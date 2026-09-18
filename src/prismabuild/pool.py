@@ -3226,6 +3226,61 @@ class PoolQueue:
             return None
         return record
 
+    def movers_claimed_on_tier(self, tier_id: str) -> list[str]:
+        """Mover keys holding a claim on this tier at this instant.
+
+        The number a mover's receipt needs to make its own pool-side rate mean
+        anything: ``mean_pool_read_mb_s`` is what the *pool* delivered while it
+        ran, whoever was reading, so one copy's share of it is only readable
+        beside the count of copies that shared it.  A mover row is the one whose
+        residency block names a *range*; a consumer's names leads.  Claimed
+        only -- a ready mover is not reading yet.
+        """
+
+        out: list[str] = []
+        for path in _scan(self.dir(CLAIMED)):
+            item = _read_json(path)
+            residency = item.get("residency") if isinstance(item, dict) else None
+            if not isinstance(residency, dict):
+                continue
+            if "range_start_bytes" not in residency:
+                continue
+            if str(residency.get("tier_id") or "") != str(tier_id):
+                continue
+            name = path.name
+            out.append(name[:-len(".json")] if name.endswith(".json") else name)
+        return sorted(out)
+
+    def move_records(self) -> list[dict[str, object]]:
+        """Every filed movement receipt, oldest first by the time it records.
+
+        The history a next submission prices itself from: ``mem_gb`` and
+        ``cpu`` off ``peak_rss_bytes`` and ``cpu_seconds``, fill capacity off
+        the pool-side rate.  Append-only and small (one JSON per mover), so it
+        is read whole rather than indexed.  A record that is unreadable or not
+        a move receipt is skipped, never raised: a submission must not fail
+        because one older receipt was truncated.
+        """
+
+        directory = self.root / MOVERS
+        out: list[dict[str, object]] = []
+        try:
+            paths = sorted(directory.glob("*.json"))
+        except OSError:
+            return out
+        for path in paths:
+            try:
+                record = _read_json(path, tolerate_stale=True)
+            except PoolContractError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+                continue
+            out.append(record)
+        out.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
+        return out
+
     def record_move(self, action_key: str, record: Mapping[str, object]) -> Path:
         """File one movement result.
 

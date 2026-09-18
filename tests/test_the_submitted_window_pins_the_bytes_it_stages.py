@@ -132,7 +132,10 @@ def fleet(tmp_path: Path):
 
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=True,
-        residency="stage", residency_tier=None, residency_mover_mem_gb=1)
+        residency="stage", residency_tier=None, residency_mover_mem_gb=1,
+        # A mover's own, since #603: the width it copies at and the attempts it
+        # gets, neither of them the consumer's.
+        residency_mover_readers=4, residency_mover_max_attempts=3)
     staged = pbrun.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue, cas=cas)

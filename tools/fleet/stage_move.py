@@ -133,6 +133,24 @@ def _delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
     return {name: after[name] - before.get(name, 0) for name in sorted(after)}
 
 
+def cpu_seconds(*, usage=resource.getrusage) -> float:
+    """This process and its children's CPU seconds so far, user plus system.
+
+    Read at both ends of the copy and differenced, for the same reason
+    ``peak_rss_bytes`` is in the receipt: the next submission's ``cpu`` demand
+    should be a measurement of what a mover cost rather than a number someone
+    chose (``pb_demand_must_be_measured_not_habitual``).  Children are counted
+    because the copy's digest work is where the CPU goes and a future mover may
+    spawn it; today it is threads, which ``RUSAGE_SELF`` already covers.
+    """
+
+    total = 0.0
+    for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN):
+        sample = usage(who)
+        total += float(sample.ru_utime) + float(sample.ru_stime)
+    return total
+
+
 class _Copier:
     """One range, copied in read order by a bounded set of workers."""
 
@@ -461,12 +479,26 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         pacer.begin_row(served_host=str(served["served_host"]),
                         served_addresses=tuple(served["served_addresses"]),
                         served_reason=str(served["served_reason"]))
+    # How many movers were reading this tier when the copy began, this one
+    # included.  Without it ``mean_pool_read_mb_s`` cannot price a single
+    # mover: it is what the whole pool delivered, so a window shared by three
+    # copies reports three copies' worth, and a next submission that read it as
+    # one mover's rate would reserve the entire pool for each of them -- which
+    # re-serializes movers through the fill token, the same failure this whole
+    # change is about, arriving by another resource kind.
+    try:
+        concurrent = len(pool.PoolQueue(Path(args.pool_root)).movers_claimed_on_tier(
+            str(args.tier_id))) or 1
+    except (OSError, pool.PoolContractError):
+        concurrent = 0          # unknown, and unknown prices nothing
     before = proc_io()
+    cpu_before = cpu_seconds()
     started = time.time()
     copier.run(window, whole=whole, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
+    cpu_used = max(0.0, cpu_seconds() - cpu_before)
     pacing = (pacer.report() if pacer is not None
               else prewarm_loop.inactive_pacing("no pacer"))
 
@@ -487,8 +519,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "complete": copier.bytes_staged == declared and not copier.errors,
         "seconds": round(elapsed, 3),
         # File-side, and named so: what the copy saw, which the ARC can answer
-        # without the disks moving.  ``disk_pacing.mean_self_read_mb_s`` beside
-        # it is the pool-side number, and the only one a tier mints from.
+        # without the disks moving.  ``disk_pacing.mean_pool_read_mb_s`` beside
+        # it is the pool-side number, summed off the members' own sector
+        # counters, and the only one a tier mints from.
         "mb_per_s_file_side": round(copier.bytes_staged / 1e6 / elapsed, 1),
         "disk_pacing": pacing,
         "served": {k: list(v) if isinstance(v, tuple) else v
@@ -501,6 +534,25 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # this should stay flat as the range grows, and a receipt that
         # says otherwise is the bug report.
         "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        # The other half of the same story, and the one #603 is about: a
+        # mover's sha256 is CPU-bound, it declared no ``cpu`` at all, and
+        # ``adaptive_cpu`` reads an absent ``cpu`` as unknown CPU use and
+        # serializes it on an otherwise idle host
+        # (``adaptive_cpu.py`` ``unbounded_cpu_not_exclusive``).  Differenced
+        # across the copy, so the manifest read and the fragment publishes
+        # outside it are not charged to the rate.  ``cpu_seconds / seconds``
+        # is mean parallelism -- what this copy actually kept busy -- which is
+        # the number a next submission can declare and the controller can
+        # learn down from.
+        "cpu_seconds": round(cpu_used, 3),
+        # 0 means "could not be read", which prices nothing, rather than 1.
+        storage_tiers.MOVER_CONCURRENCY_FIELD: int(concurrent),
+        # What the ledger promised this copy of the pool, beside what the pool
+        # actually delivered (``disk_pacing.mean_pool_read_mb_s``) and what
+        # this copy achieved.  The three together are what says whether the
+        # supply can grow or has found its ceiling.
+        storage_tiers.MOVER_FILL_DEMAND_FIELD: int(
+            getattr(args, "fill_mb_s_pool_side", 0) or 0),
         "host": socket.gethostname(),
         "errors": copier.errors,
         "unix": time.time(),
@@ -594,6 +646,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="local=declared, as the prewarm loop takes it")
     parser.add_argument("--block", type=int, default=prewarm_loop.BLOCK,
                         help="bytes per read; the buffer each worker holds")
+    parser.add_argument("--fill-mb-s-pool-side", type=int, default=0,
+                        help="the pool bandwidth this mover's claim reserved, "
+                             "recorded in the receipt so a later cycle can ask "
+                             "whether the pool delivered what the ledger "
+                             "promised.  0 means the claim reserved none")
     parser.add_argument("--readers", type=int, default=4,
                         help="copy depth while another client is reading the pool")
     parser.add_argument("--max-readers", type=int, default=16,

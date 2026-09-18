@@ -49,6 +49,7 @@ are arithmetic over it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+import math
 import os
 from pathlib import Path
 import shutil
@@ -433,22 +434,42 @@ def split_demand(
     return host, tiers
 
 
-def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
-    """The best sustained pool-side MB/s any recorded move off a tier drew, or ``None``.
+#: The field in a reader's ``disk_pacing`` block a fill capacity is minted
+#: from: what the pool's members delivered over that reader's window, summed
+#: from their sector counters.  Not ``mean_self_read_mb_s``, which is nfsd
+#: ``export_stats`` bytes to the served consumer's client addresses: a mover
+#: copying pool -> stage runs *on* the file server and is no NFS client, so its
+#: own reads are attributed to nobody.  Measured on all five live receipts in
+#: ``pb-queue/movers/``: ``mean_self_read_mb_s`` is 0.0 four times and 0.2 once
+#: with ``mean_util_pct`` 77-86, while file-side rates read 229-1478 MB/s.
+POOL_FILL_FIELD = "mean_pool_read_mb_s"
 
-    The number is ``disk_pacing.mean_self_read_mb_s``: what the pool's own
-    members delivered to this reader over the whole window, attributed by the
-    pacer (#580).  It is deliberately **not** the record's file-side
-    ``mb_per_s``.  A warm that finds its bytes already in the ARC reports
-    file-side rates the disks never produced -- one live receipt on
-    dl380g10 says 1141 MB/s for 206 GB off a four-spindle raidz1 -- and a
-    fill capacity minted from that would admit movers the disks cannot feed.
-    A record without pool-side attribution therefore says nothing about the
-    pool, and a tier with no attributed record has no fill tokens, which is
-    the probe rule.  The maximum over records is the demonstrated capacity;
-    a later record that beats it raises the mint on the next cycle, so a
-    deeper reader or a quieter pool shows up as tokens without anybody
-    editing a number.
+
+def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
+    """The best pool-side MB/s any recorded read off a tier demonstrated, or ``None``.
+
+    The number is ``disk_pacing.mean_pool_read_mb_s``: the sum over the pool's
+    members of sectors read during that reader's window, over the wall seconds
+    of the intervals it sampled.  It is deliberately **not** the record's
+    file-side ``mb_per_s``.  A warm that finds its bytes already in the ARC
+    reports file-side rates the disks never produced -- one live receipt on
+    dl380g10 says 1141 MB/s for 206 GB off a four-spindle raidz1, and a live
+    mover receipt says 1478 MB/s for 3.3 GB -- and a fill capacity minted from
+    that would admit readers the disks cannot feed.
+
+    It is also not ``mean_self_read_mb_s``, which this function read until the
+    live receipts refuted it: that field is what nfsd served to the *consumer's*
+    addresses, so a local pool-to-stage copy contributes nothing to it and
+    every mover receipt reports 0.0 while the spindles are at 80%.  A rate of
+    0.2 then minted ``int(0.2) == 0`` fill tokens and the tier announced
+    ``"fill_source": "measured"`` over a supply that admits nothing.
+
+    A record without the pool-side field says nothing about the pool, and a
+    tier with no such record has no fill tokens, which is the probe rule.  The
+    maximum over records is the demonstrated delivery; because the field counts
+    *every* reader of the pool rather than only the one being measured, a
+    window in which two movers overlapped reports both, so the mint can grow
+    past one mover without anybody editing a number.
     """
 
     best: float | None = None
@@ -456,12 +477,182 @@ def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | N
         pacing = record.get("disk_pacing")
         if not isinstance(pacing, Mapping):
             continue
-        rate = pacing.get("mean_self_read_mb_s")
+        rate = pacing.get(POOL_FILL_FIELD)
         if isinstance(rate, bool) or not isinstance(rate, (int, float)):
             continue
         if rate > 0 and (best is None or rate > best):
             best = float(rate)
     return best
+
+
+#: What a mover reserved of the pool, as it reserved it.  ``stage_move`` copies
+#: this out of its own command line into the receipt so a later cycle can ask
+#: whether the pool delivered what the ledger had promised -- which is the one
+#: question that distinguishes "the supply can grow" from "this is the ceiling".
+MOVER_FILL_DEMAND_FIELD = "fill_demand_mb_s_pool_side"
+
+#: How many movers were reading this tier when a copy began, that copy
+#: included.  ``mean_pool_read_mb_s`` is the *pool's* delivery, so one copy's
+#: share of it is unreadable without this count, and a demand priced off the
+#: aggregate would reserve the whole pool per mover.
+MOVER_CONCURRENCY_FIELD = "movers_claimed_on_tier"
+
+
+def _delivered(record: Mapping[str, object]) -> float | None:
+    pacing = record.get("disk_pacing")
+    if not isinstance(pacing, Mapping):
+        return None
+    rate = pacing.get(POOL_FILL_FIELD)
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+        return None
+    return float(rate)
+
+
+def _fell_short(record: Mapping[str, object]) -> bool:
+    """Whether this reader drew less of the pool than the ledger had promised it.
+
+    Measured, with no tolerance and no constant: the bytes it staged over the
+    wall seconds it was *reading* -- its elapsed time less the seconds the
+    pacer held it, because a held reader was stopped on purpose and its
+    shortfall is the pacer's doing rather than the pool's -- against the
+    ``fill_mb_s_pool_side`` its own claim reserved.  A reader that got what it
+    reserved says the supply was honest; one that did not, while the pool was
+    delivering ``mean_pool_read_mb_s``, says the supply was priced above what
+    the disks can give to that many readers at once.
+    """
+
+    sealed = record.get(MOVER_FILL_DEMAND_FIELD)
+    if isinstance(sealed, bool) or not isinstance(sealed, (int, float)) or sealed <= 0:
+        return False
+    staged = record.get("bytes_staged")
+    seconds = record.get("seconds")
+    if isinstance(staged, bool) or not isinstance(staged, (int, float)) or staged <= 0:
+        return False
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+        return False
+    pacing = record.get("disk_pacing")
+    held = 0.0
+    if isinstance(pacing, Mapping):
+        value = pacing.get("held_seconds")
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
+            held = float(value)
+    span = float(seconds) - held
+    if span <= 0:
+        return False
+    return (float(staged) / 1e6 / span) < float(sealed)
+
+
+def mover_fill_demand_from_receipts(
+    records: Iterable[Mapping[str, object]], *, tier_id: str,
+) -> int | None:
+    """The pool bandwidth a next mover reserves, or ``None`` with nothing measured.
+
+    Priced per receipt and maximised across them, never mixed: each receipt
+    bounds *one* mover's draw two ways, and the smaller bound is that receipt's
+    answer.
+
+    * Its own file-side rate is what a copy of this shape achieved -- but a warm
+      one achieved it out of the ARC and the disks never produced it (a live
+      receipt: 1478 MB/s for 3.3 GB off four spindles).
+    * Its window's pool delivery over the movers that shared that window is what
+      one of them can have drawn on average.  The division is the point.
+      ``mean_pool_read_mb_s`` is the *pool's* number: a window shared by three
+      copies reports three copies' worth, and reading it as one mover's rate
+      would reserve the whole pool for each of them -- which re-serializes
+      movers through the fill token, the same failure the CPU demand fixes,
+      arriving by another resource kind.
+
+    A receipt missing either side, or missing its concurrency count, prices
+    nothing; with no receipt priced the answer is ``None`` and the mover
+    reserves no fill, because a guessed bandwidth is the habit this replaces.
+    """
+
+    best: float | None = None
+    for record in usable_mover_receipts(records, tier_id=tier_id):
+        rate = record.get("mb_per_s_file_side")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+            continue
+        delivered = _delivered(record)
+        if delivered is None:
+            continue
+        sharers = record.get(MOVER_CONCURRENCY_FIELD)
+        if isinstance(sharers, bool) or not isinstance(sharers, int) or sharers < 1:
+            continue
+        share = min(float(rate), delivered / sharers)
+        best = share if best is None else max(best, share)
+    if best is None:
+        return None
+    demand = int(best)
+    return demand if demand > 0 else None
+
+
+def fill_supply_from_records(
+    records: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """How much pool bandwidth a tier may offer, folded over its receipts.
+
+    The problem this solves is that ``max`` over receipts cannot grow past the
+    concurrency that produced them if the number it maximises is one reader's
+    own rate.  ``mean_pool_read_mb_s`` is not that number -- it is what the
+    whole pool delivered while that reader ran, whoever else was reading -- so
+    the maximum does rise the first time two movers overlap.  What is still
+    needed is a reason to *let* them overlap the first time, and a reason to
+    stop.
+
+    Both are measured, and the whole thing is a pure fold over the receipts in
+    ``unix`` order, so the same history mints the same supply however often it
+    is read:
+
+    * A receipt that *fell short* of the fill it reserved, while the pool was
+      delivering what it delivered, is a measured ceiling: that delivery is
+      what the disks give, and the ledger had promised more.  The most recent
+      such receipt sets ``ceiling_mb_s``.
+    * Any later receipt whose delivery exceeded that ceiling refutes it -- the
+      pool did more than the ceiling claimed -- and clears it, which is how a
+      resilver finishing or a competing consumer leaving is noticed without an
+      age or a decay.
+    * ``best_mb_s`` is the highest delivery observed after the last ceiling,
+      or over all receipts when there is none.
+
+    A caller with no ceiling may offer ``best_mb_s`` plus one more reader's
+    worth and watch what happens: if the pool keeps up, the next receipt raises
+    ``best_mb_s``; if it does not, that receipt sets the ceiling and the growth
+    stops where the disks stopped.  ``may_grow`` says which case this is.  The
+    "one more reader's worth" is the probe rule's number -- the oldest ready
+    item's own sealed demand -- and it stays with the loop that can see the
+    queue, so nothing here invents a size.
+
+    Residual, stated rather than hidden: at the ceiling the supply can flap by
+    one reader, because a window one reader below the ceiling may deliver a
+    little more than the ceiling recorded and refute it.  That is harmless
+    here -- a consumer is protected from a reader by the pacer's hold, not by
+    this ledger -- and removing it would need a hysteresis nothing measures.
+    """
+
+    ordered = sorted(
+        (record for record in records if isinstance(record, Mapping)),
+        key=lambda record: float(record.get("unix", 0.0) or 0.0))
+    ceiling: float | None = None
+    best: float | None = None
+    ceiling_key: str | None = None
+    for record in ordered:
+        delivered = _delivered(record)
+        if delivered is None:
+            continue
+        if ceiling is not None and delivered > ceiling:
+            ceiling, ceiling_key, best = None, None, None
+        if _fell_short(record):
+            ceiling = delivered
+            ceiling_key = str(record.get("action_key") or "")
+            best = None
+            continue
+        best = delivered if best is None else max(best, delivered)
+    return {
+        "ceiling_mb_s": ceiling,
+        "ceiling_receipt": ceiling_key,
+        "best_mb_s": best,
+        "may_grow": ceiling is None,
+    }
 
 
 def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
@@ -476,7 +667,13 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
         elif tier == "arc":
             tokens[ARC_CAPACITY_KIND] = capacity // GIB
     fill = record.get(FILL_RECORD_FIELD)
-    if isinstance(fill, (int, float)) and not isinstance(fill, bool) and fill > 0:
+    if isinstance(fill, (int, float)) and not isinstance(fill, bool) and int(fill) > 0:
+        # ``int(fill) > 0``, not ``fill > 0``.  A measured 0.2 MB/s used to
+        # mint a ``fill_mb_s_pool_side`` key worth zero tokens, which admits
+        # nothing at all while the tier announces ``fill_source: measured``
+        # over it -- a supply that refuses every mover, labelled as a
+        # measurement.  A rate below one whole MB/s has not measured a usable
+        # capacity, so the kind is absent and the probe rule applies.
         tokens[FILL_KIND] = int(fill)
     return tokens
 
@@ -570,6 +767,109 @@ def stage_tokens_for_bytes(range_bytes: int) -> int:
     if isinstance(range_bytes, bool) or not isinstance(range_bytes, int) or range_bytes <= 0:
         raise ValueError("a residency range must be a positive number of bytes")
     return -(-range_bytes // GIB)
+
+
+#: What a mover receipt must carry for a next submission to price CPU and
+#: memory off it rather than off a habit.  Named here because both the reader
+#: (``mover_demand_from_receipts``) and the writer (``stage_move``) are held to
+#: it, and a receipt that predates either field simply contributes nothing.
+MOVER_CPU_FIELD = "cpu_seconds"
+MOVER_RSS_FIELD = "peak_rss_bytes"
+
+def usable_mover_receipts(
+    records: Iterable[Mapping[str, object]], *, tier_id: str,
+) -> list[Mapping[str, object]]:
+    """The receipts of movers that actually copied onto ``tier_id``.
+
+    A refused receipt measured a refusal, and a receipt from another tier
+    measured another box's disks, so neither says anything about the next
+    mover onto this one.  ``seconds`` must be positive because every number
+    derived below is a rate over it.
+    """
+
+    out: list[Mapping[str, object]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("tier_id") or "") != str(tier_id):
+            continue
+        if record.get("refusal"):
+            continue
+        seconds = record.get("seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            continue
+        if not (seconds > 0):
+            continue
+        out.append(record)
+    return out
+
+
+def mover_demand_from_receipts(
+    records: Iterable[Mapping[str, object]],
+    *,
+    tier_id: str,
+    readers: int,
+    fallback_mem_gb: int,
+) -> dict[str, object]:
+    """The ``cpu`` and ``mem_gb`` a next mover declares, and where they came from.
+
+    Measured, not habitual (``pb_demand_must_be_measured_not_habitual``): the
+    numbers are the maxima over the live receipts of movers that copied onto
+    this tier.  ``cpu`` is ``ceil(cpu_seconds / seconds)`` -- the mean
+    parallelism a copy actually kept busy -- and ``mem_gb`` is
+    ``ceil(peak_rss_bytes / GiB)``.  Maxima rather than means, because the
+    demand is a reservation: a number that half the movers exceed is a
+    reservation half of them run outside.
+
+    With no receipt carrying a field there is nothing to measure, and the
+    fallback is a *declared bound* rather than a guess at usage.  For CPU that
+    bound is the mover's own structure: it copies through ``readers`` paced
+    buffers, so ``readers`` is a width the action cannot exceed once its
+    allocation pins it there, and the adaptive controller learns down from a
+    declared width.  What it must not be is absent -- an absent ``cpu`` is read
+    as *unknown* CPU use and serialized on an otherwise idle host
+    (``adaptive_cpu`` ``unbounded_cpu_not_exclusive``), which is #603 and the
+    whole of why one mover ran at a time in the first live window (#607).
+
+    Returns the two numbers plus ``demand_source``: per field, whether it was
+    measured or declared, and the receipts that were read.
+    """
+
+    if isinstance(readers, bool) or not isinstance(readers, int) or readers < 1:
+        raise ValueError("readers must be a positive whole number of buffers")
+    if isinstance(fallback_mem_gb, bool) or not isinstance(fallback_mem_gb, int) \
+            or fallback_mem_gb < 1:
+        raise ValueError("fallback_mem_gb must be a positive whole GiB")
+    usable = usable_mover_receipts(records, tier_id=tier_id)
+    cpu_keys: list[str] = []
+    mem_keys: list[str] = []
+    cpu: int | None = None
+    mem_gb: int | None = None
+    for record in usable:
+        key = str(record.get("action_key") or "")
+        seconds = float(record["seconds"])            # type: ignore[arg-type]
+        used = record.get(MOVER_CPU_FIELD)
+        if not isinstance(used, bool) and isinstance(used, (int, float)) and used > 0:
+            want = max(1, math.ceil(float(used) / seconds))
+            cpu = want if cpu is None else max(cpu, want)
+            cpu_keys.append(key)
+        rss = record.get(MOVER_RSS_FIELD)
+        if not isinstance(rss, bool) and isinstance(rss, int) and rss > 0:
+            want_mem = max(1, -(-rss // GIB))
+            mem_gb = want_mem if mem_gb is None else max(mem_gb, want_mem)
+            mem_keys.append(key)
+    return {
+        "cpu": readers if cpu is None else cpu,
+        "mem_gb": fallback_mem_gb if mem_gb is None else mem_gb,
+        "demand_source": {
+            "tier_id": str(tier_id),
+            "receipts_read": len(usable),
+            "cpu": "receipts" if cpu is not None else "declared_readers",
+            "cpu_receipts": sorted(cpu_keys),
+            "mem_gb": "receipts" if mem_gb is not None else "declared_fallback",
+            "mem_gb_receipts": sorted(mem_keys),
+        },
+    }
 
 
 def residency_demand(
@@ -701,9 +1001,18 @@ def discover_tiers(
 __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
+    "POOL_FILL_FIELD",
+    "MOVER_FILL_DEMAND_FIELD",
+    "MOVER_CONCURRENCY_FIELD",
+    "fill_supply_from_records",
+    "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",
     "capacity_kind_of",
     "residency_demand",
+    "mover_demand_from_receipts",
+    "usable_mover_receipts",
+    "MOVER_CPU_FIELD",
+    "MOVER_RSS_FIELD",
     "stage_tokens_for_bytes",
     "tier_kind_of",
     "ARC_CAPACITY_KIND",

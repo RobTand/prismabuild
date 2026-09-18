@@ -240,7 +240,7 @@ def test_the_receipt_says_which_side_every_rate_was_measured_on(
 
     assert "mb_per_s" not in receipt, "an unqualified rate is the thing to avoid"
     assert "mb_per_s_file_side" in receipt
-    assert "mean_self_read_mb_s" in receipt["disk_pacing"]
+    assert "mean_pool_read_mb_s" in receipt["disk_pacing"]
     assert receipt["range_start_bytes"] == 0 and receipt["range_end_bytes"] == 4096
     assert receipt["range_bytes"] == 4096
     assert isinstance(receipt["proc_io"], dict)
@@ -274,7 +274,7 @@ def test_a_mover_receipt_prices_the_tier_the_same_way_a_prewarm_record_does(
 
     import prismabuild.storage_tiers as storage_tiers
 
-    mover = {"disk_pacing": {"mean_self_read_mb_s": 242.5},
+    mover = {"disk_pacing": {"mean_pool_read_mb_s": 242.5},
              "mb_per_s_file_side": 1141.0}
     assert storage_tiers.fill_rate_from_records([mover]) == 242.5
     # A receipt with no pool-side attribution says nothing about the pool.
