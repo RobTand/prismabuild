@@ -69,6 +69,9 @@ MB = 1_000_000
 ZPOOL_AUX_GROUPS = frozenset({"cache", "logs", "spares", "special", "dedup"})
 #: The token kinds a tier mints.  Every demand key on a tier is ``<kind>@<tier_id>``.
 STAGE_CAPACITY_KIND = "stage_gib"
+#: ``capacity_source`` of a stage tier whose ``capacity_bytes`` is the dataset's
+#: ``available``: what ZFS will still let a writer write, net of what is staged.
+WRITABLE_CAPACITY_SOURCE = "zfs available"
 ARC_CAPACITY_KIND = "arc_gib"
 #: The fill token is named for the side it is measured on, because a
 #: file-side rate and a pool-side rate differ by whatever the ARC answered
@@ -965,7 +968,7 @@ def discover_tiers(
             "health": pool["health"],
             "capacity_bytes": (int(dataset["available_bytes"])
                                if dataset is not None else 0),
-            "capacity_source": ("zfs available" if dataset is not None
+            "capacity_source": (WRITABLE_CAPACITY_SOURCE if dataset is not None
                                 else "none (no dataset readable)"),
             "dataset": None if dataset is None else dataset["dataset"],
             "pool_size_bytes": pool["size_bytes"],

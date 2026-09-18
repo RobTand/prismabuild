@@ -3104,6 +3104,21 @@ up. `publish` refuses an item whose declared `stage_gib` on that tier is below
 the ceiling of its own range, so the number in a claim record traces back to a
 declared read set rather than to a habit.
 
+### What a stage tier's capacity counts
+
+A stage tier's `capacity_bytes` is the dataset's ZFS `available`: what a
+writer may still write, net of parity, slop and the bytes already on the
+dataset. Those staged bytes are held tokens (retained == held), so the ledger's
+supply is minted as **writable + held**: the tier loop adds the ledger's held
+`stage_gib` to the discovered token count and announces `writable_gib`,
+`held_gib` and `capacity_basis: "zfs available + held"` on the record. Minting
+from `available` alone counted every staged GiB twice -- free tokens fell as
+`available - held` and the window starved once staged bytes reached the pool's
+remaining free space, half the pool; on 2026-09-18 that left an 11 GiB head
+phase unrepublished behind 433 GiB held and 275 GiB writable (#621). A record
+that does not name the writable source (a fake, a legacy tier) is minted as it
+was.
+
 ### Where a tier ledger lives, and why it is a second root
 
 A tier ledger is an ordinary `ResourceLedger` under `tier-reservations/<tier_id>/`,
