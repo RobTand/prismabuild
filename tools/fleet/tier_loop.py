@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({
                 "event": "tier-cycle", "unix": time.time(), "host": host,
                 "tiers": [{k: r.get(k) for k in ("tier_id", "tier", "capacity_bytes",
-                                                    "fill_mb_s", "fill_source", "tokens")}
+                                                    storage_tiers.FILL_RECORD_FIELD, "fill_source", "tokens")}
                           for r in records],
             }), flush=True)
         if args.once:

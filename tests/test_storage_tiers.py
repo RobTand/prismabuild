@@ -176,11 +176,11 @@ def test_read_arcstats_parses_the_kstat_layout(tmp_path: Path) -> None:
 def test_demand_keys_split_host_kinds_from_tier_kinds() -> None:
     host, tiers = st.split_demand({
         "cpu": 1, "stage_gib@prismabuild-stage:dl380g10": 34,
-        "fill_mb_s@prismabuild-stage:dl380g10": 500, "arc_gib@arc:dl380g10": 11,
+        "fill_mb_s_pool_side@prismabuild-stage:dl380g10": 500, "arc_gib@arc:dl380g10": 11,
     })
     assert host == {"cpu": 1}
     assert tiers == {
-        "prismabuild-stage:dl380g10": {"stage_gib": 34, "fill_mb_s": 500},
+        "prismabuild-stage:dl380g10": {"stage_gib": 34, "fill_mb_s_pool_side": 500},
         "arc:dl380g10": {"arc_gib": 11},
     }
     assert st.split_demand_key("gpu") == ("gpu", None)
@@ -206,11 +206,11 @@ def test_fill_rate_is_the_pool_side_attribution_never_the_file_side_rate() -> No
 
 
 def test_tier_tokens_mint_whole_gib_and_whole_mb_s() -> None:
-    assert st.tier_tokens({"tier": "stage", "capacity_bytes": 800166076416, "fill_mb_s": 242.5}) == {
-        "stage_gib": 745, "fill_mb_s": 242,
+    assert st.tier_tokens({"tier": "stage", "capacity_bytes": 800166076416, "fill_mb_s_pool_side": 242.5}) == {
+        "stage_gib": 745, "fill_mb_s_pool_side": 242,
     }
     assert st.tier_tokens({"tier": "arc", "capacity_bytes": 252274887864}) == {"arc_gib": 234}
-    assert st.tier_tokens({"tier": "arc", "capacity_bytes": 0, "fill_mb_s": None}) == {}
+    assert st.tier_tokens({"tier": "arc", "capacity_bytes": 0, "fill_mb_s_pool_side": None}) == {}
     assert st.tier_tokens({"tier": "pool", "capacity_bytes": 5}) == {}
 
 
@@ -268,11 +268,11 @@ def test_discover_reads_every_tier_from_the_box(tmp_path: Path) -> None:
     assert stage["source_members"] == ["sdb", "sdc"]
     assert stage["source_members_by_id"] == [
         "scsi-35000cca2a1efba56-part1", "scsi-35000cca2a1f1042d-part1"]
-    assert stage["fill_mb_s"] == 242.5
+    assert stage["fill_mb_s_pool_side"] == 242.5
     assert stage["sampled_unix"] == 1.0
     arc = tiers["arc:dl380g10"]
     assert arc["tier"] == "arc"
     assert arc["capacity_bytes"] == 257698037760 - 5423149896
     assert arc["source_members"] == ["sdb", "sdc"]
-    assert st.tier_tokens(stage) == {"stage_gib": 745, "fill_mb_s": 242}
-    assert st.tier_tokens(arc) == {"arc_gib": 234, "fill_mb_s": 242}
+    assert st.tier_tokens(stage) == {"stage_gib": 745, "fill_mb_s_pool_side": 242}
+    assert st.tier_tokens(arc) == {"arc_gib": 234, "fill_mb_s_pool_side": 242}

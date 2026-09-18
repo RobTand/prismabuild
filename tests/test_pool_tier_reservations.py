@@ -24,7 +24,7 @@ KEY_A = "a" * 64
 KEY_B = "b" * 64
 TIER = "prismabuild-stage:dl380g10"
 STAGE = f"stage_gib@{TIER}"
-FILL = f"fill_mb_s@{TIER}"
+FILL = f"fill_mb_s_pool_side@{TIER}"
 
 
 @pytest.fixture()
@@ -79,13 +79,13 @@ def test_tier_ledger_is_separate_from_host_ledgers(queue: pool.PoolQueue) -> Non
 
 
 def test_mint_follows_discovery_down_as_well_as_up(queue: pool.PoolQueue) -> None:
-    queue.mint_tier_capacity(TIER, {"stage_gib": 3, "fill_mb_s": 2})
-    assert queue.tier_ledger(TIER).capacity() == {"stage_gib": 3, "fill_mb_s": 2}
+    queue.mint_tier_capacity(TIER, {"stage_gib": 3, "fill_mb_s_pool_side": 2})
+    assert queue.tier_ledger(TIER).capacity() == {"stage_gib": 3, "fill_mb_s_pool_side": 2}
     assert queue.tier_ledger(TIER).acquire(KEY_A, {"stage_gib": 2})
     # The stage shrank to 1 GiB and the fill kind vanished: free tokens go,
     # held ones stay until their holder finishes.
     result = queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-    assert result["retired"] == {"stage_gib": 1, "fill_mb_s": 2}
+    assert result["retired"] == {"stage_gib": 1, "fill_mb_s_pool_side": 2}
     assert queue.tier_ledger(TIER).capacity() == {"stage_gib": 2}
     assert queue.tier_ledger(TIER).holder_tokens(KEY_A) == {"stage_gib": 2}
     with pytest.raises(pool.PoolContractError):
@@ -93,22 +93,26 @@ def test_mint_follows_discovery_down_as_well_as_up(queue: pool.PoolQueue) -> Non
 
 
 def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) -> None:
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2, "fill_mb_s": 5})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 2, "fill_mb_s_pool_side": 5})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 2, FILL: 5})
     claimed = queue.claim(owner="mover", capacity={"cpu": 1})
     assert claimed is not None and claimed["action_key"] == KEY_A
-    assert claimed["tier_reservations"] == [TIER]
+    assert claimed["tier_reservations"] == {
+        TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
+    # Tier demand alone asks nothing about residency, so no verdict is written.
+    assert "residency_verdict" not in claimed
     assert claimed["reserved_on"] == pool.socket.gethostname()
     assert queue.ledger().held() == {"cpu": 1}
-    assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 2, "fill_mb_s": 5}}
+    assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 2, "fill_mb_s_pool_side": 5}}
     assert queue.tier_ledger(TIER).available() == {}
     queue.finish(KEY_A, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {}
-    assert queue.tier_ledger(TIER).available() == {"stage_gib": 2, "fill_mb_s": 5}
+    assert queue.tier_ledger(TIER).available() == {"stage_gib": 2, "fill_mb_s_pool_side": 5}
     # Nothing claim-scoped survives into the outcome or a requeue.
     done = pool._read_json(queue.item_path(pool.DONE, KEY_A))
-    assert done is not None and done["tier_reservations"] == [TIER]
+    assert done is not None and done["tier_reservations"] == {
+        TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
     assert "tier_reservations" in pool.PoolQueue._CLAIM_SCOPED_FIELDS
 
 

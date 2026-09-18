@@ -272,6 +272,14 @@ RESERVATIONS = "reservations"
 TIER_RESERVATIONS = "tier-reservations"
 #: Where a tier loop files what it discovered about one tier, for readers.
 TIERS = "tiers"
+#: The residency block an item may carry (#583): what a movement node moves,
+#: and which movement nodes a compute node waits on.  Absent on every item the
+#: fleet publishes today, and the whole mechanism is inert without it.
+RESIDENCY_SCHEMA_V1 = "prismabuild.residency.v1"
+_RESIDENCY_KEYS = frozenset({
+    "schema", "tier_id", "manifest_sha256", "manifest_bytes",
+    "range_start_bytes", "range_end_bytes", "leads",
+})
 PASSES = "passes"
 CLAIM_DENIALS = "claim-denials.json"
 CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
@@ -2882,6 +2890,7 @@ class PoolQueue:
         retry_safe: bool | None = None,
         container_owner: str | None = None,
         preempted_claim: Mapping[str, object] | None = None,
+        residency: Mapping[str, object] | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -2903,6 +2912,8 @@ class PoolQueue:
                 self._check_tier_id(tier_id)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
+        residency_block = (
+            None if residency is None else self.validate_residency(residency, demand))
         if type(max_attempts) is not int or max_attempts < 1:
             raise PoolContractError("max_attempts must be a positive integer")
         if retry_safe is not None and type(retry_safe) is not bool:
@@ -2974,6 +2985,8 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if residency_block is not None:
+            item["residency"] = residency_block
         if retry_safe is not None:
             item["retry_safe"] = retry_safe
         if container_owner is not None:
@@ -3012,7 +3025,7 @@ class PoolQueue:
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
-        "cpu_allocation", "tier_reservations",
+        "cpu_allocation", "tier_reservations", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
@@ -3505,6 +3518,105 @@ class PoolQueue:
 
         return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
                    for tier_id, handle in sorted(handles.items()))
+
+    # -- residency (#583) -------------------------------------------------
+
+    @classmethod
+    def validate_residency(
+        cls, residency: Mapping[str, object], demand: Mapping[str, int],
+    ) -> dict[str, object]:
+        """Refuse a residency block that is not arithmetic over its manifest.
+
+        Two halves, either or both.  A **mover** names the byte range of the
+        manifest's read order it makes resident; its ``stage_gib`` demand on
+        that tier must be at least the range's own ceiling in GiB, so the
+        number in the claim record is a quotation from the manifest rather
+        than a number somebody typed (``pb_demand_must_be_measured_not_
+        habitual``).  A **consumer** names its lead movers; the gate admits it
+        only once each one has moved the bytes.
+
+        The manifest digest travels with both so the range is readable: a
+        range is meaningless without the list that maps it to files, and that
+        list is content-addressed in the CAS like any other input.
+        """
+
+        block = dict(residency)
+        unknown = sorted(set(block) - _RESIDENCY_KEYS)
+        if unknown:
+            raise PoolContractError(f"unknown residency fields: {unknown}")
+        if block.get("schema") != RESIDENCY_SCHEMA_V1:
+            raise PoolContractError(f"residency schema must be {RESIDENCY_SCHEMA_V1!r}")
+        tier_id = block.get("tier_id")
+        if tier_id is not None:
+            cls._check_tier_id(str(tier_id))
+        leads = block.get("leads") or []
+        if not isinstance(leads, list):
+            raise PoolContractError("residency.leads must be an array of action keys")
+        for lead in leads:
+            if not isinstance(lead, str) or len(lead) != 64:
+                raise PoolContractError(
+                    "residency.leads must be 64-character action keys")
+        if len(set(leads)) != len(leads):
+            raise PoolContractError("residency.leads must not repeat a key")
+        start = block.get("range_start_bytes")
+        end = block.get("range_end_bytes")
+        if (start is None) != (end is None):
+            raise PoolContractError(
+                "residency range needs both range_start_bytes and range_end_bytes")
+        if start is not None:
+            for name, value in (("range_start_bytes", start), ("range_end_bytes", end)):
+                if isinstance(value, bool) or type(value) is not int or value < 0:
+                    raise PoolContractError(
+                        f"residency.{name} must be a non-negative integer")
+            if int(end) <= int(start):
+                raise PoolContractError(
+                    "residency range must be non-empty and half-open (start < end)")
+            if tier_id is None:
+                raise PoolContractError("a residency range must name the tier it lands on")
+            floor = storage_tiers.stage_tokens_for_bytes(int(end) - int(start))
+            kind = f"{storage_tiers.STAGE_CAPACITY_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"
+            declared = int(demand.get(kind, 0))
+            if declared < floor:
+                # The range is the measurement; the demand is a claim about
+                # it.  A claim below the measurement would let a mover pin
+                # bytes the tier never counted, which is precisely the
+                # accounting #583 exists to close.
+                raise PoolContractError(
+                    f"residency demand {kind}={declared} is below the "
+                    f"{floor} GiB its declared range occupies")
+        if not leads and start is None:
+            raise PoolContractError(
+                "a residency block must declare a range, leads, or both")
+        return block
+
+    def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
+        """Whether this item's declared bytes are resident, and why not.
+
+        ``not_requested`` for everything the fleet publishes today: the verdict
+        is written on every claim so that the non-answer is recorded as well as
+        the answer.  A lead counts as resident only when its ``done/`` record
+        says ``executed``: a ``cache_hit`` finished without moving a byte, and
+        reading its mere existence as residency is the trap a deterministic
+        descriptor invites.
+        """
+
+        residency = item.get("residency")
+        if not isinstance(residency, Mapping):
+            return {"state": "not_requested"}
+        leads = residency.get("leads") or []
+        if not isinstance(leads, list) or not leads:
+            return {"state": "no_leads"}
+        pending: list[dict[str, object]] = []
+        for lead in leads:
+            record = _read_json(self.item_path(DONE, str(lead)))
+            status = record.get("status") if isinstance(record, Mapping) else None
+            if status != "executed":
+                pending.append({"lead": str(lead),
+                                "status": status if status is not None else "absent"})
+        if pending:
+            return {"state": "lead_not_resident", "pending": pending,
+                    "leads": [str(lead) for lead in leads]}
+        return {"state": "resident", "leads": [str(lead) for lead in leads]}
 
     def _transition_locked(self, action_key: str, *, blocking: bool = True):
         """Serialize one key's ownership transitions, never independent keys."""
@@ -4926,6 +5038,16 @@ class PoolQueue:
                                    "cancelled this generation",
                         )
                     continue
+                residency = self.residency_verdict(item)
+                if residency["state"] == "lead_not_resident":
+                    # Before any token is taken, and without ``record_pass``:
+                    # the bytes are not there, so this box should go do other
+                    # work rather than age an item nothing on this box can
+                    # advance.  Rob, #583: schedule compute when its
+                    # dependencies are met, not while it spins on I/O.
+                    self.record_denial(item, "residency_lead_not_resident", {
+                        "residency": residency})
+                    continue
                 sealed_demand = self.demand_of(item)
                 try:
                     demand, tier_demand = storage_tiers.split_demand(sealed_demand)
@@ -5329,7 +5451,12 @@ class PoolQueue:
                     claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
                 claimed["reserved_on"] = socket.gethostname() if demand else None
                 if tier_demand:
-                    claimed["tier_reservations"] = sorted(tier_demand)
+                    claimed["tier_reservations"] = {
+                        tier_id: dict(sorted(needs.items()))
+                        for tier_id, needs in sorted(tier_demand.items())
+                    }
+                if residency["state"] != "not_requested":
+                    claimed["residency_verdict"] = residency
                 # Read here, where the claim record is being written anyway,
                 # so the receipt costs no extra write and cannot race: after
                 # this point the prewarm loop has already skipped this key,

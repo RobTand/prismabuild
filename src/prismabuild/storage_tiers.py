@@ -39,7 +39,11 @@ Three tiers, each answering a different question:
 
 Tokens are minted from these numbers by whichever loop owns the tier's
 ledger (``tier_loop.py``), in the units :func:`tier_tokens` names: one
-``stage_gib`` or ``arc_gib`` token per GiB, one ``fill_mb_s`` token per MB/s.
+``stage_gib`` or ``arc_gib`` token per GiB, one ``fill_mb_s_pool_side`` token
+per pool-side MB/s.  A demand against a tier is *derived* from the action's
+own data manifest by :func:`residency_demand`, never typed by hand: the
+manifest declares the exact read set, so the bytes a range needs resident
+are arithmetic over it.
 """
 
 from __future__ import annotations
@@ -65,7 +69,15 @@ ZPOOL_AUX_GROUPS = frozenset({"cache", "logs", "spares", "special", "dedup"})
 #: The token kinds a tier mints.  Every demand key on a tier is ``<kind>@<tier_id>``.
 STAGE_CAPACITY_KIND = "stage_gib"
 ARC_CAPACITY_KIND = "arc_gib"
-FILL_KIND = "fill_mb_s"
+#: The fill token is named for the side it is measured on, because a
+#: file-side rate and a pool-side rate differ by whatever the ARC answered
+#: -- one live receipt on dl380g10 reads 1141 MB/s file-side for 206 GB off
+#: a four-spindle raidz1 -- and a demand key that did not say which it meant
+#: would let the two be compared.  Every record field carrying this quantity
+#: uses the same spelling.
+FILL_KIND = "fill_mb_s_pool_side"
+#: The record field the tier publishes it under, same spelling as the token.
+FILL_RECORD_FIELD = "fill_mb_s_pool_side"
 TIER_DEMAND_SEPARATOR = "@"
 
 
@@ -395,10 +407,138 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
             tokens[STAGE_CAPACITY_KIND] = capacity // GIB
         elif tier == "arc":
             tokens[ARC_CAPACITY_KIND] = capacity // GIB
-    fill = record.get("fill_mb_s")
+    fill = record.get(FILL_RECORD_FIELD)
     if isinstance(fill, (int, float)) and not isinstance(fill, bool) and fill > 0:
         tokens[FILL_KIND] = int(fill)
     return tokens
+
+
+#: The demand key grammar admission splits on: ``<kind>@<tier_id>``.
+#: ``residency_demand`` is the only supported way to produce one, so that a
+#: number in a claim record always traces back to a manifest.
+
+
+def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, object]]:
+    """The manifest's read order as half-open byte ranges, or ``[]``.
+
+    Both manifest schemas already declare the same thing: a running byte sum
+    over the entries in the order the action consumes them.  v2 carries it in
+    ``read_plan.phases`` (validated entry by entry in ``core``), v1 in
+    ``annotations.phases``.  This turns either into the ranges a movement node
+    names, so that the range in a mover's demand is a quotation from the
+    consumer's own manifest rather than a number somebody chose.
+
+    A v1 table that does not describe this manifest -- a boundary that cuts an
+    entry in half, a sum that does not end at ``total_bytes`` -- yields ``[]``,
+    the same refusal ``prewarm_loop.manifest_phases`` makes, because windowing
+    on the wrong boundaries reserves for bytes nobody will read.
+    """
+
+    schema = manifest.get("schema")
+    boundaries: list[tuple[str, int]] = []
+    if schema == "prismaquant.prismabuild.data_manifest.v2":
+        plan = manifest.get("read_plan")
+        if not isinstance(plan, Mapping):
+            return []
+        phases = plan.get("phases")
+        if not isinstance(phases, list) or not phases:
+            return []
+        for phase in phases:
+            if not isinstance(phase, Mapping):
+                return []
+            boundaries.append((str(phase["name"]), int(phase["cumulative_bytes"])))
+    else:
+        annotations = manifest.get("annotations")
+        if not isinstance(annotations, Mapping):
+            return []
+        declared = annotations.get("phases")
+        if not isinstance(declared, list) or not declared:
+            return []
+        total = int(manifest.get("total_bytes", 0) or 0)
+        entry_boundaries: set[int] = set()
+        running = 0
+        for entry in manifest.get("entries", []) or []:
+            if not isinstance(entry, Mapping):
+                return []
+            running += int(entry.get("bytes", 0) or 0)
+            entry_boundaries.add(running)
+        if running != total:
+            return []
+        previous = 0
+        seen: set[str] = set()
+        for phase in declared:
+            if not isinstance(phase, Mapping):
+                return []
+            name = phase.get("name")
+            cumulative = phase.get("cumulative_bytes")
+            if not isinstance(name, str) or not name or name in seen:
+                return []
+            if isinstance(cumulative, bool) or not isinstance(cumulative, int):
+                return []
+            if cumulative < previous or cumulative > total or cumulative not in entry_boundaries:
+                return []
+            seen.add(name)
+            boundaries.append((name, cumulative))
+            previous = cumulative
+        if previous != total:
+            return []
+    ranges: list[dict[str, object]] = []
+    previous = 0
+    for name, cumulative in boundaries:
+        if cumulative > previous:
+            ranges.append({"name": name, "start_bytes": previous, "end_bytes": cumulative})
+        previous = cumulative
+    return ranges
+
+
+def stage_tokens_for_bytes(range_bytes: int) -> int:
+    """Whole GiB a byte range occupies on a stage, rounded up.
+
+    Up, because a token is the unit PB can refuse on: rounding down would let
+    the last partial GiB of every reservation be unaccounted, and a tier that
+    admits a little more than it holds is the shape #583 exists to stop.
+    """
+
+    if isinstance(range_bytes, bool) or not isinstance(range_bytes, int) or range_bytes <= 0:
+        raise ValueError("a residency range must be a positive number of bytes")
+    return -(-range_bytes // GIB)
+
+
+def residency_demand(
+    *,
+    tier_id: str,
+    range_start_bytes: int,
+    range_end_bytes: int,
+    tier: str = "stage",
+    fill_mb_s_pool_side: int | None = None,
+) -> dict[str, int]:
+    """The tier demand one movement node's range implies, derived not guessed.
+
+    The capacity ask is arithmetic over the manifest: the bytes between two
+    read-order boundaries, in whole GiB.  The fill ask is the rate the mover
+    intends to draw from the source pool, and it is optional because a tier
+    with no attributed receipt has no fill tokens to give (the probe rule);
+    when given it is **pool-side**, the only side a shared four-spindle pool
+    can be rationed on.
+    """
+
+    if range_end_bytes <= range_start_bytes:
+        raise ValueError("a residency range must be non-empty and half-open")
+    kind = {"stage": STAGE_CAPACITY_KIND, "arc": ARC_CAPACITY_KIND}.get(tier)
+    if kind is None:
+        raise ValueError(f"no capacity is reservable on the {tier!r} tier")
+    if TIER_DEMAND_SEPARATOR in str(tier_id) or not tier_id:
+        raise ValueError(f"malformed tier id {tier_id!r}")
+    demand = {
+        f"{kind}{TIER_DEMAND_SEPARATOR}{tier_id}":
+            stage_tokens_for_bytes(range_end_bytes - range_start_bytes),
+    }
+    if fill_mb_s_pool_side is not None:
+        if isinstance(fill_mb_s_pool_side, bool) or not isinstance(fill_mb_s_pool_side, int) \
+                or fill_mb_s_pool_side <= 0:
+            raise ValueError("fill_mb_s_pool_side must be a positive whole MB/s")
+        demand[f"{FILL_KIND}{TIER_DEMAND_SEPARATOR}{tier_id}"] = fill_mb_s_pool_side
+    return demand
 
 
 def discover_tiers(
@@ -451,7 +591,7 @@ def discover_tiers(
             "source_pool": source_pool,
             "source_members": members,
             "source_members_by_id": sorted(members_by_id),
-            "fill_mb_s": fill,
+            FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
     arc = arc_tier(read_arcstats(arcstats_path))
@@ -464,7 +604,7 @@ def discover_tiers(
             **arc,
             "source_pool": source_pool,
             "source_members": members,
-            "fill_mb_s": fill,
+            FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
     return tiers
@@ -472,6 +612,10 @@ def discover_tiers(
 
 __all__ = [
     "ARCSTATS",
+    "FILL_RECORD_FIELD",
+    "manifest_phase_ranges",
+    "residency_demand",
+    "stage_tokens_for_bytes",
     "ARC_CAPACITY_KIND",
     "FILL_KIND",
     "GIB",
