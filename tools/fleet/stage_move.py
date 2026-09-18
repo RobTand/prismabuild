@@ -69,6 +69,11 @@ from prismabuild import storage_tiers  # noqa: E402
 #: name of one range can never be the name of another.
 RANGE_SUFFIX = ".pbrange"
 
+#: Seconds between republications of the residency fragment while a move runs.
+#: See :func:`move`; a per-entry publish costs an NFS round trip per file and
+#: was measured at 75 KB/s against 466 MB/s.
+FRAGMENT_PUBLISH_S = 5.0
+
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
                    whole_file: bool) -> str:
@@ -283,6 +288,37 @@ def load_manifest(cas_root: Path, action_key: str,
     return manifest
 
 
+def served_for(args) -> dict[str, object]:
+    """The addresses whose reads are this move's own, and how they were found.
+
+    Derived, never configured: the consumer's claim record names its box, and
+    that box's worker offer names the client addresses the server's per-client
+    counter is keyed by.  Both are records the fleet already writes.  A broken
+    link leaves the set empty and the pacer protecting every client, and the
+    reason travels into the receipt so the slow case is never silent.
+    """
+
+    if args.served_host or args.served_address:
+        return {"served_host": args.served_host or "",
+                "served_addresses": tuple(args.served_address or ()),
+                "served_reason": "named on the command line"}
+    try:
+        queue = pool.PoolQueue(Path(args.pool_root))
+        claim = pool._read_json(
+            queue.item_path(pool.CLAIMED, str(args.consumer_action_key)))
+    except (OSError, pool.PoolContractError):
+        claim = None
+    if not isinstance(claim, dict):
+        return {"served_host": "", "served_addresses": (),
+                "served_reason": "consumer is not claimed, so every client is "
+                                 "a client to protect"}
+    host = prewarm_loop.claimed_host_of(claim)
+    found = prewarm_loop.served_addresses(queue, host)
+    return {"served_host": found["served_host"],
+            "served_addresses": found["served_addresses"],
+            "served_reason": str(found["served_reason"])}
+
+
 def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     """Stage the declared range and return the receipt, refusing an overrun."""
 
@@ -320,9 +356,28 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     residency_root = Path(args.residency_root)
     manifest_sha256 = args.manifest_sha256
 
-    def publish(staged: dict[str, dict[str, object]]) -> None:
-        """Republish the fragment as entries land, so a crash leaves a prefix."""
+    last_published = [0.0]
 
+    def publish(staged: dict[str, dict[str, object]], *, force: bool = False) -> None:
+        """Republish the fragment as entries land, so a crash leaves a prefix.
+
+        Rate-limited, and that limit is the difference between a mover that
+        works and one that does not.  The fragment is a single document that
+        grows with every entry, it lives on the shared mount, and each publish
+        is a write plus an ``fsync`` plus a rename over NFS.  Writing it once
+        per entry is quadratic in bytes and pays an NFS round trip per file:
+        measured on dl380g10, a range of 9,372 entries ran at **75 KB/s** with
+        the pool idle at 2% utilization, while a range of 61 entries of the
+        same total size ran at **466 MB/s**.  The cost was never the copy.  A
+        crash still leaves a valid prefix; it is at most a couple of seconds
+        shorter than the one a per-entry publish would have left, and the
+        entries it omits are re-staged by the rerun.
+        """
+
+        now = time.monotonic()
+        if not force and now - last_published[0] < FRAGMENT_PUBLISH_S:
+            return
+        last_published[0] = now
         residency_map.write_fragment(residency_root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": args.consumer_action_key,
@@ -333,8 +388,18 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
             "entries": staged,
         })
 
+    served = served_for(args)
     if pacer is not None:
-        pacer.begin_row(served_host=socket.gethostname())
+        # Whose reads are this move's own, and whose are a client to protect.
+        # The self is the *consumer's* box, not this one: the point of the
+        # split is not to protect a consumer from its own staging.  Naming
+        # nobody is the prewarm loop's documented "no self" case, where every
+        # client counts and the row is attributed to none of them -- which is
+        # also why such a receipt reports a pool-side rate of zero and mints
+        # no fill tokens.
+        pacer.begin_row(served_host=str(served["served_host"]),
+                        served_addresses=tuple(served["served_addresses"]),
+                        served_reason=str(served["served_reason"]))
     before = proc_io()
     started = time.time()
     copier.run(window, whole=whole, stop=stop,
@@ -365,6 +430,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # it is the pool-side number, and the only one a tier mints from.
         "mb_per_s_file_side": round(copier.bytes_staged / 1e6 / elapsed, 1),
         "disk_pacing": pacing,
+        "served": {k: list(v) if isinstance(v, tuple) else v
+                   for k, v in served.items()},
         "proc_io": _delta(before, after),
         "host": socket.gethostname(),
         "errors": copier.errors,
@@ -379,8 +446,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         residency_map.fragment_path(
             residency_root, args.consumer_action_key,
             args.action_key).unlink(missing_ok=True)
-    elif not args.no_incremental_fragment or copier.staged:
-        publish(copier.staged)
+    elif copier.staged:
+        publish(copier.staged, force=True)
     if not copier.staged and not overran:
         receipt["refusal"] = receipt.get("refusal") or "residency_moved_nothing"
     return receipt
@@ -464,6 +531,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="seconds between the pacer's device samples")
     parser.add_argument("--pace-hold-s", type=float, default=0.25,
                         help="seconds a held copy waits before asking again")
+    parser.add_argument("--served-host", default="",
+                        help="the box whose reads are this move's own; derived "
+                             "from the consumer's claim when not given")
+    parser.add_argument("--served-address", action="append", default=[],
+                        help="a client address of the served box; derived from "
+                             "its worker offer when not given")
     parser.add_argument("--unpaced", action="store_true",
                         help="run with no pacer at all; for a fixture or a box "
                              "that serves nothing, never for the storage role")
