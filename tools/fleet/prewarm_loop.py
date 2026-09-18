@@ -183,6 +183,7 @@ import errno
 import json
 import os
 import queue as queuelib
+import re
 import shutil
 import socket
 import stat as statmod
@@ -295,6 +296,30 @@ STAGE_SLOP_SHIFT = 5
 STAGE_SLOP_MINIMUM = 128 << 20
 #: Separates a stage object's mirrored path from the byte range it holds.
 STAGE_OBJECT_MARK = ".pbstage@"
+#: Where a staged object carries the identity of what it copied.  The key
+#: names a path and a range, which is what a consumer looks an object up by;
+#: it says nothing about *which version* of that path was copied, and the
+#: manifests this tier exists for carry ``sha256: null`` on every entry, so
+#: the manifest cannot break the tie either.  A source rewritten to the same
+#: length between the copy and the read would be shadowed by a stale object
+#: that nothing could detect.  The three numbers below are already in hand --
+#: the reader fstats the source to check it is a regular file -- so the cost
+#: is one syscall on a file that is about to be closed anyway.  An extended
+#: attribute rather than a sidecar: a second file per object would double the
+#: inode count of a 469 008-entry window.
+STAGE_SOURCE_XATTR = "user.pbstage.source"
+#: ``<st_size>:<st_mtime_ns>:<st_ino>`` of the source, when it was copied.
+STAGE_SOURCE_FORMAT = "st_size:st_mtime_ns:st_ino at copy time"
+#: A temporary left by a copy that never finished.  ``<key>.<pid>.<tid>.tmp``:
+#: matched exactly rather than by suffix, so nothing this loop did not write
+#: is ever unlinked.
+_STAGE_TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
+#: Stage roots this process has already reaped.  A crash or a SIGKILL leaves
+#: one temporary per in-flight reader, and nothing else ever removes them:
+#: ``release`` unlinks by key and the sweep is driven from receipts, so they
+#: are invisible to both and only shrink the tier.  Once per process, not
+#: once per cycle -- a live temporary belongs to a copy in flight.
+_REAPED_STAGE_ROOTS: set[str] = set()
 #: Written into every stage record, because the layout *is* the consumer
 #: contract and a reader of the record must not have to guess it.
 STAGE_LAYOUT = (
@@ -799,6 +824,14 @@ class StageTier:
         #: is sized wrong is exactly the question they answer.
         self.aborted_bytes = 0
         self.aborted_entries = 0
+        #: Objects committed without their source identity, because the
+        #: filesystem refused the extended attribute.  Counted rather than
+        #: fatal: identity is what makes a stale object detectable, not what
+        #: makes the copy correct.
+        self.identity_unrecorded = 0
+        #: What a previous process left behind and this one removed.
+        self.reaped_entries = 0
+        self.reaped_bytes = 0
         #: Seconds spent inside ``write(2)`` on the stage.  The copy happens
         #: in the reader thread's own block cycle, so with the stage on
         #: ``per_reader_mb_s`` reads lower; this is the field that says why.
@@ -869,6 +902,10 @@ class StageTier:
             else:
                 self.aborted_bytes += written
                 self.aborted_entries += 1
+
+    def note_unrecorded_identity(self) -> None:
+        with self.lock:
+            self.identity_unrecorded += 1
 
     def add_write_seconds(self, seconds: float) -> None:
         with self.lock:
@@ -948,6 +985,29 @@ class StageTier:
                 self.released_bytes += size
                 self.released_entries += 1
 
+    def reap_temporaries(self) -> None:
+        """Remove temporaries left by a process that is no longer here.
+
+        Only names this loop's own writer builds, and never this process's
+        own: a temporary carrying our pid belongs to a copy in flight.
+        """
+
+        if not self.mountpoint:
+            return
+        mine = str(os.getpid())
+        for path in Path(self.mountpoint).rglob("*.tmp"):
+            found = _STAGE_TEMPORARY.search(path.name)
+            if not found or found.group(1) == mine:
+                continue
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError as exc:
+                self.note(f"{path.name}: {exc}")
+                continue
+            self.reaped_entries += 1
+            self.reaped_bytes += size
+
     # -- record --------------------------------------------------------
 
     def record(self) -> dict[str, object]:
@@ -981,6 +1041,12 @@ class StageTier:
             "released_entries": self.released_entries,
             "release_failures": self.release_failures,
             "layout": STAGE_LAYOUT,
+            # What a validator reads to tell a staged object from a stale one.
+            "object_identity": {"xattr": STAGE_SOURCE_XATTR,
+                                "format": STAGE_SOURCE_FORMAT},
+            "identity_unrecorded": self.identity_unrecorded,
+            "reaped_tmp_entries": self.reaped_entries,
+            "reaped_tmp_bytes": self.reaped_bytes,
             "consumer": dict(STAGE_CONSUMER),
             "errors": list(self.errors),
         }
@@ -998,6 +1064,8 @@ class StageObject:
         self.target = target
         #: The byte count this object's own name declares.
         self.declared = int(declared)
+        #: The source's identity, as the reader's own ``fstat`` saw it.
+        self.source: "os.stat_result | None" = None
         self.written = 0
         self.reserved = 0
         self.live = True
@@ -1040,6 +1108,26 @@ class StageObject:
         self.written += moved
         return True
 
+    def identify(self, source: "os.stat_result") -> None:
+        """Carry the source's identity, from the ``fstat`` already taken."""
+
+        self.source = source
+
+    def _record_identity(self) -> None:
+        if self.source is None:
+            self.tier.note_unrecorded_identity()
+            return
+        value = (f"{self.source.st_size}:{self.source.st_mtime_ns}:"
+                 f"{self.source.st_ino}")
+        try:
+            os.setxattr(self.handle, STAGE_SOURCE_XATTR, value.encode())
+        except OSError as exc:
+            # A filesystem without user extended attributes still stages; it
+            # stages objects a validator cannot date, and the record says how
+            # many.
+            self.tier.note(f"{self.key}: identity not recorded: {exc}")
+            self.tier.note_unrecorded_identity()
+
     def commit(self) -> None:
         """Rename the temporary into place; only a whole entry gets a name.
 
@@ -1062,6 +1150,7 @@ class StageObject:
             self._discard()
             self.tier.settle(self.reserved, self.written, committed=False)
             return
+        self._record_identity()
         try:
             os.close(self.handle)
             os.replace(self.temporary, self.target)
@@ -2303,8 +2392,13 @@ class Reader:
                     else:
                         sink = stage.open_object(key, want_total)
                 try:
-                    if not statmod.S_ISREG(os.fstat(fd).st_mode):
+                    source = os.fstat(fd)
+                    if not statmod.S_ISREG(source.st_mode):
                         raise OSError(f"not a regular file: {path}")
+                    if sink is not None:
+                        # The identity of what is being copied, from the stat
+                        # this loop already takes.
+                        sink.identify(source)
                     if offset:
                         os.lseek(fd, offset, os.SEEK_SET)
                     remaining = want_total
@@ -3101,6 +3195,12 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         getattr(args, "stage_pool_prefix", STAGE_POOL_PREFIX),
         free_floor_bytes=getattr(args, "stage_free_floor_bytes", None))
         if stage_requested(args) else None)
+    if (stage is not None and stage.mountpoint and not args.dry_run
+            and stage.mountpoint not in _REAPED_STAGE_ROOTS):
+        # A dry run does not do it: an unlink is a write, however little it
+        # looks like one.
+        _REAPED_STAGE_ROOTS.add(stage.mountpoint)
+        stage.reap_temporaries()
     stage_rows: list[dict[str, object]] = []
     cas_root = Path(args.cas_root) if args.cas_root else None
     reserve = claimed_reserve(

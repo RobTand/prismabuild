@@ -597,6 +597,18 @@ Two more facts to weigh before the default could change:
   residency map, not an overlay lower layer: a range written under a mirrored
   file name would be a short file that an overlay would serve as the whole
   thing.
+* Each object also carries the identity of what it copied, in the extended
+  attribute `user.pbstage.source`: `<st_size>:<st_mtime_ns>:<st_ino>` of the
+  source file as the reader's own `fstat` saw it. The key names a path and a
+  range, not a version, and these manifests carry `sha256: null` on every
+  entry by design, so without this a source rewritten to the same length
+  between the copy and the read would be shadowed by a stale object that
+  nothing could detect. A filesystem that refuses the attribute still stages;
+  the record counts those objects in `identity_unrecorded`.
+* A temporary left by a process that died mid-copy is removed by the next
+  process to use the tier, once, and only for names this loop's own writer
+  builds. Nothing else can see them: `release` unlinks by key and the sweep is
+  driven from receipts.
 
 ### Discovery
 
