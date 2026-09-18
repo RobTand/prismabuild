@@ -19,7 +19,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prewarm_fixture import Fleet, StagePool  # noqa: E402
+from prewarm_fixture import Fleet, StagePool, phase_table  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
@@ -182,13 +182,19 @@ def test_a_tier_with_no_mountpoint_releases_nothing_and_advances_nothing(
     """
 
     fleet = Fleet(tmp_path)
+    phases = [("a", 4096), ("b", 4096)]
     key = fleet.action("row", [fleet.file("a.pt", 4096),
-                               fleet.file("b.pt", 4096)])
+                               fleet.file("b.pt", 4096)],
+                       annotations={"phases": phase_table(phases)},
+                       progress_phases=[name for name, _ in phases])
     # The tier exists first, so there is a receipt with a staged band to
-    # release, and disappears before the cycle that would release it.
+    # release, and disappears before the cycle that would release it.  The
+    # row is claimed and reporting, so it carries a window and a frontier
+    # that has moved: the release path has real work to skip.
     StagePool(tmp_path).install(monkeypatch)
     fleet.cycle(stage_args(fleet))
     fleet.claim(key)
+    fleet.report_progress(key, "b")
     monkeypatch.setattr(prewarm_loop, "run_tool", lambda argv: "")
 
     event = fleet.cycle(stage_args(fleet))

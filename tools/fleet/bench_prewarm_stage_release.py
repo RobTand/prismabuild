@@ -144,7 +144,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True,
                         help="a real data manifest, .json or .json.gz")
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=3,
+                        help="how many times each arm runs; the arms are "
+                             "interleaved and the best of each is reported, "
+                             "so a box that was busy for one repeat does not "
+                             "become the result")
     parser.add_argument("--profile", action="store_true",
                         help="also run each arm once under cProfile")
     args = parser.parse_args(argv)
