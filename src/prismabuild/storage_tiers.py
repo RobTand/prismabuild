@@ -234,6 +234,11 @@ def by_id_names(
     return out
 
 
+#: The dataset the design creates inside a stage pool, and the one a mover
+#: writes into.  Named here so discovery and the movers agree on one place.
+STAGE_DATASET = "prewarm"
+
+
 def _int_field(value: str) -> int | None:
     try:
         return int(value)
@@ -271,6 +276,49 @@ def stage_pools(*, runner: Runner | None = None) -> list[dict[str, object]] | No
             "free_bytes": free, "health": fields[4],
         })
     return pools
+
+
+def stage_dataset(pool: str, *, runner: Runner | None = None) -> dict[str, object] | None:
+    """The dataset a mover writes into, with the bytes ZFS says it may write.
+
+    Capacity is minted from ``available`` on the dataset, never from the
+    pool's ``size``.  They are different numbers and only one of them is a
+    promise: ``size`` is the raw geometry, while ``available`` is what this
+    dataset may actually write after parity, slop reservation, quotas and
+    whatever its siblings already hold.  Minting from ``size`` puts the ~3%
+    slop reserve inside the accounting as an overfill margin -- the ledger
+    would hand out tokens for bytes the pool will refuse at ENOSPC.  Minting
+    from ``available`` puts it outside by construction.
+
+    ``<pool>/prewarm`` is preferred over the pool's root dataset because that
+    is the dataset the design creates and the movers write into; the root is
+    the fallback for a pool laid out some other way.
+    """
+
+    try:
+        text = (runner or _run)([
+            zfs_binary(), "list", "-Hp", "-r",
+            "-o", "name,available,mountpoint", pool,
+        ])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found: dict[str, dict[str, object]] = {}
+    for line in text.splitlines():
+        fields = line.split("\t") if "\t" in line else line.split()
+        if len(fields) < 3:
+            continue
+        available = _int_field(fields[1])
+        if available is None:
+            continue
+        found[fields[0]] = {
+            "dataset": fields[0], "available_bytes": available,
+            "mountpoint": fields[2] if fields[2].startswith("/") else None,
+        }
+    for name in (f"{pool}/{STAGE_DATASET}", pool):
+        record = found.get(name)
+        if record is not None:
+            return record
+    return None
 
 
 def pool_mountpoint(pool: str, *, runner: Runner | None = None) -> str | None:
@@ -598,6 +646,16 @@ def discover_tiers(
         leaves = pool_member_paths(str(pool["name"]), runner=runner) or []
         names = by_id_names(leaves, by_id=by_id)
         identity = tier_id("stage", host, str(pool["name"]))
+        dataset = stage_dataset(str(pool["name"]), runner=runner)
+        # ``available`` on the dataset, and nothing else.  ``zpool size`` is
+        # the raw geometry: parity, the slop reservation and whatever the
+        # pool's other datasets hold are all still inside it, so minting from
+        # it hands out tokens for bytes ZFS refuses at ENOSPC -- to a mover
+        # that has already read them off the disks.  An unreadable dataset
+        # therefore offers **nothing** for that cycle, the way a box with no
+        # zpool offers nothing, rather than falling back to a number that is
+        # wrong in the one direction that costs an artifact.  The next cycle
+        # is 60 s away and the record says why this one is empty.
         tiers[identity] = {
             "schema": TIER_RECORD_SCHEMA_V1,
             "tier": "stage",
@@ -605,10 +663,17 @@ def discover_tiers(
             "host": host,
             "pool": pool["name"],
             "health": pool["health"],
-            "capacity_bytes": pool["size_bytes"],
+            "capacity_bytes": (int(dataset["available_bytes"])
+                               if dataset is not None else 0),
+            "capacity_source": ("zfs available" if dataset is not None
+                                else "none (no dataset readable)"),
+            "dataset": None if dataset is None else dataset["dataset"],
+            "pool_size_bytes": pool["size_bytes"],
             "allocated_bytes": pool["allocated_bytes"],
             "free_bytes": pool["free_bytes"],
-            "mountpoint": pool_mountpoint(str(pool["name"]), runner=runner),
+            "mountpoint": (dataset["mountpoint"] if dataset is not None
+                           and dataset.get("mountpoint")
+                           else pool_mountpoint(str(pool["name"]), runner=runner)),
             "members_by_id": sorted(n for n in names.values() if n),
             "members_unresolved": sorted(p for p, n in names.items() if not n),
             "source_pool": source_pool,

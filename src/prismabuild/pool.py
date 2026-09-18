@@ -160,6 +160,10 @@ RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
+#: What one movement node says it staged, and what the pool delivered while
+#: it did.  Read by the ``tiers`` role for the fill measurement, so it carries
+#: the pacer's pool-side attribution like a prewarm record does.
+POOL_MOVE_SCHEMA_V1 = "prismaquant.prismabuild.pool_move.v1"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
@@ -294,6 +298,16 @@ WORKERS = "workers"
 #: ``ready``, so writing its result into the item would race the claim that
 #: may already have moved it and resurrect a claimed action.
 PREWARM = "prewarm"
+
+#: Where a movement node files what it staged.  A sidecar for the same reason
+#: ``prewarm`` is one, and read by ``tier_loop`` for the fill measurement: a
+#: mover's receipt is the pool-side rate the tier mints its fill tokens from.
+MOVERS = "movers"
+
+#: Where movers file their residency-map fragments, one directory per consumer
+#: and one file per mover inside it.  The composed map a consumer reads is
+#: written from these; see :mod:`prismabuild.residency_map`.
+RESIDENCY = "residency"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
@@ -2371,6 +2385,8 @@ class PoolQueue:
         (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
         (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
         (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
+        (self.root / MOVERS).mkdir(parents=True, exist_ok=True)
+        (self.root / RESIDENCY).mkdir(parents=True, exist_ok=True)
         (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
         (self.root / TIERS).mkdir(parents=True, exist_ok=True)
 
@@ -3168,6 +3184,40 @@ class PoolQueue:
         _write_json_atomic(
             path,
             {**dict(record), "schema": POOL_PREWARM_SCHEMA_V1,
+             "action_key": action_key},
+        )
+        return path
+
+    def move_path(self, action_key: str) -> Path:
+        return self.root / MOVERS / f"{action_key}.json"
+
+    def move_record(self, action_key: str) -> dict[str, object] | None:
+        """What one movement node staged, if it has finished and filed it."""
+
+        record = _read_json(self.move_path(action_key))
+        if not isinstance(record, dict):
+            return None
+        if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+            return None
+        return record
+
+    def record_move(self, action_key: str, record: Mapping[str, object]) -> Path:
+        """File one movement result.
+
+        A sidecar, never the item, exactly as ``record_prewarm`` is: the mover
+        writes this while its own claim is still live, and the tier loop reads
+        it beside the prewarm records to learn what the pool delivers.  What
+        makes it worth writing separately from the ``done`` record is that the
+        fill measurement must survive the action's conclusion -- a tier prices
+        its next mover from receipts, and a receipt inside a terminal record
+        would be read through a different path on every reaper generation.
+        """
+
+        path = self.move_path(action_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(
+            path,
+            {**dict(record), "schema": POOL_MOVE_SCHEMA_V1,
              "action_key": action_key},
         )
         return path
