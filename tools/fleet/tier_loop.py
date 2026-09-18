@@ -16,7 +16,8 @@ Nothing here is a capacity constant.  The two arguments name *which* pool
 the export is served from and how often to look; every quantity is read.
 
 **The probe rule.**  Fill tokens come from receipts that carry the pacer's
-pool-side attribution (``disk_pacing.mean_self_read_mb_s``, #580).  Until
+pool-side delivery (``disk_pacing.mean_pool_read_mb_s``: the sum over the
+pool's members of sectors read during that reader's window).  Until
 one exists nothing has measured the pool, and a ledger with no fill tokens
 admits no mover at all.  So while no attributed receipt exists, the loop
 mints exactly the fill demand of the oldest ready item that asks this tier

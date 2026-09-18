@@ -197,12 +197,12 @@ def test_fill_rate_is_the_pool_side_attribution_never_the_file_side_rate() -> No
     hot_arc = {"mb_per_s": 1141.4, "bytes_warmed": 206093512356,
                "disk_pacing": {"mean_util_pct": 9.1}}
     attributed = {"mb_per_s": 298.8, "bytes_warmed": 4564950688752,
-                  "disk_pacing": {"mean_self_read_mb_s": 242.5}}
-    better = {"mb_per_s": 100.0, "disk_pacing": {"mean_self_read_mb_s": 410.0}}
+                  "disk_pacing": {"mean_pool_read_mb_s": 242.5}}
+    better = {"mb_per_s": 100.0, "disk_pacing": {"mean_pool_read_mb_s": 410.0}}
     assert st.fill_rate_from_records([hot_arc]) is None
     assert st.fill_rate_from_records([hot_arc, attributed]) == 242.5
-    assert st.fill_rate_from_records([attributed, better, {"disk_pacing": {"mean_self_read_mb_s": 0}}]) == 410.0
-    assert st.fill_rate_from_records([{"disk_pacing": {"mean_self_read_mb_s": True}}]) is None
+    assert st.fill_rate_from_records([attributed, better, {"disk_pacing": {"mean_pool_read_mb_s": 0}}]) == 410.0
+    assert st.fill_rate_from_records([{"disk_pacing": {"mean_pool_read_mb_s": True}}]) is None
 
 
 def test_tier_tokens_mint_whole_gib_and_whole_mb_s() -> None:
@@ -243,7 +243,7 @@ def test_discover_reads_every_tier_from_the_box(tmp_path: Path) -> None:
         os.symlink(dev / name, by_id / link)
     arcstats = tmp_path / "arcstats"
     arcstats.write_text("c_max 4 257698037760\narc_meta_used 4 5423149896\nsize 4 1\nc 4 2\n")
-    receipts = [{"disk_pacing": {"mean_self_read_mb_s": 242.5}}]
+    receipts = [{"disk_pacing": {"mean_pool_read_mb_s": 242.5}}]
 
     # The discovery resolves ``/dev/sdb1`` through the fake ``/dev``; point the
     # parsed leaves at it by rewriting the status text to the fake paths.

@@ -434,22 +434,42 @@ def split_demand(
     return host, tiers
 
 
-def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
-    """The best sustained pool-side MB/s any recorded move off a tier drew, or ``None``.
+#: The field in a reader's ``disk_pacing`` block a fill capacity is minted
+#: from: what the pool's members delivered over that reader's window, summed
+#: from their sector counters.  Not ``mean_self_read_mb_s``, which is nfsd
+#: ``export_stats`` bytes to the served consumer's client addresses: a mover
+#: copying pool -> stage runs *on* the file server and is no NFS client, so its
+#: own reads are attributed to nobody.  Measured on all five live receipts in
+#: ``pb-queue/movers/``: ``mean_self_read_mb_s`` is 0.0 four times and 0.2 once
+#: with ``mean_util_pct`` 77-86, while file-side rates read 229-1478 MB/s.
+POOL_FILL_FIELD = "mean_pool_read_mb_s"
 
-    The number is ``disk_pacing.mean_self_read_mb_s``: what the pool's own
-    members delivered to this reader over the whole window, attributed by the
-    pacer (#580).  It is deliberately **not** the record's file-side
-    ``mb_per_s``.  A warm that finds its bytes already in the ARC reports
-    file-side rates the disks never produced -- one live receipt on
-    dl380g10 says 1141 MB/s for 206 GB off a four-spindle raidz1 -- and a
-    fill capacity minted from that would admit movers the disks cannot feed.
-    A record without pool-side attribution therefore says nothing about the
-    pool, and a tier with no attributed record has no fill tokens, which is
-    the probe rule.  The maximum over records is the demonstrated capacity;
-    a later record that beats it raises the mint on the next cycle, so a
-    deeper reader or a quieter pool shows up as tokens without anybody
-    editing a number.
+
+def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
+    """The best pool-side MB/s any recorded read off a tier demonstrated, or ``None``.
+
+    The number is ``disk_pacing.mean_pool_read_mb_s``: the sum over the pool's
+    members of sectors read during that reader's window, over the wall seconds
+    of the intervals it sampled.  It is deliberately **not** the record's
+    file-side ``mb_per_s``.  A warm that finds its bytes already in the ARC
+    reports file-side rates the disks never produced -- one live receipt on
+    dl380g10 says 1141 MB/s for 206 GB off a four-spindle raidz1, and a live
+    mover receipt says 1478 MB/s for 3.3 GB -- and a fill capacity minted from
+    that would admit readers the disks cannot feed.
+
+    It is also not ``mean_self_read_mb_s``, which this function read until the
+    live receipts refuted it: that field is what nfsd served to the *consumer's*
+    addresses, so a local pool-to-stage copy contributes nothing to it and
+    every mover receipt reports 0.0 while the spindles are at 80%.  A rate of
+    0.2 then minted ``int(0.2) == 0`` fill tokens and the tier announced
+    ``"fill_source": "measured"`` over a supply that admits nothing.
+
+    A record without the pool-side field says nothing about the pool, and a
+    tier with no such record has no fill tokens, which is the probe rule.  The
+    maximum over records is the demonstrated delivery; because the field counts
+    *every* reader of the pool rather than only the one being measured, a
+    window in which two movers overlapped reports both, so the mint can grow
+    past one mover without anybody editing a number.
     """
 
     best: float | None = None
@@ -457,7 +477,7 @@ def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | N
         pacing = record.get("disk_pacing")
         if not isinstance(pacing, Mapping):
             continue
-        rate = pacing.get("mean_self_read_mb_s")
+        rate = pacing.get(POOL_FILL_FIELD)
         if isinstance(rate, bool) or not isinstance(rate, (int, float)):
             continue
         if rate > 0 and (best is None or rate > best):
@@ -477,7 +497,13 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
         elif tier == "arc":
             tokens[ARC_CAPACITY_KIND] = capacity // GIB
     fill = record.get(FILL_RECORD_FIELD)
-    if isinstance(fill, (int, float)) and not isinstance(fill, bool) and fill > 0:
+    if isinstance(fill, (int, float)) and not isinstance(fill, bool) and int(fill) > 0:
+        # ``int(fill) > 0``, not ``fill > 0``.  A measured 0.2 MB/s used to
+        # mint a ``fill_mb_s_pool_side`` key worth zero tokens, which admits
+        # nothing at all while the tier announces ``fill_source: measured``
+        # over it -- a supply that refuses every mover, labelled as a
+        # measurement.  A rate below one whole MB/s has not measured a usable
+        # capacity, so the kind is absent and the probe rule applies.
         tokens[FILL_KIND] = int(fill)
     return tokens
 
@@ -805,6 +831,7 @@ def discover_tiers(
 __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
+    "POOL_FILL_FIELD",
     "manifest_phase_ranges",
     "capacity_kind_of",
     "residency_demand",

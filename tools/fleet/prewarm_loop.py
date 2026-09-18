@@ -217,6 +217,14 @@ ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
 #: ``Documentation/block/stat.rst``.  Named because the file is a bare row of
 #: integers and an off-by-one here reads writes as reads.
 STAT_READS_COMPLETED = 0
+#: Sectors read, always 512 bytes each whatever the device's logical block
+#: size (``stat.rst``).  The only counter on this box that sees *every* read of
+#: the pool -- ZFS issues its device reads from ``zio`` taskq threads, so a
+#: reader's own ``/proc/self/io`` ``read_bytes`` is 0 (measured: four of the
+#: five live mover receipts report 0 with the spindles at 77-86% utilization),
+#: and nfsd's ``export_stats`` sees only what went out over NFS, which a
+#: pool-to-stage copy on the file server itself never does.
+STAT_READ_SECTORS = 2
 STAT_READ_MS = 3
 STAT_IN_FLIGHT = 8
 STAT_IO_TICKS = 9
@@ -1851,6 +1859,14 @@ class DiskPacer:
         self._totals = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0}
         self._maxima = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0}
         self._last: dict[str, float] = {}
+        #: Bytes the pool's members delivered over the intervals this row
+        #: sampled, and the wall seconds of those intervals.  A sum over
+        #: members rather than a worst-member maximum: the question it answers
+        #: is what the pool as a whole delivered, which is what a fill
+        #: capacity is rationing.  Accumulated rather than averaged per sample
+        #: so a long interval is not weighted like a short one.
+        self._pool_read_bytes = 0
+        self._pool_read_seconds = 0.0
 
     @property
     def active(self) -> bool:
@@ -1923,6 +1939,8 @@ class DiskPacer:
                 self._maxima[key] = 0.0
             self._self_total = 0.0
             self._self_samples = 0
+            self._pool_read_bytes = 0
+            self._pool_read_seconds = 0.0
             self._shared_samples = 0
             self._client_samples = 0
             self._served_host = str(served_host or "")
@@ -1965,11 +1983,13 @@ class DiskPacer:
         worst = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0,
                  "in_flight": 0.0}
         seen = False
+        sectors = 0
         for device, row in current.items():
             before = previous.get(device)
             if before is None:
                 continue
             seen = True
+            sectors += max(0, row[STAT_READ_SECTORS] - before[STAT_READ_SECTORS])
             reads = row[STAT_READS_COMPLETED] - before[STAT_READS_COMPLETED]
             read_ms = row[STAT_READ_MS] - before[STAT_READ_MS]
             ticks = row[STAT_IO_TICKS] - before[STAT_IO_TICKS]
@@ -1983,6 +2003,12 @@ class DiskPacer:
         if not seen:
             self._telemetry_complete = False
             return None
+        # Every member, over the same interval, whoever read: another mover,
+        # the prewarm loop, an NFS consumer, a scrub.  That is the point --
+        # what the pool delivered is the supply, and a mover's shortfall
+        # against it is a fact about contention rather than about capacity.
+        self._pool_read_bytes += sectors * 512
+        self._pool_read_seconds += elapsed
         self._telemetry_complete = True
         return worst
 
@@ -2171,6 +2197,8 @@ class DiskPacer:
             active = self.ledger.active_s
             mean_self = (self._self_total / self._self_samples
                          if self._self_samples else None)
+            pool_read = (self._pool_read_bytes / 1e6 / self._pool_read_seconds
+                         if self._pool_read_seconds > 0 else None)
             shared = ((self._shared_samples / self._client_samples)
                       if self._client_samples else None)
             depth = (self.readers if (self._clients_active or not self.active)
@@ -2211,6 +2239,19 @@ class DiskPacer:
                                     else round(self._other_mb_s, 1)),
                 "mean_self_read_mb_s": (None if mean_self is None
                                         else round(mean_self, 1)),
+                # What the pool's own members delivered over this row, from
+                # their sector counters.  The number a fill capacity is minted
+                # from, because it is the only one that sees a local reader:
+                # ``mean_self_read_mb_s`` is nfsd bytes to the *consumer's*
+                # client addresses and reads 0.0 for every mover ever run.
+                # An approximation in one direction only, and stated as one:
+                # on raidz1 a read touches parity only on a checksum error, so
+                # the member sum is delivered data plus metadata, and it is
+                # not corrected by a factor.
+                "mean_pool_read_mb_s": (None if pool_read is None
+                                        else round(pool_read, 1)),
+                "pool_read_bytes": self._pool_read_bytes,
+                "pool_read_seconds": round(self._pool_read_seconds, 3),
                 "served_host": self._served_host,
                 "served_client_addresses": list(self._served_addresses),
                 "served_attribution": self._served_reason,

@@ -507,8 +507,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "complete": copier.bytes_staged == declared and not copier.errors,
         "seconds": round(elapsed, 3),
         # File-side, and named so: what the copy saw, which the ARC can answer
-        # without the disks moving.  ``disk_pacing.mean_self_read_mb_s`` beside
-        # it is the pool-side number, and the only one a tier mints from.
+        # without the disks moving.  ``disk_pacing.mean_pool_read_mb_s`` beside
+        # it is the pool-side number, summed off the members' own sector
+        # counters, and the only one a tier mints from.
         "mb_per_s_file_side": round(copier.bytes_staged / 1e6 / elapsed, 1),
         "disk_pacing": pacing,
         "served": {k: list(v) if isinstance(v, tuple) else v
