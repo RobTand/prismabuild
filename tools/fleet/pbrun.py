@@ -82,7 +82,8 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    adaptive_gpu, core as pb, decomposition as dc, pool, slurm_lane,
+    adaptive_gpu, core as pb, decomposition as dc, pool, residency_plan,
+    slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -4712,6 +4713,229 @@ def seal_action_from_template(
         raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
 
 
+#: The params a movement node keeps from the template it was cut off.  The
+#: rest are the consumer's own question -- its progress policy bounds its
+#: work and not a copy, its profiler mode profiles it and not a copy, its GPU
+#: fields describe a device no mover touches -- and a mover that carried them
+#: would be admitted against reservations it does not use.
+_MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "retry_policy", "data_manifest")
+
+
+def seal_movement_action(
+    template: Mapping[str, object],
+    *,
+    command: Sequence[str],
+    demand: Mapping[str, int],
+    tags: Sequence[str],
+    log_name: str,
+) -> dict[str, object]:
+    """Seal one movement or egress node off the submission that needs it.
+
+    Not ``seal_action_from_template``: that function's refusal to let a child
+    restate the template's ``demand`` or ``placement`` is deliberate and
+    right, because a decomposed child measures a slice of the *same* work
+    under the *same* reservation.  A movement node is not that.  It is a
+    sibling that shares a checkout snapshot and a data manifest and nothing
+    else: its command is a fleet tool rather than the submitter's, its demand
+    is tier tokens rather than CPU and GPU, and it is placed on the box that
+    owns the stage rather than on the box that will compute.  Bending the
+    child path to carry that would mean a child whose demand no longer
+    describes it -- which is the failure the refusal exists to prevent.
+
+    What it does keep is everything an action's identity is made of and a
+    mover does not vary: the same ``inputs[0]`` checkout snapshot, the same
+    code closure, the same execution scope, the same environment.  So a mover
+    is an ordinary sealed action with an ordinary key, and the data manifest
+    stays in its inputs -- which is how ``stage_move`` finds the list its
+    range refers to without being handed a path.
+    """
+
+    params: dict[str, object] = {
+        name: template["params"][name]                    # type: ignore[index]
+        for name in _MOVEMENT_PARAM_KEYS
+        if name in template["params"]                     # type: ignore[operator]
+    }
+    params["command"] = list(command)
+    params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
+    params["placement"] = {"required_tags": list(tags)}
+    variables = dict(template["environment"]["variables"])  # type: ignore[index]
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    marker_root = template["marker_root"]
+    owner = container_owner(
+        params["command"], params["cwd"], params["demand"], variables,
+        determinism=template["task"]["determinism"],      # type: ignore[index]
+        retry_policy=params["retry_policy"],
+        marker_root=marker_root,
+        identity=template["checkout_identity"],
+        logical_cwd=params["cwd"],
+        placement=params["placement"],
+    )
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
+    body = {
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            **template["task"],                           # type: ignore[dict-item]
+            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
+                     f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
+                     f"exit ${{PIPESTATUS[0]}}"],
+            "result_path": log_name,
+        },
+        "inputs": template["inputs"],
+        "code_closure": template["code_closure"],
+        "params": params,
+        "environment": {**template["environment"], "variables": variables},
+        "execution_scope": template["execution_scope"],
+    }
+    try:
+        return pb.seal_action(body)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: refusing to seal a movement action: {exc}") from None
+
+
+def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
+    """Which stage tier this submission's bytes land on, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: ``tier_loop``
+    announces what each box actually has, so a submitter that hard-coded a
+    pool name would keep asking for a dataset after Rob moved it.  One stage
+    tier is the unambiguous case and needs no flag; none is a refusal naming
+    the loop that would have announced it; more than one is a refusal that
+    lists them, because picking for the operator is picking which box the
+    campaign reads from.
+    """
+
+    stages = [record for record in queue.tiers()
+              if record.get("tier") == "stage" and not record.get("retired")]
+    if declared is not None:
+        for record in stages:
+            if str(record.get("tier_id")) == declared:
+                return record
+        raise SystemExit(
+            f"pbrun: no live stage tier {declared!r}; the fleet announces "
+            f"{sorted(str(r.get('tier_id')) for r in stages) or 'none'}")
+    if not stages:
+        raise SystemExit(
+            "pbrun: --residency stage needs a stage tier, and no box announces "
+            "one.  A storage box mints it by running the tiers role "
+            "(tier_loop.py); until it does, nothing can reserve stage capacity")
+    if len(stages) > 1:
+        raise SystemExit(
+            "pbrun: more than one stage tier is live; name one with "
+            f"--residency-tier: {sorted(str(r.get('tier_id')) for r in stages)}")
+    return stages[0]
+
+
+def residency_stage_rows(
+    template: Mapping[str, object],
+    *,
+    consumer_action_key: str,
+    tier: Mapping[str, object],
+    args: argparse.Namespace,
+    queue,
+    cas,
+) -> dict[str, object]:
+    """Seal every movement and egress node this submission will ever have.
+
+    All of them, now, before anything is published: an action key is a hash of
+    an action body, so the only way a coordinator can publish the window's
+    later phases is for the submitter to have sealed them and written the rows
+    down.  That is also what freezes the decomposition -- a restart republishes
+    these same children rather than cutting a new partition of the read order.
+
+    The ranges are the manifest's own phases.  Nothing here chooses a boundary:
+    a cut through an entry would hand a mover more bytes than its tokens
+    reserved, and ``manifest_phase_ranges`` refuses a phase table that does not
+    describe its own manifest.
+    """
+
+    manifest_input = template["params"].get("data_manifest")   # type: ignore[union-attr]
+    if not isinstance(manifest_input, Mapping):
+        raise SystemExit(
+            "pbrun: --residency stage needs --data-manifest: the byte ranges a "
+            "mover stages are read-order offsets into that list, and there is "
+            "no other way to say which bytes a range means")
+    entry = manifest_input["input"]
+    manifest, _ = pb.read_data_manifest(cas.input_path(entry))
+    ranges = storage_tiers.manifest_phase_ranges(manifest)
+    if not ranges:
+        raise SystemExit(
+            "pbrun: --residency stage needs a manifest that declares its read "
+            "order in phases; this one declares none, so there is no boundary "
+            "to stage up to that is not invented here")
+    tier_id = str(tier["tier_id"])
+    stage_root = str(tier.get("mountpoint") or "")
+    if not stage_root.startswith("/"):
+        raise SystemExit(
+            f"pbrun: stage tier {tier_id} announces no mountpoint to write into")
+    digest = str(entry["sha256"])
+    tags = [str(tier["host"])]
+    mover_tool = str(RUNTIME_ROOT / "tools" / "fleet" / "stage_move.py")
+    egress_tool = str(RUNTIME_ROOT / "tools" / "fleet" / "stage_release.py")
+    pool_root = str(SH / "pb-queue")
+
+    phases: list[dict[str, object]] = []
+    for ordinal, span in enumerate(ranges):
+        start, end = int(span["start_bytes"]), int(span["end_bytes"])
+        demand = storage_tiers.residency_demand(
+            tier_id=tier_id, range_start_bytes=start, range_end_bytes=end)
+        # Measured, not habitual: the copy is a bounded window of
+        # ``--readers`` buffers, and the live receipts carry the peak RSS it
+        # actually reached.  A mover that grew with its range would show up
+        # there rather than in a number chosen here.
+        demand["mem_gb"] = args.residency_mover_mem_gb
+        mover = seal_movement_action(
+            template,
+            command=[sys.executable, mover_tool,
+                     "--pool-root", pool_root,
+                     "--cas-root", str(SH / "cas"),
+                     "--consumer-action-key", consumer_action_key,
+                     "--tier-id", tier_id,
+                     "--stage-root", stage_root,
+                     "--manifest-sha256", digest,
+                     "--range-start-bytes", str(start),
+                     "--range-end-bytes", str(end)],
+            demand=demand, tags=tags,
+            log_name=f"stage-move-{ordinal:04d}-{span['name']}.log")
+        egress = seal_movement_action(
+            template,
+            command=[sys.executable, egress_tool,
+                     "--pool-root", pool_root,
+                     "--mover-action-key", str(mover["action_key"]),
+                     "--consumer-action-key", consumer_action_key,
+                     "--stage-root", stage_root],
+            # No tier demand: an egress *returns* capacity, and one that had to
+            # reserve some before it could give any back would deadlock exactly
+            # when the stage is full -- which is the only moment it matters.
+            demand={"mem_gb": 1}, tags=tags,
+            log_name=f"stage-release-{ordinal:04d}-{span['name']}.log")
+        for action in (mover, egress):
+            cas.publish_action_request(action)
+        phases.append({
+            "name": str(span["name"]),
+            "start_bytes": start, "end_bytes": end,
+            "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
+            "mover_row": publication_row(mover, args=args, queue=queue),
+            "egress_row": publication_row(egress, args=args, queue=queue),
+        })
+    plan = residency_plan.build_plan(
+        consumer_action_key=consumer_action_key, tier_id=tier_id,
+        stage_root=stage_root, manifest_sha256=digest,
+        manifest_bytes=int(entry["bytes"]), phases=phases)
+    return {
+        "plan": plan,
+        "residency": {
+            "schema": pool.RESIDENCY_SCHEMA_V1,
+            "manifest_sha256": digest,
+            "manifest_bytes": int(entry["bytes"]),
+            "tier_id": tier_id,
+            "leads": residency_plan.leads_for(plan),
+        },
+    }
+
+
 def seal_decomposed_child(
     template: Mapping[str, object],
     *,
@@ -4818,6 +5042,29 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "is claimed. It is part of the action key: the same command with "
              "a manifest is a different action from the same command without "
              "one, and from the same command with a different manifest",
+    )
+    parser.add_argument(
+        "--residency", choices=("none", "stage"), default="none",
+        help="stage this action's declared bytes onto a storage tier before it "
+             "runs (#583).  'stage' seals one movement node per phase of the "
+             "data manifest's read order and one egress node each, publishes "
+             "the first phase, and admits the action only once that phase's "
+             "bytes are on the tier and still pinned there; the tiers loop "
+             "publishes the rest of the window as the action's own accepted "
+             "progress advances.  Needs --data-manifest, because a byte range "
+             "is meaningless without the list it indexes.  'none', the "
+             "default, publishes exactly what it published before",
+    )
+    parser.add_argument(
+        "--residency-tier", default=None,
+        help="which announced stage tier to stage onto; only needed when the "
+             "fleet announces more than one",
+    )
+    parser.add_argument(
+        "--residency-mover-mem-gb", type=int, default=1,
+        help="memory one movement node reserves.  The copy is a bounded "
+             "read-ahead window, so this does not grow with the range; raise "
+             "it only against a mover receipt's own peak_rss_bytes",
     )
     ap.add_argument(
         "--checkout-snapshot-max-bytes",
@@ -5568,8 +5815,32 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
-    queued_path = publish_or_refuse(
-        q, publication_row(action, args=args, queue=q))
+    # Everything the window will ever publish is sealed and written down
+    # before the consumer's own row goes in, so a crash between the two leaves
+    # a frozen plan and no queue rows rather than a half-published window.
+    staged = None
+    if args.residency == "stage":
+        staged = residency_stage_rows(
+            template, consumer_action_key=key,
+            tier=resolve_stage_tier(q, args.residency_tier),
+            args=args, queue=q, cas=cas)
+        residency_plan.freeze(q, staged["plan"])
+
+    publication = publication_row(action, args=args, queue=q)
+    if staged is not None:
+        publication["residency"] = staged["residency"]
+    queued_path = publish_or_refuse(q, publication)
+    if staged is not None:
+        # The first phase only.  The rest is the tiers loop's to publish as
+        # this action's accepted progress advances: publishing the whole plan
+        # here would put every phase of a 223-phase read order in ``ready`` at
+        # once, and reserve a stage several times its own size.
+        lead = staged["plan"]["phases"][0]
+        publish_or_refuse(q, dict(lead["mover_row"]))
+        print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
+              f"{staged['plan']['tier_id']}; published phase "
+              f"{lead['name']!r} ({lead['stage_gib']} GiB)",
+              file=sys.stderr, flush=True)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

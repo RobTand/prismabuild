@@ -300,6 +300,18 @@ def fragment_path(root: str | Path, consumer_action_key: str, mover_action_key: 
             / f"{_action_key(mover_action_key, where='mover_action_key')}.json")
 
 
+def map_path(root: str | Path, consumer_action_key: str) -> Path:
+    """``<root>/<consumer>.map.json`` -- the composed document, beside the fragments.
+
+    Beside rather than inside, because the fragment directory has one writer
+    per file and the map has one writer altogether; a map inside it would be
+    read back as a fragment by ``read_fragments`` and refused on every scan.
+    """
+
+    return (Path(root)
+            / f"{_action_key(consumer_action_key, where='consumer_action_key')}.map.json")
+
+
 def write_fragment(root: str | Path, fragment: Mapping[str, object]) -> Path:
     checked = validate_fragment(fragment)
     return _write_atomic(
@@ -363,6 +375,7 @@ __all__ = [
     "compose",
     "fragment_path",
     "lookup",
+    "map_path",
     "parse_residency_map_key",
     "read_fragments",
     "read_map",

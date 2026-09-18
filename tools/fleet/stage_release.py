@@ -45,8 +45,10 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
+from prismabuild import residency_plan  # noqa: E402
 
 
 def _prune_empty(directory: Path, stop: Path) -> None:
@@ -156,6 +158,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     egress, because nothing is waiting for its bytes.  The test is deliberately
     the queue's own live state --- ready or claimed --- rather than a policy: a
     lead some item may still be admitted on is not an orphan, however old.
+
+    **A live consumer protects its whole plan, not just its leads.**  The
+    consumer depends on its first phase only, so a pinned mover three phases
+    ahead of it is named by nothing in the queue: testing ``leads`` alone would
+    make this sweep delete the window it exists to protect, on the cycle after
+    it was staged.  The frozen plan is what says a mover is still wanted.
     """
 
     wanted: set[str] = set()
@@ -170,6 +178,9 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                 wanted.add(str(lead))
             key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
             owners[key] = key
+            plan = residency_plan.read(queue, key)
+            if plan is not None:
+                wanted.update(residency_plan.mover_keys(plan))
     swept: list[dict[str, object]] = []
     for tier_id, stage_root in stage_roots.items():
         try:
@@ -190,13 +201,35 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     return swept
 
 
+def own_action_key(declared: str | None) -> str:
+    """This node's own action key, from the flag or from the launcher.
+
+    A movement node files its receipt and holds its tier tokens under its own
+    key, and that key is ``canonical_sha256`` of the action body --- so a
+    ``--action-key`` sealed into the argv would be hashed into the very value
+    it states, and no fixed point exists.  The launcher sets
+    :data:`prismabuild.core.ACTION_KEY_ENV` for every action it starts, from
+    the action in hand, which is the one place the answer is already known.
+    The flag stays, because a direct run and every test needs to say which key
+    it is acting as.
+    """
+
+    key = declared or os.environ.get(pb.ACTION_KEY_ENV) or ""
+    if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
+        raise SystemExit(
+            f"pass --action-key, or run under a launcher that sets "
+            f"{pb.ACTION_KEY_ENV}; got {key!r}")
+    return key
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="delete one mover's staged files and return its tier tokens")
     parser.add_argument("--pool-root", required=True,
                         help="the pull queue root this egress files its receipt under")
-    parser.add_argument("--action-key", required=True,
-                        help="this egress node's own action key")
+    parser.add_argument("--action-key", default=None,
+                        help="this egress node's own action key; defaults to "
+                             f"{pb.ACTION_KEY_ENV}, which the launcher sets")
     parser.add_argument("--mover-action-key", required=True,
                         help="the movement node whose staged bytes are being taken back")
     parser.add_argument("--consumer-action-key", required=True,
@@ -211,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="also write the receipt here (it is always filed in "
                              "the queue's movers directory)")
     args = parser.parse_args(argv)
+    args.action_key = own_action_key(args.action_key)
 
     queue = pool.PoolQueue(Path(args.pool_root))
     receipt = evict(queue, args.mover_action_key,

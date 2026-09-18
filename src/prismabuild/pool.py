@@ -143,6 +143,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import residency_map
 from . import storage_tiers
 from . import box_capacity
 from . import box_window
@@ -313,6 +314,11 @@ MOVERS = "movers"
 #: written from these; see :mod:`prismabuild.residency_map`.
 RESIDENCY = "residency"
 
+#: Where a consumer's frozen window plan lives: every movement node it
+#: will ever have, named before the first one is published, so a restart
+#: resumes the same decomposition instead of cutting a new one.
+RESIDENCY_PLANS = "residency-plans"
+
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
 #: launcher itself gives the action group it reaps on the way out.
@@ -334,6 +340,20 @@ OFFER_FUTURE_TOLERANCE_S = 60.0
 class OfferTiming(NamedTuple):
     age_s: float | None
     clock_skew_s: float | None
+
+
+def _residency_action_key(value: object) -> str:
+    """One action key, checked, because these two names index shared files.
+
+    The residency map and the frozen plan are named after the consumer; a
+    caller that passed a path fragment instead of a key would name a file
+    somewhere else under the shared mount.
+    """
+
+    if (not isinstance(value, str) or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        raise PoolContractError("a residency file is named by a 64-character action key")
+    return value
 
 
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
@@ -2391,6 +2411,7 @@ class PoolQueue:
         (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
         (self.root / MOVERS).mkdir(parents=True, exist_ok=True)
         (self.root / RESIDENCY).mkdir(parents=True, exist_ok=True)
+        (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
         (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
         (self.root / TIERS).mkdir(parents=True, exist_ok=True)
 
@@ -3225,6 +3246,56 @@ class PoolQueue:
              "action_key": action_key},
         )
         return path
+
+    # -- residency: the map an action reads, and the plan it was cut from ---
+
+    def residency_fragment_root(self) -> Path:
+        """Where movement nodes file their fragments, one directory per consumer."""
+
+        return self.root / RESIDENCY
+
+    def residency_map_path(self, consumer_action_key: str) -> Path:
+        """The composed map an action reads its staged inputs through.
+
+        One definition, because two parties depend on this name being the same
+        string: the ``tiers`` loop is its single writer, and this launcher puts
+        it in the action's environment.  A second spelling would be a consumer
+        reading a map nobody writes, which fails by falling back to the pool --
+        that is, silently, at full cost.
+        """
+
+        return residency_map.map_path(
+            self.residency_fragment_root(),
+            _residency_action_key(consumer_action_key))
+
+    def residency_plan_path(self, consumer_action_key: str) -> Path:
+        """The frozen window plan: every mover this consumer will ever have."""
+
+        return (self.root / RESIDENCY_PLANS
+                / f"{_residency_action_key(consumer_action_key)}.json")
+
+    def residency_map_environment(self, item: Mapping[str, object]) -> dict[str, str]:
+        """``{RESIDENCY_MAP_ENV: path}`` for an action with a map to read.
+
+        Nothing for everything else, so an ordinary action launches in
+        byte-identical surroundings to before #583 existed.  The file has to
+        be there: an action told to read a map that does not exist would open
+        nothing and fall back to the pool anyway, but it would do it after
+        deciding it had been staged, and the difference is invisible in the
+        receipt.  Existence here makes the variable mean what it says.
+        """
+
+        residency = item.get("residency") if isinstance(item, Mapping) else None
+        if not isinstance(residency, Mapping) or not residency.get("leads"):
+            return {}
+        key = item.get("action_key")
+        if not isinstance(key, str):
+            return {}
+        try:
+            path = self.residency_map_path(key)
+        except PoolContractError:
+            return {}
+        return {pb.RESIDENCY_MAP_ENV: str(path)} if path.exists() else {}
 
     def record_pass(self, action_key: str) -> int:
         """Count one admission denial.
@@ -8749,7 +8820,7 @@ class PoolQueue:
             # travel in a file because this process's exit status cannot
             # carry them.
             env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment},
+                 **progress_environment, **self.residency_map_environment(item)},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.
