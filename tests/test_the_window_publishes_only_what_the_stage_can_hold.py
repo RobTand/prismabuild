@@ -407,12 +407,14 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
     template = {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
         "checkout_identity": {"commit": "a" * 40},
-        "log_name": "x.log", "stamp_name": "y",
+        "log_name": "x.log", "stamp_name": "pbrun.stamp",
         "task": {"definition_id": "fleet/pbrun", "definition_version": "v1",
-                 "task_class": "generation", "determinism": "nondeterministic",
+                 "task_class": "generation", "determinism": "stochastic",
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "working_directory": "."},
-        "inputs": [], "code_closure": {"files": []},
+        "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
+                    "bytes": 4096}],
+        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {"input": {"sha256": "b" * 64}},
@@ -421,15 +423,12 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     }
-    try:
-        first = pbrun.seal_movement_action(
-            template, command=["/bin/true", "--range-start-bytes", "0"],
-            demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="a.log")
-        second = pbrun.seal_movement_action(
-            template, command=["/bin/true", "--range-start-bytes", "2048"],
-            demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="b.log")
-    except SystemExit as exc:                    # pragma: no cover - diagnostic
-        pytest.skip(f"the action contract refuses this stub template: {exc}")
+    first = pbrun.seal_movement_action(
+        template, command=["/bin/true", "--range-start-bytes", "0"],
+        demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="a.log")
+    second = pbrun.seal_movement_action(
+        template, command=["/bin/true", "--range-start-bytes", "2048"],
+        demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="b.log")
 
     assert first["action_key"] != second["action_key"]
     assert first["params"]["demand"] == {STAGE_KIND: 2}

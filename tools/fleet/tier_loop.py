@@ -339,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="mint and announce this box's storage tiers from what the box says",
     )
-    parser.add_argument("--pool-root", required=True,
+    parser.add_argument("--pool-root", default=str(prewarm_loop.SH / "pb-queue"),
                         help="the pull queue root this box's loops serve")
     parser.add_argument("--source-pool", default="storage_pool",
                         help="the ZFS pool the fleet export is served from; its "

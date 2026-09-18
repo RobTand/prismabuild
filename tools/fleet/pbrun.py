@@ -5043,7 +5043,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "a manifest is a different action from the same command without "
              "one, and from the same command with a different manifest",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--residency", choices=("none", "stage"), default="none",
         help="stage this action's declared bytes onto a storage tier before it "
              "runs (#583).  'stage' seals one movement node per phase of the "
@@ -5055,12 +5055,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "is meaningless without the list it indexes.  'none', the "
              "default, publishes exactly what it published before",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--residency-tier", default=None,
         help="which announced stage tier to stage onto; only needed when the "
              "fleet announces more than one",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--residency-mover-mem-gb", type=int, default=1,
         help="memory one movement node reserves.  The copy is a bounded "
              "read-ahead window, so this does not grow with the range; raise "

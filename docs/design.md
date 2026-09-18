@@ -3152,12 +3152,72 @@ slop reserve inside the accounting as an overfill margin — tokens for bytes th
 pool refuses at ENOSPC, discovered by a mover that has already read them off the
 disks. The record carries `capacity_source` so the fallback announces itself.
 
+### The pin, and what may take it back
+
+**Held tier tokens equal bytes on the stage, at every instant.** A mover keeps
+its tokens from `finish` until an egress deletes its files, because releasing at
+`finish` bounds concurrent copies rather than resident bytes: twenty-one movers
+of 34.4 GB run one after another leave 722 GB on a 721 GB stage while the ledger
+reads its full supply free at every step. `PoolQueue.residency_pin_holds` decides
+it from the mover's own receipt — a record that exists, carries no refusal, names
+the same tier, says `complete`, and whose `bytes_staged` equals its declared
+range — and `finish` releases the host reservation while keeping the tier's.
+
+There is no retained-but-unpinned state, so the egress node is one operation:
+delete this mover's files, release its key, drop its fragment, in that order. A
+crash after the deletes costs capacity until a sweep returns it; a crash after a
+release would leave bytes on a stage the ledger believes is empty, which is the
+failure the whole accounting exists to prevent. An unreadable fragment keeps the
+tokens and deletes nothing: its bytes may be there and cannot be named.
+
+A consumer is admitted only when every lead has moved its bytes **and still
+holds them**; the second half is `residency_lead_unpinned`, and a missing mover
+receipt fails it, so "no receipt" can never read as "staged".
+
+### The window
+
+A campaign stage reads several times the size of the stage, so "admitted when
+every lead is executed" cannot hold for the whole read set. The consumer depends
+on its **first phase only**; the `tiers` loop publishes later phases as the
+consumer's accepted progress advances and egress rows for the phases it has read
+past. Staging for phase k+N overlaps compute on phase k, and the stage never
+overfills.
+
+Membership is frozen before anything is published and publication is what is
+deferred. An action key is `canonical_sha256` of an action body, so a mover's key
+is not something a loop may derive: `pbrun --residency stage` seals every
+movement and egress node up front and writes their whole queue rows into a
+first-writer plan under `residency-plans/`. A restart republishes those same
+children rather than cutting a new partition of the read order — the decomposer's
+transaction — and the coordinator that publishes them is the `tiers` role, which
+already holds the queue and the tier ledger every cycle. How many are in flight
+is bounded by the tier's free tokens, never by a number.
+
+Two consequences worth stating, because both were bugs first. A live consumer
+protects its **whole plan** from the orphan sweep, not just its leads: a pinned
+mover three phases ahead is named by nothing in the queue. And a terminal mover
+that holds no tokens counts as unpublished, because the same manifest seals the
+same key on a second campaign and a leftover `done` record would otherwise read
+as "already staged".
+
+### How the map reaches the consumer
+
+`tier_loop` is the map's **single writer**: movers write one fragment each into a
+file only they name, and the loop composes them and recomposes after every
+eviction, because a rename cannot merge and a map naming an evicted range points
+at deleted files. The launcher puts the composed map's path in
+`PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
+
+Neither that variable nor `PRISMABUILD_ACTION_KEY` is sealed. Every map entry
+carries the manifest's own digest, so an action that reads a staged copy computes
+what an action that reads the pool computes; sealing the map would make one
+question two actions and cost every staged run its CAS hit. `PRISMABUILD_ACTION_KEY`
+is how a movement node learns the key it files receipts and holds tokens under —
+a key sealed into the argv it is computed from has no fixed point.
+
 ### Not built here
 
-Pin lifetime beyond the claim, the egress node that unpins, the orphan sweep for
-a mover whose consumer was withdrawn, the windowed publication that keeps a
-rolling stage ahead of a consumer, and the submitter flag that publishes a mover
-plan. No end-to-end campaign speedup is claimed, and none is measurable until a
+No end-to-end campaign speedup is claimed, and none is measurable until a
 consumer reads the stage.
 
 Also deferred deliberately: reuse of a resident prefix *across artifacts*, where
