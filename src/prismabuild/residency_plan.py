@@ -25,6 +25,42 @@ in flight is how many the tier's free capacity can hold, which is discovered
 from the device and changes when the hardware does.  Nothing here is a
 capacity constant.
 
+**...and by the consumer, because free capacity alone brakes at 0 B (#632).**
+Free capacity is the only brake that acts on the admit side, and the release
+side is driven by the consumer's accepted progress, so a consumer that
+publishes none stages its whole plan up to the last phase that fits.  The
+GLM-5.3-Flash run ``ad8803aa`` did exactly that on 2026-09-18: 46 phases and
+3.60 TB against a 744 GB stage, 19 movers done, 1 egress done, and
+``prismabuild-stage/prewarm`` at 0 B -- at which point the #628 ownership
+marker could not be rewritten and every sweep and egress refused with
+``stage_root_unregistered`` (#631).  So ``window`` also bounds *run-ahead*:
+the tokens it holds for phases **strictly after** the one the consumer is
+reading.  Two quantities, both read off the plan and the tier and neither of
+them a count of phases:
+
+* a consumer that has accepted **nothing** gets ``step`` -- the largest
+  ``stage_gib`` still ahead of it.  ``N = 1`` is the smallest N for which this
+  module's own overlap claim ("staging for phase k+N overlaps compute on phase
+  k") is satisfiable, and a consumer that has published nothing has given no
+  evidence it consumes at all, so anything deeper is speculation on a rate
+  nobody has measured.
+* a consumer that **has** accepted a phase is rolling, and its bound is the
+  tier: ``capacity - step``, so the stage keeps room to stage one more phase
+  and never reaches 0 B.  Free capacity still binds first whenever it is
+  smaller, exactly as before.
+
+A consumer that reported some phases and then went quiet gets the second
+bound, not the first, and stalls there.  Telling "quiet" from "slow" needs a
+clock, and a clock is the thing #598 took out of this subsystem: an orphan is
+evicted when the tier needs its tokens, never because a clock said so.  The
+only progress-free fact available without one is whether the consumer has ever
+accepted anything, so that is the fact the two regimes turn on.
+
+**A stall is reported, never inferred.**  ``window`` returns a ``stall``
+descriptor naming the phase it declined, how far ahead it already is and what
+it is waiting for, and ``tier_loop`` files it as a ``window-stalled`` event.
+A silent stall would reproduce the incident in the other direction.
+
 **What gates a later mover is publication, not admission.**  A published mover
 is admitted on its tokens like any other action; one whose phase the consumer
 has not reached yet is simply not in ``ready/`` for anyone to scan.  That keeps
@@ -354,9 +390,63 @@ def remaining(plan: Mapping[str, object],
     return phases[names.index(accepted_phase) if accepted_phase in names else 0:]
 
 
+def accepted(plan: Mapping[str, object], accepted_phase: str | None) -> bool:
+    """Whether the consumer has accepted a phase of *this* plan.
+
+    ``remaining`` already reads a name the plan does not carry as the
+    beginning, for the reason it says: a consumer that has not said where it
+    is has not passed anything.  The run-ahead bound has to read it the same
+    way, or a stale name -- another plan's phase, a phase renamed by a
+    resubmission -- would buy the deeper budget that only demonstrated
+    progress earns.
+    """
+
+    if accepted_phase is None:
+        return False
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    return any(str(phase["name"]) == accepted_phase for phase in phases)
+
+
+def runahead_step_gib(plan: Mapping[str, object],
+                      accepted_phase: str | None) -> int:
+    """The largest single phase still ahead of the consumer, in tier tokens.
+
+    One quantity, used twice and in opposite directions: it is the whole
+    run-ahead budget of a consumer that has accepted nothing, and it is the
+    room a rolling window must leave the tier so the stage never reaches 0 B.
+    Both readings say the same thing -- *one more phase* -- which is what
+    ``tier_loop.window_pressure`` already calls "what the tier must be able to
+    offer".  The largest rather than the next, so the answer does not depend
+    on which phase happens to come first in a plan whose phases differ by 65%.
+    """
+
+    ahead = remaining(plan, accepted_phase)[1:]
+    return max((int(phase["stage_gib"]) for phase in ahead), default=0)
+
+
+def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
+                        *, capacity_gib: int | None) -> int | None:
+    """How many tokens the window may hold ahead of the consumer, or ``None``.
+
+    ``None`` is "the tier's free capacity is the only bound", which is what a
+    caller that cannot say what the tier's capacity is gets: this module will
+    not invent a capacity, and a bound derived from a number nobody minted
+    would be the heuristic the explicit exists to replace.
+    """
+
+    step = runahead_step_gib(plan, accepted_phase)
+    if not accepted(plan, accepted_phase):
+        return step
+    if capacity_gib is None:
+        return None
+    return max(0, int(capacity_gib) - step)
+
+
 def window(plan: Mapping[str, object], *, accepted_phase: str | None,
-           free_gib: int, published: Sequence[str] = (),
-           staged: Sequence[str] = ()) -> dict[str, list[dict[str, object]]]:
+           free_gib: int, capacity_gib: int | None = None,
+           published: Sequence[str] = (),
+           staged: Sequence[str] = ()) -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -375,6 +465,14 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     the tier's free capacity covers the next one, so a starved mover is rarely
     in ``ready/`` at all and the tokens stay the safety net rather than the
     schedule.
+
+    ...and while the run-ahead bound covers it, which is the second half #632
+    added: free capacity brakes at 0 B, which is too late for a stage that has
+    to keep its own ownership marker writable.  ``capacity_gib`` is the tier's
+    minted total (``ResourceLedger.capacity``); leaving it out keeps free
+    capacity as the only bound for a consumer that is reporting.  The answer
+    carries ``stall``: ``None``, or what the window declined to publish and
+    what it is waiting for.
     """
 
     phases = list(plan["phases"])                                # type: ignore[arg-type]
@@ -394,31 +492,62 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
 
     publish: list[dict[str, object]] = []
     room = int(free_gib)
-    for phase in ahead:
+    has_accepted = accepted(plan, accepted_phase)
+    budget = runahead_budget_gib(plan, accepted_phase, capacity_gib=capacity_gib)
+    # Everything the window already holds beyond the phase being read.  The
+    # phase the consumer is inside is not run-ahead: it is the work.
+    runahead = sum(int(phase["stage_gib"]) for phase in ahead[1:]
+                   if str(phase["mover_row"]["action_key"]) in already)
+    stall: dict[str, object] | None = None
+    for offset, phase in enumerate(ahead):
         key = str(phase["mover_row"]["action_key"])
         if key in already:
             continue
         need = int(phase["stage_gib"])
+        if offset and budget is not None and runahead + need > budget:
+            stall = {
+                "consumer_action_key": plan["consumer_action_key"],
+                "tier_id": plan["tier_id"],
+                "accepted_phase": accepted_phase,
+                "reading_phase": str(ahead[0]["name"]),
+                "blocked_phase": str(phase["name"]),
+                "blocked_gib": need,
+                "runahead_gib": runahead,
+                "runahead_budget_gib": budget,
+                "free_gib": int(free_gib),
+                "capacity_gib": None if capacity_gib is None else int(capacity_gib),
+                "reason": ("runahead_budget" if has_accepted
+                           else "no_accepted_progress"),
+                "waiting_for": (
+                    f"accepted progress past {accepted_phase}" if has_accepted
+                    else "the consumer's first accepted progress record"),
+            }
+            break
         if need > room:
             break
         room -= need
+        if offset:
+            runahead += need
         publish.append({
             "phase": phase["name"], "mover_action_key": key,
             "start_bytes": phase["start_bytes"], "end_bytes": phase["end_bytes"],
             "stage_gib": need, "mover_row": phase["mover_row"],
         })
-    return {"publish": publish, "evict": evict}
+    return {"publish": publish, "evict": evict, "stall": stall}
 
 
 __all__ = [
     "RESIDENCY_PLAN_SCHEMA_V1",
     "ResidencyPlanError",
+    "accepted",
     "build_plan",
     "freeze",
     "leads_for",
     "mover_keys",
     "read",
     "remaining",
+    "runahead_budget_gib",
+    "runahead_step_gib",
     "validate_plan",
     "window",
 ]
