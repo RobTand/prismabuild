@@ -3108,16 +3108,25 @@ declared read set rather than to a habit.
 
 A stage tier's `capacity_bytes` is the dataset's ZFS `available`: what a
 writer may still write, net of parity, slop and the bytes already on the
-dataset. Those staged bytes are held tokens (retained == held), so the ledger's
-supply is minted as **writable + held**: the tier loop adds the ledger's held
-`stage_gib` to the discovered token count and announces `writable_gib`,
-`held_gib` and `capacity_basis: "zfs available + held"` on the record. Minting
-from `available` alone counted every staged GiB twice -- free tokens fell as
-`available - held` and the window starved once staged bytes reached the pool's
-remaining free space, half the pool; on 2026-09-18 that left an 11 GiB head
-phase unrepublished behind 433 GiB held and 275 GiB writable (#621). A record
-that does not name the writable source (a fake, a legacy tier) is minted as it
-was.
+dataset. A mover takes its `stage_gib` tokens at claim and keeps them past
+`finish` only once its receipt says the whole range landed, so the tokens a
+ledger holds are two things: **landed** (a holder with a complete, unrefused
+receipt; its bytes are already subtracted from `available`) and **in flight**
+(a holder still copying, or one whose copy fell short and is about to
+release; its bytes are not). The ledger's supply is minted as **writable +
+landed** (`tier_loop.landed_and_in_flight`), and the record announces
+`writable_gib`, `landed_gib`, `in_flight_gib`, `held_gib` and
+`capacity_basis: "zfs available + landed"`.
+
+Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
+`available` alone counted every landed GiB twice -- free fell as
+`available - held` and the window starved at half the pool, an 11 GiB head
+phase unrepublished behind 433 GiB held and 275 GiB writable (#621).
+`available + held` counted a claimed mover's unlanded bytes as free and
+published one more window every cycle while the first was still copying: ten
+82 GiB movers admitted against 275 GiB writable, all ten ENOSPC (#623). A
+record that does not name the writable source (a fake, a legacy tier) is
+minted as it was.
 
 ### Where a tier ledger lives, and why it is a second root
 
