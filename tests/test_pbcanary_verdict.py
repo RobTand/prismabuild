@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
@@ -211,3 +213,84 @@ def test_incomplete_digest_pair_is_exit_1() -> None:
 
     assert code == 1
     assert "incomplete digest pair" in summary["stderr_message"]
+
+
+# --------------------------------------------------------------------------
+# Issue #690 follow-up: digest evidence must be an actual nonempty string,
+# and malformed or partial fields must not be masked by another valid digest
+# --------------------------------------------------------------------------
+
+
+#: Leg-4 extras that are not usable digest evidence: null, empty, blank and
+#: non-string values (alone, in pairs, or hiding beside a valid sibling).
+MALFORMED_DIGEST_EXTRAS = [
+    pytest.param({"digest_a": None, "digest_b": None}, id="null-pair"),
+    pytest.param({"digest_a": "", "digest_b": ""}, id="empty-pair"),
+    pytest.param({"digest_a": "   ", "digest_b": "   "}, id="blank-pair"),
+    pytest.param({"digest_a": 0, "digest_b": 0}, id="int-pair"),
+    pytest.param({"digest_a": ["9f2c"], "digest_b": ["9f2c"]}, id="list-pair"),
+    pytest.param({"digest_a": None, "digest_b": None, "envelope_equal": True},
+                 id="null-pair-flag-true"),
+    pytest.param({"digest_a": "9f2c", "digest_b": None}, id="half-null-pair"),
+    pytest.param({"digest_a": "9f2c"}, id="partial-pair"),
+    pytest.param({"digest": ""}, id="empty-single"),
+    pytest.param({"digest": "   "}, id="blank-single"),
+    pytest.param({"digest": 0}, id="int-single"),
+    pytest.param({"digest": None}, id="null-single"),
+    pytest.param({"digest_a": None, "digest_b": None, "digest": "abcd"},
+                 id="null-pair-masked-by-single"),
+    pytest.param({"digest_a": "9f2c", "digest": "abcd"},
+                 id="partial-pair-masked-by-single"),
+]
+
+
+@pytest.mark.parametrize("extra", MALFORMED_DIGEST_EXTRAS)
+def test_malformed_leg4_digest_evidence_is_exit_1(extra: dict) -> None:
+    """No coercion, no masking: only nonempty strings are digest evidence.
+
+    Before this fix ``_leg4_digests`` converted every candidate with
+    ``str``, so ``digest_a=None, digest_b=None`` compared equal as the
+    string ``"None"`` and passed, as did equal empty, blank and non-string
+    values; a valid extra digest also masked a partial pair. Each of these
+    must answer exit 1 envelope-equality.
+    """
+    legs = [_ok(1), _ok(2), _ok(3), _ok(4, **extra)]
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 1, (extra, summary["stderr_message"])
+    assert summary["verified"] is False
+    assert summary["failed_leg"] == "leg-4"
+    assert summary["failed_check"] == "envelope-equality"
+
+
+#: Leg-4 forms that are genuine digest evidence and must stay exit 0.
+VALID_DIGEST_LEGS = [
+    pytest.param(
+        [_ok("4-sparky", digest="9f2c"), _ok("4-sparklina", digest="9f2c")],
+        id="single-digest-per-box"),
+    pytest.param([_ok(4, digest_a="9f2c", digest_b="9f2c")],
+                 id="matching-pair"),
+    pytest.param([_ok(4, envelope_a="9f2c", envelope_b="9f2c")],
+                 id="matching-envelope-pair"),
+    pytest.param([_ok(4, digest_sparky="9f2c", digest_sparklina="9f2c")],
+                 id="matching-sparky-pair"),
+    pytest.param([_ok(4, envelope_digest="9f2c")], id="single-envelope-digest"),
+    pytest.param([_ok(4, artifact_digest="9f2c")],
+                 id="single-artifact-digest"),
+    pytest.param([_ok(4, digest_a="a" * 64, digest_b="a" * 64)],
+                 id="matching-hex-pair"),
+    pytest.param([_ok(4, digest_a="9f2c", digest_b="9f2c",
+                      envelope_equal=True)], id="matching-pair-flag-true"),
+]
+
+
+@pytest.mark.parametrize("leg4", VALID_DIGEST_LEGS)
+def test_valid_leg4_digest_forms_stay_green(leg4: list) -> None:
+    """A complete pair or a single-value digest key remains exit 0."""
+    legs = [_ok(1), _ok(2), _ok(3)] + leg4
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 0, summary["stderr_message"]
+    assert summary["verified"] is True
