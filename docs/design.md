@@ -3223,19 +3223,30 @@ policy-minted window below it is what PB actually fills, and the minted
 supply is `writable + landed`, capped at the window — the #621/#623
 arithmetic, one tier over.
 
-**Three refusals, each fail-closed and each naming its numbers.** The mount
+**Five refusals, each fail-closed and each naming its numbers.** The mount
 absent: announce nothing — free RAM is not placed RAM. `statvfs` unreadable:
 announce the tier with capacity zero and the refusal on the record, minting
 nothing, so an operator sees a tmpfs that is not answering rather than a
-tier that quietly vanished. And the floor guard: the tier refuses while
-`ceiling + max(arc_c_max, arc_floor, arc_meta_used) + system_reserve >
-MemTotal`, read live from `/proc/meminfo` and `arcstats`. `size=` is a limit
+tier that quietly vanished. And the floor guard, in two halves: the tier
+refuses while `ceiling + max(arc_c_max, arc_floor, arc_meta_used) +
+system_reserve > MemTotal`, read live from `/proc/meminfo` and `arcstats`. `size=` is a limit
 on file bytes, not an allocation, so a tmpfs whose roof plus the ARC's own
 permission plus the reserve exceeds `MemTotal` never reaches its ENOSPC —
 the OOM killer arrives first, which is fail-random rather than fail-closed;
 the runbook's `zfs_arc_max` shrink is an operational precondition, and the
 guard refuses until it is done. The ARC floor itself is the larger of the
-policy's declared floor and the metadata the ARC cannot drop. **The tmpfs
+policy's declared floor and the metadata the ARC cannot drop. The roof is
+only the mount's ENOSPC backstop, though: what PB actually fills is the
+policy window below it, capped by the ledger — so the window must fit beside
+the box's own offered job capacity too, read live every cycle from the tier
+host's worker record (`workers/<host>.json`, `capacity.mem_gb`): the tier
+refuses while `window + worker_demand + max(arc_c_max, arc_floor) +
+system_reserve > MemTotal` (#645), and it refuses when no offer names a
+number at all, because a loop can appear between cycles. Tonight's box is
+the proof both halves hold together: the 240 GiB roof admits
+(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside the 96 GiB the
+loops offer (worst case 112 + 96 + 22 + 16 = 246 ≤ 294.5), and a window
+publish toward the sanctioned 256 with jobs admitted would refuse. **The tmpfs
 must be mounted `noswap`:** the options are announced, and a mount without
 it refuses the warm-path admission outright — a swappable tmpfs can page
 "resident" bytes out, and a consumer whose gate says resident would then
