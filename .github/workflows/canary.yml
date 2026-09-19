@@ -1,0 +1,85 @@
+# pbcanary — fleet end-to-end self-test (PB #688).
+#
+# Crew E owns this file's CI wiring only. The canary driver itself
+# (tools/fleet/pbcanary.py, crew A) does the submitting, waiting, and
+# verifying; this workflow only checks out the repo, invokes the driver,
+# and archives its machine-readable summary.
+#
+# If the driver path differs at integration, the integrator adapts the
+# `Run pbcanary` step below — nothing else here depends on it.
+#
+# NON-BLOCKING BY REPO SETTINGS, NOT BY YAML: this workflow reports
+# pass/fail honestly per run, but it must NEVER be added as a required
+# status check in branch protection. Post-merge signal only. PR CI
+# (pull_request triggers) stays exactly as-is — this file adds none.
+#
+# PRE-REGISTRATION TOLERANCE: this file may land before the dl380
+# self-hosted runner registers. GitHub queues jobs with unmatched
+# `runs-on` labels server-side until a matching runner comes online, so
+# pending runs simply wait — no workflow change is needed when the
+# runner appears. `timeout-minutes` below starts only once a runner
+# picks the job up.
+name: pbcanary
+
+on:
+  # Post-merge signal on every main commit. Informational only (see above).
+  push:
+    branches: [main]
+  # Nightly in a low-activity UTC slot. Adjustable: edit the cron below.
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+    inputs:
+      generation:
+        description: "Runtime generation root the canary resolves against (empty = active generation)"
+        required: false
+        default: ""
+        type: string
+
+# Checkout only. The canary submits through the fleet queue from the
+# runner host; it needs no secrets beyond the checkout token and the
+# fleet mounts already present on dl380 (see the runner setup doc).
+permissions:
+  contents: read
+
+# Each main commit and each nightly gets its own verdict. Runs are
+# minutes-long and low-priority, so queue them, never cancel them.
+concurrency:
+  group: pbcanary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: [self-hosted, fleet]
+    # ~15 min canary bound (issue #688) plus runner-side slack. Queue
+    # wait for a (pre-registration) runner happens server-side and does
+    # not consume this budget.
+    timeout-minutes: 60
+    steps:
+      # Pinned by SHA, following the issue-link.yml convention.
+      - name: Check out prismabuild
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run pbcanary
+        run: |
+          args=()
+          if [ -n "${{ inputs.generation }}" ]; then
+            args+=(--generation "${{ inputs.generation }}")
+          fi
+          python3 tools/fleet/pbcanary.py "${args[@]}"
+        # Driver exit contract (issue #688): 0 = all legs verified,
+        # 1 = a leg failed its contract (names the leg), 2 = precondition
+        # refused ("did not test" — fails the workflow, never passes).
+
+      - name: Upload canary summary
+        # Always archive the verdict, green or red. Fails loudly if the
+        # driver produced no summary: a missing verdict is not a pass.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pbcanary-summary-${{ github.run_id }}
+          path: pbcanary-summary/
+          if-no-files-found: error
+          retention-days: 30
