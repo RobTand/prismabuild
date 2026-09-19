@@ -113,6 +113,10 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, **overrides):
     manifest_path.write_text(json.dumps(_manifest()))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
+    # A registrable root, as in production (#631): the admission this file
+    # pins needs a tier that minted its occupancy.
+    (tmp_path / "stage").mkdir(exist_ok=True)
+
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",

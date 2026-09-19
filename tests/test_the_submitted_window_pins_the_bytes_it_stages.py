@@ -118,6 +118,11 @@ def fleet(tmp_path: Path):
 
     # One cycle to announce the tier: the mountpoint, the interpreter and the
     # tool root all come off the box, and the submission reads them there.
+    # The root exists, as a discovered dataset's mountpoint always does -- a
+    # root the loop cannot register offers no capacity (#631), and a path
+    # that was never created would leave the tier with nothing to mint.
+    (tmp_path / "stage").mkdir(exist_ok=True)
+
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",
