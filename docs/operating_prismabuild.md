@@ -1929,6 +1929,13 @@ The tools:
     tokens, fill supply, RAM admission and epoch where present, and the
     window. Records that cannot be read are named in `invalid` rather than
     dropped silently.
+*   **`pb_movers(tier_id)`** — movement-node states and queue depth per
+    tier: the live mover actions waiting in `ready/` or running in
+    `claimed/` (a mover is the row whose residency block names a byte
+    range), and the movement receipts already filed under `movers/`, which
+    outlive the action's conclusion and are what the next submission prices
+    itself from. Egress take-backs are not counted: an egress removes bytes
+    rather than staging them.
 *   **`pb_action(key_prefix)`** — one action, whole: the sealed submission
     (tags, demand, priority, checkout, `max_attempts`), its state and host,
     every attempt with its log metadata, the ending and both return codes, the
@@ -1947,6 +1954,15 @@ The tools:
     a parent can match several agents' work. All filters intersect inside
     the newest-record scan window, and explicit keys bypass that window.
     The answer says so in its `identity` field.
+*   **`pb_receipts(keys)`** — one ending-and-receipt verdict per action
+    key (at most 50 per call): the state, the return codes, and whether the
+    CAS holds a receipt, with a count of each verdict. This is the set form
+    of `pb_action` for validating a batch of submissions; a prefix that
+    names nothing, or more than one action, is an entry with an error
+    rather than a failed call. Per-shard pass counts are not answered:
+    `pbtest` writes its passed/failed totals to the caller's `--json`, not
+    to the queue record, and returncode 0 is the queue's verdict, not a
+    case count.
 *   **`pb_verify_claim(sha256)`** — resolve the `local_result_claim_sha256` a
     run reported to its receipt and payload, reporting each check by name.
     The verdict field is `checks_passed`, not `verified`: it says every check
