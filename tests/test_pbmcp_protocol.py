@@ -29,8 +29,8 @@ import pbmcp_fixture as fx  # noqa: E402
 TOOL = REPOSITORY / "tools" / "fleet" / "pbmcp.py"
 #: Every tool the issue's contract names.  Listed here rather than imported
 #: so that dropping one from the module is a failure rather than a rename.
-EXPECTED_TOOLS = ("pb_status", "pb_action", "pb_actions", "pb_verify_claim",
-                  "pb_log", "pb_runtime")
+EXPECTED_TOOLS = ("pb_status", "pb_denials", "pb_tier", "pb_action",
+                  "pb_actions", "pb_verify_claim", "pb_log", "pb_runtime")
 
 
 class Client:
