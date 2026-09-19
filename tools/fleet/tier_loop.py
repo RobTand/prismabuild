@@ -1238,6 +1238,22 @@ def cycle(
             # the root's own identity, and ``reconcile`` skips them by name.
             record["stage_root_owner"] = stage_release.register_stage_root(
                 queue, tier_id=tier_id, stage_root=str(record["mountpoint"]))
+            if record["stage_root_owner"] != "registered":
+                # A root the loop cannot register offers no capacity (#631).
+                # Registration is a ~300-byte marker write, so a fresh root
+                # always marks before its first mover is admitted -- and a
+                # full unregistered root admits nothing more instead of
+                # filling to exactly 0 B and then refusing the sweep and the
+                # egress rows that are the only way room is made.  The tier is
+                # still announced, with the refusal loud on the record; the
+                # sweep below refuses on the same fact.  Only the occupancy
+                # kind is withheld: fill tokens price bandwidth, not bytes,
+                # and admit nothing without their occupancy beside them.
+                tokens.pop(kind, None)
+                record["tokens"] = tokens
+                record["capacity_basis"] = (
+                    "unregistered root offers no capacity "
+                    f"(stage_root_owner={record['stage_root_owner']})")
         record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)

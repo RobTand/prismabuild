@@ -58,6 +58,7 @@ from typing import Collection, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
+import fleet_roster  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool  # noqa: E402
@@ -329,8 +330,15 @@ def _claim_holders() -> frozenset[int] | None:
         return None
 
 
-def _config(host: str) -> dict:
-    """Read this box's declared shape, from the checkout or the published copy."""
+def _box_entry(host: str) -> dict | None:
+    """This box's raw roster entry, or ``None`` when no file names it.
+
+    ``None`` covers both "no readable roster" (a transient NFS failure or a
+    damaged generation, which must not take the box's loops with it) and "no
+    entry" (which ``_config`` still refuses at startup, where there is no
+    previous shape to keep).  Alias handling matches ``_config``: the roster
+    key and its ``_alias`` name the same machine.
+    """
 
     # A supervisor intentionally outlives a generation.  Prefer the current
     # live generation; CONFIG is only the checkout/bootstrapping fallback.
@@ -339,21 +347,59 @@ def _config(host: str) -> dict:
             boxes = json.loads(path.read_text())["boxes"]
         except (OSError, ValueError, KeyError):
             continue
-        if host in boxes:
+        if not isinstance(boxes, dict):
+            continue
+        if host in boxes and isinstance(boxes[host], dict):
             return boxes[host]
         # The second Spark was renamed from gx10-6b77 to sparklina.  Its
         # declared alias names the same machine, not a second capacity offer.
         # Keep one shape so the old and new hostname cannot drift apart.
-        aliases = [shape for shape in boxes.values()
-                   if shape.get("_alias") == host]
+        aliases = [(name, shape) for name, shape in boxes.items()
+                   if isinstance(shape, dict) and shape.get("_alias") == host]
         if len(aliases) > 1:
             raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
         if aliases:
-            return aliases[0]
-    raise SystemExit(
-        f"no fleet_boxes.json entry for {host}; refusing to guess what this "
-        f"box offers -- add it to tools/fleet/fleet_boxes.json and publish"
-    )
+            return aliases[0][1]
+    return None
+
+
+def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
+    """This box's declared presence, or ``None`` when it cannot be read.
+
+    ``None`` is "no answer", not "active": callers keep their previous
+    behaviour on it.  A malformed presence refuses rather than answering,
+    because an ambiguous presence is not an active box (#606).
+    """
+
+    entry = _box_entry(host)
+    if entry is None:
+        return None
+    try:
+        return fleet_roster.box_status(host, entry)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(f"cannot establish this box's roster presence: {exc}")
+
+
+def _config(host: str) -> dict:
+    """Read this box's declared shape, from the checkout or the published copy."""
+
+    entry = _box_entry(host)
+    if entry is None:
+        raise SystemExit(
+            f"no fleet_boxes.json entry for {host}; refusing to guess what this "
+            f"box offers -- add it to tools/fleet/fleet_boxes.json and publish"
+        )
+    try:
+        status, detail = fleet_roster.box_status(host, entry)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(f"cannot establish this box's roster presence: {exc}")
+    if status in fleet_roster.ABSENT:
+        raise SystemExit(
+            f"fleet_boxes.json declares {host} {status} "
+            f"({detail['reason']}) by {detail['by']}; refusing to offer "
+            f"loops or roles -- un-declare the absence and publish to resume"
+        )
+    return entry
 
 
 def declared_shape(host: str, override_loops: int,
@@ -1060,6 +1106,7 @@ def _run_supervisor(stop_requested) -> int:
           flush=True)
     fixed_target = args.loops > 0
     next_log_index = _next_log_index()
+    draining_announced = False
     if args.cycle_stale:
         published = ""
         try:
@@ -1088,6 +1135,43 @@ def _run_supervisor(stop_requested) -> int:
             host, args.loops, (target, loop_args))
         if stop_requested():
             continue
+        # A box the roster declares absent offers nothing (#606).  Startup
+        # already refused it in ``_config``; a supervisor that was running
+        # when the declaration published drains instead: no new loops, no new
+        # roles, and the idle reserve goes with them, so its offers expire
+        # and placement stops considering it.  Loops mid-action are never
+        # killed -- they finish, go idle, and are stopped on a later tick.
+        # Roles already running (the file server's) are left to the operator's
+        # stop: ``ensure_roles`` only spawns, and tearing down a tier loop
+        # from here would strand the ledgers it mints.
+        draining = False
+        try:
+            presence = box_presence(host)
+        except SystemExit as exc:
+            # A presence that cannot be established is not an active box: an
+            # ambiguous declaration fails closed as absent (#606).  Fall
+            # through to the normal sleep rather than spinning on the error.
+            presence, presence_error = None, str(exc)
+        else:
+            presence_error = None
+        if presence_error is not None:
+            draining = True
+            if not draining_announced:
+                print(f"[{host}] {presence_error}; starting nothing",
+                      flush=True)
+                draining_announced = True
+            target = 0
+        elif presence is not None and presence[0] in fleet_roster.ABSENT:
+            draining = True
+            status, detail = presence
+            if not draining_announced:
+                print(f"[{host}] roster declares this box {status} "
+                      f"({detail['reason']}) by {detail['by']}; draining "
+                      f"loops to zero and starting nothing", flush=True)
+                draining_announced = True
+            target = 0
+        else:
+            draining_announced = False
 
         live = _live_loops()
         for role, pid in ensure_roles(host, stop_requested):
@@ -1149,14 +1233,17 @@ def _run_supervisor(stop_requested) -> int:
         # queue, because an idle poller is idle whether or not work is
         # waiting.  ``backlog`` survives only below, choosing the tick rate.
         desired = target
-        if not fixed_target and not args.once:
+        if (not fixed_target or draining) and not args.once:
             if holders is None:
                 # Silence never licenses a signal, and it does not license a
                 # spawn either: hold the count and ask again next tick.
                 desired = max(target, len(live))
             else:
+                # A draining box keeps no idle reserve: every idle poller is
+                # excess, so its offers expire and placement stops seeing it.
+                reserve = 0 if draining else IDLE_RESERVE
                 desired = min(housekeeping_ceiling(target),
-                              max(target, busy + unknown + IDLE_RESERVE))
+                              max(target, busy + unknown + reserve))
                 excess = max(0, len(live) - desired)
                 if excess and idle:
                     stopped = _stop_idle_loops(

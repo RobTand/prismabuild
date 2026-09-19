@@ -286,3 +286,83 @@ def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None
     assert shard.exists() and partial.exists()
     assert [r["event"] for r in swept] == [stage_release.STAGE_ROOT_REFUSED_EVENT]
     assert _marker(stage)["queue_root"] == os.path.realpath(str(fleet.root))
+
+
+# -- a root the loop cannot register offers no capacity (#631) ----------------
+
+
+def test_an_unregistered_root_mints_no_capacity(queue, stage, tmp_path) -> None:
+    """A full root that cannot take the marker must admit nothing more.
+
+    On 2026-09-18 the movers filled ``prismabuild-stage/prewarm`` to the last
+    byte before the loop wrote its ~300-byte ownership marker, and the loop
+    then refused every deletion under the root -- including the egress rows
+    that are the only way room is made.  A root the loop cannot register now
+    mints zero occupancy, so a fresh root always marks before its first mover
+    and a full one stops admitting instead of deadlocking.
+    """
+
+    other = pool.PoolQueue(tmp_path / "other-queue")
+    other.ensure_layout()
+    stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
+
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(),
+        discover=lambda **_kwargs: {TIER: _record(stage)})
+
+    record = announced[0]
+    assert record["stage_root_owner"].startswith("stage_root_belongs_to_another_queue")
+    assert record["tokens"].get("stage_gib") is None
+    assert "unregistered root offers no capacity" in str(record["capacity_basis"])
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.available().get("stage_gib", 0) == 0
+    # The refusal is loud on the announced record, and the sweep inside the
+    # cycle refused on the same fact rather than deleting under it.
+    stored = {str(r["tier_id"]): r for r in queue.tiers()}[TIER]
+    assert stored["stage_root_owner"] == record["stage_root_owner"]
+
+
+def test_an_unregistered_root_with_held_tokens_never_indexes_a_missing_kind(
+    queue, stage, tmp_path,
+) -> None:
+    """The ``available()[kind]`` KeyError the issue notes, driven end to end.
+
+    An in-flight mover holds 2 GiB against a root another queue owns.  The
+    cycle mints nothing, keeps the held reservation, and runs the pressure,
+    window and sweep reads over a ledger whose free set has no ``stage_gib``
+    key at all -- every one of them through ``.get``, never ``[]``.
+    """
+
+    other = pool.PoolQueue(tmp_path / "other-queue")
+    other.ensure_layout()
+    stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert queue.tier_ledger(TIER).acquire("5" * 64, {"stage_gib": 2})
+
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(),
+        discover=lambda **_kwargs: {TIER: _record(stage)})
+    swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
+
+    ledger = queue.tier_ledger(TIER)
+    assert announced[0]["tokens"].get("stage_gib") is None
+    assert ledger.capacity().get("stage_gib", 0) == 2  # held, not re-minted
+    assert ledger.available().get("stage_gib", 0) == 0
+    assert ledger.holder_tokens("5" * 64).get("stage_gib", 0) == 2
+    assert [r["event"] for r in swept] == [stage_release.STAGE_ROOT_REFUSED_EVENT]
+
+
+def test_a_fresh_root_registers_then_mints(queue, stage) -> None:
+    """The ordering the gate exists to guarantee: mark first, admit after."""
+
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(),
+        discover=lambda **_kwargs: {TIER: _record(stage)})
+
+    record = announced[0]
+    assert record["stage_root_owner"] == "registered"
+    assert record["tokens"].get("stage_gib") == 8
+    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 8

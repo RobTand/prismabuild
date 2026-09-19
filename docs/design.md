@@ -299,11 +299,22 @@ new child cannot renew caller patience. A `--wait-s 0` caller still receives
 one immediate bounded snapshot. An unavailable reader (timeout, child failure,
 or reader that cannot be reaped) returns filesystem exit 74 with its retained
 PID/start-time identity; it does not cancel work, publish a record, or
-manufacture a verdict. The one exception is patience: with `--wait-s` above 0,
+manufacture a verdict. Two exceptions keep a finished action reportable. A
+complete payload from a reader that could not be reaped is used, not refused:
+EOF is the proof the payload is whole and the child holds nothing but its
+pipe, so the 0.25 s reap grace is a scheduling artifact under load, not a
+verdict on the data (#630). And before any unavailable observation becomes
+exit 74, the wait spends one last bounded snapshot -- the terminal re-read --
+asking whether the ending has landed since; a pass that will not report a
+finished shard is the mirror image of the submission-acknowledgement trap.
+The re-read is bounded by the same five-second budget, runs no mutation, and
+is the wait's last observation either way, so no polling loop ever races a
+retained reader. The one exception is patience: with `--wait-s` above 0,
 a snapshot or verification that timed out, and whose reader was killed and
 reaped, is taken again at the next poll under the same deadline. Because a
-retry follows only a reaped reader, one wait never has two readers alive, and a
-reader that cannot be reaped still ends the wait at once. A deadline that
+retry follows only a reaped reader, one wait never has two readers alive;
+the terminal re-read above is the single terminal exception, and it polls
+nothing after itself. A deadline that
 passes on an unavailable read exits 74 with its own message, not 75, because
 no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.
@@ -2258,7 +2269,20 @@ whoever reads these files.
 a bootstrap preflight. Every roster box must have posted an attestation naming
 the sha256 recorded for the target updater; refusals name missing boxes and
 their previously posted versions. A box answers under its roster key or its
-declared alias (`gx10-6b77` / `sparklina`). New-publication preflight uses the
+declared alias (`gx10-6b77` / `sparklina`). A box the roster declares absent
+(`status` `retired` or `offline` in `fleet_boxes.json`, #606) is skipped by
+the preflight and by the epoch roster instead of vetoing them: an offline box
+must not block a publish for the boxes that are live. The declaration needs
+its provenance -- nonblank `status_reason`, `status_by` and a finite
+`status_unix` -- and an unknown status or a missing provenance refuses
+wherever the roster is read. The skip is said out loud, so a stale retirement
+cannot pass silently. The epoch roster excludes the same boxes from its
+quorum, and refuses if an absent box is still announcing (stop its loops or
+un-declare the absence) or if a box group mixes absent and active names. The
+supervisor side converges an absent box's loops to zero -- no spawns, no idle
+reserve, mid-action loops finish first -- so its offers expire and placement
+stops seeing it; a fresh supervisor refuses to start there at all. Roles
+already running are left to the operator's stop. New-publication preflight uses the
 source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and
@@ -3708,6 +3732,39 @@ egress registers its temporary root first, the way the loop registers the real
 one. `tests/test_a_stage_root_belongs_to_one_queue.py` holds the incident's
 exact shape — a throwaway queue, the fleet's marker already on the root, one
 cycle — and asserts nothing is deleted and the announced record says why.
+
+**A root the loop cannot register offers no capacity (#631).** Registration
+is a ~300-byte marker write, and the cycle marks before it mints: while
+`stage_root_owner` is anything but `registered`, the tier mints zero
+occupancy tokens. A fresh root therefore always marks before its first mover
+is admitted, and a full unregistered root stops admitting instead of filling
+to exactly 0 B available and then refusing the sweep and the egress rows that
+are the only way room is made. The tier is still announced, with the refusal
+loud on the record as `stage_root_owner` and `capacity_basis`; the sweep
+refuses on the same fact. The ledger's free set then has no occupancy key at
+all, which is why every reader there uses `.get`, never `[]` — a missing kind
+is "nothing free", not a `KeyError`.
+
+**Bootstrapping an already-full root is an operator path, not a bypass.**
+The loop cannot delete under a root it does not own, so no code path clears
+the deadlock from inside; what the operator does is make room for the loop's
+own next marker write, and the loop registers itself:
+
+* Prefer the slop window: `spa_slop_shift` 5→6 for seconds on the storage box
+  frees ~11 GB of `available` out of the slop with no deletion and no data
+  touched, the loop's next cycle writes its marker, and the shift is restored
+  on exit (trap it). Needs sudo for the two kernel-parameter writes.
+* Without sudo: delete a bounded set of staged fragments whose pool originals
+  match by sha256 — enough bytes for the marker, recopyable from the pool —
+  and only fragments the live run's residency plan does not name.
+
+Either way the marker is written by the loop, never by hand: a hand-written
+marker is a second copy of the queue identity the ownership check exists to
+refuse. Once registered, the loop's own egress reclaims the rest through the
+ledger, which is where that decision belongs. Whether the ledger should ever
+fill a dataset to 0 B available at all -- a measured headroom off the
+dataset's own `used`/`logicalused` ratio rather than a constant -- is open;
+it is not this gate.
 
 ### How the map reaches the consumer
 
