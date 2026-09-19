@@ -354,6 +354,60 @@ exit cleanly, and is exempt all the same. Work that does not run vLLM still
 submits, and a running vLLM remains external load for batch admission.
 `docs/agent_execution_policy.md` carries the full ruling.
 
+## Fleet observation over MCP: `pbmcp.py`
+
+`tools/fleet/pbmcp.py` exposes fleet state as typed tools over the MCP
+stdio protocol — read-only by construction (the server opens files,
+never writes, never submits, never mutates; enforced and test-pinned).
+Mount it in any MCP-capable agent harness instead of hand-rolled queue
+JSON archaeology:
+
+    "mcpServers": {"prismabuild": {"command": "python3",
+      "args": ["/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py"]}}
+
+Tools (growing; PB #660 tracks the full list): `pb_status` (jobs, states,
+progress, denials), `pb_denials` (per-host claim-denial histogram by
+reason, most-recent denied action), `pb_tier` (every tier record: tokens,
+fill supply, admission, epoch, window). The starvation view
+(`pbstatus.py --starvation`, PB #666) and the pbmetrics gauges
+(:9469) are the live counterparts — the MCP is the typed frontend, the
+observability stack is the backend.
+
+## Dev mode: ceremony-free campaign submission
+
+`PRISMAQUANT_DEV_MODE=1` turns PrismaQuant's provenance gates into stamps —
+Rob's directive (2026-09-19): rapid iteration pays no sealing tax; the
+certificate returns at the artifact gate, not the run gate.
+
+What it changes when set (in the campaign's environment — the spec env or
+the dispatching shell):
+
+- **No transition receipts.** `submit-joint` accepts submission without
+  `--source-transition`; any checkout may run (main is a superset of every
+  carried branch — run from main, not a campaign branch).
+- **Digest walls become warnings.** The source-proof loader identity check
+  and the prepared-plan comparisons (`_preflight_run_prepared`: plan,
+  implementation, reader, projection identities) log both digests and
+  continue instead of refusing.
+- **Checkpoint mismatches auto-archive.** A lineage that disagrees with the
+  running identity is renamed `.dev-archived-<iso>` (house pattern) and a
+  fresh lineage starts — loudly, never silently reusing.
+- **Everything is stamped.** `dev_uncertified: true` plus the executing
+  tree's actual digest land top-level in `results.json` and in progress
+  metadata — a dev result is identifiable at a glance and grep-able.
+
+What it does NOT change: certified behavior with the flag off is
+byte-identical; PB's sealed actions (CAS checkouts, hashed movement nodes)
+are untouched; the v1 proof machinery itself is never weakened — dev mode
+bypasses at the gate. Dev results are uncertified by construction: do not
+feed them to the certified artifact path without the seal's return
+(deliberate, recorded, and Rob's call).
+
+Fleet-side notes: the dispatcher `tools/dispatch_joint_quanta.py` pins the
+env on every distributed row including stage A (PR #789 — a row without it
+dies at the prepared-digest wall). The spec carries it as env
+(`spec-hostcap32-ram-dev.json` is the pattern).
+
 ## Verify and recover
 
 A submission acknowledgement is not completion. With `--detach`, retain the
