@@ -573,3 +573,185 @@ def test_the_publishers_umask_does_not_decide_who_can_read_a_generation(
         mode = _mode(path)
         wanted = 0o555 if path.is_dir() else 0o444
         assert mode == wanted, f"{path} published {mode:04o}, wanted {wanted:04o}"
+
+
+def _write_canary_driver(checkout: Path, body: str) -> None:
+    """Install a fake crew-A driver in the checkout the publisher loads from."""
+
+    driver_dir = checkout / "tools" / "fleet"
+    driver_dir.mkdir(parents=True, exist_ok=True)
+    (driver_dir / "pbcanary.py").write_text(body)
+
+
+def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str]) -> tuple[int, Path]:
+    """Publish ``checkout`` into a private mirror with extra argv; return (exit, mirror)."""
+
+    mirror = tmp_path / "mirror"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication",
+                                        *extra])
+    return publish_runtime.main(), mirror
+
+
+def _canary_record(mirror: Path) -> dict:
+    store = mirror.parent / "runtime-generations"
+    records = list(store.glob("*.canary.json"))
+    assert len(records) == 1, [p.name for p in store.iterdir()]
+    return json.loads(records[0].read_text())
+
+
+def test_default_publish_records_not_run_and_never_loads_the_driver(
+    tmp_path, monkeypatch,
+) -> None:
+    """Phase-1 default-OFF: publication behaves as before, plus a skip record."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, [])
+    assert exit_code == 0
+    generation = mirror.resolve()
+    assert (generation / "RUNTIME_VERSION.json").is_file()
+    record = _canary_record(mirror)
+    assert record["schema"] == publish_runtime.CANARY_RECORD_SCHEMA
+    assert record["generation"] == generation.name
+    assert record["commit"] == "a" * 40
+    assert record["canary_status"] == "not_run"
+    assert record["canary_exit"] is None
+
+
+def test_no_canary_flag_records_not_run(tmp_path, monkeypatch) -> None:
+    """The phase-2 escape hatch spelling already works in phase 1."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--no-canary"])
+    assert exit_code == 0
+    assert _canary_record(mirror)["canary_status"] == "not_run"
+
+
+def test_verified_canary_resolves_against_the_activated_generation(
+    tmp_path, monkeypatch,
+) -> None:
+    """The driver is imported (not duplicated) and told which generation to verify."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    _write_canary_driver(checkout,
+        "from pathlib import Path\n"
+        "def run_canary(*, generation):\n"
+        "    (Path(__file__).parent / 'seen.txt').write_text(generation)\n"
+        "    return 0\n")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--canary"])
+    assert exit_code == 0
+    generation = mirror.resolve().name
+    assert (checkout / "tools" / "fleet" / "seen.txt").read_text() == generation
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "verified"
+    assert record["canary_exit"] == 0
+    assert record["generation"] == generation
+
+
+def test_failed_canary_marks_and_exits_nonzero_without_rollback(
+    tmp_path, monkeypatch,
+) -> None:
+    """Campaign-primacy: a failed canary leaves the activation exactly as it was."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    _write_canary_driver(checkout, "def run_canary(*, generation):\n    return 1\n")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--canary"])
+    assert exit_code == 1
+    generation = mirror.resolve()
+    assert (generation / "RUNTIME_VERSION.json").is_file(), \
+        "a failed canary rolled back the activation it was meant only to mark"
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "failed"
+    assert record["canary_exit"] == 1
+    assert record["generation"] == generation.name
+
+
+def test_crashing_driver_is_a_failed_verdict_not_a_traceback(
+    tmp_path, monkeypatch,
+) -> None:
+    """A driver that raises verifies nothing; the record says so and the exit is 1."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    _write_canary_driver(checkout,
+        "def run_canary(*, generation):\n    raise RuntimeError('boom')\n")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--canary"])
+    assert exit_code == 1
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "failed"
+    assert "raised instead of returning a verdict" in record["detail"]
+
+
+def test_canary_driver_return_drift_is_a_failed_verdict(
+    tmp_path, monkeypatch,
+) -> None:
+    """The assumed contract is int-only; a friendlier shape is still drift."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    _write_canary_driver(checkout,
+        "def run_canary(*, generation):\n    return 'verified'\n")
+    exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--canary"])
+    assert exit_code == 1
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "failed"
+    assert "run_canary(generation=...) -> int" in record["detail"]
+
+
+def test_canary_without_a_driver_refuses_before_touching_the_mirror(
+    tmp_path, monkeypatch,
+) -> None:
+    """Fail-closed pre-flight: no driver, no publication, no rollout record."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    mirror = tmp_path / "mirror"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication",
+                                        "--canary"])
+    with pytest.raises(SystemExit, match="no driver"):
+        publish_runtime.main()
+    assert not mirror.exists()
+    assert not (tmp_path / "runtime-generations").exists()
+
+
+def test_canary_and_no_canary_conflict(tmp_path, monkeypatch) -> None:
+    """Two opposing flags are a usage error, not a coin toss."""
+
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--canary", "--no-canary"])
+    with pytest.raises(SystemExit) as caught:
+        publish_runtime.main()
+    assert caught.value.code == 2
+
+
+def test_canary_flags_are_refused_on_rollback(tmp_path, monkeypatch) -> None:
+    """Rollback restores bytes; it neither runs the canary nor rewrites its record."""
+
+    mirror = tmp_path / "mirror"
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication",
+                                        "--activate-generation", "somename",
+                                        "--canary"])
+    with pytest.raises(SystemExit, match="only on fresh publication"):
+        publish_runtime.main()
+
+
+def test_canary_flags_are_refused_with_stage_only(monkeypatch) -> None:
+    """A staged generation is not live, so there is nothing to verify yet."""
+
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--stage-only", "--canary"])
+    with pytest.raises(SystemExit) as caught:
+        publish_runtime.main()
+    assert caught.value.code == 2
