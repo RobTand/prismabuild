@@ -10,7 +10,6 @@ path was in the snapshot; the bundle did not carry it.
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -50,14 +49,6 @@ def _checkout(tmp_path: Path) -> Path:
     return checkout
 
 
-def _stamp(checkout: Path, name: str) -> str:
-    stamp_name = f"{pbrun.STAMP_PREFIX}{name}.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
-    )
-    return stamp_name
-
-
 def _sealed_roster(tmp_path: Path, snapshot: dict[str, object],
                    cas: core_module.PrismaBuildCAS) -> tuple[Path, list[str]]:
     materialized = tmp_path / "materialized"
@@ -83,11 +74,10 @@ def test_a_newly_staged_ignored_file_is_sealed_with_its_working_bytes(
     checkout = _checkout(tmp_path)
     (checkout / "ignored.txt").write_text("required staged input\n")
     assert _git(checkout, "add", "-f", "ignored.txt").returncode == 0
-    stamp_name = _stamp(checkout, "staged-ignored")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     assert "ignored.txt" in pbrun.snapshot_path_roster(checkout)
@@ -105,11 +95,10 @@ def test_a_staged_ignored_file_seals_its_live_bytes_not_its_staged_bytes(
     (checkout / "ignored.txt").write_text("staged bytes\n")
     assert _git(checkout, "add", "-f", "ignored.txt").returncode == 0
     (checkout / "ignored.txt").write_text("live bytes\n")
-    stamp_name = _stamp(checkout, "staged-ignored-live")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     materialized, roster = _sealed_roster(tmp_path, snapshot, cas)
@@ -126,11 +115,10 @@ def test_a_staged_addition_removed_from_the_worktree_is_not_sealed(
     (checkout / "ignored.txt").write_text("staged then deleted\n")
     assert _git(checkout, "add", "-f", "ignored.txt").returncode == 0
     (checkout / "ignored.txt").unlink()
-    stamp_name = _stamp(checkout, "staged-then-deleted")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     _, roster = _sealed_roster(tmp_path, snapshot, cas)
@@ -144,11 +132,10 @@ def test_a_tracked_deletion_stays_deleted_in_the_sealed_tree(
 
     checkout = _checkout(tmp_path)
     (checkout / "task.py").unlink()
-    stamp_name = _stamp(checkout, "tracked-deletion")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     _, roster = _sealed_roster(tmp_path, snapshot, cas)
@@ -167,11 +154,10 @@ def test_the_sealed_roster_is_the_roster_the_identity_hashes(
     (checkout / "untracked.py").write_text("VALUE = 'untracked'\n")
     (checkout / "build").mkdir()
     (checkout / "build" / "artifact.bin").write_bytes(b"never submitted")
-    stamp_name = _stamp(checkout, "roster-identity")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     _, roster = _sealed_roster(tmp_path, snapshot, cas)

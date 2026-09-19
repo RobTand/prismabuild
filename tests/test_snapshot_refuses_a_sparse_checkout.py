@@ -10,7 +10,6 @@ could not read, review, or change.
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -37,7 +36,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _checkout(tmp_path: Path) -> tuple[Path, str]:
+def _checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     assert _git(checkout, "init", "-q", "-b", "main").returncode == 0
@@ -51,17 +50,12 @@ def _checkout(tmp_path: Path) -> tuple[Path, str]:
     (checkout / "away" / "b.txt").write_text("out of the cone\n")
     assert _git(checkout, "add", "-A").returncode == 0
     assert _git(checkout, "commit", "-qm", "sealed tree").returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}sparse.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
-    )
-    return checkout, stamp_name
+    return checkout
 
 
-def _seal(checkout: Path, stamp_name: str, store: Path) -> dict[str, object]:
+def _seal(checkout: Path, store: Path) -> dict[str, object]:
     return pbrun.build_git_checkout_snapshot(
         checkout,
-        stamp_name=stamp_name,
         cas=core_module.PrismaBuildCAS(store),
         max_bytes=MAX_BYTES,
     )
@@ -70,12 +64,12 @@ def _seal(checkout: Path, stamp_name: str, store: Path) -> dict[str, object]:
 def test_a_sparse_checkout_is_refused_before_anything_is_sealed(
     tmp_path: Path,
 ) -> None:
-    checkout, stamp_name = _checkout(tmp_path)
+    checkout = _checkout(tmp_path)
     assert _git(checkout, "sparse-checkout", "set", "keep").returncode == 0
     assert not (checkout / "away").exists()
 
     with pytest.raises(SystemExit) as refusal:
-        _seal(checkout, stamp_name, tmp_path / "cas")
+        _seal(checkout, tmp_path / "cas")
 
     message = str(refusal.value)
     assert "away/b.txt" in message
@@ -88,21 +82,21 @@ def test_a_path_marked_skip_worktree_by_hand_is_refused_too(
 ) -> None:
     """The same defect without the porcelain: the bytes still come from HEAD."""
 
-    checkout, stamp_name = _checkout(tmp_path)
+    checkout = _checkout(tmp_path)
     assert _git(
         checkout, "update-index", "--skip-worktree", "away/b.txt"
     ).returncode == 0
     (checkout / "away" / "b.txt").write_text("edited but invisible to add\n")
 
     with pytest.raises(SystemExit) as refusal:
-        _seal(checkout, stamp_name, tmp_path / "cas")
+        _seal(checkout, tmp_path / "cas")
 
     assert "away/b.txt" in str(refusal.value)
 
 
 def test_an_ordinary_dense_checkout_still_seals(tmp_path: Path) -> None:
-    checkout, stamp_name = _checkout(tmp_path)
+    checkout = _checkout(tmp_path)
 
-    snapshot = _seal(checkout, stamp_name, tmp_path / "cas")
+    snapshot = _seal(checkout, tmp_path / "cas")
 
     assert snapshot["parent"] == pbrun._git_identity(checkout)["head"]
