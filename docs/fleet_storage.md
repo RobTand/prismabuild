@@ -57,10 +57,11 @@ defines `read_ahead_kb` as the window, not an RPC-slot reservation.
 A larger window may help serial buffered reads and file mappings but must be
 measured with the actual consumer and its cache residency.
 
-As of the readback above, **neither client is changed**: interactive root
-authentication is required. Two 102 GiB GPU claims and 16 ready actions were
-present, so isolated throughput and remount/reboot acceptance are also pending.
-Issue #523 stays open through those checks.
+The 2026-09-12 readback above predates installation: the unit is now
+installed and enabled on both clients (see [Client readahead: installed
+and persistent](#client-readahead-installed-and-persistent)). Root
+transitions remain a host operation. Issue #523 stays open through the
+paired acceptance below.
 
 ### Readiness check: what `pbstatus` reports
 
@@ -185,6 +186,46 @@ the device reference, CPU activity, memory residency and useful work per joule.
 GPU utilization percentage alone is insufficient on GB10. Re-read terminal
 states, immutable logs and CAS receipt payloads. An installed value, a passing
 fixture, or a submission acknowledgement is not a measured fleet improvement.
+
+## Client readahead: installed and persistent
+
+Installation completed 2026-09-14 22:34:30-31 UTC on both Sparks, from the
+reviewed #524 unit and #526 helper, unchanged. Installed SHA-256:
+
+| File | SHA-256 |
+|---|---|
+| `/usr/local/libexec/prismabuild-nfs-readahead.py` | `b5bc3f2496cf2cc723438d78a81ee04091e27a7d5bc154233dcb2a48fc0970b3` |
+| `/etc/systemd/system/prismabuild-nfs-readahead.service` | `670700f61f16453fde4602c19560a8a38db277f14558eaa6d4ef0079f2d8cbe9` |
+
+Both journals record `applied=true`, 1024 -> 16384 KiB (sparky BDI `0:64`,
+sparklina BDI `0:49`), `active/exited`, `enabled`, and published `pbstatus`
+`host_storage.state=ok` with complete censuses on both clients.
+
+Lifecycle persistence is verified across reboots, not just installs:
+
+- 2026-09-15: both clients rebooted (sparky boot
+  `e3bf1b10-a9a6-4cb8-bbd9-f79446a99b39`, sparklina
+  `815a45e7-7a1a-44fe-9586-64a12a406833`). Each current-boot journal
+  records the unit re-applying 1024 -> 16384 KiB, and each current NFS BDI
+  still reads 16384. Sparklina's run followed initial mount-dependency
+  failures, so this records eventual application after mount availability.
+- 2026-09-19: sparky rebooted again (boot
+  `36e5c0ed-f703-4065-b3ba-e3652166a29f`, up since Sep 17 09:31 UTC). The
+  journal applied 1024 -> 16384 KiB at boot — `before_kib: 1024` shows the
+  kernel default returned and the unit re-applied it. Current helper
+  readback: 16384 KiB on BDI `0:64`, source
+  `10.100.98.3:/storage_pool/shared`; the unit is `active/exited` and
+  `enabled`, and both installed hashes re-verify byte-identical to the
+  reviewed artifacts. Sparklina was last verified 2026-09-15; re-read it
+  with `pbstatus --json` on next operator access rather than assuming one
+  box's reading covers the fleet.
+
+What remains is the interleaved 1024/16384 `--measurement` comparison in
+the acceptance section above. It is blocked on coordinated root setting
+transitions and an idle fleet (live campaign work contends the pool and
+the ARC), and PB admission does not grant a payload root access, so no
+paired throughput or energy delta is claimed here. The `sync=disabled` /
+L2ARC / no-SLOG server record above stands unchanged.
 
 ## Provisioning checklist
 
