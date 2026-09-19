@@ -353,10 +353,13 @@ def _ram_leg_rows(phase: Mapping[str, object],
         if len(matches) != 1:
             return None, None
         return matches[0]["ram_mover_row"], matches[0]["ram_egress_row"]
-    if not isinstance(phase.get("ram_mover_row"), Mapping) or not isinstance(
-            phase.get("ram_egress_row"), Mapping):
-        return None, None
-    return phase["ram_mover_row"], phase["ram_egress_row"]
+    # A promotion leg with no egress row still promotes: the plan validator
+    # refuses an egress without a mover, not a mover without an egress, so
+    # the publish side asks for the mover and the evict side asks for both.
+    mover = phase.get("ram_mover_row")
+    egress = phase.get("ram_egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
 
 
 def _ram_window_state(
