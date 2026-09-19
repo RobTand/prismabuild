@@ -250,7 +250,10 @@ def submit_leg(
     """Submit one action via ``pbrun --detach``; return (action_key, detach_json).
 
     ``argv`` defaults to ``spec["argv"]`` (legs 1-2) or the spec's
-    ``action.argv`` (leg 3); demand defaults to ``spec.get("demand", {})``.
+    ``action.argv`` (leg 3); demand defaults to ``spec.get("demand", {})``
+    and is forwarded as one comma-separated ``--demand`` aggregate -- the
+    form pbrun's single-value flag parses -- with no flag at all when the
+    demand is empty, so pbrun's own defaults stand.
     ``extra_flags`` (leg 3's ``pbrun_flags`` + progress phases, leg 4's
     per-side flags) extend the command line after the driver's own
     ``--priority``. Issue #690: the driver's ``--priority`` governs every
@@ -280,8 +283,10 @@ def submit_leg(
             )
     command = list(argv)
     submit_argv = [sys.executable, str(paths["pbrun"]), "--cwd", str(checkout)]
-    for name, value in spec.get("demand", {}).items():
-        submit_argv += ["--demand", f"{name}={value}"]
+    demand = spec.get("demand", {})
+    if demand:
+        submit_argv += ["--demand", ",".join(
+            f"{name}={value}" for name, value in sorted(demand.items()))]
     submit_argv += ["--priority", str(priority)]
     submit_argv += extra
     if manifest is not None:
