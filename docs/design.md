@@ -2258,7 +2258,20 @@ whoever reads these files.
 a bootstrap preflight. Every roster box must have posted an attestation naming
 the sha256 recorded for the target updater; refusals name missing boxes and
 their previously posted versions. A box answers under its roster key or its
-declared alias (`gx10-6b77` / `sparklina`). New-publication preflight uses the
+declared alias (`gx10-6b77` / `sparklina`). A box the roster declares absent
+(`status` `retired` or `offline` in `fleet_boxes.json`, #606) is skipped by
+the preflight and by the epoch roster instead of vetoing them: an offline box
+must not block a publish for the boxes that are live. The declaration needs
+its provenance -- nonblank `status_reason`, `status_by` and a finite
+`status_unix` -- and an unknown status or a missing provenance refuses
+wherever the roster is read. The skip is said out loud, so a stale retirement
+cannot pass silently. The epoch roster excludes the same boxes from its
+quorum, and refuses if an absent box is still announcing (stop its loops or
+un-declare the absence) or if a box group mixes absent and active names. The
+supervisor side converges an absent box's loops to zero -- no spawns, no idle
+reserve, mid-action loops finish first -- so its offers expire and placement
+stops seeing it; a fresh supervisor refuses to start there at all. Roles
+already running are left to the operator's stop. New-publication preflight uses the
 source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and
