@@ -48,6 +48,16 @@ org runner needed):
 
 ## Host prerequisites
 
+- The canary's GPU leg reads `PBCANARY_GPU_IMAGE` from the job environment
+  (set in `canary.yml` as versioned config — do not shadow it with a
+  different value in the runner's service environment unless you also
+  update the workflow). The host must be able to `docker run
+  --entrypoint "" <that ref>` with `--gpus all`: the image must exist
+  locally or be pullable, and the Docker daemon must have GPU device
+  plumbing (`nvidia-container-toolkit`). Verified 2026-09-19 on sparky
+  against `prismaquant-glm-derivative@sha256:c0e532d2…` (1 CUDA device).
+
+
 - `git`, `python3` (whatever `tools/fleet/pbcanary.py` needs beyond the
   stdlib comes from the repo/fleet environment, not the runner image).
 - `/mnt/shared/prismabuild-fleet` reachable at the same path the fleet

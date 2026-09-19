@@ -9,7 +9,11 @@ container identity) and #798 (no GPU demand):
 
 * #796: the image ref is digest-pinned (``name@sha256:<hex>``) and echoed
   on the artifact's first line; ``docker run`` through PB's shim fails a
-  leg whose image is missing instead of running bare.
+  leg whose image is missing instead of running bare. The run clears the
+  entrypoint (``--entrypoint ""``) exactly as the production container
+  wrapper does (``tools/tessera_campaign_container.py``): the campaign
+  image family's own entrypoint performs vLLM platform inference and
+  refuses to pass a command through when it stands.
 * #798: the action declares ``gpu: 1`` demand AND the payload asserts
   ``device_count >= 1`` AND runs a real device-tensor op inside the
   container, so a box with no visible CUDA fails the leg loudly.
@@ -109,7 +113,7 @@ def build() -> dict:
     inner = _inner_script()
     script = (
         f"echo {shlex.quote('IMAGE ' + ref)}; "
-        f"docker run --rm --gpus all {ref} "
+        f"docker run --rm --gpus all --entrypoint \"\" {ref} "
         f"python3 -c {shlex.quote(inner)}"
     )
     return {
