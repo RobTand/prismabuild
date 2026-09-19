@@ -1068,6 +1068,76 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
 #: number in a claim record always traces back to a manifest.
 
 
+def _checked_phase_boundaries(
+    phases: list, *, total: int, entry_boundaries: set[int],
+) -> list[tuple[str, int]] | None:
+    """One refusal rule for both manifest schemas' phase tables (#594).
+
+    A phase that is not a mapping, a name that is missing, empty, repeated
+    or not a string, a cumulative that is not an integer (bools and floats
+    included -- ``int()`` accepts ``True`` and truncates, and neither is a
+    byte count), a table that steps back, overruns its total, cuts an entry,
+    or ends anywhere but the total is not a description of this manifest,
+    and a mover priced off it would reserve for bytes nobody reads.  ``None``
+    is that refusal; the caller answers it with ``[]``.
+    """
+
+    boundaries: list[tuple[str, int]] = []
+    previous = 0
+    seen: set[str] = set()
+    for phase in phases:
+        if not isinstance(phase, Mapping):
+            return None
+        name = phase.get("name")
+        cumulative = phase.get("cumulative_bytes")
+        if not isinstance(name, str) or not name or name in seen:
+            return None
+        if isinstance(cumulative, bool) or not isinstance(cumulative, int):
+            return None
+        if (cumulative < previous or cumulative > total
+                or cumulative not in entry_boundaries):
+            return None
+        seen.add(name)
+        boundaries.append((name, cumulative))
+        previous = cumulative
+    if previous != total:
+        return None
+    return boundaries
+
+
+def _read_order_sizes(
+    phases: list, entry_sizes: list[int],
+) -> list[int] | None:
+    """The byte sizes of the v2 read plan's consumption order, or ``None``.
+
+    v1 consumes ``entries`` in list order, so its boundaries are the list's
+    own prefix sums.  v2 consumes them in ``read_plan`` order, which exists
+    to differ -- so the boundaries a v2 table is checked against are the
+    prefix sums of the plan's own ``entry_indices`` expansion, not of the
+    list.  Checking a reordered plan against list-order sums would refuse a
+    table the core validator accepted, which is the two-readers disagreement
+    this shared rule removes.  A plan that does not say what it reads, or
+    names entries it cannot have, refuses.
+    """
+
+    order: list[int] = []
+    for phase in phases:
+        indices = phase.get("entry_indices")
+        if not isinstance(indices, list):
+            return None
+        seen: set[int] = set()
+        for ref in indices:
+            if isinstance(ref, bool) or not isinstance(ref, int):
+                return None
+            if ref < 0 or ref >= len(entry_sizes):
+                return None
+            if ref in seen:
+                return None
+            seen.add(ref)
+            order.append(ref)
+    return [entry_sizes[index] for index in order]
+
+
 def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, object]]:
     """The manifest's read order as half-open byte ranges, or ``[]``.
 
@@ -1081,7 +1151,11 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
     A v1 table that does not describe this manifest -- a boundary that cuts an
     entry in half, a sum that does not end at ``total_bytes`` -- yields ``[]``,
     the same refusal ``prewarm_loop.manifest_phases`` makes, because windowing
-    on the wrong boundaries reserves for bytes nobody will read.
+    on the wrong boundaries reserves for bytes nobody will read.  The v2 table
+    in ``read_plan.phases`` is held to the same rule, against the plan's own
+    consumption order: both schemas declare a running byte sum over the
+    entries in the order the action consumes them, so one validator reads
+    both.
     """
 
     schema = manifest.get("schema")
@@ -1096,7 +1170,31 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
         for phase in phases:
             if not isinstance(phase, Mapping):
                 return []
-            boundaries.append((str(phase["name"]), int(phase["cumulative_bytes"])))
+        entries = manifest.get("entries", []) or []
+        entry_sizes: list[int] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                return []
+            entry_sizes.append(int(entry.get("bytes", 0) or 0))
+        total = int(manifest.get("total_bytes", 0) or 0)
+        if sum(entry_sizes) != total:
+            return []
+        read = plan.get("read_bytes")
+        if isinstance(read, bool) or not isinstance(read, int):
+            return []
+        read_sizes = _read_order_sizes(phases, entry_sizes)
+        if read_sizes is None or sum(read_sizes) != read:
+            return []
+        entry_boundaries: set[int] = set()
+        running = 0
+        for size in read_sizes:
+            running += size
+            entry_boundaries.add(running)
+        checked = _checked_phase_boundaries(
+            phases, total=read, entry_boundaries=entry_boundaries)
+        if checked is None:
+            return []
+        boundaries = checked
     else:
         annotations = manifest.get("annotations")
         if not isinstance(annotations, Mapping):
@@ -1105,7 +1203,7 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
         if not isinstance(declared, list) or not declared:
             return []
         total = int(manifest.get("total_bytes", 0) or 0)
-        entry_boundaries: set[int] = set()
+        entry_boundaries = set()
         running = 0
         for entry in manifest.get("entries", []) or []:
             if not isinstance(entry, Mapping):
@@ -1114,24 +1212,11 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
             entry_boundaries.add(running)
         if running != total:
             return []
-        previous = 0
-        seen: set[str] = set()
-        for phase in declared:
-            if not isinstance(phase, Mapping):
-                return []
-            name = phase.get("name")
-            cumulative = phase.get("cumulative_bytes")
-            if not isinstance(name, str) or not name or name in seen:
-                return []
-            if isinstance(cumulative, bool) or not isinstance(cumulative, int):
-                return []
-            if cumulative < previous or cumulative > total or cumulative not in entry_boundaries:
-                return []
-            seen.add(name)
-            boundaries.append((name, cumulative))
-            previous = cumulative
-        if previous != total:
+        checked = _checked_phase_boundaries(
+            declared, total=total, entry_boundaries=entry_boundaries)
+        if checked is None:
             return []
+        boundaries = checked
     ranges: list[dict[str, object]] = []
     previous = 0
     for name, cumulative in boundaries:
