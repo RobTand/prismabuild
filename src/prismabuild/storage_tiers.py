@@ -855,6 +855,26 @@ def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | N
     return best
 
 
+#: A receipt whose pool reads are less than this share of the bytes it staged
+#: did not measure the pool, and the fill fold skips it whole (#654).  A mover
+#: that ADOPTS resident stage ranges -- the fleet's own optimization, where a
+#: resubmitted campaign's phases are adopted instead of re-read from the pool
+#: -- barely touches the pool: its pacing's ``mean_pool_read_mb_s`` measures
+#: only the few device reads it made while its ``bytes_staged`` shows GiB
+#: served from the stage.  Live on 2026-09-19 in ``pb-queue/movers/`` on tier
+#: ``prismabuild-stage:dl380g10``: adoption receipts 2cdd1396 / a4a07f40 /
+#: c1441fda / 4bbaa6aa read pool_read_bytes at 0.003-0.036 of their
+#: bytes_staged with mean_pool_read 1.5-6.5 MB/s, while the honest receipt
+#: b14ebfcf read 1.81x its bytes_staged at 311.7 MB/s.  Read as a pool
+#: measurement, an adoption shortfall sealed a 6.5 MB/s ceiling no later
+#: receipt of the same shape could refute and no honest mover could fit under
+#: (``never_fits_tier_capacity``), so none could ever land either.
+#: ``pool_read_bytes >= POOL_MEASUREMENT_MIN_SHARE * bytes_staged`` is what
+#: counts as a measurement; a receipt missing either counter keeps the bare
+#: treatment it had before, because nothing in it says "this window read the
+#: stage instead of the pool".
+POOL_MEASUREMENT_MIN_SHARE = 0.5
+
 #: What a mover reserved of the pool, as it reserved it.  ``stage_move`` copies
 #: this out of its own command line into the receipt so a later cycle can ask
 #: whether the pool delivered what the ledger had promised -- which is the one
@@ -910,6 +930,37 @@ def _fell_short(record: Mapping[str, object]) -> bool:
     if span <= 0:
         return False
     return (float(staged) / 1e6 / span) < float(sealed)
+
+
+def _measured_the_pool(record: Mapping[str, object]) -> bool:
+    """Whether this receipt's window read the bytes it staged off the pool.
+
+    A mover that adopts resident stage ranges stages its bytes from the stage
+    and reads the pool only incidentally, so its ``mean_pool_read_mb_s`` says
+    nothing about what the pool delivers to a reader that actually reads it
+    (#654): the counter below is the tell, and a window whose pool reads are
+    less than ``POOL_MEASUREMENT_MIN_SHARE`` of the bytes it staged is not a
+    pool measurement at all -- it can set no ceiling, refute none, and raise
+    no best, because any of the three would be priced off device reads the
+    staged bytes never needed.
+
+    A receipt missing either counter says nothing either way and keeps the
+    bare ``_delivered`` treatment: only both counters together can witness
+    "the stage, not the pool, served this window".
+    """
+
+    pacing = record.get("disk_pacing")
+    if not isinstance(pacing, Mapping):
+        return True
+    pool_read = pacing.get("pool_read_bytes")
+    if (isinstance(pool_read, bool) or not isinstance(pool_read, (int, float))
+            or pool_read < 0):
+        return True
+    staged = record.get("bytes_staged")
+    if (isinstance(staged, bool) or not isinstance(staged, (int, float))
+            or staged <= 0):
+        return True
+    return float(pool_read) >= POOL_MEASUREMENT_MIN_SHARE * float(staged)
 
 
 def mover_fill_demand_from_receipts(
@@ -997,6 +1048,17 @@ def fill_supply_from_records(
     little more than the ceiling recorded and refute it.  That is harmless
     here -- a consumer is protected from a reader by the pacer's hold, not by
     this ledger -- and removing it would need a hysteresis nothing measures.
+
+    One receipt among these is not a pool measurement at all: a mover that
+    adopts resident stage ranges reads the pool only incidentally, so its
+    ``mean_pool_read_mb_s`` prices the few device reads it made rather than
+    the pool's delivery, and a window that fell short of its sealed fill
+    while barely reading the pool would seal a ceiling no later receipt of
+    that shape could refute and no honest mover could fit under (#654).  A
+    receipt whose pool reads are less than ``POOL_MEASUREMENT_MIN_SHARE`` of
+    the bytes it staged is therefore skipped whole -- no ceiling, no
+    refutation, no best -- and one missing either counter keeps the bare
+    treatment above.
     """
 
     ordered = sorted(
@@ -1008,6 +1070,8 @@ def fill_supply_from_records(
     for record in ordered:
         delivered = _delivered(record)
         if delivered is None:
+            continue
+        if not _measured_the_pool(record):
             continue
         if ceiling is not None and delivered > ceiling:
             ceiling, ceiling_key, best = None, None, None
@@ -1420,6 +1484,7 @@ __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
     "POOL_FILL_FIELD",
+    "POOL_MEASUREMENT_MIN_SHARE",
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
     "fill_supply_from_records",
