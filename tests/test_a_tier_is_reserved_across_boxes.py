@@ -54,7 +54,28 @@ def _queue(root: Path) -> pool.PoolQueue:
     return q
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int]) -> None:
+GIB = 1 << 30
+
+
+def _range_block(tier: str, range_bytes: int) -> dict[str, object]:
+    """A range block sized so its own floor clears the demand it travels with.
+
+    Tier demand without a residency block is refused at publish (#595).  A
+    range with no leads reads ``no_leads`` at claim, so the residency gate
+    passes and these tests exercise the tier ledger alone.
+    """
+
+    return {
+        "schema": pool.RESIDENCY_SCHEMA_V1,
+        "manifest_sha256": "0" * 64,
+        "manifest_bytes": range_bytes,
+        "tier_id": tier,
+        "range_start_bytes": 0,
+        "range_end_bytes": range_bytes,
+    }
+
+
+def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
     q.publish(
         action_key=key,
         cas_root=q.root / "cas",
@@ -62,6 +83,7 @@ def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int]) -> None:
         worker_script=q.root / "worker.py",
         resources=resources,
         tags=[],
+        **kw,
     )
 
 
@@ -88,8 +110,10 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
 
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 30, FILL: 200})
-    _publish(sparky, ON_SPARKLINA, {"cpu": 1, STAGE: 30, FILL: 200})
+    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 30, FILL: 200},
+             residency=_range_block(TIER, 30 * GIB))
+    _publish(sparky, ON_SPARKLINA, {"cpu": 1, STAGE: 30, FILL: 200},
+             residency=_range_block(TIER, 30 * GIB))
     first = sparky.claim(owner="sparky-worker", capacity={"cpu": 8})
     assert first is not None
     winner = first["action_key"]
@@ -148,13 +172,15 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
 
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 1})
+    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 1},
+             residency=_range_block(TIER, 1))
     held = sparky.claim(owner="sparky-worker", capacity={"cpu": 8})
     assert held is not None and held["action_key"] == ON_SPARKY
 
     _as_host(monkeypatch, "sparklina")
     sparklina = _queue(shared_root)
-    _publish(sparklina, ON_SPARKLINA, {"cpu": 1, STAGE: 1})
+    _publish(sparklina, ON_SPARKLINA, {"cpu": 1, STAGE: 1},
+             residency=_range_block(TIER, 1))
     ordinary = "3" * 64
     _publish(sparklina, ordinary, {"cpu": 1})
     claimed = sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8})
@@ -171,13 +197,15 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
     _queue(shared_root).mint_tier_capacity(TIER, {"stage_gib": 4})
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 5})
+    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 5},
+             residency=_range_block(TIER, 5 * GIB))
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
     denial = _denial(sparky, ON_SPARKY)
     assert denial is not None and denial["reason"] == "never_fits_tier_capacity"
 
     # A tier nobody has minted at all is a different answer from a busy one.
     unknown = "4" * 64
-    _publish(sparky, unknown, {"cpu": 1, "stage_gib@prismabuild-stage:nowhere": 1})
+    _publish(sparky, unknown, {"cpu": 1, "stage_gib@prismabuild-stage:nowhere": 1},
+             residency=_range_block("prismabuild-stage:nowhere", 1))
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
     assert _denial(sparky, unknown)["reason"] == "tier_unknown"

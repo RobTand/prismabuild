@@ -153,11 +153,14 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     assert "gave up waiting" not in err
 
 
-def test_unreaped_reader_still_ends_a_patient_wait_at_once(
+def test_unreaped_reader_gets_one_terminal_reread_then_ends_74(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guard: patience never starts a second reader beside a retained one."""
+    """#630 narrows the guard: patience never polls beside a retained reader,
+    but the wait spends one last bounded snapshot before reporting
+    unobserved.  A FIFO that answers neither still ends 74 -- after exactly
+    two readers and no polling loop, not one."""
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
@@ -184,19 +187,26 @@ def test_unreaped_reader_still_ends_a_patient_wait_at_once(
         assert pbrun.await_outcome(queue, KEY, wait_s=30) == \
             pbrun.RECORD_WRITE_FAILED_EXIT
         assert time.monotonic() - started < 5
-        assert len(forks) == 1 and retained == forks
+        assert len(forks) == 2 and retained == forks
         err = capsys.readouterr().err
         assert "could not be reaped" in err
+        assert "when the terminal re-read ended" in err
         assert "when the wait ended" not in err
     finally:
         _reap_exact(forks)
 
 
-def test_zero_patience_keeps_one_observation_and_exit_74(
+def test_zero_patience_keeps_two_bounded_reads_and_exit_74(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Guard: ``wait_s=0`` makes one bounded read and does not retry it."""
+    """Guard: ``wait_s=0`` makes no polling loop; #630 adds one re-read.
+
+    The probe is still a single immediate observation plus, only when that
+    observation is unavailable, the same terminal re-read every other
+    unavailable wait spends.  A FIFO that answers neither still ends 74,
+    after exactly two bounded readers and no wait.
+    """
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
@@ -214,7 +224,7 @@ def test_zero_patience_keeps_one_observation_and_exit_74(
     try:
         assert pbrun.await_outcome(queue, KEY, wait_s=0) == \
             pbrun.RECORD_WRITE_FAILED_EXIT
-        assert len(forks) == 1
+        assert len(forks) == 2
         err = capsys.readouterr().err
         assert f"pbrun: unavailable pool outcome for {KEY[:12]}: " \
                "pool outcome observation timed out" in err

@@ -103,8 +103,14 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
     queue: pool.PoolQueue, bad_tier: str,
 ) -> None:
     # Published valid, then hand-edited: the poison tier id can only exist
-    # in a record this pool never wrote.
-    _publish(queue, POISON, {"cpu": 1, STAGE: 1}, priority=1)
+    # in a record this pool never wrote.  The range block keeps the initial
+    # publish honest (#595: tier demand travels with a block); the poison
+    # arrives in the rewrite below.
+    _publish(queue, POISON, {"cpu": 1, STAGE: 1}, priority=1, residency={
+        "schema": pool.RESIDENCY_SCHEMA_V1,
+        "manifest_sha256": "0" * 64, "manifest_bytes": 1, "tier_id": TIER,
+        "range_start_bytes": 0, "range_end_bytes": 1,
+    })
     _rewrite_resources(queue, POISON, {"cpu": 1, f"stage_gib@{bad_tier}": 1})
     _publish(queue, GOOD, {"cpu": 1})
 

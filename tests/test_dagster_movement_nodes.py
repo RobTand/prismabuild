@@ -217,3 +217,40 @@ def test_action_spec_config_round_trips_v1_and_v2(tmp_path: Path) -> None:
     # A v1 record must not carry a movement it has no schema for.
     with pytest.raises(pd.DagsterGraphError):
         pd.ActionSpec.from_config(mover.action, dict(config, schema=pd.DAGSTER_ACTION_SPEC_SCHEMA_V1))
+
+
+def test_two_dependencies_on_one_mover_are_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    """The single-edge read in ``_check_movement`` rests on this refusal (#595)."""
+
+    mover, _consumer = _graph(tmp_path)
+    dependencies = tuple(
+        pd.CASDependency(
+            upstream_action_key=mover.action_key,
+            input_id=f"{pd.RESIDENCY_INPUT_PREFIX}{ordinal}",
+            result_sha256="0" * 64, result_bytes=1,
+        )
+        for ordinal in (0, 1)
+    )
+    with pytest.raises(pd.DagsterGraphError, match="unique upstream action keys"):
+        _spec(
+            _action(tmp_path, "greedy", inputs=[MANIFEST]), tmp_path,
+            dependencies=dependencies,
+        )
+
+
+def test_a_second_edge_to_one_mover_fails_closed(tmp_path: Path) -> None:
+    """If the uniqueness invariant ever relaxes, only checking the first edge
+    would silently bless a second binding nobody verified (#595)."""
+
+    mover, consumer = _graph(tmp_path)
+    extra = pd.CASDependency(
+        upstream_action_key=mover.action_key,
+        input_id=f"{pd.RESIDENCY_INPUT_PREFIX}1",
+        result_sha256="0" * 64, result_bytes=1,
+    )
+    consumer.dependencies = consumer.dependencies + (extra,)
+    by_key = {mover.action_key: mover, consumer.action_key: consumer}
+    with pytest.raises(AssertionError):
+        pd._check_movement(mover, by_key)

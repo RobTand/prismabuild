@@ -34,7 +34,28 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return q
 
 
+def _range_block() -> dict[str, object]:
+    """The block every tier-demand row in this file travels with.
+
+    Tier demand without a residency block is refused at publish (#595), so
+    the ledger-mechanics rows here carry a range block.  A range with no
+    leads reads ``no_leads`` at claim and admits past the residency gate,
+    which is what lets these tests exercise the tier ledger alone.  The one
+    byte ranges one GiB, the floor every demand below clears.
+    """
+
+    return {
+        "schema": pool.RESIDENCY_SCHEMA_V1,
+        "manifest_sha256": "0" * 64,
+        "manifest_bytes": 1,
+        "tier_id": TIER,
+        "range_start_bytes": 0,
+        "range_end_bytes": 1,
+    }
+
+
 def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
+    kw.setdefault("residency", _range_block())
     q.publish(
         action_key=key,
         cas_root=q.root / "cas",
@@ -99,8 +120,10 @@ def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) 
     assert claimed is not None and claimed["action_key"] == KEY_A
     assert claimed["tier_reservations"] == {
         TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
-    # Tier demand alone asks nothing about residency, so no verdict is written.
-    assert "residency_verdict" not in claimed
+    # The range block travels with the demand (#595) and reads ``no_leads``:
+    # a range with no leads asks nothing about residency beyond the block
+    # itself, so the gate passes and the verdict is written, not skipped.
+    assert claimed["residency_verdict"] == {"state": "no_leads"}
     assert claimed["reserved_on"] == pool.socket.gethostname()
     assert queue.ledger().held() == {"cpu": 1}
     assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 2, "fill_mb_s_pool_side": 5}}

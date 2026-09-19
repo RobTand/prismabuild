@@ -156,10 +156,16 @@ def _cycle(queue, fill_records_seen=None):
 
 
 def _ready_mover(queue, key: str, fill: int) -> None:
+    # Tier demand travels with its range block (#595); the tier loop only
+    # reads the demand here, but the publish gate is the same one.
     queue.publish(action_key=key * 64, cas_root="/cas", worker_script="w.py",
                   checkout_root="/co", tags=["dl380g10"],
                   resources={"cpu": 4, "mem_gb": 2, KIND: fill,
-                             f"stage_gib@{TIER}": 4})
+                             f"stage_gib@{TIER}": 4},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "manifest_sha256": "0" * 64,
+                             "manifest_bytes": 4 * GIB, "tier_id": TIER,
+                             "range_start_bytes": 0, "range_end_bytes": 4 * GIB})
 
 
 def test_the_tier_offers_one_more_mover_than_the_pool_has_carried(tmp_path):

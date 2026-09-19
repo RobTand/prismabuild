@@ -305,11 +305,22 @@ new child cannot renew caller patience. A `--wait-s 0` caller still receives
 one immediate bounded snapshot. An unavailable reader (timeout, child failure,
 or reader that cannot be reaped) returns filesystem exit 74 with its retained
 PID/start-time identity; it does not cancel work, publish a record, or
-manufacture a verdict. The one exception is patience: with `--wait-s` above 0,
+manufacture a verdict. Two exceptions keep a finished action reportable. A
+complete payload from a reader that could not be reaped is used, not refused:
+EOF is the proof the payload is whole and the child holds nothing but its
+pipe, so the 0.25 s reap grace is a scheduling artifact under load, not a
+verdict on the data (#630). And before any unavailable observation becomes
+exit 74, the wait spends one last bounded snapshot -- the terminal re-read --
+asking whether the ending has landed since; a pass that will not report a
+finished shard is the mirror image of the submission-acknowledgement trap.
+The re-read is bounded by the same five-second budget, runs no mutation, and
+is the wait's last observation either way, so no polling loop ever races a
+retained reader. The one exception is patience: with `--wait-s` above 0,
 a snapshot or verification that timed out, and whose reader was killed and
 reaped, is taken again at the next poll under the same deadline. Because a
-retry follows only a reaped reader, one wait never has two readers alive, and a
-reader that cannot be reaped still ends the wait at once. A deadline that
+retry follows only a reaped reader, one wait never has two readers alive;
+the terminal re-read above is the single terminal exception, and it polls
+nothing after itself. A deadline that
 passes on an unavailable read exits 74 with its own message, not 75, because
 no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.
@@ -2264,7 +2275,20 @@ whoever reads these files.
 a bootstrap preflight. Every roster box must have posted an attestation naming
 the sha256 recorded for the target updater; refusals name missing boxes and
 their previously posted versions. A box answers under its roster key or its
-declared alias (`gx10-6b77` / `sparklina`). New-publication preflight uses the
+declared alias (`gx10-6b77` / `sparklina`). A box the roster declares absent
+(`status` `retired` or `offline` in `fleet_boxes.json`, #606) is skipped by
+the preflight and by the epoch roster instead of vetoing them: an offline box
+must not block a publish for the boxes that are live. The declaration needs
+its provenance -- nonblank `status_reason`, `status_by` and a finite
+`status_unix` -- and an unknown status or a missing provenance refuses
+wherever the roster is read. The skip is said out loud, so a stale retirement
+cannot pass silently. The epoch roster excludes the same boxes from its
+quorum, and refuses if an absent box is still announcing (stop its loops or
+un-declare the absence) or if a box group mixes absent and active names. The
+supervisor side converges an absent box's loops to zero -- no spawns, no idle
+reserve, mid-action loops finish first -- so its offers expire and placement
+stops seeing it; a fresh supervisor refuses to start there at all. Roles
+already running are left to the operator's stop. New-publication preflight uses the
 source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and
@@ -3438,8 +3462,13 @@ reaper finds the stale lease.
 
 An item may carry a `residency` block naming its lead movement nodes. It is
 admitted only when every lead has a `done/` record whose status is `executed`;
-otherwise the claim is denied `residency_lead_not_resident` before any token
-moves, and the box goes and does other work. A `cache_hit` lead moved no bytes
+otherwise the claim is denied before any token
+moves, and the box goes and does other work.  A lead that may still arrive
+reads `residency_lead_not_resident`; a lead that ended somewhere no later
+poll repairs -- failed, withdrawn, dropped, unpinned, or bound to another
+manifest -- reads `residency_lead_terminal`, so the fleet-wide denial
+snapshot tells the two apart.  Admission is the same either way: the item
+stays ready.  A `cache_hit` lead moved no bytes
 and does not satisfy the gate — the residency descriptor is deterministic on
 purpose, so that a consumer can bind it as a CAS dependency before the mover
 runs, which is exactly what makes a cached mover look finished.
@@ -3688,7 +3717,9 @@ as "already staged".
 
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
-stay held, so a mover row published without a residency block stages its range
+stay held, so a mover row that reaches the queue without a residency block --
+`publish` refuses tier demand with no block, so only a record the pool never
+wrote can still arrive shaped that way -- stages its range
 and hands the tokens straight back: the mover ends `executed`, the files are on
 the stage, the ledger reads its full supply free, and the consumer's gate waits
 for a lead that can never read as pinned. Nothing but the ledger can see it.
@@ -3859,6 +3890,50 @@ egress registers its temporary root first, the way the loop registers the real
 one. `tests/test_a_stage_root_belongs_to_one_queue.py` holds the incident's
 exact shape — a throwaway queue, the fleet's marker already on the root, one
 cycle — and asserts nothing is deleted and the announced record says why.
+
+**A present-but-unregistered root refuses movers and keeps its tokens (#631).**
+Registration is a ~300-byte marker write, and the cycle marks before it
+mints. When the mountpoint exists but `stage_root_owner` is anything but
+`registered`, the tier still mints its whole supply -- refuse-and-keep, not
+refuse-and-remove. Popping the occupancy kind retired it to zero and turned
+every `[]` read of the ledger into a `KeyError`, while the held reservations
+the refusal exists to protect kept working. The announced record carries the
+refusal as `stage_root_owner` with `stage_root_admits: False`, said once on
+the log; the window publishes no movers against such a tier
+(`mover-publish-deferred-unregistered-root`, ram:
+`ram-mover-publish-deferred-unregistered-root`); egress still publishes, and
+the sweep refuses on the same fact, as it always has. A fresh root therefore
+always marks before its first mover is admitted, and a full unregistered
+root stops admitting instead of filling to exactly 0 B available and then
+refusing the sweep and the egress rows that are the only way room is made.
+
+**A mountpoint that is not there at all is pre-registration, not refusal.**
+Registration never got a chance to mark -- a discovered dataset's mountpoint
+always exists -- so the cycle mints as before and stamps no verdict; the
+record carries only the owner the registration reported. Telling the two
+apart is what keeps fixture paths and discover anomalies on the supply
+arithmetic they pin instead of answering the refusal.
+
+**Bootstrapping an already-full root is an operator path, not a bypass.**
+The loop cannot delete under a root it does not own, so no code path clears
+the deadlock from inside; what the operator does is make room for the loop's
+own next marker write, and the loop registers itself:
+
+* Prefer the slop window: `spa_slop_shift` 5→6 for seconds on the storage box
+  frees ~11 GB of `available` out of the slop with no deletion and no data
+  touched, the loop's next cycle writes its marker, and the shift is restored
+  on exit (trap it). Needs sudo for the two kernel-parameter writes.
+* Without sudo: delete a bounded set of staged fragments whose pool originals
+  match by sha256 — enough bytes for the marker, recopyable from the pool —
+  and only fragments the live run's residency plan does not name.
+
+Either way the marker is written by the loop, never by hand: a hand-written
+marker is a second copy of the queue identity the ownership check exists to
+refuse. Once registered, the loop's own egress reclaims the rest through the
+ledger, which is where that decision belongs. Whether the ledger should ever
+fill a dataset to 0 B available at all -- a measured headroom off the
+dataset's own `used`/`logicalused` ratio rather than a constant -- is open;
+it is not this gate.
 
 ### How the map reaches the consumer
 
