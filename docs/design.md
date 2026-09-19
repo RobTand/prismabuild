@@ -305,11 +305,22 @@ new child cannot renew caller patience. A `--wait-s 0` caller still receives
 one immediate bounded snapshot. An unavailable reader (timeout, child failure,
 or reader that cannot be reaped) returns filesystem exit 74 with its retained
 PID/start-time identity; it does not cancel work, publish a record, or
-manufacture a verdict. The one exception is patience: with `--wait-s` above 0,
+manufacture a verdict. Two exceptions keep a finished action reportable. A
+complete payload from a reader that could not be reaped is used, not refused:
+EOF is the proof the payload is whole and the child holds nothing but its
+pipe, so the 0.25 s reap grace is a scheduling artifact under load, not a
+verdict on the data (#630). And before any unavailable observation becomes
+exit 74, the wait spends one last bounded snapshot -- the terminal re-read --
+asking whether the ending has landed since; a pass that will not report a
+finished shard is the mirror image of the submission-acknowledgement trap.
+The re-read is bounded by the same five-second budget, runs no mutation, and
+is the wait's last observation either way, so no polling loop ever races a
+retained reader. The one exception is patience: with `--wait-s` above 0,
 a snapshot or verification that timed out, and whose reader was killed and
 reaped, is taken again at the next poll under the same deadline. Because a
-retry follows only a reaped reader, one wait never has two readers alive, and a
-reader that cannot be reaped still ends the wait at once. A deadline that
+retry follows only a reaped reader, one wait never has two readers alive;
+the terminal re-read above is the single terminal exception, and it polls
+nothing after itself. A deadline that
 passes on an unavailable read exits 74 with its own message, not 75, because
 no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.
@@ -2264,7 +2275,20 @@ whoever reads these files.
 a bootstrap preflight. Every roster box must have posted an attestation naming
 the sha256 recorded for the target updater; refusals name missing boxes and
 their previously posted versions. A box answers under its roster key or its
-declared alias (`gx10-6b77` / `sparklina`). New-publication preflight uses the
+declared alias (`gx10-6b77` / `sparklina`). A box the roster declares absent
+(`status` `retired` or `offline` in `fleet_boxes.json`, #606) is skipped by
+the preflight and by the epoch roster instead of vetoing them: an offline box
+must not block a publish for the boxes that are live. The declaration needs
+its provenance -- nonblank `status_reason`, `status_by` and a finite
+`status_unix` -- and an unknown status or a missing provenance refuses
+wherever the roster is read. The skip is said out loud, so a stale retirement
+cannot pass silently. The epoch roster excludes the same boxes from its
+quorum, and refuses if an absent box is still announcing (stop its loops or
+un-declare the absence) or if a box group mixes absent and active names. The
+supervisor side converges an absent box's loops to zero -- no spawns, no idle
+reserve, mid-action loops finish first -- so its offers expire and placement
+stops seeing it; a fresh supervisor refuses to start there at all. Roles
+already running are left to the operator's stop. New-publication preflight uses the
 source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and

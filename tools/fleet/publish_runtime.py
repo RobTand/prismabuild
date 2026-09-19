@@ -48,6 +48,9 @@ import threading
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+import fleet_roster  # noqa: E402
+
 _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
@@ -118,6 +121,11 @@ FLEET_SCRIPTS = (
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.
     "pbsweep.py",
+    # fleet_roster.py holds the roster presence contract (#606): which boxes
+    # count as declared absent and what provenance that needs.  The
+    # supervisor and the barrier preflight import it on boxes with no
+    # checkout, so a generation without it cannot enforce a retirement.
+    "fleet_roster.py",
     # Per-job containment clients and root-installed authority sources travel
     # with the generation; installation copies privileged code to root-owned
     # storage rather than executing it from this shared runtime.
@@ -735,8 +743,19 @@ def _barrier_generation(name):
 
 
 def _barrier_roster(generations):
-    """Freeze the union of old/new boxes; a roster edit cannot drop a member."""
+    """Freeze the union of old/new boxes; a roster edit cannot drop a member.
+
+    A box the *target* generation declares absent (``retired``/``offline``,
+    #606) is excluded from the quorum instead: the union still freezes it, so
+    a silent file edit cannot drop a member, but an explicit declared absence
+    with its provenance is exactly how a member leaves.  An absent box that
+    is still announcing is refused rather than skipped -- a live participant
+    the quorum ignores is a split fleet, and the operator either stops it or
+    un-declares the absence.  A group mixing absent and active names is the
+    same ambiguity and refuses too.
+    """
     groups = []
+    boxes_by_generation = []
     for root, receipt in generations:
         member = "tools/fleet/fleet_boxes.json"
         if member not in receipt["files"]:
@@ -751,11 +770,16 @@ def _barrier_roster(generations):
                     names.add(value["_alias"])
                 if any(not isinstance(n, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n) is None for n in names):
                     raise ValueError("invalid roster name")
+                try:
+                    status, _ = fleet_roster.box_status(key, value)
+                except fleet_roster.RosterPresenceError as exc:
+                    raise ValueError(str(exc)) from exc
                 overlap = [group for group in groups if group & names]
                 for group in overlap:
                     names |= group
                     groups.remove(group)
                 groups.append(names)
+            boxes_by_generation.append(boxes)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise SystemExit(f"invalid barrier roster in {root.name}: {exc}") from exc
     # Offers only resolve spelling and reject undeclared live participants.
@@ -778,9 +802,41 @@ def _barrier_roster(generations):
         raise SystemExit(f"cannot establish live barrier roster: {exc}") from exc
     now = time.time()
     live = {o["host"] for o in offers if -60 <= now - o["announced_unix"] <= 120}
+    target_boxes = boxes_by_generation[-1]
+    absent_names: set[str] = set()
+    absent_detail: dict[str, str] = {}
+    for key, value in target_boxes.items():
+        status, detail = fleet_roster.box_status(key, value)
+        if status in fleet_roster.ABSENT:
+            names = {key}
+            if isinstance(value, dict) and value.get("_alias"):
+                names.add(value["_alias"])
+            absent_names |= names
+            absent_detail[key] = fleet_roster.describe_absent(key, detail)
+    announced_absent = sorted(absent_names & live)
+    if announced_absent:
+        raise SystemExit(
+            "barrier roster refuses: boxes declared absent are announcing: "
+            f"{announced_absent}. Stop their loops or un-declare the absence: "
+            + "; ".join(sorted(absent_detail.values()))
+        )
+    kept = []
+    for group in groups:
+        if group <= absent_names:
+            continue
+        if group & absent_names:
+            raise SystemExit(
+                f"barrier roster mixes absent and active names in one box: "
+                f"{sorted(group)}; fix the roster's aliases and statuses")
+        kept.append(group)
+    groups = kept
+    if not groups:
+        raise SystemExit(
+            "barrier roster is empty: every declared box is absent: "
+            + "; ".join(sorted(absent_detail.values())))
     declared = set().union(*groups)
-    if live - declared:
-        raise SystemExit(f"undeclared live barrier hosts: {sorted(live - declared)}")
+    if live - declared - absent_names:
+        raise SystemExit(f"undeclared live barrier hosts: {sorted(live - declared - absent_names)}")
     canonical = []
     for group in groups:
         matches = live & group
@@ -1081,13 +1137,12 @@ def _agent_definitions(*, expected_sha=None):
     return module
 
 
-def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
-    """Every box the fleet declares, with the names it may report itself as.
+def _roster_entries() -> list[tuple[str, frozenset[str], object]]:
+    """Every box the fleet declares, with its raw roster entry.
 
-    A box is keyed here by the name its submissions use as a placement tag,
-    and that is not always what ``gethostname`` returns on it: ``gx10-6b77``
-    answers ``sparklina``.  The file records the second name as ``_alias``
-    precisely because the two are the same box, so both are accepted.
+    ``_roster_boxes`` is the name-and-alias view the history check needs;
+    this is the same walk with the entry attached, so presence can be
+    validated from the same bytes rather than re-reading the file.
     """
 
     try:
@@ -1099,12 +1154,50 @@ def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
         raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
     declared = []
     for key in sorted(boxes):
+        entry = boxes[key]
         names = {key}
-        alias = boxes[key].get("_alias") if isinstance(boxes[key], dict) else None
+        alias = entry.get("_alias") if isinstance(entry, dict) else None
         if isinstance(alias, str) and alias:
             names.add(alias)
-        declared.append((key, frozenset(names)))
+        declared.append((key, frozenset(names), entry))
     return declared
+
+
+def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
+    """Every box the fleet declares, with the names it may report itself as.
+
+    A box is keyed here by the name its submissions use as a placement tag,
+    and that is not always what ``gethostname`` returns on it: ``gx10-6b77``
+    answers ``sparklina``.  The file records the second name as ``_alias``
+    precisely because the two are the same box, so both are accepted.
+    """
+
+    return [(key, names) for key, names, _entry in _roster_entries()]
+
+
+def _active_roster_boxes() -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
+    """The roster boxes a barrier must hear from, and the absent ones it skips.
+
+    A box declared ``retired`` or ``offline`` in ``fleet_boxes.json`` (#606)
+    is excluded from the attestation preflight and the barrier quorum: an
+    absent box must not veto a publish for the boxes that are live.  The
+    declaration needs its provenance (``status_reason``/``status_by``/
+    ``status_unix``); an unknown status or a missing provenance refuses here,
+    because an ambiguous presence is not an active box.
+    """
+
+    active = []
+    absent = []
+    for key, names, entry in _roster_entries():
+        try:
+            status, detail = fleet_roster.box_status(key, entry)
+        except fleet_roster.RosterPresenceError as exc:
+            raise SystemExit(f"cannot establish the fleet roster: {exc}") from exc
+        if status in fleet_roster.ABSENT:
+            absent.append(fleet_roster.describe_absent(key, detail))
+        else:
+            active.append((key, names))
+    return active, absent
 
 
 def _attested_agents(agent) -> dict[str, set[str]]:
@@ -1154,17 +1247,23 @@ def _attested_agents(agent) -> dict[str, set[str]]:
 
 
 def _require_attested_fleet(agent_sha: str) -> None:
-    """Require historical attestations for the target agent on every box.
+    """Require historical attestations for the target agent on every live box.
 
     This is only a bootstrap prerequisite. Matching records can remain after
     every host has moved to another version. A barrier must additionally prove
     current participation in its own epoch, then its drain and rotation quorums.
+
+    Boxes declared absent (``retired``/``offline``) in the roster are not
+    required to have posted: an offline box must not veto a publish for the
+    boxes that are live (#606).  Their exclusion is said out loud on success
+    so a stale retirement cannot pass silently.
     """
 
     agent = _agent_definitions()
     attested = _attested_agents(agent)
+    active, absent = _active_roster_boxes()
     missing = []
-    for key, names in _roster_boxes():
+    for key, names in active:
         held = set().union(*(attested.get(name, set()) for name in names))
         if agent_sha in held:
             continue
@@ -1182,18 +1281,19 @@ def _require_attested_fleet(agent_sha: str) -> None:
         else:
             posted = ", ".join(sorted(short[:12] for short in held))
             missing.append(f"  {spelling}: posted versions {posted}")
-    if not missing:
-        return
-    raise SystemExit(
-        "refusing barrier attestation preflight: not every box has posted "
-        f"the agent version this generation requires ({agent_sha[:12]}).\n"
-        + "\n".join(missing)
-        + "\nIf a reviewed compatibility assessment permits a normal rolling "
-        "publication, pass --rollout rolling with its nonblank "
-        "--rollout-reason, let each box converge and post its attestation, then "
-        "repeat --rollout barrier --dry-run. Historical attestations do not prove "
-        "current participation."
-    )
+    if missing:
+        raise SystemExit(
+            "refusing barrier attestation preflight: not every box has posted "
+            f"the agent version this generation requires ({agent_sha[:12]}).\n"
+            + "\n".join(missing)
+            + "\nIf a reviewed compatibility assessment permits a normal rolling "
+            "publication, pass --rollout rolling with its nonblank "
+            "--rollout-reason, let each box converge and post its attestation, then "
+            "repeat --rollout barrier --dry-run. Historical attestations do not prove "
+            "current participation."
+        )
+    for line in absent:
+        print(f"barrier preflight: skipping absent box: {line}", flush=True)
 
 
 def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
