@@ -2414,6 +2414,9 @@ class PoolQueue:
         self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
         self._admission_busy_logged_at: float | None = None
+        # Queue directories are created once per process (see
+        # ``ensure_layout``): nothing in the pool ever removes them.
+        self._layout_ensured = False
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
 
@@ -2607,6 +2610,20 @@ class PoolQueue:
         return outcome.parent / f"{attempt:08d}.{stream}.{sha256}.log"
 
     def ensure_layout(self) -> None:
+        """Create the queue directories, once per process.
+
+        Fourteen ``mkdir`` calls: one per directory in ``_STATES`` plus one
+        per auxiliary root.  On a starved NFS mount each costs RPCs (a ``MKDIR``
+        plus a stat on ``FileExistsError``), so running this on every claim
+        poll billed every worker a directory walk per poll for directories
+        nothing ever deletes (#595).  The first call in this process creates
+        them; later calls are a flag check.  A directory an operator deletes
+        by hand returns on the next loop restart, which is the same window
+        any other queue repair already needs.
+        """
+
+        if self._layout_ensured:
+            return
         for state in _STATES:
             self.dir(state).mkdir(parents=True, exist_ok=True)
         (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
@@ -2617,6 +2634,7 @@ class PoolQueue:
         (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
         (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
         (self.root / TIERS).mkdir(parents=True, exist_ok=True)
+        self._layout_ensured = True
 
     # -- what the fleet can actually run ---------------------------------
 
@@ -3153,10 +3171,21 @@ class PoolQueue:
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
         try:
-            for tier_id in storage_tiers.split_demand(demand)[1]:
+            tier_demand = storage_tiers.split_demand(demand)[1]
+            for tier_id in tier_demand:
                 self._check_tier_id(tier_id)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
+        if tier_demand and residency is None:
+            # Derived, never typed (#595): every tier demand the fleet's own
+            # submitters seal travels beside the residency block whose
+            # manifest range (mover) or leads (consumer) it accounts for.
+            # Demand on a tier with no block names bytes no manifest maps,
+            # so the pool refuses it rather than reserving capacity nothing
+            # can attribute.
+            raise PoolContractError(
+                "tier demand requires a residency block: "
+                f"{sorted(tier_demand)} names no manifest range or leads")
         residency_block = (
             None if residency is None else self.validate_residency(residency, demand))
         if type(max_attempts) is not int or max_attempts < 1:
@@ -6327,9 +6356,22 @@ class PoolQueue:
                     # its own: no coordinator can compose a map from a plan it
                     # refuses, so the item names the refusal rather than
                     # waiting out a cycle that will not come (#615).
-                    self.record_denial(
-                        item, f"residency_{residency['state']}",
-                        {"residency": residency})
+                    reason = f"residency_{residency['state']}"
+                    if residency["state"] in ("lead_not_resident", "lead_unpinned"):
+                        pending = residency.get("pending")
+                        if (isinstance(pending, list) and pending
+                                and all(isinstance(entry, Mapping)
+                                        and entry.get("status") not in (None, "absent")
+                                        for entry in pending)):
+                            # Every lead ended somewhere no later poll repairs:
+                            # failed, withdrawn, dropped, unpinned, or bound
+                            # to another manifest.  Admission is unchanged --
+                            # the item stays ready, as documented above -- but
+                            # the denial names the terminal state, so the
+                            # fleet-wide denial snapshot tells it apart from a
+                            # mover that simply has not finished (#595).
+                            reason = "residency_lead_terminal"
+                    self.record_denial(item, reason, {"residency": residency})
                     continue
                 try:
                     sealed_demand = self.demand_of(item)

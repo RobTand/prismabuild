@@ -605,6 +605,11 @@ def _check_movement(spec: ActionSpec, by_key: Mapping[str, ActionSpec]) -> None:
             f"movement node {key}"
         )
     expected = pb.residency_descriptor_binding(movement.descriptor(manifest))
+    # ``ActionSpec`` refuses two dependencies on one upstream key, so at most
+    # one edge can name this mover.  Asserted rather than assumed: if that
+    # invariant ever relaxes, checking only the first edge would silently
+    # bless a second binding nobody verified (#595).
+    assert len(edges) == 1
     edge = edges[0]
     if (edge.result_sha256, edge.result_bytes) != (expected["sha256"], expected["bytes"]):
         raise DagsterGraphError(

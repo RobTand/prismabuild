@@ -130,10 +130,19 @@ def _cycle(queue: pool.PoolQueue) -> dict[str, object]:
 
 
 def _mover(queue: pool.PoolQueue, key: str, fill: int) -> None:
+    # Tier demand travels with its range block (#595): production movers seal
+    # the range they make resident (pbrun's mover_row always carries one), so
+    # probe-scenario movers seal one too rather than taking the block-less
+    # path publish() refuses.  The probe rule only reads the demand, never
+    # the block.
     queue.publish(action_key=key * 64, cas_root="/cas", worker_script="w.py",
                   checkout_root="/co", tags=["dl380g10"],
                   resources={"cpu": 4, "mem_gb": 2, FILL_DEMAND: fill,
-                             STAGE_DEMAND: 4})
+                             STAGE_DEMAND: 4},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "manifest_sha256": "0" * 64,
+                             "manifest_bytes": 4 * GIB, "tier_id": TIER,
+                             "range_start_bytes": 0, "range_end_bytes": 4 * GIB})
 
 
 def test_the_probe_is_sized_for_the_oldest_ready_mover(

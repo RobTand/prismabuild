@@ -324,7 +324,8 @@ def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
 
     assert claimed is None
     denial = _denial(queue, CONSUMER)
-    assert denial is not None and denial["reason"] == "residency_lead_unpinned"
+    # Terminal: the mover ran and holds nothing, so no later poll repairs it.
+    assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"][0]["status"] == "unpinned"
     # Refused before any token moved, and without ageing the item.
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
@@ -342,7 +343,9 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
     queue.release_tier_reservations(MOVER)
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
-    assert _denial(queue, CONSUMER)["reason"] == "residency_lead_unpinned"
+    # Terminal too: the bytes are gone and only a republished mover brings
+    # them back.
+    assert _denial(queue, CONSUMER)["reason"] == "residency_lead_terminal"
 
 
 def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
