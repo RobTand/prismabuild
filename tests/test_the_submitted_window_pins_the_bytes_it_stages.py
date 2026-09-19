@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
+import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -399,3 +400,37 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
     verdict = queue.residency_verdict({"residency": fleet.staged["residency"]})
     assert verdict["state"] != "resident", verdict
+
+
+def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
+        fleet, tmp_path) -> None:
+    """Refuse-and-keep through the real window (#631).
+
+    The stage exists but belongs to another queue: the cycle keeps the whole
+    2 GiB supply minted and publishes no mover against it.  The operator then
+    removes the foreign marker by hand -- the bootstrap the design doc owns --
+    the next cycle writes its own marker, and the deferred lead publishes.
+    Nothing about the supply moved while the root was refused.
+    """
+
+    queue, mover = fleet.queue, _lead(fleet)
+    stage = fleet.stage
+    stage.mkdir(exist_ok=True)
+    other = pool.PoolQueue(tmp_path / "other-queue")
+    other.ensure_layout()
+    assert stage_release.register_stage_root(
+        other, tier_id=TIER, stage_root=stage) == "registered"
+
+    record = _cycle(fleet)[0]
+    assert record["stage_root_owner"].startswith(
+        "stage_root_belongs_to_another_queue")
+    assert record["stage_root_admits"] is False
+    assert record["tokens"]["stage_gib"] == 2
+    assert queue.tier_ledger(TIER).available()["stage_gib"] == 2
+    assert not queue.item_path(pool.READY, mover).exists()
+
+    (stage / stage_release.STAGE_ROOT_MARKER).unlink()
+    record = _cycle(fleet)[0]
+    assert record["stage_root_owner"] == "registered"
+    assert "stage_root_admits" not in record
+    assert queue.item_path(pool.READY, mover).exists()

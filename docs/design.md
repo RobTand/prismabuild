@@ -3884,6 +3884,50 @@ one. `tests/test_a_stage_root_belongs_to_one_queue.py` holds the incident's
 exact shape — a throwaway queue, the fleet's marker already on the root, one
 cycle — and asserts nothing is deleted and the announced record says why.
 
+**A present-but-unregistered root refuses movers and keeps its tokens (#631).**
+Registration is a ~300-byte marker write, and the cycle marks before it
+mints. When the mountpoint exists but `stage_root_owner` is anything but
+`registered`, the tier still mints its whole supply -- refuse-and-keep, not
+refuse-and-remove. Popping the occupancy kind retired it to zero and turned
+every `[]` read of the ledger into a `KeyError`, while the held reservations
+the refusal exists to protect kept working. The announced record carries the
+refusal as `stage_root_owner` with `stage_root_admits: False`, said once on
+the log; the window publishes no movers against such a tier
+(`mover-publish-deferred-unregistered-root`, ram:
+`ram-mover-publish-deferred-unregistered-root`); egress still publishes, and
+the sweep refuses on the same fact, as it always has. A fresh root therefore
+always marks before its first mover is admitted, and a full unregistered
+root stops admitting instead of filling to exactly 0 B available and then
+refusing the sweep and the egress rows that are the only way room is made.
+
+**A mountpoint that is not there at all is pre-registration, not refusal.**
+Registration never got a chance to mark -- a discovered dataset's mountpoint
+always exists -- so the cycle mints as before and stamps no verdict; the
+record carries only the owner the registration reported. Telling the two
+apart is what keeps fixture paths and discover anomalies on the supply
+arithmetic they pin instead of answering the refusal.
+
+**Bootstrapping an already-full root is an operator path, not a bypass.**
+The loop cannot delete under a root it does not own, so no code path clears
+the deadlock from inside; what the operator does is make room for the loop's
+own next marker write, and the loop registers itself:
+
+* Prefer the slop window: `spa_slop_shift` 5→6 for seconds on the storage box
+  frees ~11 GB of `available` out of the slop with no deletion and no data
+  touched, the loop's next cycle writes its marker, and the shift is restored
+  on exit (trap it). Needs sudo for the two kernel-parameter writes.
+* Without sudo: delete a bounded set of staged fragments whose pool originals
+  match by sha256 — enough bytes for the marker, recopyable from the pool —
+  and only fragments the live run's residency plan does not name.
+
+Either way the marker is written by the loop, never by hand: a hand-written
+marker is a second copy of the queue identity the ownership check exists to
+refuse. Once registered, the loop's own egress reclaims the rest through the
+ledger, which is where that decision belongs. Whether the ledger should ever
+fill a dataset to 0 B available at all -- a measured headroom off the
+dataset's own `used`/`logicalused` ratio rather than a constant -- is open;
+it is not this gate.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a

@@ -628,7 +628,23 @@ def ram_residency_window(
                     "free_gib", "capacity_gib", "reason", "waiting_for")},
                 "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
-        for mover_row, entry in state["publishable"]:
+        publishable = state["publishable"]
+        ram_tier_record = tiers.get(ram_tier_id)
+        if (isinstance(ram_tier_record, Mapping)
+                and not _tier_admits_movers(ram_tier_record)):
+            # The stage window's own rule, pointed at the tmpfs (#631): a
+            # present-but-unregistered ram root admits no new promotions, the
+            # ram egress below still publishes, and the deferral names its
+            # refusal.  The tokens stay minted either way.
+            if publishable:
+                events.append({
+                    "event": "ram-mover-publish-deferred-unregistered-root",
+                    "consumer": key, "tier_id": ram_tier_id,
+                    "stage_root_owner": ram_tier_record.get("stage_root_owner"),
+                    "phases": [str(entry["phase"]) for _, entry in publishable
+                               if isinstance(entry, Mapping)]})
+            publishable = []
+        for mover_row, entry in publishable:
             row = dict(mover_row)
             try:
                 # A copy has no result to replay, for the same reason the
@@ -1427,6 +1443,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # publish this window; two loops minting one tier's occupancy is
             # the thing the tier id exists to prevent.
             continue
+        tier_record = tiers[tier_id]
         already, staged = _mover_state(queue, plan, tier_id)
         ledger = queue.tier_ledger(tier_id)
         kind = storage_tiers.capacity_kind_of(tier_id)
@@ -1454,7 +1471,23 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "chunk_index": stall.get("chunk_index")})
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
-        for entry in decision["publish"]:
+        publishable = decision["publish"]
+        if not _tier_admits_movers(tier_record):
+            # A root that is present but unregistered admits nothing more
+            # (#631): the movers wait while the evict loop below still
+            # publishes egress, and the deferral is said out loud with the
+            # refusal that caused it.  The tokens stay minted, so the
+            # window's own bound still reads the tier's real supply when
+            # the root registers.
+            if publishable:
+                published.append({
+                    "event": "mover-publish-deferred-unregistered-root",
+                    "consumer": key, "tier_id": tier_id,
+                    "stage_root_owner": tier_record.get("stage_root_owner"),
+                    "phases": [str(entry["phase"]) for entry in publishable
+                               if isinstance(entry, Mapping)]})
+            publishable = []
+        for entry in publishable:
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
             # their egress, and a chunked phase's egress lives on its chunk.
@@ -1660,6 +1693,30 @@ def _same_host_chunk(
     return None
 
 
+def _stage_root_present(mountpoint: object) -> bool:
+    """Whether a stage root exists to be registered (#631).
+
+    Registration never got a chance when the mountpoint is not there at all:
+    a discovered dataset's mountpoint always exists, so a missing one is a
+    fixture path or a discover anomaly, not a root withholding capacity.
+    Only a root that is present but unregistered refuses admission.
+    """
+
+    return bool(mountpoint) and Path(str(mountpoint)).is_dir()
+
+
+def _tier_admits_movers(tier_record: Mapping[str, object]) -> bool:
+    """Whether the window may publish movers against this tier's record (#631).
+
+    ``cycle`` stamps ``stage_root_admits: False`` on a tier whose root is
+    present but owned by nobody this queue may write; every other record --
+    registered, pre-registration, or a tier with no root at all -- admits as
+    before.  Absent means admissible, so older announcements stay readable.
+    """
+
+    return tier_record.get("stage_root_admits") is not False
+
+
 def cycle(
     queue: pool.PoolQueue,
     *,
@@ -1858,6 +1915,28 @@ def cycle(
             # the root's own identity, and ``reconcile`` skips them by name.
             record["stage_root_owner"] = stage_release.register_stage_root(
                 queue, tier_id=tier_id, stage_root=str(record["mountpoint"]))
+            if (record["stage_root_owner"] != "registered"
+                    and _stage_root_present(record.get("mountpoint"))):
+                # A root that is there but is not this queue's refuses new
+                # movers -- and only that (#631).  The tokens stay minted:
+                # refuse-and-keep, not refuse-and-remove.  Popping the
+                # occupancy kind retired it to zero and turned every ``[]``
+                # read of the ledger into a ``KeyError``, while the held
+                # reservations the refusal exists to protect kept working.
+                # A mountpoint that is not there at all is pre-registration,
+                # not refusal: registration never got a chance to mark, so
+                # the cycle mints as before and the record carries only the
+                # owner it reported.  The refusal is loud on the record as
+                # ``stage_root_owner`` with ``stage_root_admits`` False, and
+                # said once on the log; the sweep below refuses on the same
+                # fact, as it always has.
+                record["stage_root_admits"] = False
+                print(json.dumps({
+                    "event": "stage-root-refuses-movers",
+                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                    "stage_root": str(record["mountpoint"]),
+                    "stage_root_owner": record["stage_root_owner"],
+                }), flush=True)
         record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)
