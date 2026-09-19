@@ -274,7 +274,9 @@ def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
     denial = _denial(queue, CONSUMER)
-    assert denial is not None and denial["reason"] == "residency_lead_not_resident"
+    # Terminal, not pending: a cached mover will never move the byte, so the
+    # denial says so instead of reading like a mover that has yet to run.
+    assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": MOVER, "status": "cache_hit"}]
 
@@ -297,6 +299,7 @@ def test_every_lead_must_be_resident_not_merely_the_first(
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
+    assert denial["reason"] == "residency_lead_terminal"
     # ...and the denial says the lead ended, not that it has yet to start:
     # a consumer waiting on a mover that will never run is a different
     # situation from one waiting on a mover that is queued.
@@ -340,7 +343,8 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
     denial = _denial(queue, CONSUMER)
-    assert denial is not None and denial["reason"] == "residency_lead_not_resident"
+    # Terminal: the drop is filed, so no later poll repairs this consumer.
+    assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": MOVER, "status": "dropped"}]
 

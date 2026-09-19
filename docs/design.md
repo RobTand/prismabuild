@@ -3438,8 +3438,13 @@ reaper finds the stale lease.
 
 An item may carry a `residency` block naming its lead movement nodes. It is
 admitted only when every lead has a `done/` record whose status is `executed`;
-otherwise the claim is denied `residency_lead_not_resident` before any token
-moves, and the box goes and does other work. A `cache_hit` lead moved no bytes
+otherwise the claim is denied before any token
+moves, and the box goes and does other work.  A lead that may still arrive
+reads `residency_lead_not_resident`; a lead that ended somewhere no later
+poll repairs -- failed, withdrawn, dropped, unpinned, or bound to another
+manifest -- reads `residency_lead_terminal`, so the fleet-wide denial
+snapshot tells the two apart.  Admission is the same either way: the item
+stays ready.  A `cache_hit` lead moved no bytes
 and does not satisfy the gate — the residency descriptor is deterministic on
 purpose, so that a consumer can bind it as a CAS dependency before the mover
 runs, which is exactly what makes a cached mover look finished.
@@ -3688,7 +3693,9 @@ as "already staged".
 
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
-stay held, so a mover row published without a residency block stages its range
+stay held, so a mover row that reaches the queue without a residency block --
+`publish` refuses tier demand with no block, so only a record the pool never
+wrote can still arrive shaped that way -- stages its range
 and hands the tokens straight back: the mover ends `executed`, the files are on
 the stage, the ledger reads its full supply free, and the consumer's gate waits
 for a lead that can never read as pinned. Nothing but the ledger can see it.
