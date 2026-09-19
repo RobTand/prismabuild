@@ -25,6 +25,13 @@ the flat path.  Both are written, from the same source, rather than left to
 drift into two versions of one file -- which is exactly what happened to
 ``worker_loop.py``, where the flat copy was current and the nested one was
 three days stale.
+
+After activation, ``--canary`` submits the fleet canary (issue #688) resolving
+against the new generation and records ``verified`` or ``failed`` in the
+rollout record ``runtime-generations/<generation>.canary.json``; ``--no-canary``
+records ``not_run``. The gate is default-OFF (phase 1: ``CANARY_DEFAULT_ENABLED``).
+A failed canary marks and exits nonzero; it never rolls back and never touches
+admission. See the canary runbook.
 """
 
 from __future__ import annotations
@@ -156,7 +163,36 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "checkout through pbrun over a named data manifest; it carries the "
      "pre-#589 arithmetic as its before arm, so it is a record of one "
      "measurement rather than an operator command"),
+    ("pbcanary.py",
+     "the fleet canary driver (#688) runs from a checkout that has one: "
+     "the GitHub runner on dl380 and the rollout gate both invoke the "
+     "checkout's copy and submit through the published pbrun client, while "
+     "worker boxes execute the driver's legs from the submission snapshot, "
+     "never from the generation; a box with no checkout has no reason to "
+     "run it"),
+    ("pbcanary_verdict.py",
+     "the canary's verdict module (#688) is imported by the checkout's "
+     "driver at verdict time, never executed standalone; it travels with "
+     "the driver above, not with the generation"),
 )
+
+
+#: Rollout canary gate (issue #688, crew D). Two-phase adoption: this landing
+#: is phase 1 with the gate default-OFF, so publication behaves exactly as
+#: before unless ``--canary`` is passed. Phase 2 flips this constant to True
+#: in a follow-up after the first green canary on main; ``--no-canary`` is
+#: then the escape hatch. The constant (not an environment variable) is the
+#: switch so the default is versioned, reviewable, and published with the
+#: generation that implements it.
+CANARY_DEFAULT_ENABLED = False
+#: Rollout-record statuses. ``pending`` is written before the driver is
+#: invoked and rewritten to ``verified`` or ``failed`` on its verdict;
+#: ``not_run`` is the skip record. There is no separate error state: a canary
+#: that could not verify the generation (missing driver, refusal, crash) is
+#: ``failed`` with the reason in ``detail``, because "did not test" is never
+#: "passed".
+CANARY_STATUSES = ("pending", "verified", "failed", "not_run")
+CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 
 #: Not code, but read by published code.  The supervisor on each box reads
 #: the fleet's declared shape from ``fleet_boxes.json``, so a runtime
@@ -572,6 +608,172 @@ def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
         if candidate.is_symlink():
             candidate.unlink()
     return legacy
+
+
+class _CanaryPrecondition(Exception):
+    """The canary produced no verdict on the generation.
+
+    Missing driver, unimportable driver, a driver that raises, or a driver
+    whose return shape drifted from the assumed contract below: in every case
+    there is nothing to verify against, and "did not test" is never "passed",
+    so the rollout record is marked ``failed`` with the reason in ``detail``.
+    """
+
+
+def _canary_driver_path() -> Path:
+    """Where crew A's driver (issue #688 deliverable 1) is expected."""
+
+    return CHECKOUT / "tools" / "fleet" / "pbcanary.py"
+
+
+def _load_canary_driver():
+    """Import the driver; never duplicate its submit-and-verify logic.
+
+    CONFIRMED crew-A entry shape (verified at #688 integration against
+    ``tools/fleet/pbcanary.py``): ``run_canary(generation=<name>) -> int``,
+    where the int is the issue's verdict exit code (0 every leg verified,
+    1 a leg failed its contract, 2 precondition refused). The driver's
+    other settings take their CLI defaults; the generation is recorded in
+    its run record and sealed into each action's environment. Anything
+    else -- no ``run_canary`` attribute, a non-int return, an exception --
+    is a ``_CanaryPrecondition``: the generation is marked ``failed`` and
+    publication exits nonzero, rather than inventing a verdict.
+    ``SystemExit`` raised by the driver is honored as its verdict code
+    (``None`` counts as 0, a string message as 1).
+    """
+
+    driver = _canary_driver_path()
+    if not driver.is_file():
+        raise _CanaryPrecondition(
+            f"no canary driver at {driver}: crew A has not landed "
+            "tools/fleet/pbcanary.py in this checkout"
+        )
+    spec = importlib.util.spec_from_file_location("pbcanary", driver)
+    if spec is None or spec.loader is None:
+        raise _CanaryPrecondition(
+            f"cannot load canary driver at {driver}: no import spec"
+        )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise _CanaryPrecondition(
+            f"canary driver at {driver} failed to import: {exc!r}"
+        ) from exc
+    entry = getattr(module, "run_canary", None)
+    if entry is None:
+        raise _CanaryPrecondition(
+            f"canary driver at {driver} has no run_canary(generation=...) "
+            "entry: assumed crew-A shape drifted; refusing to invent a verdict"
+        )
+    return entry
+
+
+def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
+    """Run the driver against the just-activated generation; return (code, detail)."""
+
+    entry = _load_canary_driver()
+    try:
+        result = entry(generation=generation_name)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0, "driver exited without a code; counted as verified"
+        if isinstance(code, int):
+            return code, f"driver raised SystemExit({code})"
+        return 1, f"driver refused: {code}"
+    except _CanaryPrecondition:
+        raise
+    except Exception as exc:
+        raise _CanaryPrecondition(
+            f"canary driver raised instead of returning a verdict: {exc!r}"
+        ) from exc
+    if isinstance(result, bool) or not isinstance(result, int):
+        raise _CanaryPrecondition(
+            f"canary driver returned {result!r}: assumed contract is "
+            "run_canary(generation=...) -> int exit code (0/1/2 per #688)"
+        )
+    detail = {
+        0: "every leg executed and every receipt verified",
+        1: "a leg failed its contract; the driver names the leg and the refusing check",
+        2: "precondition refused: the canary did not test this generation",
+    }.get(result, f"unrecognized driver exit code: {result}")
+    return result, detail
+
+
+def _canary_record_path(store: Path, generation_name: str) -> Path:
+    """The rollout record: a sidecar beside the sealed generation.
+
+    The generation directory itself is sealed read-only at publication, so
+    the post-activation verdict cannot live inside it without breaking the
+    append-only history. This sibling file is the only mutable rollout
+    state, and ``supervise`` ignores store children that carry no
+    ``RUNTIME_VERSION.json``, so it is never mistaken for a generation.
+    """
+
+    return store / f"{generation_name}.canary.json"
+
+
+def _write_canary_record(
+    path: Path, *, generation: str, commit: str, status: str,
+    exit_code: int | None, detail: str,
+) -> None:
+    assert status in CANARY_STATUSES, status
+    _write_receipt(path, {
+        "schema": CANARY_RECORD_SCHEMA,
+        "generation": generation,
+        "commit": commit,
+        "canary_status": status,
+        "canary_exit": exit_code,
+        "detail": detail,
+        "recorded_unix": time.time(),
+        "recorded_by": socket.gethostname(),
+    })
+
+
+def _run_rollout_canary(
+    *, store: Path, generation_name: str, commit: str, enabled: bool,
+) -> int:
+    """Record the canary outcome for an activated generation; return the process exit.
+
+    Exit 0 means the rollout record says ``verified`` (canary ran green) or
+    ``not_run`` (gate off or skipped). Exit 1 means it says ``failed``. A
+    failure marks the record and exits nonzero; it never rolls anything back
+    and never touches admission -- campaign-primacy (issue #688 non-goals).
+    """
+
+    record = _canary_record_path(store, generation_name)
+    if not enabled:
+        reason = ("--no-canary" if CANARY_DEFAULT_ENABLED
+                  else "gate default-OFF (phase 1); pass --canary to verify")
+        _write_canary_record(record, generation=generation_name, commit=commit,
+                             status="not_run", exit_code=None,
+                             detail=f"canary skipped: {reason}")
+        print(f"canary not_run for {generation_name}: {reason}")
+        return 0
+    _write_canary_record(record, generation=generation_name, commit=commit,
+                         status="pending", exit_code=None,
+                         detail="canary submitted against the activated generation")
+    print(f"canary pending for {generation_name}; invoking the driver", flush=True)
+    try:
+        code, detail = _invoke_canary_driver(generation_name)
+    except _CanaryPrecondition as exc:
+        _write_canary_record(record, generation=generation_name, commit=commit,
+                             status="failed", exit_code=None, detail=str(exc))
+        print(f"canary failed for {generation_name}: {exc}", file=sys.stderr)
+        return 1
+    if code == 0:
+        _write_canary_record(record, generation=generation_name, commit=commit,
+                             status="verified", exit_code=code, detail=detail)
+        print(f"canary verified for {generation_name}: {detail}")
+        return 0
+    _write_canary_record(record, generation=generation_name, commit=commit,
+                         status="failed", exit_code=code, detail=detail)
+    print(f"canary failed for {generation_name} (exit {code}): {detail}; "
+          "activation stands, nothing was rolled back", file=sys.stderr)
+    return 1
 
 
 def _rollout_reason(rollout: str, reason: str | None) -> str | None:
@@ -1368,6 +1570,18 @@ def main() -> int:
              "receipt are validated and the target is printed, but the live "
              "runtime is not repointed.",
     )
+    ap.add_argument(
+        "--canary", action="store_true",
+        help="after activation, submit the fleet canary (issue #688) resolving "
+             "against the new generation and record verified|failed in its "
+             "rollout record; a failed canary marks and exits nonzero without "
+             "rolling back. Opt-in while the gate is default-OFF (phase 1).",
+    )
+    ap.add_argument(
+        "--no-canary", action="store_true",
+        help="skip the fleet canary and record not_run in the rollout record; "
+             "the escape hatch once the gate flips default-ON (phase 2).",
+    )
     args = ap.parse_args()
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
         ap.error("--barrier-wait-s must be finite and nonnegative")
@@ -1376,12 +1590,17 @@ def main() -> int:
         ap.error("choose one of --resume-barrier and --rollback-barrier")
     if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
                      or args.migrate_directory or args.default_transport
-                     or args.rollout != "barrier" or args.rollout_reason):
+                     or args.rollout != "barrier" or args.rollout_reason
+                     or args.canary or args.no_canary):
         ap.error("barrier recovery cannot be combined with publication options")
     if args.rollback_barrier and not (args.rollback_reason and args.rollback_reason.strip()):
         ap.error("--rollback-barrier requires a nonblank --rollback-reason")
     if args.rollback_reason is not None and not args.rollback_barrier:
         ap.error("--rollback-reason requires --rollback-barrier")
+    if args.canary and args.no_canary:
+        ap.error("--canary and --no-canary conflict")
+    if args.stage_only and (args.canary or args.no_canary):
+        ap.error("the canary verifies a live generation; --stage-only activates nothing")
     if args.stage_only and args.activate_generation:
         ap.error("--stage-only cannot activate an existing generation")
     if args.dry_run:
@@ -1409,6 +1628,11 @@ def _run_publication(args) -> int:
     _require_no_epoch()
 
     if args.activate_generation is not None:
+        if args.canary or args.no_canary:
+            raise SystemExit(
+                "the rollout canary runs only on fresh publication; rollback "
+                "(--activate-generation) leaves existing rollout records untouched"
+            )
         return _activate_existing(
             args.activate_generation, dry_run=args.dry_run, rollout=args.rollout,
             rollout_reason=rollout_reason, wait_s=args.barrier_wait_s,
@@ -1426,6 +1650,9 @@ def _run_publication(args) -> int:
         )
 
     published = _publication_manifest()
+    # --canary forces the gate on, --no-canary forces it off (the two together
+    # are refused in main()); otherwise the versioned default decides.
+    canary_enabled = bool(args.canary or (CANARY_DEFAULT_ENABLED and not args.no_canary))
     # Read before a single byte is staged: a publisher that cannot say
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
@@ -1440,11 +1667,18 @@ def _run_publication(args) -> int:
             )
         _barrier_preflight(agent_sha, dry_run=args.dry_run)
 
+    if canary_enabled and not _canary_driver_path().is_file():
+        raise SystemExit(
+            f"canary requested but no driver at {_canary_driver_path()}: "
+            "nothing was published and the live runtime still points where it did."
+        )
     if args.rollout == "rolling":
         print(f"rollout rolling: {rollout_reason}")
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")
     if args.dry_run:
+        print(f"canary: {'enabled' if canary_enabled else 'disabled'} "
+              f"(gate default-{'ON' if CANARY_DEFAULT_ENABLED else 'OFF'})")
         for name in sorted(published):
             print(f"  {name}")
         return 0
@@ -1526,7 +1760,13 @@ def _run_publication(args) -> int:
                               "path": str(generation), "activated": False}, sort_keys=True))
             return 0
         if args.rollout == "barrier":
-            return _arm_barrier(generation_name, wait_s=args.barrier_wait_s)
+            barrier_exit = _arm_barrier(generation_name, wait_s=args.barrier_wait_s)
+            if barrier_exit != 0:
+                # Rolled back or still pending: the rollout has no ending yet,
+                # so there is no rollout record to write. The resume path owns it.
+                return barrier_exit
+            return _run_rollout_canary(store=store, generation_name=generation_name,
+                                       commit=commit, enabled=canary_enabled)
         legacy = _activate(
             generation, migrate_directory=args.migrate_directory
         )
@@ -1534,7 +1774,8 @@ def _run_publication(args) -> int:
         print(f"activated {MIRROR} -> {generation}")
         if legacy is not None:
             print(f"retained previous directory runtime at {legacy}")
-        return 0
+        return _run_rollout_canary(store=store, generation_name=generation_name,
+                                   commit=commit, enabled=canary_enabled)
     finally:
         if not activated and stage.exists():
             _remove_staging_tree(stage)
