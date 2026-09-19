@@ -1,6 +1,6 @@
 # PrismaBuild agent instructions
 
-All tests and GPU work by agents and subagents must run through PrismaBuild,
+All tests and batch GPU work by agents and subagents must run through PrismaBuild,
 using the published `pbrun.py`, `pbtest.py` or `pbcampaign.py` entrypoints.
 Read [the execution policy](docs/agent_execution_policy.md) and
 [the operating guide](docs/operating_prismabuild.md) before running work.
@@ -21,6 +21,14 @@ directly, without submission. It is a ruling, not a claim about what the fleet
 could technically admit, so do not argue it from a wrapper's capability. A
 running vLLM is still external load for admission, so account for it when
 declaring demand. Work that does not run vLLM still submits.
+
+Exception — Rob, 2026-09-07: vLLM is completely and totally exempt from
+PrismaBuild and GPU admission constraints. This includes serving, tests,
+censuses, routing runs, benchmarks, and GPU containers that run vLLM. Run them
+directly without PrismaBuild submission or bootstrap approval. Non-vLLM tests,
+benchmarks, exports, probes and other batch GPU work still use PrismaBuild.
+vLLM resource use remains external load when admitting other batch work.
+This instruction supersedes the earlier serving-only exception.
 
 Read `docs/design.md` before changing execution, identity or queue contracts;
 update it with contract/default changes. Preserve existing worktrees and dirty

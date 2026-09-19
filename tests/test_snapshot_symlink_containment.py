@@ -16,7 +16,6 @@ an older ``pbrun`` carries whatever that version accepted.
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -55,14 +54,6 @@ def _source(tmp_path: Path) -> Path:
     return source
 
 
-def _stamp(source: Path, name: str) -> str:
-    stamp_name = f"{pbrun.STAMP_PREFIX}{name}.json"
-    (source / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(source)})
-    )
-    return stamp_name
-
-
 def test_seal_refuses_links_that_compose_into_an_escape(tmp_path: Path) -> None:
     """Each target normalizes inside the tree; the pair does not."""
 
@@ -70,12 +61,11 @@ def test_seal_refuses_links_that_compose_into_an_escape(tmp_path: Path) -> None:
     (tmp_path / "outside.txt").write_text("unsealed host bytes\n")
     (source / "a").symlink_to(".", target_is_directory=True)
     (source / "b").symlink_to("a/../outside.txt")
-    stamp_name = _stamp(source, "composed-escape")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="symlink.*outside"):
         pbrun.build_git_checkout_snapshot(
-            source, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+            source, cas=cas, max_bytes=MAX_BYTES
         )
 
 
@@ -88,12 +78,11 @@ def test_seal_refuses_an_escape_composed_through_a_subdirectory_link(
     (source / "nested").mkdir()
     (source / "nested" / "up").symlink_to("..", target_is_directory=True)
     (source / "nested" / "reach").symlink_to("up/../../outside.txt")
-    stamp_name = _stamp(source, "nested-escape")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="symlink.*outside"):
         pbrun.build_git_checkout_snapshot(
-            source, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+            source, cas=cas, max_bytes=MAX_BYTES
         )
 
 
@@ -103,12 +92,11 @@ def test_seal_refuses_a_symlink_cycle(tmp_path: Path) -> None:
     source = _source(tmp_path)
     (source / "loop-a").symlink_to("loop-b")
     (source / "loop-b").symlink_to("loop-a")
-    stamp_name = _stamp(source, "cyclic-links")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="cycles through"):
         pbrun.build_git_checkout_snapshot(
-            source, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+            source, cas=cas, max_bytes=MAX_BYTES
         )
 
 
@@ -121,11 +109,10 @@ def test_seal_still_accepts_links_that_stay_in_the_tree(tmp_path: Path) -> None:
     (source / "payload").symlink_to("data/payload.txt")
     (source / "roundabout").symlink_to("here/assets/../assets/payload.txt")
     (source / "missing").symlink_to("assets/absent.txt")
-    stamp_name = _stamp(source, "contained-links")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        source, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        source, cas=cas, max_bytes=MAX_BYTES
     )
 
     assert snapshot["commit"]

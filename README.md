@@ -16,7 +16,9 @@ records 1,835 passed and 3 skipped on each of the three hosts at `d157067`,
 10/10 parallel test shards, GPU execution on both GB10 hosts, and 35/35
 SLURM container smoke rows. It records exact source revisions, receipts,
 subsequent CPU-tier qualification and deployment limits. All agent and subagent
-tests and GPU work now follow the [PB execution policy](docs/agent_execution_policy.md).
+tests and batch GPU work now follow the [PB execution policy](docs/agent_execution_policy.md).
+Running vLLM for inference serving is explicitly exempt: it runs directly as
+a service, without PrismaBuild admission.
 
 **The pull queue is slated for replacement by SLURM.** The 2026-09-04 review
 found the memoization core worth owning and the scheduler half to be the

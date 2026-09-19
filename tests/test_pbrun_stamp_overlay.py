@@ -25,7 +25,7 @@ def test_submission_leaves_no_stamp_or_scratch_in_the_source(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("subdirectory", [".", "package"])
-def test_overlay_preserves_the_existing_bundle_and_closure_identity(tmp_path, subdirectory):
+def test_overlay_materializes_the_declared_stamp_and_closure(tmp_path, subdirectory):
     checkout = _checkout(tmp_path)
     cwd = checkout if subdirectory == "." else checkout / subdirectory
     cwd.mkdir(exist_ok=True)
@@ -34,20 +34,30 @@ def test_overlay_preserves_the_existing_bundle_and_closure_identity(tmp_path, su
     payload = json.dumps({"cwd": subdirectory, **pbrun._git_identity(cwd)},
                          indent=1, sort_keys=True)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    (cwd / stamp).write_text(payload)
-    legacy_closure = pb.build_code_closure(cwd, [stamp])
-    legacy = pbrun.build_git_checkout_snapshot(cwd, stamp_name=stamp, cas=cas)
-    (cwd / stamp).unlink()
     overlay = pbrun.build_git_checkout_snapshot(
         cwd, stamp_name=stamp, stamp_payload=payload, cas=cas)
-    assert overlay == legacy
-    assert pbrun.build_stamp_closure(stamp, payload) == legacy_closure
     assert not (cwd / stamp).exists()
     materialized = tmp_path / "materialized"
     subprocess.run(["git", "clone", "-q", "--branch", pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME,
                     str(cas.input_path(overlay["input"])),
                     str(materialized)], check=True, capture_output=True)
     assert (materialized / subdirectory / stamp).read_text() == payload
+    assert (materialized / subdirectory / stamp).stat().st_mode & 0o111 == 0
+    assert pbrun.build_stamp_closure(stamp, payload) == pb.build_code_closure(
+        materialized / subdirectory, [stamp])
+
+
+@pytest.mark.parametrize("stamp_name,stamp_payload", [
+    (f"{pbrun.STAMP_PREFIX}{'a' * 16}.json", None),
+    (None, "{}"),
+])
+def test_stamp_requires_both_name_and_payload(tmp_path, stamp_name, stamp_payload):
+    checkout = _checkout(tmp_path)
+    with pytest.raises(SystemExit, match="stamp name and payload.*together"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, stamp_payload=stamp_payload,
+            cas=pb.PrismaBuildCAS(tmp_path / "cas"))
+    assert not (tmp_path / "cas").exists()
 
 
 def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):

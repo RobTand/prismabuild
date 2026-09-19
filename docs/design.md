@@ -1219,7 +1219,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   is published into the source checkout. Its historical relative name, bytes,
   and regular-file mode are retained, preserving closure and bundle identities
   while concurrent submissions need no shared stamp lock or cleanup. Existing
-  source-side stamps from older versions are left untouched. The submitter publishes its
+  source-side stamps from older versions are left untouched. The snapshot
+  builder accepts either a stamp name and UTF-8 payload together or neither;
+  it no longer reads a stamp file from the submitting worktree. Producers
+  that seal their own action bodies omit both. The submitter publishes its
   bundle as a verified CAS input, and puts the commit rather than the
   submitter path in the queue. Those bundle bytes are a function of the sealed
   objects alone: the pack is written with every setting that influences it

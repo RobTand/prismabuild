@@ -68,14 +68,14 @@ def _checkout(tmp_path: Path) -> tuple[Path, str]:
     # Untracked and dropped: the repository's own .gitignore matches it.
     (checkout / "ignored.txt").write_text("generated\n")
     stamp_name = f"{pbrun.STAMP_PREFIX}excludes.json"
-    (checkout / stamp_name).write_text(STAMP_PAYLOAD)
     return checkout, stamp_name
 
 
 def _seal(checkout: Path, stamp_name: str, store: Path) -> tuple[str, list[str]]:
     cas = core_module.PrismaBuildCAS(store)
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=MAX_BYTES
+        checkout, stamp_name=stamp_name, stamp_payload=STAMP_PAYLOAD,
+        cas=cas, max_bytes=MAX_BYTES
     )
     materialized = store.parent / f"materialized-{store.name}"
     materialized.mkdir()

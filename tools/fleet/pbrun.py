@@ -294,9 +294,7 @@ def _snapshot_git(
 PERSONAL_EXCLUDES_PIN: tuple[str, ...] = ("-c", "core.excludesFile=/dev/null")
 
 
-def snapshot_path_roster(
-    root: Path, *, extra_paths: tuple[str, ...] = ()
-) -> list[str]:
+def snapshot_path_roster(root: Path) -> list[str]:
     """Tracked plus nonignored-untracked paths, each counted once."""
 
     raw_paths = _snapshot_git(
@@ -304,9 +302,7 @@ def snapshot_path_roster(
         [*PERSONAL_EXCLUDES_PIN, "ls-files", "-co", "--exclude-standard", "-z"],
         strip=False,
     )
-    return list(dict.fromkeys(
-        [path for path in raw_paths.split("\0") if path] + list(extra_paths)
-    ))
+    return list(dict.fromkeys(path for path in raw_paths.split("\0") if path))
 
 
 def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
@@ -900,14 +896,12 @@ def build_git_checkout_snapshot(
     Args:
         cwd: The directory the action runs in, inside a Git worktree.
         stamp_name: The pbrun closure stamp to seal alongside the tree, or
-            ``None`` for a producer that seals its own action body. The stamp
-            exists so a pull-queue worker can compare the live tree against the
-            action that pinned it; a snapshot-addressed action is compared
-            against its own sealed commit instead, so a producer that never
-            writes a stamp does not need one invented for it.
-        stamp_payload: Optional UTF-8 stamp contents injected into the private
-            Git index, without writing a stamp into the submitting worktree.
-            The name, bytes and Git mode remain identical to a regular stamp.
+            ``None`` for a producer that seals its own action body. A stamp
+            requires both a plain basename and its payload.
+        stamp_payload: UTF-8 stamp contents injected into the private Git
+            index with regular-file mode, without reading or writing a stamp
+            in the submitting worktree. Omit along with ``stamp_name`` to seal
+            only the checkout.
         cas: The store the bundle is ingested into.
         max_bytes: The local-disk bound this snapshot may not exceed.
         expected_identity: The checkout identity the caller already read, so
@@ -922,67 +916,17 @@ def build_git_checkout_snapshot(
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if (stamp_name is None) != (stamp_payload is None):
+        raise SystemExit("pbrun: stamp name and payload must be supplied together")
+    subdirectory = cwd.relative_to(root).as_posix() or "."
+    stamp_relative = None
     if stamp_payload is not None:
         if (not stamp_name or Path(stamp_name).name != stamp_name
                 or stamp_name in {".", ".."}):
             raise SystemExit("pbrun: overlay stamp name must be a plain basename")
-        subdirectory = cwd.relative_to(root).as_posix() or "."
         stamp_relative = (Path(subdirectory) / stamp_name).as_posix()
-        return _build_git_checkout_snapshot(
-            cwd, root, subdirectory, stamp_relative, (),
-            stamp_payload=stamp_payload, cas=cas, max_bytes=max_bytes,
-            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
-        )
-    if stamp_name is None:
-        subdirectory = cwd.relative_to(root).as_posix() or "."
-        stamp_relative = None
-        stamp_paths: tuple[str, ...] = ()
-        return _build_git_checkout_snapshot(
-            cwd, root, subdirectory, stamp_relative, stamp_paths,
-            cas=cas, max_bytes=max_bytes,
-            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
-        )
-    declared_stamp = cwd / stamp_name
-    if declared_stamp.is_symlink():
-        raise SystemExit("pbrun: checkout stamp must not be a symlink")
-    stamp = declared_stamp.resolve(strict=True)
-    try:
-        observed_stamp_relative = stamp.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise SystemExit("pbrun: checkout stamp is outside its Git worktree") from exc
-    if not stamp.is_file():
-        raise SystemExit("pbrun: checkout stamp must be a regular file")
-    subdirectory = cwd.relative_to(root).as_posix() or "."
-    stamp_relative = (
-        Path(stamp_name)
-        if subdirectory == "."
-        else Path(subdirectory) / stamp_name
-    ).as_posix()
-    if observed_stamp_relative != stamp_relative:
-        raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
-    return _build_git_checkout_snapshot(
-        cwd, root, subdirectory, stamp_relative, (stamp_relative,),
-        cas=cas, max_bytes=max_bytes,
-        expected_identity=expected_identity, snapshot_refs=snapshot_refs,
-    )
 
-
-def _build_git_checkout_snapshot(
-    cwd: Path,
-    root: Path,
-    subdirectory: str,
-    stamp_relative: str | None,
-    stamp_paths: tuple[str, ...],
-    *,
-    cas: pb.PrismaBuildCAS,
-    max_bytes: int,
-    expected_identity: dict[str, str] | None,
-    snapshot_refs: Sequence[str],
-    stamp_payload: str | None = None,
-) -> dict[str, object]:
-    """Seal the tree once the caller has settled where the stamp is, if any."""
-
-    paths = snapshot_path_roster(root, extra_paths=stamp_paths)
+    paths = snapshot_path_roster(root)
     working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
     if stamp_payload is not None:
         overlay_bytes = len(stamp_payload.encode("utf-8"))
@@ -1055,12 +999,6 @@ def _build_git_checkout_snapshot(
             _snapshot_git(
                 root, ["update-index", "--add", "--cacheinfo",
                        f"100644,{stamp_blob},{stamp_relative}"],
-                environment=object_environment,
-            )
-        elif stamp_relative is not None:
-            _snapshot_git(
-                root,
-                ["add", "-f", "--", stamp_relative],
                 environment=object_environment,
             )
         tree = _snapshot_git(root, ["write-tree"], environment=object_environment)

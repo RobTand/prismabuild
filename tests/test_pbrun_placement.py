@@ -752,21 +752,14 @@ def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
     helper = checkout / "experiments" / "campaign.py"
     helper.parent.mkdir()
     helper.write_text("print('first')\n")
-    stamp_name = f"{pbrun.STAMP_PREFIX}snapshot-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
     first = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
     helper.write_text("print('second')\n")
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     second = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
     assert first["commit"] != second["commit"]
@@ -785,14 +778,10 @@ def test_git_snapshot_keeps_a_tracked_file_that_now_matches_ignore(
     assert _git(checkout, "add", ".gitignore").returncode == 0
     assert _git(checkout, "add", "-f", "tracked.cache").returncode == 0
     assert _git(checkout, "commit", "-qm", "track ignored input").returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}ignored-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
     materialized = tmp_path / "materialized"
     bundle = cas.input_path(snapshot["input"])
@@ -837,13 +826,9 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
     ) == []
 
     (linked / "linked-only.txt").write_text("sealed linked worktree bytes\n")
-    stamp_name = f"{pbrun.STAMP_PREFIX}linked-test.json"
-    (linked / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(linked)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
     snapshot = pbrun.build_git_checkout_snapshot(
-        linked, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        linked, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
     materialized = tmp_path / "materialized-linked"
@@ -871,16 +856,12 @@ def test_git_snapshot_limits_logical_tree_bytes_after_indexing(
 
     checkout = _git_checkout(tmp_path)
     (checkout / "mostly-zero.bin").write_bytes(b"\0" * (256 * 1024))
-    stamp_name = f"{pbrun.STAMP_PREFIX}logical-size-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_kw: 0)
     with pytest.raises(SystemExit, match="logical checkout tree"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=32 * 1024
+            checkout, cas=cas, max_bytes=32 * 1024
         )
 
 
@@ -893,10 +874,6 @@ def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
     oversized = checkout / "sparse-cache.bin"
     with oversized.open("wb") as handle:
         handle.truncate(256 * 1024)
-    stamp_name = f"{pbrun.STAMP_PREFIX}early-size-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
     real_snapshot_git = pbrun._snapshot_git
 
@@ -908,7 +885,7 @@ def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
     monkeypatch.setattr(pbrun, "_snapshot_git", observed_snapshot_git)
     with pytest.raises(SystemExit, match="logical working tree"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=32 * 1024
+            checkout, cas=cas, max_bytes=32 * 1024
         )
 
 
@@ -918,16 +895,11 @@ def test_git_snapshot_limit_cannot_exceed_the_hard_fleet_ceiling(
     """A caller cannot authorize unaccounted worker-local disk expansion."""
 
     checkout = _git_checkout(tmp_path)
-    stamp_name = f"{pbrun.STAMP_PREFIX}hard-limit-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="hard fleet ceiling"):
         pbrun.build_git_checkout_snapshot(
             checkout,
-            stamp_name=stamp_name,
             cas=cas,
             max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES + 1,
         )
@@ -941,15 +913,11 @@ def test_git_snapshot_refuses_a_symlink_that_escapes_the_repository(
 
     checkout = _git_checkout(tmp_path)
     (checkout / "data").symlink_to(target, target_is_directory=True)
-    stamp_name = f"{pbrun.STAMP_PREFIX}escaping-link-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="symlink.*outside"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+            checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
 
@@ -959,14 +927,10 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
     target.parent.mkdir()
     target.write_text("sealed bytes\n")
     (checkout / "data").symlink_to("assets")
-    stamp_name = f"{pbrun.STAMP_PREFIX}internal-link-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
     # "Allows" has to mean "seals", not "does not raise": a snapshot that
@@ -1016,15 +980,11 @@ def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
         "vendor/dependency",
     ).returncode == 0
     assert _git(checkout, "commit", "-qam", "add submodule").returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}gitlink-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="gitlink"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+            checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
 
@@ -1041,22 +1001,12 @@ def test_git_snapshot_refuses_an_active_clean_filter(
     ).returncode == 0
     assert _git(checkout, "config", "filter.rewrite.smudge", "cat").returncode == 0
     assert _git(checkout, "config", "filter.rewrite.required", "true").returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}filter-test.json"
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="content transform"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+            checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
-
-
-def _stamped(checkout: Path, stamp_name: str) -> None:
-    (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
-    )
 
 
 def _materialized(snapshot: dict[str, object], cas_root: Path):
@@ -1088,13 +1038,11 @@ def test_git_snapshot_keeps_the_source_commit_as_its_parent(
     checkout = _git_checkout(tmp_path)
     source_head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     (checkout / "task.py").write_text("VALUE = 'edited after the commit'\n")
-    stamp_name = f"{pbrun.STAMP_PREFIX}ancestry-test.json"
-    _stamped(checkout, stamp_name)
     cas_root = tmp_path / "cas"
     cas = core_module.PrismaBuildCAS(cas_root)
 
     snapshot = pbrun.build_git_checkout_snapshot(
-        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
     assert snapshot["parent"] == source_head
 
@@ -1118,14 +1066,11 @@ def test_git_snapshot_advertises_a_requested_branch_by_name(
     branch = _git(checkout, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     source_head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     (checkout / "task.py").write_text("VALUE = 'edited after the commit'\n")
-    stamp_name = f"{pbrun.STAMP_PREFIX}named-ref-test.json"
-    _stamped(checkout, stamp_name)
     cas_root = tmp_path / "cas"
     cas = core_module.PrismaBuildCAS(cas_root)
 
     snapshot = pbrun.build_git_checkout_snapshot(
         checkout,
-        stamp_name=stamp_name,
         cas=cas,
         max_bytes=16 * 1024 * 1024,
         snapshot_refs=(branch,),
@@ -1204,8 +1149,6 @@ def test_git_snapshot_bounds_a_bundle_its_history_made_large(
     assert _git(checkout, "commit", "-qm", "heavy history").returncode == 0
     assert _git(checkout, "rm", "-q", "deleted-later.bin").returncode == 0
     assert _git(checkout, "commit", "-qm", "small tree again").returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}bundle-size-test.json"
-    _stamped(checkout, stamp_name)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     # Both tree-side bounds pass on this checkout; the bundle bound is the
@@ -1216,7 +1159,7 @@ def test_git_snapshot_bounds_a_bundle_its_history_made_large(
     )
     with pytest.raises(SystemExit, match="above the .* safety limit"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=64 * 1024
+            checkout, cas=cas, max_bytes=64 * 1024
         )
 
 
@@ -1244,13 +1187,11 @@ def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
     assert _git(
         shallow, "config", "user.name", "PrismaBuild test"
     ).returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}shallow-test.json"
-    _stamped(shallow, stamp_name)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="shallow clone"):
         pbrun.build_git_checkout_snapshot(
-            shallow, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+            shallow, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
 
@@ -1274,13 +1215,11 @@ def test_git_snapshot_refuses_a_repository_with_no_commits(
     assert _git(
         checkout, "config", "user.name", "PrismaBuild test"
     ).returncode == 0
-    stamp_name = f"{pbrun.STAMP_PREFIX}unborn-test.json"
-    (checkout / stamp_name).write_text("{}")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     with pytest.raises(SystemExit, match="cannot identify checkout"):
         pbrun.build_git_checkout_snapshot(
-            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+            checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
 
