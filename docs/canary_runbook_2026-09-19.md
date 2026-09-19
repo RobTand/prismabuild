@@ -14,19 +14,23 @@ runner belong to the driver, workflow, and runner docs; the tracking issue
 
 *   `--canary` — after activation, submit the canary resolving against the
     new generation G and record `verified` or `failed` in G's rollout
-    record. A failed canary marks the record and exits nonzero. It never
+    record. This is already the default, so the flag only forces a default
+    in effect. A failed canary marks the record and exits nonzero. It never
     rolls back and never touches admission (campaign-primacy: the canary
     must not block or roll back real work).
 *   `--no-canary` — skip the canary and record `not_run`. This is the
-    escape hatch once the gate flips default-ON.
+    escape hatch.
 
-Two-phase adoption: the gate lands **default-OFF**
-(`CANARY_DEFAULT_ENABLED = False` in `publish_runtime.py`). Publication
-behaves exactly as before unless `--canary` is passed, and every
-publication still writes a `not_run` rollout record so the absence of a
-verdict is visible rather than silent. Phase 2 flips the constant to
-`True` in a follow-up after the first green canary on main; `--no-canary`
-then becomes the way to skip.
+The gate is **default-ON** (`CANARY_DEFAULT_ENABLED = True` in
+`publish_runtime.py`). A publication from a checkout carrying this default
+runs the canary when neither flag is named, and `--no-canary` is the only
+way to skip; a skip is still recorded as `not_run` so the absence of a
+verdict is visible rather than silent. Phase 1 landed default-OFF with
+`--canary` as the opt-in; the constant was flipped 2026-09-19 (phase 2)
+after the first verified live 4-leg run: namespace
+`pb-canary/20260919T173543Z`, exit 0, leg-4 envelopes bitwise-equal across
+sparky+sparklina. The running fleet adopts the flipped default only when a
+generation carrying it is published.
 
 ## The rollout record
 
@@ -67,7 +71,7 @@ so the sidecar is never mistaken for a generation.
 ## When the gate applies
 
 *   Fresh publication, `--rollout rolling`: the canary runs after the
-    inline activation. The `--canary` hold extends the publication lock
+    inline activation. The canary hold extends the publication lock
     for the canary's duration (bounded ~15 min by the driver's wait
     budgets); plan publications accordingly.
 *   Fresh publication, `--rollout barrier` (the default): the canary runs
@@ -81,8 +85,8 @@ so the sidecar is never mistaken for a generation.
     record. Re-verify by publishing, not by rolling back.
 *   `--dry-run` reports the canary intent (`enabled`/`disabled`) and
     writes nothing.
-*   `--canary` with no driver present refuses **before** anything is
-    published: the live runtime is untouched.
+*   An enabled canary with no driver present refuses **before** anything
+    is published: the live runtime is untouched.
 
 ## On a failed canary
 

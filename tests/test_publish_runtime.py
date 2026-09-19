@@ -28,6 +28,13 @@ def _checkout(path: Path, generation: str) -> Path:
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text(f"GENERATION = {generation!r}\n")
     (package / "pool.py").write_text(f"GENERATION = {generation!r}\n")
+    # Phase-2 default-ON: every published generation is verified, so a plain
+    # green canary driver ships with every test checkout.  Tests that care
+    # about a verdict overwrite it with _write_canary_driver; tests that care
+    # about skipping pass --no-canary.
+    driver = path / "tools" / "fleet" / "pbcanary.py"
+    driver.parent.mkdir(parents=True, exist_ok=True)
+    driver.write_text("def run_canary(*, generation):\n    return 0\n")
     return path
 
 
@@ -131,7 +138,10 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    # Content test: publishes the real tree to inspect the generation's docs;
+    # the real canary driver cannot verify a sandboxed mirror, so it skips.
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--no-canary",
                                         "--rollout-reason", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
@@ -175,7 +185,10 @@ def test_published_torch_helper_can_be_copied_without_a_source_checkout(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    # Content test: publishes the real tree to inspect the generation's docs;
+    # the real canary driver cannot verify a sandboxed mirror, so it skips.
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--no-canary",
                                         "--rollout-reason", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
@@ -584,7 +597,13 @@ def _write_canary_driver(checkout: Path, body: str) -> None:
 
 
 def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str]) -> tuple[int, Path]:
-    """Publish ``checkout`` into a private mirror with extra argv; return (exit, mirror)."""
+    """Publish ``checkout`` into a private mirror with extra argv; return (exit, mirror).
+
+    Phase-2 default-ON: an unflagged publication verifies its generation, so
+    ``_checkout`` ships a green canary driver with every test checkout.  Tests
+    that exercise the canary's own verdicts overwrite it with
+    ``_write_canary_driver``; the skip path passes ``--no-canary``.
+    """
 
     mirror = tmp_path / "mirror"
     monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
@@ -607,31 +626,39 @@ def _canary_record(mirror: Path) -> dict:
     return json.loads(records[0].read_text())
 
 
-def test_default_publish_records_not_run_and_never_loads_the_driver(
-    tmp_path, monkeypatch,
-) -> None:
-    """Phase-1 default-OFF: publication behaves as before, plus a skip record."""
+def test_default_publish_runs_the_canary(tmp_path, monkeypatch) -> None:
+    """Phase-2 default-ON: an unflagged publication verifies the generation.
+
+    Flipped 2026-09-19 after the first verified live 4-leg run
+    (pb-canary/20260919T173543Z, exit 0, cross-box envelopes equal); the
+    default is no longer a skip.
+    """
 
     checkout = _checkout(tmp_path / "checkout", "new")
+    _write_canary_driver(checkout,
+        "from pathlib import Path\n"
+        "def run_canary(*, generation):\n"
+        "    (Path(__file__).parent / 'seen.txt').write_text(generation)\n"
+        "    return 0\n")
     exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, [])
     assert exit_code == 0
     generation = mirror.resolve()
     assert (generation / "RUNTIME_VERSION.json").is_file()
+    assert (checkout / "tools" / "fleet" / "seen.txt").read_text() == generation.name
     record = _canary_record(mirror)
-    assert record["schema"] == publish_runtime.CANARY_RECORD_SCHEMA
-    assert record["generation"] == generation.name
-    assert record["commit"] == "a" * 40
-    assert record["canary_status"] == "not_run"
-    assert record["canary_exit"] is None
+    assert record["canary_status"] == "verified"
+    assert record["canary_exit"] == 0
 
 
 def test_no_canary_flag_records_not_run(tmp_path, monkeypatch) -> None:
-    """The phase-2 escape hatch spelling already works in phase 1."""
+    """The escape hatch still skips, and says so in the record."""
 
     checkout = _checkout(tmp_path / "checkout", "new")
     exit_code, mirror = _run_publish(tmp_path, monkeypatch, checkout, ["--no-canary"])
     assert exit_code == 0
-    assert _canary_record(mirror)["canary_status"] == "not_run"
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "not_run"
+    assert "--no-canary" in record["detail"]
 
 
 def test_verified_canary_resolves_against_the_activated_generation(
@@ -709,6 +736,9 @@ def test_canary_without_a_driver_refuses_before_touching_the_mirror(
     """Fail-closed pre-flight: no driver, no publication, no rollout record."""
 
     checkout = _checkout(tmp_path / "checkout", "new")
+    # Phase-2 ships a green driver with every test checkout; this test is the
+    # fail-closed pre-flight, so it removes the driver first.
+    (checkout / "tools" / "fleet" / "pbcanary.py").unlink()
     mirror = tmp_path / "mirror"
     monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
