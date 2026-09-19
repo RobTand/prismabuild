@@ -21,6 +21,16 @@ delivers, that receipt refutes the ceiling and growth resumes; if it falls
 short, the ceiling re-sets at the new delivery and probes again -- bounded
 oscillation, never a one-way ratchet down.  When no receipt can price a
 reader, nothing is invented: the ceiling stands unpinned, exactly as before.
+
+The queued-work follow-up (#706, after the merged fold proved insufficient
+live): the fold cannot see the queue, and its offer of 171 still sat under
+six already-ready movers reserving 259.  `tier_loop.cycle` now selects the
+larger of that historical offer and `int(ceiling_mb_s) + the oldest ready
+mover's sealed demand`, announces the selected offer and basis, and mints it;
+with no ready demand the historical offer stands, and with neither the offer
+is exactly the ceiling.  A ready or republished row keeps the resources its
+dispatch sealed -- rewriting them would admit a reservation the sealed
+request and the copy's argv never named -- so the tier's offer is what moves.
 """
 from __future__ import annotations
 
@@ -204,10 +214,14 @@ def test_no_ceiling_no_probe():
 
 
 def _cycle(queue):
+    # A stage root beside this queue, never a live box's: the fixture must
+    # not register, sweep or measure anything on a real stage.
+    stage_root = queue.root.parent / "stage"
+
     def discover(**kwargs):
         record = {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                   "tier_id": TIER, "host": "dl380g10", "tier": "stage",
-                  "mountpoint": "/stage/prewarm", "capacity_bytes": 600 * GIB}
+                  "mountpoint": str(stage_root), "capacity_bytes": 600 * GIB}
         record[storage_tiers.FILL_RECORD_FIELD] = storage_tiers.fill_rate_from_records(
             kwargs.get("fill_records") or ())
         return {TIER: record}
@@ -280,10 +294,11 @@ def test_the_escaped_probe_refutes_the_ceiling_and_growth_resumes(tmp_path):
     assert "fill_ceiling_receipt" not in record
 
 
-def test_a_ceiling_without_a_priced_reader_mints_as_before(tmp_path):
-    """Nothing invents a size: no receipt prices a reader, so the tokens mint
-    at the plain ceiling and the label says measured-ceiling, exactly as the
-    pre-probe fold did."""
+def test_a_ceiling_without_a_priced_reader_mints_the_queued_floor(tmp_path):
+    """The fold cannot price a reader here, so its only measured offer is the
+    plain ceiling -- but the queue is not blind: the oldest ready mover's own
+    sealed demand lifts the offer above the ceiling, and the announced supply
+    names that selection rather than the absent fold."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
@@ -294,13 +309,63 @@ def test_a_ceiling_without_a_priced_reader_mints_as_before(tmp_path):
     _ready_mover(queue, "a", 166)
     record = _cycle(queue)
 
-    assert record["fill_source"] == "measured-ceiling"
-    assert record["tokens"][FILL] == 522
-    assert record["fill_supply"]["probing"] is False
-    assert record["fill_supply"]["probe_offer_mb_s"] is None
+    assert record["fill_source"] == "measured-probing"
+    assert record["tokens"][FILL] == 522 + 166
+    assert record["fill_probe_mb_s"] == 166
+    assert record["fill_supply"]["probing"] is True
+    assert record["fill_supply"]["probe_offer_mb_s"] == 522 + 166
+    assert record["fill_supply"]["probe_basis"] == {
+        "basis": "oldest-ready-sealed-demand", "demand_mb_s": 166}
 
 
-# -- the adoption path: a stale price must not wedge its republished mover --
+def test_the_larger_of_the_fold_offer_and_the_queued_floor_is_selected(tmp_path):
+    """#707's historical offer is the fallback, not a cap: when the oldest
+    ready mover's sealed demand asks for more, that floor is the selected
+    offer and the announcement carries the historical value beside it."""
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
+                                         achieved=120.0, sharers=1, key="1"))
+    _ready_mover(queue, "a", 145)
+    record = _cycle(queue)
+
+    # The fold prices one reader at 120 (120 + 120 historical offer); the
+    # queued floor is 120 + 145 and is the larger, so it is selected.
+    assert record["fill_supply"]["probe_offer_mb_s"] == 265
+    assert record["fill_supply"]["probe_basis"]["basis"] == (
+        "oldest-ready-sealed-demand")
+    assert record["fill_supply"]["probe_basis"]["demand_mb_s"] == 145
+    assert record["fill_supply"]["probe_basis"]["historical_offer_mb_s"] == 240
+    assert record["tokens"][FILL] == 265
+    assert record["fill_source"] == "measured-probing"
+
+
+def test_the_fold_offer_stands_when_the_queued_floor_is_smaller(tmp_path):
+    """With no ready demand, or ready demand smaller than the historical
+    increment, the fold's own offer is the selected one and its basis stands:
+    the queue can only add, never shrink, what the receipts measured."""
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
+                                         achieved=120.0, sharers=1, key="1"))
+    queue.record_move("2" * 64, _receipt(unix=200.0, delivered=120.0, sealed=120,
+                                         achieved=120.0, sharers=1, key="2"))
+    _ready_mover(queue, "a", 50)
+    record = _cycle(queue)
+
+    # 120.0 ceiling + 120.0 median single-reader share beats the queued
+    # floor of 170.
+    assert record["fill_source"] == "measured-probing"
+    assert record["tokens"][FILL] == 240
+    assert record["fill_probe_mb_s"] == 120
+    assert record["fill_supply"]["probe_offer_mb_s"] == pytest.approx(240.0)
+    assert record["fill_supply"]["probe_basis"]["basis"] == (
+        "median-single-reader-share")
+
+
+# -- the adoption path: a stale price waits for the cycle, it is not rewritten --
 
 
 CONSUMER = "c" * 64
@@ -361,48 +426,58 @@ def _claim_consumer(queue: pool.PoolQueue, plan: dict[str, object]) -> None:
                    "leads": residency_plan.leads_for(plan)})
 
 
-def test_a_republished_mover_priced_above_the_tier_is_republished_at_its_offer(
+def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
         tmp_path):
-    """Tonight's second failure mode: a mover adopted across dispatches
-    carries the fill price its dispatch sealed, and after the tier's supply
-    sinks below it the claim can never fit (``never_fits_tier_capacity`` is
-    a denial no waiting repairs).  Republished, the row must take the tier's
-    current fill offer rather than wedge."""
+    """A mover adopted across dispatches carries the fill price its dispatch
+    sealed, and the tier's supply may have sunk under it since.  The window
+    must publish that row byte for byte as sealed -- rewriting the resources
+    here would admit a reservation the sealed request and the copy's argv
+    never named -- and once the row is the oldest ready demand the next cycle
+    raises the fill offer to that unchanged demand, with other admission
+    gates still applying."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     # The tier the loop would have minted by now: 5 GiB of stage, 130 MB/s of
-    # fill -- sunk far under the 400 the first mover's dispatch sealed.
+    # fill -- sunk far under the 400 each mover's dispatch sealed.
     queue.mint_tier_capacity(TIER, {"stage_gib": 5, FILL: 130})
-    plan = _stale_plan(queue, fills=(400, 100))
+    plan = _stale_plan(queue, fills=(400, 400))
     _claim_consumer(queue, plan)
 
     events = tier_loop.residency_window(
         queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(tmp_path / "stage")}})
 
-    repriced = [event for event in events
+    assert not [event for event in events
                 if event["event"] == "mover-repriced-to-tier-offer"]
-    assert [event["phase"] for event in repriced] == ["phase-0"]
-    assert repriced[0]["sealed_fill_mb_s"] == 400
-    assert repriced[0]["offer_mb_s"] == 130
+    for ordinal in (0, 1):
+        row = pool._read_json(queue.item_path(pool.READY,
+                                              _hexkey(f"mover{ordinal}")))
+        assert row["resources"][KIND] == 400
+        assert row["resources"][STAGE_KIND] == 2
+        assert row["resources"]["mem_gb"] == 1
+        assert row["residency"]["range_end_bytes"] == (ordinal + 1) * 2 * GIB
+    # The tier cannot seat a 400 reservation on the 130 it holds: the row
+    # waits, unchanged, rather than claiming against a price it never sealed.
+    assert queue.claim(capacity={"cpu": 32, "mem_gb": 48},
+                       tags=["dl380g10"]) is None
 
-    # The published rows carry the tier's offer where they were stale, and
-    # the price that already fit is left exactly as its dispatch sealed it.
-    stale = pool._read_json(queue.item_path(pool.READY, _hexkey("mover0")))
-    fitting = pool._read_json(queue.item_path(pool.READY, _hexkey("mover1")))
-    assert stale["resources"][KIND] == 130
-    assert fitting["resources"][KIND] == 100
-    # Only the fill was repriced: the range's own occupancy is not the
-    # submitter's to shrink, and neither is anything else on the row.
-    assert stale["resources"][STAGE_KIND] == 2
-    assert stale["resources"]["mem_gb"] == 1
-    assert stale["residency"]["range_end_bytes"] == 2 * GIB
+    # The next cycle measures a 65.7 ceiling that no receipt can price a
+    # reader for; the queued floor is 65 + 400, and the sealed row claims.
+    queue.record_move("1" * 64, _receipt(unix=100.0, delivered=65.7,
+                                         sealed=400, achieved=65.0, key="1"))
+    record = _cycle(queue)
+    assert record["fill_source"] == "measured-probing"
+    assert record["tokens"][FILL] == int(65.7) + 400
+    claimed = queue.claim(capacity={"cpu": 32, "mem_gb": 48},
+                          tags=["dl380g10"])
+    assert claimed is not None
+    assert claimed["resources"][KIND] == 400
 
 
 def test_a_mover_priced_under_the_tier_is_republished_verbatim(tmp_path):
-    """The reprice is an escape from a wedge, not a second pricing path: a
-    row the tier can already admit is published byte for byte as sealed."""
+    """The window never rewrites a mover's resources: a row the tier can
+    already admit is published byte for byte as sealed."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()

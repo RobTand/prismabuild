@@ -1512,37 +1512,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                         "egress": egress_key})
                     continue
             row = dict(entry["mover_row"])                   # type: ignore[arg-type]
-            # A republished mover carries the fill price its dispatch sealed,
-            # and the tier's supply may have sunk under it since (#706): a
-            # claim above the minted total is ``never_fits_tier_capacity``,
-            # the one denial no amount of waiting repairs, so an adopted
-            # mover priced before a sink wedges forever.  Republished at the
-            # tier's current offer instead.  Only the fill is repriced -- the
-            # range's own occupancy is the manifest's arithmetic, not this
-            # loop's to shrink -- and the copy's sealed argv still carries
-            # the original number, which the fold reads as the reservation it
-            # compares deliveries against; a shortfall against it re-sets the
-            # ceiling at the pool's own delivery, which is the measurement
-            # that ceiling exists to take.
-            fill_kind = (f"{storage_tiers.FILL_KIND}"
-                         f"{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}")
-            resources = row.get("resources")
-            sealed_fill = (resources.get(fill_kind)
-                           if isinstance(resources, dict) else None)
-            if isinstance(sealed_fill, bool) or not isinstance(
-                    sealed_fill, (int, float)):
-                sealed_fill = None
-            if sealed_fill is not None:
-                offered = int(ledger.capacity().get(storage_tiers.FILL_KIND, 0))
-                if int(sealed_fill) > offered:
-                    row["resources"] = {**resources, fill_kind: offered}
-                    published.append({
-                        "event": "mover-repriced-to-tier-offer",
-                        "consumer": key, "phase": entry["phase"],
-                        "chunk_index": entry.get("chunk_index"),
-                        "tier_id": tier_id,
-                        "sealed_fill_mb_s": int(sealed_fill),
-                        "offer_mb_s": offered})
+            # The row publishes with the resources its dispatch sealed.  A
+            # mover priced above the tier's current offer is not rewritten
+            # here (#706): the admission ledger is the authority, and the
+            # sealed request and the copy's argv must agree about what was
+            # reserved.  Once this row supplies the oldest ready demand, the
+            # tier's next cycle raises the fill offer to that unchanged
+            # demand; other admission gates still apply, so this is the
+            # scoped liveness the probe floor can promise.
             try:
                 # A copy has no result to replay: published with recompute,
                 # or a republished range is a cache hit that stages nothing.
@@ -1904,24 +1881,53 @@ def cycle(
             ready = queue.ready_items()
         probe = probe_fill_demand(ready, tier_id)
         ceiling, best = supply["ceiling_mb_s"], supply["best_mb_s"]
-        # The probe rule, extended to a standing ceiling (#706).  Minting
-        # exactly the ceiling closes the fold's own escape: movers are
-        # admitted against fill tokens, so a tier at a ceiling paces every
-        # later reservation at or under it, no delivery can exceed it, and
-        # the refutation clause never fires -- while each paced-at-ceiling
-        # mover that falls short sinks the ceiling further (111 MB/s, then
-        # 65, live 2026-09-19).  When the fold can measure one reader's
-        # worth above the ceiling, the tokens mint from that offer instead,
-        # so the next mover admits above the ceiling: a delivery refutes it
-        # and growth resumes, a shortfall re-sets it with a fresh probe.
-        offer = supply.get("probe_offer_mb_s")
+        # The probe rule over a standing ceiling (#706).  Minting exactly the
+        # ceiling admits nobody priced above it, so the tier never asks for
+        # more and the refutation clause cannot fire from admitted work --
+        # while each shortfall under it sinks it further (live 2026-09-19: an
+        # offer of 171 against six already-ready movers reserving 259, every
+        # one at ``never_fits_tier_capacity``).  The receipts fold prices one
+        # historical reader's worth above the ceiling (#707), but it cannot
+        # see the queue: movers sealed before a sink ask more than that offer.
+        # The queued floor is the same rule every other branch already uses --
+        # the oldest ready mover's own sealed demand -- and the selected offer
+        # is the larger of the two, so already-ready work can claim on this
+        # cycle without its sealed request changing.  With no ready demand the
+        # historical offer stands; with neither, the offer is exactly the
+        # measured ceiling.
+        selected: int | None = None
+        floor_wins = False
+        basis = supply.get("probe_basis")
+        historical = supply.get("probe_offer_mb_s")
+        priced = (isinstance(historical, (int, float))
+                  and not isinstance(historical, bool))
+        if priced:
+            selected = int(historical)
+        if ceiling is not None and int(ceiling) > 0 and probe:
+            floor = int(ceiling) + probe
+            if selected is None or floor > selected:
+                selected = floor
+                floor_wins = True
+                basis = {"basis": "oldest-ready-sealed-demand",
+                         "demand_mb_s": probe}
+                if priced:
+                    basis["historical_offer_mb_s"] = int(historical)
         if ceiling is not None and int(ceiling) > 0:
-            if (isinstance(offer, (int, float))
-                    and not isinstance(offer, bool)
-                    and int(offer) > int(ceiling)):
-                tokens[storage_tiers.FILL_KIND] = int(offer)
+            if selected is not None and selected > int(ceiling):
+                tokens[storage_tiers.FILL_KIND] = selected
                 record["fill_source"] = "measured-probing"
-                record["fill_probe_mb_s"] = int(offer) - int(ceiling)
+                record["fill_probe_mb_s"] = selected - int(ceiling)
+                if floor_wins:
+                    # The announced supply names the offer that was actually
+                    # selected -- a queued demand, never measured delivery --
+                    # so a reader (and the probe_offer metric) cannot mistake
+                    # the smaller historical fold for the live offer (#706).
+                    # A local name distinct from the cycle's ``announced``
+                    # list: shadowing it broke the append below.
+                    announced_supply = record["fill_supply"]
+                    announced_supply["probing"] = True
+                    announced_supply["probe_offer_mb_s"] = selected
+                    announced_supply["probe_basis"] = basis
             else:
                 tokens[storage_tiers.FILL_KIND] = int(ceiling)
                 record["fill_source"] = "measured-ceiling"

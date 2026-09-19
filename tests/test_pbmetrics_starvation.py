@@ -60,9 +60,12 @@ def starved_queue(tmp_path, monkeypatch):
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
         "capacity_bytes": 600 * storage_tiers.GIB, "sampled_unix": NOW - 5,
-        "fill_source": "measured-ceiling",
+        "fill_source": "measured-probing",
         "fill_supply": {"best_mb_s": 300.0, "ceiling_mb_s": 250.0,
-                        "may_grow": False}})
+                        "may_grow": False, "probing": True,
+                        "probe_offer_mb_s": 324,
+                        "probe_basis": {"basis": "oldest-ready-sealed-demand",
+                                        "demand_mb_s": 74}}})
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
     assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {"stage_gib": 2})
     # Claim the mover by filing, not through claim(): these tests read
@@ -178,6 +181,16 @@ def test_tier_fill_and_token_occupancy(starved_queue):
     assert (f'prismabuild_tier_tokens{{resource="stage_gib",state="available",tier="{STAGE_TIER}"}} 62'
             in text)
     assert (f'prismabuild_tier_tokens{{resource="stage_gib",state="held",tier="{STAGE_TIER}"}} 2'
+            in text)
+
+
+def test_tier_probe_offer_exports_the_announced_selected_offer(starved_queue):
+    """The gauge reads the tier record's selected offer (#706), never the
+    fold's smaller historical fallback: the loop overwrites the announced
+    supply with the offer it actually minted."""
+
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert (f'prismabuild_tier_fill_supply_mb_s{{stat="probe_offer",tier="{STAGE_TIER}"}} 324'
             in text)
 
 
