@@ -159,11 +159,13 @@ def test_a_probe_that_falls_short_re_sets_the_ceiling_at_its_delivery():
 
 def test_no_priced_reader_means_no_probe_and_nothing_invented():
     """A ceiling set by receipts that cannot price a single reader (no
-    concurrency count, no file-side rate) stays as it was: sealed, honest,
-    and unpinned -- the increment is measured or absent, never guessed."""
+    concurrency count) stays as it was: sealed, honest, and unpinned -- the
+    increment is measured or absent, never guessed."""
 
-    sick = _receipt(unix=100.0, delivered=120.0, sealed=166, key="1")
-    paced = _receipt(unix=200.0, delivered=110.0, sealed=110, key="2")
+    sick = _receipt(unix=100.0, delivered=120.0, sealed=166, achieved=120.0,
+                    key="1")
+    paced = _receipt(unix=200.0, delivered=110.0, sealed=110, achieved=110.0,
+                     key="2")
     supply = _supply([sick, paced])
 
     assert supply["ceiling_mb_s"] == 120.0
@@ -295,6 +297,7 @@ def test_a_ceiling_without_a_priced_reader_mints_as_before(tmp_path):
     assert record["fill_source"] == "measured-ceiling"
     assert record["tokens"][FILL] == 522
     assert record["fill_supply"]["probing"] is False
+    assert record["fill_supply"]["probe_offer_mb_s"] is None
 
 
 # -- the adoption path: a stale price must not wedge its republished mover --
