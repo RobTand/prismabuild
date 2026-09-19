@@ -93,7 +93,7 @@ def test_a_reachable_store_with_a_blocked_traversal_is_not_certified(
     config = SimpleNamespace(pluginmanager=Plugins())
     session = SimpleNamespace(config=config)
     monkeypatch.setattr(conftest, "LIVE_ROOT", live)
-    monkeypatch.setattr(conftest, "LIVE_PROBE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(conftest, "LIVE_CENSUS_TIMEOUT_S", 0.1)
     monkeypatch.setattr(conftest, "reachable", lambda _root: True)
     monkeypatch.setattr(conftest, "_walk", blocked)
     started = time.monotonic()
