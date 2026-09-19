@@ -72,6 +72,11 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
         def announce(self, **_kwargs) -> None:
             pass
 
+        def ready_items(self) -> list:
+            # The loop discovers the candidate list before it publishes or
+            # admits; this double stands in for an empty queue.
+            return []
+
         def serve_once(self, **_kwargs):
             return None
 

@@ -241,6 +241,96 @@ def pool_member_devices(
     return devices
 
 
+#: The schema a mover receipt carries, owned by ``pool.POOL_MOVE_SCHEMA_V1``.
+#: Named here -- rather than imported, which would be circular (``pool``
+#: imports this module) -- so the fill fold can tell a mover's measurement,
+#: which a pool change invalidates, from a prewarm record, which another role
+#: stamps and this gate must keep reading (#611).
+MOVER_RECEIPT_SCHEMA = "prismaquant.prismabuild.pool_move.v1"
+
+
+def _coarse_scan(value: str | None) -> str | None:
+    """The topology a ``zpool status`` scan line attests to, coarsely.
+
+    The raw line carries percentages, rates and dates that change every
+    cycle; keying receipt folds on it would split every receipt into its own
+    topology and price nothing ever again.  What matters is whether a
+    resilver or scrub is running and whether the last one finished, because
+    that is what changes what the pool delivers.
+    """
+
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if not text or text.startswith("none"):
+        return "none"
+    if "in progress" in text:
+        if text.startswith("scrub"):
+            return "scrub-in-progress"
+        if text.startswith("resilver"):
+            return "resilver-in-progress"
+        return "scan-in-progress"
+    if text.startswith("scrub"):
+        return "scrub-done"
+    if text.startswith("resilver"):
+        return "resilver-done"
+    return "scan-done"
+
+
+def pool_identity(pool: str, *, runner: Runner | None = None) -> dict[str, object]:
+    """Which pool ``pool`` is, as ``zpool`` describes it right now (#611).
+
+    The ``guid`` names the pool across imports: destroying and recreating a
+    pool with the same name mints a new one, which is exactly the event that
+    must invalidate every receipt priced off the old pool's disks.  ``state``
+    and the coarse ``scan`` say whether a resilver or scrub is running, and
+    ``members`` -- the data-vdev leaves ``pool_member_paths`` reads -- say
+    whether a swap or an added vdev changed the spindles since.  Together
+    they are what a receipt fold compares before pricing a next mover off an
+    older measurement.
+
+    Always a dict, never ``None``: callers compare it, and ``None`` would
+    read as "no pool here" -- the one answer that must never compare equal
+    to a pool that is there.  A pool ``zpool`` will not read is still an
+    identity, with nothing in it; it compares unequal to every readable
+    one.  (A box that cannot read ``zpool`` at all discovers no tier, so an
+    unreadable *current* identity never gates a real fold.)
+    """
+
+    call = runner or _run
+    try:
+        guid_text = call([zpool_binary(), "get", "-Hp",
+                          "-o", "value", "guid", pool])
+    except (OSError, subprocess.SubprocessError):
+        guid_text = ""
+    lines = guid_text.strip().splitlines()
+    guid = lines[0].strip() if lines else ""
+    try:
+        status_text = call([zpool_binary(), "status", "-P", pool])
+    except (OSError, subprocess.SubprocessError):
+        status_text = ""
+    state: str | None = None
+    scan: str | None = None
+    if status_text:
+        in_config = False
+        for line in status_text.splitlines():
+            stripped = line.strip()
+            if not in_config:
+                if stripped.startswith("config:"):
+                    in_config = True
+                    continue
+                if state is None and stripped.startswith("state:"):
+                    state = stripped[len("state:"):].strip() or None
+                elif scan is None and stripped.startswith("scan:"):
+                    scan = stripped[len("scan:"):].strip() or None
+    try:
+        members = pool_member_paths(pool, runner=runner) or []
+    except (OSError, subprocess.SubprocessError):
+        members = []
+    return {"pool": pool, "guid": guid or None, "state": state,
+            "scan": _coarse_scan(scan), "members": members}
+
+
 def by_id_names(
     paths: Iterable[str], *, by_id: str = BY_ID,
 ) -> dict[str, str | None]:
@@ -855,6 +945,26 @@ def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | N
     return best
 
 
+#: A receipt whose pool reads are less than this share of the bytes it staged
+#: did not measure the pool, and the fill fold skips it whole (#654).  A mover
+#: that ADOPTS resident stage ranges -- the fleet's own optimization, where a
+#: resubmitted campaign's phases are adopted instead of re-read from the pool
+#: -- barely touches the pool: its pacing's ``mean_pool_read_mb_s`` measures
+#: only the few device reads it made while its ``bytes_staged`` shows GiB
+#: served from the stage.  Live on 2026-09-19 in ``pb-queue/movers/`` on tier
+#: ``prismabuild-stage:dl380g10``: adoption receipts 2cdd1396 / a4a07f40 /
+#: c1441fda / 4bbaa6aa read pool_read_bytes at 0.003-0.036 of their
+#: bytes_staged with mean_pool_read 1.5-6.5 MB/s, while the honest receipt
+#: b14ebfcf read 1.81x its bytes_staged at 311.7 MB/s.  Read as a pool
+#: measurement, an adoption shortfall sealed a 6.5 MB/s ceiling no later
+#: receipt of the same shape could refute and no honest mover could fit under
+#: (``never_fits_tier_capacity``), so none could ever land either.
+#: ``pool_read_bytes >= POOL_MEASUREMENT_MIN_SHARE * bytes_staged`` is what
+#: counts as a measurement; a receipt missing either counter keeps the bare
+#: treatment it had before, because nothing in it says "this window read the
+#: stage instead of the pool".
+POOL_MEASUREMENT_MIN_SHARE = 0.5
+
 #: What a mover reserved of the pool, as it reserved it.  ``stage_move`` copies
 #: this out of its own command line into the receipt so a later cycle can ask
 #: whether the pool delivered what the ledger had promised -- which is the one
@@ -912,8 +1022,40 @@ def _fell_short(record: Mapping[str, object]) -> bool:
     return (float(staged) / 1e6 / span) < float(sealed)
 
 
+def _measured_the_pool(record: Mapping[str, object]) -> bool:
+    """Whether this receipt's window read the bytes it staged off the pool.
+
+    A mover that adopts resident stage ranges stages its bytes from the stage
+    and reads the pool only incidentally, so its ``mean_pool_read_mb_s`` says
+    nothing about what the pool delivers to a reader that actually reads it
+    (#654): the counter below is the tell, and a window whose pool reads are
+    less than ``POOL_MEASUREMENT_MIN_SHARE`` of the bytes it staged is not a
+    pool measurement at all -- it can set no ceiling, refute none, and raise
+    no best, because any of the three would be priced off device reads the
+    staged bytes never needed.
+
+    A receipt missing either counter says nothing either way and keeps the
+    bare ``_delivered`` treatment: only both counters together can witness
+    "the stage, not the pool, served this window".
+    """
+
+    pacing = record.get("disk_pacing")
+    if not isinstance(pacing, Mapping):
+        return True
+    pool_read = pacing.get("pool_read_bytes")
+    if (isinstance(pool_read, bool) or not isinstance(pool_read, (int, float))
+            or pool_read < 0):
+        return True
+    staged = record.get("bytes_staged")
+    if (isinstance(staged, bool) or not isinstance(staged, (int, float))
+            or staged <= 0):
+        return True
+    return float(pool_read) >= POOL_MEASUREMENT_MIN_SHARE * float(staged)
+
+
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> int | None:
     """The pool bandwidth a next mover reserves, or ``None`` with nothing measured.
 
@@ -938,7 +1080,8 @@ def mover_fill_demand_from_receipts(
     """
 
     best: float | None = None
-    for record in usable_mover_receipts(records, tier_id=tier_id):
+    for record in usable_mover_receipts(records, tier_id=tier_id,
+                                        pool_identity=pool_identity):
         rate = record.get("mb_per_s_file_side")
         if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
             continue
@@ -958,6 +1101,7 @@ def mover_fill_demand_from_receipts(
 
 def fill_supply_from_records(
     records: Iterable[Mapping[str, object]],
+    *, pool_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """How much pool bandwidth a tier may offer, folded over its receipts.
 
@@ -997,6 +1141,17 @@ def fill_supply_from_records(
     little more than the ceiling recorded and refute it.  That is harmless
     here -- a consumer is protected from a reader by the pacer's hold, not by
     this ledger -- and removing it would need a hysteresis nothing measures.
+
+    One receipt among these is not a pool measurement at all: a mover that
+    adopts resident stage ranges reads the pool only incidentally, so its
+    ``mean_pool_read_mb_s`` prices the few device reads it made rather than
+    the pool's delivery, and a window that fell short of its sealed fill
+    while barely reading the pool would seal a ceiling no later receipt of
+    that shape could refute and no honest mover could fit under (#654).  A
+    receipt whose pool reads are less than ``POOL_MEASUREMENT_MIN_SHARE`` of
+    the bytes it staged is therefore skipped whole -- no ceiling, no
+    refutation, no best -- and one missing either counter keeps the bare
+    treatment above.
     """
 
     ordered = sorted(
@@ -1006,8 +1161,22 @@ def fill_supply_from_records(
     best: float | None = None
     ceiling_key: str | None = None
     for record in ordered:
+        if pool_identity is not None and (
+                record.get("schema") == MOVER_RECEIPT_SCHEMA):
+            # A mover's measurement of a pool, gated on the pool it measured
+            # (#611): after a resilver or a rebuild the old receipts still
+            # name this tier, and the ceiling they set would throttle the new
+            # pool by the old one's shortfall.  Anything that is not a mover
+            # receipt -- a prewarm record, stamped by another role with no
+            # tier and no identity -- is the pool's other measurement and
+            # keeps being read; keying that is a separate change.
+            stamped = record.get("pool_identity")
+            if not isinstance(stamped, Mapping) or stamped != pool_identity:
+                continue
         delivered = _delivered(record)
         if delivered is None:
+            continue
+        if not _measured_the_pool(record):
             continue
         if ceiling is not None and delivered > ceiling:
             ceiling, ceiling_key, best = None, None, None
@@ -1068,6 +1237,76 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
 #: number in a claim record always traces back to a manifest.
 
 
+def _checked_phase_boundaries(
+    phases: list, *, total: int, entry_boundaries: set[int],
+) -> list[tuple[str, int]] | None:
+    """One refusal rule for both manifest schemas' phase tables (#594).
+
+    A phase that is not a mapping, a name that is missing, empty, repeated
+    or not a string, a cumulative that is not an integer (bools and floats
+    included -- ``int()`` accepts ``True`` and truncates, and neither is a
+    byte count), a table that steps back, overruns its total, cuts an entry,
+    or ends anywhere but the total is not a description of this manifest,
+    and a mover priced off it would reserve for bytes nobody reads.  ``None``
+    is that refusal; the caller answers it with ``[]``.
+    """
+
+    boundaries: list[tuple[str, int]] = []
+    previous = 0
+    seen: set[str] = set()
+    for phase in phases:
+        if not isinstance(phase, Mapping):
+            return None
+        name = phase.get("name")
+        cumulative = phase.get("cumulative_bytes")
+        if not isinstance(name, str) or not name or name in seen:
+            return None
+        if isinstance(cumulative, bool) or not isinstance(cumulative, int):
+            return None
+        if (cumulative < previous or cumulative > total
+                or cumulative not in entry_boundaries):
+            return None
+        seen.add(name)
+        boundaries.append((name, cumulative))
+        previous = cumulative
+    if previous != total:
+        return None
+    return boundaries
+
+
+def _read_order_sizes(
+    phases: list, entry_sizes: list[int],
+) -> list[int] | None:
+    """The byte sizes of the v2 read plan's consumption order, or ``None``.
+
+    v1 consumes ``entries`` in list order, so its boundaries are the list's
+    own prefix sums.  v2 consumes them in ``read_plan`` order, which exists
+    to differ -- so the boundaries a v2 table is checked against are the
+    prefix sums of the plan's own ``entry_indices`` expansion, not of the
+    list.  Checking a reordered plan against list-order sums would refuse a
+    table the core validator accepted, which is the two-readers disagreement
+    this shared rule removes.  A plan that does not say what it reads, or
+    names entries it cannot have, refuses.
+    """
+
+    order: list[int] = []
+    for phase in phases:
+        indices = phase.get("entry_indices")
+        if not isinstance(indices, list):
+            return None
+        seen: set[int] = set()
+        for ref in indices:
+            if isinstance(ref, bool) or not isinstance(ref, int):
+                return None
+            if ref < 0 or ref >= len(entry_sizes):
+                return None
+            if ref in seen:
+                return None
+            seen.add(ref)
+            order.append(ref)
+    return [entry_sizes[index] for index in order]
+
+
 def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, object]]:
     """The manifest's read order as half-open byte ranges, or ``[]``.
 
@@ -1081,7 +1320,11 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
     A v1 table that does not describe this manifest -- a boundary that cuts an
     entry in half, a sum that does not end at ``total_bytes`` -- yields ``[]``,
     the same refusal ``prewarm_loop.manifest_phases`` makes, because windowing
-    on the wrong boundaries reserves for bytes nobody will read.
+    on the wrong boundaries reserves for bytes nobody will read.  The v2 table
+    in ``read_plan.phases`` is held to the same rule, against the plan's own
+    consumption order: both schemas declare a running byte sum over the
+    entries in the order the action consumes them, so one validator reads
+    both.
     """
 
     schema = manifest.get("schema")
@@ -1096,7 +1339,31 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
         for phase in phases:
             if not isinstance(phase, Mapping):
                 return []
-            boundaries.append((str(phase["name"]), int(phase["cumulative_bytes"])))
+        entries = manifest.get("entries", []) or []
+        entry_sizes: list[int] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                return []
+            entry_sizes.append(int(entry.get("bytes", 0) or 0))
+        total = int(manifest.get("total_bytes", 0) or 0)
+        if sum(entry_sizes) != total:
+            return []
+        read = plan.get("read_bytes")
+        if isinstance(read, bool) or not isinstance(read, int):
+            return []
+        read_sizes = _read_order_sizes(phases, entry_sizes)
+        if read_sizes is None or sum(read_sizes) != read:
+            return []
+        entry_boundaries: set[int] = set()
+        running = 0
+        for size in read_sizes:
+            running += size
+            entry_boundaries.add(running)
+        checked = _checked_phase_boundaries(
+            phases, total=read, entry_boundaries=entry_boundaries)
+        if checked is None:
+            return []
+        boundaries = checked
     else:
         annotations = manifest.get("annotations")
         if not isinstance(annotations, Mapping):
@@ -1105,7 +1372,7 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
         if not isinstance(declared, list) or not declared:
             return []
         total = int(manifest.get("total_bytes", 0) or 0)
-        entry_boundaries: set[int] = set()
+        entry_boundaries = set()
         running = 0
         for entry in manifest.get("entries", []) or []:
             if not isinstance(entry, Mapping):
@@ -1114,24 +1381,11 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
             entry_boundaries.add(running)
         if running != total:
             return []
-        previous = 0
-        seen: set[str] = set()
-        for phase in declared:
-            if not isinstance(phase, Mapping):
-                return []
-            name = phase.get("name")
-            cumulative = phase.get("cumulative_bytes")
-            if not isinstance(name, str) or not name or name in seen:
-                return []
-            if isinstance(cumulative, bool) or not isinstance(cumulative, int):
-                return []
-            if cumulative < previous or cumulative > total or cumulative not in entry_boundaries:
-                return []
-            seen.add(name)
-            boundaries.append((name, cumulative))
-            previous = cumulative
-        if previous != total:
+        checked = _checked_phase_boundaries(
+            declared, total=total, entry_boundaries=entry_boundaries)
+        if checked is None:
             return []
+        boundaries = checked
     ranges: list[dict[str, object]] = []
     previous = 0
     for name, cumulative in boundaries:
@@ -1163,6 +1417,7 @@ MOVER_RSS_FIELD = "peak_rss_bytes"
 
 def usable_mover_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> list[Mapping[str, object]]:
     """The receipts of movers that actually copied onto ``tier_id``.
 
@@ -1170,6 +1425,17 @@ def usable_mover_receipts(
     measured another box's disks, so neither says anything about the next
     mover onto this one.  ``seconds`` must be positive because every number
     derived below is a rate over it.
+
+    With ``pool_identity`` given -- the tier's current one, as
+    :func:`discover_tiers` stamps it -- only receipts carrying that same
+    identity are usable (#611).  After a resilver, a member swap, an added
+    vdev or a pool rebuild, the old receipts still name this tier id but
+    measured another pool's disks; pricing cpu, mem and the fill share off
+    them is pricing the new pool by the old one's habits.  A receipt with no
+    identity predates the stamping and cannot prove which pool it measured,
+    so it is dropped too: failing closed re-measures through the probe rule
+    rather than guessing.  Without the argument there is no gate, exactly as
+    before, for tiers announced by a generation that stamps none.
     """
 
     out: list[Mapping[str, object]] = []
@@ -1180,6 +1446,10 @@ def usable_mover_receipts(
             continue
         if record.get("refusal"):
             continue
+        if pool_identity is not None:
+            stamped = record.get("pool_identity")
+            if not isinstance(stamped, Mapping) or stamped != pool_identity:
+                continue
         seconds = record.get("seconds")
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
             continue
@@ -1195,6 +1465,7 @@ def mover_demand_from_receipts(
     tier_id: str,
     readers: int,
     fallback_mem_gb: int,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """The ``cpu`` and ``mem_gb`` a next mover declares, and where they came from.
 
@@ -1225,7 +1496,8 @@ def mover_demand_from_receipts(
     if isinstance(fallback_mem_gb, bool) or not isinstance(fallback_mem_gb, int) \
             or fallback_mem_gb < 1:
         raise ValueError("fallback_mem_gb must be a positive whole GiB")
-    usable = usable_mover_receipts(records, tier_id=tier_id)
+    usable = usable_mover_receipts(records, tier_id=tier_id,
+                                     pool_identity=pool_identity)
     cpu_keys: list[str] = []
     mem_keys: list[str] = []
     cpu: int | None = None
@@ -1248,6 +1520,7 @@ def mover_demand_from_receipts(
         "mem_gb": fallback_mem_gb if mem_gb is None else mem_gb,
         "demand_source": {
             "tier_id": str(tier_id),
+            "pool_identity": dict(pool_identity) if pool_identity is not None else None,
             "receipts_read": len(usable),
             "cpu": "receipts" if cpu is not None else "declared_readers",
             "cpu_receipts": sorted(cpu_keys),
@@ -1389,6 +1662,19 @@ def discover_tiers(
             "source_pool": source_pool,
             "source_members": members,
             "source_members_by_id": sorted(members_by_id),
+            # Which pools these numbers were read off (#611): the guid names
+            # the pool across a destroy/recreate, the coarse scan says
+            # whether a resilver is running, and the members say whether a
+            # swap or an added vdev changed the spindles.  Movers copy this
+            # into their receipts, and the receipt folds price only receipts
+            # carrying the tier's current one -- so a rebuilt pool
+            # re-measures through the probe rule instead of running on the
+            # old pool's habits.
+            "pool_identity": {
+                "stage": pool_identity(str(pool["name"]), runner=runner),
+                "source": (pool_identity(source_pool, runner=runner)
+                           if source_pool else None),
+            },
             FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
@@ -1420,8 +1706,10 @@ __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
     "POOL_FILL_FIELD",
+    "POOL_MEASUREMENT_MIN_SHARE",
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
+    "MOVER_RECEIPT_SCHEMA",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",
@@ -1454,6 +1742,7 @@ __all__ = [
     "ensure_ram_epoch",
     "fill_rate_from_records",
     "meminfo_total_bytes",
+    "pool_identity",
     "pool_member_devices",
     "pool_member_paths",
     "ram_admission",

@@ -44,6 +44,7 @@ refuses its consumer rather than admitting it onto bytes nobody reserved.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -155,13 +156,15 @@ class _Copier:
     """One range, copied in read order by a bounded set of workers."""
 
     def __init__(self, *, mounts: prewarm_loop.MountMap, pacer, stage_root: Path,
-                 mount_prefix: str, block: int, workers: int) -> None:
+                 mount_prefix: str, block: int, workers: int,
+                 owner: str = "") -> None:
         self.mounts = mounts
         self.pacer = pacer
         self.stage_root = stage_root
         self.mount_prefix = mount_prefix
         self.block = block
         self.workers = max(1, workers)
+        self.owner = str(owner or "")
         self.lock = threading.Lock()
         self.staged: dict[str, dict[str, object]] = {}
         self.bytes_staged = 0
@@ -170,6 +173,29 @@ class _Copier:
         #: outside the lock can say which snapshot it is and an older one can
         #: be discarded rather than written over a newer one.
         self.generation = 0
+
+    def _temporary(self, destination: Path) -> Path:
+        """This mover's own temporary beside ``destination`` (#620).
+
+        Stage paths are content-addressed per manifest entry and shared
+        between consumers, so two movers -- a dead consumer's unstarted one
+        and its successor's -- copy one entry to one destination.  A shared
+        ``.<name>.partial`` is then truncated by both and renamed away by the
+        winner, and the loser's rename fails with ENOENT (or worse, lands a
+        torn prefix).  Keying the temporary by the mover keeps each copy's
+        rename its own: both verify the same digest and both land the same
+        bytes.  The first 16 hex characters name the mover uniquely enough --
+        a collision only reverts to the old sharing -- and keep long staged
+        names inside the filename limit.  An empty owner keeps the legacy
+        name, so a direct run and every old test stages exactly as before.
+        The sweep still recognises both spellings: each starts with ``.``
+        and ends with ``.partial``.
+        """
+
+        if not self.owner:
+            return destination.with_name(f".{destination.name}.partial")
+        return destination.with_name(
+            f".{destination.name}.{self.owner[:16]}.partial")
 
     def _copy_one(self, entry: dict[str, object], destination: Path,
                   admission, stop: threading.Event) -> tuple[int, str]:
@@ -184,7 +210,7 @@ class _Copier:
         want = int(entry["bytes"])
         offset = int(entry["offset"])
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.partial")
+        temporary = self._temporary(destination)
         digest = hashlib.sha256()
         written = 0
         # O_NOFOLLOW at the leaf and a regular-file check, for the reason the
@@ -498,6 +524,28 @@ def served_for(args) -> dict[str, object]:
             "served_reason": str(found["served_reason"])}
 
 
+def announced_pool_identity(pool_root: str | Path,
+                            tier_id: str) -> dict[str, object] | None:
+    """The pool identity the tier loop announced for ``tier_id``, or ``None``.
+
+    Copied into the mover's receipt so the receipt folds can key it to the
+    pool it measured (#611).  ``None`` -- no record announced, or one stamped
+    by an older generation -- files a receipt exactly as before, which a
+    gated fold drops and an ungated one reads.
+    """
+
+    try:
+        records = pool.PoolQueue(Path(pool_root)).tiers()
+    except (OSError, pool.PoolContractError):
+        return None
+    for record in records:
+        if str(record.get("tier_id")) != str(tier_id):
+            continue
+        identity = record.get("pool_identity")
+        return dict(identity) if isinstance(identity, Mapping) else None
+    return None
+
+
 def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     """Stage the declared range and return the receipt, refusing an overrun."""
 
@@ -548,7 +596,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     mounts = prewarm_loop.MountMap(args.mount or [])
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
-        mount_prefix=mount_prefix, block=args.block, workers=args.max_readers)
+        mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
+        owner=str(args.action_key))
 
     residency_root = Path(args.residency_root)
     manifest_sha256 = args.manifest_sha256
@@ -685,6 +734,14 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "errors": copier.errors,
         "unix": time.time(),
     }
+    # Which pools this copy read off and wrote onto, for the receipt folds
+    # that price the next mover (#611).  Read off the live tier record rather
+    # than sealed into the argv, for the same reason ``movers_claimed_on_tier``
+    # is read there: the pool a mover measured is a fact about the tier now,
+    # and a mover sealed before a rebuild must not carry the old pool's name.
+    identity = announced_pool_identity(args.pool_root, str(args.tier_id))
+    if identity is not None:
+        receipt["pool_identity"] = identity
     if overran:
         # The tokens bound what the tier can hold.  Staging past them is the
         # one failure that cannot be left to the consumer to notice, so the
