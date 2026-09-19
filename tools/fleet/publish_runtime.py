@@ -29,7 +29,8 @@ three days stale.
 After activation, ``--canary`` submits the fleet canary (issue #688) resolving
 against the new generation and records ``verified`` or ``failed`` in the
 rollout record ``runtime-generations/<generation>.canary.json``; ``--no-canary``
-records ``not_run``. The gate is default-OFF (phase 1: ``CANARY_DEFAULT_ENABLED``).
+records ``not_run``. The gate is default-ON (phase 2, flipped 2026-09-19 after
+the first verified live 4-leg run); ``--no-canary`` remains the escape hatch.
 A failed canary marks and exits nonzero; it never rolls back and never touches
 admission. See the canary runbook.
 """
@@ -183,8 +184,10 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
 #: in a follow-up after the first green canary on main; ``--no-canary`` is
 #: then the escape hatch. The constant (not an environment variable) is the
 #: switch so the default is versioned, reviewable, and published with the
-#: generation that implements it.
-CANARY_DEFAULT_ENABLED = False
+#: generation that implements it. Flipped ON 2026-09-19 (phase 2) after the
+#: first verified live 4-leg run: namespace pb-canary/20260919T173543Z,
+#: exit 0, leg-4 envelopes bitwise-equal across sparky+sparklina.
+CANARY_DEFAULT_ENABLED = True
 #: Rollout-record statuses. ``pending`` is written before the driver is
 #: invoked and rewritten to ``verified`` or ``failed`` on its verdict;
 #: ``not_run`` is the skip record. There is no separate error state: a canary
