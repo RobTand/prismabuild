@@ -32,6 +32,10 @@ import pbmcp_fixture as fx
     ("pb_denials", {"hours": -1}),
     ("pb_denials", {"hours": "recent"}),
     ("pb_tier", {"tier_id": "ram:x"}),
+    ("pb_movers", {"tier_id": 42}),
+    ("pb_receipts", {}),
+    ("pb_receipts", {"keys": "x"}),
+    ("pb_receipts", {"keys": [42]}),
 ])
 def test_bad_arguments_return_invalid_params_before_any_read(
     tmp_path, monkeypatch, name, arguments,

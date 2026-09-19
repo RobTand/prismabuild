@@ -103,6 +103,19 @@ DEFAULT_DENIAL_HOURS = 24.0
 DEFAULT_LOG_TAIL_BYTES = 65536
 DEFAULT_TAIL_LINES = 40
 
+#: How many action keys one ``pb_receipts`` call answers for.  Each key costs
+#: up to five small record reads plus one receipt read, so the cap is what
+#: keeps one call inside one deadline on a slow mount rather than a round
+#: number: fifty keys is two hundred small reads, past which the caller
+#: should page with a second call.
+DEFAULT_RECEIPTS_KEYS = 50
+
+#: How many filed movement receipts ``pb_movers`` reads, newest first.  The
+#: ``movers/`` directory is append-only, so an unbounded read would get
+#: slower every campaign; the newest hundred answer "what landed lately"
+#: and ``truncated`` says when that is not all of it.
+DEFAULT_MOVER_RECEIPTS = 100
+
 #: The states one action key can be found in, in the order a reader should
 #: prefer them: a live record outranks a terminal one, because a key that was
 #: re-submitted after an ending has both.
@@ -625,6 +638,133 @@ def _receipt_summary(record: Mapping[str, object]) -> dict:
     }
 
 
+def _receipt_verdict(state: str | None,
+                    detail: Mapping[str, object]) -> str | None:
+    """One word for what a queue record's ending says, or ``None``.
+
+    ``"green"`` is deliberately narrow: a ``done`` record whose own
+    ``returncode`` is 0.  A terminal record with no returncode at all is not
+    "failed" -- nothing observed it failing -- so it reads as ``None`` and
+    the caller counts it under ``unknown`` rather than under either verdict.
+    """
+
+    if state in (pool.READY, pool.CLAIMED):
+        return "pending"
+    if state == pool.WITHDRAWN:
+        return "withdrawn"
+    if state in (pool.DONE, pool.FAILED):
+        code = detail.get("returncode")
+        if state == pool.DONE and code == 0:
+            return "green"
+        if code is None:
+            return None
+        return "failed"
+    return None
+
+
+def _mover_live_rows(queue_root: Path) -> list[dict]:
+    """Live actions whose residency block names a byte range: the movers.
+
+    A mover row is the one whose residency block names a range; a consumer's
+    names leads.  That is the same line ``movers_claimed_on_tier`` draws, so
+    a mover this misses or a consumer this keeps would be a disagreement
+    between two readers of one queue rather than a wider net.  Only
+    ``ready/`` and ``claimed/`` are walked: terminal records number in the
+    thousands and a finished mover's story is in its filed receipt, which
+    the next reader below covers.
+    """
+
+    now = time.time()
+    rows: list[dict] = []
+    for state in (pool.READY, pool.CLAIMED):
+        for key in _keys_in(Path(queue_root) / state):
+            record = _read_record(Path(queue_root) / state / f"{key}.json")
+            if record is None:
+                continue
+            block = record.get("residency")
+            if not isinstance(block, Mapping):
+                continue
+            start = block.get("range_start_bytes")
+            end = block.get("range_end_bytes")
+            if type(start) is not int or type(end) is not int:
+                continue
+            published = record.get("published_unix")
+            rows.append({
+                "action_key": key,
+                "action_key_prefix": key[:12],
+                "state": state,
+                "tier_id": block.get("tier_id"),
+                "range_start_bytes": start,
+                "range_end_bytes": end,
+                "range_bytes": end - start,
+                "manifest_sha256": block.get("manifest_sha256"),
+                "claimed_host": record.get("claimed_host"),
+                "published_unix": published,
+                "age_s": (now - float(published)
+                          if type(published) in (int, float) else None),
+            })
+    rows.sort(key=lambda row: str(row["action_key"]))
+    return rows
+
+
+def _filed_move_receipts(queue_root: Path, *,
+                         limit: int = DEFAULT_MOVER_RECEIPTS) -> dict:
+    """The newest filed movement receipts, without reading the directory whole.
+
+    ``movers/`` is append-only -- one JSON per mover, forever -- so the
+    window is chosen by ``stat`` first, exactly as ``_scan_actions`` does for
+    terminal records: the newest ``limit`` by modification time are read and
+    ``truncated`` says whether that was all of them.  A receipt that cannot
+    be read or is not a move receipt is counted in ``unreadable`` rather than
+    raised: a submission must not fail because one older receipt was
+    truncated, and neither must a reader of them.
+    """
+
+    directory = Path(queue_root) / pool.MOVERS
+    try:
+        names = [entry.name for entry in os.scandir(directory)
+                 if entry.name.endswith(".json") and entry.is_file()]
+    except OSError as error:
+        if _absent(error):
+            return {"receipts": [], "scanned": 0, "unreadable": 0,
+                    "truncated": False}
+        raise
+    stamped: list[tuple[float, str]] = []
+    for name in names:
+        try:
+            stamped.append(((directory / name).stat().st_mtime, name))
+        except OSError as error:
+            if _absent(error):
+                continue
+            raise
+    stamped.sort(reverse=True)
+    truncated = len(stamped) > max(0, int(limit))
+    receipts: list[dict] = []
+    unreadable = 0
+    for _mtime, name in stamped[:max(0, int(limit))]:
+        record = _read_record(directory / name)
+        if (not isinstance(record, Mapping)
+                or record.get("schema") != pool.POOL_MOVE_SCHEMA_V1):
+            unreadable += 1
+            continue
+        consumer = record.get("consumer_action_key")
+        consumer = str(consumer) if isinstance(consumer, str) else None
+        receipts.append({
+            "action_key": record.get("action_key"),
+            "action_key_prefix": str(record.get("action_key") or "")[:12],
+            "consumer_action_key": consumer,
+            "consumer_action_key_prefix": (consumer[:12] if consumer else None),
+            "tier_id": record.get("tier_id"),
+            "range_bytes": record.get("range_bytes"),
+            "bytes_staged": record.get("bytes_staged"),
+            "complete": record.get("complete"),
+            "seconds": record.get("seconds"),
+            "unix": record.get("unix"),
+        })
+    return {"receipts": receipts, "scanned": len(stamped),
+            "unreadable": unreadable, "truncated": truncated}
+
+
 def _log_tail(path: Path, *, tail_lines: int, max_bytes: int) -> dict:
     """The last lines of one log, without reading the log.
 
@@ -1106,6 +1246,177 @@ class Session:
             },
         }
 
+    # -- pb_receipts -------------------------------------------------------
+
+    def pb_receipts(self, call: Call, *, keys: Sequence[str]) -> dict:
+        """One ending-and-receipt verdict per action key.
+
+        The set form of the question ``pb_action`` answers for one key: the
+        state, the return codes, and whether the CAS holds a receipt -- for
+        every key the caller names, with a count of each verdict.  A prefix
+        that names nothing, or more than one action, is an entry with an
+        error rather than a failed call, so one bad key does not cost the
+        caller the verdicts on the rest.
+
+        Per-shard pass counts are in ``not_answered``, and deliberately: the
+        passed/failed totals live in the ``pbtest --json`` the caller wrote,
+        not on the queue record, and returncode 0 is the queue's verdict,
+        not a case count.  Reporting a count this cannot read would be the
+        assertion the read-only half of this server exists to refuse.
+        """
+
+        selected = [str(one) for one in (keys or [])]
+        if not selected:
+            raise ToolError("keys must name at least one action key or prefix")
+        if len(selected) > DEFAULT_RECEIPTS_KEYS:
+            raise ToolError(
+                f"keys names {len(selected)} actions; at most "
+                f"{DEFAULT_RECEIPTS_KEYS} per call -- page with a second call")
+        counts = {"green": 0, "failed": 0, "pending": 0, "withdrawn": 0,
+                  "unknown": 0, "errors": 0}
+        rows = [self._one_receipt(call, prefix, counts) for prefix in selected]
+        return {
+            "queue_root": str(self.queue_root),
+            "keys": selected,
+            "receipts": rows,
+            "summary": counts,
+            "not_answered": [
+                "per-shard pass counts: pbtest writes its passed/failed "
+                "totals to the caller's --json, not to the queue record",
+            ],
+        }
+
+    def _one_receipt(self, call: Call, key_prefix: str,
+                     counts: dict[str, int]) -> dict:
+        try:
+            prefix = _valid_prefix(key_prefix)
+        except ToolError as exc:
+            counts["errors"] += 1
+            return {"key_prefix": str(key_prefix), "action_key": None,
+                    "found": False, "error": str(exc)}
+        matches = call.read(f"receipts:{prefix}",
+                            lambda: _resolve_prefix(self.queue_root, prefix))
+        if matches is None:
+            counts["unknown"] += 1
+            return {"key_prefix": prefix, "action_key": None, "found": None}
+        if not matches:
+            counts["errors"] += 1
+            return {"key_prefix": prefix, "action_key": None, "found": False,
+                    "error": f"no action starts with {prefix!r}"}
+        if len(matches) > 1:
+            counts["errors"] += 1
+            return {"key_prefix": prefix, "action_key": None, "found": False,
+                    "error": f"{prefix!r} names {len(matches)} actions",
+                    "candidates": matches[:20]}
+        key = matches[0]
+        records = call.read(f"receipts:{prefix}:records",
+                            lambda: _records_for(self.queue_root, key))
+        if records is None:
+            counts["unknown"] += 1
+            return {"key_prefix": prefix, "action_key": key, "found": None}
+        state = next((one for one in STATES if one in records), None)
+        record = records.get(state) if state else None
+        if record is None:
+            counts["errors"] += 1
+            return {"key_prefix": prefix, "action_key": key, "found": False,
+                    "error": f"{key[:12]} names no queue record"}
+        detail = record.get("detail")
+        detail = detail if isinstance(detail, Mapping) else {}
+        verdict = _receipt_verdict(state, detail)
+        if verdict in counts:
+            counts[verdict] += 1
+        else:
+            counts["unknown"] += 1
+        return {
+            "key_prefix": prefix,
+            "action_key": key,
+            "found": True,
+            "state": state,
+            "status": record.get("status"),
+            "verdict": verdict,
+            "returncode": detail.get("returncode"),
+            "action_returncode": detail.get("action_returncode"),
+            "action_signal": detail.get("action_signal"),
+            "attempts": record.get("attempts"),
+            "elapsed_s": detail.get("elapsed_s"),
+            "finished_unix": record.get("finished_unix"),
+            "receipt": call.read(f"receipts:{prefix}:receipt",
+                                 lambda: _receipt_summary(record)),
+        }
+
+    # -- pb_movers ---------------------------------------------------------
+
+    def pb_movers(self, call: Call, *, tier_id: str | None = None) -> dict:
+        """Movement-node states and queue depth per tier.
+
+        Three readings per tier, from three records the fleet already files:
+        the live mover actions waiting in ``ready/`` or running in
+        ``claimed/`` -- a mover is the row whose residency block names a
+        range, the same line the pool's own ``movers_claimed_on_tier`` draws
+        -- and the movement receipts movers filed beside ``movers/`` when
+        they landed, which outlive the action's conclusion and are what the
+        next submission prices itself from.  The tier announcements come
+        through the same reader ``pb_tier`` uses, so the two tools cannot
+        disagree about what a tier offers.
+
+        Egress take-backs are not here: an egress removes bytes rather than
+        staging them, and counting both as movement would let "staging is
+        keeping up" hide a tier that is only draining.
+        """
+
+        wanted = str(tier_id) if tier_id is not None else None
+        found = call.read("tiers", lambda: _tier_rows(self.queue_root))
+        found = found if isinstance(found, dict) else {}
+        live = call.read("movers-live",
+                         lambda: _mover_live_rows(self.queue_root))
+        filed = call.read("movers-filed",
+                          lambda: _filed_move_receipts(self.queue_root))
+        tiers = found.get("tiers")
+        if isinstance(tiers, list) and wanted is not None:
+            tiers = [row for row in tiers
+                     if isinstance(row, Mapping)
+                     and row.get("tier_id") == wanted]
+        rows = None
+        if isinstance(tiers, list):
+            rows = [self._one_tier_movers(tier, live, filed) for tier in tiers]
+        return {
+            "queue_root": str(self.queue_root),
+            "tier_filter": wanted,
+            "tiers": rows,
+            "invalid": found.get("invalid"),
+        }
+
+    @staticmethod
+    def _one_tier_movers(tier: Mapping[str, object], live: object,
+                         filed: object) -> dict:
+        ident = tier.get("tier_id")
+        ready = claimed = None
+        depth = None
+        if isinstance(live, list):
+            ready = [row for row in live
+                     if row.get("state") == pool.READY
+                     and row.get("tier_id") == ident]
+            claimed = [row for row in live
+                       if row.get("state") == pool.CLAIMED
+                       and row.get("tier_id") == ident]
+            depth = len(ready) + len(claimed)
+        receipts = receipts_filed = truncated = None
+        if isinstance(filed, Mapping):
+            receipts = [row for row in (filed.get("receipts") or [])
+                        if isinstance(row, Mapping)
+                        and row.get("tier_id") == ident]
+            receipts_filed = len(receipts)
+            truncated = filed.get("truncated")
+        return {
+            "tier_id": ident,
+            "queue_depth": depth,
+            "ready_movers": ready,
+            "claimed_movers": claimed,
+            "filed_receipts": receipts,
+            "receipts_filed": receipts_filed,
+            "receipts_truncated": truncated,
+        }
+
     # -- pb_verify_claim ---------------------------------------------------
 
     def pb_verify_claim(self, call: Call, *, sha256: str,
@@ -1473,6 +1784,21 @@ TOOLS: tuple[dict, ...] = (
                         "additionalProperties": False},
     },
     {
+        "name": "pb_movers",
+        "description": "Movement-node states and queue depth per tier: the "
+                       "live mover actions waiting or running, and the "
+                       "movement receipts already filed. Read-only and "
+                       "deadline-bounded.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tier_id": {"type": "string",
+                            "description": "Keep only the tier with this id."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "pb_action",
         "description": "Everything the queue holds about one action: the "
                        "sealed submission (tags, demand, priority, checkout), "
@@ -1534,6 +1860,25 @@ TOOLS: tuple[dict, ...] = (
                           "description": "Maximum rows, and the size of the "
                                          "newest-first window scanned."},
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "pb_receipts",
+        "description": "One ending-and-receipt verdict per action key: the "
+                       "state, the return codes, and whether the CAS holds a "
+                       "receipt -- the set form of pb_action for validating "
+                       "a batch of submissions. Read-only and "
+                       "deadline-bounded; per-shard pass counts are not on "
+                       "the queue and are said so in the answer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keys": {"type": "array", "items": {"type": "string"},
+                         "description": "Action keys or unique prefixes, at "
+                                        "most 50 per call."},
+            },
+            "required": ["keys"],
             "additionalProperties": False,
         },
     },
@@ -1691,7 +2036,9 @@ class Server:
                 "to find your own submissions (filter by checkout_root, "
                 "snapshot_parent, snapshot_commit or "
                 "published_by; the queue records no submitter identity), "
-                "pb_action and pb_log for one of them, and pb_status for the "
+                "pb_action and pb_log for one of them, pb_receipts for a "
+                "set of endings, pb_movers for who is staging data, "
+                "and pb_status for the "
                 "fleet. Every response carries complete/timed_out: a quiet "
                 "queue and an unreachable mount look alike unless you read "
                 "them. Submission is deliberately absent -- use pbrun."),
