@@ -3209,6 +3209,36 @@ never produced; the same action's pool-side attribution at depth 16 is
 242.5 MB/s. A tier with no pool-side-attributed receipt mints no fill tokens,
 which is the probe rule.
 
+**A standing ceiling probes above itself (#706).** The supply fold
+(`storage_tiers.fill_supply_from_records`) seals a ceiling off the most recent
+receipt that fell short of its reservation, and clears it only on a later
+delivery that exceeds it. But movers are admitted against the tier's fill
+tokens, and a tier at a ceiling used to mint exactly the ceiling, so every
+later reservation sat at or under it and no delivery could exceed it: the
+refutation was structurally unreachable while each paced-at-ceiling mover that
+fell short sank the ceiling further (live 2026-09-19: 111.2 MB/s froze, then
+sank to 65, wedging every queued mover whose sealed price predates the sink).
+While a ceiling stands and the receipts can price a single reader — `min` of a
+copy's file-side rate and its window's delivery over its sharers, the same
+bound that prices a next mover — the fold now offers `ceiling_mb_s` plus the
+median of those shares as `probe_offer_mb_s`, marked `probing` with the basis
+on the supply record, and the loop mints from the offer
+(`fill_source: "measured-probing"`). The next mover then admits above the
+ceiling: a delivery refutes it and growth resumes off the new best, a shortfall
+re-sets it at the pool's own delivery with a fresh probe above it — bounded
+oscillation, never a one-way ratchet down. No priceable receipt means no
+increment and nothing invented: the ceiling stands and the label stays
+`measured-ceiling`. The `probe_offer` stat on
+`prismabuild_tier_fill_supply_mb_s` exports the offer.
+
+A mover republished by a window can carry a fill price its dispatch sealed
+before the supply sank, and a claim above the minted total is
+`never_fits_tier_capacity` — the one denial no waiting repairs. The window
+therefore republishes such a row at the tier's current fill offer (event
+`mover-repriced-to-tier-offer`, the fill kind only: the range's occupancy is
+the manifest's arithmetic, not the loop's to shrink), so an adopted mover
+reprices instead of wedging.
+
 ### Demand is derived from the data manifest
 
 A movement node declares the half-open byte range of its consumer's read order

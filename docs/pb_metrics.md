@@ -176,7 +176,7 @@ the gauge and the blob cannot disagree about who is waiting.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `prismabuild_tier_fill_supply_mb_s` | `tier,stat=best\|ceiling` | Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold. `best` is the highest delivery since the last ceiling, `ceiling` the most recent measured shortfall. Absent, not zero, where the tier announced none. |
+| `prismabuild_tier_fill_supply_mb_s` | `tier,stat=best\|ceiling\|probe_offer` | Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold. `best` is the highest delivery since the last ceiling, `ceiling` the most recent measured shortfall, `probe_offer` the ceiling plus one median reader's share, present only while the fold probes above a standing ceiling (#706). Absent, not zero, where the tier announced none. |
 | `prismabuild_tier_tokens` | `tier,resource,state=capacity\|available\|held` | Tier ledger tokens by kind and state. Capacity kinds count GiB, the fill kind counts pool-side MB/s, and held is capacity less available. |
 | `prismabuild_claim_denials` | `host,reason` | Latest claim denial per action generation observed in the window, by host and reason. A restart-safe gauge, not a counter. |
 | `prismabuild_claim_denial_window_seconds` | none | Configured lookback for the per-host claim-denial gauges. |
