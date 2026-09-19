@@ -1512,6 +1512,37 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                         "egress": egress_key})
                     continue
             row = dict(entry["mover_row"])                   # type: ignore[arg-type]
+            # A republished mover carries the fill price its dispatch sealed,
+            # and the tier's supply may have sunk under it since (#706): a
+            # claim above the minted total is ``never_fits_tier_capacity``,
+            # the one denial no amount of waiting repairs, so an adopted
+            # mover priced before a sink wedges forever.  Republished at the
+            # tier's current offer instead.  Only the fill is repriced -- the
+            # range's own occupancy is the manifest's arithmetic, not this
+            # loop's to shrink -- and the copy's sealed argv still carries
+            # the original number, which the fold reads as the reservation it
+            # compares deliveries against; a shortfall against it re-sets the
+            # ceiling at the pool's own delivery, which is the measurement
+            # that ceiling exists to take.
+            fill_kind = (f"{storage_tiers.FILL_KIND}"
+                         f"{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}")
+            resources = row.get("resources")
+            sealed_fill = (resources.get(fill_kind)
+                           if isinstance(resources, dict) else None)
+            if isinstance(sealed_fill, bool) or not isinstance(
+                    sealed_fill, (int, float)):
+                sealed_fill = None
+            if sealed_fill is not None:
+                offered = int(ledger.capacity().get(storage_tiers.FILL_KIND, 0))
+                if int(sealed_fill) > offered:
+                    row["resources"] = {**resources, fill_kind: offered}
+                    published.append({
+                        "event": "mover-repriced-to-tier-offer",
+                        "consumer": key, "phase": entry["phase"],
+                        "chunk_index": entry.get("chunk_index"),
+                        "tier_id": tier_id,
+                        "sealed_fill_mb_s": int(sealed_fill),
+                        "offer_mb_s": offered})
             try:
                 # A copy has no result to replay: published with recompute,
                 # or a republished range is a cache hit that stages nothing.
@@ -1873,9 +1904,27 @@ def cycle(
             ready = queue.ready_items()
         probe = probe_fill_demand(ready, tier_id)
         ceiling, best = supply["ceiling_mb_s"], supply["best_mb_s"]
+        # The probe rule, extended to a standing ceiling (#706).  Minting
+        # exactly the ceiling closes the fold's own escape: movers are
+        # admitted against fill tokens, so a tier at a ceiling paces every
+        # later reservation at or under it, no delivery can exceed it, and
+        # the refutation clause never fires -- while each paced-at-ceiling
+        # mover that falls short sinks the ceiling further (111 MB/s, then
+        # 65, live 2026-09-19).  When the fold can measure one reader's
+        # worth above the ceiling, the tokens mint from that offer instead,
+        # so the next mover admits above the ceiling: a delivery refutes it
+        # and growth resumes, a shortfall re-sets it with a fresh probe.
+        offer = supply.get("probe_offer_mb_s")
         if ceiling is not None and int(ceiling) > 0:
-            tokens[storage_tiers.FILL_KIND] = int(ceiling)
-            record["fill_source"] = "measured-ceiling"
+            if (isinstance(offer, (int, float))
+                    and not isinstance(offer, bool)
+                    and int(offer) > int(ceiling)):
+                tokens[storage_tiers.FILL_KIND] = int(offer)
+                record["fill_source"] = "measured-probing"
+                record["fill_probe_mb_s"] = int(offer) - int(ceiling)
+            else:
+                tokens[storage_tiers.FILL_KIND] = int(ceiling)
+                record["fill_source"] = "measured-ceiling"
         elif best is not None and int(best) > 0:
             grown = int(best) + (probe or 0)
             tokens[storage_tiers.FILL_KIND] = grown

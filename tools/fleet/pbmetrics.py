@@ -539,7 +539,9 @@ def _starvation_metrics(
         "prismabuild_tier_fill_supply_mb_s",
         "Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold; "
         "best is the highest delivery since the last ceiling, ceiling the most recent measured "
-        "shortfall. Absent, not zero, where the tier announced none.",
+        "shortfall, and probe_offer the ceiling plus one median reader, minted while the fold "
+        "probes its way back out of a ceiling paced movers cannot refute. Absent, not zero, "
+        "where the tier announced none.",
     )
     tokens = metrics.family(
         "prismabuild_tier_tokens",
@@ -552,6 +554,8 @@ def _starvation_metrics(
         if isinstance(supply, Mapping):
             fill.add(supply.get("best_mb_s"), tier=tier_id, stat="best")
             fill.add(supply.get("ceiling_mb_s"), tier=tier_id, stat="ceiling")
+            fill.add(supply.get("probe_offer_mb_s"), tier=tier_id,
+                     stat="probe_offer")
         try:
             ledger = queue.tier_ledger(tier_id)
             capacity, available = ledger.capacity(), ledger.available()

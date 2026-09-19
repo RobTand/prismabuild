@@ -66,6 +66,7 @@ from pathlib import Path
 import secrets
 import shutil
 import socket
+import statistics
 import subprocess
 import tempfile
 import time
@@ -1203,6 +1204,29 @@ def _measured_the_pool(record: Mapping[str, object]) -> bool:
     return float(pool_read) >= POOL_MEASUREMENT_MIN_SHARE * float(staged)
 
 
+def _single_reader_share(record: Mapping[str, object]) -> float | None:
+    """What one reader of this receipt's window drew on average, bounded.
+
+    The same two-sided bound :func:`mover_fill_demand_from_receipts` prices a
+    next mover with -- ``min`` of the copy's own file-side rate and the
+    window's pool delivery over the movers that shared it -- read here as
+    "one reader's worth", the increment the probe rule grows by.  A receipt
+    missing any of the three sides prices nothing, exactly as there: a share
+    off a guessed bandwidth is the habit this whole module replaces.
+    """
+
+    rate = record.get("mb_per_s_file_side")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+        return None
+    delivered = _delivered(record)
+    if delivered is None:
+        return None
+    sharers = record.get(MOVER_CONCURRENCY_FIELD)
+    if isinstance(sharers, bool) or not isinstance(sharers, int) or sharers < 1:
+        return None
+    return min(float(rate), delivered / sharers)
+
+
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
     pool_identity: Mapping[str, object] | None = None,
@@ -1286,6 +1310,24 @@ def fill_supply_from_records(
     item's own sealed demand -- and it stays with the loop that can see the
     queue, so nothing here invents a size.
 
+    That escape clause has a hole the pacing closes (#706): movers are
+    admitted against fill tokens, and a tier at a ceiling mints exactly the
+    ceiling, so every later reservation sits at or under it and no delivery
+    can *exceed* it -- the refutation is structurally unreachable, and each
+    paced-at-ceiling mover that falls short of its own reservation sinks the
+    ceiling further (live 2026-09-19: 111.2 MB/s, then 65).  A standing
+    ceiling therefore gets its own probe: the fold offers ``ceiling_mb_s``
+    plus one reader's worth -- the median of the single-reader shares these
+    same receipts price, ``min`` of each copy's file-side rate and its
+    window's delivery over its sharers -- as ``probe_offer_mb_s``, marked
+    ``probing`` with the basis spelled out.  A probing tier mints from the
+    offer, so the next mover admits above the ceiling; if the pool delivers,
+    that receipt refutes it and growth resumes, and if it falls short the
+    ceiling re-sets at the new delivery with a fresh probe above it -- a
+    bounded oscillation, never a one-way ratchet down.  When no receipt can
+    price a reader, no increment exists and nothing is invented: the ceiling
+    stands as it did.
+
     Residual, stated rather than hidden: at the ceiling the supply can flap by
     one reader, because a window one reader below the ceiling may deliver a
     little more than the ceiling recorded and refute it.  That is harmless
@@ -1310,6 +1352,7 @@ def fill_supply_from_records(
     ceiling: float | None = None
     best: float | None = None
     ceiling_key: str | None = None
+    shares: list[float] = []
     for record in ordered:
         if pool_identity is not None and (
                 record.get("schema") == MOVER_RECEIPT_SCHEMA):
@@ -1328,6 +1371,9 @@ def fill_supply_from_records(
             continue
         if not _measured_the_pool(record):
             continue
+        share = _single_reader_share(record)
+        if share is not None:
+            shares.append(share)
         # A record may rebuild ``best`` from None only if it is a reader
         # of the pool: a mover receipt (any era, sealed or not) or any
         # record carrying a sealed fill demand.  Anything else -- a prewarm
@@ -1353,12 +1399,28 @@ def fill_supply_from_records(
             best = None
             continue
         best = delivered if best is None else max(best, delivered)
-    return {
+    supply: dict[str, object] = {
         "ceiling_mb_s": ceiling,
         "ceiling_receipt": ceiling_key,
         "best_mb_s": best,
         "may_grow": ceiling is None,
+        "probing": False,
+        "probe_offer_mb_s": None,
+        "probe_basis": None,
     }
+    if ceiling is not None and shares:
+        # The growth rule's own increment, measured rather than queued: the
+        # receipts that set this ceiling still say what one reader drew, and
+        # their median is the one reader's worth the probe offers above it.
+        increment = statistics.median(shares)
+        supply["probing"] = True
+        supply["probe_offer_mb_s"] = ceiling + increment
+        supply["probe_basis"] = {
+            "basis": "median-single-reader-share",
+            "share_mb_s": increment,
+            "receipts_priced": len(shares),
+        }
+    return supply
 
 
 def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
