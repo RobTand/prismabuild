@@ -102,11 +102,24 @@ _PHASE_KEYS = frozenset({
     # and its chunk range.  A phase carries either the pair or the chunks,
     # never both: chunking is a sealing-time property, and a node whose
     # range is its phase's whole range follows the whole-phase rules.
-    "ram_chunks"})
+    "ram_chunks",
+    # The stage's own leg cut into chunks the same way (#675): one movement
+    # node plus one egress node per chunk, in read order, each carrying its
+    # chunk index and its chunk range under the stage's own role names.  A
+    # phase carries either the pair or the chunks, never both, and either
+    # leg chunks independently of the other: a phase may carry
+    # ``stage_chunks`` and/or ``ram_chunks``, and validation tiles each
+    # against the phase on its own.
+    "stage_chunks"})
 #: What one chunk of a chunked ram leg says, and nothing else.
 _CHUNK_KEYS = frozenset({
     "chunk_index", "start_bytes", "end_bytes", "stage_gib",
     "ram_mover_row", "ram_egress_row"})
+#: What one chunk of a chunked stage leg says, and nothing else: the same
+#: shape under the stage's own role names (#675).
+_STAGE_CHUNK_KEYS = frozenset({
+    "chunk_index", "start_bytes", "end_bytes", "stage_gib",
+    "mover_row", "egress_row"})
 _PLAN_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "stage_root", "manifest_sha256",
     "manifest_bytes", "phases",
@@ -126,6 +139,12 @@ _PLAN_KEYS = frozenset({
 _MOVEMENT_ROLES = {
     "mover_row": "egress_row",
     "ram_mover_row": "ram_egress_row",
+}
+#: Which rows one chunk of a chunked leg carries, by leg: the tmpfs leg
+#: under its own role names (#673), the SSD leg under the stage's (#675).
+_MOVEMENT_ROLES_BY_LEG = {
+    "ram": ("ram_mover_row", "ram_egress_row"),
+    "stage": ("mover_row", "egress_row"),
 }
 
 
@@ -167,8 +186,6 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
             "start_bytes": start,
             "end_bytes": end,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
-            "mover_row": dict(phase["mover_row"]),      # type: ignore[arg-type]
-            "egress_row": dict(phase["egress_row"]),    # type: ignore[arg-type]
         }
         if phase.get("ram_mover_row") is not None:
             entry["ram_mover_row"] = dict(phase["ram_mover_row"])  # type: ignore[arg-type]
@@ -177,6 +194,15 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
         if phase.get("ram_chunks") is not None:
             entry["ram_chunks"] = [  # type: ignore[arg-type]
                 {**chunk} for chunk in phase["ram_chunks"]]
+        # The stage leg arrives in either shape (#675); the validator
+        # refuses the mixture, so copying what is there copies one shape.
+        if phase.get("mover_row") is not None:
+            entry["mover_row"] = dict(phase["mover_row"])      # type: ignore[arg-type]
+        if phase.get("egress_row") is not None:
+            entry["egress_row"] = dict(phase["egress_row"])    # type: ignore[arg-type]
+        if phase.get("stage_chunks") is not None:
+            entry["stage_chunks"] = [  # type: ignore[arg-type]
+                {**chunk} for chunk in phase["stage_chunks"]]
         built.append(entry)
     body: dict[str, object] = {
         "schema": RESIDENCY_PLAN_SCHEMA_V1,
@@ -194,26 +220,32 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
     return validate_plan(body)
 
 
-def _checked_ram_chunk(chunk: object, *, phase_name: str, chunk_index: int,
-                       phase_start: int, digest: str, ram_tier_id: str,
-                       ram_demand_kind: str,
+def _checked_leg_chunk(chunk: object, *, leg: str, phase_name: str,
+                       chunk_index: int, phase_start: int, digest: str,
+                       tier_id: str, demand_kind: str,
                        keys: set[str]) -> dict[str, object]:
-    """One chunk of a chunked ram leg, checked the way the whole-phase leg is.
+    """One chunk of a chunked movement leg, checked the way the whole-phase leg is.
 
-    ``phase_start`` is where the previous chunk ended (or the phase began):
-    chunks tile their phase with no gap and no overlap, because a gap is
-    bytes nobody promotes and an overlap is bytes two promotions both
-    publish under one name -- the same cover rule the phases themselves
-    answer to.  ``keys`` is the plan's shared action-key set, so a chunk
-    node never shares a key with anything else sealed.
+    ``leg`` is ``"ram"`` (#673) or ``"stage"`` (#675): it selects the chunk
+    key set and the mover and egress roles the chunk carries them under --
+    ``ram_mover_row``/``ram_egress_row`` on the tmpfs leg, the stage's own
+    ``mover_row``/``egress_row`` on the SSD leg.  ``phase_start`` is where
+    the previous chunk ended (or the phase began): chunks tile their phase
+    with no gap and no overlap, because a gap is bytes nobody moves and an
+    overlap is bytes two nodes both publish under one name -- the same cover
+    rule the phases themselves answer to.  ``keys`` is the plan's shared
+    action-key set, so a chunk node never shares a key with anything else
+    sealed.
     """
 
+    mover_role, egress_role = _MOVEMENT_ROLES_BY_LEG[leg]
+    chunk_keys = _CHUNK_KEYS if leg == "ram" else _STAGE_CHUNK_KEYS
     where = f"plan phase {phase_name!r} chunk {chunk_index}"
     if not isinstance(chunk, Mapping):
         raise ResidencyPlanError(f"{where} must be an object")
-    stray = sorted(set(chunk) - _CHUNK_KEYS)
+    stray = sorted(set(chunk) - chunk_keys)
     if stray:
-        raise ResidencyPlanError(f"unknown ram-chunk fields: {stray}")
+        raise ResidencyPlanError(f"unknown {leg}-chunk fields: {stray}")
     if (isinstance(chunk.get("chunk_index"), bool)
             or chunk.get("chunk_index") != chunk_index):
         raise ResidencyPlanError(
@@ -235,47 +267,47 @@ def _checked_ram_chunk(chunk: object, *, phase_name: str, chunk_index: int,
     if isinstance(declared, bool) or not isinstance(declared, int) or declared < floor:
         raise ResidencyPlanError(
             f"{where} claims {declared} GiB for a range that occupies {floor}")
-    ram_mover = chunk.get("ram_mover_row")
-    if not isinstance(ram_mover, Mapping):
-        raise ResidencyPlanError(f"{where} needs a ram_mover_row")
-    ram_key = _action_key(ram_mover.get("action_key"),
-                          where="ram_mover_row.action_key")
-    if ram_key in keys:
+    mover = chunk.get(mover_role)
+    if not isinstance(mover, Mapping):
+        raise ResidencyPlanError(f"{where} needs a {mover_role}")
+    mover_key = _action_key(mover.get("action_key"),
+                            where=f"{mover_role}.action_key")
+    if mover_key in keys:
         raise ResidencyPlanError("two plan rows share an action key")
-    keys.add(ram_key)
-    ram_pin = ram_mover.get("residency")
-    if not isinstance(ram_pin, Mapping):
+    keys.add(mover_key)
+    pin = mover.get("residency")
+    if not isinstance(pin, Mapping):
         raise ResidencyPlanError(
-            f"{where} has a ram mover row with no residency block; its "
+            f"{where} has a {leg} mover row with no residency block; its "
             f"occupancy would be released the moment it finished")
-    if (ram_pin.get("tier_id") != ram_tier_id
-            or ram_pin.get("manifest_sha256") != digest
-            or ram_pin.get("range_start_bytes") != cstart
-            or ram_pin.get("range_end_bytes") != cend):
+    if (pin.get("tier_id") != tier_id
+            or pin.get("manifest_sha256") != digest
+            or pin.get("range_start_bytes") != cstart
+            or pin.get("range_end_bytes") != cend):
         raise ResidencyPlanError(
             f"{where} names bytes {cstart}..{cend} of {digest[:12]} for the "
-            f"ram tier {ram_tier_id}, and its ram mover row pins "
-            f"{ram_pin.get('range_start_bytes')}.."
-            f"{ram_pin.get('range_end_bytes')} of "
-            f"{str(ram_pin.get('manifest_sha256'))[:12]} on "
-            f"{ram_pin.get('tier_id')}")
-    ram_resources = ram_mover.get("resources")
-    if (not isinstance(ram_resources, Mapping)
-            or int(ram_resources.get(ram_demand_kind, 0)) < floor):
+            f"{leg} tier {tier_id}, and its {leg} mover row pins "
+            f"{pin.get('range_start_bytes')}.."
+            f"{pin.get('range_end_bytes')} of "
+            f"{str(pin.get('manifest_sha256'))[:12]} on "
+            f"{pin.get('tier_id')}")
+    resources = mover.get("resources")
+    if (not isinstance(resources, Mapping)
+            or int(resources.get(demand_kind, 0)) < floor):
         raise ResidencyPlanError(
-            f"{where} asks the ram tier for "
-            f"{None if not isinstance(ram_resources, Mapping) else ram_resources.get(ram_demand_kind)}"
+            f"{where} asks the {leg} tier for "
+            f"{None if not isinstance(resources, Mapping) else resources.get(demand_kind)}"
             f", below the {floor} GiB its range occupies")
-    ram_egress = chunk.get("ram_egress_row")
-    if not isinstance(ram_egress, Mapping):
-        raise ResidencyPlanError(f"{where} needs a ram_egress_row")
-    ram_egress_key = _action_key(ram_egress.get("action_key"),
-                                 where="ram_egress_row.action_key")
-    if ram_egress_key in keys:
+    egress = chunk.get(egress_role)
+    if not isinstance(egress, Mapping):
+        raise ResidencyPlanError(f"{where} needs a {egress_role}")
+    egress_key = _action_key(egress.get("action_key"),
+                             where=f"{egress_role}.action_key")
+    if egress_key in keys:
         raise ResidencyPlanError("two plan rows share an action key")
-    keys.add(ram_egress_key)
-    return {**dict(chunk), "ram_mover_row": dict(ram_mover),
-            "ram_egress_row": dict(ram_egress)}
+    keys.add(egress_key)
+    return {**dict(chunk), mover_role: dict(mover),
+            egress_role: dict(egress)}
 
 
 def validate_plan(value: object) -> dict[str, object]:
@@ -364,51 +396,85 @@ def validate_plan(value: object) -> dict[str, object]:
                 f"plan phase {name!r} claims {declared} GiB for a range that "
                 f"occupies {floor}")
         rows: dict[str, object] = {}
-        for role in ("mover_row", "egress_row"):
-            row = phase.get(role)
-            if not isinstance(row, Mapping):
-                raise ResidencyPlanError(f"plan phase {name!r} needs a {role}")
-            key = _action_key(row.get("action_key"), where=f"{role}.action_key")
-            if key in keys:
-                raise ResidencyPlanError("two plan rows share an action key")
-            keys.add(key)
-            rows[role] = dict(row)
-        mover = rows["mover_row"]
-        assert isinstance(mover, dict)
-        resources = mover.get("resources")
-        if not isinstance(resources, Mapping) or int(resources.get(demand_kind, 0)) < floor:
-            # The range is the measurement and the demand is a claim about it.
-            # A row that asked the tier for less than its range occupies would
-            # pin bytes the ledger never counted -- the accounting #583 closes
-            # -- and ``publish`` would refuse it one phase into the campaign
-            # rather than here, where nothing is queued yet.
+        # The stage leg, in either sealed shape (#675): one movement node
+        # plus one egress node over the whole range, or one pair per chunk.
+        # Either shape or neither -- a phase with no stage leg at all is a
+        # plan no version of the submitter ever sealed, and a phase with
+        # both seals one shape twice.
+        mover = phase.get("mover_row")
+        egress = phase.get("egress_row")
+        stage_chunks = phase.get("stage_chunks")
+        if stage_chunks is not None and (
+                mover is not None or egress is not None):
             raise ResidencyPlanError(
-                f"plan phase {name!r} asks the tier for "
-                f"{None if not isinstance(resources, Mapping) else resources.get(demand_kind)}"
-                f", below the {floor} GiB its range occupies")
-        # ...and it has to carry the pin the row is read for.  A mover row
-        # without a residency block publishes, claims, stages its 34 GB and
-        # then releases its tier tokens at ``finish``, because
-        # ``residency_pin_holds`` reads the queue record and finds no range to
-        # check the receipt against.  Nothing downstream can see that: the
-        # mover is ``executed``, the files are on the stage, and only the
-        # ledger disagrees -- so it is checked here, where the plan is frozen
-        # and nothing is queued yet, against the range the phase already
-        # declares rather than against itself.
-        pin = mover.get("residency")
-        if not isinstance(pin, Mapping):
-            raise ResidencyPlanError(
-                f"plan phase {name!r} has a mover row with no residency block; "
-                f"its tier tokens would be released the moment it finished")
-        if (pin.get("tier_id") != tier_id
-                or pin.get("manifest_sha256") != digest
-                or pin.get("range_start_bytes") != start
-                or pin.get("range_end_bytes") != end):
-            raise ResidencyPlanError(
-                f"plan phase {name!r} names bytes {start}..{end} of {digest[:12]} "
-                f"on {tier_id}, and its mover row pins "
-                f"{pin.get('range_start_bytes')}..{pin.get('range_end_bytes')} of "
-                f"{str(pin.get('manifest_sha256'))[:12]} on {pin.get('tier_id')}")
+                f"plan phase {name!r} carries both a mover and stage "
+                f"chunks; chunking is a sealing-time property, and one "
+                f"phase seals one shape")
+        if stage_chunks is not None:
+            if not isinstance(stage_chunks, list) or not stage_chunks:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} needs a non-empty stage_chunks list")
+            checked_chunks: list[dict[str, object]] = []
+            chunk_position = start
+            for index, chunk in enumerate(stage_chunks):
+                checked_chunk = _checked_leg_chunk(
+                    chunk, leg="stage", phase_name=name, chunk_index=index,
+                    phase_start=chunk_position, digest=digest,
+                    tier_id=tier_id, demand_kind=demand_kind, keys=keys)
+                checked_chunks.append(checked_chunk)
+                chunk_position = int(checked_chunk["end_bytes"])
+            if chunk_position != end:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} ends at {end}, not where its last "
+                    f"chunk ended ({chunk_position})")
+            rows["stage_chunks"] = checked_chunks
+        else:
+            for role in ("mover_row", "egress_row"):
+                row = phase.get(role)
+                if not isinstance(row, Mapping):
+                    raise ResidencyPlanError(
+                        f"plan phase {name!r} needs a {role}")
+                key = _action_key(row.get("action_key"), where=f"{role}.action_key")
+                if key in keys:
+                    raise ResidencyPlanError("two plan rows share an action key")
+                keys.add(key)
+                rows[role] = dict(row)
+            mover = rows["mover_row"]
+            assert isinstance(mover, dict)
+            resources = mover.get("resources")
+            if not isinstance(resources, Mapping) or int(resources.get(demand_kind, 0)) < floor:
+                # The range is the measurement and the demand is a claim about it.
+                # A row that asked the tier for less than its range occupies would
+                # pin bytes the ledger never counted -- the accounting #583 closes
+                # -- and ``publish`` would refuse it one phase into the campaign
+                # rather than here, where nothing is queued yet.
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} asks the tier for "
+                    f"{None if not isinstance(resources, Mapping) else resources.get(demand_kind)}"
+                    f", below the {floor} GiB its range occupies")
+            # ...and it has to carry the pin the row is read for.  A mover row
+            # without a residency block publishes, claims, stages its 34 GB and
+            # then releases its tier tokens at ``finish``, because
+            # ``residency_pin_holds`` reads the queue record and finds no range to
+            # check the receipt against.  Nothing downstream can see that: the
+            # mover is ``executed``, the files are on the stage, and only the
+            # ledger disagrees -- so it is checked here, where the plan is frozen
+            # and nothing is queued yet, against the range the phase already
+            # declares rather than against itself.
+            pin = mover.get("residency")
+            if not isinstance(pin, Mapping):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} has a mover row with no residency block; "
+                    f"its tier tokens would be released the moment it finished")
+            if (pin.get("tier_id") != tier_id
+                    or pin.get("manifest_sha256") != digest
+                    or pin.get("range_start_bytes") != start
+                    or pin.get("range_end_bytes") != end):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} names bytes {start}..{end} of {digest[:12]} "
+                    f"on {tier_id}, and its mover row pins "
+                    f"{pin.get('range_start_bytes')}..{pin.get('range_end_bytes')} of "
+                    f"{str(pin.get('manifest_sha256'))[:12]} on {pin.get('tier_id')}")
         # The ram leg, when the plan carries one: the same two checks the
         # stage's own row just passed, aimed at the tier the promotion lands
         # on.  A ram mover row without a pin releases its occupancy the
@@ -434,11 +500,11 @@ def validate_plan(value: object) -> dict[str, object]:
             checked_chunks: list[dict[str, object]] = []
             position = start
             for index, chunk in enumerate(ram_chunks):
-                checked_chunk = _checked_ram_chunk(
-                    chunk, phase_name=name, chunk_index=index,
+                checked_chunk = _checked_leg_chunk(
+                    chunk, leg="ram", phase_name=name, chunk_index=index,
                     phase_start=position, digest=digest,
-                    ram_tier_id=ram_tier_id,
-                    ram_demand_kind=ram_demand_kind, keys=keys)
+                    tier_id=ram_tier_id,
+                    demand_kind=ram_demand_kind, keys=keys)
                 checked_chunks.append(checked_chunk)
                 position = int(checked_chunk["end_bytes"])
             if position != end:
@@ -498,10 +564,7 @@ def validate_plan(value: object) -> dict[str, object]:
                 raise ResidencyPlanError("two plan rows share an action key")
             keys.add(ram_egress_key)
             rows["ram_egress_row"] = dict(ram_egress)
-        checked.append({**dict(phase), "mover_row": mover,
-                        "egress_row": rows["egress_row"],
-                        **{role: rows[role] for role in rows
-                           if role not in ("mover_row", "egress_row")}})
+        checked.append({**dict(phase), **rows})
     return {**{key: value[key] for key in _PLAN_KEYS if key in value},
             "phases": checked}
 
@@ -574,6 +637,24 @@ def read(queue, consumer_action_key: str, *,
         return None
 
 
+def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:
+    """The row the submitter publishes at once: the first chunk's, or the mover's.
+
+    The consumer depends only on its first phase, and a first phase sealed
+    chunked (#675) starts with its first chunk: the rest is the tiers loop's
+    to publish as accepted progress advances.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    first = phases[0]
+    chunks = first.get("stage_chunks")
+    if isinstance(chunks, list):
+        assert isinstance(chunks[0], Mapping)
+        return dict(chunks[0]["mover_row"])  # type: ignore[index]
+    return dict(first["mover_row"])
+
+
 def leads_for(plan: Mapping[str, object]) -> list[str]:
     """The movers the consumer's admission depends on: its first phase, only.
 
@@ -582,9 +663,7 @@ def leads_for(plan: Mapping[str, object]) -> list[str]:
     consumer's progress to publish it.
     """
 
-    phases = plan["phases"]
-    assert isinstance(phases, list)
-    return [str(phases[0]["mover_row"]["action_key"])]
+    return [str(lead_mover_row(plan)["action_key"])]
 
 
 def mover_keys(plan: Mapping[str, object]) -> list[str]:
@@ -600,8 +679,28 @@ def mover_keys(plan: Mapping[str, object]) -> list[str]:
 
     phases = plan["phases"]
     assert isinstance(phases, list)
-    out = [str(phase["mover_row"]["action_key"]) for phase in phases]
+    out = stage_mover_keys(plan)
     out += ram_mover_keys(plan)
+    return out
+
+
+def stage_mover_keys(plan: Mapping[str, object]) -> list[str]:
+    """Every stage movement node this plan will ever have, published or not.
+
+    A chunked phase contributes one key per chunk, in chunk order (#675);
+    a whole-phase leg contributes its mover's key, exactly as before.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    out = []
+    for phase in phases:
+        chunks = phase.get("stage_chunks")
+        if isinstance(chunks, list):
+            out += [str(chunk["mover_row"]["action_key"])
+                    for chunk in chunks]
+        elif "mover_row" in phase:
+            out.append(str(phase["mover_row"]["action_key"]))
     return out
 
 
@@ -724,22 +823,30 @@ def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
         capacity_gib=capacity_gib, runahead_cap_gib=runahead_cap_gib)
 
 
+#: Which chunk table a window decision reads, by mover role: the stage
+#: window reads ``stage_chunks`` (#675), the ram window ``ram_chunks`` (#673).
+_CHUNK_TABLES = {
+    "mover_row": "stage_chunks",
+    "ram_mover_row": "ram_chunks",
+}
+
+
 def _legs(plan: Mapping[str, object], *, mover_role: str) -> list[dict[str, object]]:
     """One publishable unit per phase, or per chunk of a chunked phase.
 
-    A chunked ram leg (#673) promotes and frees per chunk: each chunk is a
-    leg carrying its phase, its chunk index and its own mover and egress
-    rows, in read order.  Every other leg -- the stage's, and a ram leg
-    sealed whole -- is one leg over the phase's whole range with no chunk
-    index, which is what keeps those decisions byte-identical to today.
+    A chunked leg stages and frees per chunk: each chunk is a leg carrying
+    its phase, its chunk index and its own mover and egress rows, in read
+    order -- ``stage_chunks`` for the stage window, ``ram_chunks`` for the
+    ram window.  Every other leg is one leg over the phase's whole range
+    with no chunk index, which is what keeps those decisions byte-identical
+    to today.
     """
 
     egress_role = _MOVEMENT_ROLES[mover_role]
     legs = []
     for phase in plan["phases"]:
         assert isinstance(phase, Mapping)
-        chunks = (phase.get("ram_chunks")
-                  if mover_role == "ram_mover_row" else None)
+        chunks = phase.get(_CHUNK_TABLES[mover_role])
         if isinstance(chunks, list):
             for chunk in chunks:
                 assert isinstance(chunk, Mapping)
@@ -749,8 +856,8 @@ def _legs(plan: Mapping[str, object], *, mover_role: str) -> list[dict[str, obje
                     "start_bytes": int(chunk["start_bytes"]),
                     "end_bytes": int(chunk["end_bytes"]),
                     "stage_gib": int(chunk["stage_gib"]),
-                    "mover_row": chunk["ram_mover_row"],
-                    "egress_row": chunk["ram_egress_row"],
+                    "mover_row": chunk[mover_role],
+                    "egress_row": chunk[egress_role],
                 })
         elif mover_role in phase:
             legs.append({
@@ -793,9 +900,10 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     nothing on the tier: published by nobody, evicted by nobody.  Each
     entry's ``mover_row`` and ``egress_row`` are the pair the role names.
 
-    A phase the submitter sealed chunked (#673) decides per chunk: each
-    chunk is a leg with its own ``chunk_index``, its own range and its own
-    rows, in read order.  Chunks of the phase being read are the reader's
+    A phase the submitter sealed chunked decides per chunk: each chunk is
+    a leg with its own ``chunk_index``, its own range and its own rows, in
+    read order -- ``stage_chunks`` on the stage leg (#675), ``ram_chunks``
+    on the ram leg (#673).  Chunks of the phase being read are the reader's
     near-term food -- they publish as their turn comes, outside the
     run-ahead budget -- while later chunks spend it, so the budget buys
     several chunks instead of zero phases.  A chunk of a passed phase
@@ -914,6 +1022,7 @@ __all__ = [
     "accepted",
     "build_plan",
     "freeze",
+    "lead_mover_row",
     "leads_for",
     "mover_keys",
     "ram_mover_keys",
@@ -921,6 +1030,7 @@ __all__ = [
     "remaining",
     "runahead_budget_gib",
     "runahead_step_gib",
+    "stage_mover_keys",
     "validate_plan",
     "window",
 ]
