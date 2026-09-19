@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ if str(FLEET_DIR) not in sys.path:
     sys.path.insert(0, str(FLEET_DIR))
 
 import pbcanary  # noqa: E402
+import pbrun  # noqa: E402
 from pbcanary_legs import leg1, leg2, leg3, leg4  # noqa: E402
 from pbcanary_verdict import PRECONDITION_MARKERS, verdict  # noqa: E402
 
@@ -323,3 +325,103 @@ def test_run_record_is_a_stamped_gc_contract() -> None:
     assert record["run_id"] == "run-x"
     assert "pb_gc" in record["gc"]["owner"]
     assert "quiescent-store" in record["gc"]["rule"]
+
+
+# --- the driver's demand reaches pbrun intact (#700) -------------------------
+
+
+class _PbrunSealed(Exception):
+    """The real pbrun reached the CAS seal; the captured demand is complete."""
+
+
+def _driver_pbrun_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, demand: dict,
+) -> list:
+    """Submit one fake leg through the driver; return the pbrun argv it built."""
+
+    captured: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = '{"action_key": "key-1"}'
+        stderr = ""
+
+    def fake_run(argv, *, timeout_s):
+        captured["argv"] = list(argv)
+        return _Done()
+
+    monkeypatch.setattr(pbcanary, "run_process", fake_run)
+    spec = {"name": "leg-2", "argv": ["true"], "demand": demand}
+    pbcanary.submit_leg(
+        {"pbrun": tmp_path / "pbrun.py"}, spec, tmp_path, "run-1", -7, None)
+    return captured["argv"]
+
+
+def _sealed_pbrun_demand(
+    pbrun_argv: list, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    """Decode one driver command line through pbrun's real parser and defaults.
+
+    The same seam ``tests/test_pbrun_declares_cores.py`` uses: ``pbrun.main``
+    parses the command line, resolves the default environment and the demand,
+    and is stopped at ``pb.seal_action`` -- no queue, worker or fleet contact.
+    The checkout the driver named is a private Git repository here.
+    """
+
+    sealed: list = []
+    assert subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=False
+    ).returncode == 0
+    assert subprocess.run(
+        ["git", "-C", str(tmp_path),
+         "-c", "user.name=PrismaBuild test",
+         "-c", "user.email=test@example.invalid",
+         "commit", "--allow-empty", "-qm", "fixture"],
+        check=False,
+    ).returncode == 0
+
+    def _stop(body, *_a, **_kw):
+        sealed.append(body)
+        raise _PbrunSealed()
+
+    monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        pbrun, "build_git_checkout_snapshot",
+        lambda *_a, **_kw: {"input": {"id": "test"}},
+    )
+    monkeypatch.setattr(sys, "argv", ["pbrun.py", *pbrun_argv[2:]])
+    with pytest.raises(_PbrunSealed):
+        pbrun.main()
+    return sealed[0]["params"]["demand"]
+
+
+def test_submit_leg_demand_survives_the_real_pbrun_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (#700): repeated scalar ``--demand`` options lose all but the last.
+
+    ``--demand`` is one single-value flag, so ``--demand cpu=3 --demand gpu=1
+    --demand mem_gb=8`` seals only ``mem_gb=8``.  The live leg-2 action
+    ``f385165a...`` sealed ``{"cpu": 1, "mem_gb": 8}`` that way: the declared
+    ``gpu=1`` admission was lost while the payload still ran CUDA.  The driver
+    must send the one comma-separated aggregate pbrun already parses, with
+    every resource preserved, including a nondefault cpu count.
+    """
+
+    argv = _driver_pbrun_argv(
+        tmp_path, monkeypatch, {"cpu": 3, "gpu": 1, "mem_gb": 8})
+    assert _sealed_pbrun_demand(argv, tmp_path, monkeypatch) == {
+        "cpu": 3, "gpu": 1, "mem_gb": 8}, argv
+
+
+def test_submit_leg_empty_demand_keeps_the_pbrun_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty demand is no flag at all, so pbrun's own defaults stand."""
+
+    argv = _driver_pbrun_argv(tmp_path, monkeypatch, {})
+    assert "--demand" not in argv
+    assert _sealed_pbrun_demand(argv, tmp_path, monkeypatch) == {
+        "cpu": 1, "mem_gb": 4}
