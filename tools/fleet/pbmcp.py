@@ -910,6 +910,106 @@ def _tier_row(record: Mapping[str, object]) -> dict:
     }
 
 
+def _cursor_census(queue_root: Path, *, now: float) -> dict:
+    """One row per filed residency plan: where its consumer's cursor is.
+
+    The cursor and the frontier are derived by ``pbstatus``'s own plan census
+    -- the same reader ``read_starvation`` and the pbmetrics gauges use -- so
+    three consumers of one set of records cannot disagree about where a
+    reader stands.  What this adds is the join #660 asks for at the per-key
+    grain: the full consumer key, and the progress record's own timestamp for
+    the accepted phase, lifted from the lease beside the claim.  A queue
+    where nobody was ever staged has no plans and answers ``[]``; a mount
+    that does not answer raises, and lands in ``unavailable``.
+    """
+
+    root = Path(queue_root)
+    queue = pool.PoolQueue(root.absolute())
+    notes: list[str] = []
+    unreadable: list[str] = []
+    try:
+        with os.scandir(root / pool.RESIDENCY_PLANS) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".json") and entry.is_file())
+    except OSError as error:
+        if not _absent(error):
+            raise
+        names = []
+    ready = set(_keys_in(root / pool.READY))
+    claimed = set(_keys_in(root / pool.CLAIMED))
+    rows: list[dict] = []
+    for name in names:
+        key = name[:-len(".json")]
+        raw = pbstatus._starvation_sidecar(root / pool.RESIDENCY_PLANS / name)
+        if isinstance(raw, Exception) or not isinstance(raw, Mapping):
+            reason = str(raw) if isinstance(raw, Exception) else "not a JSON object"
+            note = f"cursors plan {key[:12]}: {reason}"
+            notes.append(note)
+            unreadable.append(note)
+            rows.append({"consumer_action_key": key,
+                         "consumer_action_key_prefix": key[:12],
+                         "valid": False, "note": reason})
+            continue
+        entry = pbstatus._starvation_plan_entry(
+            queue, key, raw, ready=ready, claimed=claimed,
+            notes=notes, unreadable=unreadable, now=now)
+        rows.append(_cursor_row(queue, key, entry, now=now,
+                                notes=notes, unreadable=unreadable))
+    return {"rows": rows, "notes": notes, "unreadable": unreadable}
+
+
+def _cursor_row(queue: pool.PoolQueue, key: str,
+                entry: Mapping[str, object], *, now: float,
+                notes: list[str], unreadable: list[str]) -> dict:
+    """The cursor view of one plan entry: the accepted phase, and the gap.
+
+    A ready or absent consumer carries no lease, so its accepted timestamp
+    reads ``null``: nothing recorded one, which is the gap-list fact rather
+    than a missing field.  A claimed consumer whose lease will not answer
+    keeps its plan-derived row and names the failure, so one unreadable
+    sidecar does not cost the caller every cursor.
+    """
+
+    row: dict[str, object] = {
+        "consumer_action_key": key,
+        "consumer_action_key_prefix": key[:12],
+        "valid": entry.get("valid"),
+        "note": entry.get("note"),
+        "state": entry.get("state"),
+        "tier_id": entry.get("tier_id"),
+        "ram_tier_id": entry.get("ram_tier_id"),
+        "accepted_phase": entry.get("accepted_phase"),
+        "accepted_index": entry.get("accepted_index"),
+        "phase_count": len(entry.get("phases") or []),
+        "cursor_gap": entry.get("cursor_gap"),
+        "accepted_reported_unix": None,
+        "accepted_age_s": None,
+        "accepted_units_completed": None,
+    }
+    if not entry.get("valid") or entry.get("state") != "claimed":
+        return row
+    lease = pbstatus._starvation_sidecar(queue.lease_path(key))
+    if isinstance(lease, Exception):
+        note = f"cursors lease {key[:12]}: {lease}"
+        notes.append(note)
+        unreadable.append(note)
+        return row
+    observed = (lease.get("progress_observation")
+                if isinstance(lease, Mapping) else None)
+    accepted = (observed.get("last_accepted")
+                if isinstance(observed, Mapping) else None)
+    if not isinstance(accepted, Mapping):
+        return row
+    reported = accepted.get("reported_unix")
+    if type(reported) in (int, float) and math.isfinite(reported):
+        row["accepted_reported_unix"] = reported
+        row["accepted_age_s"] = now - float(reported)
+    units = accepted.get("units_completed")
+    if type(units) is int:
+        row["accepted_units_completed"] = units
+    return row
+
+
 # --------------------------------------------------------------------------
 # The tools
 # --------------------------------------------------------------------------
@@ -1415,6 +1515,82 @@ class Session:
             "filed_receipts": receipts,
             "receipts_filed": receipts_filed,
             "receipts_truncated": truncated,
+        }
+
+    # -- pb_starvation -----------------------------------------------------
+
+    def pb_starvation(self, call: Call) -> dict:
+        """What is waiting on data, as one census.
+
+        ``pbstatus --starvation``'s own reader, served whole rather than
+        paraphrased: a second reader of the same records that disagreed
+        about who is waiting would be a second source of truth, and the
+        quiet/grace rule, the plan census and the denial join are exactly
+        the parts this must not get subtly wrong.  Two completenesses,
+        because there are two things that can be incomplete: the envelope's
+        ``complete`` says the mount answered inside the deadline, and
+        ``census_complete`` says every record the census tried did.
+
+        The verdicts stay heuristics here as they are there: a waiting
+        claim carries its ``quiet_s``/``grace_s`` and its child's silence
+        beside ``waiting_on_data``, and the ``not_observable`` list names
+        what no record carries rather than inventing it.
+        """
+
+        blob = call.read(
+            "starvation", lambda: pbstatus.read_starvation(self.queue_root))
+        blob = blob if isinstance(blob, Mapping) else {}
+        return {
+            "queue_root": str(self.queue_root),
+            "starvation_schema": blob.get("schema"),
+            "sampled_unix": blob.get("sampled_unix"),
+            "census_complete": blob.get("complete"),
+            "waiting_claims": blob.get("waiting_claims"),
+            "residency_plans": blob.get("residency_plans"),
+            "tiers": blob.get("tiers"),
+            "denial_top": blob.get("denial_top"),
+            "not_observable": blob.get("not_observable"),
+            "notes": blob.get("notes"),
+        }
+
+    # -- pb_cursors --------------------------------------------------------
+
+    def pb_cursors(self, call: Call, *, key_prefix: str | None = None) -> dict:
+        """Where each consumer's read cursor stands, per filed plan.
+
+        The read cursor is the phase the consumer's progress record last
+        vouches for, with the timestamp that record carried; the frontier is
+        what the tier ledgers say is staged ahead of it, per leg, with the
+        backlog in phases and bytes.  The join is ``pbstatus``'s plan census,
+        the same one ``pb_starvation`` serves, so the two tools cannot
+        disagree about where a reader is.
+
+        The population is the filed plans, and is said in the answer: a
+        consumer the coordinator never staged has no plan and therefore no
+        cursor to report, which is a different sentence from "the queue did
+        not answer", and the envelope is what tells those apart.
+        """
+
+        prefix = _valid_prefix(key_prefix) if key_prefix else None
+        census = call.read("cursors",
+                           lambda: _cursor_census(self.queue_root,
+                                                  now=time.time()))
+        census = census if isinstance(census, Mapping) else {}
+        rows = census.get("rows")
+        if rows is not None and prefix is not None:
+            rows = [row for row in rows
+                    if str(row.get("consumer_action_key") or "")
+                    .startswith(prefix)]
+        return {
+            "queue_root": str(self.queue_root),
+            "key_prefix": prefix,
+            "cursors": rows,
+            "returned": None if rows is None else len(rows),
+            "population": "one row per filed residency plan, in plan order; "
+                          "a consumer with no plan has no cursor to report, "
+                          "and its state on the row says why",
+            "unreadable": census.get("unreadable"),
+            "notes": census.get("notes"),
         }
 
     # -- pb_verify_claim ---------------------------------------------------
@@ -1939,6 +2115,41 @@ TOOLS: tuple[dict, ...] = (
         "inputSchema": {"type": "object", "properties": {},
                         "additionalProperties": False},
     },
+    {
+        "name": "pb_starvation",
+        "description": "What is waiting on data, as one census: claimed "
+                       "consumers the quiet/grace rule reads as waiting (with "
+                       "the payload scope's silence beside the verdict), each "
+                       "residency plan's promotion state and cursor gap, what "
+                       "every tier offers and holds, and which claim denials "
+                       "block movers. not_observable names what no record "
+                       "carries. Read-only and deadline-bounded; check "
+                       "`complete` and `census_complete` before trusting a "
+                       "quiet fleet.",
+        "inputSchema": {"type": "object", "properties": {},
+                        "additionalProperties": False},
+    },
+    {
+        "name": "pb_cursors",
+        "description": "Per-consumer read cursors: for every filed residency "
+                       "plan, the phase the consumer's progress record last "
+                       "vouches for and when it was reported, against what "
+                       "the tier ledgers say is staged ahead of it, per leg "
+                       "(stage and ram), with the backlog in phases and "
+                       "bytes. The consumer's byte offset inside the phase "
+                       "it is reading is recorded nowhere and reads "
+                       "not_observable. Read-only and deadline-bounded.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key_prefix": {"type": "string",
+                               "description": "Keep only the consumer whose "
+                                              "action key starts with this "
+                                              "prefix."},
+            },
+            "additionalProperties": False,
+        },
+    },
 )
 
 TOOL_NAMES = tuple(tool["name"] for tool in TOOLS)
@@ -2038,7 +2249,9 @@ class Server:
                 "published_by; the queue records no submitter identity), "
                 "pb_action and pb_log for one of them, pb_receipts for a "
                 "set of endings, pb_movers for who is staging data, "
-                "and pb_status for the "
+                "pb_starvation for what is waiting on that data and "
+                "pb_cursors for where each consumer's read cursor stands "
+                "against it, and pb_status for the "
                 "fleet. Every response carries complete/timed_out: a quiet "
                 "queue and an unreachable mount look alike unless you read "
                 "them. Submission is deliberately absent -- use pbrun."),

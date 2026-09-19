@@ -22,19 +22,31 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 
 READY_KEY = "a" * 64
 CLAIMED_KEY = "c" * 64
 DONE_KEY = "d" * 64
 #: Two keys sharing a prefix, so ambiguity has something to be ambiguous about.
 TWIN_KEY = "d" * 63 + "e"
+
+#: The staged consumer the starvation census reads: claimed, mid-read on its
+#: first phase, quiet past half its grace with a silent payload scope.
+CONSUMER_KEY = "e" * 64
+CONSUMER_MANIFEST = "9" * 64
+STAGE_TIER = "prismabuild-stage:fixture-box"
+RAM_TIER = "ram:fixture-box"
+STAGE_KIND = f"stage_gib@{STAGE_TIER}"
+RAM_KIND = f"ram_gib@{RAM_TIER}"
+RAM_EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
+STARVED_GIB = storage_tiers.GIB
 
 STDOUT = "first line\nsecond line\nthird line\n"
 STDERR = "a warning\n"
@@ -192,3 +204,158 @@ def point_at(fleet: Fleet, generation: str) -> None:
         staging.unlink()
     os.symlink(target, staging)
     os.replace(staging, fleet.repo_link)
+
+
+def _hexkey(seed: str) -> str:
+    return (seed.encode().hex() * 64)[:64]
+
+
+def _tier_row(key: str, resources: dict, queue: pool.PoolQueue) -> dict:
+    """A mover/egress row shaped the way a submitter seals it."""
+
+    return {"action_key": key, "cas_root": str(queue.root / "cas"),
+            "checkout_root": str(queue.root / "co"),
+            "worker_script": str(queue.root / "worker.py"),
+            "tags": ["fixture-box"], "resources": resources}
+
+
+def _two_phase_plan(queue: pool.PoolQueue, *, stage_root: str) -> dict:
+    """Two phases of two GiB; only the first carries a ram promotion leg."""
+
+    phases = []
+    start = 0
+    for ordinal in range(2):
+        end = start + 2 * STARVED_GIB
+        entry: dict = {
+            "name": f"phase-{ordinal:04d}",
+            "start_bytes": start, "end_bytes": end, "stage_gib": 2,
+            "mover_row": {
+                **_tier_row(_hexkey(f"mover{ordinal}"),
+                            {STAGE_KIND: 2, "mem_gb": 1}, queue),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
+                    "manifest_sha256": CONSUMER_MANIFEST, "manifest_bytes": end,
+                    "range_start_bytes": start, "range_end_bytes": end}},
+            "egress_row": _tier_row(_hexkey(f"egress{ordinal}"),
+                                    {"mem_gb": 1}, queue),
+        }
+        if ordinal == 0:
+            entry["ram_mover_row"] = {
+                **_tier_row(_hexkey("rampromote0"),
+                            {RAM_KIND: 2, "mem_gb": 1}, queue),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
+                    "manifest_sha256": CONSUMER_MANIFEST,
+                    "manifest_bytes": end,
+                    "range_start_bytes": start, "range_end_bytes": end}}
+            entry["ram_egress_row"] = _tier_row(_hexkey("ramrelease0"),
+                                                {"mem_gb": 1}, queue)
+        phases.append(entry)
+        start = end
+    return residency_plan.build_plan(
+        consumer_action_key=CONSUMER_KEY, tier_id=STAGE_TIER,
+        stage_root=stage_root, manifest_sha256=CONSUMER_MANIFEST,
+        manifest_bytes=start, phases=phases, ram_tier_id=RAM_TIER)
+
+
+def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
+    """``build``'s fleet, plus one staged consumer mid-read on phase one.
+
+    Everything the starvation census and the cursor census read, filed the
+    way the fleet files it: a frozen residency plan, a claimed consumer whose
+    lease carries a progress observation (so the accepted phase and its
+    timestamp are real records rather than assertions), tier announcements
+    beside minted ledgers, a ram promotion fragment, a published-but-unstaged
+    mover for phase two, and adaptive claim denials for the host and the
+    mover.  The clock is read at build time rather than frozen, so the ages
+    the tools derive are asserted approximately in the tests.
+    """
+
+    fleet = build(base, host=host)
+    queue = fleet.queue
+    now = time.time()
+    plan = _two_phase_plan(queue, stage_root=str(base / "stage"))
+    residency_plan.freeze(queue, plan)
+    # The consumer, claimed and quiet on its first phase.  Filed directly
+    # rather than through claim(): the claim gate admits a consumer only once
+    # its leads are resident, and the census reads the claim, not the gate.
+    queue.publish(**_tier_row(CONSUMER_KEY, {"mem_gb": 1}, queue), residency={
+        "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
+        "manifest_sha256": CONSUMER_MANIFEST,
+        "manifest_bytes": 4 * STARVED_GIB,
+        "leads": residency_plan.leads_for(plan)})
+    ready_path = queue.item_path(pool.READY, CONSUMER_KEY)
+    record = json.loads(ready_path.read_text())
+    record.update({"claimed_unix": now - 100, "claimed_host": host,
+                   "claimed_by": f"worker-{host}"})
+    queue.item_path(pool.CLAIMED, CONSUMER_KEY).write_text(json.dumps(record))
+    ready_path.unlink()
+    queue.lease_path(CONSUMER_KEY).write_text(json.dumps({
+        "action_key": CONSUMER_KEY, "owner": record["claimed_by"], "host": host,
+        "claimed_unix": record["claimed_unix"],
+        "published_unix": record["published_unix"],
+        "heartbeat_unix": now - 1,
+        "progress_observation": {
+            "phase": "encode", "quiet_s": 800.0, "grace_s": 900.0,
+            "last_accepted": {"phase": "phase-0000",
+                              "reported_unix": now - 800,
+                              "units_completed": 3}},
+        "execution_observation": {
+            "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
+                      "silent_s": 700.0}}}))
+    fleet.consumer_reported_unix = now - 800  # type: ignore[attr-defined]
+    # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
+    # as a ready mover and staged nowhere.
+    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
+    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
+    assert queue.tier_ledger(STAGE_TIER).acquire(
+        _hexkey("mover0"), {"stage_gib": 2})
+    assert queue.tier_ledger(RAM_TIER).acquire(
+        _hexkey("rampromote0"), {"ram_gib": 2})
+    queue.publish(**_tier_row(_hexkey("mover1"),
+                              {STAGE_KIND: 2, "mem_gb": 1}, queue),
+                   residency={
+                       "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
+                       "manifest_sha256": CONSUMER_MANIFEST,
+                       "manifest_bytes": 4 * STARVED_GIB,
+                       "range_start_bytes": 2 * STARVED_GIB,
+                       "range_end_bytes": 4 * STARVED_GIB})
+    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER_KEY,
+        "mover_action_key": _hexkey("rampromote0"),
+        "tier_id": RAM_TIER, "stage_root": str(base / "stage"),
+        "manifest_sha256": CONSUMER_MANIFEST, "epoch": RAM_EPOCH,
+        "entries": {residency_map.residency_map_key("/in/shard-0.bin", 0): {
+            "stage_path": f"{base}/stage/model/shard-0.bin", "bytes": 4096,
+            "offset": 0, "sha256": "b" * 64}}})
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": STAGE_TIER, "tier": "stage", "host": host,
+        "capacity_bytes": 600 * STARVED_GIB, "sampled_unix": now - 5,
+        "fill_source": "measured",
+        storage_tiers.FILL_RECORD_FIELD: 310.0,
+        "fill_supply": {"best_mb_s": 300.0, "ceiling_mb_s": None,
+                        "may_grow": True}})
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": RAM_TIER, "tier": "ram", "host": host,
+        "capacity_bytes": 8 * STARVED_GIB, "sampled_unix": now - 5,
+        "epoch": RAM_EPOCH, "window_gib": 4})
+    published = json.loads(
+        queue.item_path(pool.READY, _hexkey("mover1")).read_text())
+    denials = {
+        "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
+            "mover": {"action_key": _hexkey("mover1"),
+                      "published_unix": published["published_unix"],
+                      "host": host, "reason": "tier_reservation_unavailable",
+                      "evidence": {"decision": {"reason": "tier_busy"}},
+                      "denied_unix": now - 10},
+            "consumer": {"action_key": CONSUMER_KEY,
+                         "published_unix": record["published_unix"],
+                         "host": host, "reason": "adaptive_cpu_refused",
+                         "evidence": {}, "denied_unix": now - 20}}}
+    adaptive = queue.ledger(host).base / "adaptive"
+    adaptive.mkdir(parents=True, exist_ok=True)
+    (adaptive / pool.CLAIM_DENIALS).write_text(json.dumps(denials))
+    return fleet

@@ -145,6 +145,8 @@ def _every_tool(session: pbmcp.Session, fleet: fx.Fleet) -> list[dict]:
         session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)}),
         session.call("pb_log", {"key_prefix": fx.DONE_KEY[:12]}),
         session.call("pb_runtime"),
+        session.call("pb_starvation"),
+        session.call("pb_cursors"),
     ]
 
 
