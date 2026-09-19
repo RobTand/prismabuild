@@ -122,7 +122,7 @@ def test_a_policy_predating_the_pin_still_validates_as_unpinned(tmp_path) -> Non
 
     policy = storage_tiers.read_ram_policy(path)
 
-    assert policy is not None and policy["promotion_chunk_gib"] is None
+    assert policy is not None and policy.get("promotion_chunk_gib") is None
 
 
 def test_a_bad_pin_refuses_the_policy() -> None:

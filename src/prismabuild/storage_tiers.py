@@ -608,12 +608,16 @@ def read_ram_policy(path: str | Path) -> dict[str, object] | None:
     policy["prefill_depth"] = depth
     # The promotion chunk the submitter cuts phases into (#673): a positive
     # whole GiB pins it, ``None`` derives a window quarter at seal time.
-    # Absent is the generation that predates the pin, which derives too.
-    chunk = value.get("promotion_chunk_gib")
-    if chunk is not None and (isinstance(chunk, bool)
-                              or not isinstance(chunk, int) or chunk <= 0):
-        return None
-    policy["promotion_chunk_gib"] = chunk
+    # Absent is the generation that predates the pin, which derives too --
+    # refusing it here would un-discover the running campaign's tier, so
+    # the key is copied only when the file carries it and every reader
+    # defaults through ``.get``.
+    if "promotion_chunk_gib" in value:
+        chunk = value["promotion_chunk_gib"]
+        if chunk is not None and (isinstance(chunk, bool)
+                                  or not isinstance(chunk, int) or chunk <= 0):
+            return None
+        policy["promotion_chunk_gib"] = chunk
     if set(value) != set(policy):
         # A field the writer meant and the reader ignores is the quiet half
         # of a disagreement about how big the tier may be.

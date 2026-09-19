@@ -434,13 +434,13 @@ def validate_plan(value: object) -> dict[str, object]:
             checked_chunks: list[dict[str, object]] = []
             position = start
             for index, chunk in enumerate(ram_chunks):
-                checked = _checked_ram_chunk(
+                checked_chunk = _checked_ram_chunk(
                     chunk, phase_name=name, chunk_index=index,
                     phase_start=position, digest=digest,
                     ram_tier_id=ram_tier_id,
                     ram_demand_kind=ram_demand_kind, keys=keys)
-                checked_chunks.append(checked)
-                position = int(checked["end_bytes"])
+                checked_chunks.append(checked_chunk)
+                position = int(checked_chunk["end_bytes"])
             if position != end:
                 raise ResidencyPlanError(
                     f"plan phase {name!r} ends at {end}, not where its last "
