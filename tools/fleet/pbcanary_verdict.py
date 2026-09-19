@@ -15,7 +15,10 @@ Input contract (exact -- the driver imports this signature)::
 leg-4 entries may carry digest fields (``digest``, ``envelope_digest``,
 ``sha256``, or paired ``digest_a``/``digest_b`` style keys) or an explicit
 ``envelope_equal`` bool so envelope equality is checked here, not trusted
-from a flag alone.
+from a flag alone. Since #690 an ok leg-4 entry must actually carry digest
+evidence: a complete digest pair or a single-value digest key. An entry
+with none (with or without ``envelope_equal: True``), or with only half a
+pair, is treated as not-envelope-equal rather than passing vacuously.
 
 Exit codes:
 
@@ -104,22 +107,48 @@ def _infer_check(reason: object, *, missing: bool = False) -> str:
 
 
 def _leg4_digests(entries: list[dict]) -> tuple[list[str], str | None]:
-    """Collect comparable leg-4 digests; return (digests, inequality_detail)."""
+    """Collect comparable leg-4 digests; return (digests, inequality_detail).
+
+    Fail closed on evidence, not only on equality (issue #690): an ok
+    leg-4 entry that carries no digest evidence at all is treated as
+    not-envelope-equal, because an empty comparison would pass vacuously.
+    ``envelope_equal: False`` fails as before, and ``True`` is read but
+    never substitutes for digests — the flag alone is not evidence.
+    """
     digests: list[str] = []
     for entry in entries:
         if isinstance(entry.get("envelope_equal"), bool):
             if not entry["envelope_equal"]:
                 return [], "envelope_equal is False"
+        evidence: str | None = None
+        partial: str | None = None
         for first, second in _DIGEST_PAIRS:
-            if first in entry and second in entry:
+            present = [name for name in (first, second) if name in entry]
+            if len(present) == 2:
                 if str(entry[first]) != str(entry[second]):
                     return [], (
                         f"{first} {entry[first]!r} != {second} {entry[second]!r}"
                     )
-        for key in _DIGEST_KEYS:
-            if entry.get(key) is not None:
-                digests.append(str(entry[key]))
-                break
+                if evidence is None:
+                    evidence = str(entry[first])
+            elif len(present) == 1 and partial is None:
+                partial = present[0]
+        if evidence is None:
+            for key in _DIGEST_KEYS:
+                if entry.get(key) is not None:
+                    evidence = str(entry[key])
+                    break
+        if evidence is None and partial is not None:
+            return [], (
+                f"incomplete digest pair: {partial!r} present without its "
+                "partner"
+            )
+        if evidence is None:
+            return [], (
+                f"ok leg-4 entry {entry.get('leg', 'leg-4')!r} carries no "
+                "digest evidence; envelope equality is unproven, not confirmed"
+            )
+        digests.append(evidence)
     if len(set(digests)) > 1:
         return [], f"box envelope digests differ: {sorted(set(digests))!r}"
     return digests, None

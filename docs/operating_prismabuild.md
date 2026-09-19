@@ -2788,6 +2788,19 @@ receipts, unrecognized entries, and nonempty result staging namespaces are
 retained. Normal ingest completion removes its private directory; SIGKILL can
 leave payload bytes behind for this maintenance command to reclaim.
 
+It also owns the canary run namespaces (issue #690): each
+`pb-canary/<run-id>/` directory holds one run's staged chunks and artifacts —
+about 24 MiB per run — next to a `run.json` registration record whose
+`gc.rule` names this command as the owner. That second root is surveyed only
+when `--canary-root` names it, the same explicit-root rule as `--cas-root`.
+A canary namespace becomes a candidate only when its run record is a valid
+canary record naming the namespace, every member is a regular file or
+directory owned by this user and held open by nobody, and it is either sealed
+(`canary-result.json`, the driver's terminal write) or older than the age
+backstop. An unreadable record, a foreign schema, a run-id mismatch, a
+symlink, an open chunk, or an unreadable seal keeps the whole namespace. The
+CAS receipts a run refers to are records and are never removed with it.
+
     tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas
 
 The default only reports, including candidate paths, bytes, ages, reasons for
@@ -2818,7 +2831,12 @@ namespaces, open local staging files, and private ingest directories whose
 ownership lock is held, missing, or contains unrecognized files. A private
 ingest lock is held throughout copying and publication; the reaper also holds
 it while deleting that directory. Incomplete hidden `.ingest.*` initialization
-directories are retained for manual inspection.
+directories are retained for manual inspection. Canary namespaces follow the
+rule stamped in their own `run.json`: without `--canary-root` the kind surveys
+nothing, and with it an unsealed run younger than the backstop, a namespace
+with any unrecognizable member, or one whose seal cannot be read is retained
+whole. The canary driver is a producer of that root, so a fleet-quiescent
+sweep includes it.
 
 A fresh survey and inode identity checks protect against entries that changed
 since the report. Parent directories are opened without following symlinks.

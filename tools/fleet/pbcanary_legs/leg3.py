@@ -19,8 +19,11 @@ this module owns the fixed spec and the mechanical verdict):
          pbrun --cwd <checkout> --data-manifest <manifest> --residency stage \\
              --progress-phase leg3-c0=600 --progress-phase leg3-c1=600 \\
              --progress-phase leg3-c2=600 \\
-             --timeout-s 600 --wait-s 900 --priority -10 --deterministic -- \\
+             --timeout-s 600 --wait-s 900 --deterministic -- \\
              python3 tools/fleet/pbcanary_legs/leg3.py --run-action
+
+      (the driver injects its own ``--priority`` once for every leg;
+      the spec no longer pins one — issue #690)
 
      with ``PBCANARY_LEG3_MANIFEST=<absolute manifest path>`` in the
      action environment. The manifest's ``read_plan`` phases and the
@@ -80,7 +83,8 @@ LEG3_MANIFEST_SCHEMA = "prismaquant.prismabuild.data_manifest.v2"
 
 LEG3_WAIT_S = 900  # Issue #688 residency wait budget.
 LEG3_TIMEOUT_S = 600  # Execution deadline: read 24 MiB + hash takes seconds.
-LEG3_PRIORITY = -10  # Canary never contends with real work.
+LEG3_PRIORITY = -10  # Documented default; the driver's --priority governs
+# the submission (issue #690 dedupe: specs do not pin --priority).
 
 LEG3_PHASES = ("leg3-c0", "leg3-c1", "leg3-c2")
 LEG3_CHUNK_NAMES = ("leg3-chunk-0.bin", "leg3-chunk-1.bin", "leg3-chunk-2.bin")
@@ -200,8 +204,6 @@ def build() -> dict:
             str(LEG3_TIMEOUT_S),
             "--wait-s",
             str(LEG3_WAIT_S),
-            "--priority",
-            str(LEG3_PRIORITY),
             "--deterministic",
             "--retry-safe",
             "--max-attempts",

@@ -22,6 +22,19 @@ Requests and receipts are records and are never removed. Nonempty local-result
 staging namespaces remain available for core.repair_local_result. --cas-root
 is required and --apply defaults off.
 
+Canary run namespaces (``pb-canary/<run-id>/``) are a separate root with
+their own kind: the canary driver seals one per run, its receipts are CAS
+records this tool never touches, and the 24 MiB of staged chunks plus
+artifacts would otherwise accumulate with no owner. The root is surveyed
+only when ``--canary-root`` names it — the same explicit-root rule as
+``--cas-root`` — and a namespace becomes a candidate only when its run
+record is a valid canary record naming the namespace, every member is a
+recognizable regular file or directory owned by this user and held open by
+nobody, and it is either sealed (``canary-result.json``, the driver's last
+write) or older than the age backstop. Anything else about a namespace —
+an unreadable record, a foreign schema, a symlink, an open descriptor —
+keeps it whole.
+
 """
 
 from __future__ import annotations
@@ -50,9 +63,24 @@ KIND_LOCK = "lock"
 KIND_NAMESPACE = "staging namespace"
 KIND_INGEST = "aborted staging copy"
 KIND_PRIVATE_INGEST = "private ingest staging"
-KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST, KIND_PRIVATE_INGEST)
+KIND_CANARY = "canary namespace"
+KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST,
+         KIND_PRIVATE_INGEST, KIND_CANARY)
 PRIVATE_STAGING_PREFIX = "ingest."
 PRIVATE_STAGING_OWNER = ".owner.lock"
+
+#: The canary kind's root and records, spelled the way the driver that
+#: writes them spells it (``tools/fleet/pbcanary.py``): every run lives
+#: under ``<canary-root>/<run-id>/`` with a ``run.json`` registration
+#: record stamped once at creation and a ``canary-result.json`` seal
+#: written exactly once at the end of every driver path. The schema
+#: literal is pinned here rather than imported so a driver change is a
+#: failing test (``test_pb_gc`` mints namespaces through the driver's own
+#: ``build_run_record``) rather than a sweeper that quietly stops
+#: sweeping.
+CANARY_RUN_SCHEMA = "prismabuild.pbcanary.run.v1"
+CANARY_RUN_RECORD = "run.json"
+CANARY_SEAL_RECORD = "canary-result.json"
 
 #: Where each class lives, spelled the way the code that writes it spells it:
 #: ``core._local_result_claim_path``, ``core._local_output_lock``,
@@ -527,6 +555,137 @@ def _survey_private_ingests(
     return {"scanned": scanned, "remove": remove, "keep": keep}
 
 
+def _canary_members(
+    namespace: Path, held_inodes: set[tuple[int, int]],
+) -> tuple[dict, str, int]:
+    """Walk one canary namespace; return ``(members, refusal, bytes)``.
+
+    Refuses anything the canary driver does not write: a symlink, a
+    non-regular file, a foreign-owned member, or a member another
+    process on this box holds open. ``members`` maps slash-relative
+    names to identities, mirroring the private-ingest candidate rows;
+    directory identities are advisory only, because a directory's size
+    and mtime legitimately change as its children are removed.
+    """
+
+    members: dict[str, tuple] = {}
+    total = 0
+    stack: list[tuple[str, Path]] = [("", namespace)]
+    while stack:
+        relative, directory = stack.pop()
+        for member in _entries(directory):
+            name = f"{relative}/{member.name}" if relative else member.name
+            try:
+                info = member.stat(follow_symlinks=False)
+            except OSError as exc:
+                return {}, f"namespace changed while surveying: {exc}", 0
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                return {}, f"unrecognized member: {name} is not a regular file or directory", 0
+            if info.st_uid != os.geteuid():
+                return {}, f"unrecognized member: {name} is not this user's", 0
+            if stat.S_ISREG(info.st_mode):
+                if (info.st_dev, info.st_ino) in held_inodes:
+                    return {}, "open in another process", 0
+                total += info.st_size
+            members[name] = _identity(info)
+            if stat.S_ISDIR(info.st_mode):
+                stack.append((name, Path(member.path)))
+    return members, "", total
+
+
+def _canary_sealed(namespace: Path) -> tuple[bool | None, str]:
+    """``(True, "")`` sealed, ``(False, "")`` not, ``(None, why)`` undecidable.
+
+    The seal is the driver's own terminal write: the existence of a
+    readable ``canary-result.json`` means every driver path finished.
+    Anything undecidable about the file keeps the namespace.
+    """
+
+    seal = namespace / CANARY_SEAL_RECORD
+    try:
+        info = os.lstat(seal)
+    except FileNotFoundError:
+        return False, ""
+    except OSError as exc:
+        return None, f"cannot inspect the seal record: {exc}"
+    if not stat.S_ISREG(info.st_mode):
+        return None, "seal record is not a regular file"
+    try:
+        record = json.loads(seal.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"unreadable seal record: {exc}"
+    if not isinstance(record, Mapping):
+        return None, "seal record is not a JSON object"
+    return True, ""
+
+
+def _survey_canary(
+    canary_root: Path, *, min_age_s: float,
+    held_inodes: set[tuple[int, int]],
+) -> dict:
+    """Classify every canary run namespace under one root.
+
+    A namespace is removable only when its registration record is a
+    valid canary record naming the namespace, every member is
+    recognizable, and it is sealed or older than the age backstop. The
+    chunks and artifacts inside are per-run droppings; the receipts the
+    run refers to are CAS records and stay.
+    """
+
+    remove: list[dict] = []
+    keep: list[dict] = []
+    scanned = 0
+    for entry in _entries(canary_root):
+        path = Path(entry.path)
+        if not entry.is_dir(follow_symlinks=False):
+            keep.append(_retain(KIND_CANARY, path, "unexpected entry"))
+            continue
+        scanned += 1
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            keep.append(_retain(KIND_CANARY, path, f"cannot inspect: {exc}"))
+            continue
+        try:
+            record = json.loads(
+                (path / CANARY_RUN_RECORD).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            keep.append(_retain(
+                KIND_CANARY, path, f"unreadable run record: {exc}"))
+            continue
+        if (not isinstance(record, Mapping)
+                or record.get("schema") != CANARY_RUN_SCHEMA
+                or not isinstance(record.get("run_id"), str)):
+            keep.append(_retain(KIND_CANARY, path, "not a canary run record"))
+            continue
+        if record["run_id"] != entry.name:
+            keep.append(_retain(
+                KIND_CANARY, path, "run record does not name this namespace"))
+            continue
+        members, why, total = _canary_members(path, held_inodes)
+        if why:
+            keep.append(_retain(KIND_CANARY, path, why))
+            continue
+        if max(0.0, time.time() - info.st_mtime) < min_age_s:
+            keep.append(_retain(
+                KIND_CANARY, path, "younger than the age backstop"))
+            continue
+        sealed, seal_why = _canary_sealed(path)
+        if sealed is None:
+            keep.append(_retain(KIND_CANARY, path, seal_why))
+            continue
+        row = _candidate(
+            KIND_CANARY, path, info,
+            "sealed canary run; its CAS receipts are records and stay" if sealed
+            else "no seal and older than the age backstop: a driver run "
+                 "that died mid-run",
+        )
+        row["bytes"] = total
+        row["members"] = members
+        remove.append(row)
+    return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
 def _remove_private_ingest(row: Mapping[str, object]) -> str:
     path = Path(str(row["path"]))
     parent_fd = directory_fd = owner_fd = None
@@ -573,11 +732,14 @@ def survey(
     min_age_s: float = DEFAULT_MIN_AGE_HOURS * 3600.0,
     held_inodes: set[tuple[int, int]] | None = None,
     unreadable_processes: int = 0,
+    canary_root: Path | None = None,
 ) -> dict:
     """Classify every per-execution dropping in one store.
 
     Reads only. The caller supplies the ``/proc`` answer so the sweep can take
-    a fresh one immediately before it removes anything.
+    a fresh one immediately before it removes anything. ``canary_root``
+    optionally adds the canary run namespaces under a second explicitly
+    named root (issue #690); when it is None the kind surveys nothing.
     """
 
     if not math.isfinite(min_age_s) or min_age_s < 0:
@@ -585,6 +747,9 @@ def survey(
     cas_root = Path(cas_root)
     if not cas_root.is_dir():
         raise SweepError(f"not a CAS root: {cas_root}")
+    canary_root = Path(canary_root) if canary_root is not None else None
+    if canary_root is not None and not canary_root.is_dir():
+        raise SweepError(f"not a canary root: {canary_root}")
     if held_inodes is None:
         held_inodes, unreadable_processes = open_inodes(skip_pid=os.getpid())
     claims = _survey_claims(cas_root, min_age_s=min_age_s)
@@ -604,11 +769,16 @@ def survey(
         KIND_INGEST: ingests,
         KIND_PRIVATE_INGEST: _survey_private_ingests(
             cas_root, min_age_s=min_age_s, held_inodes=held_inodes),
+        KIND_CANARY: _survey_canary(
+            canary_root, min_age_s=min_age_s, held_inodes=held_inodes
+        ) if canary_root is not None
+        else {"scanned": 0, "remove": [], "keep": []},
     }
     requests = _count_json(cas_root / "requests")
     receipts = _count_json(cas_root / "actions")
     return {
         "cas_root": cas_root,
+        "canary_root": canary_root,
         "sections": sections,
         "remove": [row for kind in KINDS for row in sections[kind]["remove"]],
         "keep": [row for kind in KINDS for row in sections[kind]["keep"]],
@@ -618,6 +788,7 @@ def survey(
             "requests_without_a_receipt": max(0, requests - receipts),
             "occupied_staging_namespaces": occupied,
             "unreadable_processes": unreadable_processes,
+            "canary_root": str(canary_root) if canary_root is not None else None,
         },
     }
 
@@ -674,6 +845,45 @@ def _identity(info: os.stat_result) -> tuple:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
+def _remove_canary(row: Mapping[str, object]) -> str:
+    """Remove one canary namespace, deepest member first, by identity.
+
+    The namespace identity and the complete member map are re-verified
+    against the plan before anything is unlinked, and each member is
+    re-identified as it is removed. Directory identities compare by
+    ``(dev, ino)`` only: a directory's size and mtime legitimately move
+    while its children are being removed.
+    """
+
+    path = Path(str(row["path"]))
+    try:
+        if _identity(path.lstat()) != row["identity"]:
+            return "replaced or changed during the sweep"
+        observed, why, _total = _canary_members(path, set())
+        if why or observed != row["members"]:
+            return "namespace changed during the sweep"
+        deepest_first = sorted(
+            observed, key=lambda name: (-name.count("/"), name))
+        for name in deepest_first:
+            member = path / name
+            info = member.lstat()
+            identity = observed[name]
+            if (info.st_dev, info.st_ino) != (identity[0], identity[1]):
+                return "namespace changed during the sweep"
+            if stat.S_ISDIR(info.st_mode):
+                os.rmdir(member)
+            else:
+                if _identity(info) != identity:
+                    return "namespace changed during the sweep"
+                os.unlink(member)
+        os.rmdir(path)
+    except FileNotFoundError:
+        return "already gone"
+    except OSError as exc:
+        return f"cannot remove canary namespace: {exc}"
+    return ""
+
+
 def _remove(row: Mapping[str, object]) -> str:
     """Remove the inspected inode through a descriptor anchored below the CAS."""
 
@@ -683,6 +893,8 @@ def _remove(row: Mapping[str, object]) -> str:
         return _remove_lock(path, row["identity"])
     if kind == KIND_PRIVATE_INGEST:
         return _remove_private_ingest(row)
+    if kind == KIND_CANARY:
+        return _remove_canary(row)
     try:
         directory_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
     except (OSError, pb.PrismaBuildError) as exc:
@@ -719,6 +931,7 @@ def sweep(
     recheck = survey(
         Path(str(plan["cas_root"])), min_age_s=min_age_s,
         held_inodes=held, unreadable_processes=unreadable,
+        canary_root=plan.get("canary_root"),
     )
     still_dead = {str(row["path"]): row["identity"] for row in recheck["remove"]}
     removed: list[dict] = []
@@ -770,12 +983,18 @@ def report(plan: Mapping[str, object], *, list_paths: bool = True) -> list[str]:
     lines = [f"pb_gc: {plan['cas_root']}",
              "Candidates require fleet-wide quiescence and remote checkout "
              "verification before removal; local probes cannot prove abandonment."]
+    canary_root = plan.get("canary_root")  # type: ignore[union-attr]
+    if canary_root is not None:
+        lines.append(f"pb_gc: canary root {canary_root}")
     total_bytes = 0.0
     for kind in KINDS:
         section = sections[kind]  # type: ignore[index]
         rows = section["remove"]
         size = sum(float(row["bytes"]) for row in rows)
         total_bytes += size
+        if kind == KIND_CANARY and canary_root is None:
+            lines.append(f"\n{kind}: not surveyed (pass --canary-root)")
+            continue
         lines.append(
             f"\n{kind}: {section['scanned']} scanned, {len(rows)} to remove"
             + (f", {format_bytes(size)}" if size else "")
@@ -826,6 +1045,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cas-root", required=True,
                     help="the store to sweep; required, and deliberately has "
                          "no default, because this tool removes files")
+    ap.add_argument("--canary-root", default=None,
+                    help="also survey the pbcanary run namespaces at this "
+                         "root (each holds a run's staged chunks and "
+                         "artifacts); removable under the same --apply "
+                         "rules, and deliberately has no default either")
     ap.add_argument("--apply", action="store_true",
                     help="actually remove; the default only reports")
     ap.add_argument("--quiescent-store", action="store_true",
@@ -851,7 +1075,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     min_age_s = args.min_age_hours * 3600.0
     try:
-        plan = survey(Path(args.cas_root), min_age_s=min_age_s)
+        plan = survey(Path(args.cas_root), min_age_s=min_age_s,
+                      canary_root=Path(args.canary_root) if args.canary_root
+                      else None)
     except SweepError as exc:
         print(f"pb_gc: {exc}", file=sys.stderr)
         return 2

@@ -160,3 +160,54 @@ def test_verdict_output_shape_is_driver_stable() -> None:
     assert set(("exit_code", "verified", "legs", "failed_leg",
                 "failed_check", "detail", "stderr_message")) <= set(summary)
     assert set(summary["legs"]) == {"1", "2", "3", "4-sparky", "4-sparklina"}
+
+
+# --------------------------------------------------------------------------
+# Issue #690: an ok leg-4 entry must carry digest evidence, not nothing
+# --------------------------------------------------------------------------
+
+
+def test_ok_leg4_entry_with_no_digest_evidence_is_exit_1() -> None:
+    """The vacuous pass: no digests proves nothing, so the leg fails.
+
+    Before #690 an ok leg-4 entry lacking every digest field contributed
+    nothing to the comparison, and an empty comparison passed vacuously.
+    """
+    legs = [_ok(1), _ok(2), _ok(3), _ok(4)]
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 1
+    assert summary["failed_leg"] == "leg-4"
+    assert summary["failed_check"] == "envelope-equality"
+    assert "no digest evidence" in summary["stderr_message"]
+
+
+def test_two_ok_leg4_entries_without_digests_still_fail() -> None:
+    """Both box entries lacking digests is equally unproven."""
+    legs = [_ok(1), _ok(2), _ok(3), _ok("4-sparky"), _ok("4-sparklina")]
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 1
+    assert summary["failed_check"] == "envelope-equality"
+
+
+def test_envelope_equal_true_alone_is_not_digest_evidence() -> None:
+    """The flag is read but never substitutes for digests (#690)."""
+    legs = [_ok(1), _ok(2), _ok(3), _ok(4, envelope_equal=True)]
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 1
+    assert summary["failed_check"] == "envelope-equality"
+
+
+def test_incomplete_digest_pair_is_exit_1() -> None:
+    """A lone ``digest_a`` is a partial pair, not evidence."""
+    legs = [_ok(1), _ok(2), _ok(3), _ok(4, digest_a="9f2c")]
+
+    code, summary = verdict(FakeGateway(legs).run())
+
+    assert code == 1
+    assert "incomplete digest pair" in summary["stderr_message"]

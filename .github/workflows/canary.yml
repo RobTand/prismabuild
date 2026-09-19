@@ -69,10 +69,14 @@ jobs:
           persist-credentials: false
 
       - name: Run pbcanary
+        # Workflow context (inputs.*, github.*) crosses into the job through
+        # env, never by interpolating ${{ }} into the shell (issue #690).
+        env:
+          PB_CANARY_GENERATION: ${{ inputs.generation }}
         run: |
           args=(--summary-dir pbcanary-summary)
-          if [ -n "${{ inputs.generation }}" ]; then
-            args+=(--generation "${{ inputs.generation }}")
+          if [ -n "$PB_CANARY_GENERATION" ]; then
+            args+=(--generation "$PB_CANARY_GENERATION")
           fi
           python3 tools/fleet/pbcanary.py "${args[@]}"
         # Driver exit contract (issue #688): 0 = all legs verified,

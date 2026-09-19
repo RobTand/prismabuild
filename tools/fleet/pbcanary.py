@@ -22,7 +22,10 @@ fresh namespace is created for every run and a duplicate ``--run-id`` is
 refused rather than reused, so no run ever shares state with another. CAS
 receipts stay in the CAS (records pb_gc never removes); the namespace
 carries a registration record (``run.json``) naming each leg's action key
-so the audit trail resolves back to them.
+so the audit trail resolves back to them. The namespace itself is owned by
+``pb_gc --canary-root`` (issue #690): run.json stamps the retention rule,
+and the reaper removes a namespace only when its record is valid, its
+members are recognizable, and it is sealed or older than the age backstop.
 
 Priority defaults to -10 (agent self-validation band): the canary never
 contends with real work.
@@ -86,6 +89,50 @@ LEG_MODULES = (
 DEFAULT_LEGS = "leg-1,leg-2,leg-3,leg-4"
 
 DEFAULT_PRIORITY = -10
+
+#: Schema of the registration record stamped into every run namespace.
+#: ``pb_gc`` pins the same literal (issue #690) and refuses a namespace
+#: whose record does not carry it, so the record is the namespace's
+#: identity card as well as its audit trail.
+RUN_RECORD_SCHEMA = "prismabuild.pbcanary.run.v1"
+
+#: The namespace retention rule, stamped into run.json so every
+#: namespace documents its own GC owner (issue #690): pb_gc surveys the
+#: canary root when given ``--canary-root`` and removes a namespace only
+#: during an acknowledged quiescent-store sweep, and only when its run
+#: record is valid, every member is recognizable, and it is sealed
+#: (``canary-result.json``) or older than the age backstop. The CAS
+#: receipts a namespace refers to are records and are never removed.
+RUN_GC_OWNER = "tools/fleet/pb_gc.py --canary-root"
+RUN_GC_RULE = (
+    "pb_gc removes this namespace only during an acknowledged "
+    "quiescent-store sweep, and only when its run record is valid, every "
+    "member is recognizable, and it is sealed (canary-result.json) or "
+    "older than the age backstop; its CAS receipts are records and stay"
+)
+
+
+def build_run_record(
+    *, run_id: str, generation: str | None, requested: list,
+    priority: int, checkout: Path, published_root: Path,
+) -> dict:
+    """The registration record written to ``<namespace>/run.json``.
+
+    Pure data; ``run_canary`` stamps it once, immediately after the fresh
+    namespace is created, and nothing rewrites it afterwards.
+    """
+    return {
+        "run_id": run_id,
+        "schema": RUN_RECORD_SCHEMA,
+        "generation": generation,
+        "legs_requested": requested,
+        "priority": priority,
+        "checkout": str(checkout),
+        "published_root": str(published_root),
+        "gc": {"owner": RUN_GC_OWNER, "rule": RUN_GC_RULE},
+        "started_unix": datetime.datetime.now(
+            datetime.timezone.utc).isoformat(),
+    }
 
 
 class PreconditionRefused(Exception):
@@ -206,9 +253,11 @@ def submit_leg(
     ``action.argv`` (leg 3); demand defaults to ``spec.get("demand", {})``.
     ``extra_flags`` (leg 3's ``pbrun_flags`` + progress phases, leg 4's
     per-side flags) extend the command line after the driver's own
-    ``--priority`` — on a repeated single-value flag the later (spec-side)
-    value wins, which in production is the same -10. ``extra_env`` extends
-    the action environment; ``manifest`` selects ``--data-manifest``.
+    ``--priority``. Issue #690: the driver's ``--priority`` governs every
+    leg, so a spec-side ``--priority`` in ``extra_flags`` is refused
+    loudly instead of silently overriding it (argparse would let the
+    later, spec-side value win). ``extra_env`` extends the action
+    environment; ``manifest`` selects ``--data-manifest``.
 
     Any refusal here means nothing executed: callers record it as a
     did-not-test leg entry (exit 2 class).
@@ -221,12 +270,20 @@ def submit_leg(
             f"precondition refused ({label}): spec carries no argv: "
             "did not test"
         )
+    extra = list(extra_flags or [])
+    for flag in extra:
+        if flag == "--priority" or flag.startswith("--priority="):
+            raise PreconditionRefused(
+                f"precondition refused ({label}): spec-side flags carry "
+                f"{flag!r}: the driver's --priority governs every leg, so "
+                "a leg spec must not pin its own: did not test"
+            )
     command = list(argv)
     submit_argv = [sys.executable, str(paths["pbrun"]), "--cwd", str(checkout)]
     for name, value in spec.get("demand", {}).items():
         submit_argv += ["--demand", f"{name}={value}"]
     submit_argv += ["--priority", str(priority)]
-    submit_argv += list(extra_flags or [])
+    submit_argv += extra
     if manifest is not None:
         submit_argv += ["--data-manifest", str(manifest)]
     submit_argv += [
@@ -373,14 +430,15 @@ def _execute_side(
     fleet_root: Path, leg_dir: Path, side: str | None,
     extra_flags: list, extra_env: dict, manifest: Path | None,
     wait_s: int,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, bytes, str]:
     """Submit one action, wait within budget, CAS-load its receipt.
 
-    Returns ``(envelope_for_verify, receipt_ref)``. Raises
-    :class:`PreconditionRefused` when nothing became a test (exit 2) and
-    :class:`_SideFailed` when the action executed but broke its contract
-    (exit 1). The envelope offers the artifact text both as ``artifact``
-    (legs 1-2 shape) and as ``stdout`` (legs 3-4 envelope-scan shape).
+    Returns ``(envelope_for_verify, receipt_ref, result_blob,
+    action_key)``. Raises :class:`PreconditionRefused` when nothing
+    became a test (exit 2) and :class:`_SideFailed` when the action
+    executed but broke its contract (exit 1). The envelope offers the
+    artifact text both as ``artifact`` (legs 1-2 shape) and as
+    ``stdout`` (legs 3-4 envelope-scan shape).
     """
     label = leg if side is None else f"{leg} ({side})"
     file_tag = "" if side is None else f"_{side}"
@@ -598,16 +656,10 @@ def run_canary(args: argparse.Namespace | None = None,
         return 2
 
     sys.path.insert(0, str(FLEET_DIR))
-    run_record = {
-        "run_id": run_id,
-        "generation": generation,
-        "legs_requested": requested,
-        "priority": args.priority,
-        "checkout": str(checkout),
-        "published_root": str(published_root),
-        "started_unix": datetime.datetime.now(
-            datetime.timezone.utc).isoformat(),
-    }
+    run_record = build_run_record(
+        run_id=run_id, generation=generation, requested=requested,
+        priority=args.priority, checkout=checkout,
+        published_root=published_root)
     write_json(namespace / "run.json", run_record)
 
     results: list[dict] = []
