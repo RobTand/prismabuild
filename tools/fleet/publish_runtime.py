@@ -178,15 +178,15 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
 )
 
 
-#: Rollout canary gate (issue #688, crew D). Two-phase adoption: this landing
-#: is phase 1 with the gate default-OFF, so publication behaves exactly as
-#: before unless ``--canary`` is passed. Phase 2 flips this constant to True
-#: in a follow-up after the first green canary on main; ``--no-canary`` is
-#: then the escape hatch. The constant (not an environment variable) is the
-#: switch so the default is versioned, reviewable, and published with the
-#: generation that implements it. Flipped ON 2026-09-19 (phase 2) after the
-#: first verified live 4-leg run: namespace pb-canary/20260919T173543Z,
-#: exit 0, leg-4 envelopes bitwise-equal across sparky+sparklina.
+#: Rollout canary gate (issue #688, crew D). The default is ON: publication
+#: verifies the generation it just activated unless ``--no-canary`` is
+#: passed. Phase 1 landed default-OFF with ``--canary`` as the opt-in; the
+#: constant was flipped 2026-09-19 (phase 2) after the first verified live
+#: 4-leg run: namespace pb-canary/20260919T173543Z, exit 0, leg-4 envelopes
+#: bitwise-equal across sparky+sparklina. The flag spellings and the rollout
+#: record are unchanged by the flip. The constant (not an environment
+#: variable) is the switch so the default is versioned, reviewable, and
+#: published with the generation that implements it.
 CANARY_DEFAULT_ENABLED = True
 #: Rollout-record statuses. ``pending`` is written before the driver is
 #: invoked and rewritten to ``verified`` or ``failed`` on its verdict;
@@ -1578,12 +1578,13 @@ def main() -> int:
         help="after activation, submit the fleet canary (issue #688) resolving "
              "against the new generation and record verified|failed in its "
              "rollout record; a failed canary marks and exits nonzero without "
-             "rolling back. Opt-in while the gate is default-OFF (phase 1).",
+             "rolling back. The gate is default-ON, so the flag only forces a "
+             "default already in effect.",
     )
     ap.add_argument(
         "--no-canary", action="store_true",
         help="skip the fleet canary and record not_run in the rollout record; "
-             "the escape hatch once the gate flips default-ON (phase 2).",
+             "the escape hatch now that the gate is default-ON (phase 2).",
     )
     args = ap.parse_args()
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:

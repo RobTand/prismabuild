@@ -2374,6 +2374,17 @@ a nonblank compatibility explanation, recorded in a new generation receipt.
 Existing-generation rolling activation requires its own reason. A reason neither
 proves compatibility nor waives the publication window.
 
+Fresh publication runs the fleet canary (issue #688) after activation by
+default. `CANARY_DEFAULT_ENABLED` is a versioned source constant, `True` since
+2026-09-19 (phase 2) after the first verified live 4-leg run
+(`pb-canary/20260919T173543Z`, exit 0, leg-4 envelopes bitwise-equal across
+sparky+sparklina); phase 1 landed default-OFF with `--canary` as the opt-in.
+`--no-canary` is the skip, and the outcome lands in the generation's sibling
+rollout record (`verified`/`failed`/`not_run`). A failed canary marks `failed`
+and exits nonzero; it never rolls back the activation or touches admission. The
+running fleet adopts this default only when a generation carrying it is
+published.
+
 The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
 public barrier mutation, including publication, activation, resume and rollback,
 therefore refuses before staging or stepping the epoch state machine.

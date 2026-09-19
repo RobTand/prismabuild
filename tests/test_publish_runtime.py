@@ -599,10 +599,10 @@ def _write_canary_driver(checkout: Path, body: str) -> None:
 def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str]) -> tuple[int, Path]:
     """Publish ``checkout`` into a private mirror with extra argv; return (exit, mirror).
 
-    Phase-2 default-ON: an unflagged publication verifies its generation, so a
-    green canary driver is installed when the test has not written one and has
-    not asked for ``--no-canary``.  Tests that exercise the canary's own
-    verdicts install their own drivers and are left alone.
+    Phase-2 default-ON: an unflagged publication verifies its generation, so
+    ``_checkout`` ships a green canary driver with every test checkout.  Tests
+    that exercise the canary's own verdicts overwrite it with
+    ``_write_canary_driver``; the skip path passes ``--no-canary``.
     """
 
     mirror = tmp_path / "mirror"
