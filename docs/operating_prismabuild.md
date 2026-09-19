@@ -1741,6 +1741,42 @@ The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail
 `pbstatus` does not join in.
 
+### When a GPU is idle
+
+An idle GPU is not a scheduler failure until the queue and the admission
+evidence say it is. Read them in this order, because each step distinguishes
+a cause the next step cannot see (#351).
+
+*   **Is there runnable work?** The `jobs` table's `ready` count is the first
+    number. Zero ready is a work-supply gap, not a placement defect: do not
+    manufacture load, duplicate completed measurements, or weaken gates to
+    fill the box. The placement census beside it says where the waiting work
+    could run -- how much is pinned to exactly one box, how much is wide, how
+    much is on none -- so ten ready items behind one busy box read
+    differently from ten items no live worker matches.
+*   **Did this box refuse it, and when?** Each host's latest skip prints in
+    `DENIAL` beside `PASSES`, with its age; `--json` carries
+    `admission_denials` with the branch, the captured decision or sample, and
+    the timestamp. A skip describes that earlier observation, not a current
+    refusal: check the age before treating it as the reason the box is idle
+    now. `reservation_unavailable`, `adaptive_cpu_refused` and the bounded
+    placement preferences (`deferred_for_preferred_cpu`,
+    `deferred_for_cross_resource_placement`, which expire on their own after
+    20 seconds) are different verdicts with different next moves.
+*   **Is the box still announcing?** An expired worker offer means the box
+    stopped reaching its announcement -- which is what a loop wedged in a
+    queue read does, and since #16 a loop that cannot finish its discovery
+    scan skips its announcement on purpose so the stale record expires. A
+    missing offer is therefore evidence about the box's path to the mount,
+    not about the scheduler. Read it alongside the mount probe and the
+    admission-gate holder/waiter leg before deciding where the fault is.
+*   **Is the wait the isolation working?** A `--measurement` action is
+    admitted only against a fresh near-idle host sample, so on a busy fleet it
+    waits, by design, while other work drains. An idle GPU beside a waiting
+    measurement is the precondition holding, not starvation. Dropping
+    `--measurement` to get admitted buys a number measured against other
+    tenants' noise.
+
 ### File the endings nobody asked for
 
 Under SLURM the ending is filed by whoever polls for the key. A job that ends

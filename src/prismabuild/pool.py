@@ -5286,6 +5286,7 @@ class PoolQueue:
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
+        ready: list[dict[str, object]] | None = None,
     ) -> dict[str, object] | None:
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
@@ -5307,7 +5308,14 @@ class PoolQueue:
                 # begun. The same ``except`` catches both, so it has to be
                 # told which one it caught rather than assert the earlier one.
                 evaluating = True
-                ready = self.ready_items()
+                if ready is None:
+                    # The worker loop prefetches this snapshot in an
+                    # abandonable child and passes it in, so a wedged mount
+                    # parks the child rather than this process (#16).  A
+                    # caller without a snapshot scans here, in-process, as
+                    # before.  Either way the list is advisory: an
+                    # intervening claim wins at the rename.
+                    ready = self.ready_items()
                 if not ready:
                     # No candidate needs capacity reconciled on this pass. The
                     # shared ledger prelude can stall while holding admission;
@@ -5345,7 +5353,8 @@ class PoolQueue:
                 self._report_admission_busy(exc, evaluating=evaluating)
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
-                           capacity=capacity, cpu_tiers=cpu_tiers)
+                           capacity=capacity, cpu_tiers=cpu_tiers,
+                           ready=ready)
 
     @staticmethod
     def _admission_lock(controller: cpu_admission.Controller | None):
@@ -9895,6 +9904,7 @@ class PoolQueue:
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
         containment: bool = False,
+        ready: list[dict[str, object]] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -9902,12 +9912,17 @@ class PoolQueue:
         ``capacity`` is in play -- including the deliberate case where a starved
         item is withholding the host.  A caller that loops should treat it as
         back-pressure and poll again, not as an empty queue.
+
+        ``ready`` is a prefetched ``ready_items`` snapshot, read in an
+        abandonable child by a caller that must not park in the scan (#16).
+        ``None`` scans here, in-process, as before.
         """
 
         if self._sweep_due():
             self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
-                          cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu)
+                          cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
+                          ready=ready)
         if item is None:
             return None
         key = str(item["action_key"])

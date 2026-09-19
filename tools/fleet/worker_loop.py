@@ -163,6 +163,22 @@ OFFER_PUBLISH_TIMEOUT_S = 5.0
 #: that is genuinely stuck is still reported, not waited on.
 OFFER_PUBLISH_RETRY_S = 0.05
 
+#: How long one worker-loop queue discovery may spend on the shared mount
+#: before the loop gives up on this poll.  Discovery is the pure read-only
+#: half of the claim scan -- the ready records and their ``passes/`` sidecars
+#: -- so unlike the claim itself it can run in a disposable child: nothing it
+#: does needs ownership, and a result that arrives after the deadline is
+#: merely stale, never a double claim (issue #16).  The bound exists for the
+#: same reason the publication bound does: a hard NFS mount need not return
+#: from a read at any deadline, even after a signal, so the loop discovers
+#: through the same isolated reader (``pbstatus.bounded``) and stops waiting
+#: at the deadline rather than joining a child that may still be blocked in
+#: the kernel.  The budget is larger than the publication one because one scan
+#: reads one record per queued item rather than writing one file; it stays
+#: well under the 120 s offer lifetime so a box that cannot finish a scan
+#: lets its offer expire instead of refreshing it on no evidence.
+DISCOVERY_TIMEOUT_S = 30.0
+
 #: Where the host-local publication lock lives.  Hardcoded to a private local
 #: tmpfs directory, never the shared mount and never a caller-influenced path:
 #: the lock's whole job is to keep one box's writers from piling up while the
@@ -522,6 +538,86 @@ def publish_offer(announce, *, budget_s: float,
         f"publication returned an unknown status: {status!r}")
 
 
+#: One queue discovery's outcome.  ``status`` is the only field the loop
+#: branches on: ``ready`` carries the snapshot ``serve_once`` must consume,
+#: and every other value means this poll reaches neither publication nor
+#: admission.  ``unavailable`` is deliberately not "the queue is empty": a
+#: scan that did not finish says nothing about what is queued, so the loop
+#: must not serve, must not advertise, and must not count the poll as idle.
+DiscoveryResult = namedtuple("DiscoveryResult", (
+    "status",       # "ready" | "unavailable" | "busy" | "failed"
+    "snapshot",     # list of ready records, or None
+    "retained",     # (pid, starttime) of a reader this loop could not reap
+    "error",        # a named failure reason, or ""
+))
+
+
+def _retained_reader(abandoned: list) -> tuple[int, str] | None:
+    """The first discovery reader identity this loop cannot prove has exited.
+
+    Discovery readers never take a lock -- the scan runs outside admission and
+    the child inherits nothing it must release (``pbstatus.bounded`` closes
+    every unrelated descriptor before the scan) -- so unlike a retained
+    publisher this fences nothing but accumulation: one poll must not abandon
+    a second reader while the first is still unreaped, or a long stall parks
+    one D-state process per poll per loop.  The identity check is the
+    publisher's: ``waitpid`` reaps the exited, a reused pid is recognised by
+    its starttime, and an unreadable ``/proc`` keeps the entry retained.
+    """
+
+    return _retained_publisher(abandoned)
+
+
+def discover_ready_snapshot(queue, *, budget_s: float,
+                            abandoned: list) -> DiscoveryResult:
+    """Read the claim scan's candidate list through an abandonable child.
+
+    The child runs ``queue.ready_items`` -- ready records plus their
+    ``passes/`` sidecars -- and the parent stops waiting at ``budget_s``.  A
+    scan that completes is passed to ``serve_once`` as its ``ready`` snapshot;
+    anything else skips the poll: the loop returns to its generation and
+    maintenance checks after the normal poll delay and never publishes an
+    offer or calls ``serve_once`` without evidence it can read the queue
+    (issue #16).  The snapshot is advisory -- an intervening claim wins at the
+    rename -- so a scan that finished just before the deadline is still safe
+    to serve from.
+    """
+
+    started = time.monotonic()
+    retained = _retained_reader(abandoned)
+    if retained is not None:
+        return DiscoveryResult(
+            "busy", None, retained,
+            "an earlier discovery reader is still unreaped")
+    result = bounded("queue-discovery", queue.ready_items,
+                     deadline=Deadline(budget_s), abandoned=abandoned,
+                     cap_s=budget_s)
+    elapsed = round(time.monotonic() - started, 3)
+
+    retained = _retained_reader(abandoned)
+    status = result.get("status")
+    if status == "ok":
+        snapshot = result.get("value")
+        if retained is not None or not isinstance(snapshot, list):
+            return DiscoveryResult(
+                "unavailable", None, retained,
+                "discovery replied without a candidate list")
+        return DiscoveryResult("ready", snapshot, None, "")
+    if status == "timed_out":
+        # Pure read: nothing was claimed, renamed or reserved, so there is
+        # nothing unknown to reconcile -- the poll is simply skipped.
+        return DiscoveryResult(
+            "unavailable", None, retained,
+            f"discovery timed out after {elapsed:g}s; the queue was not read")
+    if status == "error":
+        return DiscoveryResult(
+            "failed", None, retained,
+            f"{result.get('type', 'Exception')}: {result.get('error') or ''}")
+    return DiscoveryResult(
+        "failed", None, retained,
+        f"discovery returned an unknown status: {status!r}")
+
+
 def loaded_runtime_commit() -> str:
     """The commit beside the immutable source tree this loop imported."""
 
@@ -737,11 +833,18 @@ def _run_loop(stop_requested):
     #: ``(pid, starttime)`` identities.  While one survives, this loop does not
     #: launch another writer: the survivor is what holds the publication lock.
     abandoned_publishers: list = []
+    #: Discovery readers ``pbstatus.bounded`` could not reap, as
+    #: ``(pid, starttime)`` identities.  While one survives, this loop does not
+    #: launch another reader: the survivor holds no lock, but a stalled mount
+    #: must not accumulate one D-state process per poll per loop.
+    abandoned_discoveries: list = []
     loaded_commit = loaded_runtime_commit()
     loaded_generation = _generation_at(GENERATION_VERSION)
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}",
           flush=True)
     print(f"[{host}] offer publication bounded to {OFFER_PUBLISH_TIMEOUT_S:g}s "
+          f"per poll (issue #16)", flush=True)
+    print(f"[{host}] queue discovery bounded to {DISCOVERY_TIMEOUT_S:g}s "
           f"per poll (issue #16)", flush=True)
     while True:
         if stop_requested():
@@ -865,6 +968,32 @@ def _run_loop(stop_requested):
         # helper cannot raise: this is the offer path of every loop.
         addresses = box_capacity.ipv4_addresses()
 
+        # The claim scan's pure-read half runs first, in an abandonable child:
+        # a box that cannot read the queue must neither offer nor admit, and
+        # its offer must expire on its own rather than be refreshed on no
+        # evidence (issue #16).  The snapshot is advisory -- an intervening
+        # claim wins at the rename -- so serving from it is safe, and skipping
+        # on any other outcome is fail-closed: an unreadable queue is not an
+        # empty one.  This poll is not counted idle and not counted as a
+        # failure either way: a wedged mount is environmental, and neither the
+        # idle exit nor the error exit would repair it -- both would only churn
+        # loops while the mount is down and slow the recovery after it.
+        discovery = discover_ready_snapshot(
+            queue, budget_s=DISCOVERY_TIMEOUT_S,
+            abandoned=abandoned_discoveries)
+        if discovery.status != "ready":
+            identity = (f" retained reader pid={discovery.retained[0]}"
+                        f" starttime={discovery.retained[1]}"
+                        if discovery.retained else "")
+            print(f"[{host}] queue discovery {discovery.status} "
+                  f"({discovery.error or 'no reason'}"
+                  f"{identity}); skipping publication and admission this poll",
+                  flush=True)
+            if args.once:
+                return 1
+            time.sleep(args.poll_s)
+            continue
+
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=declared,
                            capacity=capacity, observer=observer, loops=loops,
@@ -946,6 +1075,7 @@ def _run_loop(stop_requested):
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
+                ready=discovery.snapshot,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
