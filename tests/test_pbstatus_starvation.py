@@ -139,6 +139,11 @@ def starved_queue(tmp_path, monkeypatch):
         storage_tiers.FILL_RECORD_FIELD: 310.0,
         "fill_supply": {"best_mb_s": 300.0, "ceiling_mb_s": None,
                         "may_grow": True}})
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": RAM_TIER, "tier": "ram", "host": HOST,
+        "capacity_bytes": 8 * GIB, "sampled_unix": NOW - 5,
+        "epoch": EPOCH, "window_gib": 4})
     published = json.loads(queue.item_path(pool.READY, _hexkey("mover1")).read_text())
     denials = {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
@@ -198,6 +203,18 @@ def test_tiers_carry_announced_fill_and_ledger_occupancy(starved_queue):
     assert tier["ledger_capacity"]["stage_gib"] == 64
     assert tier["ledger_available"]["stage_gib"] == 62
     assert tier["ledger_held"]["stage_gib"] == 2
+
+
+def test_tiers_carry_kind_host_epoch_and_window(starved_queue):
+    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    assert blob["complete"] is True
+    ram = next(t for t in blob["tiers"] if t["tier_id"] == RAM_TIER)
+    assert ram["announced"] is True
+    assert ram["tier_kind"] == "ram" and ram["host"] == HOST
+    assert ram["epoch"] == EPOCH and ram["window_gib"] == 4
+    stage = next(t for t in blob["tiers"] if t["tier_id"] == STAGE_TIER)
+    assert stage["tier_kind"] == "stage" and stage["host"] == HOST
+    assert stage["epoch"] is None and stage["window_gib"] is None
 
 
 def test_denial_top_separates_mover_blocking_reasons(starved_queue):

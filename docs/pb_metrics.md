@@ -106,8 +106,12 @@ advancing wall clock. Nothing is exposed per action key; the store is keyed by
 it in memory and pruned each refresh to the claims that are live, so it cannot
 grow with the queue's history. Labels are drawn
 from bounded sets: worker host, resource, CPU/GPU job kind, terminal outcome,
-timing statistic, timing phase, and memory domain. Action keys, command lines,
-nonces, tokens, and result digests are never labels.
+timing statistic, timing phase, memory domain, residency tier, queue state,
+fill statistic, denial reason, and promotion leg. Action keys, command lines,
+nonces, tokens, and result digests are never labels. A waiting consumer or
+movement record that names no usable tier counts under the single `unknown`
+tier value, which keeps the per-tier series accounting complete without
+growing label cardinality with the queue.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
@@ -157,6 +161,51 @@ Resource values use these units:
 
 Unknown resource names are omitted so a malformed or newly invented key cannot
 grow label cardinality or silently acquire an implied unit.
+
+## Starvation and promotion
+
+What is waiting on data, per residency tier. These gauges derive from the
+same records `pbstatus --starvation` reads -- claims and leases for quiet
+consumers, frozen plans and fragments for promotion state, tier
+announcements and ledgers for fill and occupancy, denial snapshots, and
+filed movement receipts -- aggregated to label-bounded series. The blob
+itself (per-claim quiet, per-plan cursor gaps, per-host denial tops, and the
+`not_observable` gap list) stays the per-record companion; see
+`pbstatus --starvation`. Waiting reuses that census's quiet/grace rule, so
+the gauge and the blob cannot disagree about who is waiting.
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `prismabuild_tier_fill_supply_mb_s` | `tier,stat=best\|ceiling` | Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold. `best` is the highest delivery since the last ceiling, `ceiling` the most recent measured shortfall. Absent, not zero, where the tier announced none. |
+| `prismabuild_tier_tokens` | `tier,resource,state=capacity\|available\|held` | Tier ledger tokens by kind and state. Capacity kinds count GiB, the fill kind counts pool-side MB/s, and held is capacity less available. |
+| `prismabuild_claim_denials` | `host,reason` | Latest claim denial per action generation observed in the window, by host and reason. A restart-safe gauge, not a counter. |
+| `prismabuild_claim_denial_window_seconds` | none | Configured lookback for the per-host claim-denial gauges. |
+| `prismabuild_mover_queue_depth` | `state=ready\|claimed` | Active actions with movement-node shape (a residency range to stage), by queue state. |
+| `prismabuild_mover_queue_depth_tier` | `tier,state=ready\|claimed` | The same movers broken down by the tier their residency range names. Known tiers always read, zero included; the single `unknown` tier reads only when a record names no usable tier. |
+| `prismabuild_starvation_waiting_consumers` | `tier` | Claimed consumers the quiet/grace rule reads as waiting on data, by the tier their frozen plan names. Known tiers always read, zero included; the `unknown` tier counts waiters with no readable plan. |
+| `prismabuild_starvation_waiting_quiet_max_seconds` | `tier` | Longest progress quiet among the tier's waiting consumers -- the promotion lag. Absent, not zero, where none is waiting. |
+| `prismabuild_residency_plans` | `tier,state=claimed\|ready\|absent` | Filed residency plans by tier and consumer queue state. `absent` plans name consumers that already left the queue. Unreadable or rejected plans count under the `unknown` tier with state `invalid`, and make collection unsuccessful. |
+| `prismabuild_residency_staged_phases` | `tier,leg=stage\|ram` | Plan phases at or behind the read cursor the tier ledger says are staged: the promoted frontier behind the cursor. |
+| `prismabuild_residency_unstaged_phases` | `tier,leg` | Plan phases at or ahead of the read cursor the tier ledger does not say are staged: the promotion backlog. |
+| `prismabuild_residency_unstaged_bytes` | `tier,leg` | Bytes in the promotion backlog, by tier and leg. |
+| `prismabuild_tier_move_jobs` | `tier` | Movement receipts filed in the window, by tier. A restart-safe gauge, not a counter. |
+| `prismabuild_tier_move_measured_jobs` | `tier` | In-window receipts whose window read the staged bytes off the pool, under the fill fold's own share test; the remainder is adoption served resident. Jobs beside measured is the hit rate. |
+| `prismabuild_tier_move_staged_bytes` | `tier` | Bytes movers reported staging in the window, by tier, over receipts carrying both byte counters. Absent, not zero, where none did. |
+| `prismabuild_tier_move_pool_read_bytes` | `tier` | Pool sector reads during movers' windows in the window, by tier, over the same receipts as the staged sum. It counts every pool reader, not one copy's bytes, so it can exceed the staged sum; read it beside measured jobs, never as a ratio's denominator. |
+| `prismabuild_tier_move_pool_rate_mb_s` | `tier,stat=best\|mean` | Pool-side delivery the tier's movers demonstrated in the window. `best` is the highest pool delivery any receipt measured, `mean` the average over receipts. Absent, not zero, with no measured rate. |
+| `prismabuild_tier_move_rate_jobs` | `tier` | Receipts contributing to the tier's pool-rate gauge in the window. |
+| `prismabuild_tier_move_window_seconds` | none | Configured lookback for the movement receipt gauges. |
+| `prismabuild_tier_move_window_complete` | none | `1` when the receipt scan examined every filing (newest-first, capped at 1000 files) and every selected receipt was readable; `0` means the window may be truncated or partly unreadable. |
+
+Known tiers always read their count series with zero included, so an alert
+can distinguish "no movers queued" from "the tier stopped reporting" by
+reading these beside `prismabuild_collection_success`. The byte sums gate on
+receipts carrying both counters, so each sum covers one population, not two;
+the adoption signal itself is jobs beside measured jobs, because the
+pool-read sum counts every pool reader's sectors and can exceed staged. The
+per-tier tier-kind, host, epoch, and promotion window behind these series are
+in the `--starvation` blob's `tiers` section, read off each tier's
+announcement rather than derived.
 
 ## Recent terminal window
 
