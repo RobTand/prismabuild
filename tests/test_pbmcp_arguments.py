@@ -29,6 +29,9 @@ import pbmcp_fixture as fx
     ("pb_actions", {"priority_min": "1"}),
     ("pb_actions", {"limit": -1}),
     ("pb_verify_claim", {"sha256": "a" * 64, "hash_payload": "false"}),
+    ("pb_denials", {"hours": -1}),
+    ("pb_denials", {"hours": "recent"}),
+    ("pb_tier", {"tier_id": "ram:x"}),
 ])
 def test_bad_arguments_return_invalid_params_before_any_read(
     tmp_path, monkeypatch, name, arguments,

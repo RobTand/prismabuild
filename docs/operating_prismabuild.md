@@ -1920,6 +1920,15 @@ The tools:
 *   **`pb_status`** — the `pbstatus` census: worker offers and their ages,
     ready and claimed actions with why each is waiting, per-host reservation
     token counts, and how the most recent actions ended.
+*   **`pb_denials(hours)`** — claim denials per host, grouped by reason,
+    inside the last `hours` (default 24, 0 for every recorded denial): how
+    many per reason, and the most recently denied action for each. This is
+    the typed form of the `reservations/*/adaptive/claim-denials.json`
+    archaeology behind #660.
+*   **`pb_tier()`** — every announced record under `tiers/`: capacity
+    tokens, fill supply, RAM admission and epoch where present, and the
+    window. Records that cannot be read are named in `invalid` rather than
+    dropped silently.
 *   **`pb_action(key_prefix)`** — one action, whole: the sealed submission
     (tags, demand, priority, checkout, `max_attempts`), its state and host,
     every attempt with its log metadata, the ending and both return codes, the

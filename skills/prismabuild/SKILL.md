@@ -375,7 +375,7 @@ Read status and your own actions as data, not as text. Register the read-only
 MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
 as an `mcpServers` entry for opencode/Codex -- and use `pb_status`,
-`pb_action`, `pb_actions`, `pb_log`, `pb_verify_claim` and `pb_runtime`
+`pb_action`, `pb_actions`, `pb_denials`, `pb_tier`, `pb_log`, `pb_verify_claim` and `pb_runtime`
 instead of shelling out to `pbstatus` and parsing its table, which is arranged
 for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
 `snapshot_parent`, `snapshot_commit`, `published_by` or explicit `keys`: a queue

@@ -94,6 +94,10 @@ DEFAULT_DEADLINE_S = 5.0
 DEFAULT_RECENT = 20
 DEFAULT_ACTIONS_LIMIT = 50
 
+#: How far back ``pb_denials`` counts by default.  A day covers the nightly
+#: debugging session #660 was drawn from; pass 0 to read every recorded denial.
+DEFAULT_DENIAL_HOURS = 24.0
+
 #: The most bytes ``pb_log`` will read from the tail of one log.  A log is
 #: never read whole: the reader seeks to ``size - cap`` and reads once.
 DEFAULT_LOG_TAIL_BYTES = 65536
@@ -703,6 +707,69 @@ def _names_in(directory: Path) -> list[str]:
         raise
 
 
+def _tier_rows(queue_root: Path) -> dict:
+    """Every file under ``tiers/``, curated, with the unreadable ones named.
+
+    A record whose ``tier_id`` does not match its file name is reported
+    rather than served: ``PoolQueue.tiers`` drops such a file silently, which
+    is right for admission and wrong for observation, where a loop filing
+    under the wrong name is exactly what the reader is trying to see.
+    """
+
+    try:
+        with os.scandir(Path(queue_root) / pool.TIERS) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".json") and entry.is_file())
+    except OSError as error:
+        if _absent(error):
+            return {"tiers": [], "invalid": []}
+        raise
+    tiers: list[dict] = []
+    invalid: list[dict] = []
+    for name in names:
+        stem = name[:-len(".json")]
+        try:
+            record = pool.read_queue_record(Path(queue_root) / pool.TIERS / name)
+        except (ValueError, pool.PoolContractError) as exc:
+            invalid.append({"tier_id": stem, "reason": str(exc)})
+            continue
+        if record is None:
+            invalid.append({"tier_id": stem,
+                            "reason": "unreadable or empty record"})
+            continue
+        if record.get("tier_id") != stem:
+            invalid.append({"tier_id": stem,
+                            "reason": "tier_id does not match the file name"})
+            continue
+        tiers.append(_tier_row(record))
+    tiers.sort(key=lambda row: str(row.get("tier_id") or ""))
+    return {"tiers": tiers, "invalid": invalid}
+
+
+def _tier_row(record: Mapping[str, object]) -> dict:
+    """The fields #660's debugging actually reached for, nothing reshaped."""
+
+    now = time.time()
+    sampled = record.get("sampled_unix")
+    return {
+        "tier_id": record.get("tier_id"),
+        "tier": record.get("tier"),
+        "host": record.get("host"),
+        "tokens": record.get("tokens"),
+        "fill_supply": record.get("fill_supply"),
+        "ram_admission": record.get("ram_admission"),
+        "epoch": record.get("epoch"),
+        "window_gib": record.get("window_gib"),
+        "mountpoint": record.get("mountpoint"),
+        "size_bytes": record.get("size_bytes"),
+        "capacity_bytes": record.get("capacity_bytes"),
+        "sampled_unix": sampled,
+        "age_s": (now - float(sampled)
+                  if type(sampled) in (int, float) and math.isfinite(sampled)
+                  else None),
+    }
+
+
 # --------------------------------------------------------------------------
 # The tools
 # --------------------------------------------------------------------------
@@ -773,6 +840,95 @@ class Session:
             "endings_limit": limit,
             "reservations": reservations,
             "rollout": rollout,
+        }
+
+    # -- pb_denials --------------------------------------------------------
+
+    def pb_denials(self, call: Call,
+                   *, hours: float = DEFAULT_DENIAL_HOURS) -> dict:
+        """Claim denials per host, grouped by reason, inside a recent window.
+
+        The reader is ``pbstatus``' own -- the same snapshots, the same schema
+        check, the same per-record validation -- reused rather than repeated,
+        because a second reader of ``claim-denials.json`` that disagrees with
+        the first about what a record means is a second source of truth.  What
+        is new here is the grouping: an agent asking why nothing is claiming
+        wants a histogram with the most recently denied action per reason, not
+        a flat list of up to 256 records per host.
+        """
+
+        window_s = max(0.0, float(hours)) * 3600.0
+        queue = pool.PoolQueue(self.queue_root.absolute())
+        found = call.read("denials",
+                          lambda: pbstatus._pool_claim_denials(queue))
+        denials, notes = found if found is not None else (None, None)
+        now = time.time()
+        cutoff = None if window_s <= 0 else now - window_s
+        hosts: dict[str, dict] = {}
+        total = 0
+        if denials is not None:
+            for denial in denials:
+                denied = denial.get("denied_unix")
+                if (type(denied) not in (int, float)
+                        or not math.isfinite(denied)
+                        or denied > now
+                        or (cutoff is not None and denied < cutoff)):
+                    continue
+                host = str(denial.get("host"))
+                reason = str(denial.get("reason"))
+                key = str(denial.get("action_key"))
+                entry = hosts.setdefault(
+                    host, {"denials_in_window": 0, "by_reason": {}})
+                entry["denials_in_window"] += 1
+                total += 1
+                bucket = entry["by_reason"].setdefault(reason, {
+                    "count": 0, "latest_denied_unix": None,
+                    "latest_action_key": None,
+                    "latest_action_key_prefix": None,
+                    "latest_decision_reason": None,
+                })
+                bucket["count"] += 1
+                if (bucket["latest_denied_unix"] is None
+                        or float(denied) > float(bucket["latest_denied_unix"])):
+                    decision = denial.get("evidence")
+                    decision = (decision.get("decision")
+                                if isinstance(decision, dict) else None)
+                    subreason = (decision.get("reason")
+                                 if isinstance(decision, dict) else None)
+                    bucket["latest_denied_unix"] = denied
+                    bucket["latest_action_key"] = key
+                    bucket["latest_action_key_prefix"] = key[:12]
+                    bucket["latest_decision_reason"] = (
+                        subreason if isinstance(subreason, str) else None)
+        return {
+            "queue_root": str(self.queue_root),
+            "hours": float(hours),
+            "cutoff_unix": cutoff,
+            "hosts": hosts if denials is not None else None,
+            "total_in_window": total if denials is not None else None,
+            "reader_notes": notes,
+        }
+
+    # -- pb_tier -----------------------------------------------------------
+
+    def pb_tier(self, call: Call) -> dict:
+        """Every announced storage-tier record: tokens, fill, admission, window.
+
+        The records are advisory -- the ledger is the admission authority --
+        and this passes through what the tier loops filed without reshaping
+        it beyond the projection below, so a later loop can file a new field
+        without this tool having to name it first.  ``ram_admission`` and
+        ``epoch`` are present on RAM records and absent elsewhere; both read
+        as ``null`` rather than as missing, so a client can tell "this tier
+        has no admission" from "the tiers directory did not answer".
+        """
+
+        found = call.read("tiers", lambda: _tier_rows(self.queue_root))
+        found = found if isinstance(found, dict) else {}
+        return {
+            "queue_root": str(self.queue_root),
+            "tiers": found.get("tiers"),
+            "invalid": found.get("invalid"),
         }
 
     # -- pb_action ---------------------------------------------------------
@@ -1290,6 +1446,31 @@ TOOLS: tuple[dict, ...] = (
             },
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "pb_denials",
+        "description": "Claim denials per host, grouped by reason, inside a "
+                       "recent window: how many per reason, and the most "
+                       "recently denied action for each. Read-only and "
+                       "deadline-bounded; check `complete` before trusting a "
+                       "quiet host.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hours": {"type": "number", "minimum": 0,
+                          "description": "How far back to count. 0 reads every "
+                                         "recorded denial."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "pb_tier",
+        "description": "Every announced storage-tier record: capacity tokens, "
+                       "fill supply, RAM admission and epoch where present, "
+                       "and the window. Read-only and deadline-bounded.",
+        "inputSchema": {"type": "object", "properties": {},
+                        "additionalProperties": False},
     },
     {
         "name": "pb_action",
