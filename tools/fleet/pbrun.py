@@ -5075,7 +5075,20 @@ def residency_stage_rows(
             # No tier demand: an egress *returns* capacity, and one that had to
             # reserve some before it could give any back would deadlock exactly
             # when the stage is full -- which is the only moment it matters.
-            demand={"mem_gb": 1}, tags=tags,
+            # CPU and memory it must still declare, and bounded: a row without
+            # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
+            # whenever the box holds anything (#603, #607) -- and the box an
+            # egress runs on is the stage's own file server, whose resident
+            # loops mean it always holds something.  A release that cannot
+            # claim there deadlocks the tier through the same door the comment
+            # above closes: the concluding movers pin their ranges' tokens, the
+            # egress is the only node that returns them, and one waiting for an
+            # empty box waits forever.  One CPU is a declared bound, the width
+            # of the single-process unlink-and-record an egress is -- not a
+            # measurement, because an egress files no receipts of its own, and
+            # pricing it off the movers' copy receipts would measure the wrong
+            # node entirely (the #655 lesson).
+            demand={"cpu": 1, "mem_gb": 1}, tags=tags,
             log_name=f"stage-release-{ordinal:04d}-{span['name']}.log")
         for action in (mover, egress):
             cas.publish_action_request(action)
@@ -5118,8 +5131,12 @@ def residency_stage_rows(
                          "--mover-action-key", str(ram_mover["action_key"]),
                          "--consumer-action-key", consumer_action_key,
                          "--stage-root", ram_root],
-                # No tier demand, for the same reason as the stage's egress.
-                demand={"mem_gb": 1}, tags=tags,
+                # No tier demand, for the same reason as the stage's egress,
+                # and one declared CPU for the same reason as its cpu: a
+                # tmpfs promotion's release runs on the same never-empty file
+                # server, and unknown CPU use would refuse to run beside the
+                # loops that make it never-empty.
+                demand={"cpu": 1, "mem_gb": 1}, tags=tags,
                 log_name=f"ram-release-{ordinal:04d}-{span['name']}.log")
             cas.publish_action_request(ram_mover)
             cas.publish_action_request(ram_egress)

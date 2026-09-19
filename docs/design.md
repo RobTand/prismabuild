@@ -3498,6 +3498,18 @@ release would leave bytes on a stage the ledger believes is empty, which is the
 failure the whole accounting exists to prevent. An unreadable fragment keeps the
 tokens and deletes nothing: its bytes may be there and cannot be named.
 
+Because it is the only node that returns tokens, an egress must be admissible
+exactly when the tier is fullest: on the stage's own file server, beside the
+resident loops that make that box hold something at all times. Its row
+therefore declares `{"cpu": 1, "mem_gb": 1}` — no tier demand, it *returns*
+that — with the CPU a declared bound of the single-process unlink-and-record
+it is, never a measurement: an egress files no receipts, and pricing it off
+the movers' copy receipts would measure the wrong node (#655's lesson, and
+#607's unknown-CPU discipline on the node that fix skipped; 2026-09-19,
+dl380g10, campaign `397b8f851004`'s three `stage-release` rows refused
+`unbounded_cpu_not_exclusive` at `psi 0.043`, `busy 3.61 of 80`, eight
+holders).
+
 A consumer is admitted only when every lead has moved its bytes **and still
 holds them**; the second half is `residency_lead_unpinned`, and a missing mover
 receipt fails it, so "no receipt" can never read as "staged". Tokens alone are
