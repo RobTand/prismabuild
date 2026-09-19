@@ -192,50 +192,6 @@ INTENT = "intent"
 WITHDRAWN = "withdrawn"
 _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 
-#: Queue namespace where a fleet member records that it caught itself (or, as
-#: the supervisor, a role it owns) executing against a generation the fleet has
-#: retired (2026-09-19).  A drift record is an incident record, not telemetry:
-#: one per refusal or restart, never one per poll, and immutable once stamped
-#: -- a writer that could edit its own drift record could un-notice the drift.
-#: It lives under the queue root beside the queue's other record namespaces so
-#: every existing reader (status sweeps, an operator's ``ls``) finds it without
-#: a new place to look.
-GENERATION_DRIFT = "generation-drift"
-GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
-
-
-def stamp_generation_drift(queue_root: Path, record: Mapping[str, object]) -> Path:
-    """File one immutable generation-drift record under a queue root.
-
-    The record name is fixed by the incident it names -- when it happened, who
-    stamped it, from which pid -- plus a random fragment, because the queue's
-    atomic publication uses ``os.replace`` and a name collision would silently
-    overwrite the earlier record.  The file is made read-only to everything,
-    including its writer, after publication: the queue's other records are
-    last-writer-wins state, but this one is evidence.
-
-    Best effort by design, in the fail-closed direction that matters: the
-    caller has already refused the claim or stopped the role when it gets
-    here, so a stamp that cannot land must not undo the refusal.  The path is
-    returned for the caller to log.
-    """
-
-    unix = float(record.get("unix") or _now())
-    actor = str(record.get("actor") or "unknown")
-    host = str(record.get("host") or socket.gethostname())
-    pid = record.get("pid")
-    name = (f"{unix:.6f}-{actor}-{host}"
-            f"-{pid if isinstance(pid, int) and pid > 0 else 'x'}"
-            f"-{uuid.uuid4().hex[:8]}.json")
-    path = Path(queue_root) / GENERATION_DRIFT / name
-    _write_json_atomic(path, dict(record, schema=GENERATION_DRIFT_SCHEMA,
-                                  unix=unix, actor=actor, host=host))
-    try:
-        os.chmod(path, 0o444)
-    except OSError:
-        pass
-    return path
-
 #: Suffix of a claim that has been moved out of the way while its finisher
 #: publishes the item's next home.  Every reader of ``claimed/`` addresses it
 #: as ``<key>.json`` or ``<key>.lease`` -- ``reap_stale`` and
