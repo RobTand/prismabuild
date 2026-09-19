@@ -1,126 +1,129 @@
 {
-  "schema": "prismaquant.prismabuild.fleet_boxes.v1",
-  "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file. Raised 2026-09-04 against measurement, not intuition: see _measured_2026_09_04.",
-  "boxes": {
-    "sparky": {
-      "loops": 5,
-      "args": [
-        "--class",
-        "gb10",
-        "--gpu",
-        "--mem-gb",
-        "104",
-        "--timeout-s",
-        "86400",
-        "--max-idle",
-        "500",
-        "--poll-s",
-        "15",
-        "--all-cores"
-      ]
-    },
-    "gx10-6b77": {
-      "_alias": "sparklina",
-      "_alias_why": "The OS hostname is now sparklina. The supervisor resolves this explicit alias to the same shape; both names remain placement tags for existing submissions.",
-      "loops": 3,
-      "args": [
-        "--class",
-        "gb10",
-        "--tag",
-        "sparklina",
-        "--tag",
-        "gx10-6b77",
-        "--gpu",
-        "--mem-gb",
-        "104",
-        "--timeout-s",
-        "86400",
-        "--max-idle",
-        "500",
-        "--poll-s",
-        "20",
-        "--python",
-        "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
-        "--all-cores"
-      ]
-    },
-    "dl380g10": {
-      "loops": 16,
-      "args": [
-        "--class",
-        "x86",
-        "--mem-gb",
-        "96",
-        "--all-cores",
-        "--timeout-s",
-        "3600",
-        "--max-idle",
-        "2000",
-        "--poll-s",
-        "10",
-        "--python",
-        "/home/rob/venvs/pb-cpu/bin/python"
-      ],
-      "_roles_why": "dl380g10 is the file server: /mnt/shared is a local ZFS dataset here, also mounted at /storage_pool/shared. The storage role runs one prewarm_loop.py, which reads ready/ in claim order and pulls the bytes a data-manifest-carrying action declares into the ARC before anybody claims it (#487). It claims nothing and holds no lease, so it sits outside the worker sizing law; with no manifest-carrying action in the queue it does nothing at all. Readers and lookahead are both down from the first deployment (8 and 2) because that shape charged the fleet more than it saved (#499): eight concurrent readers took the raidz1 to 73-83% utilization and 11-14 s of backlog, the clients' sync writes queued behind it, their NFS-over-RDMA transports reset, and both Sparks' GPUs idled 100-130 s per row. --readers 1 with the disk pacer reads the same bytes without owning the queue, and it is the shape that was measured on the live fleet rather than the one that looked reasonable: on 2026-09-11 09:13:21-09:20:36 UTC it warmed row-0079 (63.8 GB) at 146.5 MB/s while both Sparks kept encoding -- zero WC errors, the server's nfsd.rpc never below 2 094/s, each Spark's nfs.rpc never below 762/s, no sparky batch slower than the no-prewarm control's own worst (32.5 s in both), and the disks at 23% mean and 41.7% peak utilization. The same run at --readers 1 but the looser caps (40% utilization, 15 ms await, 4 s backlog) left the disks at 31% peak yet dropped both Sparks' NFS clients to ~50 RPC/s, so the caps below are the tighter ones. --pace-pool names the pool whose spindles it samples; the caps are the parser defaults (25%, 10 ms, 2 000 ms), measured harmless against 8-12% utilization when the campaign reads alone. --lookahead 1 is ARC arithmetic, not caution: c_max here is 245 760 MiB (257.7 GB), the loop may hold 80% of it (206.2 GB), and one 64 GB census row warmed ahead of two 64 GB rows still being read comes to 191.4 GB, leaving 14.8 GB. A second lookahead row (255.2 GB) does not fit, and the only way to warm it is to evict what the running rows are reading, which is what the arc_size swing on 2026-09-11 recorded.",
-      "_tiers_why": "dl380g10 owns the stage tier, so it is the box that mints it. The tiers role runs one tier_loop.py: every cycle it rediscovers what this box actually has -- the ARC from arcstats, stage pools by the prismabuild-stage name prefix, the source pool's members from zpool status -- and makes each tier ledger say exactly that, so adding a device to the stage pool offers more on the next cycle and exporting the pool offers nothing. The stage is the dataset prismabuild-stage/prewarm mounted at /stage/prewarm, exported read-only to both Sparks at the same path over RDMA; capacity is minted from that dataset\u0027s own zfs available (774,032,285,696 B on 2026-09-18, 720 stage_gib), never from zpool size, because size still has parity, the slop reservation and every other dataset inside it and a mover that discovers the difference has already read its range off the disks. It also publishes the residency window -- the next movers a consumer\u0027s accepted progress has earned and the egress nodes for what it has read past -- and composes each consumer\u0027s residency map as its single writer. It claims nothing and holds no lease, so like the storage role it sits outside the worker sizing law; with no residency-carrying action in the queue it mints the tiers and does nothing else. No arguments beyond the pool it drains: --source-pool storage_pool names the pool whose receipts the fill bandwidth is learned from, and the interval is the parser default (60 s), because every quantity it announces is re-read each cycle rather than configured here.",
-      "roles": {
-        "tiers": [
-          "--source-pool",
-          "storage_pool"
-        ],
-        "storage": [
-          "--mount-map",
-          "/mnt/shared=/storage_pool/shared",
-          "--pace-pool",
-          "storage_pool",
-          "--readers",
-          "1",
-          "--lookahead",
-          "1",
-          "--poll-s",
-          "20",
-          "--claim-grace-min",
-          "20"
-        ]
-      }
-    },
-    "wsl-gpu": {
-      "_alias": "DESKTOP-P5UOGNJ",
-      "_alias_why": "WSL2 takes its hostname from the Windows machine name, so socket.gethostname() answers DESKTOP-P5UOGNJ while every submission spells this box wsl-gpu. One machine, one shape, the same mechanism gx10-6b77/sparklina already uses. The offer therefore lands at pb-queue/workers/DESKTOP-P5UOGNJ.json, and --tag wsl-gpu is what places work here.",
-      "_why": "A Ryzen 9800X3D under WSL2 with an RX 9070 XT (gfx1201, RDNA4). It offers its CPU and, since #529, its GPU. The AMD reader publishes that device from rocminfo and a HIP probe that must agree on VRAM total, wavefront, peak clock and threads per block; run on the box, the broker snapshot reads complete true, attributed true, one discrete 15.81 GiB device GPU-9c30c352a59e5b7a, and box_capacity.observe({\"gpu\": 1, \"mem_gb\": 16}) answered capacity {gpu 1, mem_gb 16} with gpu_capacity_trusted true. A foreign GPU process is named by pid and closes the offer to gpu 0, the same rule the GB10s use.",
-      "_gpu_why": "One GPU token, and it is a narrower offer than a GB10's. WSL2 has no amdgpu driver, so this device carries no power, clock or throttle counter and no per-process VRAM at all; its record declares telemetry_class memory_only and the adaptive controller withholds the two permissions power exists to authorize. It runs one attributed job at a time: no concurrency probe, no measurement action, and no enforceable per-scope GPU allowance -- a job that exceeds its GPU budget here fails its own allocation rather than being stopped on two confirming observations. Ownership still comes from a /dev/dxg open-handle census under the same PID-start and cgroup checks as the NVML rows, so an unattributed holder still refuses admission. A Windows-side GPU user is outside a Linux /proc census and will not appear as a foreign process; it cannot overcommit VRAM, because free VRAM is measured whoever holds the rest. --class stays x86: the class names the ABI the box runs and this is an x86-64 host with the fleet's x86 project environments, so a new class would break CPU placement while adding nothing -- the gfx1201/rocm/rdna4 tags already place AMD GPU work. See docs/amd_gpu_capacity_2026-09-12.md.",
-      "_capacity_why": "27.41 GiB physical. box_capacity.MEMORY_MARGIN_GB is 8 and the box read MemAvailable 24 GiB, so 16 GiB is the largest budget it can offer without eating the margin; observe() returned exactly mem_gb 16. 16 vCPU: cpu_topology.inherited_tiers() classifies the 8 physical cores [0,2,4,6,8,10,12,14] preferred and the 8 SMT siblings [1,3,5,7,9,11,13,15] fallback, so --all-cores retains all 16 and still reserves physical cores first. Three loops keeps roughly dl380g10's five-cores-per-loop ratio. --python is the interpreter that launches the pool worker, not a project environment: /usr/bin/python3 here is 3.14.4, the same version as dl380g10's pb-cpu, and all 19 prismabuild modules plus supervise/worker_loop/worker/pbrun import under it. The project environments PrismaQuant CPU shards pass with their own --python are provisioned at the same paths this fleet already uses, /home/rob/venvs/pb-cpu and /home/rob/venvs/pq-cpu312.",
-      "loops": 3,
-      "args": [
-        "--class",
-        "x86",
-        "--tag",
-        "wsl-gpu",
-        "--tag",
-        "gfx1201",
-        "--tag",
-        "rocm",
-        "--tag",
-        "rdna4",
-        "--gpu",
-        "--mem-gb",
-        "16",
-        "--all-cores",
-        "--timeout-s",
-        "3600",
-        "--max-idle",
-        "2000",
-        "--poll-s",
-        "10",
-        "--python",
-        "/usr/bin/python3"
-      ]
-    }
+ "schema": "prismaquant.prismabuild.fleet_boxes.v1",
+ "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file. Raised 2026-09-04 against measurement, not intuition: see _measured_2026_09_04.",
+ "boxes": {
+  "sparky": {
+   "loops": 5,
+   "args": [
+    "--class",
+    "gb10",
+    "--gpu",
+    "--mem-gb",
+    "104",
+    "--timeout-s",
+    "86400",
+    "--max-idle",
+    "500",
+    "--poll-s",
+    "15",
+    "--all-cores"
+   ]
   },
-  "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",
-  "_capacity_policy_2026_09_05": "Both GB10 boxes use the same --gpu policy. A trusted fresh broker snapshot detects physical devices and reports one on each current host; missing, stale, incomplete or unattributed evidence offers zero. The snapshot distinguishes shared-system memory from discrete VRAM, while mem-gb values remain host-RAM budgets. All hosts retain full inherited CPU capacity, with physical performance cores preferred and fallback CPUs allocated last.",
-  "_dl380_memory_2026_09_05": "Raised the stale 60 GiB fleet ceiling to 192 GiB after measuring 294.5 GiB physical RAM, 230.6 GiB available, zero memory PSI and 48 GiB of active PB reservations using about 5 GiB. The 192 GiB aggregate budget leaves over 100 GiB outside PB's maximum reservation, including unrelated services and host margin. Live host observation can lower the offer; each action still reserves and enforces its full declared memory. See docs/dl380_memory_capacity_2026-09-05.md and issue #191.",
-  "_dl380_memory_2026_09_11": "Reduced the aggregate PB memory budget from 192 to 96 GiB to preserve the storage server's ZFS ARC (issue #488). The host exposes 294.523 GiB physical RAM; its runtime zfs_arc_min is 176 GiB and zfs_arc_sys_free is 16 GiB, leaving 102.523 GiB before other services. The 96 GiB declaration leaves 6.523 GiB beyond those floors. Fresh host observation can lower admission further; full per-action reservation and containment remain required. The legacy 3600-second ceiling is unchanged: progress-v1 actions use it as a per-phase stall bound and retain any explicit sealed deadline.",
-  "_gb10_memory_2026_09_07": "Raised both GB10 aggregate memory budgets to 96 GiB for a full calibration capture, selected by the root reviewer from measured headroom after Rob authorized increasing memory limits; decision recorded in issue #322. Linux exposes 121.627 GiB physical memory. Initial live samples had over 110 GiB available with zero memory PSI; a later sparky sample fell to 95.872 GiB, so headroom is a fresh admission condition, not a permanent grant. A 96 GiB action must wait for existing reservations to drain; no 104/112 GiB overlap budget is added. Preserve the 8 GiB host-availability margin, complete reservations and the GPU subset cap. See docs/gb10_memory_capacity_2026-09-07.md.",
-  "_gb10_memory_104_2026_09_07": "Revised the earlier 96 GiB decision to 104 GiB for an isolated whole-GPU calibration measurement after source-derived finalization sizing found a 93.756 GiB tensor floor before runtime overhead (issue #326). Rob authorized raising limits; root selected this revised budget. Idle sparklina had 115.638 GiB available at 04:59:15Z, zero memory PSI, and complete attributed broker evidence with no jobs or foreign GPU processes. Sparky was busy below the required 112 GiB fresh headroom. A 104 GiB action waits for other reservations to drain; this increase does not authorize overlap. Preserve the 8 GiB host margin and GPU subset cap. Physical memory outside the aggregate ceiling is 17.627 GiB. See docs/gb10_memory_104_capacity_2026-09-07.md."
+  "gx10-6b77": {
+   "_alias": "sparklina",
+   "_alias_why": "The OS hostname is now sparklina. The supervisor resolves this explicit alias to the same shape; both names remain placement tags for existing submissions.",
+   "loops": 3,
+   "args": [
+    "--class",
+    "gb10",
+    "--tag",
+    "sparklina",
+    "--tag",
+    "gx10-6b77",
+    "--gpu",
+    "--mem-gb",
+    "104",
+    "--timeout-s",
+    "86400",
+    "--max-idle",
+    "500",
+    "--poll-s",
+    "20",
+    "--python",
+    "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
+    "--all-cores"
+   ]
+  },
+  "dl380g10": {
+   "loops": 16,
+   "args": [
+    "--class",
+    "x86",
+    "--mem-gb",
+    "96",
+    "--all-cores",
+    "--timeout-s",
+    "3600",
+    "--max-idle",
+    "2000",
+    "--poll-s",
+    "10",
+    "--python",
+    "/home/rob/venvs/pb-cpu/bin/python"
+   ],
+   "_roles_why": "dl380g10 is the file server: /mnt/shared is a local ZFS dataset here, also mounted at /storage_pool/shared. The storage role runs one prewarm_loop.py, which reads ready/ in claim order and pulls the bytes a data-manifest-carrying action declares into the ARC before anybody claims it (#487). It claims nothing and holds no lease, so it sits outside the worker sizing law; with no manifest-carrying action in the queue it does nothing at all. Readers and lookahead are both down from the first deployment (8 and 2) because that shape charged the fleet more than it saved (#499): eight concurrent readers took the raidz1 to 73-83% utilization and 11-14 s of backlog, the clients' sync writes queued behind it, their NFS-over-RDMA transports reset, and both Sparks' GPUs idled 100-130 s per row. --readers 1 with the disk pacer reads the same bytes without owning the queue, and it is the shape that was measured on the live fleet rather than the one that looked reasonable: on 2026-09-11 09:13:21-09:20:36 UTC it warmed row-0079 (63.8 GB) at 146.5 MB/s while both Sparks kept encoding -- zero WC errors, the server's nfsd.rpc never below 2 094/s, each Spark's nfs.rpc never below 762/s, no sparky batch slower than the no-prewarm control's own worst (32.5 s in both), and the disks at 23% mean and 41.7% peak utilization. The same run at --readers 1 but the looser caps (40% utilization, 15 ms await, 4 s backlog) left the disks at 31% peak yet dropped both Sparks' NFS clients to ~50 RPC/s, so the caps below are the tighter ones. --pace-pool names the pool whose spindles it samples; the caps are the parser defaults (25%, 10 ms, 2 000 ms), measured harmless against 8-12% utilization when the campaign reads alone. --lookahead 1 is ARC arithmetic, not caution: c_max here is 245 760 MiB (257.7 GB), the loop may hold 80% of it (206.2 GB), and one 64 GB census row warmed ahead of two 64 GB rows still being read comes to 191.4 GB, leaving 14.8 GB. A second lookahead row (255.2 GB) does not fit, and the only way to warm it is to evict what the running rows are reading, which is what the arc_size swing on 2026-09-11 recorded.",
+   "_tiers_why": "dl380g10 owns the stage tier, so it is the box that mints it. The tiers role runs one tier_loop.py: every cycle it rediscovers what this box actually has -- the ARC from arcstats, stage pools by the prismabuild-stage name prefix, the source pool's members from zpool status -- and makes each tier ledger say exactly that, so adding a device to the stage pool offers more on the next cycle and exporting the pool offers nothing. The stage is the dataset prismabuild-stage/prewarm mounted at /stage/prewarm, exported read-only to both Sparks at the same path over RDMA; capacity is minted from that dataset's own zfs available (774,032,285,696 B on 2026-09-18, 720 stage_gib), never from zpool size, because size still has parity, the slop reservation and every other dataset inside it and a mover that discovers the difference has already read its range off the disks. It also publishes the residency window -- the next movers a consumer's accepted progress has earned and the egress nodes for what it has read past -- and composes each consumer's residency map as its single writer. It claims nothing and holds no lease, so like the storage role it sits outside the worker sizing law; with no residency-carrying action in the queue it mints the tiers and does nothing else. No arguments beyond the pool it drains: --source-pool storage_pool names the pool whose receipts the fill bandwidth is learned from, and the interval is the parser default (60 s), because every quantity it announces is re-read each cycle rather than configured here.",
+   "roles": {
+    "tiers": [
+     "--source-pool",
+     "storage_pool"
+    ],
+    "storage": [
+     "--mount-map",
+     "/mnt/shared=/storage_pool/shared",
+     "--pace-pool",
+     "storage_pool",
+     "--readers",
+     "4",
+     "--lookahead",
+     "2",
+     "--poll-s",
+     "20",
+     "--claim-grace-min",
+     "20",
+     "--max-readers",
+     "8"
+    ]
+   }
+  },
+  "wsl-gpu": {
+   "_alias": "DESKTOP-P5UOGNJ",
+   "_alias_why": "WSL2 takes its hostname from the Windows machine name, so socket.gethostname() answers DESKTOP-P5UOGNJ while every submission spells this box wsl-gpu. One machine, one shape, the same mechanism gx10-6b77/sparklina already uses. The offer therefore lands at pb-queue/workers/DESKTOP-P5UOGNJ.json, and --tag wsl-gpu is what places work here.",
+   "_why": "A Ryzen 9800X3D under WSL2 with an RX 9070 XT (gfx1201, RDNA4). It offers its CPU and, since #529, its GPU. The AMD reader publishes that device from rocminfo and a HIP probe that must agree on VRAM total, wavefront, peak clock and threads per block; run on the box, the broker snapshot reads complete true, attributed true, one discrete 15.81 GiB device GPU-9c30c352a59e5b7a, and box_capacity.observe({\"gpu\": 1, \"mem_gb\": 16}) answered capacity {gpu 1, mem_gb 16} with gpu_capacity_trusted true. A foreign GPU process is named by pid and closes the offer to gpu 0, the same rule the GB10s use.",
+   "_gpu_why": "One GPU token, and it is a narrower offer than a GB10's. WSL2 has no amdgpu driver, so this device carries no power, clock or throttle counter and no per-process VRAM at all; its record declares telemetry_class memory_only and the adaptive controller withholds the two permissions power exists to authorize. It runs one attributed job at a time: no concurrency probe, no measurement action, and no enforceable per-scope GPU allowance -- a job that exceeds its GPU budget here fails its own allocation rather than being stopped on two confirming observations. Ownership still comes from a /dev/dxg open-handle census under the same PID-start and cgroup checks as the NVML rows, so an unattributed holder still refuses admission. A Windows-side GPU user is outside a Linux /proc census and will not appear as a foreign process; it cannot overcommit VRAM, because free VRAM is measured whoever holds the rest. --class stays x86: the class names the ABI the box runs and this is an x86-64 host with the fleet's x86 project environments, so a new class would break CPU placement while adding nothing -- the gfx1201/rocm/rdna4 tags already place AMD GPU work. See docs/amd_gpu_capacity_2026-09-12.md.",
+   "_capacity_why": "27.41 GiB physical. box_capacity.MEMORY_MARGIN_GB is 8 and the box read MemAvailable 24 GiB, so 16 GiB is the largest budget it can offer without eating the margin; observe() returned exactly mem_gb 16. 16 vCPU: cpu_topology.inherited_tiers() classifies the 8 physical cores [0,2,4,6,8,10,12,14] preferred and the 8 SMT siblings [1,3,5,7,9,11,13,15] fallback, so --all-cores retains all 16 and still reserves physical cores first. Three loops keeps roughly dl380g10's five-cores-per-loop ratio. --python is the interpreter that launches the pool worker, not a project environment: /usr/bin/python3 here is 3.14.4, the same version as dl380g10's pb-cpu, and all 19 prismabuild modules plus supervise/worker_loop/worker/pbrun import under it. The project environments PrismaQuant CPU shards pass with their own --python are provisioned at the same paths this fleet already uses, /home/rob/venvs/pb-cpu and /home/rob/venvs/pq-cpu312.",
+   "loops": 3,
+   "args": [
+    "--class",
+    "x86",
+    "--tag",
+    "wsl-gpu",
+    "--tag",
+    "gfx1201",
+    "--tag",
+    "rocm",
+    "--tag",
+    "rdna4",
+    "--gpu",
+    "--mem-gb",
+    "16",
+    "--all-cores",
+    "--timeout-s",
+    "3600",
+    "--max-idle",
+    "2000",
+    "--poll-s",
+    "10",
+    "--python",
+    "/usr/bin/python3"
+   ]
+  }
+ },
+ "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",
+ "_capacity_policy_2026_09_05": "Both GB10 boxes use the same --gpu policy. A trusted fresh broker snapshot detects physical devices and reports one on each current host; missing, stale, incomplete or unattributed evidence offers zero. The snapshot distinguishes shared-system memory from discrete VRAM, while mem-gb values remain host-RAM budgets. All hosts retain full inherited CPU capacity, with physical performance cores preferred and fallback CPUs allocated last.",
+ "_dl380_memory_2026_09_05": "Raised the stale 60 GiB fleet ceiling to 192 GiB after measuring 294.5 GiB physical RAM, 230.6 GiB available, zero memory PSI and 48 GiB of active PB reservations using about 5 GiB. The 192 GiB aggregate budget leaves over 100 GiB outside PB's maximum reservation, including unrelated services and host margin. Live host observation can lower the offer; each action still reserves and enforces its full declared memory. See docs/dl380_memory_capacity_2026-09-05.md and issue #191.",
+ "_dl380_memory_2026_09_11": "Reduced the aggregate PB memory budget from 192 to 96 GiB to preserve the storage server's ZFS ARC (issue #488). The host exposes 294.523 GiB physical RAM; its runtime zfs_arc_min is 176 GiB and zfs_arc_sys_free is 16 GiB, leaving 102.523 GiB before other services. The 96 GiB declaration leaves 6.523 GiB beyond those floors. Fresh host observation can lower admission further; full per-action reservation and containment remain required. The legacy 3600-second ceiling is unchanged: progress-v1 actions use it as a per-phase stall bound and retain any explicit sealed deadline.",
+ "_gb10_memory_2026_09_07": "Raised both GB10 aggregate memory budgets to 96 GiB for a full calibration capture, selected by the root reviewer from measured headroom after Rob authorized increasing memory limits; decision recorded in issue #322. Linux exposes 121.627 GiB physical memory. Initial live samples had over 110 GiB available with zero memory PSI; a later sparky sample fell to 95.872 GiB, so headroom is a fresh admission condition, not a permanent grant. A 96 GiB action must wait for existing reservations to drain; no 104/112 GiB overlap budget is added. Preserve the 8 GiB host-availability margin, complete reservations and the GPU subset cap. See docs/gb10_memory_capacity_2026-09-07.md.",
+ "_gb10_memory_104_2026_09_07": "Revised the earlier 96 GiB decision to 104 GiB for an isolated whole-GPU calibration measurement after source-derived finalization sizing found a 93.756 GiB tensor floor before runtime overhead (issue #326). Rob authorized raising limits; root selected this revised budget. Idle sparklina had 115.638 GiB available at 04:59:15Z, zero memory PSI, and complete attributed broker evidence with no jobs or foreign GPU processes. Sparky was busy below the required 112 GiB fresh headroom. A 104 GiB action waits for other reservations to drain; this increase does not authorize overlap. Preserve the 8 GiB host margin and GPU subset cap. Physical memory outside the aggregate ceiling is 17.627 GiB. See docs/gb10_memory_104_capacity_2026-09-07.md.",
+ "_prewarm_readers_2026_09_19": "Raised dl380g10 storage-role prewarm depth: --readers 1->4, --lookahead 1->2, --max-readers 8 added. Measured live during the joint campaign's stage A (action 74f12044f774): the HDD pool sat at 2-4% utilization with 112 ms awaits behind a single reader while the capture D-stalled minutes at a time on folio waits (NFS timeo=600 retrans). The disks are latency-bound at depth 1, not capacity-bound; #499's depth-1 measurement protected concurrent readers that tonight did not exist. The pacer still measures and records; utilization alone no longer holds (the 2026-09-13 zpool lesson, already in the loop)."
 }
