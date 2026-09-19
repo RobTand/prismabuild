@@ -19,6 +19,11 @@ from a flag alone. Since #690 an ok leg-4 entry must actually carry digest
 evidence: a complete digest pair or a single-value digest key. An entry
 with none (with or without ``envelope_equal: True``), or with only half a
 pair, is treated as not-envelope-equal rather than passing vacuously.
+Evidence must be an actual nonempty string: values are never coerced with
+``str``, so null, empty, blank and non-string digest fields are malformed
+and refuse, and such a field refuses even when another valid digest field
+is present on the same entry -- a valid extra digest never masks a
+malformed or partial pair.
 
 Exit codes:
 
@@ -106,6 +111,18 @@ def _infer_check(reason: object, *, missing: bool = False) -> str:
     return "contract"
 
 
+def _digest_evidence(value: object) -> str | None:
+    """Return ``value`` when it is usable digest evidence, else None.
+
+    Evidence is an actual nonempty, non-blank string. Values are never
+    coerced with ``str``: ``None``, numbers, containers and empty or blank
+    strings are malformed digest fields, not evidence (#690 follow-up).
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def _leg4_digests(entries: list[dict]) -> tuple[list[str], str | None]:
     """Collect comparable leg-4 digests; return (digests, inequality_detail).
 
@@ -114,6 +131,12 @@ def _leg4_digests(entries: list[dict]) -> tuple[list[str], str | None]:
     not-envelope-equal, because an empty comparison would pass vacuously.
     ``envelope_equal: False`` fails as before, and ``True`` is read but
     never substitutes for digests — the flag alone is not evidence.
+
+    Evidence must be an actual nonempty string (issue #690 follow-up):
+    null, empty, blank and non-string digest fields are malformed and
+    refuse, never coerced with ``str``. A malformed pair, a partial pair
+    or a malformed single key refuses even when another digest field on the
+    same entry is valid, so a valid extra digest cannot mask it.
     """
     digests: list[str] = []
     for entry in entries:
@@ -125,20 +148,35 @@ def _leg4_digests(entries: list[dict]) -> tuple[list[str], str | None]:
         for first, second in _DIGEST_PAIRS:
             present = [name for name in (first, second) if name in entry]
             if len(present) == 2:
-                if str(entry[first]) != str(entry[second]):
+                first_value = _digest_evidence(entry[first])
+                second_value = _digest_evidence(entry[second])
+                if first_value is None or second_value is None:
                     return [], (
-                        f"{first} {entry[first]!r} != {second} {entry[second]!r}"
+                        f"{first}/{second} digest pair carries no nonempty "
+                        f"string evidence: {first}={entry[first]!r}, "
+                        f"{second}={entry[second]!r}"
+                    )
+                if first_value != second_value:
+                    return [], (
+                        f"{first} {first_value!r} != {second} {second_value!r}"
                     )
                 if evidence is None:
-                    evidence = str(entry[first])
-            elif len(present) == 1 and partial is None:
-                partial = present[0]
-        if evidence is None:
-            for key in _DIGEST_KEYS:
-                if entry.get(key) is not None:
-                    evidence = str(entry[key])
-                    break
-        if evidence is None and partial is not None:
+                    evidence = first_value
+            elif len(present) == 1:
+                if partial is None:
+                    partial = present[0]
+        for key in _DIGEST_KEYS:
+            if key not in entry:
+                continue
+            value = _digest_evidence(entry[key])
+            if value is None:
+                return [], (
+                    f"{key} carries no nonempty string digest evidence: "
+                    f"{entry[key]!r}"
+                )
+            if evidence is None:
+                evidence = value
+        if partial is not None:
             return [], (
                 f"incomplete digest pair: {partial!r} present without its "
                 "partner"
