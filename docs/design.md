@@ -2444,6 +2444,56 @@ worker respawns in a poll interval and the box has others; a role is a
 singleton, so stopping a live-generation one costs a cycle of a service nothing
 else provides. The idle rule is unchanged — only `SIGTERM`, only a loop holding
 no action.
+
+### The generation-drift handshake (2026-09-19)
+
+On 2026-09-19 the fleet's active generation sat on a four-day-old tree while
+`origin/main` advanced through ~8 republications, a supervisor re-exec'd itself
+into the successor without touching its role children, and a `prewarm_loop`
+kept the pre-#703 `--readers 1` shape for hours. Nothing refused, and nothing
+wrote a record a reader could find afterwards; the drift was found by forensic
+inspection. The handshake closes both halves, fail-closed and without any new
+daemon:
+
+* **A claim is taken only under the active generation.** `worker_loop`'s
+  poll-top fence guards the poll, but offer publication and queue discovery
+  sit between that fence and the claim, and a publisher can activate a
+  successor inside exactly that window. So immediately before `serve_once`
+  the loop re-reads the one tiny `RUNTIME_VERSION.json` through the live
+  `repo` name — the same existing reader, one file per claim, no second
+  path — and compares it with the generation its own bytes were loaded
+  from, derived from `__file__`'s immutable root. On mismatch it refuses
+  the claim, stamps one record, and exits so the supervisor respawns it.
+  The same check runs at startup before the first claim, in both
+  directions: a loop resurrected from a generation newer than the fleet
+  retreated to refuses just as an old one does. An unreadable receipt is
+  "unknown", not "moved", and never licenses a refusal — the same rule the
+  reload fence has always kept.
+* **`--ensure` ensures the declared role, not a process's existence.** A
+  running role whose argv differs from the current `fleet_boxes.json`
+  declaration, or whose executable resolves outside the active generation,
+  is stopped when idle and respawned from the active generation on the same
+  tick. The idle rule is every restart path's: SIGTERM only, never a role
+  mid-cycle, so a stale role finishes the service cycle it is inside and
+  cycles on a later tick.
+* **Every refusal is stamped.** One `generation-drift/` record namespace
+  under the queue root, written by the one shared helper in
+  `worker_loop.py` (the module the roles already import as `runtime_gate`
+  and the supervisor now imports too), following the queue's immutable
+  record conventions: canonical JSON, atomic first-writer link, mode 0444,
+  naming both generations, the actor's pid and host, a timestamp, and — for
+  a supervisor restart — the role, the argv it was running, the argv the
+  declaration names, and which rule fired. One record per incident, not
+  per poll: every writer stamps on the way out the door. A record that
+  cannot be written is reported as `UNWRITABLE` and the refusal still
+  happens — the refusal is the safety, the stamp is the evidence.
+* **Rolling rollout convergence is untouched.** `publish_runtime`'s rolling
+  mode relies on loops cycling at their own boundaries; the handshake sits
+  at claim boundaries only, an executing action is atomic to the loop and
+  finishes under the generation that claimed it, and a worker that refuses
+  leaves the ready record for a successor to claim. Nothing interrupts
+  work in flight, so the handshake cannot fight a converge.
+
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
 barrier activation. The #458 protocol still needs fresh epoch participation

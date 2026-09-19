@@ -35,6 +35,12 @@ the thing that can actually balance two boxes.
 ``--ensure`` is the form a periodic job uses: become the supervisor if there
 isn't one, exit quietly if there is.  Nothing supervises the supervisor, so
 that idempotence is what makes a five-minute timer a sufficient answer.
+And ``--ensure`` now ensures more than presence: a role loop running an argv
+the current ``fleet_boxes.json`` no longer declares, or an executable from a
+generation the fleet has retired, is stopped when idle and respawned from
+the active generation, with the restart stamped in the queue's
+``generation-drift`` record namespace beside the workers' own claim
+refusals.
 """
 
 from __future__ import annotations
@@ -59,6 +65,11 @@ from typing import Collection, TextIO
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 import fleet_roster  # noqa: E402
+# The generation readers, and the drift-record writer beside them, live in
+# the worker loop module -- the same object the role loops import as
+# ``runtime_gate`` -- so the supervisor, the workers and the roles all stamp
+# refusals through one code path rather than three near-identical ones.
+import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool  # noqa: E402
@@ -808,14 +819,131 @@ def _stop_stale_roles(published: str, proc_root: Path | None = None,
 
     stopped: list[int] = []
     roots = _proven_roots()
-    for _role, script in sorted(ROLE_SCRIPTS.items()):
+    receipt = _published_receipt()
+    for role, script in sorted(ROLE_SCRIPTS.items()):
         for pid in _live_role_loops(script, proc_root):
             commit = _loop_commit(pid, roots, proc_root)
             if not commit or commit == published:
                 continue
-            stopped.extend(_stop_idle_loops(
-                [pid], proc_root, holders, script_name=script))
+            was = _stop_idle_loops(
+                [pid], proc_root, holders, script_name=script)
+            stopped.extend(was)
+            if was:
+                argv, script_path = _role_process(pid, proc_root)
+                _record_role_restart(socket.gethostname(), role, {
+                    "pid": pid, "argv": argv, "script": script_path,
+                    "reason": "generation"}, receipt)
     return stopped
+
+
+def _published_receipt() -> dict:
+    """The active generation's receipt, or ``{}`` when it cannot be read."""
+
+    try:
+        value = json.loads(
+            (_current_root() / "RUNTIME_VERSION.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _role_process(pid: int, proc_root: Path | None = None,
+                  ) -> tuple[list[str] | None, Path | None]:
+    """This role pid's argv past the script, and the script it runs.
+
+    Both from one ``cmdline`` read.  ``None`` for either means ``/proc`` did
+    not answer, and missing evidence is never staleness -- the rule
+    ``_loop_commit`` already keeps.
+    """
+
+    proc_root = PROC if proc_root is None else proc_root
+    raw = _proc_field(pid, "cmdline", proc_root)
+    if raw is None:
+        return None, None
+    argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    if len(argv) < 2:
+        return None, None
+    return argv[2:], _script_of(pid, argv, proc_root)
+
+
+def _stale_role_loops(role_args: list[str], script_name: str,
+                      proc_root: Path | None = None) -> list[dict]:
+    """Live role loops the current declaration no longer names as-is.
+
+    Two ways to be stale, and the 2026-09-19 incident was both at once.  A
+    role whose argv is not the one the current ``fleet_boxes.json`` declares
+    -- the ``prewarm_loop --readers 1`` that outlived #703's declaration of
+    ``--readers 4`` for hours, because ``--ensure`` checked presence and
+    presence alone.  Or a role whose executable resolves outside the ACTIVE
+    generation: fleet-proven bytes, retired by a publish, kept serving
+    because only the operator's ``--cycle-stale`` verb reached roles and
+    the installed unit does not pass it.
+
+    Each entry carries the evidence the drift record needs: the pid, the
+    argv the process is actually running, the script it loaded, and which
+    of the two rules fired.  An unreadable argv or script, or an
+    unresolvable live root, keeps the role off this list.
+    """
+
+    try:
+        active = _current_root().resolve(strict=True)
+    except OSError:
+        active = None
+    stale: list[dict] = []
+    for pid in _live_role_loops(script_name, proc_root):
+        argv, script = _role_process(pid, proc_root)
+        reason = None
+        if argv is not None and argv != role_args:
+            reason = "argv"
+        elif (active is not None and script is not None
+              and not script.is_relative_to(active)):
+            reason = "generation"
+        if reason is not None:
+            stale.append({"pid": pid, "argv": argv, "script": script,
+                          "reason": reason})
+    return stale
+
+
+def _record_role_restart(host: str, role: str, entry: dict,
+                         published: dict, *,
+                         role_args: list[str] | None = None) -> None:
+    """Stamp one drift record for a role restart this supervisor performed.
+
+    The record goes where the worker's claim refusals go -- the queue's
+    ``generation-drift/`` namespace, written by the one shared helper -- so
+    a reader asking "what drifted tonight, and what did the fleet do about
+    it" finds both halves in one place.  The role's own generation is named
+    by the tree its script resolved into, the fleet's by the live receipt.
+    """
+
+    loaded_commit = ""
+    loaded_generation = ""
+    script = entry.get("script")
+    if script is not None:
+        for root in _proven_roots():
+            if not script.is_relative_to(root):
+                continue
+            try:
+                value = json.loads(
+                    (root / "RUNTIME_VERSION.json").read_text())
+                if isinstance(value, dict):
+                    loaded_commit = str(value.get("commit") or "")
+                    loaded_generation = str(value.get("generation") or "")
+            except (OSError, ValueError):
+                pass
+            break
+    detail = {"event": "role-restart", "role": role,
+              "pid": entry["pid"], "reason": entry.get("reason"),
+              "running_argv": entry.get("argv"),
+              "script": str(entry.get("script") or "")}
+    if role_args is not None:
+        detail["declared_argv"] = role_args
+    runtime_gate.record_generation_drift(
+        {"loaded_commit": loaded_commit,
+         "loaded_generation": loaded_generation,
+         "published_commit": str(published.get("commit") or ""),
+         "published_generation": str(published.get("generation") or "")},
+        actor="supervise", queue_root=_queue_root(), detail=detail)
 
 
 def _stop_idle_loops(pids: list[int] | None = None,
@@ -933,20 +1061,57 @@ def _spawn_role(role: str, args: list[str]) -> int:
     return proc.pid
 
 
-def ensure_roles(host: str, stop_requested=lambda: False) -> list[tuple[str, int]]:
-    """Keep exactly one live child per declared role.
+def ensure_roles(host: str, stop_requested=lambda: False, *,
+                 holders: Collection[int] | None = None) -> list[tuple[str, int]]:
+    """Keep exactly one live child per declared role, **as declared**.
 
     One, not a target: a role loop is a single reader of one queue, and a
     second copy of it would read the same ready list and warm the same bytes
     twice.  A box that declares no role does nothing here, which is every box
     but the file server.
+
+    Presence was, for years, the whole of this function -- and presence is
+    exactly what the 2026-09-19 incident survived on.  A supervisor that
+    re-execs itself into a new generation leaves its role children running,
+    and a role that is present but running an argv the current
+    ``fleet_boxes.json`` no longer declares, or an executable from a
+    generation the fleet has retired, went on serving the old shape for
+    hours: the ``prewarm_loop --readers 1`` that outlived #703.  So each
+    declared role's live loops are checked against the declaration first,
+    and a stale one is stopped when idle and respawned here from the active
+    generation, with the restart stamped in the queue's
+    ``generation-drift`` namespace.  The idle rule is every other restart
+    path's: only SIGTERM, only a role holding no work, so a role mid-cycle
+    finishes it and cycles on a later tick.
     """
 
     started: list[tuple[str, int]] = []
+    published = _published_receipt()
     for role, role_args in declared_roles(host):
         if stop_requested():
             break
-        if _live_role_loops(ROLE_SCRIPTS[role]):
+        script_name = ROLE_SCRIPTS[role]
+        stopped: list[int] = []
+        stale = _stale_role_loops(role_args, script_name)
+        if stale:
+            stopped = _stop_idle_loops(
+                [entry["pid"] for entry in stale], holders=holders,
+                script_name=script_name)
+            for entry in stale:
+                if entry["pid"] not in stopped:
+                    continue      # busy: it cycles when it next goes idle
+                _record_role_restart(host, role, entry, published,
+                                     role_args=role_args)
+                print(f"[{host}] role {role} pid {entry['pid']} stale by "
+                      f"{entry['reason']} ({' '.join(entry['argv'] or [])}); "
+                      f"stopped for restart on "
+                      f"{str(published.get('commit') or '')[:12] or '(unknown)'}",
+                      flush=True)
+        # A just-stopped role may not have exited yet; count it as gone the
+        # way the worker top-up does, so the replacement starts on this tick
+        # rather than one supervision interval later.
+        if [pid for pid in _live_role_loops(script_name)
+                if pid not in stopped]:
             continue
         if stop_requested():
             break
@@ -1174,11 +1339,13 @@ def _run_supervisor(stop_requested) -> int:
             draining_announced = False
 
         live = _live_loops()
-        for role, pid in ensure_roles(host, stop_requested):
-            print(f"[{host}] spawned role {role} pid {pid}", flush=True)
-        # One authoritative claim census per cycle.  Reusing it for stale
-        # cycling, load feedback and scale-down avoids an NFS rescan per pid.
+        # One authoritative claim census per cycle.  Computed before the role
+        # pass so role freshness shares it, and reused for stale cycling, load
+        # feedback and scale-down below -- still one NFS rescan per pid, not
+        # one per caller.
         holders = _claim_holders()
+        for role, pid in ensure_roles(host, stop_requested, holders=holders):
+            print(f"[{host}] spawned role {role} pid {pid}", flush=True)
         # The file is the authority, so a loop running other arguments is
         # stale in the same sense a loop running other bytes is.  Stop the
         # idle ones and let the top-up below respawn them on the declared
