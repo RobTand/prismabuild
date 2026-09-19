@@ -1,0 +1,6 @@
+# actionlint config: declare our self-hosted runner labels so the
+# `fleet` label in canary.yml lints clean. PB #688, crew E.
+self-hosted-runner:
+  labels:
+    - self-hosted
+    - fleet
