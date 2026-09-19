@@ -80,7 +80,9 @@ def test_a_history_of_adoption_receipts_mints_no_ceiling_and_no_best():
                _receipt(ADOPTION_KEPT_UP, key="b")]
     supply = storage_tiers.fill_supply_from_records(records)
     assert supply == {"ceiling_mb_s": None, "ceiling_receipt": None,
-                      "best_mb_s": None, "may_grow": True}
+                      "best_mb_s": None, "may_grow": True,
+                      "probing": False, "probe_offer_mb_s": None,
+                      "probe_basis": None}
 
 
 def test_an_adoption_receipt_after_an_honest_shortfall_leaves_the_honest_ceiling():
@@ -118,8 +120,13 @@ def test_an_honest_receipt_still_sets_the_ceiling_exactly_as_it_did():
 
     supply = storage_tiers.fill_supply_from_records(
         [_receipt(HONEST_SHORT, key="b")])
+    # No concurrency count on the live shape, so no single-reader share
+    # prices and the ceiling carries no probe: the fold says so rather than
+    # inventing one reader's worth (#706).
     assert supply == {"ceiling_mb_s": 311.7, "ceiling_receipt": "b" * 64,
-                      "best_mb_s": None, "may_grow": False}
+                      "best_mb_s": None, "may_grow": False,
+                      "probing": False, "probe_offer_mb_s": None,
+                      "probe_basis": None}
 
 
 def test_a_later_honest_delivery_still_refutes_the_ceiling():
@@ -149,7 +156,9 @@ def test_a_receipt_without_a_pool_rate_still_says_nothing_at_all():
     bare = storage_tiers.fill_supply_from_records(
         [_receipt(ADOPTION_SHORT, key="a", with_pool_rate=False)])
     assert bare == {"ceiling_mb_s": None, "ceiling_receipt": None,
-                    "best_mb_s": None, "may_grow": True}
+                    "best_mb_s": None, "may_grow": True,
+                    "probing": False, "probe_offer_mb_s": None,
+                    "probe_basis": None}
 
 
 def test_a_receipt_without_pool_read_bytes_keeps_its_bare_treatment():
