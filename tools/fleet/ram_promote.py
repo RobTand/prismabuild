@@ -149,7 +149,8 @@ def promote(args, *, stop=None) -> dict[str, object]:
     mounts = prewarm_loop.MountMap([f"{mount_prefix}={str(source)}"])
     copier = _Copier(
         mounts=mounts, pacer=None, stage_root=Path(args.ram_root),
-        mount_prefix=mount_prefix, block=args.block, workers=args.max_readers)
+        mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
+        owner=str(args.action_key))
 
     before = proc_io()
     cpu_before = cpu_seconds()

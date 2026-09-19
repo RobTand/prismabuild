@@ -4982,6 +4982,9 @@ def residency_stage_rows(
     ram_python = ram_tool = ram_egress_tool = ""
     if ram_tier is not None:
         ram_tier_id = str(ram_tier["tier_id"])
+        ram_identity = ram_tier.get("pool_identity")
+        if not isinstance(ram_identity, Mapping):
+            ram_identity = None
         ram_root = str(ram_tier.get("mountpoint") or "")
         if not ram_root.startswith("/"):
             raise SystemExit(
@@ -4996,9 +4999,17 @@ def residency_stage_rows(
     # because a mover finished between them.
     readers = int(args.residency_mover_readers)
     receipts = queue.move_records()
+    # Which pools the receipts must have measured to price this window
+    # (#611): the tier's current identity, as the tier loop announced it.
+    # ``None`` -- a tier last announced by an older generation -- prices off
+    # every usable receipt, exactly as before.
+    tier_identity = tier.get("pool_identity")
+    if not isinstance(tier_identity, Mapping):
+        tier_identity = None
     priced = storage_tiers.mover_demand_from_receipts(
         receipts, tier_id=tier_id, readers=readers,
-        fallback_mem_gb=int(args.residency_mover_mem_gb))
+        fallback_mem_gb=int(args.residency_mover_mem_gb),
+        pool_identity=tier_identity)
     # The pool bandwidth a mover reserves, once anything has measured it.  It
     # is what makes concurrency a ledger decision rather than an accident: the
     # tier mints what the disks delivered plus one probe mover's worth, and a
@@ -5006,12 +5017,13 @@ def residency_stage_rows(
     # until both sides of the bound exist, because a guessed bandwidth is the
     # habit this replaces.
     fill = storage_tiers.mover_fill_demand_from_receipts(
-        receipts, tier_id=tier_id)
+        receipts, tier_id=tier_id, pool_identity=tier_identity)
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
-        # copies to ``<name>.partial``, verifies the digest, then
-        # ``os.replace``s, and files its fragment only for entries it verified.
+        # copies to a mover-keyed ``.<name>.partial``, verifies the digest,
+        # then ``os.replace``s, and files its fragment only for entries it
+        # verified.
         "retry_safe": True,
     }
     phases: list[dict[str, object]] = []
@@ -5079,7 +5091,8 @@ def residency_stage_rows(
                 range_end_bytes=end)
             ram_priced = storage_tiers.mover_demand_from_receipts(
                 receipts, tier_id=ram_tier_id, readers=readers,
-                fallback_mem_gb=int(args.residency_mover_mem_gb))
+                fallback_mem_gb=int(args.residency_mover_mem_gb),
+                pool_identity=ram_identity)
             ram_demand["cpu"] = int(ram_priced["cpu"])
             ram_demand["mem_gb"] = int(ram_priced["mem_gb"])
             ram_mover = seal_movement_action(

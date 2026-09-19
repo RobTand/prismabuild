@@ -3403,6 +3403,35 @@ file-side rate under a name that says which side it is
 (`mb_per_s_file_side`), the `/proc/PID/io` delta, and the range it was asked
 for beside the bytes it staged.
 
+Each entry's temporary beside its final name is keyed by the mover writing it
+(`.<name>.<owner>.partial`, #620): stage paths are content-addressed per
+manifest entry and shared between consumers, so a dead consumer's unstarted
+mover and its successor's copy one entry to one destination, and a shared
+temporary is truncated by both and renamed away by the winner. Keyed
+temporaries verify the same digest and land the same bytes independently, and
+the sweep still recognises both spellings.
+
+### Mover receipts are keyed on pool identity (#611)
+
+`mover_demand_from_receipts`, `mover_fill_demand_from_receipts` and
+`fill_supply_from_records` fold over every usable receipt in `movers/` for a
+tier id — and nothing on the receipt said which pool it measured. After a
+resilver, a member swap, an added vdev or a pool rebuild, the old receipts
+still price cpu, mem_gb, the fill share and the ceiling for the new pool.
+
+`storage_tiers.pool_identity` names the pool as `zpool` describes it: the guid
+(which a destroy/recreate mints anew), the state, the coarse scan (running vs
+finished — never the progress line, which changes every cycle), and the
+data-vdev members. Discovery stamps it onto every stage tier record
+(`pool_identity: {stage, source}`); the mover copies the announced record's
+into its receipt; the three folds read only receipts carrying the tier's
+current one. A receipt with no identity predates the stamping and is dropped
+by a gated fold — failing closed re-measures through the probe rule rather
+than guessing — while an ungated fold (a tier announced by an older
+generation) reads everything, exactly as before. Prewarm records carry no tier
+and no identity and are the pool's other measurement; the supply fold keeps
+reading them, and keying them is a separate change.
+
 ### The residency map
 
 `prismabuild.residency_map` is what a consumer reads to find its staged bytes;
@@ -3661,6 +3690,42 @@ pressure named still takes every orphan, which is what an operator means. And
 `reclaim_terminal_reservation` refuses an adopted mover, because it demands
 exactly one terminal record and an adopted mover has none; the supported way to
 return that range is its egress, which is the path the sweep already uses.
+
+### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
+
+A consumer that fails with movers published leaves them running for nobody.
+The egress evicts the completed ones, but the not-yet-run ones are not
+withdrawn: on 2026-09-18 six movers staged ~400 GB for a consumer already in
+`failed/`, and the successor's head mover over the same content paths finished
+`complete: false` — its `.partial` vanished before the rename, taken by
+another mover working the same path for the dead consumer.
+
+So in the same egress cycle that evicts the dead consumer's resident ranges,
+`tier_loop.withdraw_dead_consumer_movers` withdraws its movers still in
+`ready/` or `claimed/`: the queued ones never start, the claimed ones are
+stopped through the withdrawal decision (their `claimed/` record stays until
+the claiming worker concludes — withdrawing never concludes another worker's
+claim), and both leave their partials to the sweep and the reconciliation.
+Never touched: a mover with a complete receipt (a resident range, which the
+successor adopts), an egress row (cleanup, not staging), a consumer key also
+present in `ready/`/`claimed/` (resubmitted — the withdrawal names a
+generation, not a key), and a consumer whose plan this reader refuses
+(unattributable movers are hands off; a refused withdrawal is reported, never
+forced).
+
+The other half is a mover that ends without a complete receipt: its tokens go
+back at `finish`, but every entry it renamed into place before it failed stays
+on the dataset, named by its fragment and counted by no token — and nothing
+publishes an egress for it, because the window evicts only phases the consumer
+has read past. `reclaim_failed_mover_partials` treats that mover as an
+eviction candidate whenever the window has no room for the next phase and
+publishes its own egress row, which already handles "an earlier egress removed
+it" and returns no tokens when none are held. No pressure, no reclaim; never
+from under a queued recopy, a complete receipt, or a concluded egress (which
+refused rather than raced — republishing would only repeat it). While the
+egress is queued the window holds the recopy (`mover-publish-deferred-for-egress`):
+the egress frees device bytes, not ledger tokens, so republishing into a stage
+that is still full would ENOSPC into the very room being made.
 
 ### A stage root belongs to one queue (#628)
 

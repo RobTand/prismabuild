@@ -563,6 +563,78 @@ def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tup
     return (str(manifest_sha256), str(tier_id), int(start), int(end))
 
 
+def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, object]]:
+    """Withdraw the still-queued movers of consumers that already failed (#620).
+
+    A consumer that fails with movers published leaves them running for
+    nobody: the egress evicts the completed ones, but the not-yet-run ones
+    stage hundreds of GiB for a consumer already in ``failed/`` -- and on
+    stage paths shared with the successor's movers, their writes collide.
+    So in the same egress cycle that evicts the dead consumer's resident
+    ranges, its movers still in ``ready/`` or ``claimed/`` are withdrawn:
+    the queued ones never start, the claimed ones are stopped, and both
+    leave whatever partials they landed to the sweep and the reconciliation.
+
+    Three things are never touched.  A mover with a complete receipt is a
+    resident range, which the successor adopts rather than recopies.  An
+    egress row is cleanup, not staging, and still has to run.  And a consumer
+    key also present in ``ready/`` or ``claimed/`` was resubmitted: the
+    withdrawal names a generation, not a key for all time, and the new
+    generation's movers are live work.  A plan this reader refuses is hands
+    off for the same reason -- without it no mover can be attributed -- and
+    a withdrawal the queue refuses is reported, never forced: ambiguous
+    state fails closed and the bytes stay bounded by the sweep.
+    """
+
+    events: list[dict[str, object]] = []
+    for state in (pool.FAILED, pool.WITHDRAWN):
+        try:
+            paths = list(pool._scan(queue.dir(state)))
+        except OSError:
+            continue
+        for path in paths:
+            name = path.name
+            key = name[:-len(".json")] if name.endswith(".json") else name
+            if len(key) != 64:
+                continue
+            item = pool._read_json(path)
+            if not isinstance(item, dict):
+                continue
+            if (queue.item_path(pool.READY, key).exists()
+                    or queue.item_path(pool.CLAIMED, key).exists()):
+                # Resubmitted under the same key: a new generation, live work.
+                continue
+            plan = residency_plan.read(queue, key)
+            if plan is None:
+                continue      # not a staged consumer, or an unreadable plan
+            for mover_key in residency_plan.mover_keys(plan):
+                receipt = queue.move_record(mover_key)
+                if (isinstance(receipt, Mapping)
+                        and receipt.get("complete") is True):
+                    continue  # a resident range: adoption's, not withdrawal's
+                if queue.item_path(pool.READY, mover_key).exists():
+                    origin = pool.READY
+                elif queue.item_path(pool.CLAIMED, mover_key).exists():
+                    origin = pool.CLAIMED
+                else:
+                    continue  # finished or never published: nothing to stop
+                try:
+                    outcome = queue.withdraw(
+                        mover_key, reason=f"consumer-{state}", by="tier-loop")
+                except (pool.PoolContractError, OSError) as exc:
+                    events.append({
+                        "event": "dead-consumer-mover-withdraw-failed",
+                        "consumer": key, "mover": mover_key, "state": origin,
+                        "withdrawn": False, "error": repr(exc)})
+                    continue
+                done = outcome.get("status") in ("withdrawn", "already_withdrawn")
+                events.append({
+                    "event": "dead-consumer-mover-withdrawn",
+                    "consumer": key, "mover": mover_key, "state": origin,
+                    "withdrawn": bool(done), "status": outcome.get("status")})
+    return events
+
+
 def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
                      reserved: set[str]) -> dict[tuple, str]:
     """Descriptor -> mover key, for resident ranges no live item still names.
@@ -840,6 +912,98 @@ def window_pressure(
     return need
 
 
+def reclaim_failed_mover_partials(
+        queue: pool.PoolQueue, consumers: list,
+        pressure: Mapping[str, int]) -> list[dict[str, object]]:
+    """Publish the egress row of a failed mover whose partials block the window (#627).
+
+    A mover that ends without a complete receipt releases its tokens at
+    ``finish`` -- but every entry it renamed into place before it failed is
+    still on the dataset, still named by its fragment, and counted by no
+    ledger token.  The window evicts only phases the consumer has read past
+    and the sweep takes back only movers no live plan names, so nothing
+    publishes an egress for these bytes -- while a republished recopy cannot
+    land for want of the room they occupy.
+
+    A terminal, unpinned mover that still names bytes in a fragment is
+    therefore an eviction candidate whenever the window has no room for the
+    next phase: its own egress row is published, which already handles "an
+    earlier egress removed it" and returns no tokens when none are held.  No
+    pressure, no reclaim -- the partials are a cache until a window cannot
+    be placed -- and never from under a queued recopy, a complete receipt,
+    or a concluded egress: the copy already running is the owner, a complete
+    copy is adoption's or the sweep's, and a concluded egress that left the
+    fragment behind refused rather than raced, which republishing would only
+    repeat.  Each of those declines silently; only publications are events.
+    """
+
+    events: list[dict[str, object]] = []
+    root = queue.residency_fragment_root()
+    for consumer_key, _consumer, plan, tier_id in consumers:
+        if int((pressure or {}).get(tier_id, 0) or 0) <= 0:
+            continue
+        try:
+            ledger = queue.tier_ledger(tier_id)
+        except (OSError, pool.PoolContractError):
+            continue
+        for phase in plan["phases"]:
+            mover_row = phase.get("mover_row")
+            egress_row = phase.get("egress_row")
+            if not isinstance(mover_row, Mapping) or not isinstance(
+                    egress_row, Mapping):
+                continue
+            mover_key = str(mover_row.get("action_key") or "")
+            egress_key = str(egress_row.get("action_key") or "")
+            if not mover_key or not egress_key:
+                continue
+            try:
+                pinned = bool(ledger.holder_tokens(mover_key))
+            except (OSError, pool.PoolContractError):
+                continue
+            if pinned:
+                continue
+            if (queue.item_path(pool.READY, mover_key).exists()
+                    or queue.item_path(pool.CLAIMED, mover_key).exists()):
+                continue      # its own recopy is queued or running; let it finish
+            receipt = queue.move_record(mover_key)
+            if receipt is not None and (
+                    not isinstance(receipt, Mapping)
+                    or receipt.get("complete") is True):
+                continue
+            try:
+                with open(residency_map.fragment_path(
+                        root, consumer_key, mover_key)) as stream:
+                    fragment = residency_map.validate_fragment(
+                        json.load(stream))
+            except (OSError, ValueError):
+                continue      # names nothing readable: nothing to evict
+            if not fragment["entries"]:
+                continue
+            if (queue.item_path(pool.READY, egress_key).exists()
+                    or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                continue      # already asked; asking again would double the row
+            if (queue.item_path(pool.DONE, egress_key).exists()
+                    or queue.item_path(pool.FAILED, egress_key).exists()
+                    or queue.item_path(pool.WITHDRAWN, egress_key).exists()):
+                continue      # concluded and the fragment is still there:
+                              # it refused rather than raced; do not spin
+            try:
+                queue.publish(**dict(egress_row), recompute=True)
+            except (pool.PoolContractError, OSError) as exc:
+                events.append({
+                    "event": "failed-mover-egress-publish-failed",
+                    "consumer": consumer_key, "phase": phase.get("name"),
+                    "mover": mover_key, "action_key": egress_key,
+                    "error": repr(exc)})
+                continue
+            events.append({
+                "event": "failed-mover-egress-published",
+                "consumer": consumer_key, "phase": phase.get("name"),
+                "mover": mover_key, "action_key": egress_key,
+                "tier_id": tier_id})
+    return events
+
+
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
                      now: float | None = None) -> list[dict[str, object]]:
     """Publish the next movers, retire the consumed ones, recompose the maps.
@@ -906,7 +1070,27 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
                                   "capacity_gib", "reason", "waiting_for")}})
+        by_name = {str(entry["name"]): entry for entry in plan["phases"]
+                   if isinstance(entry, Mapping)}
         for phase in decision["publish"]:
+            owner = by_name.get(str(phase["phase"]))
+            if owner is not None and isinstance(
+                    owner.get("egress_row"), Mapping):
+                egress_key = str(owner["egress_row"]["action_key"])  # type: ignore[index]
+                if (queue.item_path(pool.READY, egress_key).exists()
+                        or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                    # A reclaim published this phase's egress and it has not
+                    # run yet (#627).  The egress frees device bytes, not
+                    # ledger tokens, so the window would otherwise republish
+                    # the recopy into a stage that is still full -- and the
+                    # recopy would ENOSPC into the very room being made.  The
+                    # mover waits; the egress deletes; the next cycle stages.
+                    published.append({
+                        "event": "mover-publish-deferred-for-egress",
+                        "consumer": key, "phase": phase["phase"],
+                        "mover": phase["mover_action_key"],
+                        "egress": egress_key})
+                    continue
             row = dict(phase["mover_row"])                 # type: ignore[arg-type]
             try:
                 # A copy has no result to replay: published with recompute,
@@ -1187,7 +1371,14 @@ def cycle(
         # ceiling and the growth stops there.  Nothing here is a number: the
         # increment is a queued mover's sealed demand and the base is a
         # measurement.
-        supply = storage_tiers.fill_supply_from_records(fill_records)
+        # The receipts a gated fold may price this tier from (#611): the
+        # identity this cycle just discovered.  ``None`` -- stamped by no
+        # generation, which is every record until this one -- folds every
+        # usable receipt, exactly as before.
+        tier_identity = record.get("pool_identity")
+        supply = storage_tiers.fill_supply_from_records(
+            fill_records, pool_identity=(
+                tier_identity if isinstance(tier_identity, Mapping) else None))
         record["fill_supply"] = {key: value for key, value in supply.items()
                                  if key != "ceiling_receipt"}
         if supply["ceiling_receipt"]:
@@ -1264,10 +1455,22 @@ def cycle(
     # this list is not reading anything stale; what changes between them is the
     # ledger, and both re-read that.
     planned = _planned_consumers(queue, announced_tiers)
+    # Dead consumers' movers first: a consumer that failed with movers
+    # published would otherwise keep staging for nobody all cycle (#620).
+    # Withdrawing only stops queued work, so adoption below still sees every
+    # resident range it could take.
+    for event in withdraw_dead_consumer_movers(queue):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
                                        consumers=planned):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned)
+    # Failed movers' partials next: a terminal, unpinned mover that still
+    # names bytes is an eviction candidate when the window has no room (#627).
+    # Its egress rows land in ``ready/`` before the sweep runs, so the window
+    # below sees both the room being made and the recopy it must hold back.
+    for event in reclaim_failed_mover_partials(queue, planned, pressure):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
         print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
     # The ram window before the stage's, so a phase's ram egress is published
