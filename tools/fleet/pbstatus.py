@@ -1439,6 +1439,20 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         tiers.append({
             "tier_id": tier_id,
             "announced": record is not None,
+            # Identity off the announcement, read never derived: kind groups
+            # ram/stage/arc records for one box, host names the box, epoch
+            # dates the ram mount, and window_gib is the promotion window the
+            # tier was announced with. Each is None where the tier announced
+            # none, which is how an unannounced ledger row differs from a
+            # tier that measured zero.
+            "tier_kind": (record.get("tier") if isinstance(record, Mapping)
+                          else None),
+            "host": (record.get("host") if isinstance(record, Mapping)
+                     else None),
+            "epoch": (record.get("epoch") if isinstance(record, Mapping)
+                      else None),
+            "window_gib": (record.get("window_gib")
+                           if isinstance(record, Mapping) else None),
             # The tier loop's latest fold, read, not recomputed: best is the
             # highest pool delivery since the last ceiling, ceiling the most
             # recent measured shortfall, may_grow whether another reader fits.

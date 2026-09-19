@@ -15,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
-from prismabuild import pool, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
 
 NOW = 2_000_000.0
@@ -24,6 +24,8 @@ STAGE_KIND = f"stage_gib@{STAGE_TIER}"
 MOVER = "a" * 64
 MOVER2 = "b" * 64
 CONSUMER = "c" * 64
+PLAN_MOVER0 = "d" * 64
+PLAN_MOVER1 = "e" * 64
 HOST = "dl380g10"
 
 
@@ -83,6 +85,69 @@ def starved_queue(tmp_path, monkeypatch):
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue, residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "manifest_sha256": "9" * 64,
         "manifest_bytes": 4 * storage_tiers.GIB, "leads": [MOVER]}))
+    # The consumer, claimed and quiet on its first phase: the promotion lag
+    # gauge joins this lease to the frozen plan below, through the same
+    # quiet/grace rule the --starvation blob reads.
+    ready_consumer = queue.item_path(pool.READY, CONSUMER)
+    consumer_record = json.loads(ready_consumer.read_text())
+    consumer_record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
+                            "claimed_by": f"worker-{HOST}"})
+    queue.item_path(pool.CLAIMED, CONSUMER).write_text(
+        json.dumps(consumer_record))
+    ready_consumer.unlink()
+    queue.lease_path(CONSUMER).write_text(json.dumps({
+        "action_key": CONSUMER, "owner": consumer_record["claimed_by"],
+        "host": HOST, "claimed_unix": consumer_record["claimed_unix"],
+        "published_unix": consumer_record["published_unix"],
+        "heartbeat_unix": NOW - 1,
+        "progress_observation": {
+            "phase": "encode", "quiet_s": 800.0, "grace_s": 900.0,
+            "last_accepted": {"phase": "phase-0000",
+                              "reported_unix": NOW - 800,
+                              "units_completed": 3}},
+        "execution_observation": {
+            "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
+                      "silent_s": 700.0}}}))
+    # Two phases, neither staged anywhere: the movers are unpublished and
+    # hold no tokens, so the whole plan reads as promotion backlog behind a
+    # cursor accepted at phase-0000.
+    phases = []
+    start = 0
+    for ordinal, mover_key in enumerate((PLAN_MOVER0, PLAN_MOVER1)):
+        end = start + storage_tiers.GIB
+        phases.append({
+            "name": f"phase-{ordinal:04d}",
+            "start_bytes": start, "end_bytes": end, "stage_gib": 1,
+            "mover_row": {
+                **_row(mover_key, {STAGE_KIND: 1, "mem_gb": 1}, queue),
+                "residency": _mover_residency(start, end)},
+            "egress_row": _row("f" * 63 + str(ordinal), {"mem_gb": 1},
+                               queue)})
+        start = end
+    residency_plan.freeze(queue, residency_plan.build_plan(
+        consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
+        stage_root=str(tmp_path / "stage"), manifest_sha256="9" * 64,
+        manifest_bytes=start, phases=phases))
+    # Two in-window movement receipts -- one honest pool read, one adoption
+    # that barely touched the pool -- and one stale receipt outside it.
+    queue.record_move("e" * 63 + "0", {
+        "tier_id": STAGE_TIER, "bytes_staged": 2 * storage_tiers.GIB,
+        "complete": True,
+        "disk_pacing": {"mean_pool_read_mb_s": 311.7,
+                        "pool_read_bytes": int(1.81 * 2 * storage_tiers.GIB)},
+        "host": HOST, "unix": NOW - 100})
+    queue.record_move("e" * 63 + "1", {
+        "tier_id": STAGE_TIER, "bytes_staged": storage_tiers.GIB,
+        "complete": True,
+        "disk_pacing": {"mean_pool_read_mb_s": 5.0,
+                        "pool_read_bytes": int(0.01 * storage_tiers.GIB)},
+        "host": HOST, "unix": NOW - 200})
+    queue.record_move("e" * 63 + "2", {
+        "tier_id": STAGE_TIER, "bytes_staged": storage_tiers.GIB,
+        "complete": True,
+        "disk_pacing": {"mean_pool_read_mb_s": 100.0,
+                        "pool_read_bytes": storage_tiers.GIB},
+        "host": HOST, "unix": NOW - 7200})
     published = {key: json.loads(queue.item_path(
         pool.CLAIMED if key == MOVER2 else pool.READY, key).read_text()
     )["published_unix"] for key in (MOVER, MOVER2)}
@@ -143,3 +208,94 @@ def test_corrupt_active_record_fails_collection(starved_queue):
     (starved_queue.root / "ready" / f"{MOVER}.json").write_text("{")
     text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
     assert "prismabuild_collection_success 0" in text
+
+
+def test_promotion_mover_depth_labels_tier(starved_queue):
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert (f'prismabuild_mover_queue_depth_tier{{state="ready",tier="{STAGE_TIER}"}} 1'
+            in text)
+    assert (f'prismabuild_mover_queue_depth_tier{{state="claimed",tier="{STAGE_TIER}"}} 1'
+            in text)
+
+
+def test_waiting_consumer_names_plan_tier_and_quiet_max(starved_queue):
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert (f'prismabuild_starvation_waiting_consumers{{tier="{STAGE_TIER}"}} 1'
+            in text)
+    assert (f'prismabuild_starvation_waiting_quiet_max_seconds{{tier="{STAGE_TIER}"}} 800'
+            in text)
+
+
+def test_plan_backlog_counts_unstaged_bytes_by_leg(starved_queue):
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert (f'prismabuild_residency_plans{{state="claimed",tier="{STAGE_TIER}"}} 1'
+            in text)
+    assert (f'prismabuild_residency_unstaged_phases{{leg="stage",tier="{STAGE_TIER}"}} 2'
+            in text)
+    assert (f'prismabuild_residency_unstaged_bytes{{leg="stage",tier="{STAGE_TIER}"}} '
+            f'{2 * storage_tiers.GIB}' in text)
+    assert (f'prismabuild_residency_staged_phases{{leg="stage",tier="{STAGE_TIER}"}} 0'
+            in text)
+
+
+def test_move_receipts_window_delivery_and_hit_share(starved_queue):
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW,
+                                     terminal_window_seconds=3600)
+    assert (f'prismabuild_tier_move_jobs{{tier="{STAGE_TIER}"}} 2' in text)
+    staged = 3 * storage_tiers.GIB
+    assert (f'prismabuild_tier_move_staged_bytes{{tier="{STAGE_TIER}"}} '
+            f'{staged}' in text)
+    pool_read = int(1.81 * 2 * storage_tiers.GIB) + int(0.01 * storage_tiers.GIB)
+    assert (f'prismabuild_tier_move_pool_read_bytes{{tier="{STAGE_TIER}"}} '
+            f'{pool_read}' in text)
+    assert (f'prismabuild_tier_move_pool_rate_mb_s{{stat="best",tier="{STAGE_TIER}"}} 311.7'
+            in text)
+    assert (f'prismabuild_tier_move_rate_jobs{{tier="{STAGE_TIER}"}} 2'
+            in text)
+    # One honest pool read, one adoption served resident: jobs beside
+    # measured is the hit rate, never the byte ratio -- the pool-read sum
+    # counts every pool reader's sectors and exceeds the staged sum here.
+    assert (f'prismabuild_tier_move_measured_jobs{{tier="{STAGE_TIER}"}} 1'
+            in text)
+    assert pool_read > staged
+    assert "prismabuild_tier_move_window_seconds 3600" in text
+    assert "prismabuild_tier_move_window_complete 1" in text
+
+
+def test_corrupt_move_receipt_fails_collection(starved_queue):
+    (starved_queue.root / "movers" / ("0" * 64 + ".json")).write_text("{")
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert "prismabuild_collection_success 0" in text
+    assert "prismabuild_tier_move_window_complete 0" in text
+
+
+def test_invalid_plan_counts_under_unknown_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: HOST)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
+        "capacity_bytes": 600 * storage_tiers.GIB, "sampled_unix": NOW - 5})
+    plans = queue.root / pool.RESIDENCY_PLANS
+    plans.mkdir(parents=True, exist_ok=True)
+    (plans / ("d" * 64 + ".json")).write_text("{")
+    text = pbmetrics.collect_metrics(queue.root, now=NOW)
+    assert ('prismabuild_residency_plans{state="invalid",tier="unknown"} 1'
+            in text)
+    assert "prismabuild_collection_success 0" in text
+
+
+def test_promotion_gauges_keep_metric_conventions(starved_queue):
+    text = pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    assert "action_key=" not in text
+    assert " NaN" not in text and " Inf" not in text
+
+
+def test_promotion_reads_without_writing(starved_queue):
+    paths = [p for p in starved_queue.root.rglob("*") if p.is_file()]
+    before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
+    pbmetrics.collect_metrics(starved_queue.root, now=NOW)
+    after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+             for p in starved_queue.root.rglob("*") if p.is_file()}
+    assert after == before

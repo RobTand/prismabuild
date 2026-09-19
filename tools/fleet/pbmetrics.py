@@ -639,6 +639,393 @@ def _starvation_metrics(
     return ok
 
 
+#: How many of the newest mover receipts one snapshot examines. The
+#: ``movers/`` directory is append-only with one JSON per movement node, so
+#: the scan is bounded by file modification time and the content window is
+#: applied after the read -- the same shape as the terminal record limit,
+#: with its own constant because the two populations differ.
+_MOVE_RECEIPT_CAP = 1000
+
+#: Tier label for a record that names no usable tier. One value, never an
+#: action key: the unknown bucket keeps the series accounting complete
+#: without growing label cardinality with the queue.
+_UNKNOWN_TIER = "unknown"
+
+
+def _tier(value: object) -> str | None:
+    text = value if isinstance(value, str) else None
+    # The shape ``PoolQueue._check_tier_id`` enforces: a tier id names one
+    # tier, never a demand kind and never a path.
+    if not text or text.startswith(".") or "/" in text or "@" in text:
+        return None
+    return text
+
+
+def _promotion_metrics(
+    metrics: Metrics,
+    queue_root: Path,
+    *,
+    now: float,
+    window_seconds: float,
+) -> bool:
+    """Per-tier promotion lag, mover depth, and delivery (issue #660 backend).
+
+    Read-only derivation from records the fleet already files, following this
+    module's conventions: restart-safe gauges (never counters), absent rather
+    than zero where nothing was measured, no action-key labels, and a partial
+    snapshot that reports its failure rather than dropping the scrape.
+
+    Three questions feed the ``pb_starvation`` / ``pb_cursors`` / ``pb_movers``
+    observation tools: how many movers are queued per tier and state, how long
+    the oldest waiter on each tier has waited for its data, and what the
+    tier's recent movers reported delivering. Waiting reuses
+    :mod:`pbstatus`' quiet/grace rule so the gauge and the ``--starvation``
+    blob cannot disagree about who is waiting; the cursor-gap backlog reuses
+    its plan census for the same reason. The per-tier move series are what
+    the fill fold prices from: jobs beside measured jobs is the resident-hit
+    share (adoption served resident versus windows that read the pool), and
+    the best pool-side rate is the demonstrated delivery.
+
+    Costs one walk over the active queue, one bounded walk over the newest
+    mover receipts, one lease read per claimed consumer, and one plan census
+    over the filed residency plans (leases plus fragments per plan, exactly
+    as ``read_starvation`` reads them).
+    """
+
+    ok = True
+    try:
+        queue = pool.PoolQueue(queue_root)
+    except Exception:
+        return False
+
+    try:
+        announced = {str(record.get("tier_id")): record
+                     for record in queue.tiers()
+                     if isinstance(record, dict) and record.get("tier_id")}
+    except Exception:
+        announced = {}
+        ok = False
+    try:
+        tier_ids = queue.tier_ids()
+    except Exception:
+        tier_ids = sorted(announced)
+        ok = False
+    tiers = sorted(set(tier_ids) | set(announced))
+
+    # -- one active-queue walk: per-tier mover depth, consumer candidates --
+    depth: dict[tuple[str, str], int] = defaultdict(int)
+    ready: set[str] = set()
+    claimed: set[str] = set()
+    consumers: list[str] = []
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            with os.scandir(queue_root / state) as scan:
+                paths = sorted(Path(entry.path) for entry in scan
+                               if entry.name.endswith(".json"))
+        except OSError:
+            ok = False
+            continue
+        for path in paths:
+            key = path.name[:-len(".json")]
+            try:
+                record = pool._read_json(path)
+            except (OSError, ValueError):
+                record = None
+            if not isinstance(record, dict) or record.get("action_key") != key:
+                # The census sets below classify plans; a row nobody could
+                # read classifies nothing, exactly as read_pool treats it.
+                if not isinstance(record, dict):
+                    ok = False
+                continue
+            (claimed if state == pool.CLAIMED else ready).add(key)
+            residency = record.get("residency")
+            if not isinstance(residency, Mapping):
+                continue
+            if "range_start_bytes" in residency:
+                depth[(_tier(residency.get("tier_id")) or _UNKNOWN_TIER,
+                       state)] += 1
+            elif state == pool.CLAIMED and residency.get("leads"):
+                consumers.append(key)
+    tier_depth = metrics.family(
+        "prismabuild_mover_queue_depth_tier",
+        "Active actions with movement-node shape (a residency range to stage), "
+        "by tier and queue state. Known tiers always read, zero included; the "
+        "single unknown tier reads only when a record names no usable tier.",
+    )
+    for tier_id in tiers:
+        for state in (pool.READY, pool.CLAIMED):
+            tier_depth.add(depth.get((tier_id, state), 0),
+                           tier=tier_id, state=state)
+    for (tier_id, state), count in sorted(depth.items()):
+        if tier_id not in tiers:
+            tier_depth.add(count, tier=tier_id, state=state)
+
+    # -- waiting consumers per tier: the promotion lag ----------------------
+    # The tier join is the consumer's frozen plan: a waiting claim names its
+    # leads, the plan names the tier. A waiter with no readable plan still
+    # counts, under the unknown tier, because "waiting and tierless" is the
+    # signal, not a reason to drop the row.
+    waiting: dict[str, int] = defaultdict(int)
+    quiet_max: dict[str, float] = {}
+    plan_root = queue.root / pool.RESIDENCY_PLANS
+    for key in consumers:
+        lease = pbstatus._starvation_sidecar(queue.lease_path(key))
+        if isinstance(lease, Exception):
+            ok = False
+            continue
+        quiet, grace = pbstatus._starvation_quiet(
+            lease if isinstance(lease, dict) else None)
+        child = pbstatus._starvation_child(
+            lease if isinstance(lease, dict) else None)
+        is_waiting, _rule = pbstatus._starvation_waiting(quiet, grace, child)
+        if not is_waiting:
+            continue
+        tier_id = _UNKNOWN_TIER
+        try:
+            raw_plan = pool._read_json(queue.residency_plan_path(key))
+        except FileNotFoundError:
+            # No plan filed: the ordinary answer for a consumer the
+            # coordinator never staged, which still counts as a waiter whose
+            # tier is unknown rather than as a read failure.
+            raw_plan = None
+        except (OSError, ValueError):
+            raw_plan = None
+            ok = False
+        if raw_plan is not None:
+            try:
+                tier_id = str(pbstatus.residency_plan.validate_plan(
+                    raw_plan)["tier_id"])
+            except (ValueError, KeyError):
+                ok = False
+        waiting[tier_id] += 1
+        if quiet is not None:
+            quiet_max[tier_id] = max(quiet_max.get(tier_id, quiet), quiet)
+    waiting_family = metrics.family(
+        "prismabuild_starvation_waiting_consumers",
+        "Claimed consumers the quiet/grace rule reads as waiting on data, by "
+        "the tier their frozen plan names. Known tiers always read, zero "
+        "included; the unknown tier counts waiters with no readable plan.",
+    )
+    for tier_id in tiers:
+        waiting_family.add(waiting.get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(waiting.items()):
+        if tier_id not in tiers:
+            waiting_family.add(count, tier=tier_id)
+    quiet_family = metrics.family(
+        "prismabuild_starvation_waiting_quiet_max_seconds",
+        "Longest progress quiet among the tier's waiting consumers; absent, "
+        "not zero, where none is waiting.",
+    )
+    for tier_id, value in sorted(quiet_max.items()):
+        quiet_family.add(value, tier=tier_id)
+
+    # -- plan backlog per tier: the cursor-gap census as gauges --------------
+    plans: dict[tuple[str, str], int] = defaultdict(int)
+    staged_phases: dict[tuple[str, str], int] = defaultdict(int)
+    unstaged_phases: dict[tuple[str, str], int] = defaultdict(int)
+    unstaged_bytes: dict[tuple[str, str], float] = defaultdict(float)
+    invalid_plans = 0
+    notes: list[str] = []
+    unreadable: list[str] = []
+    try:
+        with os.scandir(plan_root) as scan:
+            plan_paths = sorted(Path(entry.path) for entry in scan
+                                if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        plan_paths = []  # No staged consumer has ever filed a plan.
+    except OSError:
+        plan_paths = []
+        ok = False
+    for path in plan_paths:
+        raw = pbstatus._starvation_sidecar(path)
+        if isinstance(raw, Exception):
+            unreadable.append(f"promotion plan {path.stem[:12]}: {raw}")
+            invalid_plans += 1
+            continue
+        entry = pbstatus._starvation_plan_entry(
+            queue, path.stem, raw, ready=ready, claimed=claimed,
+            notes=notes, unreadable=unreadable, now=now)
+        if not entry.get("valid"):
+            invalid_plans += 1
+            continue
+        tier_id = str(entry["tier_id"])
+        plans[(tier_id, str(entry["state"]))] += 1
+        gap = entry.get("cursor_gap")
+        if not isinstance(gap, Mapping):
+            ok = False
+            continue
+        for leg in ("stage", "ram"):
+            leg_gap = gap.get(leg)
+            if not isinstance(leg_gap, Mapping):
+                ok = False
+                continue
+            staged = leg_gap.get("staged_phases")
+            phases = leg_gap.get("unstaged_phases")
+            missing = leg_gap.get("unstaged_bytes")
+            if (type(staged) is not int or not isinstance(phases, list)
+                    or type(missing) not in (int, float)):
+                ok = False
+                continue
+            staged_phases[(tier_id, leg)] += staged
+            unstaged_phases[(tier_id, leg)] += len(phases)
+            unstaged_bytes[(tier_id, leg)] += float(missing)
+    if unreadable:
+        ok = False
+    plans_family = metrics.family(
+        "prismabuild_residency_plans",
+        "Filed residency plans by tier and consumer queue state; the invalid "
+        "state counts unreadable or rejected plans under the unknown tier.",
+    )
+    for tier_id in tiers:
+        for state in ("claimed", "ready", "absent"):
+            plans_family.add(plans.get((tier_id, state), 0),
+                             tier=tier_id, state=state)
+    for (tier_id, state), count in sorted(plans.items()):
+        if tier_id not in tiers:
+            plans_family.add(count, tier=tier_id, state=state)
+    if invalid_plans:
+        plans_family.add(invalid_plans, tier=_UNKNOWN_TIER, state="invalid")
+    staged_family = metrics.family(
+        "prismabuild_residency_staged_phases",
+        "Plan phases at or behind the read cursor the tier ledger says are "
+        "staged, by tier and leg: the promoted frontier behind the cursor.",
+    )
+    unstaged_family = metrics.family(
+        "prismabuild_residency_unstaged_phases",
+        "Plan phases at or ahead of the read cursor the tier ledger does not "
+        "say are staged, by tier and leg: the promotion backlog.",
+    )
+    backlog_family = metrics.family(
+        "prismabuild_residency_unstaged_bytes",
+        "Bytes in the promotion backlog, by tier and leg.",
+    )
+    for tier_id in tiers:
+        for leg in ("stage", "ram"):
+            staged_family.add(staged_phases.get((tier_id, leg), 0),
+                              tier=tier_id, leg=leg)
+            unstaged_family.add(unstaged_phases.get((tier_id, leg), 0),
+                                tier=tier_id, leg=leg)
+            backlog_family.add(unstaged_bytes.get((tier_id, leg), 0.0),
+                               tier=tier_id, leg=leg)
+
+    # -- mover receipts per tier: demonstrated delivery in the window --------
+    # Bounded by newest file modification time, windowed by content unix: the
+    # receipts directory is append-only, one JSON per movement node, and a
+    # scrape that reads all of them to report a handful is the slow path.
+    # The pool-read sum can exceed the staged sum: it counts every pool
+    # reader's sectors during each mover's window, not one copy's bytes, so
+    # the adoption signal is jobs beside measured jobs, never the byte
+    # ratio. Byte sums gate on receipts carrying BOTH counters, so each sum
+    # covers one population, not two.
+    try:
+        with os.scandir(queue_root / pool.MOVERS) as scan:
+            candidates = [(entry.stat().st_mtime, entry.path)
+                          for entry in scan if entry.name.endswith(".json")]
+    except FileNotFoundError:
+        candidates = []  # No mover has ever filed a receipt.
+    except OSError:
+        candidates = []
+        ok = False
+    candidates.sort(reverse=True)
+    move_complete = len(candidates) <= _MOVE_RECEIPT_CAP
+    move_jobs: dict[str, int] = defaultdict(int)
+    measured_jobs: dict[str, int] = defaultdict(int)
+    move_staged: dict[str, float] = defaultdict(float)
+    move_pool_read: dict[str, float] = defaultdict(float)
+    move_rates: dict[str, list[float]] = defaultdict(list)
+    for _, path in candidates[:_MOVE_RECEIPT_CAP]:
+        try:
+            record = pool._read_json(Path(path))
+        except (OSError, ValueError):
+            record = None
+        if not isinstance(record, dict):
+            ok = False
+            continue
+        if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
+            continue
+        stamped = _number(record.get("unix"))
+        if stamped is None or not -_SKEW_S <= now - stamped <= window_seconds:
+            continue
+        tier_id = _tier(record.get("tier_id")) or _UNKNOWN_TIER
+        move_jobs[tier_id] += 1
+        # One definition of "this window measured the pool": the same share
+        # test the fill fold prices from, so the gauge and the mint cannot
+        # disagree about which receipts count.
+        if pbstatus.storage_tiers._measured_the_pool(record):
+            measured_jobs[tier_id] += 1
+        pacing = record.get("disk_pacing")
+        pacing = pacing if isinstance(pacing, Mapping) else {}
+        rate = _number(pacing.get("mean_pool_read_mb_s"))
+        if rate is not None and rate > 0:
+            move_rates[tier_id].append(rate)
+        staged = _number(record.get("bytes_staged"))
+        pool_read = _number(pacing.get("pool_read_bytes"))
+        if staged is not None and pool_read is not None:
+            move_staged[tier_id] += staged
+            move_pool_read[tier_id] += pool_read
+    metrics.family(
+        "prismabuild_tier_move_window_seconds",
+        "Configured lookback window for the per-tier movement receipt gauges.",
+    ).add(window_seconds)
+    metrics.family(
+        "prismabuild_tier_move_window_complete",
+        "Whether the mover-receipt scan proved the window was not truncated "
+        "by its file cap and every selected receipt was readable.",
+    ).add(1 if move_complete and ok else 0)
+    move_jobs_family = metrics.family(
+        "prismabuild_tier_move_jobs",
+        "Movement receipts filed in the window, by tier; a restart-safe "
+        "gauge, not a counter.",
+    )
+    for tier_id in tiers:
+        move_jobs_family.add(move_jobs.get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(move_jobs.items()):
+        if tier_id not in tiers:
+            move_jobs_family.add(count, tier=tier_id)
+    measured_family = metrics.family(
+        "prismabuild_tier_move_measured_jobs",
+        "In-window receipts whose window read the staged bytes off the pool, "
+        "by tier, under the fill fold's own share test; the remainder is "
+        "adoption served resident. Jobs beside measured is the hit rate.",
+    )
+    for tier_id in tiers:
+        measured_family.add(measured_jobs.get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(measured_jobs.items()):
+        if tier_id not in tiers:
+            measured_family.add(count, tier=tier_id)
+    staged_bytes_family = metrics.family(
+        "prismabuild_tier_move_staged_bytes",
+        "Bytes movers reported staging in the window, by tier, over receipts "
+        "carrying both byte counters; absent, not zero, where none did.",
+    )
+    for tier_id, value in sorted(move_staged.items()):
+        staged_bytes_family.add(value, tier=tier_id)
+    pool_read_family = metrics.family(
+        "prismabuild_tier_move_pool_read_bytes",
+        "Pool sector reads during movers' windows in the window, by tier, "
+        "over the same receipts as the staged sum. It counts every pool "
+        "reader, not one copy's bytes, so it can exceed the staged sum; "
+        "read it beside measured jobs, never as a ratio's denominator.",
+    )
+    for tier_id, value in sorted(move_pool_read.items()):
+        pool_read_family.add(value, tier=tier_id)
+    rate_family = metrics.family(
+        "prismabuild_tier_move_pool_rate_mb_s",
+        "Pool-side delivery the tier's movers demonstrated in the window, by "
+        "tier: best is the highest pool delivery any receipt measured, mean "
+        "the average over receipts. Absent, not zero, with no measured rate.",
+    )
+    rate_jobs_family = metrics.family(
+        "prismabuild_tier_move_rate_jobs",
+        "Receipts contributing to the tier's pool-rate gauge in the window.",
+    )
+    for tier_id, rates in sorted(move_rates.items()):
+        rate_family.add(max(rates), tier=tier_id, stat="best")
+        rate_family.add(sum(rates) / len(rates), tier=tier_id, stat="mean")
+        rate_jobs_family.add(len(rates), tier=tier_id)
+    return ok
+
+
 def collect_metrics(
     queue_root: str | Path = DEFAULT_QUEUE_ROOT,
     *,
@@ -954,6 +1341,19 @@ def collect_metrics(
         ) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
+
+    try:
+        success = _promotion_metrics(
+            metrics, root, now=sampled,
+            window_seconds=terminal_window_seconds,
+        ) and success
+    except Exception:  # A scrape reports the failure rather than dropping HTTP.
+        success = False
+        metrics.family(
+            "prismabuild_tier_move_window_complete",
+            "Whether the mover-receipt scan proved the window was not truncated "
+            "by its file cap and every selected receipt was readable.",
+        ).add(0)
 
     metrics.family(
         "prismabuild_collection_success",
