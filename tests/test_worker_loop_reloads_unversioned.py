@@ -17,6 +17,7 @@ was introduced.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import socket
 import sys
@@ -40,25 +41,42 @@ def _worker_loop():
     return module
 
 
-def _run(tmp_path: Path, commits: list[str], capsys) -> str:
-    """One worker start whose view of the published commit changes under it."""
+def _run(tmp_path: Path, receipts: list[dict], capsys) -> str:
+    """One worker start whose view of the published generation changes under it.
+
+    The fence reads the published generation through the live receipt file,
+    so the test writes that file rather than patching a reader: the one
+    seam the handshake actually uses is the one exercised.
+    """
 
     wl = _worker_loop()
+    live = tmp_path / "repo" / "RUNTIME_VERSION.json"
+    live.parent.mkdir(parents=True, exist_ok=True)
     with mock.patch.object(wl, "SH", tmp_path), \
+         mock.patch.object(wl, "RUNTIME_VERSION", live), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "loaded_runtime_commit", return_value=commits[0]), \
-         mock.patch.object(wl, "published_commit", side_effect=commits[1:]), \
+         mock.patch.object(wl, "loaded_runtime_commit",
+                           return_value=str(receipts[0].get("commit") or "")), \
+         mock.patch.object(wl, "_generation_at",
+                           side_effect=lambda _path: str(
+                               receipts[0].get("generation") or "")), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--once", "--gpu-slots", "0",
-                            "--mem-gb", "8", "--class", "x86", "--all-cores"]):
-        assert wl.main() == 0
+                            "--mem-gb", "8", "--class", "x86", "--all-cores",
+                            "--assume-idle", "--poll-s", "0"]):
+        for receipt in receipts[1:]:
+            live.write_text(json.dumps(receipt))
+            assert wl.main() == 0
     return capsys.readouterr().out
 
 
 def test_an_unversioned_loop_reloads_when_a_commit_appears(tmp_path, capsys) -> None:
     """The one that could not reload is the one that most needed to."""
 
-    out = _run(tmp_path, ["", "abc123def456abc"], capsys)
+    out = _run(tmp_path, [
+        {"generation": ""},
+        {"commit": "abc123def456abc", "generation": "gen-new"},
+    ], capsys)
 
     assert "runtime moved (unversioned) -> abc123def456" in out
     assert "nothing admissible" not in out         # it left by the reload path
@@ -77,10 +95,14 @@ def test_a_stale_loop_reloads_before_touching_the_queue(
                 f"stale worker touched queue before reloading: {name}"
             )
 
+    live = tmp_path / "repo" / "RUNTIME_VERSION.json"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text(json.dumps({"commit": "new-runtime"}))
     with mock.patch.object(wl, "SH", tmp_path), \
+         mock.patch.object(wl, "RUNTIME_VERSION", live), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(wl, "loaded_runtime_commit", return_value="old-runtime"), \
-         mock.patch.object(wl, "published_commit", return_value="new-runtime"), \
+         mock.patch.object(wl, "_generation_at", return_value=""), \
          mock.patch.object(wl.pool, "PoolQueue", return_value=UntouchableQueue()), \
          mock.patch.object(
              sys,
@@ -100,7 +122,10 @@ def test_a_stale_loop_reloads_before_touching_the_queue(
 def test_a_versioned_loop_still_only_reloads_on_a_change(tmp_path, capsys) -> None:
     """The published commit standing still is not an event."""
 
-    out = _run(tmp_path, ["abc123def456abc", "abc123def456abc"], capsys)
+    out = _run(tmp_path, [
+        {"commit": "abc123def456abc", "generation": "gen-a"},
+        {"commit": "abc123def456abc", "generation": "gen-a"},
+    ], capsys)
 
     assert "runtime moved" not in out
     assert "nothing admissible" in out             # it left by --once, as before
@@ -109,7 +134,10 @@ def test_a_versioned_loop_still_only_reloads_on_a_change(tmp_path, capsys) -> No
 def test_an_unreadable_version_file_is_not_a_move(tmp_path, capsys) -> None:
     """"" means unknown.  A loop must not exit every poll on a bad read."""
 
-    out = _run(tmp_path, ["abc123def456abc", ""], capsys)
+    out = _run(tmp_path, [
+        {"commit": "abc123def456abc", "generation": "gen-a"},
+        {},                                        # unreadable: no commit
+    ], capsys)
 
     assert "runtime moved" not in out
     assert "nothing admissible" in out
@@ -118,7 +146,10 @@ def test_an_unreadable_version_file_is_not_a_move(tmp_path, capsys) -> None:
 def test_the_offer_carries_the_commit_the_loop_is_running(tmp_path, capsys) -> None:
     """Which is what makes a stale generation visible from another box."""
 
-    _run(tmp_path, ["abc123def456abc", "abc123def456abc"], capsys)
+    _run(tmp_path, [
+        {"commit": "abc123def456abc", "generation": "gen-a"},
+        {"commit": "abc123def456abc", "generation": "gen-a"},
+    ], capsys)
 
     offers = pool.PoolQueue(tmp_path / "pb-queue").offers()
     mine = [o for o in offers if o.get("host") == socket.gethostname()]
