@@ -101,6 +101,22 @@ def test_a_leads_block_carries_tier_demand_past_publish(
     assert queue.item_path(pool.READY, KEY_A).exists()
 
 
+def test_a_probe_shaped_mover_with_its_range_block_still_admits(
+    queue: pool.PoolQueue,
+) -> None:
+    """The #659 contract: the probe rule reads demand, never the block.
+
+    ``test_the_probe_is_sized_for_the_oldest_ready_mover`` publishes
+    fill-plus-stage movers; production movers always seal the range they make
+    resident, so probe-scenario movers seal one too and the publish gate
+    admits them.  This is the refused shape above with the block attached.
+    """
+
+    _submit(queue, KEY_A, {"cpu": 1, STAGE: 2, FILL: 5},
+            residency=_range_block(range_bytes=2))
+    assert queue.item_path(pool.READY, KEY_A).exists()
+
+
 def test_host_demand_without_a_block_is_unchanged(queue: pool.PoolQueue) -> None:
     """Ordinary rows never carried tier demand and still need no block."""
 
