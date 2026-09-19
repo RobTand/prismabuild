@@ -51,6 +51,12 @@ concurrency:
 jobs:
   canary:
     runs-on: [self-hosted, fleet]
+    env:
+      # Versioned operator configuration (review D2): leg 2's image is a
+      # name@sha256 digest pin, never a floating tag. This is the campaign
+      # image the projection backend qualifies (repo digest; the content
+      # sha256 the spec carries maps to these bytes).
+      PBCANARY_GPU_IMAGE: prismaquant-glm-derivative@sha256:c0e532d28a78b3bf425bbbc0d862e2840ba624249162aedfadd09748a6c68c37
     # ~15 min canary bound (issue #688) plus runner-side slack. Queue
     # wait for a (pre-registration) runner happens server-side and does
     # not consume this budget.
