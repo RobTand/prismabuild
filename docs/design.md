@@ -4128,6 +4128,15 @@ arguments are checked against the advertised types, required fields, property
 names, array items, minima and enums before any tool read. Invalid arguments
 return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
 
+`pb_starvation` serves the starvation census through `pbstatus`'s own reader
+rather than a second one, so the tool, the `--starvation` command and the
+pbmetrics gauges cannot disagree about who is waiting; `pb_cursors` serves
+the per-plan cursor join from the same census, adding the full consumer key
+and the progress record's own timestamp for the accepted phase. Both keep
+the census's own completeness under its own name beside the envelope's,
+because "the mount answered" and "every record answered" are different
+facts.
+
 `pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
 the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.
 Filters intersect and operate inside the existing newest-record window; exact

@@ -1977,6 +1977,26 @@ The tools:
     end and reads at most `--log-tail-bytes`.
 *   **`pb_runtime()`** — the published generation, its manifest, which loops
     are announcing on it, and whether this server was started from it.
+*   **`pb_starvation()`** — what is waiting on data, as one census: claimed
+    consumers the quiet/grace rule reads as waiting (with the payload scope's
+    silence beside the verdict, never the verdict alone), each residency
+    plan's promotion state and cursor gap, what every tier offers and holds,
+    and which claim denials block movers. This is `pbstatus --starvation`'s
+    own reader served whole, so the tool and the command cannot disagree
+    about who is waiting. `census_complete` is the census's own completeness
+    -- every record it tried to read answered -- beside the envelope's
+    `complete`, which is about the mount; `not_observable` names what no
+    record carries rather than inventing it.
+*   **`pb_cursors(key_prefix)`** — where each consumer's read cursor stands:
+    for every filed residency plan, the phase the consumer's progress record
+    last vouches for, when that was reported and how many units it carried,
+    against what the tier ledgers say is staged ahead of it, per leg (stage
+    and ram), with the backlog in phases and bytes. The join is the same
+    plan census `pb_starvation` serves, so the two tools cannot disagree
+    about where a reader is; the consumer's byte offset inside the phase it
+    is reading is recorded nowhere and reads `not_observable`. One row per
+    filed plan, said in `population`: a consumer the coordinator never
+    staged has no cursor to report.
 
 Every response carries the same envelope, and two of its fields decide whether
 the rest of it can be believed. `complete` is false, and `timed_out` names the
