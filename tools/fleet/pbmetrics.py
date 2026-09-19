@@ -537,11 +537,11 @@ def _starvation_metrics(
         ok = False
     fill = metrics.family(
         "prismabuild_tier_fill_supply_mb_s",
-        "Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold; "
+        "Learned pool-side fill bandwidth per tier from the tier loop's latest announcement; "
         "best is the highest delivery since the last ceiling, ceiling the most recent measured "
-        "shortfall, and probe_offer the ceiling plus one median reader, minted while the fold "
-        "probes its way back out of a ceiling paced movers cannot refute. Absent, not zero, "
-        "where the tier announced none.",
+        "shortfall, and probe_offer the live selected offer over a standing ceiling -- the "
+        "larger of the fold's ceiling-plus-median reader and the ceiling plus the oldest ready "
+        "mover's sealed demand. Absent, not zero, where the tier announced none.",
     )
     tokens = metrics.family(
         "prismabuild_tier_tokens",

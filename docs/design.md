@@ -3213,31 +3213,50 @@ which is the probe rule.
 (`storage_tiers.fill_supply_from_records`) seals a ceiling off the most recent
 receipt that fell short of its reservation, and clears it only on a later
 delivery that exceeds it. But movers are admitted against the tier's fill
-tokens, and a tier at a ceiling used to mint exactly the ceiling, so every
-later reservation sat at or under it and no delivery could exceed it: the
-refutation was structurally unreachable while each paced-at-ceiling mover that
-fell short sank the ceiling further (live 2026-09-19: 111.2 MB/s froze, then
-sank to 65, wedging every queued mover whose sealed price predates the sink).
-While a ceiling stands and the receipts can price a single reader — `min` of a
-copy's file-side rate and its window's delivery over its sharers, the same
-bound that prices a next mover — the fold now offers `ceiling_mb_s` plus the
-median of those shares as `probe_offer_mb_s`, marked `probing` with the basis
-on the supply record, and the loop mints from the offer
-(`fill_source: "measured-probing"`). The next mover then admits above the
-ceiling: a delivery refutes it and growth resumes off the new best, a shortfall
-re-sets it at the pool's own delivery with a fresh probe above it — bounded
-oscillation, never a one-way ratchet down. No priceable receipt means no
-increment and nothing invented: the ceiling stands and the label stays
-`measured-ceiling`. The `probe_offer` stat on
-`prismabuild_tier_fill_supply_mb_s` exports the offer.
+tokens, and a tier at a ceiling used to mint exactly the ceiling: a mover priced
+above it read `never_fits_tier_capacity` and never ran, so the pool was never
+asked for more. Two separate live observations have that shape — the archived
+receipt `aa34e2a6` measured 111.2 MB/s while the box churned, and after #707
+deployed the stage announced a 65.7 MB/s ceiling whose fold offer of 171 MB/s
+still stood under six already-ready movers reserving 259 MB/s each, every one
+denied. Neither is a hard rate cap: `fill_mb_s_pool_side` is recorded on the
+receipt as the copy's own reservation, and the disk and client pacer is
+unchanged by this; the freeze is admission.
 
-A mover republished by a window can carry a fill price its dispatch sealed
-before the supply sank, and a claim above the minted total is
-`never_fits_tier_capacity` — the one denial no waiting repairs. The window
-therefore republishes such a row at the tier's current fill offer (event
-`mover-repriced-to-tier-offer`, the fill kind only: the range's occupancy is
-the manifest's arithmetic, not the loop's to shrink), so an adopted mover
-reprices instead of wedging.
+Two offers can lift the supply over a standing ceiling, and the loop selects
+the larger:
+
+* the **historical offer** the fold has had since #707: `ceiling_mb_s` plus the
+  median of the single-reader shares its own receipts price — `min` of a copy's
+  file-side rate and its window's delivery over its sharers, the same bound
+  that prices a next mover — announced on the supply record as
+  `probe_offer_mb_s`, marked `probing` with its basis; and
+* the **queued floor**: `int(ceiling_mb_s)` plus the oldest ready mover's own
+  sealed fill demand, the one-ready-reader probe rule every other branch
+  already uses, which the fold cannot compute because it reads receipts and not
+  the queue.
+
+`tier_loop.cycle` mints the selected offer (`fill_source: "measured-probing"`,
+`fill_probe_mb_s` the selected increment over the ceiling) and announces the
+selected offer and basis under `fill_supply`, so a reader — and the
+`probe_offer` stat on `prismabuild_tier_fill_supply_mb_s` — never mistakes a
+smaller historical fold for the live selected offer. With no ready demand the
+historical offer stands, and with neither the offer is exactly
+`int(ceiling_mb_s)`. The next admitted mover decides: a delivery refutes the
+ceiling and growth resumes off the new best; a shortfall re-sets it at the
+pool's own delivery with a fresh probe above it — bounded oscillation, never a
+one-way ratchet down. The queued floor is a demand, never a measurement, and
+repeated cycles over identical evidence and ready work mint identical capacity.
+
+An already-ready row is never rewritten: its key, sealed resources and copy
+argv stay what they were sealed as, and the queued floor is what makes it claim
+on the next cycle. A mover republished by a window publishes with the resources
+its dispatch sealed for the same reason — rewriting the resources without
+rewriting the sealed request and the copy's own account of what it reserved
+would admit a reservation nothing sealed.  Once such a row is the oldest ready
+demand, the next cycle raises the fill offer to accommodate that unchanged
+demand; other admission gates still apply, so this is not a claim of immediate
+execution.
 
 ### Demand is derived from the data manifest
 

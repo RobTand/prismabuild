@@ -239,18 +239,26 @@ def test_fill_folds_still_read_tierless_prewarm_records() -> None:
 
     Keying them is a separate change (they are stamped by another role); the
     mover gate must not silence the pool's other measurement while it waits
-    for it.
+    for it.  A prewarm record may not *rebuild* ``best`` from nothing -- the
+    #654 act-three reader gate fenced that -- so this seeds a valid
+    current-pool reader first and then shows the tierless record still raises
+    the standing best, which is the identity gate this test is about.
     """
 
     now = _identity()
     prewarm = {"schema": pool.POOL_PREWARM_SCHEMA_V1,
                "disk_pacing": {storage_tiers.POOL_FILL_FIELD: 150.0},
-               "unix": 999.0}
+               "unix": 1001.0}
+    reader = _receipt("a" * 64, now, delivered=120.0, unix=1000.0)
 
     supply = storage_tiers.fill_supply_from_records(
-        [prewarm, _receipt("a" * 64, None)], pool_identity=now)
+        [reader, prewarm], pool_identity=now)
 
     assert supply["best_mb_s"] == 150.0
+    # The other half of the same contract: with no reader to stand on, the
+    # tierless observation still cannot bootstrap a best from none.
+    assert storage_tiers.fill_supply_from_records(
+        [prewarm], pool_identity=now)["best_mb_s"] is None
 
 
 def test_discover_tiers_stamps_stage_and_source_identity(tmp_path: Path) -> None:

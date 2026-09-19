@@ -13,10 +13,12 @@ ran one mover at a time for that shape of reason.  Two measurements fix it:
   measured ceiling: the supply was priced above what the disks give that many
   readers at once.
 
-While no receipt has fallen short, the tier offers the best delivery observed
-plus one ready mover's own demand and lets the next receipt decide.  So the
-supply grows by measurement and stops by measurement, with no constant, and the
-fold is pure -- the same history mints the same number however often it is read.
+The tier offers the measured number plus one ready mover's own demand and lets
+the next receipt decide: while no receipt has fallen short, and above a
+standing ceiling as well (#706, where minting exactly the ceiling froze every
+mover priced above it).  So the supply grows by measurement and stops by
+measurement, with no constant, and the fold is pure -- the same history mints
+the same number however often it is read.
 """
 from __future__ import annotations
 
@@ -182,7 +184,12 @@ def test_the_tier_offers_one_more_mover_than_the_pool_has_carried(tmp_path):
     assert record["fill_probe_mb_s"] == 166
 
 
-def test_a_measured_ceiling_stops_the_growth_at_what_the_disks_gave(tmp_path):
+def test_a_measured_ceiling_offers_the_queued_floor(tmp_path):
+    """The fold cannot price a reader here -- these receipts carry no sharer
+    count -- but the oldest ready mover's own sealed demand is still one
+    reader's worth, and the tier offers the measured ceiling plus it (#706).
+    """
+
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=498.0, sealed=166,
@@ -191,8 +198,9 @@ def test_a_measured_ceiling_stops_the_growth_at_what_the_disks_gave(tmp_path):
                                          achieved=130.0, key="2"))
     _ready_mover(queue, "a", 166)
     record = _cycle(queue)
-    assert record["fill_source"] == "measured-ceiling"
-    assert record["tokens"][FILL] == 522
+    assert record["fill_source"] == "measured-probing"
+    assert record["fill_probe_mb_s"] == 166
+    assert record["tokens"][FILL] == 522 + 166
     assert record["fill_ceiling_receipt"] == "2" * 64
 
 
