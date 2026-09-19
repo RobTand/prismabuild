@@ -3224,8 +3224,11 @@ is its own `size=`, and the record announces `mountpoint`, `mount_options`,
 decide live in one versioned file, `tools/fleet/ram_tier_policy.json`,
 published with the runtime the way `fleet_boxes.json` is and read fresh by
 the tier loop every cycle: `ceiling_gib_max` (256), `window_gib_default`
-(112 — the midpoint of the directed 96–128 GiB, a streaming window and
-never a phase container: the largest phase is 134.2 GiB), `arc_floor_gib`
+(160 — sized 2026-09-19 to hold one whole phase plus margin: promotion is
+phase-granular, the largest phase is 134.2 GiB, and a 112 GiB window made
+`capacity − step` negative, minting a zero run-ahead budget so nothing
+could ever promote — the GPU starved between layers by arithmetic. 160
+fits a phase and stays inside the worker-demand guard's 160.5 GiB bound), `arc_floor_gib`
 (20), `system_reserve_gib` (16), and `prefill_depth` (`null` — the #633
 run-ahead semantics; a positive GiB caps them). **A change to it is a
 publish, not an ssh:** the next cycle mints from the mount's own `statvfs`
