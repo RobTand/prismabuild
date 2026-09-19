@@ -305,11 +305,22 @@ new child cannot renew caller patience. A `--wait-s 0` caller still receives
 one immediate bounded snapshot. An unavailable reader (timeout, child failure,
 or reader that cannot be reaped) returns filesystem exit 74 with its retained
 PID/start-time identity; it does not cancel work, publish a record, or
-manufacture a verdict. The one exception is patience: with `--wait-s` above 0,
+manufacture a verdict. Two exceptions keep a finished action reportable. A
+complete payload from a reader that could not be reaped is used, not refused:
+EOF is the proof the payload is whole and the child holds nothing but its
+pipe, so the 0.25 s reap grace is a scheduling artifact under load, not a
+verdict on the data (#630). And before any unavailable observation becomes
+exit 74, the wait spends one last bounded snapshot -- the terminal re-read --
+asking whether the ending has landed since; a pass that will not report a
+finished shard is the mirror image of the submission-acknowledgement trap.
+The re-read is bounded by the same five-second budget, runs no mutation, and
+is the wait's last observation either way, so no polling loop ever races a
+retained reader. The one exception is patience: with `--wait-s` above 0,
 a snapshot or verification that timed out, and whose reader was killed and
 reaped, is taken again at the next poll under the same deadline. Because a
-retry follows only a reaped reader, one wait never has two readers alive, and a
-reader that cannot be reaped still ends the wait at once. A deadline that
+retry follows only a reaped reader, one wait never has two readers alive;
+the terminal re-read above is the single terminal exception, and it polls
+nothing after itself. A deadline that
 passes on an unavailable read exits 74 with its own message, not 75, because
 no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.

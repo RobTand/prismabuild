@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -143,7 +144,8 @@ def test_parent_carries_preemption_successor_between_bounded_observations(
     path.write_text(json.dumps(outcome), encoding="utf-8")
     seen: list[float | None] = []
 
-    def observation(_queue, _key, generation, *, budget_s):
+    def observation(_queue, _key, generation, *, budget_s,
+                    use_delivered_snapshot=False):
         assert budget_s > 0
         seen.append(generation)
         if len(seen) == 1:
@@ -155,9 +157,20 @@ def test_parent_carries_preemption_successor_between_bounded_observations(
     assert seen == [100.0, 200.0]
 
 
-def test_eof_payload_with_retained_reader_refuses_before_verification(
+def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """#630: a complete payload is data, not a reason to report unobserved.
+
+    Three shards reported OUTCOME UNOBSERVED (rc 74) for actions already in
+    ``done/`` with returncode 0, because the observation reader that had
+    already delivered their endings could not be reaped within the 0.25 s
+    grace under load.  EOF proves the payload whole and the child holds
+    nothing but its pipe, so the wait uses the delivered snapshot, verifies
+    it, and reports the action's own returncode and stdout.
+    """
+
     queue = Queue(tmp_path / "queue")
     queue.item_path("done", KEY).write_text(
         json.dumps(_ending("executed", 0)), encoding="utf-8")
@@ -168,15 +181,15 @@ def test_eof_payload_with_retained_reader_refuses_before_verification(
         abandoned.append({"pid": pid, "section": "pool outcome observation",
                           "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
 
-    def never_verify(*_args, **_kwargs):
-        raise AssertionError("a retained observation reader must stop the wait")
-
     monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda *_args: False)
     monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "bounded_outcome_render", never_verify)
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
-        assert len(retained) == 1
+        assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
+        assert len(retained) == 2  # observation and verification both delivered
+        out, err = capsys.readouterr()
+        assert "payload delivered but its reader could not be reaped" in err
+        assert "using the delivered snapshot" in err
+        assert "ok" in out  # the action's own stdout is reported, not buried
     finally:
         for pid in retained:
             try:
@@ -201,11 +214,17 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
+        # The first observation's reader is retained, and so is the single
+        # terminal re-read's (#630): the wait spends one last bounded
+        # snapshot before reporting unobserved, never an unbounded parent
+        # diagnostic, and a FIFO that answers neither still ends 74.
         assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
-        assert len(retained) == 1
+        assert len(retained) == 2
         shown = capsys.readouterr().err
         assert '"pid": ' + str(retained[0]) in shown
         assert '"starttime_ticks": null' not in shown
+        assert "when the terminal re-read ended" in shown
+        assert socket.gethostname() in shown
         held.close()
         with (tmp_path / "parent.lock").open("w") as contender:
             fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -244,3 +263,82 @@ def test_interrupt_reaps_the_owned_outcome_reader(
     assert len(children) == 1
     with pytest.raises(ChildProcessError):
         os.waitpid(children[0], os.WNOHANG)
+
+
+def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#630: the ending that landed during a failed read is still reported.
+
+    The first observation raises as an unreaped reader would; the terminal
+    re-read then finds the action in ``done/`` and the wait reports its
+    returncode and stdout instead of OUTCOME UNOBSERVED.
+    """
+
+    queue = Queue(tmp_path / "queue")
+    queue.item_path("done", KEY).write_text(
+        json.dumps(_ending("executed", 0)), encoding="utf-8")
+    real = pbrun.bounded_outcome_observation
+    calls: list[str] = []
+
+    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+        calls.append("observation")
+        if len(calls) == 1:
+            raise pbrun.OutcomeReadUnavailable(
+                "pool outcome observation reader could not be reaped; "
+                'retained reader=[{"pid": 1}]')
+        return real(q, key, generation, budget_s=budget_s,
+                    use_delivered_snapshot=use_delivered_snapshot)
+
+    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
+    assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
+    assert calls == ["observation", "observation"]
+    out, err = capsys.readouterr()
+    assert "ok" in out
+    assert "unavailable pool outcome" in err  # the first read still says so
+
+
+def test_terminal_reread_with_no_ending_names_host_and_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#630: a genuine unobserved stays 74, and says where and what it read."""
+
+    queue = Queue(tmp_path / "queue")
+    real = pbrun.bounded_outcome_observation
+
+    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+        raise pbrun.OutcomeReadUnavailable(
+            "pool outcome observation timed out after 5.0s and its reader "
+            "could not be reaped")
+
+    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
+    assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    err = capsys.readouterr().err
+    assert KEY[:12] in err
+    assert socket.gethostname() in err
+    assert "when the terminal re-read ended" in err
+
+
+def test_terminal_reread_with_still_no_ending_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The re-read that finds nothing reports exactly that, still exit 74."""
+
+    queue = Queue(tmp_path / "queue")
+    real = pbrun.bounded_outcome_observation
+    calls: list[str] = []
+
+    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+        calls.append("observation")
+        if len(calls) == 1:
+            raise pbrun.OutcomeReadUnavailable(
+                "pool outcome observation reader could not be reaped")
+        return real(q, key, generation, budget_s=budget_s,
+                    use_delivered_snapshot=use_delivered_snapshot)
+
+    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
+    assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert "terminal re-read saw no ending" in capsys.readouterr().err
