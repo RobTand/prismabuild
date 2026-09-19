@@ -310,6 +310,23 @@ WORKERS = "workers"
 #: may already have moved it and resurrect a claimed action.
 PREWARM = "prewarm"
 
+#: The claim record's pointer at that sidecar, and the digest it must still
+#: name when the terminal record resolves it.  The claim carries a reference
+#: rather than a copy (#596): the receipt keeps growing after the claim --
+#: later windows extend it -- and a copy frozen at claim time describes a
+#: counter that no longer exists on a record no admission decision ever reads.
+PREWARM_RECEIPT_REF = "prewarm_receipt"
+
+#: A prewarm receipt for a key nobody queues any more is garbage, but only
+#: the queue knows it is garbage: the storage loop that wrote it never sees
+#: the finish that retired it.  ``sweep_prewarm_receipts`` deletes such a
+#: receipt, and this is how long a swept, queue-absent receipt without any
+#: terminal or withdrawal record survives first -- the safety valve for a
+#: receipt whose key vanished by a path no state directory records.  Terminal
+#: and withdrawn keys are pruned without waiting: their evidence already
+#: reached the terminal record through the claim's reference.
+PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
+
 #: Where a movement node files what it staged.  A sidecar for the same reason
 #: ``prewarm`` is one, and read by ``tier_loop`` for the fill measurement: a
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
@@ -3467,6 +3484,236 @@ class PoolQueue:
         )
         return path
 
+    def resolve_prewarm_reference(
+        self, reference: Mapping[str, object]
+    ) -> dict[str, object] | None:
+        """The receipt a claim-time reference names, verified, or ``None``.
+
+        A claim carries ``{PREWARM_RECEIPT_REF: key, manifest_sha256}`` rather
+        than the receipt itself.  The receipt is verified before it is
+        trusted: the key must match the reference and the digest must match
+        the manifest the claim was admitted against, so a receipt rewritten
+        for a same-key successor -- a later publication under the same content
+        hash -- is never mistaken for this generation's window.  Anything
+        unverifiable resolves to ``None``: the terminal record omits the
+        prewarm block rather than citing a receipt it cannot produce.
+        """
+
+        key = reference.get(PREWARM_RECEIPT_REF)
+        digest = reference.get("manifest_sha256")
+        if (PREWARM_RECEIPT_REF not in reference
+                or not isinstance(key, str) or not key
+                or not isinstance(digest, str) or not digest):
+            # Not a reference at all: a legacy claim filed before the
+            # reference, carrying the full receipt.  Copied as before so a
+            # mixed-generation fleet still files complete terminal records.
+            return dict(reference)
+        try:
+            record = self.prewarm(key)
+        except OSError:
+            # Unavailable evidence is not evidence of absence: a broken mount
+            # must not rewrite what the receipt said, and it must not fail
+            # the finish either.  The terminal record simply carries no
+            # prewarm block.
+            return None
+        if record is None:
+            return None
+        if (record.get("action_key", key) != key
+                or record.get("manifest_sha256") != digest):
+            return None
+        return dict(record)
+
+    def prune_prewarm_receipt(
+        self, action_key: str, *, live: bool,
+        now: float | None = None,
+    ) -> dict[str, object]:
+        """Delete one prewarm sidecar the queue no longer needs, or say why not.
+
+        The receipt is a cache, not evidence: the claim-time reference has
+        already resolved whatever the terminal record keeps, so a receipt for
+        a key nobody queues any more is garbage.  Deletion is fail-closed --
+        a receipt is removed only when the queue positively shows the key
+        needs nothing more from it:
+
+        * a live key (still in ``ready``, ``claimed`` or ``intent``) always
+          keeps its receipt;
+        * a key with a terminal outcome (``done``/``failed``) is pruned: the
+          finish already resolved the reference into the terminal record;
+        * a withdrawn key is pruned once its stage band is released or was
+          never staged (``swept``, no stage block, or nothing staged) -- the
+          orphan sweep still has to release an unstaged band first;
+        * anything else is kept, except a swept receipt older than
+          ``PREWARM_RECEIPT_RETENTION_S``, the safety valve for a key that
+          vanished by a path no state directory records.
+
+        ``live`` is caller-supplied because the caller already holds the live
+        set: re-listing three state directories per receipt would price this
+        at one queue scan per file.  A blocked receipt -- one whose manifest
+        the sweep could not read -- is never pruned here: that is a leak with
+        a receipt, and deleting the receipt would delete the leak report.
+        """
+
+        key = str(action_key)
+        if live:
+            return {"action_key": key, "pruned": False, "reason": "live"}
+        path = self.prewarm_path(key)
+        try:
+            present = path.is_file()
+        except OSError:
+            return {"action_key": key, "pruned": False,
+                    "reason": "receipt unreadable"}
+        if not present:
+            return {"action_key": key, "pruned": False, "reason": "absent"}
+        if self.item_path(DONE, key).exists() or self.item_path(
+                FAILED, key).exists():
+            try:
+                path.unlink()
+            except OSError:
+                return {"action_key": key, "pruned": False,
+                        "reason": "unlink failed"}
+            return {"action_key": key, "pruned": True, "reason": "terminal"}
+        if self.item_path(WITHDRAWN, key).exists():
+            record = self.prewarm(key)
+            block = (record.get("stage") if isinstance(record, dict)
+                     else None)
+            releasable = (
+                not isinstance(block, dict)
+                or bool(block.get("swept"))
+                or int(block.get("staged_through_bytes", 0) or 0) <= 0)
+            if not releasable:
+                return {"action_key": key, "pruned": False,
+                        "reason": "stage band pending"}
+            try:
+                path.unlink()
+            except OSError:
+                return {"action_key": key, "pruned": False,
+                        "reason": "unlink failed"}
+            return {"action_key": key, "pruned": True, "reason": "withdrawn"}
+        record = self.prewarm(key)
+        block = record.get("stage") if isinstance(record, dict) else None
+        if isinstance(block, dict) and block.get("swept"):
+            moment = now if now is not None else _now()
+            try:
+                age = moment - path.stat().st_mtime
+            except OSError:
+                return {"action_key": key, "pruned": False,
+                        "reason": "receipt unreadable"}
+            if age >= PREWARM_RECEIPT_RETENTION_S:
+                try:
+                    path.unlink()
+                except OSError:
+                    return {"action_key": key, "pruned": False,
+                            "reason": "unlink failed"}
+                return {"action_key": key, "pruned": True, "reason": "stale"}
+        return {"action_key": key, "pruned": False, "reason": "unknown state"}
+
+    def sweep_prewarm_receipts(
+        self, live_keys: "set[str] | frozenset[str]",
+    ) -> list[dict[str, object]]:
+        """Prune every pruneable prewarm sidecar outside ``live_keys``.
+
+        One directory listing, then at most a bounded handful of small reads
+        per non-live receipt -- and in the steady state there are no non-live
+        receipts at all, because every cycle prunes what the last one left.
+        That is what bounds the storage loop's per-cycle sweep (#596): the
+        directory it lists holds only live keys' receipts, so the orphan
+        sweep behind it reads nothing that has already been swept.
+        """
+
+        rows: list[dict[str, object]] = []
+        try:
+            names = sorted(os.listdir(self.root / PREWARM))
+        except OSError:
+            return rows
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            key = name[: -len(".json")]
+            if key in live_keys:
+                continue
+            rows.append(self.prune_prewarm_receipt(key, live=False))
+        return rows
+
+    #: What :meth:`selection_live` can answer about one selected generation.
+    #:
+    #: ``live`` means the generation is still queued where the warm can serve
+    #: it; ``terminal``/``withdrawn``/``superseded`` mean no further read can
+    #: serve it and the warm must stop issuing new ones; ``unknown`` means the
+    #: evidence was absent or unreadable, and the warm carries on -- stopping
+    #: on unavailable evidence would let a broken mount cancel another
+    #: action's scope.
+    SELECTION_LIVE = "live"
+    SELECTION_TERMINAL = "terminal"
+    SELECTION_WITHDRAWN = "withdrawn"
+    SELECTION_SUPERSEDED = "superseded"
+    SELECTION_UNKNOWN = "unknown"
+
+    def selection_live(
+        self, action_key: str, *, published_unix: float | None,
+    ) -> str:
+        """Is this generation still queued to be served, or definitively gone?
+
+        Generation-scoped by ``published_unix``, the queue's own generation
+        rule: a later publication under the same action key is a different
+        request, and its presence must read as ``superseded`` rather than
+        ``live`` so a warm selected for the old generation stops instead of
+        serving the new one on the old window.  Absence everywhere reads as
+        ``unknown`` -- a requeue or a reaper may hold the key between two
+        atomic renames -- and so does any unreadable record: unavailable
+        evidence never cancels a warm.
+        """
+
+        key = str(action_key)
+        if not isinstance(published_unix, (int, float)):
+            return self.SELECTION_UNKNOWN
+
+        def generation_of(record: dict[str, object] | None) -> float | None:
+            if not isinstance(record, dict):
+                return None
+            stamp = record.get("published_unix")
+            if isinstance(stamp, (int, float)):
+                return float(stamp)
+            return None
+
+        for state in (CLAIMED, READY):
+            try:
+                record = _read_json(self.item_path(state, key))
+            except (OSError, PoolContractError):
+                return self.SELECTION_UNKNOWN
+            if record is None:
+                continue
+            stamp = generation_of(record)
+            if stamp is None:
+                return self.SELECTION_UNKNOWN
+            if stamp == float(published_unix):
+                return self.SELECTION_LIVE
+            return self.SELECTION_SUPERSEDED
+        for state in (DONE, FAILED):
+            try:
+                record = _read_json(self.item_path(state, key))
+            except (OSError, PoolContractError):
+                return self.SELECTION_UNKNOWN
+            if record is None:
+                continue
+            stamp = generation_of(record)
+            if stamp is None:
+                return self.SELECTION_UNKNOWN
+            if stamp == float(published_unix):
+                return self.SELECTION_TERMINAL
+            return self.SELECTION_SUPERSEDED
+        try:
+            record = _read_json(self.item_path(WITHDRAWN, key))
+        except (OSError, PoolContractError):
+            return self.SELECTION_UNKNOWN
+        if record is None:
+            return self.SELECTION_UNKNOWN
+        stamp = generation_of(record)
+        if stamp is None:
+            return self.SELECTION_UNKNOWN
+        if stamp == float(published_unix):
+            return self.SELECTION_WITHDRAWN
+        return self.SELECTION_SUPERSEDED
+
     def move_path(self, action_key: str) -> Path:
         return self.root / MOVERS / f"{action_key}.json"
 
@@ -6482,9 +6729,19 @@ class PoolQueue:
                 # so the receipt costs no extra write and cannot race: after
                 # this point the prewarm loop has already skipped this key,
                 # because it only ever looks at ``ready``.  Absent is normal.
+                # A reference, never a copy (#596): the receipt keeps growing
+                # after the claim as later windows extend it, and the terminal
+                # record resolves this pointer at finish, verifying the key
+                # and the digest so a same-key successor's receipt is never
+                # mistaken for this generation's.
                 warmed = self.prewarm(key)
                 if warmed is not None:
-                    claimed["prewarm"] = warmed
+                    digest = warmed.get("manifest_sha256")
+                    if isinstance(digest, str) and digest:
+                        claimed["prewarm"] = {
+                            PREWARM_RECEIPT_REF: key,
+                            "manifest_sha256": digest,
+                        }
                 _write_json_atomic(dst, claimed)
                 self.write_lease(
                     key,
@@ -8551,15 +8808,23 @@ class PoolQueue:
             and "attempt_history_missing_before" not in record
         ):
             record["attempt_history_missing_before"] = prior_attempts
-        # The prewarm receipt was copied onto the claim; carry it into the
-        # terminal record's ``detail`` so the done row answers "was this row's
-        # data resident when it ran" without a reader having to join against a
-        # sidecar the next campaign may have pruned.  ``setdefault``: a worker
-        # that measured its own residency outranks the loop's prediction.
+        # The prewarm receipt was referenced from the claim; resolve it into
+        # the terminal record's ``detail`` so the done row answers "was this
+        # row's data resident when it ran" without a reader having to join
+        # against a sidecar the next campaign may have pruned.
+        # ``setdefault``: a worker that measured its own residency outranks
+        # the loop's prediction.  A reference that no longer resolves -- the
+        # sidecar pruned early, or rewritten for a same-key successor whose
+        # digest differs -- resolves to nothing rather than to a dangling
+        # pointer: an immutable record must not cite a receipt it cannot
+        # produce.  A legacy claim that still carries the full receipt (filed
+        # before the reference) is copied as before.
         finished_detail = dict(detail or {})
         warmed = record.get("prewarm")
         if isinstance(warmed, Mapping):
-            finished_detail.setdefault("prewarm", dict(warmed))
+            resolved = self.resolve_prewarm_reference(warmed)
+            if resolved is not None:
+                finished_detail.setdefault("prewarm", resolved)
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,

@@ -2128,8 +2128,16 @@ class DiskPacer:
         with self._lock:
             return self.readers if self._clients_active else self.max_readers
 
-    def wait(self, stop: threading.Event | None = None) -> None:
-        """Block until the pool is under threshold, or ``stop`` is set."""
+    def wait(self, stop: threading.Event | None = None,
+             abort: Callable[[], bool] | None = None) -> None:
+        """Block until the pool is under threshold, or ``stop`` is set.
+
+        ``abort`` is the warm's liveness verdict (#571): a hold entered for
+        a live row must not outlive the row, so a terminal consumer releases
+        the wait at the next hold interval instead of pacing nothing for the
+        rest of the backlog.  Either answer ends the wait without touching
+        the verdict: the hold accounting stays exact whatever ended it.
+        """
 
         if not self.active:
             return
@@ -2139,6 +2147,8 @@ class DiskPacer:
         try:
             while self._verdict():
                 if stop is not None and stop.is_set():
+                    return
+                if abort is not None and not abort():
                     return
                 self.sleep(self.hold_s)
         finally:
@@ -2406,10 +2416,17 @@ class Admission:
         self._since = now
 
     def acquire(self, limit: Callable[[], int], stop: threading.Event,
-                wait_s: float) -> bool:
+                wait_s: float,
+                abort: Callable[[], bool] | None = None) -> bool:
         with self._cv:
             while self.active >= max(1, int(limit())):
                 if stop.is_set():
+                    return False
+                # A warm whose consumer went terminal stops taking new slots
+                # exactly like a warm whose role is stopping (#571): a thread
+                # parked here holds no disk, but waking it to read for a dead
+                # row would.
+                if abort is not None and not abort():
                     return False
                 self._cv.wait(wait_s)
             self._advance_locked()
@@ -2426,6 +2443,83 @@ class Admission:
     def close(self) -> None:
         with self._cv:
             self._advance_locked()
+
+
+#: How often a running warm re-asks the queue whether its row is still live.
+#: A check is a handful of small queue reads, so every data block must not
+#: ask (#16); every hold interval must not either.  Five seconds bounds the
+#: obsolete work after a consumer ends while keeping the steady-state cost to
+#: a fraction of one queue read per second per warm -- against the 89 minutes
+#: of post-failure reading in #571, prompt enough to matter.
+LIVENESS_POLL_S = 5.0
+
+
+class SelectionWatch:
+    """One warm's answer to "is this row still worth reading" (#571).
+
+    Generation-scoped at construction: the queue's ``published_unix`` names
+    the exact request the cycle selected, so a later publication under the
+    same action key reads as superseded rather than live.  The verdict is
+    cached and refreshed at most every ``poll_s`` -- shared by every reader
+    thread of the warm, so sixteen threads do not do sixteen queue reads --
+    and ``unknown`` (absent or unreadable evidence) answers True: a broken
+    mount must not cancel another action's scope, it only defers the next
+    verdict to the next poll.
+    """
+
+    def __init__(self, queue: pool.PoolQueue, action_key: str,
+                 *, published_unix: object = None,
+                 poll_s: float = LIVENESS_POLL_S,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._queue = queue
+        self._key = str(action_key)
+        self._published_unix = published_unix
+        self._poll_s = max(0.0, float(poll_s))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._verdict = pool.PoolQueue.SELECTION_UNKNOWN
+        self._checked_at: float | None = None
+        self._stopped = False
+
+    @property
+    def verdict(self) -> str:
+        """The last verdict asked for, from the queue's shared vocabulary."""
+
+        with self._lock:
+            return self._verdict
+
+    @property
+    def stopped(self) -> bool:
+        """Whether this watch has ever answered "issue no new reads"."""
+
+        with self._lock:
+            return self._stopped
+
+    def _refresh_locked(self) -> None:
+        try:
+            verdict = self._queue.selection_live(
+                self._key, published_unix=(self._published_unix
+                                           if isinstance(self._published_unix,
+                                                         (int, float))
+                                           else None))
+        except Exception:
+            # The queue read itself failed outside the contract: unavailable
+            # evidence, which answers unknown rather than cancelling the warm.
+            verdict = pool.PoolQueue.SELECTION_UNKNOWN
+        self._verdict = verdict
+        self._checked_at = self._clock()
+        if verdict not in (pool.PoolQueue.SELECTION_LIVE,
+                           pool.PoolQueue.SELECTION_UNKNOWN):
+            self._stopped = True
+
+    def __call__(self) -> bool:
+        """True while new reads for the selected row may still serve it."""
+
+        with self._lock:
+            if (self._checked_at is None
+                    or self._clock() - self._checked_at >= self._poll_s):
+                self._refresh_locked()
+            return not self._stopped
 
 
 class Reader:
@@ -2462,6 +2556,7 @@ class Reader:
         served: Mapping[str, object] | None = None,
         stage: "StageTier | None" = None,
         stage_prefix: str = "",
+        is_live: Callable[[], bool] | None = None,
     ) -> dict[str, object]:
         """``stage`` is the second destination for these same bytes (#582).
 
@@ -2471,6 +2566,15 @@ class Reader:
         in what order, at what depth or under what hold: a tier that fills or
         faults stops being written to and the warm carries on, because losing
         the second destination must not cost the first.
+
+        ``is_live`` stops new reads for a row that went terminal, withdrawn
+        or superseded after selection (#571): consulted before every entry,
+        before every block, in the admission wait and in the pacing hold, so
+        a dead consumer releases the warm within one hold interval rather
+        than at the end of its manifest.  Bytes already read stay accounted
+        exactly -- stopping issues no new reads and recalls none -- and the
+        result names what stopped it under ``stopped_by``, absent when the
+        warm ran to its budget.
         """
 
         staged_before = (stage.staged_bytes, stage.staged_entries) if stage else (0, 0)
@@ -2487,16 +2591,34 @@ class Reader:
             work.put(None)
         lock = threading.Lock()
         state = {"bytes": 0, "entries": 0, "budget": int(budget_bytes),
-                 "reserved": 0}
+                 "reserved": 0, "stopped_by": ""}
         completed = [0] * len(entries)
         errors: list[str] = []
+
+        def live() -> bool:
+            if is_live is None:
+                return True
+            try:
+                ok = bool(is_live())
+            except Exception:
+                # A watch that raises is unavailable evidence: keep reading
+                # rather than let a broken observer cancel the warm.
+                return True
+            if not ok:
+                verdict = getattr(is_live, "verdict", "terminal")
+                with lock:
+                    if not state["stopped_by"]:
+                        state["stopped_by"] = str(verdict)
+            return ok
 
         def worker() -> None:
             buffer = bytearray(self.block)
             view = memoryview(buffer)
-            while not stop.is_set():
+            while not stop.is_set() and live():
                 queued = work.get()
                 if queued is None:
+                    return
+                if not live():
                     return
                 index, job = queued
                 with lock:
@@ -2536,17 +2658,18 @@ class Reader:
                     if offset:
                         os.lseek(fd, offset, os.SEEK_SET)
                     remaining = want_total
-                    while remaining > 0 and not stop.is_set():
+                    while remaining > 0 and not stop.is_set() and live():
                         # A slot first, then the hold: a thread that is not
                         # admitted does not wait on the pool, so the count
                         # waiting on a hold is the depth, never the thread
                         # count.
-                        if not admission.acquire(limit, stop, wait_s):
+                        if not admission.acquire(limit, stop, wait_s,
+                                                    abort=live):
                             break
                         try:
                             if self.pacer is not None:
-                                self.pacer.wait(stop)
-                                if stop.is_set():
+                                self.pacer.wait(stop, abort=live)
+                                if stop.is_set() or not live():
                                     break
                             with lock:
                                 allowance = max(0, state["budget"] - state["bytes"]
@@ -2657,6 +2780,11 @@ class Reader:
             "disk_pacing": pacing,
             "errors": errors,
         }
+        if state["stopped_by"]:
+            # The row went terminal, withdrawn or superseded mid-warm (#571):
+            # no new reads were issued past that verdict, and these are the
+            # exact bytes the reads before it moved.
+            result["stopped_by"] = state["stopped_by"]
         if stage is not None:
             # What this window put on the stage, never what any consumer read
             # off it.  Absent entirely when no stage was asked for, so a
@@ -3062,6 +3190,10 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                     "phase": reported["phase"] if reported else "",
                     "claimed_host": claimed_host_of(record),
                     "residency_state": residency_state_of(record),
+                    # The generation this window was selected for: the warm
+                    # watches exactly this request, never a same-key
+                    # successor published under it (#571).
+                    "published_unix": record.get("published_unix"),
                 })
                 continue
             if now - float(claimed_unix) > grace_s and not declared:
@@ -3111,6 +3243,9 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             "phase": reported["phase"] if reported else "",
             "claimed_host": claimed_host_of(record),
             "residency_state": residency_state_of(record),
+            # The generation this window was selected for: the warm watches
+            # exactly this request, never a same-key successor (#571).
+            "published_unix": record.get("published_unix"),
         })
     return {"claimed_reserved_bytes": reserved, "claimed_reserved_keys": keys,
             "claimed_released_bytes": released_total,
@@ -3333,6 +3468,63 @@ def stage_requested(args) -> bool:
     return bool(getattr(args, "stage", False))
 
 
+def _cycle_mbytes(total_bytes: int) -> str:
+    return (f"{total_bytes / 1e9:.1f} GB" if total_bytes >= 1e9
+            else f"{total_bytes / 1e6:.1f} MB")
+
+
+def summarize_cycle(event: Mapping[str, object]) -> str:
+    """One line saying what this cycle did, for a human reading the journal.
+
+    The event is a twenty-field nested object nobody reads in a pager; the
+    per-cycle question -- did it warm, advance, skip, release, prune or stop
+    anything, and why -- gets one line (#596).  Pure formatting over the
+    event, so it can never disagree with it.
+    """
+
+    warmed = event.get("warmed") if isinstance(event.get("warmed"), list) else []
+    advanced = (event.get("advanced") if isinstance(event.get("advanced"), list)
+                else [])
+    skipped = (event.get("skipped") if isinstance(event.get("skipped"), list)
+               else [])
+    pruned = (event.get("pruned") if isinstance(event.get("pruned"), list)
+              else [])
+    warmed_bytes = sum(int(entry.get("bytes_warmed", 0) or 0)
+                       for entry in warmed if isinstance(entry, dict))
+    warmed_s = sum(float(entry.get("seconds", 0) or 0)
+                   for entry in warmed if isinstance(entry, dict))
+    stopped: dict[str, int] = {}
+    for entry in (*warmed, *advanced):
+        reason = entry.get("stopped_by") if isinstance(entry, dict) else None
+        if reason:
+            stopped[str(reason)] = stopped.get(str(reason), 0) + 1
+    skip_reasons: dict[str, int] = {}
+    for entry in skipped:
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        skip_reasons[str(reason or "unknown")] = (
+            skip_reasons.get(str(reason or "unknown"), 0) + 1)
+    parts = [
+        f"warmed {len(warmed)} rows "
+        f"({_cycle_mbytes(warmed_bytes)} in {warmed_s:.1f} s)",
+        f"advanced {len(advanced)} windows",
+        ("skipped " + str(len(skipped)) + " (" + ", ".join(
+            f"{reason} x{count}"
+            for reason, count in sorted(skip_reasons.items()))
+         + ")" if skipped else "skipped 0"),
+        f"pruned {sum(1 for row in pruned if isinstance(row, dict) and row.get('pruned'))} receipts",
+    ]
+    stage = event.get("stage")
+    if isinstance(stage, dict):
+        released = stage.get("released") if isinstance(stage.get("released"), list) else []
+        orphans = stage.get("orphans") if isinstance(stage.get("orphans"), list) else []
+        parts.append(
+            f"stage released {len(released)} bands, swept {len(orphans)} orphans")
+    if stopped:
+        parts.append("stopped: " + ", ".join(
+            f"{reason} x{count}" for reason, count in sorted(stopped.items())))
+    return "prewarm cycle: " + "; ".join(parts)
+
+
 def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
           pacer: DiskPacer | None = None) -> dict:
     ready = queue.ready_items()
@@ -3398,13 +3590,18 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     def warm(*, key: str, manifest: dict, digest: str, entries: list,
              start_bytes: int, target: int, phase: str, phased: bool,
              trigger: str, served_host: str | None = None,
-             cas_root_of: "Path | str" = "") -> dict:
+             cas_root_of: "Path | str" = "",
+             published_unix: object = None) -> dict:
         """Read one window of one manifest and file what is now resident.
 
         ``served_host`` is the box running this action, for a claimed row;
         its reads are the pacer's *self* while this window is read (#580).
         ``None`` is a ready row: nobody runs it yet, so it has no self and
         every client reading now is one to protect.
+
+        ``published_unix`` names the exact generation selected: the warm
+        stops issuing new reads when that generation goes terminal,
+        withdrawn or superseded, however long its manifest is (#571).
         """
 
         nonlocal budget, budget_before_progress, cycle_spent
@@ -3422,11 +3619,13 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         else:
             reader = Reader(args.readers, mounts, pacer=pacer,
                             max_readers=getattr(args, "max_readers", 0) or 0)
+            watch = SelectionWatch(queue, key, published_unix=published_unix)
             result = reader.read(
                 entries,
                 budget_bytes=want,
                 stop=stop,
                 served=served,
+                is_live=watch,
                 # The second destination for the same window read (#582).
                 stage=stage,
                 stage_prefix=str(manifest.get("mount_prefix", "")),
@@ -3654,6 +3853,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             trigger="progress" if window["phase"] else "claim",
             served_host=str(window.get("claimed_host") or ""),
             cas_root_of=root,
+            published_unix=window.get("published_unix"),
         )
         event["advanced"].append({
             k: record[k] for k in
@@ -3661,6 +3861,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
              "bytes_warmed", "warmed_through_phase", "trigger", "seconds",
              "mb_per_s")
         })
+        if record.get("stopped_by"):
+            event["advanced"][-1]["stopped_by"] = record["stopped_by"]
 
     taken = 0
     for item in ready:
@@ -3747,19 +3949,24 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             trigger=("progress" if target > row_budget_before_progress
                      else "claim"),
             cas_root_of=root,
+            published_unix=item.get("published_unix"),
         )
-        event["warmed"].append({k: record[k] for k in
-                                ("action_key", "status", "manifest_bytes",
-                                 "bytes_warmed", "warmed_bytes", "trigger",
-                                 "warmed_through_phase", "seconds", "mb_per_s",
-                                 "disk_pacing")})
+        warmed_entry = ({k: record[k] for k in
+                         ("action_key", "status", "manifest_bytes",
+                          "bytes_warmed", "warmed_bytes", "trigger",
+                          "warmed_through_phase", "seconds", "mb_per_s",
+                          "disk_pacing")})
+        if record.get("stopped_by"):
+            warmed_entry["stopped_by"] = record["stopped_by"]
+        event["warmed"].append(warmed_entry)
+    # Who is still queued, for the sweep below and the prune beside it.
+    live_keys = {str(item.get("action_key", "")) for item in ready}
+    live_keys |= {str(row["action_key"]) for row in live_rows}
     if stage is not None:
         # The non-action is written too.  A cycle that staged nothing, warmed
         # nothing, or found no stage pool at all still says which of the four
         # states the tier was in and why -- #585's lesson is that a correct
         # non-action nobody recorded costs the next reader the diagnosis.
-        live_keys = {str(item.get("action_key", "")) for item in ready}
-        live_keys |= {str(row["action_key"]) for row in live_rows}
         # A tier with no mountpoint -- ``absent`` on every box but the file
         # server, and most ``unreadable`` ones -- has nothing to release and
         # nowhere to release it from.  Running the release path anyway spent
@@ -3771,6 +3978,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             apply=not args.dry_run) if stage.mountpoint else [])
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
+    # Prune after the sweep, staged or not (#596): the sweep may just have
+    # released a retired row's band and marked it swept, which is what makes
+    # the receipt deletable.  Terminal and withdrawn receipts are garbage the
+    # day they retire, and leaving them makes the sweep list and read every
+    # receipt the fleet ever wrote on every 10 s poll.  A dry run reads only,
+    # so it prunes nothing.
+    event["pruned"] = (queue.sweep_prewarm_receipts(live_keys)
+                       if not args.dry_run else [])
+    event["summary"] = summarize_cycle(event)
     return event
 
 
