@@ -54,6 +54,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 FLAG = Path(os.environ.get("REQUIRE_POOL_FLAG", "/home/rob/tmp/arb/require_pool.on"))
@@ -1238,6 +1239,37 @@ TEST_WORK = re.compile(
 )
 GPU_CONTAINER = re.compile(r"\b(?:docker|podman)\s+[^;]*--gpus(?:[ =]|$)")
 
+#: vLLM work, exempt from admission universally (Rob, 2026-09-07): a serve, a
+#: census, a routing run, a benchmark against a live endpoint -- including its
+#: GPU containers, which is the shape this carve-out is for.  Lexical: the
+#: segment names vLLM as the image or the program it runs
+#: (``vllm/vllm-openai``, ``vllm serve``).  Container-only, deliberately: the
+#: tessera#550 pytest refusal was correct, and a test file is not a serve
+#: because its name says ``vllm``.
+VLLM_CONTAINER = re.compile(r"vllm", re.IGNORECASE)
+
+#: Fabric work that happens to borrow the image is not vLLM (#588's scoping
+#: note): a bare NCCL collective in a vLLM image is decided case by case by
+#: whoever holds the keyboard, and this carve-out must not decide it for
+#: them.  Nor is a test runner inside the container a serve.
+NOT_VLLM_CONTAINER = re.compile(
+    r"nccl|all.?reduce|bandwidthTest|p2pBandwidth", re.IGNORECASE)
+
+
+def _vllm_container(segment: str) -> bool:
+    """True when this GPU-container invocation is exempt vLLM work (#588).
+
+    The scan can evaluate it: the segment names vLLM as the image or the
+    program, runs no test runner, and is not a bare collective borrowing the
+    image.  Anything else with ``--gpus`` is still refused.
+    """
+
+    if NOT_VLLM_CONTAINER.search(segment):
+        return False
+    if TEST_WORK.search(segment):
+        return False
+    return VLLM_CONTAINER.search(segment) is not None
+
 
 def unpooled_work(command: str) -> bool:
     for segment in _segments(command):
@@ -1252,8 +1284,152 @@ def unpooled_work(command: str) -> bool:
                 continue
             return True
         if GPU_CONTAINER.search(scanned):
+            if _vllm_container(scanned):
+                continue
             return True
     return False
+
+
+#: The largest script file the hook reads into the scan, and the largest the
+#: sightings log grows to.  The hook is a lexical guard, not a build system:
+#: an unbounded read parks every ``bash x.sh`` behind disk, and an unbounded
+#: log is litter.  Past either bound the execution is allowed and, for the
+#: log, the volume itself is the signal.
+OPAQUE_SCRIPT_MAX_BYTES = 256 * 1024
+SIGHTINGS_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _opaque_script(segment: str) -> str | None:
+    """The script file this segment runs without showing its text, if any.
+
+    Issue #588: ``bash ab.sh`` runs a file the lexical scan cannot see
+    inside, which is the shape exempt vLLM work took to route around the
+    GPU-container rule -- and the same door is open to work that is not
+    exempt.  Three shapes, all of them a shell executing a file rather than
+    an argument: a shell invoked with a file operand (``bash ab.sh``,
+    ``bash < ab.sh``), a script executed by path (``./ab.sh``), and
+    ``source``/``.``.  A shell with a run switch (``bash -c ...``) executes
+    its argument, which is already scanned, so it is not opaque; neither is
+    ``python x.py``, whose text is not shell and which this module does not
+    read as commands (#223).
+    """
+
+    tokens = _command_tokens(segment)
+    if not tokens:
+        return None
+    head = _name_of(tokens[0])
+    if head in ("source", "."):
+        rest = [token for token in tokens[1:] if token not in ("<", ">")]
+        if rest and not rest[0].startswith("-"):
+            return rest[0]
+        return None
+    if _is_shell(head):
+        if any(_runs_argument(token) for token in tokens[1:]):
+            return None
+        rest = [token for token in tokens[1:]
+                if token not in ("<", ">") and not token.startswith("-")]
+        return rest[0] if rest else None
+    first = tokens[0]
+    if head.endswith(".sh") or first.startswith("./") or first.startswith("../"):
+        if re.fullmatch(r"python[0-9.]*", head) is not None:
+            # ``./python3 train.py`` is ``python x.py`` by another path, and
+            # that text is not shell.
+            return None
+        return first
+    return None
+
+
+def _read_opaque_script(path: str) -> str | None:
+    """The script's text, or ``None`` when it cannot be read as text.
+
+    Relative paths resolve against the hook's working directory, which is
+    the session's: a script named the way the command names it is the file
+    the command runs.  Anything unreadable, oversized or not UTF-8 text is
+    ``None`` -- allowed and recorded, never refused on this basis.
+    """
+
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path(os.getcwd()) / candidate
+    try:
+        if candidate.stat().st_size > OPAQUE_SCRIPT_MAX_BYTES:
+            return None
+        return candidate.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+
+
+def _sightings_path() -> Path:
+    override = os.environ.get("REQUIRE_POOL_SIGHTINGS")
+    if override:
+        return Path(override)
+    return FLAG.with_name("require_pool_sightings.log")
+
+
+def _record_sighting(script: str, command: str, *, reason: str) -> None:
+    """Log an opaque script execution the scan allowed, best effort.
+
+    The log is the half of #588 that visibility can do: a route-around the
+    hook cannot see inside is recorded where an operator can read it, rather
+    than passing silently.  Never raises -- a guard that breaks commands by
+    failing to log is worse than no log.
+    """
+
+    try:
+        path = _sightings_path()
+        try:
+            if path.stat().st_size >= SIGHTINGS_MAX_BYTES:
+                return
+        except OSError:
+            pass
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "unix": time.time(), "script": script,
+                "command": command[:2000], "reason": reason,
+            }, sort_keys=True) + "\n")
+    except (OSError, ValueError):
+        pass
+
+
+def _opaque_refusal(script: str, offender: str) -> str:
+    return (
+        f"Refused: {script} runs work that must go through PrismaBuild "
+        f"(the hook reads one level into script files):\n  {offender[:200]}\n"
+        f"Run it as:\n  /usr/bin/python3 {PBRUN} --gpu -- <your command>\n\n"
+        "Flags: --exclusive for a timing run that needs the whole box; "
+        "vLLM work -- a serve, a census, a routing run, a benchmark, its "
+        "GPU containers -- is exempt and runs directly, without a wrapper "
+        "script.\n"
+    )
+
+
+def opaque_refusal(command: str) -> str | None:
+    """The refusal an opaque script earns, or ``None`` when none does.
+
+    Split out so the file read and the sightings log stay beside the verdict
+    they inform: a script whose text trips the same three rules the command
+    line is judged by refuses naming the file, and a script that is clean or
+    unreadable is recorded and allowed.  One level only: a script that merely
+    calls another script is allowed and logged, and the log is what makes
+    deeper nesting visible instead of silent.
+    """
+
+    for segment in _segments(command):
+        script = _opaque_script(segment)
+        if script is None:
+            continue
+        text = _read_opaque_script(script)
+        if text is None:
+            _record_sighting(script, command, reason="unreadable")
+            continue
+        offender = next(
+            (part for part in _scan(text)
+             if unpooled_work(part) or contends(part) or submits(part)),
+            None)
+        if offender is not None:
+            return _opaque_refusal(script, offender)
+        _record_sighting(script, command, reason="scanned-clean")
+    return None
 
 
 def main() -> int:
@@ -1303,7 +1479,11 @@ def main() -> int:
             "up afterwards -- the job's CAS receipt is what makes an action "
             "mean the same thing under either transport.\n"
         )
-        return 2
+        return 2                      # exit 2 blocks and shows this to the agent
+    refused = opaque_refusal(command)
+    if refused is not None:
+        sys.stderr.write(refused)
+        return 2                      # a script file is not a way past the hook
     return 0
 
 

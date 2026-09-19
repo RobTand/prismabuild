@@ -501,6 +501,144 @@ def _release_metrics(
     return readable
 
 
+def _starvation_metrics(
+    metrics: Metrics,
+    queue_root: Path,
+    *,
+    now: float,
+    window_seconds: float,
+) -> bool:
+    """Fleet starvation gauges: tier fill, denials, mover depth (issue #661).
+
+    Read-only derivation from records the fleet already files, following this
+    module's conventions: restart-safe gauges (never counters), absent rather
+    than zero where nothing was measured, no action-key labels, and a partial
+    snapshot that reports its failure rather than dropping the scrape.
+    """
+
+    ok = True
+    try:
+        queue = pool.PoolQueue(queue_root)
+    except Exception:
+        return False
+
+    # -- per-tier fill supply and token occupancy -------------------------
+    try:
+        announced = {str(record.get("tier_id")): record
+                     for record in queue.tiers()
+                     if isinstance(record, dict) and record.get("tier_id")}
+    except Exception:
+        announced = {}
+        ok = False
+    try:
+        tier_ids = queue.tier_ids()
+    except Exception:
+        tier_ids = sorted(announced)
+        ok = False
+    fill = metrics.family(
+        "prismabuild_tier_fill_supply_mb_s",
+        "Learned pool-side fill bandwidth per tier from the tier loop's latest announced fold; "
+        "best is the highest delivery since the last ceiling, ceiling the most recent measured "
+        "shortfall. Absent, not zero, where the tier announced none.",
+    )
+    tokens = metrics.family(
+        "prismabuild_tier_tokens",
+        "Tier ledger tokens by kind and state; capacity kinds count GiB, the fill kind counts "
+        "pool-side MB/s, and held is capacity less available.",
+    )
+    for tier_id in sorted(set(tier_ids) | set(announced)):
+        record = announced.get(tier_id)
+        supply = record.get("fill_supply") if isinstance(record, Mapping) else None
+        if isinstance(supply, Mapping):
+            fill.add(supply.get("best_mb_s"), tier=tier_id, stat="best")
+            fill.add(supply.get("ceiling_mb_s"), tier=tier_id, stat="ceiling")
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            capacity, available = ledger.capacity(), ledger.available()
+        except Exception:
+            ok = False
+            continue
+        if not isinstance(capacity, dict) or not isinstance(available, dict):
+            ok = False
+            continue
+        for kind in sorted(set(capacity) | set(available)):
+            held_back = _number(capacity.get(kind, 0))
+            free_back = _number(available.get(kind, 0))
+            if held_back is None or free_back is None:
+                ok = False
+                continue
+            tokens.add(held_back, tier=tier_id, resource=str(kind), state="capacity")
+            tokens.add(free_back, tier=tier_id, resource=str(kind), state="available")
+            tokens.add(held_back - free_back, tier=tier_id, resource=str(kind), state="held")
+
+    # -- per-host denial counts by reason, windowed ------------------------
+    try:
+        denials, _denial_notes = pbstatus._pool_claim_denials(queue)
+    except Exception:
+        denials = []
+        ok = False
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    for denial in denials:
+        if not isinstance(denial, dict):
+            ok = False
+            continue
+        host = _host(denial.get("host"))
+        reason = denial.get("reason")
+        reason = reason if isinstance(reason, str) and reason else "unknown"
+        age = _number(now - float(denial.get("denied_unix", -math.inf)))
+        if host is None or age is None:
+            ok = False
+            continue
+        if age <= window_seconds:
+            counts[(host, reason)] += 1
+    metrics.family(
+        "prismabuild_claim_denial_window_seconds",
+        "Configured lookback window for the per-host claim-denial gauges.",
+    ).add(window_seconds)
+    denials_family = metrics.family(
+        "prismabuild_claim_denials",
+        "Latest claim denial per action generation observed in the window, by host and reason; "
+        "this is a restart-safe gauge, not a counter.",
+    )
+    for (host, reason), count in counts.items():
+        denials_family.add(count, host=host, reason=reason)
+
+    # -- mover queue depth --------------------------------------------------
+    # An active action with movement-node shape: its residency block names a
+    # byte range to stage, where a consumer's names leads.  The same range
+    # test ``movers_claimed_on_tier`` stages on, counted here rather than
+    # joined there so the depth needs no tier argument.
+    depth = metrics.family(
+        "prismabuild_mover_queue_depth",
+        "Active actions with movement-node shape (a residency range to stage), by queue state.",
+    )
+    for state in (pool.READY, pool.CLAIMED):
+        movers = 0
+        try:
+            with os.scandir(queue_root / state) as scan:
+                paths = sorted(Path(entry.path) for entry in scan
+                               if entry.name.endswith(".json"))
+        except OSError:
+            ok = False
+            continue
+        for path in paths:
+            try:
+                record = pool._read_json(path)
+            except (OSError, ValueError):
+                record = None
+            if record is None:
+                ok = False
+                continue
+            if not isinstance(record, dict):
+                ok = False
+                continue
+            residency = record.get("residency")
+            if isinstance(residency, Mapping) and "range_start_bytes" in residency:
+                movers += 1
+        depth.add(movers, state=state)
+    return ok
+
+
 def collect_metrics(
     queue_root: str | Path = DEFAULT_QUEUE_ROOT,
     *,
@@ -808,6 +946,14 @@ def collect_metrics(
             "prismabuild_unstarted_release_events_complete",
             "Whether the unstarted-release scan proved the configured window was not truncated by its record limit and every selected filing was readable.",
         ).add(0)
+
+    try:
+        success = _starvation_metrics(
+            metrics, root, now=sampled,
+            window_seconds=terminal_window_seconds,
+        ) and success
+    except Exception:  # A scrape reports the failure rather than dropping HTTP.
+        success = False
 
     metrics.family(
         "prismabuild_collection_success",

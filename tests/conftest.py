@@ -74,6 +74,21 @@ LIVE_PROBE_TIMEOUT_S = _positive_timeout(
     name="PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S",
 )
 
+#: How long the session guard waits for a full live-store census.  A separate
+#: budget from the probe above, because they answer different questions: the
+#: probe asks "is the mount there" and the census walks every entry of every
+#: top-level directory, which never fitted in the probe's 10 s -- on dl380g10,
+#: where the fleet's shared mount lives, the start census timed out on nearly
+#: every pbtest shard (#643).  Eight shards of this branch's validation ran on
+#: dl380g10 with this budget and none emitted the timeout note, so the walk
+#: fits in it there.  The census runs in an abandonable child, so an
+#: unreachable store still costs only the probe above; this budget sizes the
+#: walk to the store.
+LIVE_CENSUS_TIMEOUT_S = _positive_timeout(
+    os.environ.get("PRISMABUILD_TEST_LIVE_CENSUS_TIMEOUT_S") or "180",
+    name="PRISMABUILD_TEST_LIVE_CENSUS_TIMEOUT_S",
+)
+
 #: Top-level entries of ``LIVE_ROOT`` the guard leaves alone. The quarantine
 #: holds records already moved out of the fleet's way, so a new entry there is
 #: housekeeping and not a leak.
@@ -240,6 +255,13 @@ def _walk(root: Path) -> tuple[set[str], bool, list[str]]:
     errors: list[str] = []
 
     def record_error(exc: OSError) -> None:
+        if isinstance(exc, FileNotFoundError):
+            # Renamed under us between the parent listing and the descent.
+            # The fleet renames reservation files constantly -- a ``claiming``
+            # record that disappears mid-walk is ordinary churn, and a path
+            # that no longer exists cannot be a persistent leak, so it is
+            # dropped rather than reported as a partial census (#643).
+            return
         errors.append(f"{root}: {type(exc).__name__}: {exc}")
 
     for directory, subdirectories, files in os.walk(root, onerror=record_error):
@@ -294,7 +316,7 @@ def _census_payload(live_root: Path) -> dict:
 
 
 def bounded_listing(live_root: Path = LIVE_ROOT,
-                    timeout_s: float = LIVE_PROBE_TIMEOUT_S) -> dict:
+                    timeout_s: float = LIVE_CENSUS_TIMEOUT_S) -> dict:
     """Return a complete live-store census, or explicit incomplete evidence.
 
     The entire recursive traversal runs in ``pbstatus.bounded``.  A hard NFS
@@ -343,12 +365,21 @@ def bounded_listing(live_root: Path = LIVE_ROOT,
     return {"status": "complete", "listing": inventory, "abandoned": abandoned}
 
 
-def _names(path: Path, needle: str) -> tuple[bool, bool, list[str]]:
-    """Read a new entry for ``needle`` without hiding an incomplete read."""
+def _names(path: Path, needle: str) -> tuple[bool | None, bool, list[str]]:
+    """Read a new entry for ``needle`` without hiding an incomplete read.
+
+    The first element is ``None`` when the entry vanished before it could be
+    read -- renamed under us the way the walk above tolerates.  Nothing that
+    no longer exists can be a persistent leak, so the caller drops it from
+    both the leaked and the unattributed lists rather than reporting either
+    the fleet's churn or a partial census for it (#643).
+    """
 
     errors: list[str] = []
     try:
         mode = os.stat(path).st_mode
+    except FileNotFoundError:
+        return None, True, []
     except OSError as exc:
         return False, False, [f"{path}: {type(exc).__name__}: {exc}"]
     candidates = [path]
@@ -356,6 +387,8 @@ def _names(path: Path, needle: str) -> tuple[bool, bool, list[str]]:
         candidates = []
 
         def record_error(exc: OSError) -> None:
+            if isinstance(exc, FileNotFoundError):
+                return
             errors.append(f"{path}: {type(exc).__name__}: {exc}")
 
         for directory, _subdirectories, files in os.walk(path, onerror=record_error):
@@ -364,6 +397,10 @@ def _names(path: Path, needle: str) -> tuple[bool, bool, list[str]]:
         try:
             if needle in candidate.read_text(encoding="utf-8", errors="replace"):
                 return True, not errors, errors
+        except FileNotFoundError:
+            # A directory entry renamed between the walk above and this read
+            # is the same churn as a vanished entry: nothing persists.
+            continue
         except OSError as exc:
             errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
     return False, not errors, errors
@@ -427,6 +464,11 @@ def _leaked_entries(
             )
             complete = complete and read_complete
             errors.extend(read_errors)
+            if names_basetemp is None:
+                # Vanished between the census and the attribution read: the
+                # fleet renamed it under us, and nothing that no longer
+                # exists is a leak or an unattributed entry (#643).
+                continue
             if names_basetemp:
                 leaked.append(entry)
             else:
@@ -436,7 +478,7 @@ def _leaked_entries(
 
 def bounded_leaked_entries(
     before: dict[str, set[str]], *, live_root: Path = LIVE_ROOT,
-    basetemp: str, timeout_s: float = LIVE_PROBE_TIMEOUT_S,
+    basetemp: str, timeout_s: float = LIVE_CENSUS_TIMEOUT_S,
 ) -> dict:
     """Census and attribute new entries in one abandonable reader."""
 
@@ -527,7 +569,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     available = reachable(LIVE_ROOT)
     session.config._pb_live_reachable = available  # type: ignore[attr-defined]
     observation = (
-        bounded_listing(LIVE_ROOT, timeout_s=LIVE_PROBE_TIMEOUT_S)
+        bounded_listing(LIVE_ROOT, timeout_s=LIVE_CENSUS_TIMEOUT_S)
         if available else {"status": "unavailable", "reason": "probe_failed"}
     )
     session.config._pb_live_guard_start = observation  # type: ignore[attr-defined]
@@ -566,7 +608,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             session,
             f"note: live-store leak guard start census is {observation['status']} "
             f"({observation.get('reason', 'unknown')}); its census budget was "
-            f"{LIVE_PROBE_TIMEOUT_S:g}s, so it did not certify this session."
+            f"{LIVE_CENSUS_TIMEOUT_S:g}s, so it did not certify this session."
             + _guard_evidence(observation),
         )
         return
@@ -576,14 +618,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     basetemp = str(factory.getbasetemp())
     observation = bounded_leaked_entries(
         before, live_root=LIVE_ROOT, basetemp=basetemp,
-        timeout_s=LIVE_PROBE_TIMEOUT_S,
+        timeout_s=LIVE_CENSUS_TIMEOUT_S,
     )
     if observation["status"] != "complete":
         _guard_write(
             session,
             f"note: live-store leak guard finish census is {observation['status']} "
             f"({observation.get('reason', 'unknown')}); its census budget was "
-            f"{LIVE_PROBE_TIMEOUT_S:g}s, so it did not certify this session."
+            f"{LIVE_CENSUS_TIMEOUT_S:g}s, so it did not certify this session."
             + _guard_evidence(observation),
         )
         leaked = observation.get("leaked", [])

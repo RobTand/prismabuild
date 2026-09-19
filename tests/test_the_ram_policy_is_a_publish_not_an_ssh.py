@@ -31,11 +31,15 @@ def test_the_committed_policy_validates_and_says_what_the_direction_says() -> No
 
     assert policy is not None, "the policy is committed, not implied"
     assert policy["schema"] == storage_tiers.RAM_TIER_POLICY_SCHEMA_V1
-    # The ceiling Rob sanctioned, and the window he directed: 96-128 GiB is
-    # the range, 112 its midpoint, and never a phase container -- the largest
-    # phase is 134.2 GiB.
+    # The ceiling Rob sanctioned.  The window was directed 96-128 GiB as a
+    # streaming window that would never hold a phase container -- but
+    # promotion is phase-granular and the largest phase is 134.2 GiB, so on
+    # 2026-09-19 a 112 GiB window minted a zero run-ahead budget
+    # (capacity - step < 0) and nothing could ever promote: the GPU starved
+    # between layers by arithmetic.  The window now holds one whole phase
+    # plus margin, inside the worker-demand guard's bound (160.5 GiB).
     assert policy["ceiling_gib_max"] == 256
-    assert 96 <= policy["window_gib_default"] <= 128
+    assert 134 <= policy["window_gib_default"] <= 160
     # The floor guard's declared constants, and the run-ahead default: None
     # is the #633 semantics the stage window already runs.
     assert policy["arc_floor_gib"] > 0
@@ -59,7 +63,7 @@ def test_a_policy_that_does_not_say_what_it_must_refuses(tmp_path) -> None:
          "mountpoint": "/ram/prewarm", "ceiling_gib_max": 0},   # not positive
         {"schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
          "mountpoint": "/ram/prewarm", "ceiling_gib_max": 256,
-         "window_gib_default": 112, "arc_floor_gib": 20,
+         "window_gib_default": 160, "arc_floor_gib": 20,
          "system_reserve_gib": 16, "prefill_depth": -3},        # not a depth
     ):
         path = tmp_path / "policy.json"

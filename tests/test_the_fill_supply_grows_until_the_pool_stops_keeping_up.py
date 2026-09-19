@@ -124,13 +124,21 @@ def test_a_held_reader_is_not_read_as_a_pool_deficit():
     assert supply["ceiling_mb_s"] is None
 
 
-def test_a_receipt_that_reserved_no_fill_can_never_set_a_ceiling():
-    """Every receipt that shipped reserved none; none of them is evidence."""
+def test_a_receipt_that_reserved_no_fill_is_no_evidence_at_all():
+    """Every receipt that shipped reserved none; none of them is evidence.
+
+    Not for a ceiling, and not for ``best`` either: on 2026-09-19 a seal-less
+    prewarm record delivering 1.4 MB/s rebuilt ``best`` from None after an
+    honest shortfall reset it, the stage tier minted 1 MB/s of fill, and the
+    campaign starved its GPU between bursts (#654 act three).  A delivery
+    that reserved nothing measured the pool's idle moments, not what it can
+    give a reader that asks.
+    """
 
     record = _receipt(unix=100.0, delivered=166.0, sealed=0, achieved=1.0,
                       key="1")
     supply = storage_tiers.fill_supply_from_records([record])
-    assert supply["ceiling_mb_s"] is None and supply["best_mb_s"] == 166.0
+    assert supply["ceiling_mb_s"] is None and supply["best_mb_s"] is None
 
 
 def _cycle(queue, fill_records_seen=None):

@@ -331,6 +331,9 @@ def drop_prior_ram_epochs(
     return events
 
 
+    return events
+
+
 def release_incomplete_ram_promotions(
         queue: pool.PoolQueue,
         tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
@@ -430,6 +433,100 @@ def release_incomplete_ram_promotions(
     return events
 
 
+def _stage_leg_rows(phase: Mapping[str, object],
+                     chunk_index: object) -> tuple[object, object]:
+    """The ``(mover_row, egress_row)`` one window entry's stage leg sealed.
+
+    The stage mirror of :func:`_ram_leg_rows`: ``(None, None)`` when the
+    entry and the phase disagree about the shape -- a chunk entry for a
+    whole-phase leg, or the reverse.  Publishing a row the plan never sealed
+    would put an unsealed key in the queue, so a mismatch publishes nothing
+    rather than guessing which leg was meant.
+    """
+
+    if chunk_index is not None:
+        chunks = phase.get("stage_chunks")
+        if not isinstance(chunks, list):
+            return None, None
+        matches = [chunk for chunk in chunks
+                   if isinstance(chunk, Mapping)
+                   and chunk.get("chunk_index") == chunk_index
+                   and isinstance(chunk.get("mover_row"), Mapping)
+                   and isinstance(chunk.get("egress_row"), Mapping)]
+        if len(matches) != 1:
+            return None, None
+        return matches[0]["mover_row"], matches[0]["egress_row"]
+    mover = phase.get("mover_row")
+    egress = phase.get("egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
+
+
+def _stage_source_staged(phase: Mapping[str, object], start: int, end: int,
+                         stage_staged: set[str]) -> bool:
+    """Whether the stage already holds the bytes one promotion copies.
+
+    A promotion's source is the stage and nothing else: with a whole-phase
+    stage leg that is the phase's mover, and with a chunked one (#675) it is
+    every stage chunk the promoted range overlaps -- a later chunk the
+    promotion does not touch is not its precondition, so the current phase's
+    promotions stage as their turn comes while the stage slides behind them.
+    """
+
+    chunks = phase.get("stage_chunks")
+    if not isinstance(chunks, list):
+        mover = phase.get("mover_row")
+        return (isinstance(mover, Mapping)
+                and str(mover.get("action_key")) in stage_staged)
+    overlapped = []
+    for chunk in chunks:
+        if not isinstance(chunk, Mapping):
+            continue
+        cstart, cend = chunk.get("start_bytes"), chunk.get("end_bytes")
+        if (isinstance(cstart, bool) or not isinstance(cstart, int)
+                or isinstance(cend, bool) or not isinstance(cend, int)):
+            continue
+        if cstart < end and cend > start:
+            overlapped.append(chunk)
+    if not overlapped:
+        return False
+    return all(
+        isinstance(chunk.get("mover_row"), Mapping)
+        and str(chunk["mover_row"]["action_key"]) in stage_staged  # type: ignore[index]
+        for chunk in overlapped)
+
+
+def _ram_leg_rows(phase: Mapping[str, object],
+                   chunk_index: object) -> tuple[object, object]:
+    """The ``(mover_row, egress_row)`` one window entry's leg sealed.
+
+    ``(None, None)`` when the entry and the phase disagree about the shape --
+    a chunk entry for a whole-phase leg, or the reverse.  Publishing a row
+    the plan never sealed would put an unsealed key in the queue, so a
+    mismatch publishes nothing rather than guessing which leg was meant.
+    """
+
+    if chunk_index is not None:
+        chunks = phase.get("ram_chunks")
+        if not isinstance(chunks, list):
+            return None, None
+        matches = [chunk for chunk in chunks
+                   if isinstance(chunk, Mapping)
+                   and chunk.get("chunk_index") == chunk_index
+                   and isinstance(chunk.get("ram_mover_row"), Mapping)
+                   and isinstance(chunk.get("ram_egress_row"), Mapping)]
+        if len(matches) != 1:
+            return None, None
+        return matches[0]["ram_mover_row"], matches[0]["ram_egress_row"]
+    # A promotion leg with no egress row still promotes: the plan validator
+    # refuses an egress without a mover, not a mover without an egress, so
+    # the publish side asks for the mover and the evict side asks for both.
+    mover = phase.get("ram_mover_row")
+    egress = phase.get("ram_egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
+
+
 def _ram_window_state(
         queue: pool.PoolQueue, consumer: Mapping[str, object],
         plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
@@ -473,13 +570,19 @@ def _ram_window_state(
         # and its already-published skip would never skip (#640).
         mover_role="ram_mover_row")
     phases = {str(phase["name"]): phase for phase in plan["phases"]}
-    publishable = [
-        (phases[str(entry["phase"])], entry)
-        for entry in decision["publish"]
-        if str(entry["phase"]) in phases
-        and "ram_mover_row" in phases[str(entry["phase"])]
-        and str(phases[str(entry["phase"])]["mover_row"]["action_key"])
-        in stage_staged]
+    publishable = []
+    for entry in decision["publish"]:
+        phase = phases.get(str(entry["phase"]))
+        if phase is None:
+            continue
+        mover_row, _egress_row = _ram_leg_rows(phase, entry.get("chunk_index"))
+        if mover_row is None:
+            continue
+        if not _stage_source_staged(
+                phase, int(entry["start_bytes"]), int(entry["end_bytes"]),
+                stage_staged):
+            continue
+        publishable.append((mover_row, entry))
     return {"ram_tier_id": ram_tier_id, "decision": decision,
             "phases": phases, "publishable": publishable,
             "already": already, "staged": staged,
@@ -526,9 +629,10 @@ def ram_residency_window(
                     "accepted_phase", "reading_phase", "blocked_phase",
                     "blocked_gib", "runahead_gib", "runahead_budget_gib",
                     "free_gib", "capacity_gib", "reason", "waiting_for")},
+                "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
-        for phase, entry in state["publishable"]:
-            row = dict(phase["ram_mover_row"])
+        for mover_row, entry in state["publishable"]:
+            row = dict(mover_row)
             try:
                 # A copy has no result to replay, for the same reason the
                 # stage's own rows carry it.
@@ -536,18 +640,23 @@ def ram_residency_window(
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-mover-publish-failed",
                                "consumer": key, "phase": entry["phase"],
+                               "chunk_index": entry.get("chunk_index"),
                                "error": repr(exc)})
                 continue
             events.append({"event": "ram-mover-published", "consumer": key,
                            "phase": entry["phase"],
+                           "chunk_index": entry.get("chunk_index"),
                            "action_key": str(row["action_key"]),
                            "tier_id": ram_tier_id,
                            "ram_gib": int(entry["stage_gib"])})
         for entry in decision["evict"]:
             phase = state["phases"].get(str(entry["phase"]))
-            if phase is None or "ram_egress_row" not in phase:
+            mover_row, egress_row = (
+                _ram_leg_rows(phase, entry.get("chunk_index"))
+                if isinstance(phase, Mapping) else (None, None))
+            if egress_row is None or mover_row is None:
                 continue
-            row = dict(phase["ram_egress_row"])
+            row = dict(egress_row)
             egress_key = str(row["action_key"])
             if (queue.item_path(pool.READY, egress_key).exists()
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
@@ -557,11 +666,14 @@ def ram_residency_window(
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-egress-publish-failed",
                                "consumer": key, "phase": entry["phase"],
+                               "chunk_index": entry.get("chunk_index"),
                                "error": repr(exc)})
                 continue
             events.append({"event": "ram-egress-published", "consumer": key,
-                           "phase": entry["phase"], "action_key": egress_key,
-                           "mover": str(phase["ram_mover_row"]["action_key"]),
+                           "phase": entry["phase"],
+                           "chunk_index": entry.get("chunk_index"),
+                           "action_key": egress_key,
+                           "mover": str(mover_row["action_key"]),  # type: ignore[index]
                            "tier_id": ram_tier_id})
     return events
 
@@ -732,6 +844,78 @@ def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tup
     return (str(manifest_sha256), str(tier_id), int(start), int(end))
 
 
+def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, object]]:
+    """Withdraw the still-queued movers of consumers that already failed (#620).
+
+    A consumer that fails with movers published leaves them running for
+    nobody: the egress evicts the completed ones, but the not-yet-run ones
+    stage hundreds of GiB for a consumer already in ``failed/`` -- and on
+    stage paths shared with the successor's movers, their writes collide.
+    So in the same egress cycle that evicts the dead consumer's resident
+    ranges, its movers still in ``ready/`` or ``claimed/`` are withdrawn:
+    the queued ones never start, the claimed ones are stopped, and both
+    leave whatever partials they landed to the sweep and the reconciliation.
+
+    Three things are never touched.  A mover with a complete receipt is a
+    resident range, which the successor adopts rather than recopies.  An
+    egress row is cleanup, not staging, and still has to run.  And a consumer
+    key also present in ``ready/`` or ``claimed/`` was resubmitted: the
+    withdrawal names a generation, not a key for all time, and the new
+    generation's movers are live work.  A plan this reader refuses is hands
+    off for the same reason -- without it no mover can be attributed -- and
+    a withdrawal the queue refuses is reported, never forced: ambiguous
+    state fails closed and the bytes stay bounded by the sweep.
+    """
+
+    events: list[dict[str, object]] = []
+    for state in (pool.FAILED, pool.WITHDRAWN):
+        try:
+            paths = list(pool._scan(queue.dir(state)))
+        except OSError:
+            continue
+        for path in paths:
+            name = path.name
+            key = name[:-len(".json")] if name.endswith(".json") else name
+            if len(key) != 64:
+                continue
+            item = pool._read_json(path)
+            if not isinstance(item, dict):
+                continue
+            if (queue.item_path(pool.READY, key).exists()
+                    or queue.item_path(pool.CLAIMED, key).exists()):
+                # Resubmitted under the same key: a new generation, live work.
+                continue
+            plan = residency_plan.read(queue, key)
+            if plan is None:
+                continue      # not a staged consumer, or an unreadable plan
+            for mover_key in residency_plan.mover_keys(plan):
+                receipt = queue.move_record(mover_key)
+                if (isinstance(receipt, Mapping)
+                        and receipt.get("complete") is True):
+                    continue  # a resident range: adoption's, not withdrawal's
+                if queue.item_path(pool.READY, mover_key).exists():
+                    origin = pool.READY
+                elif queue.item_path(pool.CLAIMED, mover_key).exists():
+                    origin = pool.CLAIMED
+                else:
+                    continue  # finished or never published: nothing to stop
+                try:
+                    outcome = queue.withdraw(
+                        mover_key, reason=f"consumer-{state}", by="tier-loop")
+                except (pool.PoolContractError, OSError) as exc:
+                    events.append({
+                        "event": "dead-consumer-mover-withdraw-failed",
+                        "consumer": key, "mover": mover_key, "state": origin,
+                        "withdrawn": False, "error": repr(exc)})
+                    continue
+                done = outcome.get("status") in ("withdrawn", "already_withdrawn")
+                events.append({
+                    "event": "dead-consumer-mover-withdrawn",
+                    "consumer": key, "mover": mover_key, "state": origin,
+                    "withdrawn": bool(done), "status": outcome.get("status")})
+    return events
+
+
 def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
                      reserved: set[str]) -> dict[tuple, str]:
     """Descriptor -> mover key, for resident ranges no live item still names.
@@ -767,7 +951,8 @@ def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
 def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
           consumer_action_key: str, tier_id: str, phase: str,
           range_start_bytes: int, range_end_bytes: int,
-          residency_root: Path) -> dict[str, object]:
+          residency_root: Path,
+          chunk_index: int | None = None) -> dict[str, object]:
     """Hand one resident range from a finished mover to a live consumer's (#598).
 
     No byte is copied and no instant has bytes on the stage that no key holds.
@@ -797,6 +982,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
     outcome: dict[str, object] = {
         "event": "range-adoption-declined", "adopted": False,
         "consumer": consumer_action_key, "phase": phase,
+        "chunk_index": chunk_index,
         "tier_id": tier_id, "mover": new_key, "adopted_from": old_key,
     }
     ledger = queue.tier_ledger(tier_id)
@@ -906,26 +1092,54 @@ def adopt_resident_ranges(
         digest = str(plan["manifest_sha256"])
         accepted = consumer["accepted_phase"]
         for phase in residency_plan.remaining(plan, accepted):  # type: ignore[arg-type]
-            new_key = str(phase["mover_row"]["action_key"])     # type: ignore[index]
-            descriptor = _descriptor(digest, tier_id, int(phase["start_bytes"]),
-                                     int(phase["end_bytes"]))
-            old_key = index.get(descriptor)
-            if old_key is None or old_key == new_key:
-                continue
-            if ledger.holder_tokens(new_key):
-                continue      # this phase already holds tokens of its own
-            if (queue.item_path(pool.READY, new_key).exists()
-                    or queue.item_path(pool.CLAIMED, new_key).exists()):
-                continue      # its own copy is queued or running; let it finish
-            event = adopt(queue, old_key=old_key, new_key=new_key,
-                          consumer_action_key=consumer_key, tier_id=tier_id,
-                          phase=str(phase["name"]),
-                          range_start_bytes=int(phase["start_bytes"]),
-                          range_end_bytes=int(phase["end_bytes"]),
-                          residency_root=root)
-            events.append(event)
-            if event.get("adopted"):
-                index.pop(descriptor, None)
+            # One adoption candidate per leg: a chunked phase's chunks are
+            # adopted under their own ranges and keys (#675), because the
+            # descriptor match proves the taken range equal to the range the
+            # copy made resident -- a whole-phase range under a chunk key
+            # would misattribute bytes the pin is checked against.
+            legs = []
+            chunks = phase.get("stage_chunks")
+            if isinstance(chunks, list):
+                for chunk in chunks:
+                    if not isinstance(chunk, Mapping):
+                        continue
+                    mover = chunk.get("mover_row")
+                    if not isinstance(mover, Mapping):
+                        continue
+                    legs.append((chunk.get("chunk_index"),
+                                 str(mover.get("action_key")),
+                                 chunk.get("start_bytes"),
+                                 chunk.get("end_bytes")))
+            elif isinstance(phase.get("mover_row"), Mapping):
+                legs.append((None, str(phase["mover_row"]["action_key"]),  # type: ignore[index]
+                             phase.get("start_bytes"), phase.get("end_bytes")))
+            for chunk_index, new_key, cstart, cend in legs:
+                if (isinstance(cstart, bool) or not isinstance(cstart, int)
+                        or isinstance(cend, bool) or not isinstance(cend, int)):
+                    continue
+                if not (chunk_index is None
+                        or (isinstance(chunk_index, int)
+                            and not isinstance(chunk_index, bool))):
+                    continue
+                descriptor = _descriptor(digest, tier_id, cstart, cend)
+                old_key = index.get(descriptor)
+                if old_key is None or old_key == new_key:
+                    continue
+                if ledger.holder_tokens(new_key):
+                    continue      # this leg already holds tokens of its own
+                if (queue.item_path(pool.READY, new_key).exists()
+                        or queue.item_path(pool.CLAIMED, new_key).exists()):
+                    continue      # its own copy is queued or running; let it finish
+                event = adopt(queue, old_key=old_key, new_key=new_key,
+                              consumer_action_key=consumer_key, tier_id=tier_id,
+                              phase=str(phase["name"]),
+                              range_start_bytes=cstart,
+                              range_end_bytes=cend,
+                              residency_root=root,
+                              chunk_index=chunk_index)
+                events.append(event)
+                if event.get("adopted"):
+                    index.pop(descriptor, None)
     return events
 
 
@@ -966,8 +1180,26 @@ def window_pressure(
         capacity = queue.tier_ledger(tier_id).capacity().get(
             storage_tiers.capacity_kind_of(tier_id), 0)
         ahead = residency_plan.remaining(plan, accepted)          # type: ignore[arg-type]
-        waiting = [phase for phase in ahead
-                   if str(phase["mover_row"]["action_key"]) in already - staged]
+        # The probe asks in legs, the way the window decides: a chunked
+        # phase's chunks are what its movers will ask for one by one (#675).
+        # A whole-phase leg is one leg over the phase's whole range, which
+        # is what keeps this probe byte-identical to today beside chunks.
+        legs: list[tuple[str, int]] = []
+        for phase in ahead:
+            chunks = phase.get("stage_chunks")
+            if isinstance(chunks, list):
+                for chunk in chunks:
+                    if not isinstance(chunk, Mapping):
+                        continue
+                    mover = chunk.get("mover_row")
+                    if not isinstance(mover, Mapping):
+                        continue
+                    legs.append((str(mover.get("action_key")),
+                                 int(chunk.get("stage_gib", 0))))
+            elif isinstance(phase.get("mover_row"), Mapping):
+                legs.append((str(phase["mover_row"]["action_key"]),  # type: ignore[index]
+                             int(phase.get("stage_gib", 0))))
+        waiting = [key for key, _gib in legs if key in already - staged]
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -975,9 +1207,10 @@ def window_pressure(
             # again -- it counts as published -- so asking the window what it
             # would publish next would step straight over it.
             need[tier_id] = max(need.get(tier_id, 0),
-                                int(waiting[0]["stage_gib"]))
+                                next(gib for key, gib in legs
+                                     if key == waiting[0]))
             continue
-        unbounded = sum(int(phase["stage_gib"]) for phase in ahead)
+        unbounded = sum(gib for _key, gib in legs)
         decision = residency_plan.window(
             plan, accepted_phase=accepted,                       # type: ignore[arg-type]
             free_gib=unbounded, capacity_gib=int(capacity),
@@ -987,9 +1220,18 @@ def window_pressure(
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
         # The ram leg asks the same question of the ram ledger (#640): the
-        # first phase whose stage range has landed and whose promotion is
-        # unpublished is the next thing that will ask the tmpfs for room, and
-        # its GiB is what the sweep on that tier must be able to offer.
+        # next promotion the ram window would publish is the next thing that
+        # will ask the tmpfs for room, and its GiB is what the sweep on that
+        # tier must be able to offer.  Asked of the window rather than of
+        # the plan (#642): a promotion the run-ahead bound has already
+        # declined is not something the tier needs tokens for, and reporting
+        # it as pressure would evict a resident range to make room nobody is
+        # going to use -- the same deadlock shape #632 closed on the stage
+        # side, one tier up.  So the question is "would the ram window
+        # publish this if the room existed", and the way to ask it is to run
+        # the same decision with the room, for this leg's own mover role,
+        # joined with the stage ranges that have landed (a promotion's
+        # source is the stage and nothing else, #640).
         # Held-by-nobody bytes on a roof-limited tmpfs are ENOSPC waiting to
         # happen, so an orphan there becomes an eviction candidate the
         # moment this need exists.
@@ -998,15 +1240,152 @@ def window_pressure(
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
-        candidates = [
+        ram_kind = storage_tiers.capacity_kind_of(ram_tier_id)
+        ram_capacity = int(queue.tier_ledger(ram_tier_id).capacity().get(
+            ram_kind, 0))
+        ram_ahead = [
             phase for phase in residency_plan.remaining(plan, accepted)  # type: ignore[arg-type]
-            if "ram_mover_row" in phase
-            and str(phase["ram_mover_row"]["action_key"]) not in state["already"]
-            and str(phase["mover_row"]["action_key"]) in state["stage_staged"]]
-        if candidates:
+            if "ram_mover_row" in phase or "ram_chunks" in phase]
+        # The probe asks in legs, the way the window decides: a chunked
+        # phase's chunks are what its promotions will ask for one by one.
+        ram_room = 0
+        for phase in ram_ahead:
+            chunks = phase.get("ram_chunks")
+            if isinstance(chunks, list):
+                ram_room += sum(
+                    int(chunk.get("stage_gib", 0))
+                    for chunk in chunks if isinstance(chunk, Mapping))
+            else:
+                ram_room += int(phase.get("stage_gib", 0))
+        ram_decision = residency_plan.window(
+            plan, accepted_phase=accepted,                       # type: ignore[arg-type]
+            free_gib=ram_room,
+            capacity_gib=ram_capacity,
+            published=sorted(state["already"]),                  # type: ignore[arg-type]
+            staged=sorted(state["staged"]),                      # type: ignore[arg-type]
+            runahead_cap_gib=depth, mover_role="ram_mover_row")
+        ram_published = ram_decision["publish"]
+        assert isinstance(ram_published, list)
+        ram_phases = {str(phase["name"]): phase for phase in plan["phases"]}  # type: ignore[union-attr]
+        ram_wanted = [
+            entry for entry in ram_published
+            if str(entry["phase"]) in ram_phases
+            and _stage_source_staged(
+                ram_phases[str(entry["phase"])],
+                int(entry["start_bytes"]), int(entry["end_bytes"]),
+                state["stage_staged"])]
+        if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
-                                    int(candidates[0]["stage_gib"]))
+                                    int(ram_wanted[0]["stage_gib"]))
     return need
+
+
+def reclaim_failed_mover_partials(
+        queue: pool.PoolQueue, consumers: list,
+        pressure: Mapping[str, int]) -> list[dict[str, object]]:
+    """Publish the egress row of a failed mover whose partials block the window (#627).
+
+    A mover that ends without a complete receipt releases its tokens at
+    ``finish`` -- but every entry it renamed into place before it failed is
+    still on the dataset, still named by its fragment, and counted by no
+    ledger token.  The window evicts only phases the consumer has read past
+    and the sweep takes back only movers no live plan names, so nothing
+    publishes an egress for these bytes -- while a republished recopy cannot
+    land for want of the room they occupy.
+
+    A terminal, unpinned mover that still names bytes in a fragment is
+    therefore an eviction candidate whenever the window has no room for the
+    next phase: its own egress row is published, which already handles "an
+    earlier egress removed it" and returns no tokens when none are held.  No
+    pressure, no reclaim -- the partials are a cache until a window cannot
+    be placed -- and never from under a queued recopy, a complete receipt,
+    or a concluded egress: the copy already running is the owner, a complete
+    copy is adoption's or the sweep's, and a concluded egress that left the
+    fragment behind refused rather than raced, which republishing would only
+    repeat.  Each of those declines silently; only publications are events.
+    """
+
+    events: list[dict[str, object]] = []
+    root = queue.residency_fragment_root()
+    for consumer_key, _consumer, plan, tier_id in consumers:
+        if int((pressure or {}).get(tier_id, 0) or 0) <= 0:
+            continue
+        try:
+            ledger = queue.tier_ledger(tier_id)
+        except (OSError, pool.PoolContractError):
+            continue
+        for phase in plan["phases"]:
+            # One reclaim candidate per leg: a chunked phase's chunks fail
+            # and free independently (#675), each through its own egress
+            # node, while a whole-phase leg reclaims through the phase's.
+            legs = []
+            chunks = phase.get("stage_chunks")
+            if isinstance(chunks, list):
+                for chunk in chunks:
+                    if not isinstance(chunk, Mapping):
+                        continue
+                    legs.append((chunk.get("chunk_index"),
+                                 chunk.get("mover_row"),
+                                 chunk.get("egress_row")))
+            else:
+                legs.append((None, phase.get("mover_row"),
+                             phase.get("egress_row")))
+            for chunk_index, mover_row, egress_row in legs:
+                if not isinstance(mover_row, Mapping) or not isinstance(
+                        egress_row, Mapping):
+                    continue
+                mover_key = str(mover_row.get("action_key") or "")
+                egress_key = str(egress_row.get("action_key") or "")
+                if not mover_key or not egress_key:
+                    continue
+                try:
+                    pinned = bool(ledger.holder_tokens(mover_key))
+                except (OSError, pool.PoolContractError):
+                    continue
+                if pinned:
+                    continue
+                if (queue.item_path(pool.READY, mover_key).exists()
+                        or queue.item_path(pool.CLAIMED, mover_key).exists()):
+                    continue      # its own recopy is queued or running; let it finish
+                receipt = queue.move_record(mover_key)
+                if receipt is not None and (
+                        not isinstance(receipt, Mapping)
+                        or receipt.get("complete") is True):
+                    continue
+                try:
+                    with open(residency_map.fragment_path(
+                            root, consumer_key, mover_key)) as stream:
+                        fragment = residency_map.validate_fragment(
+                            json.load(stream))
+                except (OSError, ValueError):
+                    continue      # names nothing readable: nothing to evict
+                if not fragment["entries"]:
+                    continue
+                if (queue.item_path(pool.READY, egress_key).exists()
+                        or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                    continue      # already asked; asking again would double the row
+                if (queue.item_path(pool.DONE, egress_key).exists()
+                        or queue.item_path(pool.FAILED, egress_key).exists()
+                        or queue.item_path(pool.WITHDRAWN, egress_key).exists()):
+                    continue      # concluded and the fragment is still there:
+                                  # it refused rather than raced; do not spin
+                try:
+                    queue.publish(**dict(egress_row), recompute=True)
+                except (pool.PoolContractError, OSError) as exc:
+                    events.append({
+                        "event": "failed-mover-egress-publish-failed",
+                        "consumer": consumer_key, "phase": phase.get("name"),
+                        "chunk_index": chunk_index,
+                        "mover": mover_key, "action_key": egress_key,
+                        "error": repr(exc)})
+                    continue
+                events.append({
+                    "event": "failed-mover-egress-published",
+                    "consumer": consumer_key, "phase": phase.get("name"),
+                    "chunk_index": chunk_index,
+                    "mover": mover_key, "action_key": egress_key,
+                    "tier_id": tier_id})
+    return events
 
 
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
@@ -1074,23 +1453,52 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                                   "accepted_phase", "reading_phase",
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
-                                  "capacity_gib", "reason", "waiting_for")}})
-        for phase in decision["publish"]:
-            row = dict(phase["mover_row"])                 # type: ignore[arg-type]
+                                  "capacity_gib", "reason", "waiting_for")},
+                              "chunk_index": stall.get("chunk_index")})
+        by_name = {str(entry["name"]): entry for entry in plan["phases"]
+                   if isinstance(entry, Mapping)}
+        for entry in decision["publish"]:
+            # The leg's own egress row, resolved off the plan rather than
+            # the entry: publish entries carry their mover, evict entries
+            # their egress, and a chunked phase's egress lives on its chunk.
+            _mover, egress_row = _stage_leg_rows(
+                by_name.get(str(entry["phase"]), {}),
+                entry.get("chunk_index"))
+            if isinstance(egress_row, Mapping):
+                egress_key = str(egress_row["action_key"])  # type: ignore[index]
+                if (queue.item_path(pool.READY, egress_key).exists()
+                        or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                    # A reclaim published this leg's egress and it has not
+                    # run yet (#627).  The egress frees device bytes, not
+                    # ledger tokens, so the window would otherwise republish
+                    # the recopy into a stage that is still full -- and the
+                    # recopy would ENOSPC into the very room being made.  The
+                    # mover waits; the egress deletes; the next cycle stages.
+                    published.append({
+                        "event": "mover-publish-deferred-for-egress",
+                        "consumer": key, "phase": entry["phase"],
+                        "chunk_index": entry.get("chunk_index"),
+                        "mover": entry["mover_action_key"],
+                        "egress": egress_key})
+                    continue
+            row = dict(entry["mover_row"])                   # type: ignore[arg-type]
             try:
                 # A copy has no result to replay: published with recompute,
                 # or a republished range is a cache hit that stages nothing.
                 queue.publish(**row, recompute=True)
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "mover-publish-failed", "consumer": key,
-                                  "phase": phase["phase"], "error": repr(exc)})
+                                  "phase": entry["phase"],
+                                  "chunk_index": entry.get("chunk_index"),
+                                  "error": repr(exc)})
                 continue
             published.append({"event": "mover-published", "consumer": key,
-                              "phase": phase["phase"],
-                              "action_key": phase["mover_action_key"],
-                              "stage_gib": phase["stage_gib"]})
-        for phase in decision["evict"]:
-            row = dict(phase["egress_row"])                # type: ignore[arg-type]
+                              "phase": entry["phase"],
+                              "chunk_index": entry.get("chunk_index"),
+                              "action_key": entry["mover_action_key"],
+                              "stage_gib": entry["stage_gib"]})
+        for entry in decision["evict"]:
+            row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
             if (queue.item_path(pool.READY, egress_key).exists()
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
@@ -1099,11 +1507,15 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 queue.publish(**row, recompute=True)   # a deletion, likewise
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "egress-publish-failed", "consumer": key,
-                                  "phase": phase["phase"], "error": repr(exc)})
+                                  "phase": entry["phase"],
+                                  "chunk_index": entry.get("chunk_index"),
+                                  "error": repr(exc)})
                 continue
             published.append({"event": "egress-published", "consumer": key,
-                              "phase": phase["phase"], "action_key": egress_key,
-                              "mover": phase["mover_action_key"]})
+                              "phase": entry["phase"],
+                              "chunk_index": entry.get("chunk_index"),
+                              "action_key": egress_key,
+                              "mover": entry["mover_action_key"]})
         try:
             compose_map(queue, key, ram_tiers={
                 tier_id: record for tier_id, record in tiers.items()
@@ -1230,6 +1642,27 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
+def _same_host_chunk(
+        tiers: Mapping[str, Mapping[str, object]], host: str) -> int | None:
+    """The effective promotion chunk the ram tier on this host announces.
+
+    One chunk family across tiers (#675): the stage record carries the same
+    sizing the submitter cuts both legs with.  ``None`` when no ram tier is
+    announced on this host, when its record predates the announcement, or
+    when the sizing is not a positive whole GiB -- all of which seal
+    whole-phase pairs, exactly as before.
+    """
+
+    for record in tiers.values():
+        if (isinstance(record, Mapping) and record.get("tier") == "ram"
+                and str(record.get("host") or "") == host):
+            chunk = record.get("promotion_chunk_gib")
+            if (isinstance(chunk, int) and not isinstance(chunk, bool)
+                    and chunk > 0):
+                return chunk
+    return None
+
+
 def cycle(
     queue: pool.PoolQueue,
     *,
@@ -1250,8 +1683,15 @@ def cycle(
     # picked up between cycles without a remount, and a rare operator remount
     # is picked up by the statvfs read inside the same cycle (#640).
     ram_policy = load_ram_policy()
+    # The floor guard's worker demand, read fresh like the policy: what this
+    # host's own loops offer under capacity.mem_gb (#645).  Absent when no
+    # loop has announced under this name, which the admission refuses on
+    # rather than admitting a window beside demand it cannot see.
+    worker_mem_gb = storage_tiers.read_worker_mem_gb(
+        queue.root / pool.WORKERS, host)
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
-                     now=now, ram_policy=ram_policy)
+                     now=now, ram_policy=ram_policy,
+                     worker_mem_gb=worker_mem_gb)
     # The records this box announced last cycle, read before this cycle
     # overwrites them: the ram tier's epoch is compared against its own
     # previous announcement, so a change is said once rather than inferred.
@@ -1299,6 +1739,13 @@ def cycle(
                     "primarycache": verdict["primarycache"],
                     "reason": verdict["reason"],
                 }), flush=True)
+            # One chunk family across tiers (#675): the stage announces the
+            # same effective promotion chunk the ram tier on this host
+            # announces, so the submitter cuts both legs at the same size.
+            # The sealer reads it off this record, never off its own box.
+            chunk = _same_host_chunk(tiers, host)
+            if chunk is not None:
+                record["promotion_chunk_gib"] = chunk
         if record.get("tier") == "ram":
             # The tmpfs's own arithmetic, mirroring the stage's (#640):
             # ``capacity_bytes`` is statvfs ``f_bavail`` -- what the mount may
@@ -1356,7 +1803,14 @@ def cycle(
         # ceiling and the growth stops there.  Nothing here is a number: the
         # increment is a queued mover's sealed demand and the base is a
         # measurement.
-        supply = storage_tiers.fill_supply_from_records(fill_records)
+        # The receipts a gated fold may price this tier from (#611): the
+        # identity this cycle just discovered.  ``None`` -- stamped by no
+        # generation, which is every record until this one -- folds every
+        # usable receipt, exactly as before.
+        tier_identity = record.get("pool_identity")
+        supply = storage_tiers.fill_supply_from_records(
+            fill_records, pool_identity=(
+                tier_identity if isinstance(tier_identity, Mapping) else None))
         record["fill_supply"] = {key: value for key, value in supply.items()
                                  if key != "ceiling_receipt"}
         if supply["ceiling_receipt"]:
@@ -1441,10 +1895,22 @@ def cycle(
     # this list is not reading anything stale; what changes between them is the
     # ledger, and both re-read that.
     planned = _planned_consumers(queue, announced_tiers)
+    # Dead consumers' movers first: a consumer that failed with movers
+    # published would otherwise keep staging for nobody all cycle (#620).
+    # Withdrawing only stops queued work, so adoption below still sees every
+    # resident range it could take.
+    for event in withdraw_dead_consumer_movers(queue):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
                                        consumers=planned):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned)
+    # Failed movers' partials next: a terminal, unpinned mover that still
+    # names bytes is an eviction candidate when the window has no room (#627).
+    # Its egress rows land in ``ready/`` before the sweep runs, so the window
+    # below sees both the room being made and the recopy it must hold back.
+    for event in reclaim_failed_mover_partials(queue, planned, pressure):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
         print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
     # The ram window before the stage's, so a phase's ram egress is published

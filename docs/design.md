@@ -145,9 +145,15 @@ Capacity reconciliation still precedes every nonempty candidate pass; active
 holders are unchanged by the empty-poll return. The worker's independent offer
 refresh and capacity clamp continue on their normal cadence, with the refresh
 itself bounded as described above, and a refresh that does not complete skips
-that poll's admission rather than being served from. This removes scan
-stalls from the critical section but does not bound discovery or shared transition, lease and
-token I/O, which still need ownership-safe recovery qualification (#266).
+that poll's admission rather than being served from. Discovery -- the ready
+records and their aging sidecars -- additionally runs in an abandonable child
+before either: the loop hands the completed snapshot to ``serve_once`` as its
+``ready`` candidate list, and any other outcome skips publication and admission
+for that poll, so a box that cannot read the queue lets its offer expire
+instead of refreshing it on no evidence (#16). The snapshot is advisory, as the
+in-process scan was: an intervening claim wins at the rename. This removes
+scan stalls from the worker's wait, but shared transition, lease and token I/O
+remain synchronous and still need ownership-safe recovery qualification (#266).
 
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
@@ -3038,6 +3044,18 @@ progress does not establish an irreversible manifest frontier.  A disk hold
 also requires active NFS client reads and a read-await or backlog breach;
 unreadable disk telemetry remains a fail-closed hold and unreadable client
 telemetry is treated as active.
+Every cycle event stamps `client_attribution` whether it held or not (#575,
+#585): one entry per window warmed that cycle, in warm order, each naming its
+own `served_host`, `served_attribution`, self/other read rates,
+`telemetry_state` and `missing_devices`, plus the cycle's own hold counters
+diffed against the role-lifetime ledger.  The claimed-window advances carry
+their `disk_pacing` on the event beside the ready rows.  Rows are never
+merged -- a cycle serving a claimed window beside a ready row reports two
+verdicts, and a cycle that warmed nothing reports no rows, which beside
+`pacing_active` reads as "nothing to read" rather than "pacing was off".
+Only rows warmed that cycle appear: the pacer is shared, and stamping its
+current verdict for an earlier cycle's row would certify a read that never
+happened.
 `pbcampaign` warns when a row's declared `argv` or `env` names a path under the
 shared mount and the row carries no `data_manifest`.  That scan is best-effort
 over the declaration only, so the warning says the row may read cold and a
@@ -3086,6 +3104,12 @@ stage tier is any imported ZFS pool whose name starts with `prismabuild-stage`
 declares a data member), its members are bound through `/dev/disk/by-id`, and
 its capacity is the pool's own arithmetic. No tier quantity is a constant.
 
+Minting is serialized per tier (#593): `PoolQueue.mint_tier_capacity` holds
+the tier's mint lock across `ensure_capacity` and `retire_free_capacity`, so
+an operator `tier_loop --once` beside the supervised role waits rather than
+interleaving a second mint with the first. One tier's lock never blocks
+another's.
+
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
 rate differ by whatever the ARC answered. One live receipt on dl380g10 records
@@ -3100,7 +3124,12 @@ A movement node declares the half-open byte range of its consumer's read order
 it makes resident. The range comes out of the manifest the action already
 sealed — `storage_tiers.manifest_phase_ranges` reads the same running byte sum
 for v1 `annotations.phases` and v2 `read_plan.phases` that the prewarm role
-reads — and `storage_tiers.residency_demand` turns it into whole GiB, rounded
+reads, through one shared refusal rule for both tables (#594): a missing,
+empty, repeated or non-string name, a non-integer cumulative, a step back, an
+overrun, a boundary off an entry, or a table that ends anywhere but the total
+yields no ranges. A v2 table is checked against the plan's own consumption
+order, which exists to differ from entry-list order, so a reordered plan the
+core validator accepted is not refused here. `storage_tiers.residency_demand` turns it into whole GiB, rounded
 up. `publish` refuses an item whose declared `stage_gib` on that tier is below
 the ceiling of its own range, so the number in a claim record traces back to a
 declared read set rather than to a habit.
@@ -3191,14 +3220,20 @@ discovered from the tmpfs mounted at the policy's mountpoint: capacity is
 the mount's own `statvfs` (`f_bavail × f_frsize` — never `MemAvailable`,
 which moves with other tenants' habits and is not placed RAM), the ceiling
 is its own `size=`, and the record announces `mountpoint`, `mount_options`,
-`size_bytes`, `ceiling_bytes` and `epoch`. The numbers PB is allowed to
+`size_bytes`, `ceiling_bytes`, `window_gib`, the effective
+`promotion_chunk_gib` the submitter cuts phases into, and `epoch`. The numbers PB is allowed to
 decide live in one versioned file, `tools/fleet/ram_tier_policy.json`,
 published with the runtime the way `fleet_boxes.json` is and read fresh by
 the tier loop every cycle: `ceiling_gib_max` (256), `window_gib_default`
-(112 — the midpoint of the directed 96–128 GiB, a streaming window and
-never a phase container: the largest phase is 134.2 GiB), `arc_floor_gib`
-(20), `system_reserve_gib` (16), and `prefill_depth` (`null` — the #633
-run-ahead semantics; a positive GiB caps them). **A change to it is a
+(160 — sized 2026-09-19 to hold one whole phase plus margin: promotion is
+phase-granular, the largest phase is 134.2 GiB, and a 112 GiB window made
+`capacity − step` negative, minting a zero run-ahead budget so nothing
+could ever promote — the GPU starved between layers by arithmetic. 160
+fits a phase and stays inside the worker-demand guard's 160.5 GiB bound), `arc_floor_gib`
+(20), `system_reserve_gib` (16), `prefill_depth` (`null` — the #633
+run-ahead semantics; a positive GiB caps them), and `promotion_chunk_gib`
+(`null` — the submitter cuts each phase into window quarters at seal time;
+a positive GiB pins the chunk instead, #673). **A change to it is a
 publish, not an ssh:** the next cycle mints from the mount's own `statvfs`
 again, so a declared policy change or a rare operator remount is picked up
 between cycles automatically. The ceiling is a roof, not a target; the
@@ -3206,19 +3241,30 @@ policy-minted window below it is what PB actually fills, and the minted
 supply is `writable + landed`, capped at the window — the #621/#623
 arithmetic, one tier over.
 
-**Three refusals, each fail-closed and each naming its numbers.** The mount
+**Five refusals, each fail-closed and each naming its numbers.** The mount
 absent: announce nothing — free RAM is not placed RAM. `statvfs` unreadable:
 announce the tier with capacity zero and the refusal on the record, minting
 nothing, so an operator sees a tmpfs that is not answering rather than a
-tier that quietly vanished. And the floor guard: the tier refuses while
-`ceiling + max(arc_c_max, arc_floor, arc_meta_used) + system_reserve >
-MemTotal`, read live from `/proc/meminfo` and `arcstats`. `size=` is a limit
+tier that quietly vanished. And the floor guard, in two halves: the tier
+refuses while `ceiling + max(arc_c_max, arc_floor, arc_meta_used) +
+system_reserve > MemTotal`, read live from `/proc/meminfo` and `arcstats`. `size=` is a limit
 on file bytes, not an allocation, so a tmpfs whose roof plus the ARC's own
 permission plus the reserve exceeds `MemTotal` never reaches its ENOSPC —
 the OOM killer arrives first, which is fail-random rather than fail-closed;
 the runbook's `zfs_arc_max` shrink is an operational precondition, and the
 guard refuses until it is done. The ARC floor itself is the larger of the
-policy's declared floor and the metadata the ARC cannot drop. **The tmpfs
+policy's declared floor and the metadata the ARC cannot drop. The roof is
+only the mount's ENOSPC backstop, though: what PB actually fills is the
+policy window below it, capped by the ledger — so the window must fit beside
+the box's own offered job capacity too, read live every cycle from the tier
+host's worker record (`workers/<host>.json`, `capacity.mem_gb`): the tier
+refuses while `window + worker_demand + max(arc_c_max, arc_floor) +
+system_reserve > MemTotal` (#645), and it refuses when no offer names a
+number at all, because a loop can appear between cycles. Tonight's box is
+the proof both halves hold together: the 240 GiB roof admits
+(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside the 96 GiB the
+loops offer (worst case 112 + 96 + 22 + 16 = 246 ≤ 294.5), and a window
+publish toward the sanctioned 256 with jobs admitted would refuse. **The tmpfs
 must be mounted `noswap`:** the options are announced, and a mount without
 it refuses the warm-path admission outright — a swappable tmpfs can page
 "resident" bytes out, and a consumer whose gate says resident would then
@@ -3257,7 +3303,21 @@ grows two optional rows per phase — `ram_mover_row`, `ram_egress_row` —
 sealed by the submitter beside the stage's own (`--residency-ram auto`,
 the default, seals the leg when a ram tier is live on the stage's host;
 `off` is the A/B's other arm; a plan already frozen keeps the leg it was
-frozen with). A promotion holds `ram_gib` the way a mover holds
+frozen with). A phase bigger than the tier's effective chunk seals one
+promotion node plus one egress node *per chunk* instead (`ram_chunks`, in
+read order, each carrying its phase, its chunk index and its chunk range —
+#673): at window 160 the chunk is 40 GiB, so a 123 GiB phase seals 4
+chunks and the movement node shape is otherwise today's. The stage leg
+slides the same way (#675): a phase bigger than the stage record's
+effective chunk seals one movement node plus one egress node *per chunk*
+instead (`stage_chunks`, in read order, under the stage's own role names),
+because there is one chunk family across tiers — the stage record announces
+the same `promotion_chunk_gib` the ram tier on its host announces, and the
+submitter cuts both legs at that size. A phase that fits
+in one chunk seals the whole-phase pair, and a plan sealed before chunks
+keeps the leg it was frozen with — a node whose range is its phase's whole
+range follows the whole-phase rules, byte-identically. A promotion holds
+`ram_gib` the way a mover holds
 `stage_gib`: from claim, past finish — the pin, read off its receipt — and
 back only when an egress deletes its files, because held tokens equal bytes
 on the tmpfs at every instant and held-by-nobody bytes on a roof-limited
@@ -3271,8 +3331,22 @@ the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
 through the ledger — bounded by the #633 run-ahead budget on the consumer's
 accepted progress (`prefill_depth` may cap it), in the plan's read order,
-and reported as `ram-window-stalled` when it declines. When the consumer's
-progress passes a phase, the ram egress row is published *before* the stage
+and reported as `ram-window-stalled` when it declines. Chunked (#673), the
+window publishes the next *chunk* when free `ram_gib` covers it and the
+budget admits it: chunks of the phase being read are the reader's near-term
+food and promote as soon as their turn comes, while later chunks spend the
+budget — which now buys several chunks instead of zero phases — so the
+tmpfs refills as it frees instead of sawtoothing a whole phase at a time.
+Chunked (#675), the stage window plays the same game one tier down: it
+publishes the next *chunk* when free `stage_gib` covers it and the budget
+admits it, and evicts each chunk of a passed phase through its own node, so
+the SSD refills as it frees while the reader is still inside the phase.
+That is the two-tier streaming relay, HDD→SSD→RAM: the disks fill the SSD
+while the reader reads it, the SSD promotes to the tmpfs while the reader
+reads that, and every tier refills as it frees instead of sawtoothing a
+whole phase at a time. When the consumer's
+progress passes a phase, that phase's ram egress rows are published — one
+per chunk, each through its own node — *before* the stage
 egress in the same cycle: a ram range that outlives its stage range is a
 promotion whose source is gone. Orphaned ram bytes — a failed promotion's
 landed partials, a dead consumer's unclaimed promotions — are eviction
@@ -3403,6 +3477,35 @@ file-side rate under a name that says which side it is
 (`mb_per_s_file_side`), the `/proc/PID/io` delta, and the range it was asked
 for beside the bytes it staged.
 
+Each entry's temporary beside its final name is keyed by the mover writing it
+(`.<name>.<owner>.partial`, #620): stage paths are content-addressed per
+manifest entry and shared between consumers, so a dead consumer's unstarted
+mover and its successor's copy one entry to one destination, and a shared
+temporary is truncated by both and renamed away by the winner. Keyed
+temporaries verify the same digest and land the same bytes independently, and
+the sweep still recognises both spellings.
+
+### Mover receipts are keyed on pool identity (#611)
+
+`mover_demand_from_receipts`, `mover_fill_demand_from_receipts` and
+`fill_supply_from_records` fold over every usable receipt in `movers/` for a
+tier id — and nothing on the receipt said which pool it measured. After a
+resilver, a member swap, an added vdev or a pool rebuild, the old receipts
+still price cpu, mem_gb, the fill share and the ceiling for the new pool.
+
+`storage_tiers.pool_identity` names the pool as `zpool` describes it: the guid
+(which a destroy/recreate mints anew), the state, the coarse scan (running vs
+finished — never the progress line, which changes every cycle), and the
+data-vdev members. Discovery stamps it onto every stage tier record
+(`pool_identity: {stage, source}`); the mover copies the announced record's
+into its receipt; the three folds read only receipts carrying the tier's
+current one. A receipt with no identity predates the stamping and is dropped
+by a gated fold — failing closed re-measures through the probe rule rather
+than guessing — while an ungated fold (a tier announced by an older
+generation) reads everything, exactly as before. Prewarm records carry no tier
+and no identity and are the pool's other measurement; the supply fold keeps
+reading them, and keying them is a separate change.
+
 ### The residency map
 
 `prismabuild.residency_map` is what a consumer reads to find its staged bytes;
@@ -3451,6 +3554,18 @@ crash after the deletes costs capacity until a sweep returns it; a crash after a
 release would leave bytes on a stage the ledger believes is empty, which is the
 failure the whole accounting exists to prevent. An unreadable fragment keeps the
 tokens and deletes nothing: its bytes may be there and cannot be named.
+
+Because it is the only node that returns tokens, an egress must be admissible
+exactly when the tier is fullest: on the stage's own file server, beside the
+resident loops that make that box hold something at all times. Its row
+therefore declares `{"cpu": 1, "mem_gb": 1}` — no tier demand, it *returns*
+that — with the CPU a declared bound of the single-process unlink-and-record
+it is, never a measurement: an egress files no receipts, and pricing it off
+the movers' copy receipts would measure the wrong node (#655's lesson, and
+#607's unknown-CPU discipline on the node that fix skipped; 2026-09-19,
+dl380g10, campaign `397b8f851004`'s three `stage-release` rows refused
+`unbounded_cpu_not_exclusive` at `psi 0.043`, `busy 3.61 of 80`, eight
+holders).
 
 A consumer is admitted only when every lead has moved its bytes **and still
 holds them**; the second half is `residency_lead_unpinned`, and a missing mover
@@ -3661,6 +3776,42 @@ pressure named still takes every orphan, which is what an operator means. And
 `reclaim_terminal_reservation` refuses an adopted mover, because it demands
 exactly one terminal record and an adopted mover has none; the supported way to
 return that range is its egress, which is the path the sweep already uses.
+
+### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
+
+A consumer that fails with movers published leaves them running for nobody.
+The egress evicts the completed ones, but the not-yet-run ones are not
+withdrawn: on 2026-09-18 six movers staged ~400 GB for a consumer already in
+`failed/`, and the successor's head mover over the same content paths finished
+`complete: false` — its `.partial` vanished before the rename, taken by
+another mover working the same path for the dead consumer.
+
+So in the same egress cycle that evicts the dead consumer's resident ranges,
+`tier_loop.withdraw_dead_consumer_movers` withdraws its movers still in
+`ready/` or `claimed/`: the queued ones never start, the claimed ones are
+stopped through the withdrawal decision (their `claimed/` record stays until
+the claiming worker concludes — withdrawing never concludes another worker's
+claim), and both leave their partials to the sweep and the reconciliation.
+Never touched: a mover with a complete receipt (a resident range, which the
+successor adopts), an egress row (cleanup, not staging), a consumer key also
+present in `ready/`/`claimed/` (resubmitted — the withdrawal names a
+generation, not a key), and a consumer whose plan this reader refuses
+(unattributable movers are hands off; a refused withdrawal is reported, never
+forced).
+
+The other half is a mover that ends without a complete receipt: its tokens go
+back at `finish`, but every entry it renamed into place before it failed stays
+on the dataset, named by its fragment and counted by no token — and nothing
+publishes an egress for it, because the window evicts only phases the consumer
+has read past. `reclaim_failed_mover_partials` treats that mover as an
+eviction candidate whenever the window has no room for the next phase and
+publishes its own egress row, which already handles "an earlier egress removed
+it" and returns no tokens when none are held. No pressure, no reclaim; never
+from under a queued recopy, a complete receipt, or a concluded egress (which
+refused rather than raced — republishing would only repeat it). While the
+egress is queued the window holds the recopy (`mover-publish-deferred-for-egress`):
+the egress frees device bytes, not ledger tokens, so republishing into a stage
+that is still full would ENOSPC into the very room being made.
 
 ### A stage root belongs to one queue (#628)
 

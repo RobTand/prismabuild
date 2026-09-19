@@ -87,9 +87,11 @@ _XATTR_ABSENT = frozenset(
     if value is not None)
 
 #: How ``stage_move`` names the file it is copying into before it verifies the
-#: digest and ``os.replace``s it into place: ``.<final name>.partial``, beside
-#: the destination.  One definition, read here, because a temporary left by a
-#: killed or withdrawn copy is nobody's and nothing else ever removes it.
+#: digest and ``os.replace``s it into place: ``.<final name>.partial`` beside
+#: the destination, or ``.<final name>.<owner>.partial`` once the mover keys
+#: its temporary by its own action key (#620).  One definition, read here,
+#: because a temporary left by a killed or withdrawn copy is nobody's and
+#: nothing else ever removes it.
 PARTIAL_PREFIX = "."
 PARTIAL_SUFFIX = ".partial"
 

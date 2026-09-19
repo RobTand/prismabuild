@@ -155,6 +155,11 @@ class _Queue:
     def announce(self, **value):
         self.announcements.append(value)
 
+    def ready_items(self):
+        # The loop discovers the candidate list before it publishes or
+        # admits; this double stands in for an empty queue.
+        return []
+
     def serve_once(self, **_kwargs):
         return None
 
@@ -177,6 +182,14 @@ def _worker():
         announce()
         return module.PublicationResult("published", 0, None, "")
     module.publish_offer = publish_inline
+    # Same for queue discovery: the abandonable child, its reaping polls and
+    # its retained-reader fence are covered by the discovery fixtures. What
+    # the cadence tests need is the snapshot the poll serves from, which for
+    # these doubles is an empty candidate list; the nonempty/empty queue
+    # pressure they assert on comes from ``placement_census`` as before.
+    def discover_inline(queue, **_kwargs):
+        return module.DiscoveryResult("ready", [], None, "")
+    module.discover_ready_snapshot = discover_inline
     return module
 
 

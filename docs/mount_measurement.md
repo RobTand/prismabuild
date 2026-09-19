@@ -55,11 +55,27 @@ time everything except the operation the queue depends on.
 waiters, with each process's state and `wchan`.
 
 This leg is not about the mount at all, and that is why it is here. PrismaBuild's
-admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`) around the
-whole of `pool.py` `_claim` — the `ready/` scan, the record rename, the lease
-write, the token renames, every one of them on NFS (#266). It *was* the
-conversion point: a mount that was merely slow became a local queue, and one
-process waiting on one remote peer starved every other loop on the box.
+admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`). It used to
+wrap the whole of `pool.py` `_claim` — the `ready/` scan, the record rename,
+the lease write, the token renames, every one of them on NFS (#266) — and it
+*was* the conversion point: a mount that was merely slow became a local queue,
+and one process waiting on one remote peer starved every other loop on the box.
+Two narrowings since changed what the lock covers, so read an old trace
+against the current shape, not this paragraph's first sentence:
+
+- #351 moved discovery (the `ready/` scan and `passes/` sidecars) and the
+  record rename outside the lock. What stays inside is the capacity prelude
+  and, per candidate, the decision through `begin_acquire` — the token move
+  that must be exclusive between the loops of one box.
+- #16 moved the discovery that remained into an abandonable child: the worker
+  loop scans in a disposable process and skips publication and admission when
+  the scan does not finish, so a wedged queue read parks the child rather
+  than the loop.
+
+The critical section is smaller and still on the mount, so this leg still
+matters — but it has swapped which number carries the signal. A long-held lock
+is the mount doing something to this box; a *waiter* is a regression, because
+nothing should be queueing here any more.
 
 #267 closed that conversion. The acquisition is now `LOCK_NB`: a loop that
 finds admission busy raises `AdmissionBusy`, returns to the top of its poll and

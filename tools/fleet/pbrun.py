@@ -4982,6 +4982,9 @@ def residency_stage_rows(
     ram_python = ram_tool = ram_egress_tool = ""
     if ram_tier is not None:
         ram_tier_id = str(ram_tier["tier_id"])
+        ram_identity = ram_tier.get("pool_identity")
+        if not isinstance(ram_identity, Mapping):
+            ram_identity = None
         ram_root = str(ram_tier.get("mountpoint") or "")
         if not ram_root.startswith("/"):
             raise SystemExit(
@@ -4996,9 +4999,17 @@ def residency_stage_rows(
     # because a mover finished between them.
     readers = int(args.residency_mover_readers)
     receipts = queue.move_records()
+    # Which pools the receipts must have measured to price this window
+    # (#611): the tier's current identity, as the tier loop announced it.
+    # ``None`` -- a tier last announced by an older generation -- prices off
+    # every usable receipt, exactly as before.
+    tier_identity = tier.get("pool_identity")
+    if not isinstance(tier_identity, Mapping):
+        tier_identity = None
     priced = storage_tiers.mover_demand_from_receipts(
         receipts, tier_id=tier_id, readers=readers,
-        fallback_mem_gb=int(args.residency_mover_mem_gb))
+        fallback_mem_gb=int(args.residency_mover_mem_gb),
+        pool_identity=tier_identity)
     # The pool bandwidth a mover reserves, once anything has measured it.  It
     # is what makes concurrency a ledger decision rather than an accident: the
     # tier mints what the disks delivered plus one probe mover's worth, and a
@@ -5006,136 +5017,113 @@ def residency_stage_rows(
     # until both sides of the bound exist, because a guessed bandwidth is the
     # habit this replaces.
     fill = storage_tiers.mover_fill_demand_from_receipts(
-        receipts, tier_id=tier_id)
+        receipts, tier_id=tier_id, pool_identity=tier_identity)
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
-        # copies to ``<name>.partial``, verifies the digest, then
-        # ``os.replace``s, and files its fragment only for entries it verified.
+        # copies to a mover-keyed ``.<name>.partial``, verifies the digest,
+        # then ``os.replace``s, and files its fragment only for entries it
+        # verified.
         "retry_safe": True,
     }
     phases: list[dict[str, object]] = []
     for ordinal, span in enumerate(ranges):
         start, end = int(span["start_bytes"]), int(span["end_bytes"])
-        demand = storage_tiers.residency_demand(
-            tier_id=tier_id, range_start_bytes=start, range_end_bytes=end,
-            fill_mb_s_pool_side=fill)
-        # Measured, not habitual, and above all *present*: a row without a
-        # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
-        # refused whenever the box already holds anything
-        # (``unbounded_cpu_not_exclusive``), which is what ran the first live
-        # window one large mover at a time with 17 idle worker loops (#607,
-        # #603).  Both numbers come off ``pb-queue/movers/`` receipts when
-        # there are any, and ``demand_source`` on the row says which receipts
-        # were read and which field fell back to a declared bound.
-        demand["cpu"] = int(priced["cpu"])
-        demand["mem_gb"] = int(priced["mem_gb"])
-        mover = seal_movement_action(
-            template,
-            command=[mover_python, mover_tool,
-                     "--pool-root", pool_root,
-                     "--cas-root", str(SH / "cas"),
-                     "--consumer-action-key", consumer_action_key,
-                     "--tier-id", tier_id,
-                     "--stage-root", stage_root,
-                     "--manifest-sha256", digest,
-                     "--range-start-bytes", str(start),
-                     "--range-end-bytes", str(end),
-                     # Stated on the command, so the width the row reserves and
-                     # the width the copy runs at cannot drift apart.
-                     "--readers", str(readers)]
-                    + ([] if fill is None else
-                       # Carried so the receipt can say what the ledger had
-                       # promised this copy; a later cycle compares that with
-                       # what the copy achieved, and a shortfall is the
-                       # measured ceiling on how many movers the pool feeds.
-                       ["--fill-mb-s-pool-side", str(fill)]),
-            demand=demand, tags=tags,
-            retry_policy=mover_retry_policy,
-            log_name=f"stage-move-{ordinal:04d}-{span['name']}.log")
-        egress = seal_movement_action(
-            template,
-            command=[mover_python, egress_tool,
-                     "--pool-root", pool_root,
-                     "--mover-action-key", str(mover["action_key"]),
-                     "--consumer-action-key", consumer_action_key,
-                     "--stage-root", stage_root],
-            # No tier demand: an egress *returns* capacity, and one that had to
-            # reserve some before it could give any back would deadlock exactly
-            # when the stage is full -- which is the only moment it matters.
-            demand={"mem_gb": 1}, tags=tags,
-            log_name=f"stage-release-{ordinal:04d}-{span['name']}.log")
-        for action in (mover, egress):
-            cas.publish_action_request(action)
-        ram_mover_row = None
-        ram_egress_row = None
-        if ram_tier_id is not None:
-            # The withdrawn #639 part 3's plumbing, aimed at the right actor:
-            # one occupancy leg per movement node, ``ram_gib`` on the ram tier,
-            # priced off the promotion receipts exactly the way a stage
-            # mover's demand is priced off its own.
-            ram_demand = storage_tiers.residency_demand(
-                tier_id=ram_tier_id, range_start_bytes=start,
-                range_end_bytes=end)
-            ram_priced = storage_tiers.mover_demand_from_receipts(
-                receipts, tier_id=ram_tier_id, readers=readers,
-                fallback_mem_gb=int(args.residency_mover_mem_gb))
-            ram_demand["cpu"] = int(ram_priced["cpu"])
-            ram_demand["mem_gb"] = int(ram_priced["mem_gb"])
-            ram_mover = seal_movement_action(
+        # The stage leg is cut into chunks (#675) the way the ram leg is
+        # (#673): one movement node plus one egress node per chunk, in read
+        # order, so the SSD refills as it frees instead of sawtoothing a
+        # whole phase at a time.  The chunk size is the tier's announced
+        # sizing, never this box's: the pin when the loop mints one, else
+        # the same window-quarter derivation the loop announces with.  A
+        # phase that fits in one chunk seals today's whole-phase pair, and
+        # a tier that announces no sizing seals it too -- chunking is a
+        # sealing-time property, and an unchunkable phase keeps the shape it
+        # always had.
+        announced_chunk = tier.get("promotion_chunk_gib")
+        announced_window = tier.get("window_gib")
+        chunk_gib = None
+        if (isinstance(announced_chunk, int)
+                and not isinstance(announced_chunk, bool)
+                and announced_chunk > 0):
+            chunk_gib = announced_chunk
+        elif (isinstance(announced_window, int)
+                and not isinstance(announced_window, bool)
+                and announced_window > 0):
+            chunk_gib = storage_tiers.promotion_chunk_gib_for_window(
+                announced_window)
+        chunk_ranges = (
+            storage_tiers.split_range_into_chunks(
+                start, end, chunk_gib * storage_tiers.GIB)
+            if chunk_gib is not None else [(start, end)])
+
+        def seal_stage_chunk(cstart: int, cend: int,
+                             csuffix: str) -> tuple[dict, dict]:
+            chunk_demand = storage_tiers.residency_demand(
+                tier_id=tier_id, range_start_bytes=cstart,
+                range_end_bytes=cend, fill_mb_s_pool_side=fill)
+            # Measured, not habitual, and above all *present*: a row without a
+            # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
+            # refused whenever the box already holds anything
+            # (``unbounded_cpu_not_exclusive``), which is what ran the first live
+            # window one large mover at a time with 17 idle worker loops (#607,
+            # #603).  Both numbers come off ``pb-queue/movers/`` receipts when
+            # there are any, and ``demand_source`` on the plan says which receipts
+            # were read and which field fell back to a declared bound.
+            chunk_demand["cpu"] = int(priced["cpu"])
+            chunk_demand["mem_gb"] = int(priced["mem_gb"])
+            chunk_mover = seal_movement_action(
                 template,
-                command=[ram_python, ram_tool,
+                command=[mover_python, mover_tool,
                          "--pool-root", pool_root,
                          "--cas-root", str(SH / "cas"),
                          "--consumer-action-key", consumer_action_key,
-                         "--tier-id", ram_tier_id,
-                         "--ram-root", ram_root,
-                         "--source-stage-root", stage_root,
+                         "--tier-id", tier_id,
+                         "--stage-root", stage_root,
                          "--manifest-sha256", digest,
-                         "--range-start-bytes", str(start),
-                         "--range-end-bytes", str(end),
-                         "--readers", str(readers)],
-                demand=ram_demand, tags=tags,
+                         "--range-start-bytes", str(cstart),
+                         "--range-end-bytes", str(cend),
+                         # Stated on the command, so the width the row reserves and
+                         # the width the copy runs at cannot drift apart.
+                         "--readers", str(readers)]
+                        + ([] if fill is None else
+                           # Carried so the receipt can say what the ledger had
+                           # promised this copy; a later cycle compares that with
+                           # what the copy achieved, and a shortfall is the
+                           # measured ceiling on how many movers the pool feeds.
+                           ["--fill-mb-s-pool-side", str(fill)]),
+                demand=chunk_demand, tags=tags,
                 retry_policy=mover_retry_policy,
-                log_name=f"ram-promote-{ordinal:04d}-{span['name']}.log")
-            ram_egress = seal_movement_action(
+                log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log")
+            chunk_egress = seal_movement_action(
                 template,
-                command=[ram_python, ram_egress_tool,
+                command=[mover_python, egress_tool,
                          "--pool-root", pool_root,
-                         "--mover-action-key", str(ram_mover["action_key"]),
+                         "--mover-action-key", str(chunk_mover["action_key"]),
                          "--consumer-action-key", consumer_action_key,
-                         "--stage-root", ram_root],
-                # No tier demand, for the same reason as the stage's egress.
-                demand={"mem_gb": 1}, tags=tags,
-                log_name=f"ram-release-{ordinal:04d}-{span['name']}.log")
-            cas.publish_action_request(ram_mover)
-            cas.publish_action_request(ram_egress)
-            ram_mover_row = {
+                         "--stage-root", stage_root],
+                # No tier demand: an egress *returns* capacity, and one that had to
+                # reserve some before it could give any back would deadlock exactly
+                # when the stage is full -- which is the only moment it matters.
+                # CPU and memory it must still declare, and bounded: a row without
+                # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
+                # whenever the box holds anything (#603, #607) -- and the box an
+                # egress runs on is the stage's own file server, whose resident
+                # loops mean it always holds something.  A release that cannot
+                # claim there deadlocks the tier through the same door the comment
+                # above closes: the concluding movers pin their ranges' tokens, the
+                # egress is the only node that returns them, and one waiting for an
+                # empty box waits forever.  One CPU is a declared bound, the width
+                # of the single-process unlink-and-record an egress is -- not a
+                # measurement, because an egress files no receipts of its own, and
+                # pricing it off the movers' copy receipts would measure the wrong
+                # node entirely (the #655 lesson).
+                demand={"cpu": 1, "mem_gb": 1}, tags=tags,
+                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log")
+            for action in (chunk_mover, chunk_egress):
+                cas.publish_action_request(action)
+            mover_row = {
                 **publication_row(
-                    ram_mover, args=args, queue=queue,
-                    max_attempts=int(args.residency_mover_max_attempts),
-                    retry_safe=True),
-                # The pin the ram window and the pin check read: a promotion
-                # row without it releases its occupancy the moment it
-                # finishes -- bytes on a roof-limited tmpfs that no token
-                # stands for are ENOSPC waiting to happen (#640).
-                "residency": {
-                    "schema": pool.RESIDENCY_SCHEMA_V1,
-                    "manifest_sha256": digest,
-                    "manifest_bytes": int(entry["bytes"]),
-                    "tier_id": ram_tier_id,
-                    "range_start_bytes": start,
-                    "range_end_bytes": end,
-                },
-            }
-            ram_egress_row = publication_row(ram_egress, args=args, queue=queue)
-        phase_record = {
-            "name": str(span["name"]),
-            "start_bytes": start, "end_bytes": end,
-            "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
-            "mover_row": {
-                **publication_row(
-                    mover, args=args, queue=queue,
+                    chunk_mover, args=args, queue=queue,
                     max_attempts=int(args.residency_mover_max_attempts),
                     retry_safe=True),
                 # The row, not only the sealed body.  ``residency_pin_holds``
@@ -5151,19 +5139,170 @@ def residency_stage_rows(
                     "manifest_sha256": digest,
                     "manifest_bytes": int(entry["bytes"]),
                     "tier_id": tier_id,
-                    "range_start_bytes": start,
-                    "range_end_bytes": end,
+                    "range_start_bytes": cstart,
+                    "range_end_bytes": cend,
                 },
-            },
+            }
             # No block on the egress: it reserves no tier capacity, and
             # ``validate_residency`` refuses a range whose stage demand is
             # below the range's own floor.  An egress finds its mover by
             # ``--mover-action-key``, not by a range of its own.
-            "egress_row": publication_row(egress, args=args, queue=queue),
+            return mover_row, publication_row(
+                chunk_egress, args=args, queue=queue)
+
+        stage_chunks = None
+        stage_mover_row: dict[str, object] | None = None
+        stage_egress_row: dict[str, object] | None = None
+        if len(chunk_ranges) == 1:
+            stage_mover_row, stage_egress_row = seal_stage_chunk(start, end, "")
+        else:
+            stage_chunks = []
+            for cindex, (cstart, cend) in enumerate(chunk_ranges):
+                chunk_mover_row, chunk_egress_row = seal_stage_chunk(
+                    cstart, cend, f"-c{cindex:02d}")
+                stage_chunks.append({
+                    "chunk_index": cindex,
+                    "start_bytes": cstart, "end_bytes": cend,
+                    "stage_gib": storage_tiers.stage_tokens_for_bytes(
+                        cend - cstart),
+                    "mover_row": chunk_mover_row,
+                    "egress_row": chunk_egress_row,
+                })
+        ram_mover_row = None
+        ram_egress_row = None
+        ram_chunks = None
+        if ram_tier_id is not None:
+            # The withdrawn #639 part 3's plumbing, aimed at the right actor:
+            # one occupancy leg per movement node, ``ram_gib`` on the ram tier,
+            # priced off the promotion receipts exactly the way a stage
+            # mover's demand is priced off its own.
+            #
+            # The leg is cut into chunks (#673): one promotion node plus one
+            # egress node per chunk, in read order, so the tmpfs refills as
+            # it frees instead of sawtoothing a whole phase at a time.  The
+            # chunk size is the tier's announced sizing, never this box's:
+            # the pin when the loop mints one, else the same window-quarter
+            # derivation the loop announces with.  A phase that fits in one
+            # chunk seals today's whole-phase pair, and a tier that announces
+            # no sizing seals it too -- chunking is a sealing-time property,
+            # and an unchunkable phase keeps the shape it always had.
+            announced_chunk = ram_tier.get("promotion_chunk_gib")
+            announced_window = ram_tier.get("window_gib")
+            chunk_gib = None
+            if (isinstance(announced_chunk, int)
+                    and not isinstance(announced_chunk, bool)
+                    and announced_chunk > 0):
+                chunk_gib = announced_chunk
+            elif (isinstance(announced_window, int)
+                    and not isinstance(announced_window, bool)
+                    and announced_window > 0):
+                chunk_gib = storage_tiers.promotion_chunk_gib_for_window(
+                    announced_window)
+            chunk_ranges = (
+                storage_tiers.split_range_into_chunks(
+                    start, end, chunk_gib * storage_tiers.GIB)
+                if chunk_gib is not None else [(start, end)])
+
+            def seal_ram_chunk(cstart: int, cend: int,
+                               csuffix: str) -> tuple[dict, dict]:
+                ram_demand = storage_tiers.residency_demand(
+                    tier_id=ram_tier_id, range_start_bytes=cstart,
+                    range_end_bytes=cend)
+                ram_priced = storage_tiers.mover_demand_from_receipts(
+                    receipts, tier_id=ram_tier_id, readers=readers,
+                    fallback_mem_gb=int(args.residency_mover_mem_gb),
+                    pool_identity=ram_identity)
+                ram_demand["cpu"] = int(ram_priced["cpu"])
+                ram_demand["mem_gb"] = int(ram_priced["mem_gb"])
+                ram_mover = seal_movement_action(
+                    template,
+                    command=[ram_python, ram_tool,
+                             "--pool-root", pool_root,
+                             "--cas-root", str(SH / "cas"),
+                             "--consumer-action-key", consumer_action_key,
+                             "--tier-id", ram_tier_id,
+                             "--ram-root", ram_root,
+                             "--source-stage-root", stage_root,
+                             "--manifest-sha256", digest,
+                             "--range-start-bytes", str(cstart),
+                             "--range-end-bytes", str(cend),
+                             "--readers", str(readers)],
+                    demand=ram_demand, tags=tags,
+                    retry_policy=mover_retry_policy,
+                    log_name=f"ram-promote-{ordinal:04d}-{span['name']}{csuffix}.log")
+                ram_egress = seal_movement_action(
+                    template,
+                    command=[ram_python, ram_egress_tool,
+                             "--pool-root", pool_root,
+                             "--mover-action-key", str(ram_mover["action_key"]),
+                             "--consumer-action-key", consumer_action_key,
+                             "--stage-root", ram_root],
+                    # No tier demand, for the same reason as the stage's egress,
+                    # and one declared CPU for the same reason as its cpu: a
+                    # tmpfs promotion's release runs on the same never-empty file
+                    # server, and unknown CPU use would refuse to run beside the
+                    # loops that make it never-empty.
+                    demand={"cpu": 1, "mem_gb": 1}, tags=tags,
+                    log_name=f"ram-release-{ordinal:04d}-{span['name']}{csuffix}.log")
+                cas.publish_action_request(ram_mover)
+                cas.publish_action_request(ram_egress)
+                mover_row = {
+                    **publication_row(
+                        ram_mover, args=args, queue=queue,
+                        max_attempts=int(args.residency_mover_max_attempts),
+                        retry_safe=True),
+                    # The pin the ram window and the pin check read: a promotion
+                    # row without it releases its occupancy the moment it
+                    # finishes -- bytes on a roof-limited tmpfs that no token
+                    # stands for are ENOSPC waiting to happen (#640).
+                    "residency": {
+                        "schema": pool.RESIDENCY_SCHEMA_V1,
+                        "manifest_sha256": digest,
+                        "manifest_bytes": int(entry["bytes"]),
+                        "tier_id": ram_tier_id,
+                        "range_start_bytes": cstart,
+                        "range_end_bytes": cend,
+                    },
+                }
+                return mover_row, publication_row(
+                    ram_egress, args=args, queue=queue)
+
+            if len(chunk_ranges) == 1:
+                ram_mover_row, ram_egress_row = seal_ram_chunk(
+                    start, end, "")
+            else:
+                ram_chunks = []
+                for cindex, (cstart, cend) in enumerate(chunk_ranges):
+                    mover_row, egress_row = seal_ram_chunk(
+                        cstart, cend, f"-c{cindex:02d}")
+                    ram_chunks.append({
+                        "chunk_index": cindex,
+                        "start_bytes": cstart, "end_bytes": cend,
+                        "stage_gib": storage_tiers.stage_tokens_for_bytes(
+                            cend - cstart),
+                        "ram_mover_row": mover_row,
+                        "ram_egress_row": egress_row,
+                    })
+        phase_record: dict[str, object] = {
+            "name": str(span["name"]),
+            "start_bytes": start, "end_bytes": end,
+            "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
         }
+        if stage_chunks is not None:
+            phase_record["stage_chunks"] = stage_chunks
+        else:
+            assert stage_mover_row is not None and stage_egress_row is not None
+            phase_record["mover_row"] = stage_mover_row
+            # No block on the egress: it reserves no tier capacity, and
+            # ``validate_residency`` refuses a range whose stage demand is
+            # below the range's own floor.  An egress finds its mover by
+            # ``--mover-action-key``, not by a range of its own.
+            phase_record["egress_row"] = stage_egress_row
         if ram_mover_row is not None:
             phase_record["ram_mover_row"] = ram_mover_row
             phase_record["ram_egress_row"] = ram_egress_row
+        if ram_chunks is not None:
+            phase_record["ram_chunks"] = ram_chunks
         phases.append(phase_record)
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
@@ -6115,12 +6254,13 @@ def main() -> int:
         publication["residency"] = staged["residency"]
     queued_path = publish_or_refuse(q, publication)
     if staged is not None:
-        # The first phase only.  The rest is the tiers loop's to publish as
+        # The first phase only -- its first chunk when that phase sealed
+        # chunked (#675).  The rest is the tiers loop's to publish as
         # this action's accepted progress advances: publishing the whole plan
         # here would put every phase of a 223-phase read order in ``ready`` at
         # once, and reserve a stage several times its own size.
         lead = staged["plan"]["phases"][0]
-        publish_or_refuse(q, dict(lead["mover_row"]))
+        publish_or_refuse(q, dict(residency_plan.lead_mover_row(staged["plan"])))
         print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
               f"{staged['plan']['tier_id']}; published phase "
               f"{lead['name']!r} ({lead['stage_gib']} GiB)",

@@ -136,6 +136,8 @@ def test_the_reader_would_see_a_write_if_one_were_added() -> None:
 def _every_tool(session: pbmcp.Session, fleet: fx.Fleet) -> list[dict]:
     return [
         session.call("pb_status"),
+        session.call("pb_denials"),
+        session.call("pb_tier"),
         session.call("pb_action", {"key_prefix": fx.DONE_KEY[:12]}),
         session.call("pb_actions", {"limit": 20}),
         session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)}),
