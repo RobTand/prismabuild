@@ -47,7 +47,8 @@ errors: No known data errors
 """
 
 
-def _runner(*, pools: str, statuses: dict[str, str], mountpoints: dict[str, str] | None = None):
+def _runner(*, pools: str, statuses: dict[str, str], mountpoints: dict[str, str] | None = None,
+            guids: dict[str, str] | None = None):
     calls: list[list[str]] = []
 
     def run(argv: list[str]) -> str:
@@ -58,6 +59,10 @@ def _runner(*, pools: str, statuses: dict[str, str], mountpoints: dict[str, str]
             if argv[3] not in statuses:
                 raise OSError(f"no such pool {argv[3]}")
             return statuses[argv[3]]
+        if argv[1] == "get" and "guid" in argv:
+            # The pool identity (#611): which pool this name is, so a receipt
+            # priced off a rebuilt pool stops pricing the next mover.
+            return (guids or {}).get(argv[-1], "1111111111111111111") + "\n"
         if argv[1] == "get" and "mountpoint" in argv:
             return (mountpoints or {}).get(argv[-1], "none") + "\n"
         raise AssertionError(f"unexpected zpool call {argv}")
@@ -270,6 +275,11 @@ def test_discover_reads_every_tier_from_the_box(tmp_path: Path) -> None:
         "scsi-35000cca2a1efba56-part1", "scsi-35000cca2a1f1042d-part1"]
     assert stage["fill_mb_s_pool_side"] == 242.5
     assert stage["sampled_unix"] == 1.0
+    # The tier names the pools it was read off (#611), so a receipt priced
+    # off a rebuilt pool stops pricing the next mover.
+    assert stage["pool_identity"] == {
+        "stage": st.pool_identity("prismabuild-stage", runner=run),
+        "source": st.pool_identity("storage_pool", runner=run)}
     arc = tiers["arc:dl380g10"]
     assert arc["tier"] == "arc"
     assert arc["capacity_bytes"] == 257698037760 - 5423149896

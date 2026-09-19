@@ -241,6 +241,96 @@ def pool_member_devices(
     return devices
 
 
+#: The schema a mover receipt carries, owned by ``pool.POOL_MOVE_SCHEMA_V1``.
+#: Named here -- rather than imported, which would be circular (``pool``
+#: imports this module) -- so the fill fold can tell a mover's measurement,
+#: which a pool change invalidates, from a prewarm record, which another role
+#: stamps and this gate must keep reading (#611).
+MOVER_RECEIPT_SCHEMA = "prismaquant.prismabuild.pool_move.v1"
+
+
+def _coarse_scan(value: str | None) -> str | None:
+    """The topology a ``zpool status`` scan line attests to, coarsely.
+
+    The raw line carries percentages, rates and dates that change every
+    cycle; keying receipt folds on it would split every receipt into its own
+    topology and price nothing ever again.  What matters is whether a
+    resilver or scrub is running and whether the last one finished, because
+    that is what changes what the pool delivers.
+    """
+
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if not text or text.startswith("none"):
+        return "none"
+    if "in progress" in text:
+        if text.startswith("scrub"):
+            return "scrub-in-progress"
+        if text.startswith("resilver"):
+            return "resilver-in-progress"
+        return "scan-in-progress"
+    if text.startswith("scrub"):
+        return "scrub-done"
+    if text.startswith("resilver"):
+        return "resilver-done"
+    return "scan-done"
+
+
+def pool_identity(pool: str, *, runner: Runner | None = None) -> dict[str, object]:
+    """Which pool ``pool`` is, as ``zpool`` describes it right now (#611).
+
+    The ``guid`` names the pool across imports: destroying and recreating a
+    pool with the same name mints a new one, which is exactly the event that
+    must invalidate every receipt priced off the old pool's disks.  ``state``
+    and the coarse ``scan`` say whether a resilver or scrub is running, and
+    ``members`` -- the data-vdev leaves ``pool_member_paths`` reads -- say
+    whether a swap or an added vdev changed the spindles since.  Together
+    they are what a receipt fold compares before pricing a next mover off an
+    older measurement.
+
+    Always a dict, never ``None``: callers compare it, and ``None`` would
+    read as "no pool here" -- the one answer that must never compare equal
+    to a pool that is there.  A pool ``zpool`` will not read is still an
+    identity, with nothing in it; it compares unequal to every readable
+    one.  (A box that cannot read ``zpool`` at all discovers no tier, so an
+    unreadable *current* identity never gates a real fold.)
+    """
+
+    call = runner or _run
+    try:
+        guid_text = call([zpool_binary(), "get", "-Hp",
+                          "-o", "value", "guid", pool])
+    except (OSError, subprocess.SubprocessError):
+        guid_text = ""
+    lines = guid_text.strip().splitlines()
+    guid = lines[0].strip() if lines else ""
+    try:
+        status_text = call([zpool_binary(), "status", "-P", pool])
+    except (OSError, subprocess.SubprocessError):
+        status_text = ""
+    state: str | None = None
+    scan: str | None = None
+    if status_text:
+        in_config = False
+        for line in status_text.splitlines():
+            stripped = line.strip()
+            if not in_config:
+                if stripped.startswith("config:"):
+                    in_config = True
+                    continue
+                if state is None and stripped.startswith("state:"):
+                    state = stripped[len("state:"):].strip() or None
+                elif scan is None and stripped.startswith("scan:"):
+                    scan = stripped[len("scan:"):].strip() or None
+    try:
+        members = pool_member_paths(pool, runner=runner) or []
+    except (OSError, subprocess.SubprocessError):
+        members = []
+    return {"pool": pool, "guid": guid or None, "state": state,
+            "scan": _coarse_scan(scan), "members": members}
+
+
 def by_id_names(
     paths: Iterable[str], *, by_id: str = BY_ID,
 ) -> dict[str, str | None]:
@@ -914,6 +1004,7 @@ def _fell_short(record: Mapping[str, object]) -> bool:
 
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> int | None:
     """The pool bandwidth a next mover reserves, or ``None`` with nothing measured.
 
@@ -938,7 +1029,8 @@ def mover_fill_demand_from_receipts(
     """
 
     best: float | None = None
-    for record in usable_mover_receipts(records, tier_id=tier_id):
+    for record in usable_mover_receipts(records, tier_id=tier_id,
+                                        pool_identity=pool_identity):
         rate = record.get("mb_per_s_file_side")
         if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
             continue
@@ -958,6 +1050,7 @@ def mover_fill_demand_from_receipts(
 
 def fill_supply_from_records(
     records: Iterable[Mapping[str, object]],
+    *, pool_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """How much pool bandwidth a tier may offer, folded over its receipts.
 
@@ -1006,6 +1099,18 @@ def fill_supply_from_records(
     best: float | None = None
     ceiling_key: str | None = None
     for record in ordered:
+        if pool_identity is not None and (
+                record.get("schema") == MOVER_RECEIPT_SCHEMA):
+            # A mover's measurement of a pool, gated on the pool it measured
+            # (#611): after a resilver or a rebuild the old receipts still
+            # name this tier, and the ceiling they set would throttle the new
+            # pool by the old one's shortfall.  Anything that is not a mover
+            # receipt -- a prewarm record, stamped by another role with no
+            # tier and no identity -- is the pool's other measurement and
+            # keeps being read; keying that is a separate change.
+            stamped = record.get("pool_identity")
+            if not isinstance(stamped, Mapping) or stamped != pool_identity:
+                continue
         delivered = _delivered(record)
         if delivered is None:
             continue
@@ -1163,6 +1268,7 @@ MOVER_RSS_FIELD = "peak_rss_bytes"
 
 def usable_mover_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> list[Mapping[str, object]]:
     """The receipts of movers that actually copied onto ``tier_id``.
 
@@ -1170,6 +1276,17 @@ def usable_mover_receipts(
     measured another box's disks, so neither says anything about the next
     mover onto this one.  ``seconds`` must be positive because every number
     derived below is a rate over it.
+
+    With ``pool_identity`` given -- the tier's current one, as
+    :func:`discover_tiers` stamps it -- only receipts carrying that same
+    identity are usable (#611).  After a resilver, a member swap, an added
+    vdev or a pool rebuild, the old receipts still name this tier id but
+    measured another pool's disks; pricing cpu, mem and the fill share off
+    them is pricing the new pool by the old one's habits.  A receipt with no
+    identity predates the stamping and cannot prove which pool it measured,
+    so it is dropped too: failing closed re-measures through the probe rule
+    rather than guessing.  Without the argument there is no gate, exactly as
+    before, for tiers announced by a generation that stamps none.
     """
 
     out: list[Mapping[str, object]] = []
@@ -1180,6 +1297,10 @@ def usable_mover_receipts(
             continue
         if record.get("refusal"):
             continue
+        if pool_identity is not None:
+            stamped = record.get("pool_identity")
+            if not isinstance(stamped, Mapping) or stamped != pool_identity:
+                continue
         seconds = record.get("seconds")
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
             continue
@@ -1195,6 +1316,7 @@ def mover_demand_from_receipts(
     tier_id: str,
     readers: int,
     fallback_mem_gb: int,
+    pool_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """The ``cpu`` and ``mem_gb`` a next mover declares, and where they came from.
 
@@ -1225,7 +1347,8 @@ def mover_demand_from_receipts(
     if isinstance(fallback_mem_gb, bool) or not isinstance(fallback_mem_gb, int) \
             or fallback_mem_gb < 1:
         raise ValueError("fallback_mem_gb must be a positive whole GiB")
-    usable = usable_mover_receipts(records, tier_id=tier_id)
+    usable = usable_mover_receipts(records, tier_id=tier_id,
+                                     pool_identity=pool_identity)
     cpu_keys: list[str] = []
     mem_keys: list[str] = []
     cpu: int | None = None
@@ -1248,6 +1371,7 @@ def mover_demand_from_receipts(
         "mem_gb": fallback_mem_gb if mem_gb is None else mem_gb,
         "demand_source": {
             "tier_id": str(tier_id),
+            "pool_identity": dict(pool_identity) if pool_identity is not None else None,
             "receipts_read": len(usable),
             "cpu": "receipts" if cpu is not None else "declared_readers",
             "cpu_receipts": sorted(cpu_keys),
@@ -1389,6 +1513,19 @@ def discover_tiers(
             "source_pool": source_pool,
             "source_members": members,
             "source_members_by_id": sorted(members_by_id),
+            # Which pools these numbers were read off (#611): the guid names
+            # the pool across a destroy/recreate, the coarse scan says
+            # whether a resilver is running, and the members say whether a
+            # swap or an added vdev changed the spindles.  Movers copy this
+            # into their receipts, and the receipt folds price only receipts
+            # carrying the tier's current one -- so a rebuilt pool
+            # re-measures through the probe rule instead of running on the
+            # old pool's habits.
+            "pool_identity": {
+                "stage": pool_identity(str(pool["name"]), runner=runner),
+                "source": (pool_identity(source_pool, runner=runner)
+                           if source_pool else None),
+            },
             FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
@@ -1422,6 +1559,7 @@ __all__ = [
     "POOL_FILL_FIELD",
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
+    "MOVER_RECEIPT_SCHEMA",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",
@@ -1454,6 +1592,7 @@ __all__ = [
     "ensure_ram_epoch",
     "fill_rate_from_records",
     "meminfo_total_bytes",
+    "pool_identity",
     "pool_member_devices",
     "pool_member_paths",
     "ram_admission",
