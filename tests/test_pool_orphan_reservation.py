@@ -92,3 +92,63 @@ def test_reclaim_refuses_while_a_claim_is_live(tmp_path: Path) -> None:
         assert "claimed" in str(exc)
     else:
         raise AssertionError("a live claim's reservation was reclaimable")
+
+
+TIER = "prismabuild-stage:dl380g10"
+TIER_KIND = "stage_gib"
+OWNER = "e" * 64
+
+
+def _tier_only_terminal(queue: pool.PoolQueue, *, owner: str) -> None:
+    """A DONE mover that held tier tokens and no host reservation (#594).
+
+    No ``ready/``, ``claimed/`` or lease record, exactly one terminal record,
+    and no residency block, so the only guards left are the holder check and
+    the container-lifecycle check -- which is the point: the early return for
+    an empty holder list used to skip the second one.
+    """
+
+    ledger = queue.tier_ledger(TIER)
+    queue.mint_tier_capacity(TIER, {TIER_KIND: 2})
+    handle = ledger.begin_acquire(KEY, {TIER_KIND: 2})
+    assert handle is not None
+    assert ledger.commit_acquire(KEY, handle) == 2
+    assert ledger.holder_tokens(KEY) == {TIER_KIND: 2}
+    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+        "action_key": KEY, "status": "executed",
+        "finished_host": socket.gethostname(), "container_owner": owner,
+    }))
+
+
+def test_reclaim_of_a_tier_only_key_verifies_the_container_is_gone(
+    tmp_path: Path,
+) -> None:
+    queue = _queue(tmp_path)
+    _tier_only_terminal(queue, owner=OWNER)
+    marker = queue.container_marker(OWNER)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    try:
+        queue.reclaim_terminal_reservation(KEY)
+    except pool.PoolContractError as exc:
+        assert "container lifecycle" in str(exc)
+    else:
+        raise AssertionError(
+            "a tier-only reservation came back while its container lives")
+    assert queue.tier_ledger(TIER).holder_tokens(KEY) == {TIER_KIND: 2}
+
+
+def test_reclaim_of_a_tier_only_key_releases_when_the_container_is_gone(
+    tmp_path: Path,
+) -> None:
+    """The control: nothing held anywhere, container settled, tokens return."""
+
+    queue = _queue(tmp_path)
+    _tier_only_terminal(queue, owner=OWNER)
+    assert not queue.container_marker(OWNER).exists()
+
+    result = queue.reclaim_terminal_reservation(KEY)
+
+    assert result == {"action_key": KEY, "released": 2, "hosts": []}
+    assert queue.tier_ledger(TIER).holder_tokens(KEY) == {}

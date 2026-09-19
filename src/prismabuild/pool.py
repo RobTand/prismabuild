@@ -3825,6 +3825,28 @@ class PoolQueue:
 
         return ResourceLedger(self.root / TIER_RESERVATIONS, host=self._check_tier_id(tier_id))
 
+    def tier_mint_lock(self, tier_id: str, *, blocking: bool = True):
+        """Serialize the minters of one tier's capacity, never other tiers.
+
+        ``mint_tier_capacity`` runs ``ensure_capacity`` then
+        ``retire_free_capacity``; the ``O_EXCL`` mint-marker analysis that
+        makes each half safe assumes one minter per ledger, and the host
+        ledgers do the same work only inside the box's serialized capacity
+        prelude (#593).  A second minter -- ``tier_loop --once`` beside the
+        supervised role -- takes this lock rather than interleaving with the
+        first, so two minters against one tier are inside the analysis
+        instead of outside it.  Per tier, so two boxes' loops still mint
+        their own tiers concurrently; the lock file lives beside the queue
+        rather than in the ledger so retiring a tier never removes it.
+        Non-blocking acquisition yields ``False`` instead of raising, for a
+        caller that would rather decline than wait.
+        """
+
+        name = hashlib.sha256(
+            f"tier-mint:{self._check_tier_id(tier_id)}".encode()).hexdigest()
+        return posix_lock.held(self.root / "tier-mint-locks" / f"{name}.lock",
+                               blocking=blocking)
+
     def tier_ids(self) -> list[str]:
         """Every tier that has a ledger, whether or not it holds anything.
 
@@ -4091,17 +4113,25 @@ class PoolQueue:
         reservation and the total falls as holders finish.  A kind that
         discovery no longer reports is retired to zero: a stage pool that
         was exported and is gone must stop admitting movers.
+
+        Under the tier's mint lock, because the two halves are only safe in
+        one minter's hands: the marker analysis ``ensure_capacity`` rests on
+        assumes no second minter adopts and mints concurrently, and a retire
+        racing another minter's ensure could take a token the other just
+        freed for re-adoption.  The lock is per tier, so the supervised loop
+        and an operator ``--once`` run serialize only against each other.
         """
 
-        ledger = self.tier_ledger(tier_id)
-        wanted = {str(kind): int(count) for kind, count in tokens.items()}
-        if any(count < 0 for count in wanted.values()):
-            raise PoolContractError("tier capacity must not be negative")
-        ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
-        total = ledger.capacity()
-        lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
-        retired = ledger.retire_free_capacity(lower) if lower else {}
-        return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+        with self.tier_mint_lock(tier_id):
+            ledger = self.tier_ledger(tier_id)
+            wanted = {str(kind): int(count) for kind, count in tokens.items()}
+            if any(count < 0 for count in wanted.values()):
+                raise PoolContractError("tier capacity must not be negative")
+            ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
+            total = ledger.capacity()
+            lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
+            retired = ledger.retire_free_capacity(lower) if lower else {}
+            return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
 
     def tier_record_path(self, tier_id: str) -> Path:
         return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
@@ -8641,8 +8671,11 @@ class PoolQueue:
         This is the bounded repair for a worker that finished on bytes which
         predate ``claim_snapshot``.  It refuses a live or queued action, a
         missing/failed terminal result, a surviving lease, multiple holders,
-        and a holder that differs from the host which filed the successful
-        outcome.  Those are ambiguous generations, not cleanup opportunities.
+        a holder that differs from the host which filed the successful
+        outcome, and a container that still lives under the terminal record's
+        owner -- that last one on the tier-only path too, where no host holds
+        the key but a container still ran.  Those are ambiguous generations,
+        not cleanup opportunities.
         """
 
         key = str(action_key)
@@ -8685,25 +8718,33 @@ class PoolQueue:
                 "files are known to be gone")
 
         hosts = self.claim_reservation_hosts(key)
+        if hosts:
+            if len(hosts) != 1:
+                raise PoolContractError(
+                    f"refusing to reclaim {key}: reservation is held on {hosts}")
+            finished_host = terminal.get("finished_host")
+            if finished_host != hosts[0]:
+                raise PoolContractError(
+                    f"refusing to reclaim {key}: successful outcome was filed on "
+                    f"{finished_host!r}, reservation is held on {hosts[0]!r}")
+        # The container lifecycle is verified on both paths, not only when a
+        # host holds the key.  A tier-only item -- no host demand, so
+        # ``claimed["reserved_on"]`` is ``None`` and no ledger names a box --
+        # still ran in a container, and returning its tier tokens while that
+        # container lives is the same unverified release the check below
+        # refuses.  The holder check above is vacuous with no holder, which
+        # is why it stays scoped to one; this one is not.
+        terminal_owner = terminal.get("container_owner")
+        if terminal_owner and self.container_marker(str(terminal_owner)).exists():
+            raise PoolContractError(
+                f"refusing to reclaim {key}: container lifecycle verification "
+                "is required")
         if not hosts:
             # No box holds it; a tier still may (a mover's stage tokens), and
             # an operator asking for a terminal key's reservation back means
             # those too.
             return {"action_key": key, "released": self.release_tier_reservations(key),
                     "hosts": []}
-        if len(hosts) != 1:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: reservation is held on {hosts}")
-        finished_host = terminal.get("finished_host")
-        if finished_host != hosts[0]:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: successful outcome was filed on "
-                f"{finished_host!r}, reservation is held on {hosts[0]!r}")
-        terminal_owner = terminal.get("container_owner")
-        if terminal_owner and self.container_marker(str(terminal_owner)).exists():
-            raise PoolContractError(
-                f"refusing to reclaim {key}: container lifecycle verification "
-                "is required")
 
         released = self._release_reservation(key, host=hosts[0])
         return {"action_key": key, "released": released, "hosts": hosts}
