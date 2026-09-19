@@ -52,7 +52,7 @@ def _policy(mount: Path, **over) -> dict[str, object]:
         "schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
         "mountpoint": str(mount),
         "ceiling_gib_max": 256,
-        "window_gib_default": 112,
+        "window_gib_default": 160,
         "arc_floor_gib": 20,
         "system_reserve_gib": 16,
         "prefill_depth": None,
@@ -119,7 +119,7 @@ def test_capacity_is_what_the_mount_may_still_hold(tmp_path: Path) -> None:
     assert tier is not None
     assert tier["capacity_bytes"] == 200 * GIB
     assert storage_tiers.tier_tokens(tier) == {
-        storage_tiers.RAM_CAPACITY_KIND: 112}, \
+        storage_tiers.RAM_CAPACITY_KIND: 160}, \
         "the policy window caps the mint, not the mount's whole free space"
 
 
