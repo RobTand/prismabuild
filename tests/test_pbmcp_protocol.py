@@ -31,7 +31,7 @@ TOOL = REPOSITORY / "tools" / "fleet" / "pbmcp.py"
 #: so that dropping one from the module is a failure rather than a rename.
 EXPECTED_TOOLS = ("pb_status", "pb_denials", "pb_tier", "pb_movers",
                   "pb_action", "pb_actions", "pb_receipts", "pb_verify_claim",
-                  "pb_log", "pb_runtime")
+                  "pb_log", "pb_runtime", "pb_starvation", "pb_cursors")
 
 
 class Client:
