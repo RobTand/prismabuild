@@ -304,7 +304,14 @@ The same requirement belongs in each host's global agent instruction files
 and in delegation briefs. Repository `AGENTS.md` links this policy. The
 `require_pool.py` hook rejects recognized off-pool test runners, GPU interpreter
 and container launches, and direct scheduler submissions when
-`/home/rob/tmp/arb/require_pool.on` exists. Claude Code installs it as a
+`/home/rob/tmp/arb/require_pool.on` exists. GPU containers that run vLLM
+pass: the hook encodes the exemption lexically, so exempt work needs no
+wrapper script -- the segment names vLLM as the image or the program, runs
+no test runner, and is not a bare collective borrowing the image (#588). A
+shell running a script file is read one level in, and work inside it refuses
+naming the file; a clean or unreadable script is recorded in
+`require_pool_sightings.log` beside the flag file rather than passing
+silently. Claude Code installs it as a
 `PreToolUse` Bash hook. Other agents must follow their global instructions;
 this command parser is a guard, not an operating-system security boundary or a
 proof of arbitrary program behavior.

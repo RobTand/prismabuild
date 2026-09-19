@@ -3086,6 +3086,12 @@ stage tier is any imported ZFS pool whose name starts with `prismabuild-stage`
 declares a data member), its members are bound through `/dev/disk/by-id`, and
 its capacity is the pool's own arithmetic. No tier quantity is a constant.
 
+Minting is serialized per tier (#593): `PoolQueue.mint_tier_capacity` holds
+the tier's mint lock across `ensure_capacity` and `retire_free_capacity`, so
+an operator `tier_loop --once` beside the supervised role waits rather than
+interleaving a second mint with the first. One tier's lock never blocks
+another's.
+
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
 rate differ by whatever the ARC answered. One live receipt on dl380g10 records
@@ -3100,7 +3106,12 @@ A movement node declares the half-open byte range of its consumer's read order
 it makes resident. The range comes out of the manifest the action already
 sealed — `storage_tiers.manifest_phase_ranges` reads the same running byte sum
 for v1 `annotations.phases` and v2 `read_plan.phases` that the prewarm role
-reads — and `storage_tiers.residency_demand` turns it into whole GiB, rounded
+reads, through one shared refusal rule for both tables (#594): a missing,
+empty, repeated or non-string name, a non-integer cumulative, a step back, an
+overrun, a boundary off an entry, or a table that ends anywhere but the total
+yields no ranges. A v2 table is checked against the plan's own consumption
+order, which exists to differ from entry-list order, so a reordered plan the
+core validator accepted is not refused here. `storage_tiers.residency_demand` turns it into whole GiB, rounded
 up. `publish` refuses an item whose declared `stage_gib` on that tier is below
 the ceiling of its own range, so the number in a claim record traces back to a
 declared read set rather than to a habit.
