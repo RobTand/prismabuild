@@ -14,7 +14,7 @@ this module owns the fixed spec and the mechanical verdict):
      input digest matches the pinned constant below.
   2. Driver submits both ``spec["actions"]`` rows (each: its ``--tag``,
      ``--timeout-s 300 --wait-s 300 --priority -10 --deterministic``,
-     argv ``python3 pbcanary_legs/leg4.py --run-action``, env
+     argv ``python3 tools/fleet/pbcanary_legs/leg4.py --run-action``, env
      ``PBCANARY_LEG4_TAG`` + ``PBCANARY_LEG4_INPUTS``).
   3. Each action prints one canonical-JSON envelope line (see
      ``LEG4_SCHEMA``) and exits 0. The envelope carries NO hostname, NO
@@ -62,7 +62,7 @@ except ImportError:  # Worker runs the file directly: sibling import.
         sha256_hex,
     )
 
-LEG4_NAME = "leg4-two-box-fanout-join"
+LEG4_NAME = "leg-4"
 LEG4_SCHEMA = "prismabuild.pbcanary.leg4.v1"
 
 #: Deterministic placement. ``sparky`` is the sparky box's hostname tag;
@@ -131,7 +131,7 @@ def build() -> dict:
         actions.append(
             {
                 "tag": tag,
-                "argv": ["python3", "pbcanary_legs/leg4.py", "--run-action"],
+                "argv": ["python3", "tools/fleet/pbcanary_legs/leg4.py", "--run-action"],
                 "env": {
                     _ACTION_ENV_TAG: tag,
                     _ACTION_ENV_INPUTS: inputs_json,

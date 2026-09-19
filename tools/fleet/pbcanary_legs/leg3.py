@@ -20,7 +20,7 @@ this module owns the fixed spec and the mechanical verdict):
              --progress-phase leg3-c0=600 --progress-phase leg3-c1=600 \\
              --progress-phase leg3-c2=600 \\
              --timeout-s 600 --wait-s 900 --priority -10 --deterministic -- \\
-             python3 pbcanary_legs/leg3.py --run-action
+             python3 tools/fleet/pbcanary_legs/leg3.py --run-action
 
      with ``PBCANARY_LEG3_MANIFEST=<absolute manifest path>`` in the
      action environment. The manifest's ``read_plan`` phases and the
@@ -71,7 +71,7 @@ except ImportError:  # Worker runs the file directly: sibling import.
         sha256_stream_hex,
     )
 
-LEG3_NAME = "leg3-chunked-residency"
+LEG3_NAME = "leg-3"
 LEG3_SCHEMA = "prismabuild.pbcanary.leg3.v1"
 
 #: v2 data-manifest schema id. Literal (no prismabuild import; see module
@@ -190,7 +190,7 @@ def build() -> dict:
             f"{phase}={LEG3_PROGRESS_ALLOWANCE_S}" for phase in LEG3_PHASES
         ],
         "action": {
-            "argv": ["python3", "pbcanary_legs/leg3.py", "--run-action"],
+            "argv": ["python3", "tools/fleet/pbcanary_legs/leg3.py", "--run-action"],
             "env": {_ACTION_ENV_MANIFEST: "<run-namespace>/leg3.manifest.json"},
         },
         "pbrun_flags": [

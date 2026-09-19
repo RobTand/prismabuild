@@ -163,6 +163,17 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "checkout through pbrun over a named data manifest; it carries the "
      "pre-#589 arithmetic as its before arm, so it is a record of one "
      "measurement rather than an operator command"),
+    ("pbcanary.py",
+     "the fleet canary driver (#688) runs from a checkout that has one: "
+     "the GitHub runner on dl380 and the rollout gate both invoke the "
+     "checkout's copy and submit through the published pbrun client, while "
+     "worker boxes execute the driver's legs from the submission snapshot, "
+     "never from the generation; a box with no checkout has no reason to "
+     "run it"),
+    ("pbcanary_verdict.py",
+     "the canary's verdict module (#688) is imported by the checkout's "
+     "driver at verdict time, never executed standalone; it travels with "
+     "the driver above, not with the generation"),
 )
 
 
@@ -618,14 +629,17 @@ def _canary_driver_path() -> Path:
 def _load_canary_driver():
     """Import the driver; never duplicate its submit-and-verify logic.
 
-    ASSUMED crew-A entry shape (adapt here if the integrator reports drift):
-    ``run_canary(generation=<name>) -> int``, where the int is the issue's
-    verdict exit code (0 every leg verified, 1 a leg failed its contract,
-    2 precondition refused). Anything else -- no ``run_canary`` attribute, a
-    non-int return, an exception -- is a ``_CanaryPrecondition``: the
-    generation is marked ``failed`` and publication exits nonzero, rather
-    than inventing a verdict. ``SystemExit`` raised by the driver is honored
-    as its verdict code (``None`` counts as 0, a string message as 1).
+    CONFIRMED crew-A entry shape (verified at #688 integration against
+    ``tools/fleet/pbcanary.py``): ``run_canary(generation=<name>) -> int``,
+    where the int is the issue's verdict exit code (0 every leg verified,
+    1 a leg failed its contract, 2 precondition refused). The driver's
+    other settings take their CLI defaults; the generation is recorded in
+    its run record and sealed into each action's environment. Anything
+    else -- no ``run_canary`` attribute, a non-int return, an exception --
+    is a ``_CanaryPrecondition``: the generation is marked ``failed`` and
+    publication exits nonzero, rather than inventing a verdict.
+    ``SystemExit`` raised by the driver is honored as its verdict code
+    (``None`` counts as 0, a string message as 1).
     """
 
     driver = _canary_driver_path()

@@ -3,7 +3,7 @@
 This module is deliberately tiny: the deterministic byte generator and the
 digest helpers, nothing else. No PrismaBuild imports, stdlib only, so both
 the canary driver (submit side) and the sealed worker actions (execute side,
-``python3 pbcanary_legs/legN.py --run-action``) can use it without a
+``python3 tools/fleet/pbcanary_legs/legN.py --run-action``) can use it without a
 configured environment. See PB #688.
 
 Contract:

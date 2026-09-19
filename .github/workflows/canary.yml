@@ -64,7 +64,7 @@ jobs:
 
       - name: Run pbcanary
         run: |
-          args=()
+          args=(--summary-dir pbcanary-summary)
           if [ -n "${{ inputs.generation }}" ]; then
             args+=(--generation "${{ inputs.generation }}")
           fi
@@ -72,6 +72,9 @@ jobs:
         # Driver exit contract (issue #688): 0 = all legs verified,
         # 1 = a leg failed its contract (names the leg), 2 = precondition
         # refused ("did not test" — fails the workflow, never passes).
+        # --summary-dir drops the machine-readable verdict into
+        # ./pbcanary-summary/ for the upload step; the canonical copy
+        # stays in the run namespace under pb-canary/<run-id>/.
 
       - name: Upload canary summary
         # Always archive the verdict, green or red. Fails loudly if the

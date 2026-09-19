@@ -94,7 +94,7 @@ so the sidecar is never mistaken for a generation.
     is a separate operator decision, never automatic. It leaves the
     failed record in place as history.
 
-## Driver entry contract (assumed; crew A owns it)
+## Driver entry contract (confirmed at #688 integration; crew A owns it)
 
 `publish_runtime` imports the driver from the publishing checkout at
 `tools/fleet/pbcanary.py` — it never duplicates the submit-and-verify
