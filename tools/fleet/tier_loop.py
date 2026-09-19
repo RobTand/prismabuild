@@ -331,9 +331,6 @@ def drop_prior_ram_epochs(
     return events
 
 
-    return events
-
-
 def release_incomplete_ram_promotions(
         queue: pool.PoolQueue,
         tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
