@@ -336,33 +336,37 @@ def generation_drift(*, loaded_commit: str,
                      loaded_generation: str) -> dict | None:
     """The active generation's disagreement with this process's own bytes.
 
-    Reads ``RUNTIME_VERSION.json`` through the live ``repo`` name once --
-    the same existing reader path every reload check uses, not a second
-    one -- and compares it with the generation this process imported, which
-    the caller derived from ``__file__``'s immutable root at startup.  The
+    Reads ``RUNTIME_VERSION.json`` through the live ``repo`` name -- the
+    same existing reader path every reload check uses, not a second one --
+    and compares it with the generation this process imported, which the
+    caller derived from ``__file__``'s immutable root at startup.  The
     comparison is the reload fence's, unchanged: a published commit that
     differs from the loaded one, or a published generation name that
     differs while both are known.  ``None`` means the fleet and this
     process agree (or the receipt is unreadable, which was never a move).
 
+    The reads go through ``published_commit`` and ``_generation_at`` rather
+    than an inlined ``json.loads`` for the same reason those helpers exist:
+    they are the one seam the fleet's own convergence tests patch, and a
+    second reading path beside them would be the drift this module refuses.
+
     The return value is the drift half of a ``generation-drift`` record, so
     the refusal, the stamp and any later forensic read all name the same
-    identities from one read.
+    identities from one comparison.
     """
 
-    receipt = _runtime_receipt(RUNTIME_VERSION)
-    published_commit = str(receipt.get("commit") or "")
-    published_generation = str(receipt.get("generation") or "")
-    moved = bool((published_commit and published_commit != loaded_commit) or (
-        loaded_generation and published_generation
-        and loaded_generation != published_generation))
+    current_commit = published_commit()
+    current_generation = _generation_at(RUNTIME_VERSION)
+    moved = bool((current_commit and current_commit != loaded_commit) or (
+        loaded_generation and current_generation
+        and loaded_generation != current_generation))
     if not moved:
         return None
     return {
         "loaded_commit": loaded_commit,
         "loaded_generation": loaded_generation,
-        "published_commit": published_commit,
-        "published_generation": published_generation,
+        "published_commit": current_commit,
+        "published_generation": current_generation,
     }
 
 

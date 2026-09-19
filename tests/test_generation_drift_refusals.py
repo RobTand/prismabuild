@@ -352,8 +352,10 @@ def test_a_role_with_a_stale_argv_is_restarted_from_the_declaration(
     assert signals.sent == [(role, 15)], (
         "the stale-argv role was left running the old shape"
     )
+    # Resolved through the live link, so the replacement's imports are pinned
+    # to one immutable root even if a later publish moves ``repo`` again.
     assert spawned and spawned[0][1] == str(
-        mirror / "repo" / "tools" / "prewarm_loop.py"), (
+        (mirror / "repo" / "tools" / "prewarm_loop.py").resolve()), (
         "the replacement did not come from the active generation"
     )
     assert spawned[0][2:] == ["--readers", "4", "--max-readers", "8"], (
@@ -389,7 +391,7 @@ def test_a_role_from_a_non_active_generation_is_restarted(
 
     assert signals.sent == [(role, 15)]
     assert spawned and spawned[0][1] == str(
-        fleet[0] / "repo" / "tools" / "prewarm_loop.py")
+        (fleet[0] / "repo" / "tools" / "prewarm_loop.py").resolve())
     records = _drift_records(fleet[0] / "pb-queue")
     assert len(records) == 1, records
     assert records[0]["loaded_commit"] == "gen-old-commit"
