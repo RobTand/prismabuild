@@ -331,6 +331,105 @@ def drop_prior_ram_epochs(
     return events
 
 
+def release_incomplete_ram_promotions(
+        queue: pool.PoolQueue,
+        tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+    """Evict ram promotions whose terminal receipt says they did not land (#644).
+
+    A promotion that lands partially files a fragment for the landed subset
+    while the ledger holds ``ram_gib`` for the *declared* range -- and then
+    :func:`_ram_mover_state` counts the pinned-but-failed key as
+    staged/published, so the window never republishes it, no egress fires for
+    a phase the consumer has not passed, and the orphan sweep (which takes
+    only orphans, and a live consumer's promotion is not one) never takes it
+    back.  The half-landed range squats on its full-range tokens until its
+    phase passes or an operator intervenes, and the window reports
+    ``ram-window-stalled`` for room that is held but unusable.
+
+    Refuse-and-release, the issue's first preference: a promotion key that is
+    terminal (neither queued nor running) yet still holds tokens, whose move
+    receipt says anything but a clean landing -- ``complete`` is not True, or
+    a refusal or errors ride with it -- is evicted through the same
+    read-delete-release :func:`stage_release.evict` an egress uses, so the
+    partial files go before the tokens come back and the next window
+    republishes the whole range through the ordinary publish path (no retry
+    row needed: a terminal, unpinned key counts as unpublished).  The event
+    carries the receipt's errors, which is the alert the issue asks for at
+    minimum.
+
+    Fail closed throughout: a key still queued or claimed is the window's or
+    the copy's, not this step's, and a receipt read now would race the mover
+    filing it; a key with no readable move receipt names bytes this step
+    cannot date, so its tokens stay held; an evict that refuses or errors
+    retains them too, and says so on a ``ram-mover-incomplete-retained``
+    event the next cycle retries.
+    """
+
+    events: list[dict[str, object]] = []
+    ram_roots = {
+        str(tier_id): str(record.get("mountpoint") or "")
+        for tier_id, record in tiers.items()
+        if record.get("tier") == "ram" and record.get("mountpoint")
+    }
+    if not ram_roots:
+        return events
+    for tier_id, ram_root in ram_roots.items():
+        try:
+            held = sorted(queue.tier_ledger(tier_id).held_keys())
+        except (OSError, pool.PoolContractError):
+            continue
+        for key in held:
+            if (queue.item_path(pool.READY, key).exists()
+                    or queue.item_path(pool.CLAIMED, key).exists()):
+                # Queued or running: the window or the copy owns this key, and
+                # a receipt read now would race the mover filing it.
+                continue
+            receipt = queue.move_record(key)
+            if not isinstance(receipt, Mapping):
+                # No terminal promotion receipt: a crash before filing holds
+                # nothing past its reap, and anything else holding tokens here
+                # names bytes this step cannot date.  Either way, not released.
+                continue
+            if str(receipt.get("tier_id") or "") != tier_id:
+                continue
+            receipt_errors = receipt.get("errors")
+            if receipt_errors is None:
+                receipt_errors = []
+            elif not isinstance(receipt_errors, list):
+                receipt_errors = [receipt_errors]
+            if (receipt.get("complete") is True and not receipt.get("refusal")
+                    and not receipt_errors):
+                continue      # a clean landing: occupancy, not stranding
+            consumer = str(receipt.get("consumer_action_key") or "")
+            try:
+                outcome = stage_release.evict(
+                    queue, key, consumer_action_key=consumer,
+                    stage_root=ram_root, reason="ram-mover-incomplete")
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                events.append({"event": "ram-mover-incomplete-retained",
+                               "tier_id": tier_id, "mover": key,
+                               "consumer": consumer or None,
+                               "error": repr(exc)})
+                continue
+            assert isinstance(outcome, dict)
+            evict_errors = outcome.get("errors")
+            base = {"tier_id": tier_id, "mover": key,
+                    "consumer": consumer or None,
+                    "range_start_bytes": receipt.get("range_start_bytes"),
+                    "range_end_bytes": receipt.get("range_end_bytes"),
+                    "bytes_staged": receipt.get("bytes_staged"),
+                    "receipt_errors": list(receipt_errors),
+                    "entries_deleted": outcome.get("entries_deleted"),
+                    "tokens_released": outcome.get("tokens_released")}
+            if outcome.get("complete") is True and not evict_errors:
+                events.append({"event": "ram-mover-incomplete-released",
+                               **base})
+            else:
+                events.append({"event": "ram-mover-incomplete-retained",
+                               **base, "evict_errors": list(evict_errors or [])})
+    return events
+
+
 def _ram_window_state(
         queue: pool.PoolQueue, consumer: Mapping[str, object],
         plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
@@ -467,6 +566,48 @@ def ram_residency_window(
     return events
 
 
+#: What :func:`compose_map` last wrote per consumer, so a cycle whose inputs
+#: did not move does not pay a read of every fragment plus an ``os.replace``
+#: on the shared mount (#604).  Keyed by queue root and consumer; the value is
+#: the fingerprint the map was written from and whether a map resulted.  The
+#: loop is single-threaded, so no lock guards it.
+_COMPOSE_FINGERPRINTS: dict[tuple[str, str], tuple[tuple[object, ...], bool]] = {}
+
+
+def _compose_fingerprint(queue: pool.PoolQueue, consumer_action_key: str,
+                         ram_tiers: Mapping[str, Mapping[str, object]] | None,
+                         ) -> tuple[object, ...] | None:
+    """What a consumer's next map is a function of, cheaply (#604).
+
+    The fragment set with their mtimes -- fragments are written once by rename
+    and never mutated, so (name, mtime, size) pins the content -- joined with
+    the ram overlay's inputs (tier, root, epoch), because a remount lays the
+    same fragments under a different header.  ``None`` when the directory
+    cannot be read: that is "compose, not skip".
+    """
+
+    root = queue.residency_fragment_root()
+    try:
+        names = sorted(entry.name for entry in os.scandir(
+            root / consumer_action_key)
+            if entry.is_file() and entry.name.endswith(".json"))
+    except OSError:
+        return None
+    stamped: list[tuple[object, ...]] = []
+    for name in names:
+        try:
+            status = os.stat(root / consumer_action_key / name)
+        except OSError:
+            return None
+        stamped.append((name, status.st_mtime_ns, status.st_size))
+    overlay = tuple(sorted(
+        (str(tier_id), str(record.get("mountpoint") or ""),
+         str(record.get("epoch") or ""))
+        for tier_id, record in (ram_tiers or {}).items()
+        if record.get("tier") == "ram"))
+    return (tuple(stamped), overlay)
+
+
 def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
                 ram_tiers: Mapping[str, Mapping[str, object]] | None = None,
                 ) -> Path | None:
@@ -478,10 +619,16 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
     the only concurrency primitive this mount gives us, so the alternative was
     not a lock -- it was lost entries.
 
-    Recomposed every cycle rather than on a trigger, because the fragments move
-    in both directions: a mover adds one when it finishes, an egress removes
-    one when it deletes the bytes, and a map that still named an evicted range
-    would send the consumer to a path that is gone.
+    Recomposed when the inputs move rather than every cycle (#604): a mover
+    adds a fragment when it finishes, an egress removes one when it deletes
+    the bytes, and a map that still named an evicted range would send the
+    consumer to a path that is gone.  A consumer whose fragment set and mtimes
+    -- and ram overlay inputs -- are unchanged since the map last written
+    from them keeps that map: the rewrite would be byte-identical, and at one
+    loop every 60 s over every live consumer the avoided cost is a read of
+    every fragment plus an ``os.replace`` on the shared mount per consumer
+    per cycle.  Anything unreadable composes rather than skips, and a map
+    that went missing under an unchanged fingerprint is rewritten.
 
     A consumer's ram fragments are laid **over** the stage map rather than
     composed into it (#640): ``compose`` refuses fragments that disagree
@@ -492,6 +639,24 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
     """
 
     root = queue.residency_fragment_root()
+    path = queue.residency_map_path(consumer_action_key)
+    cache_key = (str(queue.root), consumer_action_key)
+    fingerprint = _compose_fingerprint(queue, consumer_action_key, ram_tiers)
+    if fingerprint is None:
+        # Unreadable inputs: compose rather than skip, and drop any memory of
+        # what was last written -- skipping against it afterwards could serve
+        # a decision made while the inputs could not be read.
+        _COMPOSE_FINGERPRINTS.pop(cache_key, None)
+    else:
+        cached = _COMPOSE_FINGERPRINTS.get(cache_key)
+        if cached is not None and cached[0] == fingerprint:
+            present = path.exists()
+            if cached[1] == present:
+                # Same fragments, same overlay inputs, same map outcome as the
+                # last write: the rewrite would be byte-identical.
+                return path if present else None
+            # The map appeared or vanished under an unchanged fingerprint;
+            # fall through and recompose rather than trust the memory.
     fragments = residency_map.read_fragments(root, consumer_action_key)
     stage_fragments = [
         fragment for fragment in fragments
@@ -501,12 +666,13 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
         fragment for fragment in fragments
         if str(fragment.get("tier_id", "")).startswith(
             storage_tiers.RAM_TIER_PREFIX)]
-    path = queue.residency_map_path(consumer_action_key)
     if not stage_fragments:
         # Nothing staged (yet, or any more).  Removing the map is what puts the
         # consumer back on the pool; leaving a stale one would point it at
         # deleted files, which reads as corruption rather than as a cache miss.
         path.unlink(missing_ok=True)
+        if fingerprint is not None:
+            _COMPOSE_FINGERPRINTS[cache_key] = (fingerprint, False)
         return None
     mapping = residency_map.compose(stage_fragments)
     if ram_fragments:
@@ -522,7 +688,10 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
                     mapping, live, ram_tier_id=tier_id,
                     ram_root=str(record.get("mountpoint") or ""),
                     ram_epoch=epoch)
-    return residency_map.write_map(path, mapping)
+    result = residency_map.write_map(path, mapping)
+    if fingerprint is not None:
+        _COMPOSE_FINGERPRINTS[cache_key] = (fingerprint, True)
+    return result
 
 
 def _planned_consumers(
@@ -1252,6 +1421,14 @@ def cycle(
     # nothing reads as ram-resident until a promotion lands under the current
     # epoch.
     for event in drop_prior_ram_epochs(queue, announced_tiers):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
+    # Incomplete promotions before anything prices the tier (#644): a
+    # half-landed promotion squats on its full-range tokens until its phase
+    # passes, so its tokens come back here -- partial files deleted first,
+    # through the egress's own read-delete-release -- and the adoption, the
+    # pressure, the sweep and both windows below see the room and republish
+    # the whole range through the ordinary publish path.
+    for event in release_incomplete_ram_promotions(queue, announced_tiers):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     # Adopt, then evict under pressure, then publish.  The order is the policy
     # (#598): a range a live consumer's window names is taken over rather than
