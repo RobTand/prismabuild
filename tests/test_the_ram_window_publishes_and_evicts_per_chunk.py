@@ -20,6 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
+import pbstatus  # noqa: E402
+
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -222,3 +224,32 @@ def test_chunk_mover_keys_join_the_plans_key_set() -> None:
         _key(phase, chunk) for phase in range(3) for chunk in range(2)]
     assert set(residency_plan.ram_mover_keys(plan)) <= set(
         residency_plan.mover_keys(plan))
+
+
+def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
+    """The starvation census must not read a chunked phase as having no ram
+    leg: its per-chunk promotion state rides beside the phase's own
+    (whole-phase) ``ram``, which stays ``None`` so the existing shape holds."""
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    plan = _plan()
+    residency_plan.freeze(queue, plan)
+    queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={
+        "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
+        "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
+        "leads": residency_plan.leads_for(plan)})
+    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
+    assert queue.tier_ledger(RAM_TIER).acquire(_key(0, 0), {"ram_gib": 1})
+
+    entry = pbstatus._starvation_plan_entry(
+        queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),
+        notes=[], unreadable=[], now=0.0)
+
+    first = entry["phases"][0]
+    assert first["ram"] is None
+    assert [(chunk["chunk_index"], chunk["staged"])
+            for chunk in first["ram_chunks"]] == [(0, True), (1, False)]
+    assert entry["cursor_gap"]["ram"]["remaining_phases"] == 3
+    assert entry["cursor_gap"]["ram"]["unstaged_phases"] == [
+        "phase-0000", "phase-0001", "phase-0002"]

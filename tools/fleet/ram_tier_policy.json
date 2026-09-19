@@ -3,6 +3,7 @@
   "ceiling_gib_max": 256,
   "mountpoint": "/ram/prewarm",
   "prefill_depth": null,
+  "promotion_chunk_gib": null,
   "schema": "prismabuild.ram_tier_policy.v1",
   "system_reserve_gib": 16,
   "window_gib_default": 160

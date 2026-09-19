@@ -96,6 +96,16 @@ _PHASE_KEYS = frozenset({
     # node and an egress node, sealed with the plan like the stage's own so
     # the same frozen decomposition governs both tiers.  A phase without
     # them predates the ram tier and is staged exactly as it always was.
+    "ram_mover_row", "ram_egress_row",
+    # The same leg cut into chunks (#673): one promotion node plus one
+    # egress node per chunk, in read order, each carrying its chunk index
+    # and its chunk range.  A phase carries either the pair or the chunks,
+    # never both: chunking is a sealing-time property, and a node whose
+    # range is its phase's whole range follows the whole-phase rules.
+    "ram_chunks"})
+#: What one chunk of a chunked ram leg says, and nothing else.
+_CHUNK_KEYS = frozenset({
+    "chunk_index", "start_bytes", "end_bytes", "stage_gib",
     "ram_mover_row", "ram_egress_row"})
 _PLAN_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "stage_root", "manifest_sha256",
@@ -164,6 +174,9 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
             entry["ram_mover_row"] = dict(phase["ram_mover_row"])  # type: ignore[arg-type]
         if phase.get("ram_egress_row") is not None:
             entry["ram_egress_row"] = dict(phase["ram_egress_row"])  # type: ignore[arg-type]
+        if phase.get("ram_chunks") is not None:
+            entry["ram_chunks"] = [  # type: ignore[arg-type]
+                {**chunk} for chunk in phase["ram_chunks"]]
         built.append(entry)
     body: dict[str, object] = {
         "schema": RESIDENCY_PLAN_SCHEMA_V1,
@@ -179,6 +192,90 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
     if demand_source is not None:
         body["demand_source"] = dict(demand_source)
     return validate_plan(body)
+
+
+def _checked_ram_chunk(chunk: object, *, phase_name: str, chunk_index: int,
+                       phase_start: int, digest: str, ram_tier_id: str,
+                       ram_demand_kind: str,
+                       keys: set[str]) -> dict[str, object]:
+    """One chunk of a chunked ram leg, checked the way the whole-phase leg is.
+
+    ``phase_start`` is where the previous chunk ended (or the phase began):
+    chunks tile their phase with no gap and no overlap, because a gap is
+    bytes nobody promotes and an overlap is bytes two promotions both
+    publish under one name -- the same cover rule the phases themselves
+    answer to.  ``keys`` is the plan's shared action-key set, so a chunk
+    node never shares a key with anything else sealed.
+    """
+
+    where = f"plan phase {phase_name!r} chunk {chunk_index}"
+    if not isinstance(chunk, Mapping):
+        raise ResidencyPlanError(f"{where} must be an object")
+    stray = sorted(set(chunk) - _CHUNK_KEYS)
+    if stray:
+        raise ResidencyPlanError(f"unknown ram-chunk fields: {stray}")
+    if (isinstance(chunk.get("chunk_index"), bool)
+            or chunk.get("chunk_index") != chunk_index):
+        raise ResidencyPlanError(
+            f"{where} names chunk {chunk.get('chunk_index')!r}, "
+            f"not its position {chunk_index}")
+    cstart, cend = chunk.get("start_bytes"), chunk.get("end_bytes")
+    for field, number in (("start_bytes", cstart), ("end_bytes", cend)):
+        if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+            raise ResidencyPlanError(f"{where} needs a whole {field}")
+    assert isinstance(cstart, int) and isinstance(cend, int)
+    if cend <= cstart:
+        raise ResidencyPlanError(f"{where} must be non-empty and half-open")
+    if cstart != phase_start:
+        raise ResidencyPlanError(
+            f"{where} starts at {cstart}, not where the previous one "
+            f"ended ({phase_start})")
+    floor = storage_tiers.stage_tokens_for_bytes(cend - cstart)
+    declared = chunk.get("stage_gib")
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < floor:
+        raise ResidencyPlanError(
+            f"{where} claims {declared} GiB for a range that occupies {floor}")
+    ram_mover = chunk.get("ram_mover_row")
+    if not isinstance(ram_mover, Mapping):
+        raise ResidencyPlanError(f"{where} needs a ram_mover_row")
+    ram_key = _action_key(ram_mover.get("action_key"),
+                          where="ram_mover_row.action_key")
+    if ram_key in keys:
+        raise ResidencyPlanError("two plan rows share an action key")
+    keys.add(ram_key)
+    ram_pin = ram_mover.get("residency")
+    if not isinstance(ram_pin, Mapping):
+        raise ResidencyPlanError(
+            f"{where} has a ram mover row with no residency block; its "
+            f"occupancy would be released the moment it finished")
+    if (ram_pin.get("tier_id") != ram_tier_id
+            or ram_pin.get("manifest_sha256") != digest
+            or ram_pin.get("range_start_bytes") != cstart
+            or ram_pin.get("range_end_bytes") != cend):
+        raise ResidencyPlanError(
+            f"{where} names bytes {cstart}..{cend} of {digest[:12]} for the "
+            f"ram tier {ram_tier_id}, and its ram mover row pins "
+            f"{ram_pin.get('range_start_bytes')}.."
+            f"{ram_pin.get('range_end_bytes')} of "
+            f"{str(ram_pin.get('manifest_sha256'))[:12]} on "
+            f"{ram_pin.get('tier_id')}")
+    ram_resources = ram_mover.get("resources")
+    if (not isinstance(ram_resources, Mapping)
+            or int(ram_resources.get(ram_demand_kind, 0)) < floor):
+        raise ResidencyPlanError(
+            f"{where} asks the ram tier for "
+            f"{None if not isinstance(ram_resources, Mapping) else ram_resources.get(ram_demand_kind)}"
+            f", below the {floor} GiB its range occupies")
+    ram_egress = chunk.get("ram_egress_row")
+    if not isinstance(ram_egress, Mapping):
+        raise ResidencyPlanError(f"{where} needs a ram_egress_row")
+    ram_egress_key = _action_key(ram_egress.get("action_key"),
+                                 where="ram_egress_row.action_key")
+    if ram_egress_key in keys:
+        raise ResidencyPlanError("two plan rows share an action key")
+    keys.add(ram_egress_key)
+    return {**dict(chunk), "ram_mover_row": dict(ram_mover),
+            "ram_egress_row": dict(ram_egress)}
 
 
 def validate_plan(value: object) -> dict[str, object]:
@@ -319,6 +416,36 @@ def validate_plan(value: object) -> dict[str, object]:
         # stands for are ENOSPC waiting to happen (#640).
         ram_mover = phase.get("ram_mover_row")
         ram_egress = phase.get("ram_egress_row")
+        ram_chunks = phase.get("ram_chunks")
+        if ram_chunks is not None and (
+                ram_mover is not None or ram_egress is not None):
+            raise ResidencyPlanError(
+                f"plan phase {name!r} carries both a ram mover and ram "
+                f"chunks; chunking is a sealing-time property, and one "
+                f"phase seals one shape")
+        if ram_chunks is not None:
+            if ram_tier_id is None or ram_demand_kind is None:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} carries ram chunks, but the plan "
+                    f"names no ram tier for them to promote onto")
+            if not isinstance(ram_chunks, list) or not ram_chunks:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} needs a non-empty ram_chunks list")
+            checked_chunks: list[dict[str, object]] = []
+            position = start
+            for index, chunk in enumerate(ram_chunks):
+                checked = _checked_ram_chunk(
+                    chunk, phase_name=name, chunk_index=index,
+                    phase_start=position, digest=digest,
+                    ram_tier_id=ram_tier_id,
+                    ram_demand_kind=ram_demand_kind, keys=keys)
+                checked_chunks.append(checked)
+                position = int(checked["end_bytes"])
+            if position != end:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} ends at {end}, not where its last "
+                    f"chunk ended ({position})")
+            rows["ram_chunks"] = checked_chunks
         if ram_egress is not None and ram_mover is None:
             raise ResidencyPlanError(
                 f"plan phase {name!r} has a ram egress with no ram mover to free")
@@ -474,8 +601,7 @@ def mover_keys(plan: Mapping[str, object]) -> list[str]:
     phases = plan["phases"]
     assert isinstance(phases, list)
     out = [str(phase["mover_row"]["action_key"]) for phase in phases]
-    out += [str(phase["ram_mover_row"]["action_key"]) for phase in phases
-            if "ram_mover_row" in phase]
+    out += ram_mover_keys(plan)
     return out
 
 
@@ -484,13 +610,20 @@ def ram_mover_keys(plan: Mapping[str, object]) -> list[str]:
 
     Empty for a plan whose submitter sealed no ram leg, which is the answer
     that leaves those consumers staged exactly as they were before the tier
-    existed.
+    existed.  A chunked phase contributes one key per chunk, in chunk order.
     """
 
     phases = plan["phases"]
     assert isinstance(phases, list)
-    return [str(phase["ram_mover_row"]["action_key"]) for phase in phases
-            if "ram_mover_row" in phase]
+    out = []
+    for phase in phases:
+        chunks = phase.get("ram_chunks")
+        if isinstance(chunks, list):
+            out += [str(chunk["ram_mover_row"]["action_key"])
+                    for chunk in chunks]
+        elif "ram_mover_row" in phase:
+            out.append(str(phase["ram_mover_row"]["action_key"]))
+    return out
 
 
 def remaining(plan: Mapping[str, object],
@@ -544,6 +677,32 @@ def runahead_step_gib(plan: Mapping[str, object],
     return max((int(phase["stage_gib"]) for phase in ahead), default=0)
 
 
+def _budget_from_step(step: int, *, has_accepted: bool,
+                      capacity_gib: int | None,
+                      runahead_cap_gib: int | None = None) -> int | None:
+    """The two-regime run-ahead bound for one step size, or ``None``.
+
+    ``None`` is "the tier's free capacity is the only bound", which is what
+    a caller that cannot say what the tier's capacity is gets.  The regimes
+    are ``runahead_budget_gib``'s: a consumer that has accepted nothing gets
+    one step, a rolling one gets the tier less one step of room.
+    """
+
+    if (runahead_cap_gib is not None and (
+            isinstance(runahead_cap_gib, bool)
+            or not isinstance(runahead_cap_gib, int) or runahead_cap_gib <= 0)):
+        raise ResidencyPlanError("runahead_cap_gib must be a positive whole GiB")
+    if not has_accepted:
+        budget = step
+    elif capacity_gib is None:
+        budget = None
+    else:
+        budget = max(0, int(capacity_gib) - step)
+    if budget is None or runahead_cap_gib is None:
+        return budget
+    return min(budget, runahead_cap_gib)
+
+
 def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
                         *, capacity_gib: int | None,
                         runahead_cap_gib: int | None = None) -> int | None:
@@ -559,20 +718,53 @@ def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
     never loosens it, and ``None`` keeps the two-regime semantics above.
     """
 
-    if (runahead_cap_gib is not None and (
-            isinstance(runahead_cap_gib, bool)
-            or not isinstance(runahead_cap_gib, int) or runahead_cap_gib <= 0)):
-        raise ResidencyPlanError("runahead_cap_gib must be a positive whole GiB")
-    step = runahead_step_gib(plan, accepted_phase)
-    if not accepted(plan, accepted_phase):
-        budget = step
-    elif capacity_gib is None:
-        budget = None
-    else:
-        budget = max(0, int(capacity_gib) - step)
-    if budget is None or runahead_cap_gib is None:
-        return budget
-    return min(budget, runahead_cap_gib)
+    return _budget_from_step(
+        runahead_step_gib(plan, accepted_phase),
+        has_accepted=accepted(plan, accepted_phase),
+        capacity_gib=capacity_gib, runahead_cap_gib=runahead_cap_gib)
+
+
+def _legs(plan: Mapping[str, object], *, mover_role: str) -> list[dict[str, object]]:
+    """One publishable unit per phase, or per chunk of a chunked phase.
+
+    A chunked ram leg (#673) promotes and frees per chunk: each chunk is a
+    leg carrying its phase, its chunk index and its own mover and egress
+    rows, in read order.  Every other leg -- the stage's, and a ram leg
+    sealed whole -- is one leg over the phase's whole range with no chunk
+    index, which is what keeps those decisions byte-identical to today.
+    """
+
+    egress_role = _MOVEMENT_ROLES[mover_role]
+    legs = []
+    for phase in plan["phases"]:
+        assert isinstance(phase, Mapping)
+        chunks = (phase.get("ram_chunks")
+                  if mover_role == "ram_mover_row" else None)
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                assert isinstance(chunk, Mapping)
+                legs.append({
+                    "phase": str(phase["name"]),
+                    "chunk_index": int(chunk["chunk_index"]),
+                    "start_bytes": int(chunk["start_bytes"]),
+                    "end_bytes": int(chunk["end_bytes"]),
+                    "stage_gib": int(chunk["stage_gib"]),
+                    "mover_row": chunk["ram_mover_row"],
+                    "egress_row": chunk["ram_egress_row"],
+                })
+        elif mover_role in phase:
+            legs.append({
+                "phase": str(phase["name"]),
+                "chunk_index": None,
+                "start_bytes": int(phase["start_bytes"]),
+                "end_bytes": int(phase["end_bytes"]),
+                "stage_gib": int(phase["stage_gib"]),
+                "mover_row": phase[mover_role],
+                "egress_row": phase[egress_role],
+            })
+        # Else sealed without this tier's leg: nothing here to publish,
+        # hold or evict, and the stage window owns whatever it carries.
+    return legs
 
 
 def window(plan: Mapping[str, object], *, accepted_phase: str | None,
@@ -601,6 +793,15 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     nothing on the tier: published by nobody, evicted by nobody.  Each
     entry's ``mover_row`` and ``egress_row`` are the pair the role names.
 
+    A phase the submitter sealed chunked (#673) decides per chunk: each
+    chunk is a leg with its own ``chunk_index``, its own range and its own
+    rows, in read order.  Chunks of the phase being read are the reader's
+    near-term food -- they publish as their turn comes, outside the
+    run-ahead budget -- while later chunks spend it, so the budget buys
+    several chunks instead of zero phases.  A chunk of a passed phase
+    evicts through its own egress node; a leg sealed whole carries no
+    ``chunk_index`` and decides exactly as it always did.
+
     A mover that is terminal but no longer pinned is deliberately absent from
     ``published``: its key is a content hash, so a second campaign over the
     same manifest seals the same key, and a ``done`` record left from an
@@ -623,50 +824,59 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
         raise ResidencyPlanError(
             f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
             f"not {mover_role!r}")
-    egress_role = _MOVEMENT_ROLES[mover_role]
     phases = list(plan["phases"])                                # type: ignore[arg-type]
     ahead = remaining(plan, accepted_phase)
-    current = len(phases) - len(ahead)
+    ahead_names = [str(phase["name"]) for phase in ahead]
+    current_name = ahead_names[0] if ahead_names else None
+    passed = {str(phase["name"]) for phase in phases[:len(phases) - len(ahead)]}
     already = set(published)
     resident = set(staged)
+    legs = _legs(plan, mover_role=mover_role)
 
-    evict = [
-        {"phase": phase["name"],
-         "mover_action_key": str(phase[mover_role]["action_key"]),
-         "egress_row": phase[egress_role],
-         "stage_gib": phase["stage_gib"]}
-        for phase in phases[:current]
-        if mover_role in phase
-        and str(phase[mover_role]["action_key"]) in resident
-    ]
+    evict = []
+    for leg in legs:
+        if leg["phase"] not in passed:
+            continue
+        key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+        if key not in resident:
+            continue
+        entry: dict[str, object] = {"phase": leg["phase"]}
+        if leg["chunk_index"] is not None:
+            entry["chunk_index"] = leg["chunk_index"]
+        entry.update({"mover_action_key": key, "egress_row": leg["egress_row"],
+                      "stage_gib": leg["stage_gib"]})
+        evict.append(entry)
 
     publish: list[dict[str, object]] = []
     room = int(free_gib)
     has_accepted = accepted(plan, accepted_phase)
-    budget = runahead_budget_gib(plan, accepted_phase, capacity_gib=capacity_gib,
-                                runahead_cap_gib=runahead_cap_gib)
+    future = [leg for leg in legs if leg["phase"] in ahead_names[1:]]
+    step = max((int(leg["stage_gib"]) for leg in future), default=0)
+    budget = _budget_from_step(
+        step, has_accepted=has_accepted, capacity_gib=capacity_gib,
+        runahead_cap_gib=runahead_cap_gib)
     # Everything the window already holds beyond the phase being read.  The
-    # phase the consumer is inside is not run-ahead: it is the work.
-    runahead = sum(int(phase["stage_gib"]) for phase in ahead[1:]
-                   if mover_role in phase
-                   and str(phase[mover_role]["action_key"]) in already)
+    # phase the consumer is inside is not run-ahead: it is the work -- and
+    # for a chunked leg that means the current phase's chunks promote as
+    # their turn comes, while later chunks spend the budget (#673).
+    runahead = sum(int(leg["stage_gib"]) for leg in future
+                   if str(leg["mover_row"]["action_key"]) in already)  # type: ignore[index]
     stall: dict[str, object] | None = None
-    for offset, phase in enumerate(ahead):
-        if mover_role not in phase:
-            # Sealed without this tier's leg: nothing here to publish, hold
-            # or evict, and the stage window owns whatever it carries.
+    for leg in legs:
+        if leg["phase"] not in ahead_names:
             continue
-        key = str(phase[mover_role]["action_key"])
+        key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
         if key in already:
             continue
-        need = int(phase["stage_gib"])
-        if offset and budget is not None and runahead + need > budget:
+        need = int(leg["stage_gib"])
+        is_current = leg["phase"] == current_name
+        if not is_current and budget is not None and runahead + need > budget:
             stall = {
                 "consumer_action_key": plan["consumer_action_key"],
                 "tier_id": plan["tier_id"],
                 "accepted_phase": accepted_phase,
-                "reading_phase": str(ahead[0]["name"]),
-                "blocked_phase": str(phase["name"]),
+                "reading_phase": current_name,
+                "blocked_phase": str(leg["phase"]),
                 "blocked_gib": need,
                 "runahead_gib": runahead,
                 "runahead_budget_gib": budget,
@@ -678,17 +888,23 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
                     f"accepted progress past {accepted_phase}" if has_accepted
                     else "the consumer's first accepted progress record"),
             }
+            if leg["chunk_index"] is not None:
+                stall["chunk_index"] = leg["chunk_index"]
             break
         if need > room:
             break
         room -= need
-        if offset:
+        if not is_current:
             runahead += need
-        publish.append({
-            "phase": phase["name"], "mover_action_key": key,
-            "start_bytes": phase["start_bytes"], "end_bytes": phase["end_bytes"],
-            "stage_gib": need, "mover_row": phase[mover_role],
+        row: dict[str, object] = {"phase": leg["phase"]}
+        if leg["chunk_index"] is not None:
+            row["chunk_index"] = leg["chunk_index"]
+        row.update({
+            "mover_action_key": key,
+            "start_bytes": leg["start_bytes"], "end_bytes": leg["end_bytes"],
+            "stage_gib": need, "mover_row": leg["mover_row"],
         })
+        publish.append(row)
     return {"publish": publish, "evict": evict, "stall": stall}
 
 

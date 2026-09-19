@@ -1239,8 +1239,14 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                        for fragment in fragments
                        if isinstance(fragment.get("mover_action_key"), str)}
     mover_keys = [str(phase["mover_row"]["action_key"]) for phase in plan["phases"]]
-    ram_keys = [str(phase["ram_mover_row"]["action_key"]) for phase in plan["phases"]
-                if "ram_mover_row" in phase]
+    ram_keys = []
+    for phase in plan["phases"]:
+        chunks = phase.get("ram_chunks")
+        if isinstance(chunks, list):
+            ram_keys += [str(chunk["ram_mover_row"]["action_key"])
+                         for chunk in chunks if isinstance(chunk, Mapping)]
+        elif "ram_mover_row" in phase:
+            ram_keys.append(str(phase["ram_mover_row"]["action_key"]))
     staged = _starvation_holders(queue, tier_id, mover_keys, notes)
     ram_staged = (_starvation_holders(queue, ram_tier_id, ram_keys, notes)
                   if ram_tier_id is not None else {})
@@ -1254,6 +1260,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                               or bool(staged.get(mover_key)),
                  "staged": staged.get(mover_key)}
         ram: dict | None = None
+        ram_chunks: list[dict] | None = None
         if "ram_mover_row" in phase:
             ram_key = str(phase["ram_mover_row"]["action_key"])
             ram = {"mover_action_key_prefix": ram_key[:12],
@@ -1264,10 +1271,28 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                    # have promotion fragments and which have none.
                    "fragment": ram_key in fragment_movers,
                    "fragment_tier_id": fragment_movers.get(ram_key)}
+        elif isinstance(phase.get("ram_chunks"), list):
+            # A chunked phase reports per chunk, beside the phase's own
+            # ``ram`` staying ``None``: the census shape for whole-phase
+            # legs is unchanged, and a chunked phase is never mistaken for
+            # one with no ram leg at all.
+            ram_chunks = []
+            assert isinstance(phase["ram_chunks"], list)
+            for chunk in phase["ram_chunks"]:
+                chunk_key = str(chunk["ram_mover_row"]["action_key"])  # type: ignore[index]
+                ram_chunks.append({
+                    "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
+                    "mover_action_key_prefix": chunk_key[:12],
+                    "published": chunk_key in ready or chunk_key in claimed
+                                 or bool(ram_staged.get(chunk_key)),
+                    "staged": ram_staged.get(chunk_key),
+                    "fragment": chunk_key in fragment_movers,
+                    "fragment_tier_id": fragment_movers.get(chunk_key)})
         phases.append({"name": str(phase["name"]),
                        "start_bytes": phase["start_bytes"],
                        "end_bytes": phase["end_bytes"],
                        "stage": stage, "ram": ram,
+                       "ram_chunks": ram_chunks,
                        "stage_fragment": mover_key in fragment_movers})
     entry = {"consumer_action_key_prefix": prefix, "valid": True,
              "tier_id": tier_id, "ram_tier_id": ram_tier_id,
@@ -1276,6 +1301,29 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
              "cursor_gap": _starvation_cursor_gap(
                  names, accepted_index, phases, now=now)}
     return entry
+
+
+def _starvation_leg_staged(phase: dict, leg: str):
+    """Whether one census phase counts as staged on one leg.
+
+    A chunked phase is staged only when every chunk is: a partially
+    promoted phase still needs tmpfs room, and counting it staged would
+    tell the census the frontier is further than the bytes prove.  ``None``
+    is no leg at all, which the caller filters before counting.
+    """
+
+    if leg == "stage":
+        return phase["stage"].get("staged")
+    if phase["ram"] is not None:
+        return phase["ram"].get("staged")
+    chunks = phase.get("ram_chunks")
+    if isinstance(chunks, list) and chunks:
+        states = [chunk.get("staged") for chunk in chunks
+                  if isinstance(chunk, dict)]
+        if states and all(state is True for state in states):
+            return True
+        return False
+    return None
 
 
 def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
@@ -1295,10 +1343,12 @@ def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
     for leg in ("stage", "ram"):
         remaining = [(index, phase) for index, phase in enumerate(phases)
                      if (accepted_index is None or index >= accepted_index)
-                     and (leg == "stage" or phase["ram"] is not None)]
-        staged = sum(1 for _, phase in remaining if phase[leg].get("staged") is True)
+                     and (leg == "stage" or phase["ram"] is not None
+                          or phase.get("ram_chunks") is not None)]
+        staged = sum(1 for _, phase in remaining
+                     if _starvation_leg_staged(phase, leg) is True)
         unstaged = [phase["name"] for _, phase in remaining
-                    if phase[leg].get("staged") is not True]
+                    if _starvation_leg_staged(phase, leg) is not True]
         gap[leg] = {
             "remaining_phases": len(remaining),
             "staged_phases": staged,
