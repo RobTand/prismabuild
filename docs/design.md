@@ -1292,7 +1292,10 @@ an attributable directory whose lock is released by the kernel. A reaper must
 acquire the owner lock before removal; local PID absence cannot establish that
 a writer on another host is dead.
 The `pb_gc` operator command also collects legacy root staging copies, claims,
-worker locks, and empty result staging namespaces. Applying any sweep requires
+worker locks, empty result staging namespaces, private ingest directories, and
+— under an explicit `--canary-root` — the canary run namespaces, each gated by
+the retention rule its own `run.json` stamps: a valid canary record naming the
+namespace, recognizable members only, and a seal or an expired age backstop. Applying any sweep requires
 an explicitly acknowledged maintenance window with every CAS producer paused
 on every host and candidate checkout roots verified absent on all hosts.
 Neither file age nor local process inspection proves remote abandonment.

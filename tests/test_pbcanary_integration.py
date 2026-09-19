@@ -249,3 +249,77 @@ def test_summary_dir_writer(tmp_path: Path) -> None:
                                      "run-x", rows, {"exit_code": 0})
     assert (out / "canary-result.json").is_file()
     assert "leg-1: ok" in (out / "summary.txt").read_text()
+
+
+# --- the driver's --priority governs every leg (issue #690) ------------------
+
+
+def test_leg_specs_never_pin_priority_over_the_driver() -> None:
+    """Legs 3-4 used to append a pinned --priority after the driver's own.
+
+    On a repeated single-value flag pbrun's argparse lets the later value
+    win, so a driver override silently never reached those legs; the
+    specs now carry no priority flag at all.
+    """
+
+    flags: list[str] = []
+    for spec in (leg3.build(), leg4.build()):
+        flags += list(spec.get("pbrun_flags", []))
+        for action in spec.get("actions", []):
+            flags += list(action.get("pbrun_flags", []))
+    assert "--priority" not in flags
+
+
+@pytest.mark.parametrize("pinned", [
+    ["--wait-s", "60", "--priority", "-10"],
+    ["--wait-s", "60", "--priority=-10"],
+])
+def test_submit_leg_refuses_a_spec_side_priority(tmp_path: Path, pinned) -> None:
+    """A spec pinning --priority is a loud refusal, never a silent override."""
+
+    spec = {"name": "leg-1", "argv": ["true"], "demand": {}}
+    with pytest.raises(pbcanary.PreconditionRefused, match="--priority"):
+        pbcanary.submit_leg({"pbrun": tmp_path / "pbrun.py"}, spec,
+                            tmp_path, "run-1", -10, None,
+                            extra_flags=pinned)
+
+
+def test_submit_leg_puts_the_drivers_priority_on_the_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One --priority per submission, and it is the driver's value."""
+
+    captured: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = '{"action_key": "key-1"}'
+        stderr = ""
+
+    def fake_run(argv, *, timeout_s):
+        captured["argv"] = list(argv)
+        return _Done()
+
+    monkeypatch.setattr(pbcanary, "run_process", fake_run)
+    spec = {"name": "leg-1", "argv": ["true"], "demand": {"mem_gb": 8}}
+    key, detach = pbcanary.submit_leg(
+        {"pbrun": tmp_path / "pbrun.py"}, spec, tmp_path, "run-1", -7, None)
+
+    argv = captured["argv"]
+    assert argv.count("--priority") == 1
+    assert argv[argv.index("--priority") + 1] == "-7"
+    assert key == "key-1"
+    assert detach["action_key"] == "key-1"
+
+
+# --- the run namespace records its GC owner (issue #690) ---------------------
+
+
+def test_run_record_is_a_stamped_gc_contract() -> None:
+    record = pbcanary.build_run_record(
+        run_id="run-x", generation=None, requested=["leg-1"], priority=-10,
+        checkout=Path("/checkout"), published_root=Path("/published"))
+    assert record["schema"] == "prismabuild.pbcanary.run.v1"
+    assert record["run_id"] == "run-x"
+    assert "pb_gc" in record["gc"]["owner"]
+    assert "quiescent-store" in record["gc"]["rule"]

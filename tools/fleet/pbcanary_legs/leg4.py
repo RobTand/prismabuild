@@ -13,9 +13,10 @@ this module owns the fixed spec and the mechanical verdict):
   1. ``spec = build()`` — fixed spec; refuses unless the recomputed
      input digest matches the pinned constant below.
   2. Driver submits both ``spec["actions"]`` rows (each: its ``--tag``,
-     ``--timeout-s 300 --wait-s 300 --priority -10 --deterministic``,
-     argv ``python3 tools/fleet/pbcanary_legs/leg4.py --run-action``, env
-     ``PBCANARY_LEG4_TAG`` + ``PBCANARY_LEG4_INPUTS``).
+     ``--timeout-s 300 --wait-s 300 --deterministic``, argv
+     ``python3 tools/fleet/pbcanary_legs/leg4.py --run-action``, env
+     ``PBCANARY_LEG4_TAG`` + ``PBCANARY_LEG4_INPUTS``; the driver injects
+     its own ``--priority`` once — issue #690).
   3. Each action prints one canonical-JSON envelope line (see
      ``LEG4_SCHEMA``) and exits 0. The envelope carries NO hostname, NO
      timestamp, NO tag, NO paths — only the shared inputs and their
@@ -74,7 +75,8 @@ LEG4_TAGS = ("sparky", "sparklina")
 
 LEG4_WAIT_S = 300  # CPU-leg wait budget from #688.
 LEG4_TIMEOUT_S = 300
-LEG4_PRIORITY = -10  # Canary never contends with real work.
+LEG4_PRIORITY = -10  # Documented default; the driver's --priority governs
+# the submission (issue #690 dedupe: specs do not pin --priority).
 
 #: Shared inputs: (seed-suffix, size). Small on purpose — leg 4 tests
 #: fanout+join agreement, not volume (volume is leg 3's job).
@@ -143,8 +145,6 @@ def build() -> dict:
                     str(LEG4_TIMEOUT_S),
                     "--wait-s",
                     str(LEG4_WAIT_S),
-                    "--priority",
-                    str(LEG4_PRIORITY),
                     "--deterministic",
                     "--retry-safe",
                     "--max-attempts",

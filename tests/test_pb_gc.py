@@ -15,6 +15,10 @@ staging copy out of ``core._copy_to_staging``, and the in-flight lock out of
 this test's own idea of the lock's digest or the namespace's name, would prove
 that ``pb_gc`` agrees with the test rather than with the store.
 
+The canary kind (issue #690) holds the same discipline: its run records and
+seals are minted through the driver's own ``build_run_record`` /
+``write_json``, never hand-written JSON.
+
 The tool runs as a subprocess wherever liveness is the subject. Both live
 guards are answers about *other* processes, ``flock`` on an open file
 description and an inode held open in ``/proc``, and an in-process call would
@@ -30,6 +34,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -605,3 +610,201 @@ def test_private_ingest_with_uncertain_ownership_is_retained(tmp_path: Path, une
     before = _snapshot(cas_root)
     _run("--cas-root", str(cas_root), "--apply", "--min-age-hours", "0")
     assert _snapshot(cas_root) == before
+
+
+# --------------------------------------------------------------------------
+# Canary run namespaces (issue #690)
+# --------------------------------------------------------------------------
+
+
+def _canary_namespace(root: Path, run_id: str, *, seal: bool = True,
+                      age_hours: float = 0.0) -> Path:
+    """Mint one run namespace with the driver's own record machinery.
+
+    The registration record comes from ``pbcanary.build_run_record`` and
+    both JSON files land through ``pbcanary.write_json``, so a driver-side
+    layout change is a failing test here rather than a sweeper that
+    quietly stops sweeping.
+    """
+
+    import pbcanary
+
+    namespace = root / run_id
+    (namespace / "leg-3").mkdir(parents=True)
+    pbcanary.write_json(
+        namespace / pb_gc.CANARY_RUN_RECORD,
+        pbcanary.build_run_record(
+            run_id=run_id, generation=None, requested=["leg-3"],
+            priority=-10, checkout=REPOSITORY, published_root=REPOSITORY))
+    (namespace / "leg-3" / "leg3-chunk-0.bin").write_bytes(b"chunk bytes")
+    if seal:
+        pbcanary.write_json(
+            namespace / pb_gc.CANARY_SEAL_RECORD,
+            {"run_id": run_id, "results": [], "verdict": {"sealed": True}})
+    stamp = time.time() - age_hours * 3600.0
+    for path in (namespace, namespace / "leg-3"):
+        os.utime(path, (stamp, stamp))
+    return namespace
+
+
+def _canary_store(tmp_path: Path) -> tuple[Path, Path]:
+    cas_root = tmp_path / "cas"
+    cas_root.mkdir()
+    canary_root = tmp_path / "pb-canary"
+    canary_root.mkdir()
+    return cas_root, canary_root
+
+
+def test_a_sealed_old_canary_namespace_is_swept_and_a_fresh_one_kept(
+    tmp_path: Path,
+):
+    """Sealed runs are reclamation, fresh ones are evidence in residence.
+
+    Both namespaces are sealed and structurally identical; only the age
+    backstop separates them, which is the retention rule the driver
+    stamps into run.json and the report shows as reclaimable bytes.
+    """
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    old = _canary_namespace(canary_root, "old-run", age_hours=48)
+    fresh = _canary_namespace(canary_root, "fresh-run")
+
+    screen = _run("--cas-root", str(cas_root), "--canary-root", str(canary_root))
+    assert str(old) in screen and str(fresh) in screen
+    assert "nothing removed; re-run with --apply" in screen
+    assert "sealed canary run" in screen
+    assert "younger than the age backstop" in screen
+
+    _run("--cas-root", str(cas_root), "--canary-root", str(canary_root),
+         "--apply")
+
+    assert not old.exists(), "a sealed, backstop-old canary run was kept"
+    assert fresh.exists(), "a fresh sealed canary run was swept"
+
+
+def test_an_unsealed_canary_namespace_goes_only_after_the_backstop(
+    tmp_path: Path,
+):
+    """A driver that died mid-run leaves no seal; the backstop covers it."""
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    abandoned = _canary_namespace(
+        canary_root, "abandoned-run", seal=False, age_hours=48)
+    live = _canary_namespace(canary_root, "live-run", seal=False)
+
+    screen = _run("--cas-root", str(cas_root), "--canary-root", str(canary_root),
+                  "--apply")
+
+    assert not abandoned.exists()
+    assert live.exists()
+    assert "no seal and older than the age backstop" in screen
+
+
+def test_a_chunk_still_open_protects_the_whole_canary_namespace(
+    tmp_path: Path,
+):
+    """The /proc guard, on the canary's own payload bytes."""
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    namespace = _canary_namespace(canary_root, "open-run", age_hours=48)
+    chunk = namespace / "leg-3" / "leg3-chunk-0.bin"
+    descriptor = os.open(chunk, os.O_RDONLY)
+    try:
+        screen = _run("--cas-root", str(cas_root), "--canary-root",
+                      str(canary_root), "--apply", "--min-age-hours", "0")
+        assert namespace.exists(), "a namespace with an open chunk was swept"
+    finally:
+        os.close(descriptor)
+    assert "open in another process" in screen
+
+
+def test_a_canary_namespace_with_an_unrecognized_member_is_kept_whole(
+    tmp_path: Path,
+):
+    """A symlink inside a namespace is not the driver's writing."""
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    namespace = _canary_namespace(canary_root, "odd-run", age_hours=48)
+    (namespace / "leg-3" / "elsewhere").symlink_to(tmp_path / "cas")
+    before = _snapshot(canary_root)
+
+    screen = _run("--cas-root", str(cas_root), "--canary-root",
+                  str(canary_root), "--apply", "--min-age-hours", "0")
+
+    assert _snapshot(canary_root) == before
+    assert "unrecognized member" in screen
+
+
+def test_a_namespace_the_driver_does_not_own_is_kept(tmp_path: Path):
+    """Only a valid canary run record naming the namespace condemns it."""
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    foreign = canary_root / "foreign"
+    foreign.mkdir()
+    (foreign / "run.json").write_text('{"run_id": "foreign"}\n',
+                                      encoding="utf-8")
+    renamed = _canary_namespace(canary_root, "not-my-name", age_hours=48)
+    shutil.move(str(renamed), str(canary_root / "other-name"))
+    (canary_root / "notes.txt").write_text("not a run\n", encoding="utf-8")
+    before = _snapshot(canary_root)
+
+    screen = _run("--cas-root", str(cas_root), "--canary-root",
+                  str(canary_root), "--apply", "--min-age-hours", "0")
+
+    assert _snapshot(canary_root) == before
+    assert "not a canary run record" in screen
+    assert "run record does not name this namespace" in screen
+    assert "unexpected entry" in screen
+
+
+def test_without_a_canary_root_the_kind_surveys_nothing(tmp_path: Path):
+    """The second root is opt-in, and opting in creates nothing."""
+
+    cas_root, canary_root = _canary_store(tmp_path)
+    namespace = _canary_namespace(canary_root, "survivor-run", age_hours=48)
+
+    screen = _run("--cas-root", str(cas_root), "--apply", "--min-age-hours", "0")
+
+    assert namespace.exists()
+    assert "canary namespace: not surveyed (pass --canary-root)" in screen
+
+    empty = tmp_path / "empty-canary"
+    empty.mkdir()
+    plan = pb_gc.survey(cas_root, min_age_s=0.0, canary_root=empty)
+    assert plan["sections"][pb_gc.KIND_CANARY]["remove"] == []
+    assert list(os.listdir(empty)) == []
+
+
+def test_an_absent_or_symlinked_canary_root_is_refused(tmp_path: Path):
+    cas_root, canary_root = _canary_store(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (canary_root / "link").symlink_to(elsewhere, target_is_directory=True)
+    _canary_namespace(canary_root / "link", "through-the-link", age_hours=48)
+
+    completed = subprocess.run(
+        [sys.executable, str(TOOL), "--cas-root", str(cas_root),
+         "--canary-root", str(tmp_path / "absent")],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 2
+    assert "not a canary root" in completed.stderr
+
+    with pytest.raises(pb_gc.SweepError, match="symlink"):
+        pb_gc.survey(cas_root, min_age_s=0.0, canary_root=canary_root / "link")
+    assert (canary_root / "link" / "through-the-link").is_dir()
+
+
+def test_a_replaced_canary_namespace_is_preserved(tmp_path: Path):
+    cas_root, canary_root = _canary_store(tmp_path)
+    namespace = _canary_namespace(canary_root, "replaced-run", age_hours=48)
+    plan = pb_gc.survey(cas_root, min_age_s=0.0, canary_root=canary_root)
+    row = next(row for row in plan["remove"]
+               if row["kind"] == pb_gc.KIND_CANARY)
+
+    shutil.rmtree(namespace)
+    namespace.mkdir()
+    (namespace / "leg-4").mkdir()
+
+    assert "changed" in pb_gc._remove(row)
+    assert namespace.is_dir()
