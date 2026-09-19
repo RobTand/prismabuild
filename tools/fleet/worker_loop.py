@@ -74,10 +74,23 @@ generation's loop publishes without this lock, so two generations can still
 interleave one offer file, a publisher that lands after its deadline keeps its
 original ``announced_unix``, and the claim, lease and token mutations that
 follow a claim decision remain synchronous and unbounded elsewhere.
+
+**A claim is taken only under the active generation.**  The poll-top fence
+above guards the poll, but publication and discovery sit between it and the
+claim, and a publisher can activate a successor inside exactly that window.
+So the loop re-reads the one tiny ``RUNTIME_VERSION.json`` through the live
+``repo`` name immediately before ``serve_once`` and compares it with the
+generation its own bytes came from: on mismatch it refuses the claim, stamps
+one immutable ``generation-drift/`` record under the queue root naming both
+generations, its pid, host and a timestamp, and exits for the supervisor to
+respawn.  An action already executing is atomic to the loop and finishes
+under the generation that claimed it; rolling publishes converge at these
+claim boundaries and are never interrupted mid-action.
 """
 import argparse
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import socket
@@ -279,25 +292,143 @@ def post_park_marker(gate: dict) -> Path | None:
     return marker
 
 
-def _generation_at(path: Path) -> str:
+def _runtime_receipt(path: Path) -> dict:
+    """The parsed receipt at ``path``, or ``{}`` when it cannot be read.
+
+    One read serves both identities a receipt carries -- the commit and the
+    generation name -- so a claim-boundary handshake costs one file open,
+    not one per compared field.  ``{}`` is "unknown", never "absent": the
+    callers' existing rule stands, and a receipt that cannot be read does
+    not license a refusal any more than it licenses a claim.
+    """
+
     try:
         value = json.loads(path.read_text())
-        return str(value.get("generation") or "") if isinstance(value, dict) else ""
     except (OSError, ValueError):
-        return ""
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _commit_at(path: Path) -> str:
-    try:
-        return str(json.loads(path.read_text()).get("commit") or "")
-    except (OSError, ValueError):
-        return ""
+    return str(_runtime_receipt(path).get("commit") or "")
+
+
+def _generation_at(path: Path) -> str:
+    return str(_runtime_receipt(path).get("generation") or "")
 
 
 def published_commit() -> str:
     """The commit at the live generation boundary, or "" if unknown."""
 
     return _commit_at(RUNTIME_VERSION)
+
+
+#: Where a loop that refuses drifted work files the refusal.  A directory
+#: under the queue's own root, spelled like the queue's other record
+#: namespaces (``workers/``, ``attempts/``, ``prewarm/``), so a reader of
+#: the queue finds it where the queue keeps everything else.
+GENERATION_DRIFT_DIR = "generation-drift"
+#: The one schema every record in that namespace carries.
+GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
+
+
+def generation_drift(*, loaded_commit: str,
+                     loaded_generation: str) -> dict | None:
+    """The active generation's disagreement with this process's own bytes.
+
+    Reads ``RUNTIME_VERSION.json`` through the live ``repo`` name once --
+    the same existing reader path every reload check uses, not a second
+    one -- and compares it with the generation this process imported, which
+    the caller derived from ``__file__``'s immutable root at startup.  The
+    comparison is the reload fence's, unchanged: a published commit that
+    differs from the loaded one, or a published generation name that
+    differs while both are known.  ``None`` means the fleet and this
+    process agree (or the receipt is unreadable, which was never a move).
+
+    The return value is the drift half of a ``generation-drift`` record, so
+    the refusal, the stamp and any later forensic read all name the same
+    identities from one read.
+    """
+
+    receipt = _runtime_receipt(RUNTIME_VERSION)
+    published_commit = str(receipt.get("commit") or "")
+    published_generation = str(receipt.get("generation") or "")
+    moved = bool((published_commit and published_commit != loaded_commit) or (
+        loaded_generation and published_generation
+        and loaded_generation != published_generation))
+    if not moved:
+        return None
+    return {
+        "loaded_commit": loaded_commit,
+        "loaded_generation": loaded_generation,
+        "published_commit": published_commit,
+        "published_generation": published_generation,
+    }
+
+
+def record_generation_drift(drift: dict, *, actor: str,
+                            queue_root, detail: dict | None = None) -> Path | None:
+    """Stamp one immutable ``generation-drift/`` record, or ``None``.
+
+    The loud half of the handshake.  On 2026-09-19 the fleet's active
+    generation sat on a four-day-old tree for hours while workers and roles
+    kept executing, and the drift was found by forensic inspection because
+    nothing anywhere had written a word: loops printed to logs that scroll
+    away, and no record named both generations.  This is that record.  It
+    follows the queue's own conventions -- canonical JSON, published by
+    atomic first-writer link under the queue root, mode 0444 so not even
+    its writer can quietly edit it -- and it is written once per incident,
+    because every caller stamps on the way out the door (a worker exits;
+    a supervisor restarts a role), not per poll.
+
+    Best effort in the same direction as the park marker: a loop that
+    cannot write the stamp still refuses, because the refusal is the
+    safety and the stamp is the evidence.
+    """
+
+    record = {
+        "schema": GENERATION_DRIFT_SCHEMA,
+        "actor": actor,
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "unix": round(time.time(), 3),
+        "loaded_commit": str(drift.get("loaded_commit") or ""),
+        "loaded_generation": str(drift.get("loaded_generation") or ""),
+        "published_commit": str(drift.get("published_commit") or ""),
+        "published_generation": str(drift.get("published_generation") or ""),
+        "detail": dict(detail or {}),
+    }
+    raw = pb._canonical_bytes(record) + b"\n"
+    digest = hashlib.sha256(raw).hexdigest()[:8]
+    path = (Path(queue_root) / GENERATION_DRIFT_DIR
+            / (f"{int(record['unix'] * 1000):013d}-{record['host']}"
+               f"-{record['pid']}-{digest}.json"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pb._atomic_publish(path, raw)
+    except OSError:
+        return None
+    return path
+
+
+def _refuse_moved_runtime(drift: dict, *, host: str, boundary: str) -> None:
+    """Stamp the drift, say it loudly, and leave the exit to the caller."""
+
+    stamped = record_generation_drift(
+        drift, actor="worker_loop", queue_root=SH / "pb-queue")
+    print(f"[{host}] runtime moved "
+          f"{drift['loaded_commit'][:12] or '(unversioned)'} -> "
+          f"{drift['published_commit'][:12]}"
+          + (f"; generation {drift['loaded_generation']} -> "
+             f"{drift['published_generation']}"
+             if drift["loaded_generation"]
+             and drift["published_generation"] != drift["loaded_generation"]
+             else "")
+          + f"; drift stamped "
+          f"{stamped.name if stamped is not None else 'UNWRITABLE'}"
+          + f"; refusing the claim at {boundary}"
+          + "; exiting so the supervisor reloads it",
+          flush=True)
 
 
 def publication_lock_path() -> Path:
@@ -880,18 +1011,39 @@ def _run_loop(stop_requested):
                   f"name from this poll on", flush=True)
             host = renamed_to
             offered = offered_tags(host)
-        current = published_commit()
-        current_generation = _generation_at(RUNTIME_VERSION)
-        if (current and current != loaded_commit) or (
-                loaded_generation and current_generation
-                and loaded_generation != current_generation):
-            print(f"[{host}] runtime moved "
-                  f"{loaded_commit[:12] or '(unversioned)'} -> "
-                  f"{current[:12]}"
-                  + (f"; generation {loaded_generation} -> {current_generation}"
-                     if loaded_generation and current_generation != loaded_generation else "")
-                  + "; exiting so the supervisor reloads it",
-                  flush=True)
+        # Fence stale imported bytes before the first queue read or mutation,
+        # and again at the top of every later poll.  In particular, an old
+        # orphan reaper must never classify a record emitted by a successor's
+        # pbrun schema merely because the successor was activated while this
+        # loop was between actions.  The first pass through this check is the
+        # loop's startup check, and it runs both directions: a loop started
+        # from a generation older than the fleet's and one resurrected from a
+        # generation newer than the fleet retreated to both refuse here.
+        #
+        # This is defense in depth around the claim-time handshake below, not
+        # a replacement for it: publication can still move after this read
+        # and before serve_once, which is exactly the window the handshake
+        # closes.  Cross-generation queue-schema rollout therefore remains an
+        # expand/converge/contract operation; this local fence only closes
+        # the much larger window in which a loop that already observes the
+        # successor keeps touching the queue before exiting.
+        #
+        # The name is re-read every poll, not read once at startup.  A box can
+        # be renamed under a running loop, and a loop that cached the name it
+        # started with kept announcing the old one for the rest of its life:
+        # after sparklina was renamed, twenty loops went on offering
+        # `gx10-6b77`, which showed as a second live node whose admission was
+        # permanently `unavailable` because nothing published counters under
+        # that name.  Every action that matched only that name would have
+        # starved.  The offer follows the box.
+        #
+        # The old name's `workers/<name>.json` is left to expire on its own
+        # rather than removed here: this loop is one of many on the box and
+        # cannot know whether a sibling still answers to the old name.
+        drift = generation_drift(loaded_commit=loaded_commit,
+                                 loaded_generation=loaded_generation)
+        if drift is not None:
+            _refuse_moved_runtime(drift, host=host, boundary="poll top")
             return 0
         gate = read_maintenance_gate()
         if gate is not None:
@@ -1069,6 +1221,30 @@ def _run_loop(stop_requested):
         # so a box whose every poll raises stops rather than spinning: that
         # shape is the box being broken, not the items.
         if stop_requested():
+            return 0
+        # The claim-time handshake.  Everything above -- offer publication,
+        # queue discovery -- may have taken seconds, and a publisher can
+        # activate a successor generation inside exactly that window, so the
+        # poll-top fence alone let a worker claim an action the fleet had
+        # already moved off of: agreement at the top of the poll, execution
+        # of bytes the fleet retired, silence in between.  That was the
+        # 2026-09-19 incident's worker half.  So the generation identity is
+        # re-read here, immediately before the claim, through the same
+        # existing reader -- one file, the tiny receipt -- and on mismatch
+        # the claim is refused, one drift record is stamped, and the loop
+        # exits for the supervisor to respawn from the active generation.
+        # A worker never executes an action sealed for a fleet it is not.
+        #
+        # The boundary is the claim, deliberately: an action already
+        # executing under ``serve_once`` is atomic to this loop and finishes
+        # under the generation that claimed it, which is also what
+        # publish_runtime's rolling convergence depends on -- loops cycle at
+        # their own boundaries while a publish converges, and nothing here
+        # fights that by interrupting work in flight.
+        drift = generation_drift(loaded_commit=loaded_commit,
+                                 loaded_generation=loaded_generation)
+        if drift is not None:
+            _refuse_moved_runtime(drift, host=host, boundary="claim boundary")
             return 0
         try:
             outcome = queue.serve_once(
