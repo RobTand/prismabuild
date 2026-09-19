@@ -38,6 +38,12 @@ MOVER = "a" * 64
 
 
 def _cycle(queue, tmp_path, writable_bytes):
+    # The root exists, as a discovered dataset's mountpoint always does: a
+    # root the loop cannot register offers no capacity (#631), so a fixture
+    # that only names a path would test the refusal instead of the supply
+    # arithmetic these tests are about.
+    (tmp_path / "stage").mkdir(exist_ok=True)
+
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",
@@ -164,6 +170,10 @@ def test_a_record_without_a_writable_source_is_minted_as_before(tmp_path):
     reinterpreted: its capacity is taken as the whole supply, as it was."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
+
+    # As above: a registrable root, or the refusal answers instead of the
+    # minting this test pins.
+    (tmp_path / "stage").mkdir(exist_ok=True)
 
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
