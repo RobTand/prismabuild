@@ -26,7 +26,10 @@ def _no_zfs(argv: list[str]) -> str:
     raise OSError(f"no {argv[0]} on this box")
 
 
-def _ram_tier(tmp_path: Path, options: str) -> dict[str, object]:
+def _ram_tier(tmp_path: Path, options: str,
+               # The fixture box offers no jobs; the guard's own tests cover
+               # a nonzero offer (#645).
+               worker_mem_gb: int | None = 0) -> dict[str, object]:
     mount = tmp_path / "ram"
     mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
@@ -54,7 +57,7 @@ def _ram_tier(tmp_path: Path, options: str) -> dict[str, object]:
             "system_reserve_gib": 16, "prefill_depth": None,
         },
         statvfs=statvfs, proc_mounts=str(proc / "mounts"),
-        meminfo_path=str(proc / "meminfo"))
+        meminfo_path=str(proc / "meminfo"), worker_mem_gb=worker_mem_gb)
     return tiers[storage_tiers.tier_id("ram", HOST)]
 
 

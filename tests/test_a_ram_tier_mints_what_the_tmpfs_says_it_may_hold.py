@@ -95,7 +95,10 @@ def _statvfs(mount: Path, *, size_gib: int, free_gib: int, frsize: int = 4096):
 
 def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
               statvfs=None, options: str = "rw,noswap,size=256G",
-              policy_over: dict | None = None) -> dict[str, object] | None:
+              policy_over: dict | None = None,
+              # The fixture box offers no jobs; the guard's own tests cover
+              # a nonzero offer (#645).
+              worker_mem_gb: int | None = 0) -> dict[str, object] | None:
     mount = mount if mount is not None else _mount(tmp_path)
     proc_mounts, meminfo, arcstats = _proc_files(tmp_path, mount,
                                                  options=options)
@@ -103,7 +106,8 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
         host=HOST, runner=_no_zfs, arcstats_path=arcstats,
         ram_policy=_policy(mount, **(policy_over or {})),
         statvfs=statvfs or _statvfs(mount, size_gib=256, free_gib=200),
-        proc_mounts=proc_mounts, meminfo_path=meminfo)
+        proc_mounts=proc_mounts, meminfo_path=meminfo,
+        worker_mem_gb=worker_mem_gb)
     return tiers.get(storage_tiers.tier_id("ram", HOST))
 
 
@@ -149,7 +153,8 @@ def test_the_epoch_is_stamped_at_the_mount_and_survives_the_cycle(
             host=HOST, runner=_no_zfs, arcstats_path=arcstats,
             ram_policy=_policy(mount),
             statvfs=_statvfs(mount, size_gib=256, free_gib=200),
-            proc_mounts=proc_mounts, meminfo_path=meminfo)
+            proc_mounts=proc_mounts, meminfo_path=meminfo,
+            worker_mem_gb=0)
         return tiers[storage_tiers.tier_id("ram", HOST)]
 
     tier = discover()

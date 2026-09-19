@@ -1265,8 +1265,15 @@ def cycle(
     # picked up between cycles without a remount, and a rare operator remount
     # is picked up by the statvfs read inside the same cycle (#640).
     ram_policy = load_ram_policy()
+    # The floor guard's worker demand, read fresh like the policy: what this
+    # host's own loops offer under capacity.mem_gb (#645).  Absent when no
+    # loop has announced under this name, which the admission refuses on
+    # rather than admitting a window beside demand it cannot see.
+    worker_mem_gb = storage_tiers.read_worker_mem_gb(
+        queue.root / pool.WORKERS, host)
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
-                     now=now, ram_policy=ram_policy)
+                     now=now, ram_policy=ram_policy,
+                     worker_mem_gb=worker_mem_gb)
     # The records this box announced last cycle, read before this cycle
     # overwrites them: the ram tier's epoch is compared against its own
     # previous announcement, so a change is said once rather than inferred.
