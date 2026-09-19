@@ -286,3 +286,62 @@ def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None
     assert shard.exists() and partial.exists()
     assert [r["event"] for r in swept] == [stage_release.STAGE_ROOT_REFUSED_EVENT]
     assert _marker(stage)["queue_root"] == os.path.realpath(str(fleet.root))
+
+
+# -- refuse-and-keep: present but unregistered (#631) -------------------------
+
+
+def test_a_present_but_unregistered_root_keeps_tokens_and_refuses_movers(
+    queue, stage, tmp_path, capsys,
+) -> None:
+    """The gate refuses admission without popping the supply.
+
+    A root that is there but is not this queue's mints its whole occupancy --
+    the ledger, the held reservations and every reader keep working -- while
+    the announced record refuses new movers with ``stage_root_admits`` False.
+    Popping the kind instead retired it to zero and turned every ``[]`` read
+    into a ``KeyError``; that is the refuse-and-remove this replaces.
+    """
+
+    other = pool.PoolQueue(tmp_path / "other-queue")
+    other.ensure_layout()
+    stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
+
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(),
+        discover=lambda **_kwargs: {TIER: _record(stage)})
+
+    record = announced[0]
+    assert record["stage_root_owner"].startswith("stage_root_belongs_to_another_queue")
+    assert record["stage_root_admits"] is False
+    assert record["tokens"]["stage_gib"] == 8
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.capacity()["stage_gib"] == 8
+    assert ledger.available()["stage_gib"] == 8
+    assert "stage-root-refuses-movers" in capsys.readouterr().out
+
+
+def test_a_missing_mountpoint_is_pre_registration_not_refusal(
+    queue, tmp_path, capsys,
+) -> None:
+    """Registration never got a chance when the root is not there at all.
+
+    A discovered dataset's mountpoint always exists, so a missing one is a
+    fixture path or a discover anomaly -- not a root withholding capacity.
+    The cycle mints as before and stamps no verdict; the record carries only
+    the owner the registration reported.  This is the shape the supply
+    arithmetic fixtures pin, and the gate must not fire on it.
+    """
+
+    missing = tmp_path / "never-mounted"
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(),
+        discover=lambda **_kwargs: {TIER: _record(missing)})
+
+    record = announced[0]
+    assert record["stage_root_owner"].startswith("stage_root_marker_unwritable")
+    assert "stage_root_admits" not in record
+    assert record["tokens"]["stage_gib"] == 8
+    assert "stage-root-refuses-movers" not in capsys.readouterr().out

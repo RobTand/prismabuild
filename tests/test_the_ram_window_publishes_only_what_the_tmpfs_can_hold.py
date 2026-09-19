@@ -177,3 +177,30 @@ def test_a_window_with_no_free_tokens_publishes_nothing(tmp_path: Path) -> None:
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
     assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+
+
+def test_nothing_is_promoted_against_a_root_that_refuses_admission(
+        tmp_path: Path) -> None:
+    """The stage window's refusal, pointed at the tmpfs (#631).
+
+    A ram root that is present but unregistered keeps its minted supply and
+    admits no new promotions; the deferral names the refusal, and the ram
+    egress path below is untouched by it.
+    """
+
+    queue = _fixture(tmp_path, ram_capacity_gib=2, landed=1)
+    tiers = _tiers(tmp_path)
+    tiers[RAM_TIER] = {**tiers[RAM_TIER],
+                       "stage_root_owner": "stage_root_belongs_to_another_queue: /x",
+                       "stage_root_admits": False}
+
+    events = tier_loop.ram_residency_window(queue, tiers=tiers)
+
+    assert [event for event in events
+            if event["event"] == "ram-mover-published"] == []
+    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    deferred = [event for event in events
+                if event["event"] == "ram-mover-publish-deferred-unregistered-root"]
+    assert len(deferred) == 1
+    assert deferred[0]["tier_id"] == RAM_TIER
+    assert deferred[0]["phases"] == ["phase-0000"]
