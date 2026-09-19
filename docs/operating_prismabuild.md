@@ -2731,6 +2731,17 @@ from a umask-002 worktree would have published `0555`/`0444` (issue #316).
 Which members are programs comes from the Git index, not from a filename or the
 local filesystem, so the answer is the repository's and not the shell's.
 
+### The rollout canary gate (default-OFF)
+
+`tools/fleet/publish_runtime.py --canary` submits the fleet canary (issue
+#688) resolving against the newly activated generation and records
+`verified` or `failed` in the rollout record
+`runtime-generations/<generation>.canary.json`; `--no-canary` records
+`not_run`. The gate lands default-OFF (phase 1) and flips default-ON in a
+follow-up after the first green canary on main. A failed canary marks and
+exits nonzero; it never rolls back and never touches admission. See the
+[canary runbook](canary_runbook_2026-09-19.md).
+
 ## Smoke-test a transport
 
 `tools/fleet/seal_and_publish.py --transport pool|slurm` seals one trivial
