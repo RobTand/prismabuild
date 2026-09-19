@@ -1253,6 +1253,23 @@ def fill_supply_from_records(
             continue
         if not _measured_the_pool(record):
             continue
+        # A record may rebuild ``best`` from None only if it is a reader
+        # of the pool: a mover receipt (any era, sealed or not) or any
+        # record carrying a sealed fill demand.  Anything else -- a prewarm
+        # cycle's pacing, stamped by another role with no tier and no
+        # reservation -- measured the pool's idle moments, and on
+        # 2026-09-19 one delivering 1.4 MB/s rebuilt ``best`` from None
+        # after an honest shortfall reset it, minting 1 MB/s of fill and
+        # starving the campaign's GPU between bursts (#654 act three).
+        # Once ``best`` stands, any delivery may raise it; only the rebuild
+        # is fenced.
+        if best is None:
+            sealed = record.get(MOVER_FILL_DEMAND_FIELD)
+            is_reader = (record.get("schema") == MOVER_RECEIPT_SCHEMA
+                         or (isinstance(sealed, (int, float))
+                             and not isinstance(sealed, bool) and sealed > 0))
+            if not is_reader:
+                continue
         if ceiling is not None and delivered > ceiling:
             ceiling, ceiling_key, best = None, None, None
         if _fell_short(record):
