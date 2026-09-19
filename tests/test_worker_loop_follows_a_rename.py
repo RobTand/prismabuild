@@ -78,6 +78,11 @@ def _announced(module, names: list[str]) -> list[dict]:
         def announce(self, **kwargs) -> None:
             calls.append(kwargs)
 
+        def ready_items(self) -> list:
+            # The loop discovers the candidate list before it publishes or
+            # admits; this double stands in for an empty queue.
+            return []
+
         def serve_once(self, **_kwargs):
             return None
 

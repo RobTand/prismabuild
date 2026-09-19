@@ -145,9 +145,15 @@ Capacity reconciliation still precedes every nonempty candidate pass; active
 holders are unchanged by the empty-poll return. The worker's independent offer
 refresh and capacity clamp continue on their normal cadence, with the refresh
 itself bounded as described above, and a refresh that does not complete skips
-that poll's admission rather than being served from. This removes scan
-stalls from the critical section but does not bound discovery or shared transition, lease and
-token I/O, which still need ownership-safe recovery qualification (#266).
+that poll's admission rather than being served from. Discovery -- the ready
+records and their aging sidecars -- additionally runs in an abandonable child
+before either: the loop hands the completed snapshot to ``serve_once`` as its
+``ready`` candidate list, and any other outcome skips publication and admission
+for that poll, so a box that cannot read the queue lets its offer expire
+instead of refreshing it on no evidence (#16). The snapshot is advisory, as the
+in-process scan was: an intervening claim wins at the rename. This removes
+scan stalls from the worker's wait, but shared transition, lease and token I/O
+remain synchronous and still need ownership-safe recovery qualification (#266).
 
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
