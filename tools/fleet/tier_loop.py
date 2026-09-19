@@ -331,6 +331,37 @@ def drop_prior_ram_epochs(
     return events
 
 
+def _ram_leg_rows(phase: Mapping[str, object],
+                   chunk_index: object) -> tuple[object, object]:
+    """The ``(mover_row, egress_row)`` one window entry's leg sealed.
+
+    ``(None, None)`` when the entry and the phase disagree about the shape --
+    a chunk entry for a whole-phase leg, or the reverse.  Publishing a row
+    the plan never sealed would put an unsealed key in the queue, so a
+    mismatch publishes nothing rather than guessing which leg was meant.
+    """
+
+    if chunk_index is not None:
+        chunks = phase.get("ram_chunks")
+        if not isinstance(chunks, list):
+            return None, None
+        matches = [chunk for chunk in chunks
+                   if isinstance(chunk, Mapping)
+                   and chunk.get("chunk_index") == chunk_index
+                   and isinstance(chunk.get("ram_mover_row"), Mapping)
+                   and isinstance(chunk.get("ram_egress_row"), Mapping)]
+        if len(matches) != 1:
+            return None, None
+        return matches[0]["ram_mover_row"], matches[0]["ram_egress_row"]
+    # A promotion leg with no egress row still promotes: the plan validator
+    # refuses an egress without a mover, not a mover without an egress, so
+    # the publish side asks for the mover and the evict side asks for both.
+    mover = phase.get("ram_mover_row")
+    egress = phase.get("ram_egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
+
+
 def _ram_window_state(
         queue: pool.PoolQueue, consumer: Mapping[str, object],
         plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
@@ -374,13 +405,17 @@ def _ram_window_state(
         # and its already-published skip would never skip (#640).
         mover_role="ram_mover_row")
     phases = {str(phase["name"]): phase for phase in plan["phases"]}
-    publishable = [
-        (phases[str(entry["phase"])], entry)
-        for entry in decision["publish"]
-        if str(entry["phase"]) in phases
-        and "ram_mover_row" in phases[str(entry["phase"])]
-        and str(phases[str(entry["phase"])]["mover_row"]["action_key"])
-        in stage_staged]
+    publishable = []
+    for entry in decision["publish"]:
+        phase = phases.get(str(entry["phase"]))
+        if phase is None:
+            continue
+        mover_row, _egress_row = _ram_leg_rows(phase, entry.get("chunk_index"))
+        if mover_row is None:
+            continue
+        if str(phase["mover_row"]["action_key"]) not in stage_staged:
+            continue
+        publishable.append((mover_row, entry))
     return {"ram_tier_id": ram_tier_id, "decision": decision,
             "phases": phases, "publishable": publishable,
             "already": already, "staged": staged,
@@ -427,9 +462,10 @@ def ram_residency_window(
                     "accepted_phase", "reading_phase", "blocked_phase",
                     "blocked_gib", "runahead_gib", "runahead_budget_gib",
                     "free_gib", "capacity_gib", "reason", "waiting_for")},
+                "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
-        for phase, entry in state["publishable"]:
-            row = dict(phase["ram_mover_row"])
+        for mover_row, entry in state["publishable"]:
+            row = dict(mover_row)
             try:
                 # A copy has no result to replay, for the same reason the
                 # stage's own rows carry it.
@@ -437,18 +473,23 @@ def ram_residency_window(
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-mover-publish-failed",
                                "consumer": key, "phase": entry["phase"],
+                               "chunk_index": entry.get("chunk_index"),
                                "error": repr(exc)})
                 continue
             events.append({"event": "ram-mover-published", "consumer": key,
                            "phase": entry["phase"],
+                           "chunk_index": entry.get("chunk_index"),
                            "action_key": str(row["action_key"]),
                            "tier_id": ram_tier_id,
                            "ram_gib": int(entry["stage_gib"])})
         for entry in decision["evict"]:
             phase = state["phases"].get(str(entry["phase"]))
-            if phase is None or "ram_egress_row" not in phase:
+            mover_row, egress_row = (
+                _ram_leg_rows(phase, entry.get("chunk_index"))
+                if isinstance(phase, Mapping) else (None, None))
+            if egress_row is None or mover_row is None:
                 continue
-            row = dict(phase["ram_egress_row"])
+            row = dict(egress_row)
             egress_key = str(row["action_key"])
             if (queue.item_path(pool.READY, egress_key).exists()
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
@@ -458,11 +499,14 @@ def ram_residency_window(
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-egress-publish-failed",
                                "consumer": key, "phase": entry["phase"],
+                               "chunk_index": entry.get("chunk_index"),
                                "error": repr(exc)})
                 continue
             events.append({"event": "ram-egress-published", "consumer": key,
-                           "phase": entry["phase"], "action_key": egress_key,
-                           "mover": str(phase["ram_mover_row"]["action_key"]),
+                           "phase": entry["phase"],
+                           "chunk_index": entry.get("chunk_index"),
+                           "action_key": egress_key,
+                           "mover": str(mover_row["action_key"]),  # type: ignore[index]
                            "tier_id": ram_tier_id})
     return events
 
@@ -915,10 +959,21 @@ def window_pressure(
             ram_kind, 0))
         ram_ahead = [
             phase for phase in residency_plan.remaining(plan, accepted)  # type: ignore[arg-type]
-            if "ram_mover_row" in phase]
+            if "ram_mover_row" in phase or "ram_chunks" in phase]
+        # The probe asks in legs, the way the window decides: a chunked
+        # phase's chunks are what its promotions will ask for one by one.
+        ram_room = 0
+        for phase in ram_ahead:
+            chunks = phase.get("ram_chunks")
+            if isinstance(chunks, list):
+                ram_room += sum(
+                    int(chunk.get("stage_gib", 0))
+                    for chunk in chunks if isinstance(chunk, Mapping))
+            else:
+                ram_room += int(phase.get("stage_gib", 0))
         ram_decision = residency_plan.window(
             plan, accepted_phase=accepted,                       # type: ignore[arg-type]
-            free_gib=sum(int(phase["stage_gib"]) for phase in ram_ahead),
+            free_gib=ram_room,
             capacity_gib=ram_capacity,
             published=sorted(state["already"]),                  # type: ignore[arg-type]
             staged=sorted(state["staged"]),                      # type: ignore[arg-type]

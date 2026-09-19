@@ -122,6 +122,63 @@ RAM_TIER_POLICY_SCHEMA_V1 = "prismabuild.ram_tier_policy.v1"
 #: identity a no-op.
 RAM_EPOCH_MARKER = ".prismabuild-ram-epoch.json"
 RAM_EPOCH_MARKER_SCHEMA_V1 = "prismabuild.ram_epoch.v1"
+#: How many promotion chunks a ram window is cut into when the policy pins
+#: no size (#673).  Four, so that at any instant the window holds the chunk
+#: being read, the chunk promoting, and run-ahead on both sides: fewer
+#: chunks reintroduce the phase-sized sawtooth 0->123->0 GiB this exists to
+#: end, and more chunks multiply queue rows and map fragments per phase
+#: without buying overlap -- a promotion at SSD->tmpfs rates fills a 40 GiB
+#: chunk in under a minute, already finer than the reader's phase dwell.
+PROMOTION_CHUNKS_PER_WINDOW = 4
+
+
+def promotion_chunk_gib_for_window(window_gib: int,
+                                   pinned: int | None = None) -> int:
+    """The promotion chunk in whole GiB: the policy's pin, or a window quarter.
+
+    ``pinned`` is the policy's ``promotion_chunk_gib`` -- ``None`` is the
+    derivation, and anything else must already have validated as a positive
+    whole GiB, the way ``read_ram_policy`` holds it.  The floor keeps a
+    window under four GiB sealable rather than deriving a zero chunk.
+    """
+
+    if pinned is not None:
+        if (isinstance(pinned, bool) or not isinstance(pinned, int)
+                or pinned <= 0):
+            raise ValueError("a pinned promotion chunk must be a positive whole GiB")
+        return pinned
+    if isinstance(window_gib, bool) or not isinstance(window_gib, int):
+        raise ValueError("window_gib must be a whole GiB count")
+    return max(1, window_gib // PROMOTION_CHUNKS_PER_WINDOW)
+
+
+def split_range_into_chunks(start_bytes: int, end_bytes: int,
+                            chunk_bytes: int) -> list[tuple[int, int]]:
+    """One phase's ``[start, end)`` as chunk ranges, in read order.
+
+    Contiguous half-open cover, the last chunk short when the range is not a
+    multiple, a single whole-range chunk when the phase fits.  A cut through
+    a manifest entry would hand a mover more bytes than its tokens reserved,
+    so phases stay entry-aligned and chunks stay phase-aligned: this splits
+    byte counts, never entries.
+    """
+
+    if (isinstance(chunk_bytes, bool) or not isinstance(chunk_bytes, int)
+            or chunk_bytes <= 0):
+        raise ValueError("chunk_bytes must be a positive whole number of bytes")
+    for name, value in (("start_bytes", start_bytes),
+                        ("end_bytes", end_bytes)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative whole number of bytes")
+    if end_bytes <= start_bytes:
+        raise ValueError("a chunked range must be non-empty and half-open")
+    chunks = []
+    position = start_bytes
+    while position < end_bytes:
+        stop = min(position + chunk_bytes, end_bytes)
+        chunks.append((position, stop))
+        position = stop
+    return chunks
 
 
 def zpool_binary() -> str:
@@ -549,6 +606,18 @@ def read_ram_policy(path: str | Path) -> dict[str, object] | None:
                               or depth <= 0):
         return None
     policy["prefill_depth"] = depth
+    # The promotion chunk the submitter cuts phases into (#673): a positive
+    # whole GiB pins it, ``None`` derives a window quarter at seal time.
+    # Absent is the generation that predates the pin, which derives too --
+    # refusing it here would un-discover the running campaign's tier, so
+    # the key is copied only when the file carries it and every reader
+    # defaults through ``.get``.
+    if "promotion_chunk_gib" in value:
+        chunk = value["promotion_chunk_gib"]
+        if chunk is not None and (isinstance(chunk, bool)
+                                  or not isinstance(chunk, int) or chunk <= 0):
+            return None
+        policy["promotion_chunk_gib"] = chunk
     if set(value) != set(policy):
         # A field the writer meant and the reader ignores is the quiet half
         # of a disagreement about how big the tier may be.
@@ -859,6 +928,12 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
         "ceiling_bytes": ceiling,
         "capacity_bytes": capacity,
         "window_gib": int(policy["window_gib_default"]),
+        # The chunk the submitter cuts phases into, announced so the seal
+        # reads it off the tier record rather than off its own box (#673):
+        # the pin when the policy pins one, else a window quarter.
+        "promotion_chunk_gib": promotion_chunk_gib_for_window(
+            int(policy["window_gib_default"]),
+            policy.get("promotion_chunk_gib")),  # type: ignore[arg-type]
         "ram_admission": admission,
         "sampled_unix": time.time() if now is None else now,
     }
@@ -1806,10 +1881,12 @@ __all__ = [
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
     "MOVER_RECEIPT_SCHEMA",
+    "PROMOTION_CHUNKS_PER_WINDOW",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",
     "capacity_kind_of",
+    "promotion_chunk_gib_for_window",
     "stage_arc_eligibility",
     "residency_demand",
     "mover_demand_from_receipts",
@@ -1847,6 +1924,7 @@ __all__ = [
     "read_arcstats",
     "read_ram_epoch",
     "read_ram_policy",
+    "split_range_into_chunks",
     "read_worker_mem_gb",
     "split_demand",
     "split_demand_key",

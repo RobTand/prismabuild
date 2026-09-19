@@ -3220,7 +3220,8 @@ discovered from the tmpfs mounted at the policy's mountpoint: capacity is
 the mount's own `statvfs` (`f_bavail × f_frsize` — never `MemAvailable`,
 which moves with other tenants' habits and is not placed RAM), the ceiling
 is its own `size=`, and the record announces `mountpoint`, `mount_options`,
-`size_bytes`, `ceiling_bytes` and `epoch`. The numbers PB is allowed to
+`size_bytes`, `ceiling_bytes`, `window_gib`, the effective
+`promotion_chunk_gib` the submitter cuts phases into, and `epoch`. The numbers PB is allowed to
 decide live in one versioned file, `tools/fleet/ram_tier_policy.json`,
 published with the runtime the way `fleet_boxes.json` is and read fresh by
 the tier loop every cycle: `ceiling_gib_max` (256), `window_gib_default`
@@ -3229,8 +3230,10 @@ phase-granular, the largest phase is 134.2 GiB, and a 112 GiB window made
 `capacity − step` negative, minting a zero run-ahead budget so nothing
 could ever promote — the GPU starved between layers by arithmetic. 160
 fits a phase and stays inside the worker-demand guard's 160.5 GiB bound), `arc_floor_gib`
-(20), `system_reserve_gib` (16), and `prefill_depth` (`null` — the #633
-run-ahead semantics; a positive GiB caps them). **A change to it is a
+(20), `system_reserve_gib` (16), `prefill_depth` (`null` — the #633
+run-ahead semantics; a positive GiB caps them), and `promotion_chunk_gib`
+(`null` — the submitter cuts each phase into window quarters at seal time;
+a positive GiB pins the chunk instead, #673). **A change to it is a
 publish, not an ssh:** the next cycle mints from the mount's own `statvfs`
 again, so a declared policy change or a rare operator remount is picked up
 between cycles automatically. The ceiling is a roof, not a target; the
@@ -3300,7 +3303,15 @@ grows two optional rows per phase — `ram_mover_row`, `ram_egress_row` —
 sealed by the submitter beside the stage's own (`--residency-ram auto`,
 the default, seals the leg when a ram tier is live on the stage's host;
 `off` is the A/B's other arm; a plan already frozen keeps the leg it was
-frozen with). A promotion holds `ram_gib` the way a mover holds
+frozen with). A phase bigger than the tier's effective chunk seals one
+promotion node plus one egress node *per chunk* instead (`ram_chunks`, in
+read order, each carrying its phase, its chunk index and its chunk range —
+#673): at window 160 the chunk is 40 GiB, so a 123 GiB phase seals 4
+chunks and the movement node shape is otherwise today's. A phase that fits
+in one chunk seals the whole-phase pair, and a plan sealed before chunks
+keeps the leg it was frozen with — a node whose range is its phase's whole
+range follows the whole-phase rules, byte-identically. A promotion holds
+`ram_gib` the way a mover holds
 `stage_gib`: from claim, past finish — the pin, read off its receipt — and
 back only when an egress deletes its files, because held tokens equal bytes
 on the tmpfs at every instant and held-by-nobody bytes on a roof-limited
@@ -3314,8 +3325,15 @@ the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
 through the ledger — bounded by the #633 run-ahead budget on the consumer's
 accepted progress (`prefill_depth` may cap it), in the plan's read order,
-and reported as `ram-window-stalled` when it declines. When the consumer's
-progress passes a phase, the ram egress row is published *before* the stage
+and reported as `ram-window-stalled` when it declines. Chunked (#673), the
+window publishes the next *chunk* when free `ram_gib` covers it and the
+budget admits it: chunks of the phase being read are the reader's near-term
+food and promote as soon as their turn comes, while later chunks spend the
+budget — which now buys several chunks instead of zero phases — so the
+tmpfs refills as it frees instead of sawtoothing a whole phase at a time.
+When the consumer's
+progress passes a phase, that phase's ram egress rows are published — one
+per chunk, each through its own node — *before* the stage
 egress in the same cycle: a ram range that outlives its stage range is a
 promotion whose source is gone. Orphaned ram bytes — a failed promotion's
 landed partials, a dead consumer's unclaimed promotions — are eviction
