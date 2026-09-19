@@ -16,9 +16,10 @@ path, with keys:
 * ``argv``: command words run after ``pbrun --``. No container or GPU
   flags live here beyond what the command itself spells (leg 2's
   ``docker run --gpus all``); placement demand lives in ``demand``.
-* ``demand``: resource demand mapping forwarded as repeated
-  ``pbrun --demand k=v`` (e.g. ``{"cpu": 1, "mem_gb": 2}``;
-  leg 2 adds ``"gpu": 1``).
+* ``demand``: resource demand mapping forwarded as one comma-separated
+  ``pbrun --demand k=v,k=v`` aggregate (e.g. ``{"cpu": 1, "mem_gb": 2}``;
+  leg 2 adds ``"gpu": 1``), sorted by name and omitted entirely when empty
+  so pbrun's own defaults stand.
 * ``wait_s``: bounded wait budget for this leg (300 s CPU / 600 s GPU).
 * ``container_image``: ``None`` for bare legs; the digest-pinned
   ``name@sha256:<hex>`` ref for container legs. A container leg whose
