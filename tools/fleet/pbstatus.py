@@ -62,6 +62,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     core as pb, pool, slurm_lane as sl,
 )
+from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
@@ -1029,6 +1030,552 @@ def read_pool(queue_root: str | Path) -> dict:
                       "complete": not unreadable, "unreadable": unreadable,
                       "live_workers": len(live),
                       "sampled_unix": now}}
+
+
+# --------------------------------------------------------------------------
+# Starvation telemetry (--starvation, issue #661)
+# --------------------------------------------------------------------------
+#
+# One JSON blob answering "what is waiting on data": which claimed consumers
+# look stalled on their leads, what each residency plan has staged and
+# promoted, where the read cursor stands against the promoted frontier, what
+# the tiers currently offer and hold, and which claim denials block movers.
+#
+# Read-only and zero new state: every section below derives from records the
+# fleet already files (claims, leases, plans, fragments, tier announcements,
+# ledgers, denial snapshots).  Whatever cannot be derived from those records
+# is emitted as the string ``"not_observable"`` with its entry in the
+# ``not_observable`` gap list saying what would have to be recorded -- that
+# list is a deliverable for the MCP observability design (#660), not an
+# error.
+
+#: Schema of the --starvation JSON blob.
+STARVATION_SCHEMA_V1 = "prismabuild.pbstatus.starvation.v1"
+
+#: What ``not_observable`` fields are spelled, so a reader can test one field
+#: rather than the absence of one.
+NOT_OBSERVABLE = "not_observable"
+
+#: A claimed consumer counts as waiting on data past half its progress grace
+#: with a payload scope to match.  A reporting heuristic, never admission:
+#: the watchdog owns liveness, this owns the sentence "look here first".
+STARVATION_QUIET_FRACTION = 0.5
+
+#: Payload silence corroborating a quiet claim.  Same standing as the
+#: fraction above: a number this blob reports beside the verdict, not a gate.
+STARVATION_CHILD_SILENT_S = 30.0
+
+
+def _starvation_sidecar(path: Path) -> dict | None | Exception:
+    """One claim-adjacent record for the starvation census, failures retained."""
+
+    try:
+        return pool._read_json(path)
+    except (OSError, ValueError) as exc:
+        return exc
+
+
+def _starvation_accepted_phase(lease: Mapping[str, object] | None) -> str | None:
+    """The phase the consumer's progress record says it is reading now.
+
+    The same field ``tier_loop.live_consumers`` reads through
+    ``prewarm_loop.progress_phase`` (the lease's authenticated accepted
+    observation), parsed here so this census does not import the tier loop.
+    ``None`` is "no accepted progress": a ready consumer with no lease, or a
+    claim whose worker has accepted nothing yet.
+    """
+
+    if not isinstance(lease, Mapping):
+        return None
+    observed = lease.get("progress_observation")
+    if not isinstance(observed, Mapping):
+        return None
+    accepted = observed.get("last_accepted")
+    if not isinstance(accepted, Mapping):
+        return None
+    phase = accepted.get("phase")
+    return phase if isinstance(phase, str) and phase else None
+
+
+def _starvation_quiet(lease: Mapping[str, object] | None,
+                      ) -> tuple[float | None, float | None]:
+    """How long this claim has been quiet, and against what it is allowed.
+
+    The same ``quiet_s``/``grace_s`` pair ``_progress_observation`` renders
+    for the jobs table, as numbers rather than prose.  ``(None, None)`` when
+    the lease carries no progress observation, so "no policy" and "quiet"
+    never read the same.
+    """
+
+    if not isinstance(lease, Mapping):
+        return None, None
+    observed = lease.get("progress_observation")
+    if not isinstance(observed, Mapping):
+        return None, None
+    quiet, grace = observed.get("quiet_s"), observed.get("grace_s")
+    if not all(type(value) in (int, float) and math.isfinite(value) and value >= 0
+               for value in (quiet, grace)):
+        return None, None
+    return float(quiet), float(grace)
+
+
+def _starvation_child(lease: Mapping[str, object] | None) -> dict | None:
+    """The payload scope's own liveness, CPU and silence, or ``None``.
+
+    Read off the lease's ``execution_observation`` beside the progress one:
+    a launcher writing log lines is not an application committing work, and
+    a claim quiet at the progress level with a busy child is not waiting on
+    data.  Lenient where ``_execution_observation`` is strict -- identity and
+    freshness there decide the jobs table, here the raw numbers travel with
+    the verdict so the reader audits the rule rather than trusting it.
+    """
+
+    if not isinstance(lease, Mapping):
+        return None
+    observed = lease.get("execution_observation")
+    if not isinstance(observed, Mapping):
+        return None
+    child = observed.get("child")
+    if not isinstance(child, Mapping):
+        return None
+    out: dict[str, object] = {}
+    for field in ("alive", "pid_count", "cpu_seconds", "silent_s"):
+        value = child.get(field)
+        if isinstance(value, bool) and field != "alive":
+            continue
+        if value is None or isinstance(value, (bool, int, float, str)):
+            out[field] = value
+    return out or None
+
+
+def _starvation_waiting(quiet: float | None, grace: float | None,
+                        child: Mapping[str, object] | None) -> tuple[bool, str]:
+    """Whether this claimed consumer reads as waiting on data, and the rule.
+
+    Quiet past half its grace with a payload scope to match: silent long
+    enough to corroborate, or unobserved so nothing exonerates it.  The rule
+    travels as a string because a boolean without its inputs is an opinion.
+    """
+
+    rule = (f"quiet_s/grace_s >= {STARVATION_QUIET_FRACTION:g} and "
+            f"(child unobserved or silent_s >= {STARVATION_CHILD_SILENT_S:g}s)")
+    if quiet is None or grace is None or grace <= 0:
+        return False, rule
+    if quiet / grace < STARVATION_QUIET_FRACTION:
+        return False, rule
+    silent = (child or {}).get("silent_s")
+    if isinstance(silent, bool) or not isinstance(silent, (int, float)):
+        return True, rule
+    return bool(silent >= STARVATION_CHILD_SILENT_S), rule
+
+
+def _starvation_holders(queue: pool.PoolQueue, tier_id: str,
+                        keys: Iterable[str], notes: list[str]) -> dict[str, bool | None]:
+    """Which mover keys hold tier tokens now, the pin the tier loop reads.
+
+    A mover holding tokens is resident by definition -- the invariant
+    ``tier_loop._mover_state`` stages from -- so the ledger answers "what is
+    on the tier" without walking the device.  An unreadable ledger answers
+    ``None`` per key rather than False: "could not read" is not "not staged".
+    """
+
+    try:
+        ledger = queue.tier_ledger(tier_id)
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        notes.append(f"starvation tier ledger {tier_id}: {exc}")
+        return {key: None for key in keys}
+    staged: dict[str, bool | None] = {}
+    for key in keys:
+        try:
+            staged[key] = bool(ledger.holder_tokens(key))
+        except (OSError, ValueError, pool.PoolContractError) as exc:
+            notes.append(f"starvation tier ledger {tier_id} holder {key[:12]}: {exc}")
+            staged[key] = None
+    return staged
+
+
+def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
+                           *, ready: set[str], claimed: set[str],
+                           notes: list[str], unreadable: list[str],
+                           now: float) -> dict:
+    """One residency plan's promotion state, derived, never decided."""
+
+    prefix = key[:12]
+    if not isinstance(raw, Mapping):
+        notes.append(f"starvation plan {prefix}: not a JSON object")
+        unreadable.append(f"starvation plan {prefix}: not a JSON object")
+        return {"consumer_action_key_prefix": prefix, "valid": False,
+                "note": "not a JSON object"}
+    try:
+        plan = residency_plan.validate_plan(raw)
+    except ValueError as exc:
+        notes.append(f"starvation plan {prefix}: {exc}")
+        unreadable.append(f"starvation plan {prefix}: {exc}")
+        return {"consumer_action_key_prefix": prefix, "valid": False,
+                "note": str(exc)}
+    tier_id = str(plan["tier_id"])
+    ram_tier_id = plan.get("ram_tier_id")
+    ram_tier_id = str(ram_tier_id) if isinstance(ram_tier_id, str) else None
+    state = ("claimed" if key in claimed else
+             "ready" if key in ready else "absent")
+    accepted: str | None = None
+    if state == "claimed":
+        lease = _starvation_sidecar(queue.lease_path(key))
+        if isinstance(lease, Exception):
+            notes.append(f"starvation plan {prefix} lease: {lease}")
+            unreadable.append(f"starvation plan {prefix} lease: {lease}")
+        else:
+            accepted = _starvation_accepted_phase(lease)
+    # Fragments are per consumer, one file per mover; an invalid one is
+    # skipped by the reader, exactly as the consumer's own compose sees it.
+    try:
+        fragments = residency_map.read_fragments(
+            queue.residency_fragment_root(), key)
+    except (OSError, ValueError) as exc:
+        notes.append(f"starvation plan {prefix} fragments: {exc}")
+        unreadable.append(f"starvation plan {prefix} fragments: {exc}")
+        fragments = []
+    fragment_movers = {str(fragment.get("mover_action_key")): str(fragment.get("tier_id"))
+                       for fragment in fragments
+                       if isinstance(fragment.get("mover_action_key"), str)}
+    mover_keys = [str(phase["mover_row"]["action_key"]) for phase in plan["phases"]]
+    ram_keys = [str(phase["ram_mover_row"]["action_key"]) for phase in plan["phases"]
+                if "ram_mover_row" in phase]
+    staged = _starvation_holders(queue, tier_id, mover_keys, notes)
+    ram_staged = (_starvation_holders(queue, ram_tier_id, ram_keys, notes)
+                  if ram_tier_id is not None else {})
+    names = [str(phase["name"]) for phase in plan["phases"]]
+    accepted_index = names.index(accepted) if accepted in names else None
+    phases: list[dict] = []
+    for index, phase in enumerate(plan["phases"]):
+        mover_key = str(phase["mover_row"]["action_key"])
+        stage = {"mover_action_key_prefix": mover_key[:12],
+                 "published": mover_key in ready or mover_key in claimed
+                              or bool(staged.get(mover_key)),
+                 "staged": staged.get(mover_key)}
+        ram: dict | None = None
+        if "ram_mover_row" in phase:
+            ram_key = str(phase["ram_mover_row"]["action_key"])
+            ram = {"mover_action_key_prefix": ram_key[:12],
+                   "published": ram_key in ready or ram_key in claimed
+                                or bool(ram_staged.get(ram_key)),
+                   "staged": ram_staged.get(ram_key),
+                   # The question the ram tier exists to answer: which phases
+                   # have promotion fragments and which have none.
+                   "fragment": ram_key in fragment_movers,
+                   "fragment_tier_id": fragment_movers.get(ram_key)}
+        phases.append({"name": str(phase["name"]),
+                       "start_bytes": phase["start_bytes"],
+                       "end_bytes": phase["end_bytes"],
+                       "stage": stage, "ram": ram,
+                       "stage_fragment": mover_key in fragment_movers})
+    entry = {"consumer_action_key_prefix": prefix, "valid": True,
+             "tier_id": tier_id, "ram_tier_id": ram_tier_id,
+             "state": state, "accepted_phase": accepted,
+             "accepted_index": accepted_index, "phases": phases,
+             "cursor_gap": _starvation_cursor_gap(
+                 names, accepted_index, phases, now=now)}
+    return entry
+
+
+def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
+                           phases: list[dict], *, now: float) -> dict:
+    """Where the read cursor stands against the promoted frontier, per leg.
+
+    The read cursor is the accepted phase -- the last phase the consumer's
+    progress record vouches for -- and the frontier is what the ledgers say
+    is staged.  Both are phases, never bytes: the consumer's live byte offset
+    inside the phase it is reading is not recorded anywhere, which is gap
+    entry ``reader_live_cursor`` rather than a number invented here.
+    """
+
+    gap: dict[str, object] = {"accepted_phase": names[accepted_index]
+                              if accepted_index is not None else None,
+                              "live_byte_cursor": NOT_OBSERVABLE}
+    for leg in ("stage", "ram"):
+        remaining = [(index, phase) for index, phase in enumerate(phases)
+                     if (accepted_index is None or index >= accepted_index)
+                     and (leg == "stage" or phase["ram"] is not None)]
+        staged = sum(1 for _, phase in remaining if phase[leg].get("staged") is True)
+        unstaged = [phase["name"] for _, phase in remaining
+                    if phase[leg].get("staged") is not True]
+        gap[leg] = {
+            "remaining_phases": len(remaining),
+            "staged_phases": staged,
+            "unstaged_phases": unstaged,
+            "unstaged_bytes": sum(
+                int(phase["end_bytes"]) - int(phase["start_bytes"])
+                for _, phase in remaining if phase["name"] in unstaged),
+        }
+    return gap
+
+
+def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
+                      notes: list[str], unreadable: list[str]) -> list[dict]:
+    """What each tier currently offers and holds: announcement plus ledger."""
+
+    try:
+        announced = {str(record.get("tier_id")): record
+                     for record in queue.tiers()
+                     if isinstance(record, dict)}
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        notes.append(f"starvation tiers: {exc}")
+        unreadable.append(f"starvation tiers: {exc}")
+        announced = {}
+    try:
+        tier_ids = queue.tier_ids()
+    except OSError as exc:
+        notes.append(f"starvation tier ledgers: {exc}")
+        unreadable.append(f"starvation tier ledgers: {exc}")
+        tier_ids = sorted(announced)
+    tiers: list[dict] = []
+    for tier_id in sorted(set(tier_ids) | set(announced)):
+        record = announced.get(tier_id)
+        supply = (record.get("fill_supply") if isinstance(record, Mapping) else None)
+        supply = dict(supply) if isinstance(supply, Mapping) else None
+        sampled = (record.get("sampled_unix") if isinstance(record, Mapping) else None)
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            capacity, available = ledger.capacity(), ledger.available()
+        except (OSError, ValueError, pool.PoolContractError) as exc:
+            notes.append(f"starvation tier ledger {tier_id}: {exc}")
+            unreadable.append(f"starvation tier ledger {tier_id}: {exc}")
+            capacity, available = None, None
+        held: dict[str, int] | None = None
+        if isinstance(capacity, dict) and isinstance(available, dict):
+            held = {kind: int(capacity.get(kind, 0)) - int(available.get(kind, 0))
+                    for kind in sorted(set(capacity) | set(available))}
+        tiers.append({
+            "tier_id": tier_id,
+            "announced": record is not None,
+            # The tier loop's latest fold, read, not recomputed: best is the
+            # highest pool delivery since the last ceiling, ceiling the most
+            # recent measured shortfall, may_grow whether another reader fits.
+            "fill_source": record.get("fill_source") if isinstance(record, Mapping) else None,
+            "fill_supply": supply,
+            "announced_fill_mb_s": (
+                record.get(storage_tiers.FILL_RECORD_FIELD)
+                if isinstance(record, Mapping) else None),
+            "capacity_bytes": record.get("capacity_bytes") if isinstance(record, Mapping) else None,
+            "sampled_age_s": (now - float(sampled)
+                              if isinstance(sampled, (int, float)) else None),
+            "ledger_capacity": capacity,
+            "ledger_available": available,
+            "ledger_held": held,
+        })
+    return tiers
+
+
+def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict]:
+    """Top claim-denial reasons per host, and the ones blocking movers.
+
+    The snapshot holds each host's latest verdict per action generation
+    (bounded, ungated by time), so this is a census of what hosts last said,
+    not a window.  A denial names no residency, so "blocking a mover" is a
+    join against the live ready/claimed items carrying a range -- the same
+    range test ``movers_claimed_on_tier`` stages on -- and a denial whose key
+    has since left the active queue reads as unknown rather than as either.
+    """
+
+    denials, denial_notes = _pool_claim_denials(queue)
+    notes.extend(denial_notes)
+    movers: set[str] = set()
+    live: set[str] = set()
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            with os.scandir(queue.dir(state)) as entries:
+                paths = sorted(Path(entry.path) for entry in entries
+                               if entry.name.endswith(".json"))
+        except OSError as exc:
+            notes.append(f"starvation mover join {state}: {exc}")
+            continue
+        for path in paths:
+            record = _starvation_sidecar(path)
+            if not isinstance(record, dict):
+                continue
+            key = record.get("action_key")
+            if key != path.stem:
+                continue
+            live.add(str(key))
+            residency = record.get("residency")
+            if isinstance(residency, Mapping) and "range_start_bytes" in residency:
+                movers.add(str(key))
+    by_host: dict[str, dict] = {}
+    for denial in denials:
+        host = str(denial.get("host"))
+        reason = str(denial.get("reason"))
+        key = str(denial.get("action_key"))
+        slot = by_host.setdefault(host, {"reasons": {}, "mover_reasons": {},
+                                         "unknown_keys": 0})
+        slot["reasons"][reason] = slot["reasons"].get(reason, 0) + 1
+        if key in movers:
+            slot["mover_reasons"][reason] = slot["mover_reasons"].get(reason, 0) + 1
+        elif key not in live:
+            slot["unknown_keys"] += 1
+    top: list[dict] = []
+    for host in sorted(by_host):
+        slot = by_host[host]
+        top.append({
+            "host": host,
+            "denials": sum(slot["reasons"].values()),
+            "top_reasons": [{"reason": reason, "count": count} for reason, count in
+                            sorted(slot["reasons"].items(),
+                                   key=lambda item: (-item[1], item[0]))],
+            "mover_blocked": sum(slot["mover_reasons"].values()),
+            "mover_blocked_reasons": [
+                {"reason": reason, "count": count} for reason, count in
+                sorted(slot["mover_reasons"].items(),
+                       key=lambda item: (-item[1], item[0]))],
+            "unknown_keys": slot["unknown_keys"],
+        })
+    return top
+
+
+def _starvation_gaps() -> list[dict]:
+    """What this blob cannot derive, and what would have to be recorded.
+
+    The gap list is a deliverable for the MCP observability design (#660):
+    each entry names the field that reads ``"not_observable"``, why no
+    existing record carries it, and the record that would.
+    """
+
+    return [
+        {"field": "waiting_claims[].cpu_growth",
+         "why_not_observable": "one census carries one cpu_seconds sample of "
+            "the payload scope; growth is a difference of two samples of the "
+            "same scope nonce, which a single snapshot cannot take",
+         "would_need": "consecutive snapshots differenced per scope nonce "
+            "(what pbmetrics recent-cores does across scrapes), or the scope "
+            "sampler publishing a short-window rate beside the lifetime counter"},
+        {"field": "residency_plans[].cursor_gap.live_byte_cursor",
+         "why_not_observable": "progress records name the last accepted phase, "
+            "never the consumer's byte offset inside the phase it is reading",
+         "would_need": "the consumer reporting read_bytes beside accepted_phase "
+            "on its progress record, in the manifest's read order"},
+        {"field": "residency_plans[] accepted_phase for ready consumers",
+         "why_not_observable": "a ready consumer has no lease, so no accepted "
+            "observation exists until it is claimed; its window position reads "
+            "as the beginning",
+         "would_need": "the coordinator publishing the last accepted phase it "
+            "saw for a ready consumer, or the progress channel pre-claim"},
+        {"field": "denial history for finished movers",
+         "why_not_observable": "denial snapshots hold each host's latest "
+            "verdict per live action generation; a mover that finished or was "
+            "evicted leaves no denial behind",
+         "would_need": "the tier loop's window-stalled events retained per "
+            "plan, or a bounded terminal denial archive beside done/"},
+        {"field": "tiers[] live disk delivery",
+         "why_not_observable": "the announced fill is the last cycle's learned "
+            "rate from mover receipts; instantaneous pool delivery between "
+            "cycles is sampled by no record",
+         "would_need": "the tier loop publishing its per-cycle disk pacing "
+            "sample beside the announced record"},
+    ]
+
+
+def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict:
+    """Answer "what is waiting on data" as one JSON-serializable blob.
+
+    A non-atomic diagnostic census over the pool queue root, reusing
+    :func:`read_pool` for the queue walk: claims and leases for quiet
+    consumers, plans and fragments for promotion state, tier announcements
+    and ledgers for fill and occupancy, denial snapshots for who blocks
+    movers.  Nothing here writes, nothing admits, nothing schedules.
+
+    Args:
+        queue_root: The queue root holding ready/claimed state and the
+            residency, tier and reservation records beside it.
+        now: The clock to age samples against; ``time.time()`` when omitted.
+
+    Returns:
+        The starvation blob: waiting claims, residency plans with cursor
+        gaps, tiers, per-host denial tops, the ``not_observable`` gap list,
+        and the notes.  ``complete`` is False when any input was unreadable.
+    """
+
+    moment = time.time() if now is None else float(now)
+    queue = pool.PoolQueue(Path(queue_root).absolute())
+    census = read_pool(queue_root)
+    notes = list(census.get("notes", []))
+    unreadable = list(census.get("queue", {}).get("unreadable", []))
+    jobs = census.get("jobs", [])
+    ready = {str(job["action_key"]) for job in jobs if job.get("state") == "READY"}
+    claimed = {str(job["action_key"]) for job in jobs if job.get("state") == "CLAIMED"}
+    waiting: list[dict] = []
+    for job in jobs:
+        if job.get("state") != "CLAIMED":
+            continue
+        key = str(job.get("action_key"))
+        claim = _starvation_sidecar(queue.item_path(pool.CLAIMED, key))
+        if isinstance(claim, Exception) or not isinstance(claim, dict):
+            notes.append(f"starvation claim {key[:12]}: {claim}")
+            unreadable.append(f"starvation claim {key[:12]}: {claim}")
+            continue
+        residency = claim.get("residency")
+        if not isinstance(residency, Mapping) or not residency.get("leads"):
+            continue  # Not a consumer: nothing to wait on.
+        lease = _starvation_sidecar(queue.lease_path(key))
+        if isinstance(lease, Exception):
+            notes.append(f"starvation lease {key[:12]}: {lease}")
+            unreadable.append(f"starvation lease {key[:12]}: {lease}")
+            lease = None
+        quiet, grace = _starvation_quiet(lease)
+        child = _starvation_child(lease)
+        is_waiting, rule = _starvation_waiting(quiet, grace, child)
+        observed = (lease.get("progress_observation") if isinstance(lease, Mapping)
+                    else None)
+        phase = (observed.get("phase") if isinstance(observed, Mapping)
+                 and isinstance(observed.get("phase"), str) else None)
+        waiting.append({
+            "action_key_prefix": key[:12],
+            "node": claim.get("claimed_host"),
+            "phase": phase,
+            "accepted_phase": _starvation_accepted_phase(lease),
+            "quiet_s": quiet,
+            "grace_s": grace,
+            "quiet_fraction": (quiet / grace if quiet is not None and grace else None),
+            "child": child,
+            # Single-sample growth is gap entry cpu_growth, not a number here.
+            "cpu_growth": NOT_OBSERVABLE,
+            "waiting_on_data": is_waiting,
+            "waiting_rule": rule,
+        })
+    plans: list[dict] = []
+    try:
+        with os.scandir(queue.root / pool.RESIDENCY_PLANS) as entries:
+            plan_paths = sorted(Path(entry.path) for entry in entries
+                                if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        plan_paths = []  # No staged consumer has ever filed a plan.
+    except OSError as exc:
+        notes.append(f"starvation residency plans: {exc}")
+        unreadable.append(f"starvation residency plans: {exc}")
+        plan_paths = []
+    for path in plan_paths:
+        raw = _starvation_sidecar(path)
+        if isinstance(raw, Exception):
+            notes.append(f"starvation plan {path.stem[:12]}: {raw}")
+            unreadable.append(f"starvation plan {path.stem[:12]}: {raw}")
+            plans.append({"consumer_action_key_prefix": path.stem[:12],
+                          "valid": False, "note": str(raw)})
+            continue
+        plans.append(_starvation_plan_entry(
+            queue, path.stem, raw, ready=ready, claimed=claimed,
+            notes=notes, unreadable=unreadable, now=moment))
+    tiers = _starvation_tiers(queue, now=moment, notes=notes, unreadable=unreadable)
+    denial_top = _starvation_denials(queue, notes=notes)
+    return {"schema": STARVATION_SCHEMA_V1,
+            "queue_root": str(queue.root),
+            "sampled_unix": moment,
+            "complete": bool(census.get("queue", {}).get("complete", False))
+                        and not unreadable,
+            "notes": notes,
+            "waiting_claims": waiting,
+            "residency_plans": plans,
+            "tiers": tiers,
+            "denial_top": denial_top,
+            "not_observable": _starvation_gaps()}
+
 
 
 def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
@@ -2064,6 +2611,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print one JSON object with the three lists and any scheduler "
              "notes, and nothing else")
     parser.add_argument(
+        "--starvation", action="store_true",
+        help="print one JSON blob answering what is waiting on data "
+             "(quiet claimed consumers, residency plan promotion state, "
+             "cursor gaps, tier fill and occupancy, denial tops, and the "
+             "not_observable gap list), and nothing else")
+    parser.add_argument(
         "--recent", type=int, default=DEFAULT_RECENT,
         help=f"how many endings to read (default {DEFAULT_RECENT})")
     parser.add_argument(
@@ -2107,6 +2660,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     # have in common is only that neither read the fleet.
     unavailable: list[dict] = []
     pool_partial = False
+
+    if args.starvation:
+        # One blob, one section, same deadline machinery as every other read
+        # of the shared mount.  Pool-only by construction: starvation is a
+        # property of the pull queue's residency records, not of a scheduler.
+        read = bounded("starvation", lambda: read_starvation(args.queue_root),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            print(json.dumps(read["value"], sort_keys=True, indent=1))
+            return 0 if read["value"]["complete"] else EXIT_INCOMPLETE
+        if read["status"] == "error":
+            print(f"pbstatus: starvation read failed "
+                  f"({read['type']}: {read['error']})", file=sys.stderr)
+        else:
+            print(f"pbstatus: starvation read did not answer within "
+                  f"{args.timeout_s:g}s", file=sys.stderr)
+        return EXIT_INCOMPLETE
 
     # Before anything touches the mount, and to stderr so it cannot be
     # mistaken for part of the census.  Counted, never enforced: an operator
