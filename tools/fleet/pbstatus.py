@@ -1238,7 +1238,14 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     fragment_movers = {str(fragment.get("mover_action_key")): str(fragment.get("tier_id"))
                        for fragment in fragments
                        if isinstance(fragment.get("mover_action_key"), str)}
-    mover_keys = [str(phase["mover_row"]["action_key"]) for phase in plan["phases"]]
+    mover_keys = []
+    for phase in plan["phases"]:
+        chunks = phase.get("stage_chunks")
+        if isinstance(chunks, list):
+            mover_keys += [str(chunk["mover_row"]["action_key"])
+                           for chunk in chunks if isinstance(chunk, Mapping)]
+        elif "mover_row" in phase:
+            mover_keys.append(str(phase["mover_row"]["action_key"]))
     ram_keys = []
     for phase in plan["phases"]:
         chunks = phase.get("ram_chunks")
@@ -1254,11 +1261,35 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     accepted_index = names.index(accepted) if accepted in names else None
     phases: list[dict] = []
     for index, phase in enumerate(plan["phases"]):
-        mover_key = str(phase["mover_row"]["action_key"])
-        stage = {"mover_action_key_prefix": mover_key[:12],
-                 "published": mover_key in ready or mover_key in claimed
-                              or bool(staged.get(mover_key)),
-                 "staged": staged.get(mover_key)}
+        stage: dict | None = None
+        stage_chunks: list[dict] | None = None
+        stage_fragment = False
+        if "mover_row" in phase:
+            mover_key = str(phase["mover_row"]["action_key"])
+            stage = {"mover_action_key_prefix": mover_key[:12],
+                     "published": mover_key in ready or mover_key in claimed
+                                  or bool(staged.get(mover_key)),
+                     "staged": staged.get(mover_key)}
+            stage_fragment = mover_key in fragment_movers
+        elif isinstance(phase.get("stage_chunks"), list):
+            # A chunked phase reports per chunk, beside the phase's own
+            # ``stage`` staying ``None``: the census shape for whole-phase
+            # legs is unchanged, and a chunked phase is never mistaken for
+            # one with no leg at all.
+            stage_chunks = []
+            assert isinstance(phase["stage_chunks"], list)
+            for chunk in phase["stage_chunks"]:
+                chunk_key = str(chunk["mover_row"]["action_key"])  # type: ignore[index]
+                chunk_fragment = chunk_key in fragment_movers
+                stage_fragment = stage_fragment or chunk_fragment
+                stage_chunks.append({
+                    "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
+                    "mover_action_key_prefix": chunk_key[:12],
+                    "published": chunk_key in ready or chunk_key in claimed
+                                 or bool(staged.get(chunk_key)),
+                    "staged": staged.get(chunk_key),
+                    "fragment": chunk_fragment,
+                    "fragment_tier_id": fragment_movers.get(chunk_key)})
         ram: dict | None = None
         ram_chunks: list[dict] | None = None
         if "ram_mover_row" in phase:
@@ -1292,8 +1323,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                        "start_bytes": phase["start_bytes"],
                        "end_bytes": phase["end_bytes"],
                        "stage": stage, "ram": ram,
+                       "stage_chunks": stage_chunks,
                        "ram_chunks": ram_chunks,
-                       "stage_fragment": mover_key in fragment_movers})
+                       "stage_fragment": stage_fragment})
     entry = {"consumer_action_key_prefix": prefix, "valid": True,
              "tier_id": tier_id, "ram_tier_id": ram_tier_id,
              "state": state, "accepted_phase": accepted,
@@ -1307,13 +1339,22 @@ def _starvation_leg_staged(phase: dict, leg: str):
     """Whether one census phase counts as staged on one leg.
 
     A chunked phase is staged only when every chunk is: a partially
-    promoted phase still needs tmpfs room, and counting it staged would
+    moved phase still needs room on the tier, and counting it staged would
     tell the census the frontier is further than the bytes prove.  ``None``
     is no leg at all, which the caller filters before counting.
     """
 
     if leg == "stage":
-        return phase["stage"].get("staged")
+        if phase["stage"] is not None:
+            return phase["stage"].get("staged")
+        chunks = phase.get("stage_chunks")
+        if isinstance(chunks, list) and chunks:
+            states = [chunk.get("staged") for chunk in chunks
+                      if isinstance(chunk, dict)]
+            if states and all(state is True for state in states):
+                return True
+            return False
+        return None
     if phase["ram"] is not None:
         return phase["ram"].get("staged")
     chunks = phase.get("ram_chunks")

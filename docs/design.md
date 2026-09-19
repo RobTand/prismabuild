@@ -3307,7 +3307,13 @@ frozen with). A phase bigger than the tier's effective chunk seals one
 promotion node plus one egress node *per chunk* instead (`ram_chunks`, in
 read order, each carrying its phase, its chunk index and its chunk range —
 #673): at window 160 the chunk is 40 GiB, so a 123 GiB phase seals 4
-chunks and the movement node shape is otherwise today's. A phase that fits
+chunks and the movement node shape is otherwise today's. The stage leg
+slides the same way (#675): a phase bigger than the stage record's
+effective chunk seals one movement node plus one egress node *per chunk*
+instead (`stage_chunks`, in read order, under the stage's own role names),
+because there is one chunk family across tiers — the stage record announces
+the same `promotion_chunk_gib` the ram tier on its host announces, and the
+submitter cuts both legs at that size. A phase that fits
 in one chunk seals the whole-phase pair, and a plan sealed before chunks
 keeps the leg it was frozen with — a node whose range is its phase's whole
 range follows the whole-phase rules, byte-identically. A promotion holds
@@ -3331,7 +3337,14 @@ budget admits it: chunks of the phase being read are the reader's near-term
 food and promote as soon as their turn comes, while later chunks spend the
 budget — which now buys several chunks instead of zero phases — so the
 tmpfs refills as it frees instead of sawtoothing a whole phase at a time.
-When the consumer's
+Chunked (#675), the stage window plays the same game one tier down: it
+publishes the next *chunk* when free `stage_gib` covers it and the budget
+admits it, and evicts each chunk of a passed phase through its own node, so
+the SSD refills as it frees while the reader is still inside the phase.
+That is the two-tier streaming relay, HDD→SSD→RAM: the disks fill the SSD
+while the reader reads it, the SSD promotes to the tmpfs while the reader
+reads that, and every tier refills as it frees instead of sawtoothing a
+whole phase at a time. When the consumer's
 progress passes a phase, that phase's ram egress rows are published — one
 per chunk, each through its own node — *before* the stage
 egress in the same cycle: a ram range that outlives its stage range is a
