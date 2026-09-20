@@ -40,6 +40,19 @@ Changes to `main` require a GitHub issue and pull request (Rob, 2026-09-06).
 Use an isolated branch/worktree, link the issue in the PR, validate and review
 before merging. Never push directly to `main`. See [contributing](docs/contributing.md).
 
+## Staged-read contract — Rob, 2026-09-20
+
+Before changing lifecycle, residency, or dev-identity behavior, or claiming
+campaign completion, read [the staged-read contract](docs/staged_read_contract_2026-09-20.md)
+and its [requirement ledger](docs/staged_read_requirements_2026-09-20.json).
+State target versus implemented/deployed per requirement — a `proposed`
+target is owed work, never a claim. Merging, launching, deploying, or
+declaring completion each needs its scoped acceptance record from the
+contract's checklist (§10) with actual evidence (action keys, receipts,
+refusals); reasoned exceptions cite explicit user authority, never agent
+waiver. Spec completion is not implementation satisfaction.
+
+
 ## Progress and termination — Rob, 2026-09-10 (#480)
 
 For long campaign work with supported semantic reporting, declare ordered
