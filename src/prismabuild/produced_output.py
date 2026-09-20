@@ -3305,9 +3305,20 @@ def due_mover_rows(queue, instance: Mapping[str, object],
     """Frozen mover-row skeletons for batches needing (re)publication.
 
     NEW method owned by this lane (pure preparation, no queue mutation).
-    For each committed unretired batch: staged fragments composing under
-    their own namespace need nothing; a FAILED mover needs a retry row; an
-    absent mover with no staged fragments needs its first row. Each row
+    For each committed unretired batch: composing fragments under their own
+    namespace need no row; a FAILED mover needs a retry row; an absent
+    mover with no staged fragments needs its first row.
+
+    Composing is deliberately the test HERE, unlike in the censuses, and it
+    does not mean the batch is complete: a partially staged batch composes
+    too, and it is skipped because it has no publishable row, not because
+    it needs nothing. Its funding is spent and its mover key is fixed by
+    the batch, so any row this could emit would be unfundable; the
+    disposition that batch actually needs is the terminal route
+    `recover_batches` names (retire -> reclaim -> re-plan). Emitting a
+    retry row for it would be inventing work the pool cannot admit.
+
+    Each row
     carries the mover-variant residency block (`pool.validate_residency`
     accepts it: batch manifest digest + 0..total range on the batch tier
     with demand at/above the range floor) and qualified tier demand, so the
