@@ -859,3 +859,32 @@ shape-only cancellation could be revived by the automatic resumer.
   carrier contract, updated window/staged suites, an ordinary
   `fm.resign` drain, the full lane (incl. genuine A->B->C on the finite
   budget), and the withdraw/window-adjacent plus 726/funding shards.
+
+## R15 addendum (2026-09-20): exact-generation binding and scope gate
+
+Root review, two bounded authorization paths in the R14 carrier:
+
+- A proven membership request stays bound to its exact authorized
+  claimed generation through every withdrawal mutation: the generic
+  operator retarget onto an uncovered READY successor is skipped
+  whenever a handoff proof was established this call (fresh or
+  adopted), so an old claim's authorization can never cancel the new
+  generation waiting behind it. Operator and admission paths keep
+  their existing retarget semantics. Pinned by a repeat-withdraw
+  regression: the repeat adopts the filed decision gracefully and the
+  successor's bytes, live marker, and lineage come back identical.
+- Scope presence is no longer an `isinstance` gate: malformed
+  non-mapping blocks refuse instead of reading as "no scope". The
+  live block is validated through the existing
+  `pool._scope_from_record` recovery-identity derivation (no second
+  hand-written unit convention), the snapshot must name the same
+  scope, and `resource_scope_intent` -- the broker prelaunch identity
+  carrier -- matches on action and nonce exactly, with control-vs-
+  intent nonce consistency where both exist. Intent-only stale
+  nonces refuse; matching prelaunch identity proceeds.
+
+Proven RED on 842766a098 (repeat retargets onto the successor with
+`state: ready`; malformed scope stamps; stale intent stamps) and
+GREEN after: carrier contract, window/staged suites, the full lane
+(incl. genuine A->B->C on the finite budget), and the
+withdraw/window-adjacent plus 726/funding focused shards.

@@ -223,37 +223,6 @@ def membership_handoff_authorized(decision: object) -> bool:
             or not math.isfinite(float(published))):
         return False
     return published == decision.get("published_unix")
-
-
-def _broker_scope_identity(record: Mapping[str, object]
-                           ) -> tuple[str, str] | None:
-    """This record's exact kernel-scope identity, or ``None``.
-
-    ``None`` for records that hold no scope -- pre-launch and no-scope
-    handoffs proceed on queue identity -- and ``None`` is never returned
-    for a malformed block; callers that see a block must treat a missing
-    identity as refusal, not absence.  When present, the unit must be the
-    broker's own derivation for this action and nonce, so a replaced
-    scope cannot ride preserved claim fields.
-    """
-
-    control = record.get("resource_scope")
-    if not isinstance(control, Mapping):
-        return None
-    unit = control.get("scope_id")
-    nonce = control.get("nonce")
-    if (not isinstance(unit, str) or not unit
-            or not isinstance(nonce, str) or not nonce):
-        return None
-    key = record.get("action_key")
-    if not isinstance(key, str):
-        return None
-    expect = ("prismabuild-job"
-              + hashlib.sha256((key + nonce).encode()).hexdigest()[:32]
-              + ".slice")
-    if unit != expect:
-        return None
-    return unit, nonce
 POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
 #: What one movement node says it staged, and what the pool delivered while
 #: it did.  Read by the ``tiers`` role for the fill measurement, so it carries
@@ -11189,15 +11158,59 @@ class PoolQueue:
                     raise PoolContractError(
                         f"membership handoff for {key[:12]} differs from "
                         f"the live claim on {binding}")
-            if (isinstance(record.get("resource_scope"), Mapping)
-                    or isinstance(snap.get("resource_scope"), Mapping)):
-                live_scope = _broker_scope_identity(record)
-                snap_scope = _broker_scope_identity(snap)
-                if (live_scope is None or snap_scope is None
-                        or live_scope != snap_scope):
+            live_control = record.get("resource_scope")
+            snap_control = snap.get("resource_scope")
+            if live_control is not None or snap_control is not None:
+                # Exact broker scope identity when the attempt holds one:
+                # the live block is validated through the existing
+                # recovery-identity derivation (no second hand-written
+                # unit convention), and the snapshot must name the same
+                # scope.  A malformed block on either side, or an
+                # absent-on-one-side mismatch, refuses: malformed is
+                # never read as "no scope".
+                try:
+                    self._scope_from_record(record)
+                except PoolContractError as exc:
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} has an invalid "
+                        f"live scope identity: {exc}") from exc
+                if not isinstance(snap_control, Mapping):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} misses the live "
+                        "attempt's scope identity")
+                live_pair = (live_control.get("scope_id"),
+                             live_control.get("nonce"))
+                snap_pair = (snap_control.get("scope_id"),
+                             snap_control.get("nonce"))
+                if live_pair != snap_pair:
                     raise PoolContractError(
                         f"membership handoff for {key[:12]} mismatches the "
                         "live attempt's scope identity")
+            live_intent = record.get("resource_scope_intent")
+            snap_intent = snap.get("resource_scope_intent")
+            if live_intent is not None or snap_intent is not None:
+                # The broker prelaunch identity carrier: intent-only rows
+                # (created but not yet scope-bound) match on action and
+                # nonce exactly, and an intent beside a control must name
+                # its nonce.  Malformed blocks and stale nonces refuse.
+                for side in (live_intent, snap_intent):
+                    if (not isinstance(side, Mapping)
+                            or side.get("action_key") != key
+                            or not isinstance(side.get("nonce"), str)
+                            or not side.get("nonce")):
+                        raise PoolContractError(
+                            f"membership handoff for {key[:12]} has an "
+                            "invalid scope-intent identity")
+                if live_intent.get("nonce") != snap_intent.get("nonce"):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} carries a stale "
+                        "scope-intent nonce")
+                if (isinstance(live_control, Mapping)
+                        and live_intent.get("nonce")
+                        != live_control.get("nonce")):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} disagrees "
+                        "between scope intent and scope")
             live = dict(record)
             if not self._preemption_eligible(live):
                 raise PoolContractError(
@@ -11216,7 +11229,15 @@ class PoolQueue:
                 "max_attempts": live.get("max_attempts"),
                 "published_unix": published,
             }
-        if record is not None and self.withdrawal_covers(record, action_key=key) is not None:
+        if (handoff_proof is None and record is not None
+                and self.withdrawal_covers(record, action_key=key) is not None):
+            # Ordinary operator cancel semantics: a repeated request may
+            # target a newer submission queued behind an original attempt
+            # that is still stopping.  A proven membership handoff never
+            # retargets: the request stays bound to its exact authorized
+            # claimed generation through all mutations and signalling, so
+            # an old claim's authorization can never cancel the new READY
+            # generation waiting behind it.
             waiting = _read_json(ready_path)
             if waiting is not None and self.withdrawal_covers(waiting, action_key=key) is None:
                 # A repeated operator request can cancel a later submission

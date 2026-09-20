@@ -337,3 +337,127 @@ def test_malformed_carrier_never_authorizes() -> None:
         good, membership_handoff=dict(good["membership_handoff"],
                                       published_unix=101.5))
     assert pool.membership_handoff_authorized(drifted) is False
+
+
+def test_repeat_handoff_never_retargets_successor(
+    queue: pool.PoolQueue, monkeypatch,
+) -> None:
+    """A proven handoff stays bound to its exact claimed generation: a
+    repeat request adopts the already-filed decision instead of
+    retargeting onto a newer READY row waiting behind it.
+
+    The successor is hand-placed to simulate the torn read this guard
+    exists for (a concurrent publication whose marker retirement is not
+    yet visible -- ``publish`` retires atomically in-process, so real
+    transitions alone cannot stage both sides at once; hand-written
+    READY rows simulate races elsewhere in this suite too).  The repeat
+    returns the filed decision gracefully; the successor's bytes, the
+    live marker, and the withdrawal lineage are byte-identical after.
+    """
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = _owner(host)
+    key = _hexkey("r15retarget")
+    _publish(queue, key)
+    snap_a = _claim(queue, host)
+    pre = queue.plan_requeue(dict(snap_a))
+    queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
+                   membership_handoff=pre["snapshot"])
+    live_a = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    assert pool.membership_handoff_authorized(live_a) is True
+    successor = {"action_key": key,
+                 "published_unix": float(live_a["published_unix"]) + 1000.0,
+                 "attempts": 1, "max_attempts": 3}
+    queue.item_path(pool.READY, key).write_text(json.dumps(successor))
+    out = queue.withdraw(key, reason=f"resign {owner}: again", by=owner,
+                         membership_handoff=pre["snapshot"])
+    assert out["status"] == "already_withdrawn", out
+    assert json.loads(queue.item_path(pool.READY, key).read_text()) == successor
+    live_after = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    assert live_after["published_unix"] == live_a["published_unix"]
+    assert live_after["membership_handoff"] == live_a["membership_handoff"]
+
+
+def _scoped_live(queue: pool.PoolQueue, key: str, snap: dict,
+                 nonce: str) -> dict:
+    """Rewrite the live claim adding a broker-valid scope block (the
+    contract `_scope_from_record` enforces), returning the new bytes."""
+    from prismabuild.resource_scope import BROKER_SOCKET
+
+    unit = ("prismabuild-job"
+            + hashlib.sha256((key + nonce).encode()).hexdigest()[:32]
+            + ".slice")
+    scoped = dict(snap, resource_scope={
+        "action_key": key, "scope_id": unit, "nonce": nonce,
+        "token": "cd" * 32, "memory_max_bytes": 1 << 30,
+        "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
+        "socket_path": str(BROKER_SOCKET)})
+    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(scoped))
+    return scoped
+
+
+def test_malformed_scope_block_refuses_without_withdrawal(
+    queue: pool.PoolQueue, monkeypatch,
+) -> None:
+    """A malformed non-mapping scope block is never read as 'no scope':
+    the handoff refuses and nothing is stopped or filed."""
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = _owner(host)
+    key = _hexkey("r15malformed")
+    _publish(queue, key)
+    snap = _claim(queue, host)
+    broken = dict(snap, resource_scope="broken")
+    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(broken))
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(key, reason="t", by=owner,
+                       membership_handoff=dict(snap))
+    assert not queue.item_path(pool.WITHDRAWN, key).exists()
+    assert json.loads(
+        queue.item_path(pool.CLAIMED, key).read_text()) == broken
+
+
+def test_scope_intent_gate(queue: pool.PoolQueue, monkeypatch) -> None:
+    """Intent-only identity matches exactly or refuses; a matching
+    legitimate prelaunch identity proceeds; scope beside intent must
+    name its nonce."""
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = _owner(host)
+
+    intent_key = _hexkey("r15intent")
+    _publish(queue, intent_key)
+    intent_live = _claim(queue, host)
+    intented = dict(intent_live, resource_scope_intent={
+        "action_key": intent_key, "nonce": "ab" * 16})
+    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(intented))
+    stale = dict(intented)
+    stale["resource_scope_intent"] = dict(stale["resource_scope_intent"],
+                                          nonce="cd" * 16)
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(intent_key, reason="t", by=owner,
+                       membership_handoff=stale)
+    assert not queue.item_path(pool.WITHDRAWN, intent_key).exists()
+    malformed = dict(intented, resource_scope_intent="broken")
+    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(malformed))
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(intent_key, reason="t", by=owner,
+                       membership_handoff=dict(malformed))
+    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(intented))
+    out = queue.withdraw(intent_key, reason="t", by=owner,
+                         membership_handoff=dict(intented))
+    assert out["status"] == "withdrawn", out
+    assert pool.membership_handoff_authorized(
+        json.loads(queue.item_path(pool.WITHDRAWN, intent_key).read_text()))
+
+    both_key = _hexkey("r15both")
+    _publish(queue, both_key)
+    both_live = _claim(queue, host)
+    scoped = _scoped_live(queue, both_key, both_live, "ab" * 16)
+    drifted = dict(scoped, resource_scope_intent={
+        "action_key": both_key, "nonce": "ef" * 16})
+    queue.item_path(pool.CLAIMED, both_key).write_text(json.dumps(drifted))
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(both_key, reason="t", by=owner,
+                       membership_handoff=dict(drifted))
+    assert not queue.item_path(pool.WITHDRAWN, both_key).exists()
