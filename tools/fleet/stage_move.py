@@ -580,23 +580,37 @@ class _StagedPublisher:
         a sibling means another copy is in flight -- or crashed, in which
         case the sweep reaps it and a later retry proceeds.  ``None``
         means the directory could not be read (fail closed).
+
+        One deliberate narrowing: only a dirent whose *name* could be a
+        partial for this destination is stat'ed, so a stat that fails on an
+        unrelated sibling no longer fails the whole census closed.  Such a
+        name is not in the answer either way -- it cannot be a partial for
+        this destination -- and an unreadable *directory* still returns
+        ``None``, as does a failure reading a name that does match.
         """
 
         own = f".{destination.name}.{str(self.mover)[:16]}.partial"
+        # The name decides membership; the stat only confirms what a matching
+        # name already is.  Asking them in that order spends one string
+        # compare on a sibling that cannot be a partial, instead of a stat on
+        # every dirent.  This runs once per publish poll -- 120 per entry --
+        # and a staged tree can put every entry of a manifest in one
+        # directory, so the stats it no longer does are the cost.  The legacy
+        # shared ``.<name>.partial`` needs no arm of its own: it carries the
+        # same prefix and the same suffix, so the general test names it.
+        prefix = f".{destination.name}."
+        out = []
         try:
-            names = [entry.name for entry in os.scandir(destination.parent)
-                     if entry.is_file(follow_symlinks=False)]
+            for entry in os.scandir(destination.parent):
+                name = entry.name
+                if name == own or not name.startswith(prefix):
+                    continue
+                if not name.endswith(".partial"):
+                    continue
+                if entry.is_file(follow_symlinks=False):
+                    out.append(name)
         except OSError:
             return None
-        out = []
-        for name in names:
-            if name == own:
-                continue
-            if name == f".{destination.name}.partial":
-                out.append(name)
-            elif (name.startswith(f".{destination.name}.")
-                    and name.endswith(".partial")):
-                out.append(name)
         return sorted(out)[:5]
 
     def _index_bytes(self) -> int:
