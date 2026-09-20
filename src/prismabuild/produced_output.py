@@ -625,6 +625,11 @@ def _read_commitments(path: Path) -> dict[str, object]:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
         return {"batches": {}}
+    except (OSError, ValueError) as exc:
+        # Corrupt/unreadable commitments are unknown state, never an empty
+        # scope: every caller retains charge and names the record.
+        raise ProducedOutputError(
+            f"commitments record corrupt or unreadable: {exc}") from None
     if not isinstance(raw, Mapping) or not isinstance(raw.get("batches"), Mapping):
         raise ProducedOutputError("commitments record is corrupt")
     return {"batches": dict(raw["batches"])}
@@ -814,8 +819,10 @@ def commit_batch(queue, instance: Mapping[str, object],
                          / f"{batch_id}.prewrite.json")
         try:
             prewrite = json.loads(prewrite_path.read_text())
-        except (OSError, ValueError):
+        except FileNotFoundError:
             return {"ok": False, "refusal": "prewrite-reservation-missing"}
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
         if (not isinstance(prewrite, Mapping)
                 or prewrite.get("tier") != tier
                 or dict(prewrite.get("class_bytes", {})) != class_bytes):
@@ -879,7 +886,7 @@ def commit_batch(queue, instance: Mapping[str, object],
                            {"batches": batches})
     return {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
             "manifest_digest": manifest_digest, "class_bytes": class_bytes,
-            "mover_key": mover, "tier": tier}
+            "mover_key": mover, "tier": tier, "entries": sealed}
 
 
 def build_stage_manifest(batch: Mapping[str, object],
