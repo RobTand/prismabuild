@@ -412,11 +412,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
                                  batch_id=batch_id)["ok"] is True
     q.finish(owner, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert squatted > 0
-    # Everything except the squatters' tokens is back: the retired fences
-    # returned through the real egress, the window through owner finish.
-    assert (ledger.available().get(KIND, 0) + squatted
-            == ledger.capacity().get(KIND, 0))
+    assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
 
 
 def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
