@@ -176,13 +176,15 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, _TEMPLATE_CACHE)
     instance = bound["instance"]
-    ok = po.reserve_working_minimum(queue, instance, _TEMPLATE_CACHE)
+    ok = po.admit_instance(queue, instance, _TEMPLATE_CACHE)
     assert ok["ok"] is True
+    assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
+    # Bound credit holds NO ledger tokens: the instance namespace stays empty.
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {STAGE_BARE: 1}
+        po.reservation_holder(instance)) == {}
     # Prewrite then commit batch0: batch holder acquires exact 1, transfers
-    # whole to the mover (no free interval). Held total is minimum(1) +
-    # mover(1) = 2: two real allocations counted once each, never doubled.
+    # whole to the mover (no free interval). Held total is mover(1) alone:
+    # one real allocation counted once, never doubled beside a standing pool.
     pre = po.require_prewrite(queue, instance, _TEMPLATE_CACHE,
                               batch_id="batch-0000", tier=STAGE_TIER,
                               class_bytes={"payload": 12288, "checkpoint": 0,
@@ -200,7 +202,7 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
     assert committed["ok"] is True
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER0) == {STAGE_BARE: 1}
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {STAGE_BARE: 1}
+        po.reservation_holder(instance)) == {}
     batch_ns = committed["batch_namespace"]
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(batch_ns) == {}
 
@@ -213,7 +215,7 @@ def test_prewrite_class_budgets_refuse_and_zero_valid(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, _TEMPLATE_CACHE)
     instance = bound["instance"]
-    assert po.reserve_working_minimum(queue, instance, _TEMPLATE_CACHE)["ok"] is True
+    assert po.admit_instance(queue, instance, _TEMPLATE_CACHE)["ok"] is True
     # Checkpoint over maxima refuses before any write.
     refused = po.require_prewrite(
         queue, instance, _TEMPLATE_CACHE, batch_id="big-ckpt", tier=STAGE_TIER,
@@ -241,6 +243,16 @@ def test_prewrite_class_budgets_refuse_and_zero_valid(tmp_path: Path) -> None:
         queue, instance, _TEMPLATE_CACHE, batch_id="zeros", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0})
     assert zeros["ok"] is True
+    # No admission record, no prewrite: a second instance never admitted.
+    claimed2 = _publish_claim(queue, "b" * 64)
+    other = po.bind_instance(queue, _TEMPLATE_CACHE,
+                             owner_action_key="b" * 64,
+                             claim_snapshot=claimed2)
+    assert other["owner_action_key"] == "b" * 64
+    assert po.require_prewrite(
+        queue, other, _TEMPLATE_CACHE, batch_id="x", tier=STAGE_TIER,
+        class_bytes={"payload": 1, "checkpoint": 0, "temp": 0}) == {
+            "ok": False, "refusal": "prewrite-not-admitted"}
 
 
 def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
@@ -256,7 +268,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     bound = _bind(queue, _TEMPLATE_CACHE)
     instance, claimed = bound["instance"], bound["claimed"]
     out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
-    assert po.reserve_working_minimum(queue, instance, _TEMPLATE_CACHE)["ok"] is True
+    assert po.admit_instance(queue, instance, _TEMPLATE_CACHE)["ok"] is True
 
     # Window 0: boundary-0 + cotangent genA + scratch temp.
     assert po.require_prewrite(
@@ -334,6 +346,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     ret0 = po.retire_batch(queue, batch0, stage_root=str(stage),
                            residency_root=str(out_base))
     assert ret0["ok"] is True
+    assert ret0["receipt"]["tokens_released"] == 1
     po.mark_batch_retired(queue.root, instance, "batch-0000")
     for entry in rm.compose(
             rm.read_fragments(out_base, batch1["batch_namespace"]))["entries"].values():
@@ -348,17 +361,21 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     held = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
     assert held["ok"] is False
     assert held["refusal"] == "owner-active-retain"
-    # Retire window 1, finish the owner, release exactly once.
+    # Retire window 1, finish the owner, release leftovers (none: egress
+    # already released each mover exactly once — receipts + empty ledger
+    # below are the proof; safe_release stays idempotent).
     ret1 = po.retire_batch(queue, batch1, stage_root=str(stage),
                            residency_root=str(out_base))
     assert ret1["ok"] is True
+    assert ret1["receipt"]["tokens_released"] == 1
     po.mark_batch_retired(queue.root, instance, "batch-0001")
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
     first = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
-    assert first["ok"] is True and first["released"] == 1
+    assert first["ok"] is True and first["released"] == 0
     second = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
     assert second["ok"] is True and second["released"] == 0
+    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {}
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
         po.reservation_holder(instance)) == {}
 
@@ -371,7 +388,7 @@ def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, _TEMPLATE_CACHE)
     instance = bound["instance"]
-    assert po.reserve_working_minimum(queue, instance, _TEMPLATE_CACHE)["ok"] is True
+    assert po.admit_instance(queue, instance, _TEMPLATE_CACHE)["ok"] is True
     # Unknown commitments (corrupt record) retains instead of releasing.
     commitments = po._commitments_path(queue.root, instance)
     commitments.parent.mkdir(parents=True, exist_ok=True)
@@ -379,8 +396,10 @@ def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
     retained = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
     assert retained["ok"] is False
     assert retained["refusal"].startswith("unknown-retain")
+    # Bound credit (no ledger tokens since the liveness R2 ruling) is what
+    # retains here: unknown commitments never authorize a release.
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {STAGE_BARE: 1}
+        po.reservation_holder(instance)) == {}
 
 
 def test_prefix_escape_and_bool_rejection(tmp_path: Path) -> None:
@@ -429,11 +448,18 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     global _TEMPLATE_CACHE
-    _TEMPLATE_CACHE = _template(str(origin))
+    # Wide durable envelope (4 GiB payload) but a 2 GiB working window: the
+    # prewrite passes on durable headroom and the commit refuses on the
+    # window — proving the two budgets are distinct.
+    _TEMPLATE_CACHE = _template(str(origin), durable_maxima={
+        "payload_max_bytes": 4 * GIB,
+        "checkpoint_max_bytes": 1 << 20,
+        "temp_max_bytes": 1 << 20,
+    })
     queue = _queue(tmp_path)
     bound = _bind(queue, _TEMPLATE_CACHE)
     instance = bound["instance"]
-    assert po.reserve_working_minimum(queue, instance, _TEMPLATE_CACHE)["ok"] is True
+    assert po.admit_instance(queue, instance, _TEMPLATE_CACHE)["ok"] is True
     # Sparse 3 GiB file: lstat size without bulk pages; window is 2 GiB.
     sparse = origin / "boundary-0.pt"
     with open(sparse, "wb") as handle:
@@ -460,6 +486,7 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
 
 def test_lease_sdk_dependency_named_not_stubbed(tmp_path: Path) -> None:
     assert "PB730" in po.SDK_DEPENDENCY and "pin_id_for" in po.SDK_DEPENDENCY
+    assert "LIVENESS" in po.SDK_DEPENDENCY and "funded" in po.SDK_DEPENDENCY
     assert po.READER_HELPER_ROOT_ENV == "PRISMABUILD_READER_HELPER_ROOT"
     try:
         import reader_lease  # noqa: F401
@@ -467,3 +494,28 @@ def test_lease_sdk_dependency_named_not_stubbed(tmp_path: Path) -> None:
         assert True  # dependency pending; no stub acquire faked
         return
     assert hasattr(reader_lease, "acquire") and hasattr(reader_lease, "open_pinned")
+
+
+def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
+    """OWNER vs NAMESPACE stay distinct; equal-sized twins stay distinct."""
+
+    origin = tmp_path / "pool-origin" / "outputs"
+    origin.mkdir(parents=True)
+    global _TEMPLATE_CACHE
+    _TEMPLATE_CACHE = _template(str(origin))
+    queue = _queue(tmp_path)
+    bound = _bind(queue, _TEMPLATE_CACHE)
+    instance = bound["instance"]
+    namespace = po.instance_namespace(instance)
+    assert namespace != OWNER and len(namespace) == 64
+    assert po.reservation_holder(instance) == namespace
+    path = po.declare_instance(queue.root, instance)
+    assert OWNER in str(path) and namespace not in str(path)
+    # Manifest object set (ours) disambiguates what the old pin_id did not;
+    # pin serialization itself stays PB730-owned.
+    twin_a = {"0:/src/alpha.pt": {"bytes": 4096, "sha256": "a" * 64}}
+    twin_b = {"0:/src/beta.pt": {"bytes": 4096, "sha256": "b" * 64}}
+    assert po.manifest_object_set_id(twin_a) != po.manifest_object_set_id(twin_b)
+    assert po.label_span_for_manifest(14336) == {
+        "coordinate_space": "output-manifest",
+        "start_bytes": 0, "end_bytes": 14336}

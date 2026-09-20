@@ -26,6 +26,18 @@ maps, pins and ledger holders and has NO terminal record. A certificate
 naming a namespace is invalid. Writer digests are reused from the streaming
 receipt, never recomputed by rereading HDD payloads.
 
+CREDIT vs TOKENS (liveness R2 direction, binding here): bound admission
+credit (minimum/window per tier, recorded in commitments) is NOT ledger
+tokens. Physical tokens are held ONLY by batch movers, exact per range,
+acquired under the batch holder and TRANSFERRED whole to mover ownership
+with no free interval (existing `transfer_tier_reservation`). No standing
+ledger pool is held beside movers: that H+D+F double-hold is rejected.
+The liveness lane owns the general funded-claim primitive (funding record
++ eligible-token verification + serialized transfer + window admission);
+this lane's batch acquire+transfer is the single-consumer exact case and
+migrates to that API once committed (exact dependency in SDK_DEPENDENCY,
+no second ledger here, never subtracts unrelated holders' tokens).
+
 PB730 owns: corrected `pin_id_for` (canonical object set), the additive
 owner/material-namespace SDK contract, the containment writer, and the
 immutable helper-env injection. This lane does not edit `reader_lease.py`,
@@ -60,12 +72,16 @@ OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 #: `reader_lease.__file__` under it. Never a mutable `/repo` checkout.
 READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 
-#: Exact SDK dependency until PB730 lands (not a stub qualifier).
+#: Exact SDK + funding dependencies until their lanes land (not stubs).
 SDK_DEPENDENCY = (
     "PB730 additive owner/material-namespace SDK contract "
     "(acquire/open/release binding material under the batch namespace to "
     "the registered OWNER attempt) + corrected pin_id_for including the "
-    "canonical expected object set and material generations"
+    "canonical expected object set and material generations; "
+    "LIVENESS funded-claim primitive (funding record binding credit to "
+    "exact tier/plan-window/mover/range/generation, eligible-token "
+    "verification, serialized transfer without free interval, window "
+    "admission covering current+next need) for the general window path"
 )
 
 ARTIFACT_CLASSES = frozenset({"payload", "checkpoint", "temp"})
@@ -588,11 +604,15 @@ def output_manifest_sha256(descriptors: list[Mapping[str, object]]) -> str:
 
 
 # --------------------------------------------------------------------------
-# Reservations: standing minimum + per-batch prewrite, then TRANSFER
+# Admission credit (bound record, NOT ledger tokens) + per-batch prewrite
 # --------------------------------------------------------------------------
 
 def reservation_holder(instance: Mapping[str, object]) -> str:
-    """Standing-minimum ledger holder (the instance namespace)."""
+    """Legacy name for the instance namespace (kept for audit continuity).
+
+    Since the liveness R2 ruling this is NOT a ledger holder: no standing
+    tokens are acquired under it. Physical tokens live only under batch
+    namespaces (pre-transfer) and mover keys (post-transfer)."""
 
     return instance_namespace(instance)
 
@@ -624,7 +644,7 @@ def _read_commitments(path: Path) -> dict[str, object]:
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
-        return {"batches": {}}
+        return {"batches": {}, "admission": None}
     except (OSError, ValueError) as exc:
         # Corrupt/unreadable commitments are unknown state, never an empty
         # scope: every caller retains charge and names the record.
@@ -632,16 +652,29 @@ def _read_commitments(path: Path) -> dict[str, object]:
             f"commitments record corrupt or unreadable: {exc}") from None
     if not isinstance(raw, Mapping) or not isinstance(raw.get("batches"), Mapping):
         raise ProducedOutputError("commitments record is corrupt")
-    return {"batches": dict(raw["batches"])}
+    admission = raw.get("admission")
+    if admission is not None and not isinstance(admission, Mapping):
+        raise ProducedOutputError("commitments admission record is corrupt")
+    return {"batches": dict(raw["batches"]), "admission": admission}
 
 
 def _write_commitments(path: Path, record: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    admission = record.get("admission")
+    if admission is None and "admission" not in record:
+        # Read-modify-write callers pass batches only; never drop a bound
+        # admission credit record on a batch update.
+        try:
+            previous = _read_commitments(path)
+            admission = previous.get("admission")
+        except ProducedOutputError:
+            admission = None
     handle, temporary = tempfile.mkstemp(
         dir=str(path.parent), prefix=".commitments.")
     try:
         with os.fdopen(handle, "w") as stream:
-            json.dump({"batches": dict(record["batches"])}, stream, sort_keys=True)
+            json.dump({"batches": dict(record["batches"]),
+                       "admission": admission}, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -664,42 +697,53 @@ def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
     return sums
 
 
-def reserve_working_minimum(queue, instance: Mapping[str, object],
-                            template: Mapping[str, object]) -> dict[str, object]:
-    """Reserve the admitted standing minimum per tier (idempotent).
+# --------------------------------------------------------------------------
+# Admission credit (bound record, NOT ledger tokens) + per-batch prewrite
+# --------------------------------------------------------------------------
 
-    Advance credit held for the instance lifetime under the instance
-    namespace; per-batch copies transfer their own exact prewrite holdings
-    to mover ownership (no free interval, counted once each). Returns
-    {"ok": True, ...} or {"ok": False, "refusal": ...}.
+def admit_instance(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object]) -> dict[str, object]:
+    """Bind admission credit for the instance lifetime (idempotent).
+
+    Records the template's per-tier minimum/window demands in commitments as
+    BOUND CREDIT. Credit is not ledger tokens: physical tokens are held ONLY
+    by batch movers, exact per range (see `commit_batch`). No standing pool
+    is held beside movers, so nothing is double-held. The general funded
+    window admission (current+next need) is the liveness lane's funded-claim
+    primitive; this record carries the scope side of that contract and
+    migrates to its API once committed. Returns {"ok": True, ...}.
     """
-
-    from prismabuild import storage_tiers as tiers_mod
 
     checked_template = validate_template(template)
     checked_instance = validate_instance(instance)
-    holder = reservation_holder(checked_instance)
-    acquired: dict[str, dict[str, int]] = {}
-    for tier in checked_template["permitted_tiers"]:
-        kind = tiers_mod.capacity_kind_of(tier)
-        minimum = int(checked_template["working_demands"][tier]["minimum_gib"])
-        if minimum == 0:
-            continue
-        ledger = queue.tier_ledger(tier)
-        if not ledger.base.is_dir():
-            return {"ok": False, "refusal": "tier-unknown", "tier_id": tier}
-        if ledger.capacity().get(kind, 0) < minimum:
-            return {"ok": False, "refusal": "never-fits-tier-capacity",
-                    "tier_id": tier}
-        held = ledger.holder_tokens(holder).get(kind, 0)
-        if held >= minimum:
-            acquired[tier] = {kind: 0}
-            continue
-        if not ledger.acquire(holder, {kind: minimum - held}):
-            return {"ok": False, "refusal": "tier-reservation-unavailable",
-                    "tier_id": tier, "available": ledger.available()}
-        acquired[tier] = {kind: minimum - held}
-    return {"ok": True, "holder": holder, "acquired": acquired}
+    if checked_instance["template_sha256"] != template_sha256(checked_template):
+        return {"ok": False, "refusal": "template-mismatch"}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        path = _commitments_path(queue.root, checked_instance)
+        try:
+            commitments = _read_commitments(path)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        demands = checked_template["working_demands"]
+        assert isinstance(demands, dict)
+        admission = {
+            "minimum_gib": {tier: int(demands[tier]["minimum_gib"])
+                            for tier in checked_template["permitted_tiers"]},
+            "window_gib": {tier: int(demands[tier]["window_gib"])
+                           for tier in checked_template["permitted_tiers"]},
+            "bound_unix": time.time(),
+        }
+        _write_commitments(path, {"batches": commitments["batches"],
+                                  "admission": admission})
+    return {"ok": True, "admission": admission}
+
+
+def reserve_working_minimum(queue, instance: Mapping[str, object],
+                            template: Mapping[str, object]) -> dict[str, object]:
+    """Deprecated alias of `admit_instance` (credit-only since the liveness
+    R2 ruling; no ledger tokens are acquired here)."""
+
+    return admit_instance(queue, instance, template)
 
 
 def require_prewrite(queue, instance: Mapping[str, object],
@@ -708,8 +752,8 @@ def require_prewrite(queue, instance: Mapping[str, object],
     """File a prewrite budget claim BEFORE any HDD byte is written.
 
     The production writer path must call this (not an optional helper):
-    uncharged temp/checkpoint writes refuse here. Checks standing
-    reservation presence + durable headroom for the planned class bytes and
+    uncharged temp/checkpoint writes refuse here. Checks bound admission
+    credit + durable headroom for the planned class bytes and
     files an immutable prewrite record the later commit must present.
     Zero-byte classes are valid (explicit zeros, never missing keys).
     """
@@ -726,18 +770,14 @@ def require_prewrite(queue, instance: Mapping[str, object],
     for cls in ("payload", "checkpoint", "temp"):
         planned[cls] = _nonneg_int(class_bytes.get(cls),
                                    where=f"prewrite class_bytes.{cls}")
-    from prismabuild import storage_tiers as tiers_mod
-    kind = tiers_mod.capacity_kind_of(tier)
-    holder = reservation_holder(checked_instance)
-    if not queue.tier_ledger(tier).holder_tokens(holder).get(kind, 0):
-        # Standing minimum proves admission; without it nothing is prewritable.
-        # (Zero-minimum tiers still need the instance bound + headroom below.)
-        minimum = int(checked_template["working_demands"][tier]["minimum_gib"])
-        if minimum > 0:
-            return {"ok": False, "refusal": "prewrite-reservation-missing"}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         commitments = _read_commitments(
             _commitments_path(queue.root, checked_instance))
+        if not isinstance(commitments.get("admission"), Mapping):
+            # Admission credit proves the instance was bound; without it
+            # nothing is prewritable. (Zero-minimum tiers still need the
+            # bound record, never ledger presence.)
+            return {"ok": False, "refusal": "prewrite-not-admitted"}
         sums = _class_sums(commitments["batches"])
         assert isinstance(sums, dict)
         maxima = checked_instance_maxima(checked_template)
@@ -958,13 +998,16 @@ def mark_batch_retired(queue_root: str | Path, instance: Mapping[str, object],
 
 def safe_release_instance(queue, instance: Mapping[str, object],
                           template: Mapping[str, object]) -> dict[str, object]:
-    """Release the standing minimum ONLY when retirement is proven safe.
+    """Release leftover batch-holder tokens ONLY when retirement is proven safe.
 
-    Fresh census under the prefix lock: instance + commitments readable
-    (unknown retains); every batch retired AND its mover holder empty AND its
+    Movers release their exact tokens through egress (`retire_batch`); this
+    reclaims any remainder (e.g. partial-transfer leftovers) after a fresh
+    census under the prefix lock: instance + commitments readable (unknown
+    retains); every batch retired AND its mover holder empty AND its
     fragments gone (active retains); live-lease refs absent where the SDK is
     available (live retains, dependency named when not); owner terminal
-    present (owner-active retains). Releases exactly once (second call 0).
+    present (owner-active retains). Idempotent: the orderly path releases 0
+    here because egress already released exactly once; leftovers release once.
     """
 
     from prismabuild import pool as pool_mod
@@ -1035,12 +1078,17 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": "unknown-retain: no-terminal"}
         released = 0
         for tier in checked_template["permitted_tiers"]:
-            try:
-                released += queue.release_tier_reservations(
-                    reservation_holder(checked))
-            except Exception:
-                break
-        # reservation_holder is one holder across tiers; release is idempotent.
+            for batch_id, entry in batches.items():
+                assert isinstance(entry, Mapping)
+                ns = str(entry.get("batch_namespace") or "")
+                if not ns:
+                    continue
+                try:
+                    released += queue.tier_ledger(tier).release(ns)
+                except Exception:
+                    break
+        # Batch holders are empty post-transfer by construction; leftovers
+        # (partial transfers) release here, once, idempotently.
         return {"ok": True, "released": released}
 
 
@@ -1065,13 +1113,20 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
         return events
     out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
     for owner in owners:
+        owner_dir = scopes_root / owner
+        candidates: list[Path] = []
         try:
-            files = sorted((scopes_root / owner).glob("*.json"))
+            for child in sorted(owner_dir.iterdir()):
+                if child.is_dir():
+                    # Bound instances live at <owner>/<template>.<nonce>/instance.json.
+                    candidate = child / "instance.json"
+                    if candidate.is_file():
+                        candidates.append(candidate)
+                elif child.suffix == ".json" and child.name != "commitments.json":
+                    candidates.append(child)
         except OSError:
             continue
-        for path in files:
-            if path.name == "commitments.json" or ".commitments" in path.name:
-                continue
+        for path in candidates:
             try:
                 instance = validate_instance(json.loads(path.read_text()))
             except (OSError, ValueError):
@@ -1150,6 +1205,7 @@ __all__ = [
     "reservation_holder",
     "output_fragment_root",
     "batch_namespace",
+    "admit_instance",
     "reserve_working_minimum",
     "require_prewrite",
     "commit_batch",
