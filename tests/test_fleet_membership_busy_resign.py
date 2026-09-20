@@ -465,9 +465,9 @@ def test_resign_retains_fence_on_unreadable_reader_refs(
 def test_resign_drained_when_no_leases_namespace(
     queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
 ) -> None:
-    """An absent leases namespace is provably drained without the module."""
+    """Proven absence drains with either the SDK or the legacy census."""
     drained, state, _ = fm.reader_refs_gate(queue, socket.gethostname(), None)
-    assert drained is True and state == "drained-absent"
+    assert drained is True and state in {"drained-absent", "refs-drained"}
 
 
 def _busy_roster(tmp_path: Path, host: str, args: list) -> Path:
