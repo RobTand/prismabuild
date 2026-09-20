@@ -3586,7 +3586,16 @@ range follows the whole-phase rules, byte-identically. A promotion holds
 `stage_gib`: from claim, past finish — the pin, read off its receipt — and
 back only when an egress deletes its files, because held tokens equal bytes
 on the tmpfs at every instant and held-by-nobody bytes on a roof-limited
-tmpfs are ENOSPC waiting to happen. The withdrawn #639 part-3 plumbing — a
+tmpfs are ENOSPC waiting to happen. Its action demand carries a second
+number, and the two answer different questions: `ram_gib` is the tier
+occupancy the range retains, while `mem_gb` is the action's own containment
+cap — the copier's runtime working set that the mover receipts price, plus
+the destination range in whole GiB (`storage_tiers.ram_promotion_mem_gb`),
+because shmem pages stay charged to the writing cgroup and writeback never
+reclaims them. A row sealed with only the runtime term runs out of its own
+cap partway through every range bigger than that term: on 2026-09-19 four
+4-11 GiB promotions died at exactly 1 GiB with `memory_limit_oom`, and no
+promotion above 1 GiB had ever completed. The withdrawn #639 part-3 plumbing — a
 second tier leg on `storage_tiers.residency_demand`, occupancy
 classification, release at egress — transfers intact, aimed at the right
 actor: one occupancy leg per movement node.

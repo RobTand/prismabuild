@@ -17,6 +17,8 @@ from pathlib import Path
 import sys
 import types
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
@@ -197,3 +199,49 @@ def test_the_sealed_plan_freezes_and_names_every_chunk_key(tmp_path) -> None:
     assert residency_plan.leads_for(frozen) == [
         str(frozen["phases"][0]["stage_chunks"][0]["mover_row"][  # type: ignore[index]
             "action_key"])]
+
+
+def test_a_promotion_reserves_the_tmpfs_pages_it_will_write(tmp_path) -> None:
+    """The action cap must cover the destination, not only the copier.
+
+    A promotion writes its whole range into the tmpfs, and shmem pages stay
+    charged to the writing cgroup -- writeback never reclaims them.  A row
+    sealed with only the runtime working set runs out of its own cap partway
+    through; on 2026-09-19 that killed every 4-11 GiB promotion at exactly
+    1 GiB (``memory_limit_oom``).  The reservation is the runtime term the
+    receipts price plus the range in whole GiB, and the ``ram_gib`` retention
+    token is deliberately separate and unchanged.
+    """
+
+    staged = _seal(tmp_path, pool.PoolQueue(tmp_path / "pb-queue"))
+    plan = staged["plan"]
+    assert isinstance(plan, dict)
+    big = plan["phases"][0]  # type: ignore[index]
+    chunks = big["ram_chunks"]
+    for chunk in chunks:
+        start, end = int(chunk["start_bytes"]), int(chunk["end_bytes"])
+        destination = -(-(end - start) // GIB)
+        mover = chunk["ram_mover_row"]
+        assert mover["resources"]["mem_gb"] == 1 + destination
+        assert mover["resources"][RAM_KIND] == destination
+    small = plan["phases"][1]  # type: ignore[index]
+    assert small["ram_mover_row"]["resources"]["mem_gb"] == 1 + SMALL_PHASE_GIB
+    # The stage leg's rows and both egress rows keep their own demands: only
+    # a tmpfs destination needs the destination-page term.
+    assert big["stage_chunks"][0]["mover_row"]["resources"]["mem_gb"] == 1
+    assert big["ram_chunks"][0]["ram_egress_row"]["resources"]["mem_gb"] == 1
+
+
+def test_the_destination_reservation_rounds_up_like_every_other_token() -> None:
+    assert storage_tiers.ram_promotion_mem_gb(
+        runtime_mem_gb=1, range_bytes=GIB) == 2
+    assert storage_tiers.ram_promotion_mem_gb(
+        runtime_mem_gb=1, range_bytes=GIB + 1) == 3
+    assert storage_tiers.ram_promotion_mem_gb(
+        runtime_mem_gb=3, range_bytes=11 * GIB) == 14
+    with pytest.raises(ValueError):
+        storage_tiers.ram_promotion_mem_gb(runtime_mem_gb=0, range_bytes=GIB)
+    with pytest.raises(ValueError):
+        storage_tiers.ram_promotion_mem_gb(runtime_mem_gb=True, range_bytes=GIB)
+    with pytest.raises(ValueError):
+        storage_tiers.ram_promotion_mem_gb(runtime_mem_gb=1, range_bytes=0)

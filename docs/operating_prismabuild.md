@@ -107,6 +107,20 @@ while its action runs, because only a phase observation maps a worker report
 to a byte count. A row is refused for headroom only when its first entry
 alone is larger than the budget.
 
+### RAM promotion memory demand
+
+A stage→ram promotion copies its range into the tmpfs, and those pages stay
+charged to the writing action's own cgroup: writeback never reclaims shmem.
+A sealed `ram_mover_row` therefore declares
+`mem_gb = runtime working set + ceil(range bytes/GiB)`, applied by the
+submitter through `storage_tiers.ram_promotion_mem_gb`; its `ram_gib` token
+is the tier occupancy the range retains and stays a separate number. A
+promotion row whose `mem_gb` is smaller than its range is a sealed defect:
+expect `memory_limit_oom` partway through and no receipt (the 2026-09-19
+promotions died at exactly 1 GiB against 4 and 11 GiB ranges, and no
+promotion above 1 GiB completed). When a `ram:` tier starves, read both
+numbers on the frozen plan's `ram_mover_row` before blaming the tier.
+
 ### Restarting the storage role after a publication
 
 Current loops detect a new generation between cycles and exit for supervisor
