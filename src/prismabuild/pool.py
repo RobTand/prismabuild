@@ -8054,7 +8054,8 @@ class PoolQueue:
                                        "generation": generation,
                                        "tokens": names,
                                        "variant": variant or "window"}
-                elif (immutable_error or immutable_present
+                elif (immutable_error
+                        or (immutable_present and immutable_ref is None)
                         or (immutable_ref is not None
                             and projection_agrees is not True)
                         or (immutable_ref is not None
