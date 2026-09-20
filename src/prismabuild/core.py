@@ -7895,12 +7895,15 @@ def _residency_environment(
     under its own key -- cannot take it as an argument without hashing the key
     into the argv the key is computed from.  ``RESIDENCY_MAP_ENV`` is
     forwarded only when the launcher set it, which it does for an item whose
-    residency block names leads that have staged something.
+    residency block names leads that have staged something.  The broker-owned
+    attempt tuple plus helper root travel the same way, through
+    :func:`_reader_identity_environment`: complete, shaped, and bound to
+    this action, or not at all.
 
-    A sealed variable of either name is a refusal rather than an overwrite,
-    the rule the progress and profile contracts already keep: an action that
-    thought it was setting its own identity would silently get somebody
-    else's.
+    A sealed variable of any of these names is a refusal rather than an
+    overwrite, the rule the progress and profile contracts already keep: an
+    action that thought it was setting its own identity would silently get
+    somebody else's.
     """
 
     conflicting = [name for name in ACTION_RESIDENCY_ENV if name in sealed]
@@ -7913,7 +7916,84 @@ def _residency_environment(
     forwarded = os.environ.get(RESIDENCY_MAP_ENV)
     if forwarded:
         environment[RESIDENCY_MAP_ENV] = forwarded
+    environment.update(
+        _reader_identity_environment(str(action["action_key"])))
     return environment
+
+
+#: Attempt nonce shape minted by pool scope startup: 32 lowercase hex.
+_ATTEMPT_NONCE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _reader_identity_environment(action_key: str) -> dict[str, str]:
+    """The broker-owned attempt tuple plus helper root, or nothing.
+
+    Forwards ``PRISMABUILD_ACTION_NONCE``/``SCOPE``/``READER_HELPER_ROOT``
+    from the launcher environment -- the exact identity ``resource_exec``
+    injected for this broker-owned attempt -- so strict readers bind pins
+    to the live claim.  These values are launcher-owned, never sealed
+    (sealed conflicts are refused by the caller); they are complete,
+    shaped, and bound to the action in hand, or nothing is forwarded:
+
+    * none present: the legacy path, forward nothing (established
+      behavior for uncontained and pre-reader actions);
+    * any present without all three: refuse, because a partial bundle is
+      a guessed identity;
+    * nonce must be 32-hex and scope must be exactly this action's broker
+      slice for it (wrong-action and wrong-nonce refuse);
+    * helper root must be a canonical absolute path naming a live
+      directory, never through a symlink (stale or malformed refuse).
+
+    The broker token and socket never cross this boundary: only these
+    three names are read, so only they can arrive.  Binding beyond shape
+    -- the live claim row -- stays the SDK's check at use.
+    """
+
+    nonce = os.environ.get(ACTION_NONCE_ENV)
+    scope = os.environ.get(ACTION_SCOPE_ENV)
+    helper = os.environ.get(READER_HELPER_ROOT_ENV)
+    present = [name for name, value in (
+        (ACTION_NONCE_ENV, nonce), (ACTION_SCOPE_ENV, scope),
+        (READER_HELPER_ROOT_ENV, helper)) if value]
+    if not present:
+        return {}
+    if len(present) != 3:
+        raise ActionContractError(
+            "launcher holds a partial reader-identity bundle "
+            f"({', '.join(present)}); refusing rather than binding "
+            "a strict identity from half of one")
+    assert nonce is not None and scope is not None and helper is not None
+    if _ATTEMPT_NONCE_RE.fullmatch(nonce) is None:
+        raise ActionContractError(
+            "launcher reader nonce is not a 32-character lowercase attempt "
+            "identity; refusing rather than forwarding it")
+    expected_scope = ("prismabuild-job"
+                      + hashlib.sha256(
+                          (action_key + nonce).encode()).hexdigest()[:32]
+                      + ".slice")
+    if scope != expected_scope:
+        raise ActionContractError(
+            "launcher reader scope is not this action's broker slice for "
+            "its nonce; refusing rather than forwarding another attempt's "
+            "identity")
+    if ("\x00" in helper or not helper.startswith("/")
+            or posixpath.normpath(helper) != helper):
+        raise ActionContractError(
+            "launcher reader helper root is not a canonical absolute path; "
+            "refusing rather than binding a helper tree by a relative or "
+            "escaping spelling")
+    try:
+        if os.path.realpath(helper) != helper or not Path(helper).is_dir():
+            raise ActionContractError(
+                "launcher reader helper root names no live directory "
+                "directly (missing, or through a symlink such as the "
+                "mutable link); refusing rather than binding stale bytes")
+    except OSError as exc:
+        raise ActionContractError(
+            "launcher reader helper root cannot be stat'ed; refusing "
+            "rather than binding an unproven tree") from exc
+    return {ACTION_NONCE_ENV: nonce, ACTION_SCOPE_ENV: scope,
+            READER_HELPER_ROOT_ENV: helper}
 
 
 def report_action_progress(
