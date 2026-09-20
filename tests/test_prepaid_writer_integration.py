@@ -19,12 +19,15 @@ Exercises the production call path end to end on real fixtures:
   succeeds after the intent is retired; staged intents never select the
   same credit name twice.
 
-Fixture concessions (dev scope): the mover runs in-process through
-`stage_move.move` with `--unpaced` (real copy/verify/fragment, no ZFS
-pacer); the claim is `PoolQueue.claim` directly rather than a fleet worker
-loop; the sealed mover argv is production-shaped but is not executed by a
-fleet worker here; `safe_release_instance` is only shown retaining (its
-full path needs the accepted reader_lease SDK package).
+Fixture concessions (dev scope): the mover executes through
+``pb.run_local_action`` -- the sealed request's own bash-wrapped argv under
+the local action runner, which derives the mover identity exactly as the
+worker launcher does -- with ``--unpaced`` sealed into the command (real
+copy/verify/fragment, no ZFS pacer) and ``--manifest`` pointing at a local
+manifest file (the fleet path seals the manifest as a request input); the
+claim is ``PoolQueue.claim`` directly rather than a fleet worker loop;
+``safe_release_instance`` is only shown retaining (its full path needs the
+accepted reader_lease SDK package).
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import prismabuild.storage_tiers as storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
+import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -161,30 +164,55 @@ def _manifest_file(tmp_path: Path, descs: list[dict],
     return path
 
 
-def _run_mover(q: pool.PoolQueue, mover: str, batch_ns: str,
-               manifest: str, total: int, manifest_file: Path,
-               stage_root: Path) -> dict:
-    """The real copier: same parser, same args shape the sealed task uses."""
-    args = stage_move.build_parser().parse_args([
-        "--pool-root", str(q.root),
-        "--cas-root", str(q.root.parent / "cas"),
-        "--action-key", mover,
-        "--consumer-action-key", batch_ns,
-        "--tier-id", TIER,
-        "--stage-root", str(stage_root),
-        "--manifest-sha256", manifest,
-        "--range-start-bytes", "0",
-        "--range-end-bytes", str(total),
-        "--manifest", str(manifest_file),
-        "--residency-root", str(po.output_fragment_root(
-            q.root / pool.RESIDENCY)),
-        "--block", str(1 << 16),
-        "--readers", "2",
-        "--max-readers", "2",
-        "--unpaced",
-    ])
-    receipt = stage_move.move(args)
-    q.record_move(mover, receipt)
+def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
+    """File the tier record the storage role announces (tier_loop shape).
+
+    The driver resolves the mover's interpreter, tools, stage root and
+    placement host ONLY from this record -- the ordinary movement-node
+    path -- so the test announces the same facts tier_loop.py would: the
+    box's own interpreter, the checkout's fleet tools, a stage root
+    registered to this queue (#628 ownership, unchanged).
+    """
+    import socket
+    stage_root.mkdir(parents=True, exist_ok=True)
+    assert stage_release.register_stage_root(
+        q, tier_id=TIER, stage_root=stage_root) == "registered"
+    record = {
+        "tier": "stage",
+        "tier_id": TIER,
+        "host": socket.gethostname(),
+        "mountpoint": str(stage_root),
+        "mover_python": sys.executable,
+        "mover_tools_root": str(REPO / "tools" / "fleet"),
+    }
+    path = Path(q.root) / "tiers" / f"{TIER}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pool._write_json_atomic(path, record)
+
+
+def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str) -> dict:
+    """Execute the SEALED request argv through the real local executor.
+
+    Not an in-process call: the action's own bash-wrapped argv runs under
+    ``run_local_action``, which derives ``PRISMABUILD_ACTION_KEY`` from the
+    action in hand exactly as the worker launcher does (a movement node
+    cannot take its key as an argument -- it would hash the key into
+    itself). The mover records its own receipt under that identity.
+    """
+    import prismabuild.core as pb
+    request = json.loads(
+        (Path(cas_root) / "requests" / mover[:2] / f"{mover}.json")
+        .read_text())
+    # The seal workdir IS the execution checkout: the action's code closure
+    # is verified against it, exactly as a movement child's snapshot is.
+    workdir = Path(q.root) / "produced-output-mover-seal"
+    workdir.mkdir(parents=True, exist_ok=True)
+    result = pb.run_local_action(
+        request, cas_root=cas_root, checkout_root=workdir,
+        timeout_seconds=180)
+    assert result.get("status") in ("published", "cache_hit"), result
+    receipt = q.move_record(mover)
+    assert isinstance(receipt, dict), "mover recorded no receipt"
     return receipt
 
 
@@ -215,11 +243,11 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     manifest_file = _manifest_file(tmp_path, descs, manifest)
     cas_root = tmp_path / "cas"
     stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
 
     res = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=cas_root, mover_checkout=REPO, stage_root=stage_root,
-        manifest_path=manifest_file)
+        cas_root=cas_root, manifest_path=manifest_file)
     assert res.get("ok") is True, res
     assert res.get("funding") == "prepaid"
     mover = str(res["mover_key"])
@@ -228,8 +256,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     # step answers a typed duplicate: a restart may simply re-call.
     retry = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=cas_root, mover_checkout=REPO, stage_root=stage_root,
-        manifest_path=manifest_file)
+        cas_root=cas_root, manifest_path=manifest_file)
     assert retry.get("ok") is True, retry
     assert str(retry["mover_key"]) == mover
     # No second acquisition: the producer's window moved, free untouched.
@@ -250,9 +277,11 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
 
-    # The REAL mover: copy, verify, fragment under the batch namespace.
-    receipt = _run_mover(q, mover, batch_ns, manifest, total,
-                         manifest_file, stage_root)
+    # The REAL mover: the sealed request's own argv executes under the
+    # local action runner, which derives the mover identity the worker
+    # launcher would; the copy, verify and fragment filing all happen in
+    # the fleet tool's own process.
+    receipt = _execute_mover(q, cas_root, mover)
     assert receipt["complete"] is True, receipt
     assert receipt["bytes_staged"] == total
     staged = Path(stage_root) / "p1.bin"
@@ -278,6 +307,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     inst = _bind(q, template, owner)
     stage_root = tmp_path / "stage"
     cas_root = tmp_path / "cas"
+    _announce_tier(q, stage_root)
     results = []
     for tag, batch_id in (("p1", "b1"), ("p2", "b2")):
         payload = (b"a" * 700) if tag == "p1" else (b"b" * 900)
@@ -289,15 +319,13 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
                                        name=f"{batch_id}-manifest.json")
         res = po.publish_prepaid_batch(
             q, inst, template, descs, batch_id=batch_id, tier=TIER,
-            cas_root=cas_root, mover_checkout=REPO, stage_root=stage_root,
-            manifest_path=manifest_file)
+            cas_root=cas_root, manifest_path=manifest_file)
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
-        # Sequential use: claim, run the real mover, finish, retire.
+        # Sequential use: claim, execute the sealed argv, finish, retire.
         claimed = q.claim(owner=f"w-{tag}")
         assert claimed is not None and claimed["action_key"] == mover
-        receipt = _run_mover(q, mover, str(res["batch_namespace"]),
-                             manifest, total, manifest_file, stage_root)
+        receipt = _execute_mover(q, cas_root, mover)
         assert receipt["complete"] is True, receipt
         q.finish(mover, status="executed")
         assert po.retire_batch(
@@ -397,10 +425,10 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     descs = _descriptors(tmp_path, template, inst, "p1", b"d" * 300)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
+    _announce_tier(q, tmp_path / "stage")
     res = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=tmp_path / "cas", mover_checkout=REPO,
-        stage_root=tmp_path / "stage",
+        cas_root=tmp_path / "cas",
         manifest_path=_manifest_file(tmp_path, descs, manifest))
     assert res.get("ok") is True, res
     mover = str(res["mover_key"])
