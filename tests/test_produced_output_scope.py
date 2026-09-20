@@ -33,6 +33,7 @@ import stage_release  # noqa: E402
 
 STAGE_TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE_TIER}"
+STAGE_BARE = "stage_gib"
 PRODUCER = "a" * 64
 MOVER = "b" * 64
 ATTEMPT = {"nonce": "attempt-0", "scope_id": "scope-0"}
@@ -132,14 +133,23 @@ def test_descriptors_are_immutable_and_prefix_bound(tmp_path: Path) -> None:
     assert manifest["entry_count"] == 3
     assert manifest["output_consumer_key"] == po.output_consumer_key(scope)
 
-    # Same path/length with different bytes is a different descriptor:
-    # the old digest no longer matches, so the old material cannot ABA-alias.
+    # Same path/length with different bytes is a different descriptor with
+    # a different generation: the old digest/material cannot ABA-alias the
+    # new bytes. Descriptor validation pins prefix/slot/envelope/identity;
+    # content equality is proven by the mover's digest-before-rename and the
+    # lease's generation binding, exercised in the copy test below.
     payload = files[0][0].read_bytes()
-    tampered = dict(descriptors[0], sha256=hashlib.sha256(b"X" * len(payload)).hexdigest())
+    other = po.validate_descriptor(dict(
+        descriptors[0],
+        sha256=hashlib.sha256(b"X" * len(payload)).hexdigest(),
+        producer_generation=po.mint_generation(),
+    ), scope)
+    assert other["sha256"] != descriptors[0]["sha256"]
+    assert po.output_manifest_sha256([other, descriptors[1], descriptors[2]]) != \
+        manifest["manifest_sha256"]
     with pytest.raises(po.ProducedOutputError):
-        # The tamper is only detected when the staged bytes are verified;
-        # the scope check below pins the prefix/slot/envelope half.
-        po.validate_descriptor(dict(tampered, path=str(origin / "elsewhere.pt")), scope)
+        po.validate_descriptor(dict(descriptors[0], path=str(origin / "elsewhere.pt")),
+                               _scope(str(tmp_path / "other-prefix")))
     with pytest.raises(po.ProducedOutputError):
         po.validate_descriptor(dict(descriptors[0], slot="foreign-slot"), scope)
 
@@ -183,7 +193,7 @@ def test_bounded_copy_read_retire_keeps_hdd_origin(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest))
     out_root = po.output_fragment_root(queue.root / pool.RESIDENCY)
     mover_demand = storage_tiers.stage_tokens_for_bytes(total)
-    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {STAGE_KIND: mover_demand})
+    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {STAGE_BARE: mover_demand})
 
     args = stage_move.build_parser().parse_args([
         "--pool-root", str(queue.root),
@@ -271,7 +281,7 @@ def test_tainted_fragment_fails_closed_and_retains_charge(tmp_path: Path) -> Non
     frag_dir = out_root / consumer
     frag_dir.mkdir(parents=True, exist_ok=True)
     (frag_dir / f"{MOVER}.json").write_text("{not json")
-    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {STAGE_KIND: 1})
+    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {STAGE_BARE: 1})
 
     receipt = stage_release.evict(queue, MOVER, consumer_action_key=consumer,
                                   stage_root=str(stage),

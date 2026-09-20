@@ -363,7 +363,9 @@ def reserve_scope(queue, scope: Mapping[str, object], tier_id: str) -> dict[str,
     total = total_reservation_bytes(checked)
     gib = tiers_mod.stage_tokens_for_bytes(total)
     kind = tiers_mod.capacity_kind_of(tier_id)
-    demand = {f"{kind}@{tier_id}": gib}
+    # Tier ledgers are keyed by bare kind ("stage_gib"); the "@tier" form
+    # only exists on action demand before split_demand partitions it.
+    demand = {kind: gib}
     ledger = queue.tier_ledger(tier_id)
     if not ledger.base.is_dir():
         return {"ok": False, "refusal": "tier-unknown"}
