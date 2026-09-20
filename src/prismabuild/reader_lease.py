@@ -121,15 +121,19 @@ def file_id_matches(published: object, live: object) -> bool:
     The one comparison every strict reader, every publication proof and
     every adoption verification makes: a material entry's recorded identity
     against a live ``stat_identity`` of the same name, field by field,
-    ignoring anything else either dict carries.  ``False`` for anything
-    unreadable -- an unstatable file or a malformed record is a mismatch,
-    never a pass (#755).
+    ignoring anything else either dict carries.  All four fields must be
+    present on both sides before any equality counts -- ``{}`` against
+    ``{}`` is vacuously equal and still not a match.  ``False`` for
+    anything unreadable -- an unstatable file or a malformed record is a
+    mismatch, never a pass (#755).
     """
 
+    fields = ("ino", "size", "mtime_ns", "ctime_ns")
     if not isinstance(published, Mapping) or not isinstance(live, Mapping):
         return False
-    return all(live.get(field) == published.get(field)
-               for field in ("ino", "size", "mtime_ns", "ctime_ns"))
+    if any(field not in published or field not in live for field in fields):
+        return False
+    return all(published[field] == live[field] for field in fields)
 
 
 def _check_identity(value: object, *, where: str) -> dict[str, int]:

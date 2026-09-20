@@ -385,6 +385,24 @@ def test_a_donor_whose_file_went_stale_publishes_no_successor(
 # --------------------------------------------- the mover's publication half
 
 
+def test_file_id_matches_requires_every_field() -> None:
+    """``{}`` against ``{}`` is vacuously equal and still not a match.
+
+    The helper's contract: malformed mappings never pass, so a record or a
+    stat missing any of the four identity fields is a mismatch, never an
+    adoption proof (#755 review).
+    """
+
+    full = {"ino": 1, "size": 1296, "mtime_ns": 3, "ctime_ns": 4}
+    assert reader_lease.file_id_matches(full, dict(full))
+    partial = {key: value for key, value in full.items() if key != "ctime_ns"}
+    assert not reader_lease.file_id_matches(partial, dict(full))
+    assert not reader_lease.file_id_matches(dict(full), partial)
+    assert not reader_lease.file_id_matches({}, {})
+    assert not reader_lease.file_id_matches(None, full)
+    assert not reader_lease.file_id_matches(full, None)
+
+
 def _publisher(queue: pool.PoolQueue, stage: Path, mover: str
                ) -> stage_move._StagedPublisher:
     return stage_move._StagedPublisher(
