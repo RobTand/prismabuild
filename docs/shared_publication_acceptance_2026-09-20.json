@@ -1,0 +1,50 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "67d429594a934b7f65437cfbb5b0957e5718de32",
+  "ledger_commit": "357f32bba915924565110de1cfd4bc54675238bd",
+  "scope": [
+    "INV-07",
+    "DEV-02"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "fix/ram-shared-source-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/751",
+    "pr": "https://github.com/RobTand/prismabuild/pull/752",
+    "source": "357f32bba915924565110de1cfd4bc54675238bd",
+    "validated_repairs": [
+      {
+        "id": "INV-07",
+        "actions": [
+          "d41b52fa2255ba3b943b1474d8a51569fa69acb96c5720a074ae06c89f53b130",
+          "4807513ec8eccf68e8b46ac7669837f4b0f2f1808e6a6ab2c658a48f706a7012"
+        ],
+        "outcome": "69 + 105 passed on 816acfe24e2; actual terminal logs and CAS receipts checked. Covers publication, shared ownership, RAM promotion, reader lifetimes and capacity exclusion."
+      },
+      {
+        "id": "DEV-02",
+        "actions": [
+          "67f9a9b62004c20e05a85aa03d091e5ddde6f75dacaa20f8dacd013a75824dc5",
+          "347dc83097f43b928e15683f7738d53c22e3d44c768c093f9cb7f15b1316e0fb"
+        ],
+        "outcome": "Before fix: changed-origin test fails behaviorally (1 failed,2 passed). Final:4 passed at357f32bba915, including null-digest two-consumer stage/RAM byte reads. Three tests overlap the adjacent qualification."
+      }
+    ],
+    "remaining_gaps": [
+      "Live deployed two-Spark dev flow",
+      "Production-size throughput and metadata-scan cost",
+      "Whole staged-read contract conformance"
+    ],
+    "note": "CPU component acceptance only. All actual source snapshots differ only by PB checkout metadata; behavioral RED is tests-only against R2. Final change after adjacent tests adds one positive test. Three fork deprecation warnings in existing tests; no skips. No model-payload rehash, release certification or live-run claim."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

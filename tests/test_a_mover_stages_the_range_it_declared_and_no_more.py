@@ -342,13 +342,18 @@ def test_a_second_movers_bad_copy_never_destroys_the_first_ones_good_one(
     assert staged.read_bytes() == b"a" * 4096
 
     # The source changes under us -- a rewritten shard, or bit rot.  That is
-    # the case the manifest digest exists for.
+    # the case the manifest digest exists for.  With the publication gate
+    # the second mover adopts the already-published good incarnation
+    # without copying (so it completes); without it, it must fail on
+    # digest mismatch before the rename.  Either way A's bytes survive.
     (mount / "shard.bin").write_bytes(b"z" * 4096)
     second = stage_move.move(
         _args(tmp_path, manifest, start=0, end=4096, action_key="b" * 64))
 
-    assert second["complete"] is False
-    assert any("digest mismatch" in error for error in second["errors"])
+    if second["complete"] is True:
+        assert second["entries_staged"] == 1, second
+    else:
+        assert any("digest mismatch" in error for error in second["errors"]), second
     # A's copy is untouched, and A's fragment still resolves to it.
     assert staged.read_bytes() == b"a" * 4096
     composed = rm.compose([rm.read_fragments(
