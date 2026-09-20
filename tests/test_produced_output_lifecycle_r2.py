@@ -25,24 +25,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
-from __future__ import annotations
-
-import hashlib
-import json
-import os
-import secrets
-import socket
-from pathlib import Path
-import sys
-import threading
-
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-
-from prismabuild import pool, produced_output as po  # noqa: E402
-from prismabuild import storage_tiers  # noqa: E402
 
 try:
     from prismabuild import reader_lease as rlc
