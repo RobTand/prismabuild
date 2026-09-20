@@ -54,14 +54,23 @@ than one of them.
   manifest consumed only as sealed wire carries ID-03; a manifest compared
   after decode carries ID-04; a manifest doing both carries both, each
   checked at its own boundary.
-- ID-05 provenance and certification, independent of location: `{origin:
-  pool-produced | staged-verified, certification: dev_uncertified |
-  certified, sealed_by, tree_digest?}`. A pool-produced payload CAN be
-  promoted into RAM and re-certified — promotion re-verifies manifest
-  binding, digest, and epoch, then re-issues certification; nothing is
-  barred forever for having originated on HDD. Digest integrity does not
-  certify quality; RAM residency does not prove correctness; certification
-  does not assert either — it asserts the checks actually ran.
+- ID-05 provenance, certification, integrity, and location — four
+  independent facts, never one field. `certification: dev_uncertified |
+  certified` asserts only which release gate ran with its required
+  evidence; promotion MUST NEVER turn `dev_uncertified` into `certified`
+  or reissue certification — promotion changes residency and integrity
+  evidence only, and artifact certification comes solely from the
+  application release gates with their required evidence. `provenance:
+  {source identity}` names what the bytes claim to be.
+  `integrity: {manifest binding, digest, epoch}` names the checks that
+  actually ran. `location: {tier_id?, epoch?}` names where the bytes sit
+  now. A pool-produced payload CAN move into RAM; the move updates
+  integrity and location evidence, never certification. Digest integrity
+  does not certify quality; RAM residency does not prove correctness. No
+  new every-payload wire schema is required: these are logical
+  requirements carried by existing metadata (tier receipts, map
+  fragments, journal envelopes, release-gate records); any new carrier
+  is explicitly target, not implemented.
 - ID-06 content and change-detection evidence: `{manifest_wire_sha256,
   manifest_canonical_sha256?, range_digest?, epoch}`. Logical requirements
   are carried by existing metadata (tier receipts, map fragments, journal
@@ -118,9 +127,9 @@ refused.
 | From → to | Actor | Precondition | Effect | Durable record | Failure |
 |---|---|---|---|---|---|
 | submitted → waiting | submitter | sealed action, manifests bound (ID-03/ID-04 as applicable) | row visible in `ready/` | sealed request in CAS | malformed seal → never published; ack (ID-09a) is acceptance, not promise |
-| waiting → admitted | claiming worker | tokens fit (INV-01); declared initial working set ready (INV-02); runtime supported (ID-08) | `ready/` → `claimed/` rename under queue discipline | claim record + lease intent | shortage → denial naming tier/shortage; no pass recorded |
+| waiting → admitted | claiming worker | tokens fit (INV-01); declared initial working set ready (INV-02); runtime supported (ID-08) | `ready/` → `claimed/` rename under queue discipline | claim record | shortage → denial naming tier/shortage; no pass recorded |
 | admitted → running | worker loop | leases acquired (SM-03) | payload executes | attempt `(nonce, scope_id)`; request immutable | lease refused → back to waiting with reason |
-| running → terminal-success | worker loop | exit 0 AND payload identities verify (ID-04/ID-06 as applicable) | record in `done/`, status `executed` | terminal record + CAS receipt | identity mismatch → failed, bytes unpublished |
+| running → terminal-success | worker loop | exit 0 | record in `done/`, status `executed`, plus CAS receipt for PB's own records | terminal record + CAS receipt | nonzero exit, timeout, or worker-observed refusal → failed. Payload-identity verification (ID-04/ID-06) is the application consumer's check on its own inputs, not something the worker performs on arbitrary payloads and not something terminal success attests |
 | running → terminal-failed | worker loop / reaper | nonzero exit, timeout, or identity refusal; attempt identity + terminal reason preserved | record in `done/` failed or `failed/` | terminal record + log tail | — |
 | waiting/admitted → withdrawn | authorized PB lifecycle only (plan revision, duplicate, supersede policy) | withdrawal authorized AND, if running, owned child containment completed before any resource release | row leaves contention without verdict | `withdrawn/superseded/` drop | a drop is never read as a verdict; release-before-containment is forbidden |
 
@@ -131,8 +140,16 @@ refused.
 | absent → copying | mover | tokens reserved for range ceiling; source readable | bytes copy to temp beside final name | mover row receipt (started) | overrun vs reservation → `residency_overran_reservation`, refused before copy |
 | copying → published | mover | digest matches manifest entry; length == range length | atomic rename into place; map names it under epoch | `movers/` receipt via `record_move` + map fragment | mismatch → delete temp, range unpublished |
 | published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
-| retiring → absent | tier loop | physical bytes reclaimed, OR atomically transferred to another accounted owner (verified shared owner) | ownership released exactly once; tokens freed | safe-deletion / transfer record + single release | deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
+| retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
 | published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
+
+Ownership transfer is not a transition to absent: a transfer keeps the
+physical object published for the remaining owners under the same epoch
+and moves only the logical owner release (which owner's charge covers
+the bytes). Logical owner release and physical object state are distinct
+facts with distinct records; conflating them double-frees or leaks.
+`absent` is entered only by actual delete after the last live lease is
+gone.
 
 Crash reaper: proves owned child processes and readers stopped (not merely
 a stale timestamp) before releasing tokens or pins.
@@ -172,7 +189,9 @@ a stale timestamp) before releasing tokens or pins.
   fragment (temp beside final name, atomic rename); claim handoff ordered;
   simultaneous egress serialized with shared-path ownership; last reader
   including pending copy handoff blocks eviction; retiring retains charge
-  until reclaim-or-transfer with exactly-once release (§4 SM-02 ordering).
+  until actual delete with the last live lease already absent, released
+  exactly once (§4 SM-02 ordering; a transfer moves only the logical
+  owner release while the object stays published).
 - INV-08 retries never double-count: new attempts mint new nonces with the
   request immutable; results adopted once per action; checkpoint adoption
   verifies identity/trust without recompute.
@@ -185,7 +204,9 @@ a stale timestamp) before releasing tokens or pins.
   tags admitting neither box are plan errors refused at dispatch.
 - INV-12 checkpoint adoption checks identity/trust without recompute, caps
   trust at the source mode, and never upgrades adopted `pool-declared`
-  to `staged-verified` without promotion re-verification (ID-05).
+  integrity/location evidence without re-verification of the bytes in
+  place; promotion updates integrity and location only and never
+  re-issues certification (ID-05).
 
 ## 6. Prefetch, tiers, and the read set
 
@@ -289,6 +310,16 @@ a stale timestamp) before releasing tokens or pins.
 - No test merely restates prose: each asserts a state transition, a
   refusal, or a byte/tier equality. Lease and read lifetimes are covered
   across async prefetch, two consumers, eviction, and epoch restart.
+
+Safety invariants, aligned with the ledger:
+
+- SAFE-01 no eviction of a live lease (INV-06/INV-07; SM-02 retiring
+  retains charge until actual delete with the last live lease absent).
+- SAFE-02 no bulk-input read from a forbidden tier (INV-03/INV-04).
+- SAFE-03 no false complete: the terminal record plus CAS receipt attest
+  exit 0 and PB's own records only. Payload-identity verification is the
+  application consumer's gate, never attested by terminal success, and
+  wrapper exit or shard counts alone complete nothing.
 
 ## 10. Delivery evidence levels; root operating checklists
 
