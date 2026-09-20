@@ -4279,6 +4279,16 @@ the ordinary claim path applies. A CLAIMED row is never told to retire; its
 recovery is the lease reaper's. Ledger holdings are not an input in either
 direction.
 
+A spent fence is spent in BOTH queue states. A terminal FAILED mover whose
+funding reads `consumed` can no more be retried than a requeued READY one can
+be claimed -- `output_funded_cover` covers only `transferring`, and
+`publish_prepaid_batch` answers a committed batch with `duplicate`, funding
+nothing -- so that branch reports the same terminal route rather than
+`output-mover-failed-retry`, and `due_mover_rows` emits no row for it. One
+shared question (`_output_funding_verdict`) decides both, because a retry
+event pointing at permanently unclaimable work is the same wait-forever
+defect as a live-wait one.
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when

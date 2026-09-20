@@ -3254,6 +3254,45 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     return events
 
 
+def _output_funding_verdict(queue, mover_key: str,
+                            tier: str) -> tuple[str, str | None]:
+    """What the FILED funding record says about one mover's fence.
+
+    ``("spent", None)`` a parsed `consumed` record -- the pool's own
+    statement that the fence is gone, and `output_funded_cover` covers only
+    a record in `transferring`, so nothing can re-cover it;
+    ``("fundable", None)`` `reserved`/`transferring`, still coverable;
+    ``("none", None)`` a PROVEN absent file -- no prepaid intent was ever
+    filed, so the ordinary claim path applies; ``("unknown", reason)``
+    anything unreadable, unparsable, or disagreeing with itself.
+
+    Read through `PoolQueue.output_funding_file_state`, never
+    `read_output_funding`, because this is a census path and that method
+    cannot tell absent from corrupt -- its own docstring forbids it here.
+    One question, asked identically wherever a batch's claimability is
+    judged, so the READY and FAILED branches cannot drift apart.
+    """
+
+    if not mover_key or not tier:
+        return ("unknown", "no mover or tier on the batch entry")
+    try:
+        record, file_state = queue.output_funding_file_state(mover_key, tier)
+    except Exception as exc:
+        return ("unknown", repr(exc))
+    if file_state == "corrupt":
+        return ("unknown", "funding record unreadable")
+    if file_state == "absent":
+        return ("none", None)
+    state = str(record.get("state")) if isinstance(record, Mapping) else ""
+    if state in ("reserved", "transferring"):
+        return ("fundable", None)
+    if state == "consumed":
+        return ("spent", None)
+    # `released` beside a batch the commitments still call live is evidence
+    # disagreeing with itself, and so is a record with no readable state.
+    return ("unknown", f"funding state {state!r} on a live batch")
+
+
 def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
     """Did this mover's own receipt say the batch landed whole? (3-valued)
 
@@ -3306,8 +3345,10 @@ def due_mover_rows(queue, instance: Mapping[str, object],
 
     NEW method owned by this lane (pure preparation, no queue mutation).
     For each committed unretired batch: composing fragments under their own
-    namespace need no row; a FAILED mover needs a retry row; an absent
-    mover with no staged fragments needs its first row.
+    namespace need no row; a FAILED mover whose fence is still fundable
+    needs a retry row; an absent mover with no staged fragments needs its
+    first row. A batch whose filed funding record reads `consumed` gets no
+    row at all -- see `_output_funding_verdict`.
 
     Composing is deliberately the test HERE, unlike in the censuses, and it
     does not mean the batch is complete: a partially staged batch composes
@@ -3363,6 +3404,16 @@ def due_mover_rows(queue, instance: Mapping[str, object],
         state = _mover_live_state(queue, mover)
         if state in ("claimed", "ready"):
             continue
+        # A batch whose fence is spent can never fund another claim on this
+        # mover key, so a row emitted for it would be work the pool cannot
+        # admit -- the retry-pointing-at-unclaimable-work defect in row
+        # form. An unreadable fence is not proof either way, and inventing
+        # work on unknown is the wrong direction for a function that
+        # creates it. Both defer to the terminal route `recover_batches`
+        # names; neither is a claim that the batch is finished.
+        verdict, _reason = _output_funding_verdict(queue, mover, tier)
+        if verdict in ("spent", "unknown"):
+            continue
         class_bytes = entry.get("class_bytes")
         total = sum(int(class_bytes.get(c, 0)) for c in
                     ("payload", "checkpoint", "temp")) \
@@ -3401,28 +3452,32 @@ def recover_batches(queue, instance: Mapping[str, object],
 
     NEW method owned by this lane. Uses existing receipts/ledgers/fragments
     only: staged (fragments compose AND the mover's receipt says complete),
-    unstaged (no fragments, mover absent → due), mover-failed (terminal
-    FAILED → retry), mover-live (claimed/ready → wait), unknown (unreadable
-    scan, or fragments whose completeness cannot be read → defer). Returns
-    events in batch_id order; callers act through existing publish/evict
-    paths, never here.
+    unstaged (no fragments, mover absent → due), mover-failed (FAILED with
+    a fence still fundable → retry), mover-live (claimed, or ready with a
+    fundable fence → wait), unfundable-retire (ready OR failed with a spent
+    fence → the terminal route), unknown (unreadable scan, unreadable
+    fence, or fragments whose completeness cannot be read → defer).
+    Returns events in batch_id order; callers act through existing
+    publish/evict paths, never here.
 
-    One queued mover is NOT live work: a READY row the retry ladder
-    requeued after its terminal consumed the funding can never be funded
-    back into a claim, because `output_funded_cover` covers only a record
-    in `transferring` and nothing re-funds a spent one. Reporting that as
-    mover-live tells the caller to wait forever, so it is reported as
-    `output-mover-unfundable-retire` with the terminal route it does
-    have: retire the batch, reclaim the origin, and re-plan the work as a
-    new batch.
+    A mover whose fence is spent is NOT work anyone can wait for or retry.
+    `output_funded_cover` covers only a record in `transferring` and
+    nothing re-funds a spent one, so once the claim has consumed the
+    funding, that mover key can never be claimed again -- whether the retry
+    ladder requeued the row READY or gave up on it and left it FAILED.
+    BOTH branches therefore report `output-mover-unfundable-retire` with
+    the terminal route the batch does have: retire it, reclaim the origin,
+    and re-plan the work as a new batch. A `failed-retry` event pointing at
+    a row no claim can cover is the same wait-forever defect as a
+    `live-wait` one, and the two branches are decided by one shared
+    question (`_output_funding_verdict`) so they cannot drift apart again.
 
-    The verdict rests on ATTRIBUTABLE evidence and nothing weaker. The
-    filed funding record decides, read through `output_funding_file_state`
-    because this is a census path and `read_output_funding` cannot tell
-    absent from corrupt (its own docstring says so): a parsed `consumed`
-    record is the pool's own statement that the fence is spent, `corrupt`
-    is unknown, `absent` means no prepaid intent was ever filed and the
-    ordinary claim path still applies, and `released` beside an unretired
+    The verdict rests on ATTRIBUTABLE evidence and nothing weaker: the
+    filed funding record, read through `output_funding_file_state` because
+    this is a census path and `read_output_funding` cannot tell absent from
+    corrupt (its own docstring says so). `consumed` is spent; `corrupt` is
+    unknown; `absent` means no prepaid intent was ever filed, so the
+    ordinary claim/retry path still applies; `released` beside an unretired
     batch is evidence disagreeing with itself. Holdings are NOT an input:
     an absent holding read is a moment, not a proof, and a mover that
     retains tokens for the bytes it staged is just as unclaimable as one
@@ -3491,54 +3546,35 @@ def recover_batches(queue, instance: Mapping[str, object],
         elif composed and complete is None:
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "namespace": ns})
-        elif state == "failed":
-            events.append({"event": "output-mover-failed-retry",
-                           "batch_id": batch_id, "mover": mover})
+        elif state in ("failed", "ready"):
+            verdict, reason = _output_funding_verdict(
+                queue, mover, str(entry.get("tier") or ""))
+            if verdict == "unknown":
+                event = {"event": "output-recovery-unknown",
+                         "batch_id": batch_id, "mover": mover}
+                if reason is not None:
+                    event["error"] = reason
+                events.append(event)
+            elif verdict == "spent":
+                # Symmetric across both branches: a spent fence is spent
+                # whether the ladder requeued the row or gave up on it, and
+                # a retry event pointing at work no claim can ever cover is
+                # the same wait-forever defect wearing the other state.
+                events.append({"event": "output-mover-unfundable-retire",
+                               "batch_id": batch_id, "mover": mover,
+                               "action": "retire-reclaim-replan"})
+            elif state == "failed":
+                events.append({"event": "output-mover-failed-retry",
+                               "batch_id": batch_id, "mover": mover})
+            else:
+                events.append({"event": "output-mover-live-wait",
+                               "batch_id": batch_id, "mover": mover})
         elif state == "claimed":
             # An executor owns this row. Whatever its ledger reads say in
             # the instant this census runs, the recovery for a claim is the
             # lease reaper's, never a retire this function names.
             events.append({"event": "output-mover-live-wait",
                            "batch_id": batch_id, "mover": mover})
-        elif state == "ready":
-            tier = str(entry.get("tier") or "")
-            if not tier:
-                events.append({"event": "output-recovery-unknown",
-                               "batch_id": batch_id})
-                continue
-            try:
-                record, file_state = queue.output_funding_file_state(
-                    mover, tier)
-            except Exception as exc:
-                events.append({"event": "output-recovery-unknown",
-                               "batch_id": batch_id, "error": repr(exc)})
-                continue
-            funding_state = (str(record.get("state"))
-                             if isinstance(record, Mapping) else "")
-            if file_state != "ok" or not funding_state:
-                # `corrupt` is UNKNOWN by the pool's own split, and this is
-                # a census path: `read_output_funding` conflates it with
-                # absent, which is why that method's docstring forbids it
-                # here. `absent` is not unknown but it is not spent either:
-                # no prepaid intent was ever filed for this row, so the
-                # ordinary claim path still applies and it waits.
-                events.append({"event": "output-recovery-unknown"
-                                        if file_state == "corrupt"
-                                        else "output-mover-live-wait",
-                               "batch_id": batch_id, "mover": mover})
-            elif funding_state in ("reserved", "transferring"):
-                events.append({"event": "output-mover-live-wait",
-                               "batch_id": batch_id, "mover": mover})
-            elif funding_state == "consumed":
-                events.append({"event": "output-mover-unfundable-retire",
-                               "batch_id": batch_id, "mover": mover,
-                               "action": "retire-reclaim-replan"})
-            else:
-                # `released` beside an unretired batch: the record says the
-                # fence is gone and the commitments say the batch is live.
-                # Disagreeing evidence is unknown, not a verdict.
-                events.append({"event": "output-recovery-unknown",
-                               "batch_id": batch_id, "mover": mover})
         elif state == "unknown":
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id})

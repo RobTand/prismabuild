@@ -8022,23 +8022,37 @@ class PoolQueue:
         sweep instead; nothing here changes it.
 
         Three states, not two: **occupied** retains, **proven empty**
-        releases, and **unknown** retains.  The evidence is ordered by what
-        the mover actually does.  ``stage_move`` publishes a residency
-        fragment **per entry**, as the bytes land, and files its move receipt
-        **once and last** (``tools/fleet/stage_move.py``: ``record_move`` at
-        :1604, after the per-entry ``publish``).  So a missing receipt is
-        silence, not a zero report -- a mover killed after publishing its
-        first entries has bytes on the stage and no receipt at all -- and
-        reading absence of a receipt as absence of bytes frees the charge
-        while the files are still there.  Published material is therefore
-        asked whenever the receipt does not settle it, and only a PROVEN
-        absence of both releases.
+        releases, and **unknown** retains.  ``stage_move`` renames each
+        destination into place (:886), publishes a residency fragment for it
+        (~:963), and files its move receipt once and last (:1604).  Bytes
+        therefore exist before either record does, so BOTH records can be
+        missing while the stage is occupied, and neither absence is a report
+        of zero.
 
-        A genuine zero-output failure still frees its reservation: it files
-        a refusal receipt, publishes no fragment, and leaves nothing to
-        charge for.
+        Releasing requires a POSITIVE report of emptiness and agreement from
+        publication -- a conjunction, not a fallback.  Every way this
+        function can answer "no" is one of exactly two kinds, and they are
+        listed here because each one has to be classified separately:
+
+        SCOPE gates (this is not a produced-output tier reservation to
+        judge, so ``residency_pin_holds`` decides it alone, exactly as
+        before) -- no claim record, no ``residency`` block, no ``tier_id``
+        in it, or a PROVEN-ENOENT funding file.  None of these is a claim
+        about the stage.
+
+        EMPTINESS, which needs both halves: the mover's own receipt names
+        this tier and reports ``bytes_staged == 0``, AND
+        :meth:`_output_published_material` proves no fragment.  An overrun
+        reports bytes above its declaration, so it never qualifies; a
+        receipt about another tier says nothing about this one; a missing or
+        shapeless receipt says nothing at all; and any unreadable probe
+        answers unknown.  All of those retain.
         """
 
+        # SCOPE gates: without a claim record carrying a tier residency
+        # block there is no produced-output tier reservation for this
+        # predicate to extend, and ``residency_pin_holds`` has already
+        # judged it.  These are not statements that the stage is empty.
         if not isinstance(record, Mapping):
             return False
         residency = record.get("residency")
@@ -8063,17 +8077,22 @@ class PoolQueue:
             receipt = self.move_record(str(action_key))
         except (OSError, PoolContractError):
             return True
-        if (isinstance(receipt, Mapping) and not receipt.get("refusal")
-                and receipt.get("tier_id") == tier_id):
-            staged = receipt.get("bytes_staged")
-            if not isinstance(staged, int):
-                return True
-            if staged > 0:
-                return True
-        # Everything else -- no receipt, a refused one, one about another
-        # tier, one reporting zero -- is settled by what was published,
-        # because publication happens per entry and the receipt happens once
-        # at the end.  Only proven-nothing releases.
+        if not isinstance(receipt, Mapping):
+            # No report at all.  The bytes land before the receipt is filed,
+            # so this is the crash window, not a statement about the stage.
+            return True
+        if receipt.get("tier_id") != tier_id:
+            # A report about some other tier proves nothing about this one.
+            return True
+        staged = receipt.get("bytes_staged")
+        if not isinstance(staged, int) or staged > 0:
+            # Shapeless (unknown) or a positive count (occupied).  An
+            # overrun lands here: it refused for staging MORE than it
+            # declared, and its bytes are on the stage.
+            return True
+        # The mover's own count says nothing landed on this tier -- the only
+        # receipt that can prove emptiness.  It still has to agree with
+        # publication: proven-no-fragment releases, anything else retains.
         return self._output_published_material(str(action_key)) is not False
 
     def _output_published_material(self, action_key: str) -> bool | None:

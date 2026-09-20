@@ -1401,8 +1401,14 @@ def test_a_ready_mover_with_an_unreadable_funding_record_stays_unknown(
     assert q.read_output_funding(mover, TIER) is None
 
     events = po.recover_batches(q, inst, template)
-    assert {"event": "output-recovery-unknown", "batch_id": "b1",
-            "mover": mover} in events, events
+    unknown = [event for event in events
+               if event.get("event") == "output-recovery-unknown"]
+    assert len(unknown) == 1, events
+    assert unknown[0]["batch_id"] == "b1", unknown
+    assert unknown[0]["mover"] == mover, unknown
+    # The event carries WHY it is unknown, so a caller is not left to
+    # guess which of the several "I found nothing" paths it took.
+    assert "unreadable" in str(unknown[0].get("error", "")), unknown
     assert not any(e.get("event") == "output-mover-unfundable-retire"
                    for e in events), events
 
@@ -1535,6 +1541,207 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 3, "holders": {owner: 1}}
     again = po.retire_batch(q, inst, template, "b1",
+                            stage_root=str(stage_root),
+                            residency_root=residency)
+    assert again.get("ok") is True and again.get("duplicate") is True, again
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+
+
+def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
+        tmp_path: Path) -> None:
+    """A spent fence is spent in both queue states, not just READY.
+
+    The requeued-READY row was fixed to consult its filed funding record;
+    the terminal-FAILED sibling kept emitting `output-mover-failed-retry`
+    unconditionally. Both point at the same impossible thing, because
+    `output_funded_cover` covers only a record in `transferring` and
+    nothing re-funds a spent one -- so a caller told to retry a
+    fence-spent mover waits exactly as forever as one told to wait.
+
+    The impossibility is PROVEN here rather than argued from the code:
+    the one production publication call is re-driven against the same
+    batch and answers duplicate without re-funding, and no claim can be
+    taken afterwards. The route the census names instead is then walked
+    from the id the census emitted, through to a replanned batch that
+    stages for real.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    origin_path = Path(str(descs[0]["path"]))
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"],
+        retry_policy={"max_attempts": 1, "retry_safe": True})
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    # One attempt, and it stages nothing: the row goes terminal FAILED
+    # rather than being requeued, which is the branch under test.
+    origin_path.unlink()
+    claimed = _claim_mover(q, "w-exhausted")
+    assert claimed["action_key"] == mover
+    outcome = q.execute(claimed, timeout_s=240)
+    assert outcome.get("returncode") != 0, outcome
+    q.finish(mover, status="failed")
+    assert po._mover_live_state(q, mover) == "failed"
+    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    # Nothing was staged, so the reservation came back; the aggregate
+    # ledger is where that is read, not the mover's own holdings.
+    assert _staged(stage_root, "*.bin") == []
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+
+    # The retry that event promised, attempted for real.
+    origin_path.write_bytes(payload)
+    assert po.refill_window(q, inst, template, tier=TIER)["ok"] is True
+    again = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"],
+        retry_policy={"max_attempts": 1, "retry_safe": True})
+    assert again.get("ok") is True and again.get("duplicate") is True, again
+    assert str(again["mover_key"]) == mover
+    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert po._mover_live_state(q, mover) == "failed"
+    assert q.claim(owner="probe-exhausted", tags=[_tier_host(q)]) is None
+
+    # So the census must not offer it, and must offer what does work.
+    events = po.recover_batches(q, inst, template)
+    assert not any(event.get("event") == "output-mover-failed-retry"
+                   for event in events), events
+    route = [event for event in events
+             if event.get("event") == "output-mover-unfundable-retire"]
+    assert len(route) == 1, route
+    assert route[0]["mover"] == mover, route
+    assert route[0]["action"] == "retire-reclaim-replan", route
+    # The row form of the same promise is withdrawn too.
+    assert po.due_mover_rows(q, inst, template) == []
+
+    # Walk it, from the id the census emitted.
+    target = str(route[0]["batch_id"])
+    retired = po.retire_batch(q, inst, template, target,
+                              stage_root=str(stage_root),
+                              residency_root=residency)
+    assert retired.get("ok") is True and retired["staged_paths"] == [], retired
+    origin_path.unlink()
+    assert po.reclaim_origin(q, inst, template, batch_id=target)["ok"] is True
+    freed = po.require_prewrite(
+        q, inst, template, batch_id="b2", tier=TIER,
+        class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
+        paths=[str(origin_path)])
+    assert freed.get("ok") is True, freed
+    descs2 = _descriptors(tmp_path, template, inst, "p1", payload)
+    res2 = po.publish_prepaid_batch(
+        q, inst, template, descs2, batch_id="b2", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res2.get("ok") is True, res2
+    mover2 = str(res2["mover_key"])
+    assert _claim_mover(q, "w-replan")["action_key"] == mover2
+    receipt = _execute_mover(q, cas_root, mover2, tmp_path / "mover-checkout")
+    assert receipt["complete"] is True, receipt
+    q.finish(mover2, status="executed")
+    assert po.retire_batch(q, inst, template, "b2",
+                           stage_root=str(stage_root),
+                           residency_root=residency)["ok"] is True
+    assert all(event.get("event") != "output-mover-unfundable-retire"
+               for event in po.recover_batches(q, inst, template))
+    assert _tier_census(ledger)["capacity"] == 4
+
+
+def test_a_mover_killed_before_filing_anything_keeps_its_charge(
+        tmp_path: Path) -> None:
+    """Bytes exist before either record does, so neither absence is proof.
+
+    `stage_move` renames each destination into place
+    (`tools/fleet/stage_move.py:886`), publishes that entry's residency
+    fragment afterwards (~:963), and files its move receipt once at the
+    end (:1604). A contained kill between the rename and the fragment
+    leaves real bytes on the stage with NEITHER record -- and "I found
+    no evidence" is not "there is nothing there". Releasing on that frees
+    capacity the stage has already spent.
+
+    Genuine zero output still releases, on positive evidence: the mover's
+    own receipt reporting `bytes_staged == 0` for this tier AND no
+    fragment. That conjunction is what
+    `test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed`
+    exercises, and it is not weakened here.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    descs = descs + _descriptors(tmp_path, template, inst, "s1", b"c" * 500)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    namespace = str(res["batch_namespace"])
+
+    Path(str(descs[1]["path"])).unlink()
+    claimed = _claim_mover(q, "w-killed-early")
+    assert claimed["action_key"] == mover
+    q.execute(claimed, timeout_s=240)
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+
+    # The window between the rename and the fragment: the bytes are on the
+    # stage and nothing names them.
+    (Path(residency) / namespace / f"{mover}.json").unlink()
+    for sidecar in Path(residency).rglob(f"{mover}.json"):
+        sidecar.unlink()
+    q.move_path(mover).unlink()
+    assert q.move_record(mover) is None
+    assert list(Path(residency).rglob(f"{mover}.json")) == []
+
+    q.finish(mover, status="failed")
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # Nothing names the bytes, so the census cannot call the batch staged;
+    # its fence is spent, so it names the terminal route.
+    route = [event for event in po.recover_batches(q, inst, template)
+             if event.get("event") == "output-mover-unfundable-retire"]
+    assert len(route) == 1 and route[0]["mover"] == mover, route
+
+    # The existing cleanup returns the charge, exactly once. It evicts no
+    # path, because no record names one: the file itself is an orphan for
+    # `stage_release.sweep`, which is the existing owner of unfragmented
+    # stage bytes, not this lane.
+    retired = po.retire_batch(q, inst, template, str(route[0]["batch_id"]),
+                              stage_root=str(stage_root),
+                              residency_root=residency)
+    assert retired.get("ok") is True, retired
+    assert retired["staged_paths"] == [], retired
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+    again = po.retire_batch(q, inst, template, str(route[0]["batch_id"]),
                             stage_root=str(stage_root),
                             residency_root=residency)
     assert again.get("ok") is True and again.get("duplicate") is True, again

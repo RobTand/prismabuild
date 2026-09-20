@@ -227,6 +227,26 @@ def _file_batch(q: pool.PoolQueue, inst: dict, template: dict,
     return record
 
 
+def _moved_nothing(q: pool.PoolQueue, mover: str) -> None:
+    """File the receipt a mover that staged nothing actually files.
+
+    `stage_move` ends `residency_moved_nothing` with `bytes_staged: 0`
+    when it stages no entry, and that receipt is what lets the terminal
+    tell a PROVEN-empty stage from an unknown one: bytes are renamed into
+    place before either the fragment or the receipt exists, so a funded
+    mover concluded with no record at all is a mover killed before it
+    could report, and its charge is retained on purpose
+    (`PoolQueue.output_partial_pin_holds`). These fixtures drive the
+    funding primitives with movers that really do move nothing, so they
+    say so where the real tool says it.
+    """
+
+    q.record_move(mover, {
+        "tier_id": TIER, "stage_root": "/stage",
+        "bytes_staged": 0, "entries_declared": 0, "entries_staged": 0,
+        "complete": False, "refusal": "residency_moved_nothing"})
+
+
 def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
     """Window 2 -> fund 1 (free/total unchanged) -> commit -> claim once."""
     owner = _hexkey("prepaid-owner")
@@ -294,6 +314,7 @@ def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
     row = pool._read_json(q.item_path(pool.CLAIMED, mover))
     assert isinstance(row, dict)
     assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+    _moved_nothing(q, mover)
     q.finish(mover, status="executed")
     # Owner retains its other token until it finishes.
     assert ledger.holder_tokens(owner).get(KIND, 0) == 1
@@ -638,6 +659,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert rec is not None and rec["state"] == "consumed"
     # Normal finish resolves credit exactly once (mover releases unpinned
     # copy tokens; owner still holds its 1 until it finishes).
+    _moved_nothing(q, mover)
     q.finish(mover, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 1
     # Reaper sweep after finish preserves sum and finds nothing stranded.
