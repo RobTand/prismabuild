@@ -905,6 +905,20 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
         if (isinstance(wanted, str) and wanted
                 and str(attestation.get(field) or "") != wanted):
             return False, f"attestation-{field}-mismatch-retain"
+    # The exact supported proof, read off the attestation body (which the
+    # pool cleanup wrote from the broker verdict): a clean release, or a
+    # settled retirement.  Tombstones without settlement, absence
+    # responses, and verdicts without stopped evidence never qualify,
+    # however scope_empty reads.
+    if not attestation.get("stopped_unix"):
+        return False, "proof-incomplete-retain"
+    retired = attestation.get("retired") is True
+    settled = attestation.get("settled") is True
+    released = attestation.get("released") is True
+    if retired and not settled:
+        return False, "tombstone-unsettled-retain"
+    if not ((released and not retired) or (retired and settled)):
+        return False, "proof-incomplete-retain"
 
     def telemetry_names(telemetry: Mapping[str, object]) -> bool:
         return (str(telemetry.get("action_key") or "") == action_key
@@ -972,6 +986,7 @@ def release_refs(queue, refs: list[dict[str, str]],
                 "skipped": [str(ref.get("ref_id", "?")) for ref in refs]}
     attempt_nonce = str(certificate.get("nonce") or "")
     attempt_scope = str(certificate.get("scope_id") or "")
+    cert_action = str(certificate.get("action_key") or "")
     attestation = read_scope_attestation(
         queue, str(certificate.get("action_key") or ""), attempt_nonce)
     attested_host = (str(attestation.get("host") or "")
@@ -1005,6 +1020,11 @@ def release_refs(queue, refs: list[dict[str, str]],
                 continue
             if isinstance(pin, Exception):
                 skipped.append(f"{ref_id}: {pin}")
+                continue
+            if str(pin.get("owner_action_key") or "") != cert_action:
+                # A foreign owner's certificate never releases this pin,
+                # even when nonce/scope/host/worker strings all repeat.
+                skipped.append(f"{ref_id}: owner mismatch")
                 continue
             refs_map = pin["refs"]
             assert isinstance(refs_map, dict)
@@ -1084,8 +1104,8 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
         return {"released": [], "retained": {}}
     released: list[str] = []
     retained: dict[str, str] = {}
-    for owner in owners:
-        directory = root / owner
+    for owner_dir in owners:
+        directory = root / owner_dir
         try:
             names = sorted(entry.name for entry in os.scandir(directory)
                            if entry.is_file()
@@ -1097,8 +1117,12 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
             pin = _read_pin(path)
             if pin is None or isinstance(pin, Exception):
                 continue
-            if str(pin.get("owner_action_key") or "") != owner:
-                continue  # path/field disagreement: leave for inspection
+            # The certificate action comes from the pin's OWNER field,
+            # never the directory it was found under: lease owner action
+            # vs material scope IDs stay distinct end to end.
+            pin_owner = str(pin.get("owner_action_key") or "")
+            if not pin_owner:
+                continue
             refs_map = pin["refs"]
             assert isinstance(refs_map, dict)
             pin_id = str(pin["pin_id"])
@@ -1121,7 +1145,7 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
                 first = refs_map[ref_ids[0]]
                 holder = first.get("holder") if isinstance(first, dict) else None
                 certificate: dict[str, object] = {
-                    "action_key": owner,
+                    "action_key": pin_owner,
                     "nonce": nonce,
                     "scope_id": scope_id,
                 }
@@ -1132,7 +1156,7 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
                             certificate[field] = holder[field]
                 outcome = release_refs(
                     queue,
-                    [{"consumer_action_key": owner,
+                    [{"consumer_action_key": pin_owner,
                       "pin_id": pin_id, "ref_id": ref_id}
                      for ref_id in ref_ids],
                     certificate, residency_root=residency_root)

@@ -5269,45 +5269,66 @@ class PoolQueue:
 
     @_serialized_key
     def _persist_reader_scope_proof(self, record: Mapping[str, object],
-                                      scope, released: object) -> None:
+                                      nonce: str, scope_id: str,
+                                      released: object) -> bool:
         """File the broker's stopped-and-empty verdict for reader containment.
 
         Called with the broker release verdict in hand (pool resource-scope
-        cleanup owns this hunk, not the membership retry branch): the
-        release refused unless the scope provably stopped and emptied, so
-        this file is the broker's proof, not a caller assertion.  The
-        egress's automatic reclamation reads it together with the attempt's
-        terminal broker telemetry; either alone authorizes nothing.
-        Best-effort: raises only for programming errors, and the caller
-        contains every other failure without failing the cleanup.
+        cleanup owns this hunk, not the membership retry branch).
+        ``scope_empty`` is True ONLY for a complete authoritative proof:
+        stopped evidence present, plus released-without-tombstone or
+        retired-with-settlement.  A retired tombstone without settlement,
+        an absence/reboot reduced response, or anything unparseable files
+        ``scope_empty False`` (retain) or nothing at all.  Never
+        manufactures true from a helper's return alone.  Host is the
+        PB-qualified claim holder (fleet alias, never the local
+        hostname); worker and incarnation are the claim's full
+        ``claimed_by`` holder identity (repository convention), matching
+        what SDK refs record.  Best-effort: returns whether a proof file
+        was filed; the caller never fails a cleanup over it.
         """
 
         from prismabuild import reader_lease
 
         action_key = str(record.get("action_key") or "")
-        nonce = str(getattr(scope, "nonce", "") or "")
-        scope_id = str(getattr(scope, "unit", "") or "")
         if len(action_key) != 64 or not nonce or not scope_id:
-            return  # unbound verdicts are not proof; retain as before
+            return False
+        verdict = released if isinstance(released, Mapping) else {}
+        stopped = verdict.get("stopped_unix")
+        retired = bool(verdict.get("retired"))
+        settled = bool(verdict.get("settled"))
+        released_ok = bool(verdict.get("released"))
+        # Complete proof: stopped evidence, and either a clean release or
+        # a settled retirement.  Tombstones without settlement, absence
+        # responses, and verdicts without stopped evidence stay unproven.
+        proven = (bool(stopped) and (
+            (released_ok and not retired) or (retired and settled)))
+        try:
+            host = self.resolve_claim_holder(action_key, record)
+        except (AttributeError, OSError, ValueError):
+            host = None
+        worker = record.get("claimed_by")
         payload = {
             "schema": reader_lease.ATTESTATION_SCHEMA_V1,
             "action_key": action_key,
             "nonce": nonce,
             "scope_id": scope_id,
-            "host": socket.gethostname(),
-            "worker": str(record.get("claimed_by") or ""),
-            "scope_empty": True,
-            "released": bool(isinstance(released, Mapping)
-                             and released.get("released")),
-            "retired": bool(isinstance(released, Mapping)
-                            and released.get("retired")),
+            "host": host if isinstance(host, str) and host else "",
+            "worker": worker if isinstance(worker, str) else "",
+            "incarnation": worker if isinstance(worker, str) else "",
+            "scope_empty": bool(proven),
+            "released": released_ok,
+            "retired": retired,
+            "settled": settled,
+            "stopped_unix": stopped,
             "termination_evidence": (
-                dict(released.get("termination_evidence"))
-                if isinstance(released, Mapping)
-                and isinstance(released.get("termination_evidence"), Mapping)
+                dict(verdict["termination_evidence"])
+                if isinstance(verdict.get("termination_evidence"), Mapping)
                 else None),
             "unix": time.time(),
         }
+        if not payload["host"] or not payload["worker"]:
+            return False
         path = reader_lease.attestation_path(self, action_key, nonce)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -5317,6 +5338,41 @@ class PoolQueue:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, path)
+        return True
+
+    def _recover_reader_scope_proof(self, record: Mapping[str, object],
+                                      prior: Mapping[str, object]) -> None:
+        """Republish a missing proof from the prior's broker verdict.
+
+        The ``prior.complete`` shortcut returns without touching the
+        broker, so a proof lost to a shared-mount blip would stay lost
+        forever.  Recovery replays publication from the prior cleanup's
+        stored release verdict for this exact attempt -- authoritative
+        broker evidence, no tokens anywhere.  An already-filed valid
+        proof is left alone; best-effort throughout.
+        """
+
+        from prismabuild import reader_lease
+
+        action_key = str(record.get("action_key") or "")
+        nonce = str(prior.get("nonce") or "")
+        control = record.get("resource_scope")
+        unit = (control.get("scope_id") if isinstance(control, Mapping)
+                else None)
+        if len(action_key) != 64 or not nonce or not unit:
+            return
+        try:
+            existing = reader_lease.read_scope_attestation(
+                self, action_key, nonce)
+        except Exception:                                        # noqa: BLE001
+            existing = None
+        if isinstance(existing, Mapping):
+            return
+        try:
+            self._persist_reader_scope_proof(
+                record, nonce, str(unit), prior.get("released"))
+        except Exception:                                        # noqa: BLE001
+            pass
 
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion",
@@ -5366,6 +5422,15 @@ class PoolQueue:
             prior = record.get("resource_scope_cleanup")
             if (isinstance(prior, dict) and prior.get("complete") is True
                     and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                # The shortcut must not permanently bypass proof
+                # publication: if the shared mount blipped while filing,
+                # cleanup recorded complete and future calls return here.
+                # Recover from the prior's authoritative broker verdict
+                # for this exact attempt (no tokens involved anywhere).
+                try:
+                    self._recover_reader_scope_proof(record, prior)
+                except Exception:                                # noqa: BLE001
+                    pass
                 return {"complete": True, "used": True, "removed": [], "remaining": [],
                         "resource_scope": prior}
             scope = self._scope_from_record(record)
@@ -5416,7 +5481,8 @@ class PoolQueue:
             # persistence must never fail a cleanup that already proved
             # emptiness -- a missing file retains, exactly as before.
             try:
-                self._persist_reader_scope_proof(record, scope, released)
+                self._persist_reader_scope_proof(
+                    record, scope.nonce, scope.unit, released)
             except Exception as exc:                             # noqa: BLE001
                 telemetry = dict(telemetry) if isinstance(telemetry, Mapping) else {}
                 telemetry.setdefault(

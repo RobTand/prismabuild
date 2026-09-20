@@ -725,6 +725,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     shared_with: list[str] = []
     live_pins: list[str] = []
     auto_reclaimed: list[str] = []
+    auto_retained: dict[str, str] = {}
     retiring_written = False
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
@@ -770,6 +771,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 reclaimed = reader_lease.auto_reclaim(
                     queue, residency_root=root)
                 auto_reclaimed.extend(reclaimed["released"])
+                for ref_id, reason in reclaimed["retained"].items():
+                    auto_retained.setdefault(ref_id, reason)
                 if reclaimed["released"]:
                     pins, pin_taint_again = reader_lease.live_for(
                         queue, wanted, residency_root=root)
@@ -902,6 +905,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "entries_deferred": deferred,
         "live_pins": sorted(set(live_pins)),
         "auto_reclaimed": sorted(set(auto_reclaimed)),
+        "auto_retained": dict(sorted(auto_retained.items())),
         "retiring": retiring_written,
         "bytes_deleted": bytes_deleted,
         "tokens_released": released,

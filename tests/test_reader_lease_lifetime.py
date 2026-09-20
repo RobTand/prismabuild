@@ -452,7 +452,9 @@ def _attest(queue, nonce="n1", scope_empty=True, host="test-host",
         "schema": reader_lease.ATTESTATION_SCHEMA_V1,
         "action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
         "host": host, "worker": worker, "incarnation": "i1",
-        "scope_empty": scope_empty, "unix": 1789880000.0}) + "\n")
+        "scope_empty": scope_empty, "released": True, "retired": False,
+        "settled": False, "stopped_unix": 1789870000.0,
+        "unix": 1789880000.0}) + "\n")
 
 def test_containment_needs_terminal_and_attestation(fleet) -> None:
     """No attestation, live scope, or missing terminal retains; certified frees.
@@ -755,6 +757,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER,
         "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
         "claimed_host": "sparky",
         "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
                            "scope_id": "unit-1"}}))
@@ -784,6 +787,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER,
         "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
         "claimed_host": "sparky",
         "resource_scope": {"action_key": CONSUMER, "nonce": "m" * 32,
                            "scope_id": "unit-2"}}))
@@ -794,6 +798,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     # carries no control to check against: unbound, refuse.
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
          "claimed_host": "sparky",
          "resource_scope": {"action_key": CONSUMER, "nonce": "",
                             "scope_id": ""}}))
@@ -809,6 +814,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     # no strict pin from a live claim alone.
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
          "claimed_host": "sparky",
          "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
                             "scope_id": "unit-1"}}))
@@ -817,6 +823,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     # Nothing names a box: no local hostname substitution, ever.
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
          "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
                             "scope_id": "unit-1"}}))
     assert reader_lease.injected_context(
@@ -834,6 +841,7 @@ def test_legacy_inspection_never_acquires(fleet) -> None:
     claimed.mkdir(parents=True, exist_ok=True)
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER, "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
         "claimed_host": "sparky",
         "resource_scope": {"action_key": CONSUMER, "nonce": "n" * 32,
                            "scope_id": "unit-1"}}))
@@ -1078,7 +1086,8 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
     assert verdict["released"] is True
 
     # Membership files the attestation FROM the export verdict (their
-    # writer; fabricated here as their input, labeled as such).
+    # writer; fabricated here as their input, labeled as such): every
+    # proof field below comes out of the real broker verdict above.
     assert verdict["scope_id"] == record["scope_id"]
     attest = reader_lease.attestation_path(queue, CONSUMER, nonce)
     attest.parent.mkdir(parents=True, exist_ok=True)
@@ -1086,7 +1095,12 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
         "schema": reader_lease.ATTESTATION_SCHEMA_V1,
         "action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
         "host": "sparky", "worker": "worker-7",
-        "scope_empty": True, "unix": 1789880000.0}) + "\n")
+        "scope_empty": True,
+        "released": bool(verdict.get("released")),
+        "retired": bool(verdict.get("retired")),
+        "settled": bool(verdict.get("settled")),
+        "stopped_unix": verdict.get("stopped_unix"),
+        "unix": 1789880000.0}) + "\n")
 
     # Terminal broker telemetry from the execution path (their record).
     done_dir = queue.dir(pool.DONE)
@@ -1183,7 +1197,7 @@ def test_egress_auto_reclaims_contained_pins(fleet) -> None:
              "host": "test-host"}}))
     receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
-    assert receipt["auto_reclaimed"] == [acquired["ref_id"]]
+    assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
     assert not staged.exists()
     assert receipt["complete"] is True
     assert receipt["entries_deleted"] == 1
@@ -1565,7 +1579,9 @@ def _attest_for(queue, action, nonce, scope_empty=True, host="test-host",
         "schema": reader_lease.ATTESTATION_SCHEMA_V1,
         "action_key": action, "nonce": nonce, "scope_id": "s1",
         "host": host, "worker": worker, "incarnation": "i1",
-        "scope_empty": scope_empty, "unix": 1789880000.0}) + "\n")
+        "scope_empty": scope_empty, "released": True, "retired": False,
+        "settled": False, "stopped_unix": 1789870000.0,
+        "unix": 1789880000.0}) + "\n")
 
 
 def test_pin_identity_is_canonical_over_paths(fleet) -> None:
@@ -1668,11 +1684,14 @@ def test_cleanup_persists_broker_proof_exactly(fleet) -> None:
     from types import SimpleNamespace
 
     queue, stage = fleet
-    scope = SimpleNamespace(nonce="n" * 32, unit="unit-9")
+    record = {"action_key": CONSUMER, "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
+              "claimed_host": "sparky"}
     released = {"released": True, "retired": False,
+                "stopped_unix": 1789870000.0,
                 "termination_evidence": {"stop": "done"}}
     queue._persist_reader_scope_proof(
-        {"action_key": CONSUMER, "claimed_by": "worker-7"}, scope, released)
+        record, "n" * 32, "unit-9", dict(released))
     attestation = reader_lease.read_scope_attestation(queue, CONSUMER,
                                                       "n" * 32)
     assert isinstance(attestation, dict)
@@ -1706,7 +1725,7 @@ def test_withdrawn_with_telemetry_reclaims_automatically(fleet) -> None:
              "host": "test-host"}}))
     receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
-    assert receipt["auto_reclaimed"] == [acquired["ref_id"]]
+    assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
     assert not staged.exists()
     assert receipt["entries_deleted"] == 1
 
@@ -1721,6 +1740,7 @@ def test_mixed_half_control_refuses_without_intent_synthesis(fleet) -> None:
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER,
         "claimed_by": "worker-7",
+        "resources": {"cpu": 1, "mem_gb": 1},
         "claimed_host": "sparky",
         "resource_scope": {"action_key": CONSUMER, "scope_id": "unit-1"},
         "resource_scope_intent": {"action_key": CONSUMER, "nonce": nonce}}))
@@ -1875,3 +1895,218 @@ def test_identity_derivation_failure_clears_stale_outer(
     assert "PRISMABUILD_READER_HELPER_ROOT" not in stamped
     assert stamped["OTHER"] == "kept"
     assert outer["PRISMABUILD_ACTION_NONCE"] == "o" * 32
+
+
+def test_foreign_owner_certificate_never_releases(fleet) -> None:
+    """Same nonce/scope/host/worker under another action frees nothing."""
+
+    FOREIGN = "f" * 64
+    queue, stage = fleet
+    staged = stage / "model" / "fo.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x65" * 1024)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/fo.bin", 0)
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/fo.bin",
+             staged, 1024, "b" * 64)
+    acquired = _acquire(queue, MOVER, "foreign-token")
+    assert acquired["ok"]
+    target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
+              "ref_id": acquired["ref_id"]}
+    # Valid proof, but for ANOTHER action reusing the same attempt strings.
+    foreign = reader_lease.attestation_path(queue, FOREIGN, "n1")
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text(json.dumps({
+        "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+        "action_key": FOREIGN, "nonce": "n1", "scope_id": "s1",
+        "host": "test-host", "worker": "w1", "incarnation": "w1",
+        "scope_empty": True, "released": True, "retired": False,
+        "settled": False, "stopped_unix": 1789870000.0,
+        "unix": 1789880000.0}) + "\n")
+    failed = queue.dir(pool.FAILED)
+    failed.mkdir(parents=True, exist_ok=True)
+    (failed / f"{FOREIGN}.json").write_text(json.dumps(
+        {"action_key": FOREIGN, "status": "failed",
+         "resource_telemetry": {
+             "action_key": FOREIGN, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    cert = {"action_key": FOREIGN, "nonce": "n1", "scope_id": "s1",
+            "worker": "w1", "host": "test-host"}
+    refused = reader_lease.release_refs(queue, [target], dict(cert))
+    assert refused["ok"] is False, refused
+    assert refused["skipped"] == ["%s: owner mismatch" % acquired["ref_id"]]
+    assert staged.exists()
+
+
+def test_tombstone_without_settlement_retains(fleet) -> None:
+    """Retired, unsettled proof is not containment even when marked empty."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "ts.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x66" * 1024)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/ts.bin",
+             staged, 1024, "b" * 64)
+    acquired = _acquire(queue, MOVER, "tomb-token")
+    assert acquired["ok"]
+    target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
+              "ref_id": acquired["ref_id"]}
+    tomb = reader_lease.attestation_path(queue, CONSUMER, "n1")
+    tomb.parent.mkdir(parents=True, exist_ok=True)
+    tomb.write_text(json.dumps({
+        "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+        "action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+        "host": "test-host", "worker": "w1", "incarnation": "w1",
+        "scope_empty": True, "released": False, "retired": True,
+        "settled": False, "stopped_unix": 1789870000.0,
+        "unix": 1789880000.0}) + "\n")
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    cert = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+            "host": "test-host"}
+    refused = reader_lease.release_refs(queue, [target], dict(cert))
+    assert refused["ok"] is False
+    assert refused["reason"] == "tombstone-unsettled-retain"
+    assert staged.exists()
+
+
+def test_writer_maps_verdicts_to_empty_honestly(fleet) -> None:
+    """_persist files True only for stopped+released or settled-retired."""
+
+    queue, stage = fleet
+    record = {"action_key": CONSUMER, "claimed_by": "sparklina:99:abc12345",
+        "resources": {"cpu": 1, "mem_gb": 1},
+              "claimed_host": "sparklina"}
+    base = {"action_key": CONSUMER}
+    clean = {"released": True, "retired": False, "settled": False,
+             "stopped_unix": 1789870000.0,
+             "termination_evidence": {"stop": "done"}}
+    assert queue._persist_reader_scope_proof(
+        record, "n" * 32, "unit-1", dict(clean)) is True
+    attestation = reader_lease.read_scope_attestation(queue, CONSUMER,
+                                                      "n" * 32)
+    assert attestation["scope_empty"] is True
+    assert attestation["host"] == "sparklina"
+    assert attestation["worker"] == "sparklina:99:abc12345"
+    assert attestation["incarnation"] == "sparklina:99:abc12345"
+    tombstone = {"released": False, "retired": True, "settled": False,
+                 "stopped_unix": 1789870000.0}
+    assert queue._persist_reader_scope_proof(
+        record, "m" * 32, "unit-1", dict(tombstone)) is True
+    tomb = reader_lease.read_scope_attestation(queue, CONSUMER, "m" * 32)
+    assert tomb["scope_empty"] is False
+    settled = {"released": False, "retired": True, "settled": True,
+               "stopped_unix": 1789870000.0}
+    assert queue._persist_reader_scope_proof(
+        record, "k" * 32, "unit-1", dict(settled)) is True
+    assert reader_lease.read_scope_attestation(
+        queue, CONSUMER, "k" * 32)["scope_empty"] is True
+    reboot = {"released": True}
+    assert queue._persist_reader_scope_proof(
+        record, "j" * 32, "unit-1", dict(reboot)) is True
+    assert reader_lease.read_scope_attestation(
+        queue, CONSUMER, "j" * 32)["scope_empty"] is False
+    _ = base
+
+
+def test_shortcut_recovery_republishes_missing_proof(fleet) -> None:
+    """A blipped proof publication heals on the next cleanup shortcut."""
+
+    queue, stage = fleet
+    claimed = queue.dir(pool.CLAIMED)
+    claimed.mkdir(parents=True, exist_ok=True)
+    nonce = "n" * 32
+    record = {
+        "action_key": CONSUMER,
+        "claimed_by": "sparky:1802421:8f3c0946",
+        "resources": {"cpu": 1, "mem_gb": 1},
+        "claimed_host": "sparky",
+        "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
+                           "scope_id": "unit-7"},
+        "resource_scope_cleanup": {
+            "complete": True, "nonce": nonce,
+            "released": {"released": True, "retired": False,
+                         "settled": False, "stopped_unix": 1789870000.0,
+                         "termination_evidence": {"stop": "done"}}},
+    }
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps(record))
+    assert reader_lease.read_scope_attestation(queue, CONSUMER, nonce) is None
+    outcome = queue.cleanup_action_containers(record)
+    assert outcome["complete"] is True
+    attestation = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+    assert isinstance(attestation, dict)
+    assert attestation["scope_empty"] is True
+    assert attestation["scope_id"] == "unit-7"
+
+
+def test_connected_sdk_ref_reclaims_through_egress(fleet) -> None:
+    """REAL SDK ref: injected ctx -> acquire_for -> live -> writer +
+    terminal -> egress auto-reclaim, no manual release, sparklina alias."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "cx.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x67" * 2048)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/cx.bin", 0)
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/cx.bin",
+             staged, 2048, "b" * 64)
+    nonce = "n" * 32
+    claimed = queue.dir(pool.CLAIMED)
+    claimed.mkdir(parents=True, exist_ok=True)
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
+        "action_key": CONSUMER,
+        "claimed_by": "sparklina:4242:9d001122",
+        "resources": {"cpu": 1, "mem_gb": 1},
+        "claimed_host": "sparklina",
+        "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
+                           "scope_id": "unit-3"}}))
+    env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
+           "PRISMABUILD_RESIDENCY_MAP": str(root / f"{CONSUMER}.map.json"),
+           "PRISMABUILD_ACTION_NONCE": nonce,
+           "PRISMABUILD_ACTION_SCOPE": "unit-3"}
+    injected = reader_lease.injected_context(queue, env=env)
+    assert injected["ok"], injected
+    ctx = injected["ctx"]
+    assert ctx["host"] == "sparklina"
+    assert ctx["worker"] == "sparklina:4242:9d001122"
+    assert ctx["incarnation"] == "sparklina:4242:9d001122"
+    acquired = reader_lease.acquire_for(
+        ctx, tier_id=TIER, epoch="",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        expected={key: {"bytes": 2048, "sha256": "b" * 64}},
+        span={"start_bytes": 0, "end_bytes": 2048},
+        acquire_token="connected-token", residency_root=root)
+    assert acquired["ok"], acquired
+    pin = reader_lease._read_pin(
+        root / "leases" / CONSUMER / f"{acquired['pin_id']}.lease.json")
+    assert pin["refs"][acquired["ref_id"]]["holder"]["host"] == "sparklina"  # type: ignore[index]
+    assert pin["refs"][acquired["ref_id"]]["holder"][  # type: ignore[index]
+        "incarnation"] == "sparklina:4242:9d001122"
+    # Ordinary finish persists broker proof through the pool hook path
+    # (writer called the way cleanup calls it, same IDs).
+    assert queue._persist_reader_scope_proof(
+        json.loads((claimed / f"{CONSUMER}.json").read_text()),
+        nonce, "unit-3",
+        {"released": True, "retired": False, "settled": False,
+         "stopped_unix": 1789870000.0,
+         "termination_evidence": {"stop": "done"}}) is True
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": nonce, "scope_unit": "unit-3",
+             "host": "sparklina"}}))
+    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                                  stage_root=str(stage))
+    assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
+    assert not staged.exists()
+    assert receipt["complete"] is True
+    assert receipt["entries_deleted"] == 1
