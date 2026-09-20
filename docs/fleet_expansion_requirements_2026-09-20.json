@@ -1,0 +1,106 @@
+{
+  "acceptance_assertion_note": "Each row names its exact executable check; manual-review kind only where governance-only.",
+  "contract": "worker-expansion-design.md",
+  "ledger_schema": "pb.fleet_expansion_requirements.v1",
+  "note": "New-lane FLEET rows only. Staged-read ledger untouched. Target stands irrespective of partial support; unknown is owed work, never a claim. Authority: user 2026-09-20 join/resign instruction; root reuse ruling (drain gate + broker maintenance + declaration draining + withdrawal ladder). Rows marked planned are target, not runtime claims.",
+  "requirements": [
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_two_matching_workers_either_may_claim",
+      "enforcement": "PoolQueue._matching_offers/placeable_hosts/claim",
+      "id": "FLEET-01",
+      "owner": "PB:pool-claim",
+      "text": "Registered boxes place by class-tag conjunction; more gb10 workers need no host listing.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_cpu_x86_vs_cuda_class_conjunction",
+      "enforcement": "has_gpu + tag conjunction in _matching_offers",
+      "id": "FLEET-02",
+      "owner": "PB:pool-claim",
+      "text": "CPU-only x86 vs ARM+CUDA distinguished by class conjunction and has_gpu; no cross-admission.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_discrete_and_unified_budgets_stay_separate",
+      "enforcement": "box_capacity GPU_MEMORY_DOMAINS; mem_gb vs VRAM budgets separate",
+      "id": "FLEET-03",
+      "owner": "PB:capacity",
+      "text": "Discrete (wsl-gpu) vs unified (GB10) memory domains recorded separately; VRAM never inflates host RAM.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_unsupported_backend_is_explicitly_unplaceable",
+      "enforcement": "_matching_offers returns no match; unknown kinds are unknown, never zero",
+      "id": "FLEET-04",
+      "owner": "PB:pool-claim",
+      "text": "Unknown backend explicitly unsupported; no fake memory/GPU advertised.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_stale_offer_is_unavailable_not_zero",
+      "enforcement": "offers(max_age_s=120); placeable None when nobody has said",
+      "id": "FLEET-05",
+      "owner": "PB:pool-claim",
+      "text": "Missing/stale offers read as unavailable, never as zero capacity; heartbeats never release tokens.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "manual-review: roster status active with provenance before join",
+      "enforcement": "fleet_roster.box_status via fleet_membership.check_roster_active",
+      "id": "FLEET-06",
+      "owner": "PB:roster",
+      "text": "Desired membership is the declaration (active vs retired/offline with reason/by/unix); restart never auto-rejoins an absent box.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_join_refuses_absent_roster + test_join_refuses_unhealthy_broker",
+      "enforcement": "fleet_membership.join validates roster + broker health + storage before touching the gate",
+      "id": "FLEET-07",
+      "owner": "PB:membership",
+      "text": "Join validates runtime/broker/capacity/telemetry/storage before eligibility; any failure leaves the gate as-is.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_gate_shape_is_fail_closed_and_keyed",
+      "enforcement": "worker_loop.read_maintenance_gate/_gate_key mirror",
+      "id": "FLEET-08",
+      "owner": "PB:broker-gate",
+      "text": "Drain gate fail-closed; changed_unix names the epoch; reason is descriptive only.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_resign_begin_then_withdraw_owned_claim + test_replacement_incarnation_markers_do_not_ack",
+      "enforcement": "fleet_membership.resign: begin, exact-loop park acks, withdraw owned claims",
+      "id": "FLEET-09",
+      "owner": "PB:membership",
+      "text": "Resign stops new claims at begin, waits exact-loop acks for that changed_unix, withdraws owned claims via the ladder; stale epochs never ack.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_resign_never_releases_on_heartbeat_loss",
+      "enforcement": "no gate/broker/queue mutation on refusal paths",
+      "id": "FLEET-10",
+      "owner": "PB:membership",
+      "text": "Voluntary resign distinct from crash/expiry; heartbeat disappearance alone releases nothing; failed containment stays resigning with reason.",
+      "maturity": "tested"
+    },
+    {
+      "acceptance": "manual-review: PoolQueue.withdraw per owned key; retry_safe requeues with new nonce, others file interrupted terminal; budgets preserved",
+      "enforcement": "existing withdrawal ladder; no new kill path (lease worker owns pool.py)",
+      "id": "FLEET-11",
+      "owner": "PB:pool-claim",
+      "text": "Owned scopes contained before release; retry-safe work requeues as new attempts, unknown/non-retry-safe files explicit interrupted terminal, attempt budgets preserved.",
+      "maturity": "planned",
+      "planned_note": "target only: no runtime claim until its acceptance test is green"
+    },
+    {
+      "acceptance": "manual-review: joining host opens only its gate; frozen child scopes immutable",
+      "enforcement": "design \u00a73.2; no pool.py edit in this lane",
+      "id": "FLEET-12",
+      "owner": "PB:membership",
+      "text": "Joining worker never mutates frozen child scope or another dispatcher; in-claim gate hook proposed via root, not taken here.",
+      "maturity": "planned",
+      "planned_note": "target only: no runtime claim until its acceptance test is green"
+    }
+  ]
+}
