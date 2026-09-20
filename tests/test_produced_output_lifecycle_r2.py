@@ -521,8 +521,6 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         return real_evict(q, mover, **kw)
 
     monkeypatch.setattr(stage_release, "evict", _spy)
-    monkeypatch.setattr("produced_output.stage_release.evict", _spy,
-                        raising=False)
 
     # (a) non-mapping entry in the filed record.
     batch_a = _fresh("mut-a", "2" * 64)
