@@ -36,3 +36,9 @@ def corpus() -> dict[str, bytes]:
 def manifest_entry(path: str, offset: int, payload: bytes) -> dict[str, object]:
     return {"path": path, "offset": offset, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def gzip_member(payload: dict) -> tuple[bytes, str]:
+    """Deterministic gzip seal (mtime=0) plus wire digest."""
+    raw = gzip.compress(json.dumps(payload, sort_keys=True).encode(), mtime=0)
+    return raw, hashlib.sha256(raw).hexdigest()
