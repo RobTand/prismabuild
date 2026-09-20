@@ -58,13 +58,13 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _manifest(tmp_path: Path, *, name: str = "manifest.json",
-              digest: str | None = None) -> tuple[Path, str, dict]:
+              null_digest: bool = False) -> tuple[Path, str, dict]:
     origin = tmp_path / "origin"
     origin.mkdir(parents=True, exist_ok=True)
     payload = _payload()
     (origin / "calib.bin").write_bytes(payload)
-    if digest is None:
-        digest = hashlib.sha256(payload).hexdigest()
+    digest: str | None = None if null_digest else hashlib.sha256(
+        payload).hexdigest()
     body = {
         "schema": "prismaquant.prismabuild.data_manifest.v1",
         "produced_by": {"tool": "ram-shared-source-fixture"},
@@ -362,7 +362,7 @@ def test_null_digest_overlap_refuses_cross_consumer(tmp_path: Path) -> None:
 
     queue = _queue(tmp_path)
     manifest, manifest_sha, body = _manifest(
-        tmp_path, name="manifest-null.json", digest=None)
+        tmp_path, name="manifest-null.json", null_digest=True)
     # Manifest entries carry an explicit null digest.
     raw = json.loads(manifest.read_text())
     assert raw["entries"][0]["sha256"] is None

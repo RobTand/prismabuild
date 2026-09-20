@@ -340,6 +340,10 @@ class _StagedPublisher:
         unreadable proof state. No payload is hashed here: the sidecar
         digest is the copy-time content proof, and stat stability is
         the change detection.
+
+        Unreadable state wins over proof: a fragment that cannot be
+        read might name this path, so adoption on another file's proof
+        could still invalidate its owner. Fail closed.
         """
 
         try:
@@ -353,6 +357,7 @@ class _StagedPublisher:
             return None, False, f"{self.residency_root}: {exc}"
         owned = False
         unknown: str | None = None
+        found: tuple[str, dict[str, int]] | None = None
         for child in children:
             cdir = self.residency_root / child
             try:
@@ -373,8 +378,12 @@ class _StagedPublisher:
                     unknown = f"{child}/{name}: unreadable"
                 elif candidate == "owned":
                     owned = True
-                elif candidate is not None:
-                    return candidate, True, None
+                elif candidate is not None and found is None:
+                    found = candidate
+        if unknown is not None:
+            return None, owned, unknown
+        if found is not None:
+            return found, True, None
         return None, owned, unknown
 
     def _proof_candidate(self, fragment_path: Path, consumer: str,
