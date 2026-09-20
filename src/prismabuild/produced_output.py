@@ -1335,9 +1335,10 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         if need > capacity:
             return {"ok": False, "refusal": "never-fits-tier-capacity",
                     "tier_id": tier}
-    delivered = [name for name in ("reserve_fence", "transfer_tokens",
-                                   "funded_cover")
+    delivered = [name for name in ("reserve_fence", "funded_cover")
                  if callable(getattr(pool_mod.PoolQueue, name, None))]
+    if callable(getattr(pool_mod.ResourceLedger, "transfer_tokens", None)):
+        delivered.append("transfer_tokens")
     if len(delivered) == 3:
         # Supported path (prepaid-output lane): the window is the owner
         # action's own tier demand, admitted once at claim; per-batch
@@ -1856,6 +1857,38 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     manifest_digest = str(ref["manifest_digest"])
     total = int(ref["range_end_bytes"])
     batch_ns = str(ref["batch_namespace"])
+    # Retry after FULL success: the prewrite and the pool-side staging are
+    # consumed by design, so creation steps would refuse exactly what they
+    # finished. A filed commitments entry with the same manifest means the
+    # batch is complete -- replay the idempotent commit and answer the
+    # duplicate.
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError as exc:
+        return {"ok": False, "step": "validate",
+                "refusal": f"unknown-retain: {exc}"}
+    existing = commitments["batches"].get(batch_id)
+    if isinstance(existing, Mapping):
+        if str(existing.get("manifest_digest")) != manifest_digest:
+            return {"ok": False, "step": "validate",
+                    "refusal": "batch-id-in-use"}
+        mover = str(existing.get("mover_key"))
+        committed = commit_batch(queue, checked_instance, checked_template,
+                                 descriptors, batch_id=batch_id, tier=tier,
+                                 mover_key=mover)
+        if not committed.get("ok"):
+            committed["step"] = "commit"
+            return committed
+        committed["mover_key"] = mover
+        record = queue.read_output_funding(mover, tier)
+        committed["generation"] = (str(record.get("generation"))
+                                   if record is not None else "")
+        committed["tokens"] = ([str(name) for name in record.get("tokens") or []]
+                               if record is not None else [])
+        committed["funding"] = "prepaid"
+        committed["duplicate"] = True
+        return committed
     kind = tiers_mod.capacity_kind_of(tier)
     gib = tiers_mod.stage_tokens_for_bytes(total)
     checkout = Path(mover_checkout).resolve()

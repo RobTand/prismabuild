@@ -151,8 +151,11 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
 
 def _manifest_file(tmp_path: Path, descs: list[dict],
                    manifest: str, name: str = "batch-manifest.json") -> Path:
+    # mount_prefix is the ORIGIN DIRECTORY the entries live under: the
+    # merged main's manifest validation requires every entry path inside
+    # it (production identity; the fixture adapts, not the check).
     batch = {"entries": descs, "batch_id": "b", "manifest_digest": manifest}
-    body = po.build_stage_manifest(batch, str(descs[0]["path"]))
+    body = po.build_stage_manifest(batch, str(Path(descs[0]["path"]).parent))
     path = tmp_path / name
     path.write_text(json.dumps(body))
     return path
