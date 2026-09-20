@@ -1045,3 +1045,127 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
     q.finish(owner, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
     assert ledger.available() == ledger.capacity()
+
+
+def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
+        tmp_path: Path) -> None:
+    """What actually happens to a committed batch whose mover FAILED.
+
+    Two things were previously asserted from reading the code. Only one
+    survives measurement.
+
+    WRONG: that such a batch can never be retired and so owns its origin
+    paths forever. `retire_batch` runs off the egress receipt, and a
+    mover that staged nothing has nothing to evict, so retirement
+    SUCCEEDS, ownership ends, and the producer re-plans the same path
+    immediately. Nothing is stranded and no cancel API is needed.
+
+    REAL, and the reason the same-batch retry cannot be relied on: the
+    FAILED terminal releases the mover's tokens while its funding record
+    stays `consumed`, and the retry ladder requeues the row READY. That
+    row is then unclaimable, and stays unclaimable after `refill_window`
+    and after re-driving `publish_prepaid_batch` -- which short-circuits
+    a committed batch to its duplicate and re-funds nothing. The working
+    recovery is retire -> reclaim -> refill -> plan a new batch.
+
+    The failure is real, not mocked: the origin file disappears before
+    the mover runs, so the sealed argv stages nothing and exits nonzero
+    through the ordinary `Pool.execute` seam.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    origin_path = Path(str(descs[0]["path"]))
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    origin_path.unlink()
+    claimed = _claim_mover(q, "w-fail")
+    assert claimed["action_key"] == mover
+    outcome = q.execute(claimed, timeout_s=240)
+    assert outcome.get("returncode") != 0, outcome
+    q.finish(mover, status="failed")
+    # The terminal released the mover's tokens, but its funding record
+    # still reads consumed.
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    funding = q.read_output_funding(mover, TIER)
+    assert funding is not None and funding["state"] == "consumed"
+
+    # The row is requeued READY -- and cannot be claimed.
+    assert po._mover_live_state(q, mover) == "ready"
+    assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
+    events = po.recover_batches(q, inst, template)
+    assert {"event": "output-mover-live-wait", "batch_id": "b1",
+            "mover": mover} in events, events
+
+    # While the batch is live it does own its path.
+    blocked = po.require_prewrite(
+        q, inst, template, batch_id="b2", tier=TIER,
+        class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
+        paths=[str(origin_path)])
+    assert blocked.get("ok") is False
+    assert blocked["refusal"] == "prewrite-path-owned-by-live-batch"
+    assert blocked["owner_batch_id"] == "b1"
+
+    # Neither refilling the window nor re-driving the batch restores the
+    # row: publication answers the duplicate and re-funds nothing.
+    origin_path.write_bytes(payload)
+    assert po.refill_window(q, inst, template, tier=TIER)["ok"] is True
+    again = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert again.get("ok") is True and again.get("duplicate") is True, again
+    assert str(again["mover_key"]) == mover
+    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert q.claim(owner="probe-b", tags=[_tier_host(q)]) is None
+
+    # The batch is NOT stranded: retirement succeeds with nothing to
+    # evict, and ownership of the path ends with it.
+    retired = po.retire_batch(q, inst, template, "b1",
+                              stage_root=str(stage_root),
+                              residency_root=residency)
+    assert retired.get("ok") is True, retired
+    assert retired["staged_paths"] == []
+    # Reclaim proves the producer disposed of the origin bytes.
+    origin_path.unlink()
+    assert po.reclaim_origin(q, inst, template, batch_id="b1")["ok"] is True
+
+    # The working recovery: the same path is re-planned as a new batch
+    # and staged for real by an ordinary mover.
+    freed = po.require_prewrite(
+        q, inst, template, batch_id="b2", tier=TIER,
+        class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
+        paths=[str(origin_path)])
+    assert freed.get("ok") is True, freed
+    descs2 = _descriptors(tmp_path, template, inst, "p1", payload)
+    res2 = po.publish_prepaid_batch(
+        q, inst, template, descs2, batch_id="b2", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res2.get("ok") is True, res2
+    mover2 = str(res2["mover_key"])
+    assert _claim_mover(q, "w-ok")["action_key"] == mover2
+    receipt = _execute_mover(q, cas_root, mover2,
+                             tmp_path / "mover-checkout")
+    assert receipt["complete"] is True, receipt
+    q.finish(mover2, status="executed")
+    assert po.retire_batch(q, inst, template, "b2",
+                           stage_root=str(stage_root),
+                           residency_root=residency)["ok"] is True
