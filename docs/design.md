@@ -4003,6 +4003,38 @@ being rewritten. `residency_plan.freeze` stays first-writer; a superseded
 filing must be reaped before its successor can be sealed, and the planner
 reaps it itself once the handoff is safe.
 
+**A deliberate seal renews the generation it replaces.** A submission
+publishes its consumer and its first lead and nothing else, so the visible
+cancellations a reaped predecessor left on its later children outlive both the
+plan and the ownership they were made against: the child keys are content
+hashes, and a same-body resubmission -- same consumer, price, tool and ranges
+-- seals the same ones. Read as live, they would supersede the fresh plan
+before its second phase ever published, which is the same-body half of #708
+the filing-identity marker does not cover. So a fresh seal (`pbrun
+--residency stage`, never a reused frozen plan) retires those *visible*
+markers as evidence: under the consumer's transition lock, after
+`residency_plan.handoff_safe` proves no live consumer and no queued or claimed
+child still names the old window, and under each child's own lock in the
+parent-before-child order every writer here keeps. The immutable decision
+under `withdrawn/decisions/` stays, and the visible marker itself is filed
+under `withdrawn/superseded/`. For a later child the boundary is *that child's
+own locked retirement* in this transaction, not the submission and not the
+freeze that follows it: a cancellation filed for the child after its marker is
+moved survives, and the window's next cycle reads it as live -- it refuses to
+publish the child and marks the fresh plan superseded. The first lead is the
+ordinary explicit-submission case: the submission publishes it in the same
+transaction, and `publish`'s own transition lock is its boundary, unchanged by
+this renewal. The renewal never teaches the automatic publisher to ignore a
+marker: the window's `refuse_withdrawn` publications and its supersession pass
+are unchanged, and only the deliberate submission retires one.
+
+An operator's `--withdraw` of a historical child whose new queue row does not
+exist yet addresses that child's *old* generation: the verb re-affirms the
+durable decision but writes no new visible marker, so it does not stop future
+staging. To cancel future staging, withdraw the **live consumer** -- whose
+withdrawal marks the plan superseded -- or withdraw the child once its new row
+is queued.
+
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
 stay held, so a mover row that reaches the queue without a residency block --
