@@ -3356,10 +3356,22 @@ def recover_batches(queue, instance: Mapping[str, object],
     mover-failed (terminal FAILED → retry), mover-live (claimed/ready →
     wait), unknown (unreadable scan → defer). Returns events in batch_id
     order; callers act through existing publish/evict paths, never here.
+
+    One queued mover is NOT live work: a row the retry ladder requeued
+    after its terminal released the mover's tokens can never be funded
+    back into a claim, because `output_funded_cover` covers only a record
+    in `transferring` and nothing re-funds a spent one. Reporting that as
+    mover-live tells the caller to wait forever, so it is reported as
+    `output-mover-unfundable-retire` with the terminal route it does
+    have: retire the batch (its egress is complete, with nothing or only
+    partial bytes to evict), reclaim the origin, and re-plan the work as
+    a new batch. Holdings decide -- a mover still holding its tier tokens
+    is genuinely live -- and anything unreadable stays unknown.
     """
 
     from prismabuild import pool as pool_mod
     from prismabuild import residency_map as map_mod
+    from prismabuild import storage_tiers as tiers_mod
 
     checked_template = validate_template(template)
     checked_instance = validate_instance(instance)
@@ -3411,8 +3423,25 @@ def recover_batches(queue, instance: Mapping[str, object],
             events.append({"event": "output-mover-failed-retry",
                            "batch_id": batch_id, "mover": mover})
         elif state in ("claimed", "ready"):
-            events.append({"event": "output-mover-live-wait",
-                           "batch_id": batch_id, "mover": mover})
+            tier = str(entry.get("tier") or "")
+            try:
+                holds = (int(queue.tier_ledger(tier).holder_tokens(mover).get(
+                    tiers_mod.capacity_kind_of(tier), 0)) if tier else 0)
+                record = (queue.read_output_funding(mover, tier)
+                          if tier else None)
+            except Exception as exc:
+                events.append({"event": "output-recovery-unknown",
+                               "batch_id": batch_id, "error": repr(exc)})
+                continue
+            fundable = (isinstance(record, Mapping)
+                        and str(record.get("state")) == "transferring")
+            if holds <= 0 and not fundable:
+                events.append({"event": "output-mover-unfundable-retire",
+                               "batch_id": batch_id, "mover": mover,
+                               "action": "retire-reclaim-replan"})
+            else:
+                events.append({"event": "output-mover-live-wait",
+                               "batch_id": batch_id, "mover": mover})
         elif state == "unknown":
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id})

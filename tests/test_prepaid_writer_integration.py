@@ -1109,9 +1109,14 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     # The row is requeued READY -- and cannot be claimed.
     assert po._mover_live_state(q, mover) == "ready"
     assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
+    # The row is queued but can never be funded back into a claim, so
+    # recovery must name the terminal route instead of telling the caller
+    # to keep waiting for it.
     events = po.recover_batches(q, inst, template)
-    assert {"event": "output-mover-live-wait", "batch_id": "b1",
-            "mover": mover} in events, events
+    assert {"event": "output-mover-unfundable-retire", "batch_id": "b1",
+            "mover": mover, "action": "retire-reclaim-replan"} in events, events
+    assert not any(e.get("event") == "output-mover-live-wait"
+                   for e in events), events
 
     # While the batch is live it does own its path.
     blocked = po.require_prewrite(
