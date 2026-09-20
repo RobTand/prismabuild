@@ -6,15 +6,13 @@ reported RESIGNED. Only proven absence may return empty; unreadable,
 incomplete, or corrupt census raises through the existing API (OSError /
 ValueError), which the membership gate already catches into unknown-retain.
 
-The membership gate integration below loads the immutable PB728 candidate
-fixture (tests/fixtures/pb728_d83743b558/, hash-pinned, never edited) with
-``prismabuild`` bound to THIS tree, and asserts module identity before
-calling the real gate. Run via published pbtest at -10.
+The membership gate integration imports this checkout's production module
+and verifies its source path and SDK identity. Future membership changes
+therefore run through the same regression. Run via published pbtest at -10.
 """
 from __future__ import annotations
 
-import hashlib
-import importlib.util
+import importlib
 import json
 import os
 from pathlib import Path
@@ -25,11 +23,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool, reader_lease  # noqa: E402
-
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "pb728_d83743b558"
-FIXTURE_SHA256 = (
-    "fb861ead6a8e5d17573f58584510d06ea91ab1472d75b9f6fe02c94a42fbe82b")
-
 
 def _leases(queue, owner="c" * 64):
     root = queue.root / "residency" / "leases" / owner
@@ -91,19 +84,11 @@ def test_absent_namespace_stays_drained(tmp_path) -> None:
 
 
 def _membership_gate():
-    """The real PB728-candidate gate with prismabuild bound to this tree."""
-
-    fixture = FIXTURE_DIR / "fleet_membership.py"
-    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
-    assert digest == FIXTURE_SHA256, "membership fixture mutated"
-    # prismabuild.* is already imported from this tree above; the fixture
-    # must reuse those modules, never shadow them.
-    spec = importlib.util.spec_from_file_location(
-        "pb728_fleet_membership", fixture)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["pb728_fleet_membership"] = module
-    spec.loader.exec_module(module)
+    """The production gate with prismabuild bound to this same checkout."""
+    module = importlib.import_module("fleet_membership")
+    expected = (Path(__file__).resolve().parents[1]
+                / "tools" / "fleet" / "fleet_membership.py")
+    assert Path(module.__file__).resolve() == expected.resolve()
     assert module.pool_module is pool, "gate bound a foreign pool module"
     assert module._reader_lease() is reader_lease, "gate bound a foreign SDK"
     return module

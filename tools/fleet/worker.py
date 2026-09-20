@@ -61,6 +61,7 @@ def main() -> int:
     outcome = q.serve_once(
         tags=["gb10"], has_gpu=True, python="/usr/bin/python3", timeout_s=120,
         containment=True,
+        admission_open=lambda: not maintenance_requested(),
     )
     print(json.dumps({
         "worker_host": socket.gethostname(),
