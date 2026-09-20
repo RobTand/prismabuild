@@ -3357,21 +3357,31 @@ def recover_batches(queue, instance: Mapping[str, object],
     wait), unknown (unreadable scan → defer). Returns events in batch_id
     order; callers act through existing publish/evict paths, never here.
 
-    One queued mover is NOT live work: a row the retry ladder requeued
-    after its terminal released the mover's tokens can never be funded
+    One queued mover is NOT live work: a READY row the retry ladder
+    requeued after its terminal consumed the funding can never be funded
     back into a claim, because `output_funded_cover` covers only a record
     in `transferring` and nothing re-funds a spent one. Reporting that as
     mover-live tells the caller to wait forever, so it is reported as
     `output-mover-unfundable-retire` with the terminal route it does
-    have: retire the batch (its egress is complete, with nothing or only
-    partial bytes to evict), reclaim the origin, and re-plan the work as
-    a new batch. Holdings decide -- a mover still holding its tier tokens
-    is genuinely live -- and anything unreadable stays unknown.
+    have: retire the batch, reclaim the origin, and re-plan the work as a
+    new batch.
+
+    The verdict rests on ATTRIBUTABLE evidence and nothing weaker. The
+    filed funding record decides, read through `output_funding_file_state`
+    because this is a census path and `read_output_funding` cannot tell
+    absent from corrupt (its own docstring says so): a parsed `consumed`
+    record is the pool's own statement that the fence is spent, `corrupt`
+    is unknown, `absent` means no prepaid intent was ever filed and the
+    ordinary claim path still applies, and `released` beside an unretired
+    batch is evidence disagreeing with itself. Holdings are NOT an input:
+    an absent holding read is a moment, not a proof, and a mover that
+    retains tokens for the bytes it staged is just as unclaimable as one
+    that holds none. A CLAIMED row is never told to retire -- an executor
+    owns it and the lease reaper is its recovery.
     """
 
     from prismabuild import pool as pool_mod
     from prismabuild import residency_map as map_mod
-    from prismabuild import storage_tiers as tiers_mod
 
     checked_template = validate_template(template)
     checked_instance = validate_instance(instance)
@@ -3422,25 +3432,50 @@ def recover_batches(queue, instance: Mapping[str, object],
         elif state == "failed":
             events.append({"event": "output-mover-failed-retry",
                            "batch_id": batch_id, "mover": mover})
-        elif state in ("claimed", "ready"):
+        elif state == "claimed":
+            # An executor owns this row. Whatever its ledger reads say in
+            # the instant this census runs, the recovery for a claim is the
+            # lease reaper's, never a retire this function names.
+            events.append({"event": "output-mover-live-wait",
+                           "batch_id": batch_id, "mover": mover})
+        elif state == "ready":
             tier = str(entry.get("tier") or "")
+            if not tier:
+                events.append({"event": "output-recovery-unknown",
+                               "batch_id": batch_id})
+                continue
             try:
-                holds = (int(queue.tier_ledger(tier).holder_tokens(mover).get(
-                    tiers_mod.capacity_kind_of(tier), 0)) if tier else 0)
-                record = (queue.read_output_funding(mover, tier)
-                          if tier else None)
+                record, file_state = queue.output_funding_file_state(
+                    mover, tier)
             except Exception as exc:
                 events.append({"event": "output-recovery-unknown",
                                "batch_id": batch_id, "error": repr(exc)})
                 continue
-            fundable = (isinstance(record, Mapping)
-                        and str(record.get("state")) == "transferring")
-            if holds <= 0 and not fundable:
+            funding_state = (str(record.get("state"))
+                             if isinstance(record, Mapping) else "")
+            if file_state != "ok" or not funding_state:
+                # `corrupt` is UNKNOWN by the pool's own split, and this is
+                # a census path: `read_output_funding` conflates it with
+                # absent, which is why that method's docstring forbids it
+                # here. `absent` is not unknown but it is not spent either:
+                # no prepaid intent was ever filed for this row, so the
+                # ordinary claim path still applies and it waits.
+                events.append({"event": "output-recovery-unknown"
+                                        if file_state == "corrupt"
+                                        else "output-mover-live-wait",
+                               "batch_id": batch_id, "mover": mover})
+            elif funding_state in ("reserved", "transferring"):
+                events.append({"event": "output-mover-live-wait",
+                               "batch_id": batch_id, "mover": mover})
+            elif funding_state == "consumed":
                 events.append({"event": "output-mover-unfundable-retire",
                                "batch_id": batch_id, "mover": mover,
                                "action": "retire-reclaim-replan"})
             else:
-                events.append({"event": "output-mover-live-wait",
+                # `released` beside an unretired batch: the record says the
+                # fence is gone and the commitments say the batch is live.
+                # Disagreeing evidence is unknown, not a verdict.
+                events.append({"event": "output-recovery-unknown",
                                "batch_id": batch_id, "mover": mover})
         elif state == "unknown":
             events.append({"event": "output-recovery-unknown",

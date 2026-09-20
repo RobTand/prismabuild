@@ -1060,13 +1060,16 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     SUCCEEDS, ownership ends, and the producer re-plans the same path
     immediately. Nothing is stranded and no cancel API is needed.
 
-    REAL, and the reason the same-batch retry cannot be relied on: the
-    FAILED terminal releases the mover's tokens while its funding record
-    stays `consumed`, and the retry ladder requeues the row READY. That
-    row is then unclaimable, and stays unclaimable after `refill_window`
-    and after re-driving `publish_prepaid_batch` -- which short-circuits
-    a committed batch to its duplicate and re-funds nothing. The working
-    recovery is retire -> reclaim -> refill -> plan a new batch.
+    REAL, and the reason the same-batch retry cannot be relied on: this
+    mover staged NOTHING, so its terminal frees its reservation (nothing
+    is occupying anything -- a partial one retains instead, which
+    `test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them`
+    measures), while its funding record stays `consumed` and the retry
+    ladder requeues the row READY. That row is then unclaimable, and
+    stays unclaimable after `refill_window` and after re-driving
+    `publish_prepaid_batch` -- which short-circuits a committed batch to
+    its duplicate and re-funds nothing. The working recovery is retire ->
+    reclaim -> refill -> plan a new batch, and the census names it.
 
     The failure is real, not mocked: the origin file disappears before
     the mover runs, so the sealed argv stages nothing and exits nonzero
@@ -1100,9 +1103,12 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     outcome = q.execute(claimed, timeout_s=240)
     assert outcome.get("returncode") != 0, outcome
     q.finish(mover, status="failed")
-    # The terminal released the mover's tokens, but its funding record
-    # still reads consumed.
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    # Nothing was staged, so the whole reservation comes back -- checked on
+    # the aggregate ledger, where a charge that merely moved would still
+    # show up under some holder.
+    assert _staged(stage_root, "*.bin") == []
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
     funding = q.read_output_funding(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
@@ -1141,16 +1147,23 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
     assert q.claim(owner="probe-b", tags=[_tier_host(q)]) is None
 
-    # The batch is NOT stranded: retirement succeeds with nothing to
-    # evict, and ownership of the path ends with it.
-    retired = po.retire_batch(q, inst, template, "b1",
+    # The batch is NOT stranded, and the route is TRAVERSED from what the
+    # census emitted rather than from a batch id the test already knew: an
+    # event that names a route is not recovery until something walks it.
+    route = [event for event in po.recover_batches(q, inst, template)
+             if event.get("event") == "output-mover-unfundable-retire"]
+    assert len(route) == 1 and route[0]["action"] == "retire-reclaim-replan"
+    target = str(route[0]["batch_id"])
+    retired = po.retire_batch(q, inst, template, target,
                               stage_root=str(stage_root),
                               residency_root=residency)
     assert retired.get("ok") is True, retired
     assert retired["staged_paths"] == []
     # Reclaim proves the producer disposed of the origin bytes.
     origin_path.unlink()
-    assert po.reclaim_origin(q, inst, template, batch_id="b1")["ok"] is True
+    assert po.reclaim_origin(q, inst, template, batch_id=target)["ok"] is True
+    assert all(event.get("event") != "output-mover-unfundable-retire"
+               for event in po.recover_batches(q, inst, template))
 
     # The working recovery: the same path is re-planned as a new batch
     # and staged for real by an ordinary mover.
@@ -1174,3 +1187,254 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert po.retire_batch(q, inst, template, "b2",
                            stage_root=str(stage_root),
                            residency_root=residency)["ok"] is True
+    # The tier is whole again and every token is accounted to somebody.
+    assert _tier_census(ledger)["capacity"] == 4
+
+
+def _tier_census(ledger) -> dict:
+    """The whole tier ledger, reconciled: free + every holder == capacity.
+
+    One holder's view cannot tell a charge that moved from a charge that
+    vanished, so every assertion about occupancy in this file is made
+    against this, never against `holder_tokens` alone.
+    """
+
+    holders: dict[str, int] = {}
+    held_dir = Path(ledger.held_dir)
+    if held_dir.is_dir():
+        for entry in sorted(held_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            count = sum(1 for _p in entry.glob(f"{KIND}-*"))
+            if count:
+                holders[entry.name] = count
+    free = int(ledger.available().get(KIND, 0))
+    capacity = int(ledger.capacity().get(KIND, 0))
+    assert capacity == free + sum(holders.values()), (capacity, free, holders)
+    return {"capacity": capacity, "free": free, "holders": holders}
+
+
+def _staged(stage_root: Path, name: str) -> list[Path]:
+    return sorted(p for p in stage_root.rglob(name) if p.is_file())
+
+
+def test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them(
+        tmp_path: Path) -> None:
+    """A half-staged batch stays charged to somebody until its bytes go.
+
+    Measured on the AGGREGATE ledger, not on the mover's own holdings:
+    before this, `finish(status="failed")` released the mover's tier
+    tokens while 700 of its 1200 declared bytes sat on the stage, the
+    owner's bounded refill then re-acquired against that occupancy, and
+    retirement evicted the bytes while freeing nothing -- capacity 4 read
+    as free 2 + owner 2 with real bytes charged to no holder at all.
+
+    The complete arm of this lifecycle already behaved: a mover that
+    staged its whole range keeps its tokens past `finish` and the egress
+    returns them. This is the same rule for the partial arm, because the
+    partial arm also left bytes behind.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    descs = descs + _descriptors(tmp_path, template, inst, "s1", b"c" * 500)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # The second origin file disappears before the mover runs, so it
+    # stages the first and cannot stage the second. A real partial.
+    Path(str(descs[1]["path"])).unlink()
+    claimed = _claim_mover(q, "w-partial")
+    assert claimed["action_key"] == mover
+    q.execute(claimed, timeout_s=240)
+    receipt = q.move_record(mover)
+    assert isinstance(receipt, dict) and receipt.get("complete") is False
+    assert int(receipt["bytes_staged"]) == len(payload)
+    assert not receipt.get("refusal"), receipt
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+
+    q.finish(mover, status="failed")
+    # The bytes are still there, so the charge is still there -- and it is
+    # still charged to the mover that put them there.
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+    # The owner's bounded refill sees it and takes nothing: the window is
+    # spent on bytes that have not left.
+    refill = po.refill_window(q, inst, template, tier=TIER)
+    assert refill["ok"] is True, refill
+    assert (refill["acquired"], refill["outstanding"]) == (0, 1), refill
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # The egress is what returns them, because it is what deletes the
+    # bytes. Both happen in the same call and neither happens without it.
+    retired = po.retire_batch(q, inst, template, "b1",
+                              stage_root=str(stage_root),
+                              residency_root=residency)
+    assert retired.get("ok") is True, retired
+    assert [Path(p).name for p in retired["staged_paths"]] == ["p1.bin"]
+    assert _staged(stage_root, "p1.bin") == []
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+    refill2 = po.refill_window(q, inst, template, tier=TIER)
+    assert refill2["ok"] is True and refill2["acquired"] == 1, refill2
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 2}}
+
+
+def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
+        tmp_path: Path) -> None:
+    """A live CLAIMED row is not reclassified by one absent holding read.
+
+    An executor owns a claimed row; its ledger holdings can read empty for
+    reasons that have nothing to do with whether the work is alive (an
+    egress or a reaper releasing by mover key, an admission still between
+    its two halves). Recovery for a claim belongs to the lease reaper, so
+    the census waits rather than naming a terminal route for it.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    descs = _descriptors(tmp_path, template, inst, "p1", b"f" * 700)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    assert _claim_mover(q, "w-live")["action_key"] == mover
+    # The funding record is spent the moment the claim counts it, which is
+    # exactly when the row is most alive.
+    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    # Model the release-by-mover-key an egress or reaper performs: the row
+    # is untouched and still claimed, only its holdings went.
+    q.release_tier_reservations(mover)
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert po._mover_live_state(q, mover) == "claimed"
+
+    events = po.recover_batches(q, inst, template)
+    assert {"event": "output-mover-live-wait", "batch_id": "b1",
+            "mover": mover} in events, events
+    assert not any(e.get("event") == "output-mover-unfundable-retire"
+                   for e in events), events
+
+
+def test_a_ready_mover_with_an_unreadable_funding_record_stays_unknown(
+        tmp_path: Path) -> None:
+    """Corrupt is UNKNOWN, and a census may not flatten it into spent.
+
+    `read_output_funding` returns None for absent AND for unparsable, and
+    its own docstring forbids a census path from reading that None as
+    "no funding". A row whose intent cannot be read is a row whose state
+    is not known, and telling its caller to retire the batch on that is
+    the unproven-becomes-negative failure this lane keeps finding.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    descs = _descriptors(tmp_path, template, inst, "p1", b"f" * 700)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    # The row stays READY; only the filed intent becomes unreadable.
+    q.funding_output_path(mover, TIER).write_text("{not json")
+    assert q.output_funding_file_state(mover, TIER)[1] == "corrupt"
+    assert q.read_output_funding(mover, TIER) is None
+
+    events = po.recover_batches(q, inst, template)
+    assert {"event": "output-recovery-unknown", "batch_id": "b1",
+            "mover": mover} in events, events
+    assert not any(e.get("event") == "output-mover-unfundable-retire"
+                   for e in events), events
+
+
+def test_the_census_verdict_does_not_turn_on_a_holding_count(
+        tmp_path: Path) -> None:
+    """Holdings are not the evidence, in either direction.
+
+    This row is unclaimable because its funding record is spent, and that
+    stays true whether or not the mover holds tier tokens -- a partial
+    mover keeps tokens for the bytes it staged and is no more claimable
+    for it. Reading a holding count as liveness calls such a row live and
+    waits for it forever, the same defect as calling a live row dead, so
+    the verdict is taken from the filed record and a holding is added
+    here to prove the count is never consulted.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    origin_path = Path(str(descs[0]["path"]))
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    origin_path.unlink()
+    claimed = _claim_mover(q, "w-holdings")
+    outcome = q.execute(claimed, timeout_s=240)
+    assert outcome.get("returncode") != 0, outcome
+    q.finish(mover, status="failed")
+    # Nothing staged, so nothing retained -- and the row is requeued READY
+    # with a spent record.
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert po._mover_live_state(q, mover) == "ready"
+    verdict = {"event": "output-mover-unfundable-retire", "batch_id": "b1",
+               "mover": mover, "action": "retire-reclaim-replan"}
+    assert verdict in po.recover_batches(q, inst, template)
+
+    # Same row, same spent record, now holding a token the way a partial
+    # mover holds one. The verdict may not move.
+    assert ledger.acquire(mover, {KIND: 1}) is True
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    events = po.recover_batches(q, inst, template)
+    assert verdict in events, events
+    assert not any(event.get("event") == "output-mover-live-wait"
+                   for event in events), events

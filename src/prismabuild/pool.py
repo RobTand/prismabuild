@@ -7969,6 +7969,14 @@ class PoolQueue:
         receipt is the evidence and the range is the test; a status alone
         cannot distinguish a mover that copied 34 GB from one that copied none,
         because both end ``executed``.
+
+        "Left nothing behind" is true of the *range*, not of the bytes: a
+        mover that staged half its batch left half a batch on the stage.
+        Where those leftovers have a named owner to return the tokens -- a
+        produced-output batch, whose egress runs for this mover key --
+        :meth:`output_partial_pin_holds` keeps them charged, and
+        :meth:`pin_holds_tier_tokens` is the union every concluding path
+        asks.  This predicate keeps answering the complete case alone.
         """
 
         if not isinstance(record, Mapping):
@@ -7991,6 +7999,81 @@ class PoolQueue:
         staged = receipt.get("bytes_staged")
         return isinstance(staged, int) and staged == end - start
 
+    def output_partial_pin_holds(self, record: Mapping[str, object] | None,
+                                 action_key: str) -> bool:
+        """Does a PRODUCED-OUTPUT mover keep tokens for a partial stage?
+
+        :meth:`residency_pin_holds` answers the complete case and releases
+        everything else, "because everything else left nothing behind".  A
+        mover that copied half its batch and then failed left plenty behind,
+        and measurement says so: 700 of 1200 declared bytes on the stage, the
+        mover's tokens back in ``free`` at ``finish``, the owner's bounded
+        refill then re-acquiring against occupancy no holder is charged for --
+        exactly the attribution loss :meth:`_release_reservation` warns about.
+
+        Retention is only safe where the leftovers have a named owner that
+        will return the tokens, and a produced-output batch has one:
+        ``produced_output.retire_batch`` runs the egress for this very mover
+        key and ``stage_release.evict`` frees its holder when the files go.
+        So the charge is retained until the bytes are gone, and this stays
+        scoped to that lane by the funding record's own existence.  The
+        consumer window's twin (#627 -- the same partial bytes, held by
+        nobody) has no such owner and keeps the tier loop's eviction-candidate
+        sweep instead; nothing here changes it.
+
+        Retention needs POSITIVE evidence that bytes are there -- a receipt
+        naming this tier with ``bytes_staged`` above zero.  A mover that filed
+        no receipt reported staging nothing, which is what the pool has always
+        read it as, and this predicate does not second-guess it: extending
+        retention where the tier cannot be shown to be occupied would hold
+        capacity for every mover that never ran.  A zero-output failure
+        therefore still frees its reservation, because nothing is occupying
+        anything.
+        """
+
+        if not isinstance(record, Mapping):
+            return False
+        residency = record.get("residency")
+        if not isinstance(residency, Mapping):
+            return False
+        tier_id = residency.get("tier_id")
+        if not isinstance(tier_id, str) or not tier_id:
+            return False
+        try:
+            funding, file_state = self.output_funding_file_state(
+                str(action_key), tier_id)
+        except (OSError, PoolContractError, ValueError):
+            return True
+        if file_state == "absent":
+            # A prepaid-output intent is PROVEN never to have been filed, so
+            # this is another lane's mover: judged by ``residency_pin_holds``
+            # alone, exactly as before.  An unreadable intent is not that
+            # proof, and falls through to the occupancy question below.
+            return False
+        del funding
+        try:
+            receipt = self.move_record(str(action_key))
+        except (OSError, PoolContractError):
+            return True
+        if not isinstance(receipt, Mapping):
+            return False
+        if receipt.get("tier_id") != tier_id:
+            return False
+        staged = receipt.get("bytes_staged")
+        return isinstance(staged, int) and staged > 0
+
+    def pin_holds_tier_tokens(self, record: Mapping[str, object] | None,
+                              action_key: str) -> bool:
+        """Either reason a concluding claim keeps its tier tokens.
+
+        One predicate for every path that concludes a claim, so a mover
+        cannot be judged complete-or-nothing by one caller and partial by
+        another.
+        """
+
+        return (self.residency_pin_holds(record, action_key)
+                or self.output_partial_pin_holds(record, action_key))
+
     def _filed_pin_holds(self, action_key: str) -> bool:
         """Does this key's already-filed ending still pin bytes on the stage?
 
@@ -8008,7 +8091,7 @@ class PoolQueue:
                 record = _read_json(self.item_path(state, str(action_key)))
             except (OSError, PoolContractError):
                 return True
-            if isinstance(record, Mapping) and self.residency_pin_holds(record, str(action_key)):
+            if isinstance(record, Mapping) and self.pin_holds_tier_tokens(record, str(action_key)):
                 return True
         return False
 
@@ -12481,7 +12564,7 @@ class PoolQueue:
                         # sweep) walks the tier's held keys, so a key released
                         # while its files remain is capacity no mechanism can
                         # ever take back.
-                        keep_tier=self.residency_pin_holds(outcome, key))
+                        keep_tier=self.pin_holds_tier_tokens(outcome, key))
                     path.unlink(missing_ok=True)
                     self.lease_path(key).unlink(missing_ok=True)
                     continue
@@ -14134,7 +14217,7 @@ class PoolQueue:
         # them may give them back.
         self._release_reservation(
             action_key, host=holder,
-            keep_tier=self.residency_pin_holds(record, action_key))
+            keep_tier=self.pin_holds_tier_tokens(record, action_key))
         _write_json_atomic(dst, record)
         if tombstone is None:
             src.unlink(missing_ok=True)
@@ -14183,7 +14266,7 @@ class PoolQueue:
                 f"refusing to reclaim {key}: terminal status is "
                 f"{state}/{terminal.get('status')}")
 
-        if not unpin and self.residency_pin_holds(terminal, key):
+        if not unpin and self.pin_holds_tier_tokens(terminal, key):
             # A concluded mover whose bytes are still on the stage holds its
             # tier tokens on purpose: they are the stage's occupancy, and
             # returning them here would let the ledger admit a mover onto bytes
