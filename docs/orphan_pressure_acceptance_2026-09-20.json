@@ -1,0 +1,52 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "67d429594a934b7f65437cfbb5b0957e5718de32",
+  "ledger_commit": "b71755ff6c90b7fe80df7ac45fde308dd31a8a05",
+  "scope": [
+    "PRG-04"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "fix/window-orphan-pressure-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/757",
+    "pr": "https://github.com/RobTand/prismabuild/pull/758",
+    "source": "b71755ff6c90b7fe80df7ac45fde308dd31a8a05",
+    "validated_repairs": [
+      {
+        "id": "PRG-04",
+        "actions": [
+          "1919c3157141870c21eefb3bbdc645e2c48dcf9e39a9f626519cf81b778e9f6e",
+          "e205f24ea3447f8289c5f20ef6dfdc5ebb201f74db015a59d4b55c69da38a96c",
+          "d0fa358352ecd712c76283508266c1becca23e559a901339435580da0f334ae1",
+          "fbdf9c495608edaa7102ba3d6d99b1363a086eddb613265b70496856a22ed571"
+        ],
+        "outcome": "88 passed, 0 skips, one existing warning, through PB CPU shards on dl380g10. Actual terminal, logs, CAS receipts and all four snapshots independently checked; snapshots differ from reviewed source only by closure metadata. Current-plus-next admission reclaims sufficient orphan capacity and publishes in the same cycle; an active consumer's range survives."
+      },
+      {
+        "id": "PRG-04",
+        "actions": [
+          "44b15d3458041920d851304ce71a4a35663a7789ad087f1bd6c38ca5b08e383d"
+        ],
+        "outcome": "Earlier root-verified pristine-main ab353 regression: 1 failed, 14 deselected; feasible newcomer stranded beside two orphan ranges."
+      }
+    ],
+    "remaining_gaps": [
+      "Actual live runtime deployment and original stale-history reader retry",
+      "The new admission-pressure term is stage-newcomer scoped; RAM pressure retains its prior behavior",
+      "Pressure conservatively counts full ready demand, including funded rows, and may defer additional relief under competing obligations; no complete liveness claim",
+      "The ordinary next-phase pressure term remains; refusal of additional admission relief does not promise no eviction from other pressure",
+      "Real full campaign and both-Spark RAM qualification remain unproved"
+    ],
+    "note": "Bounded regression repair, not full PRG-04 conformance. Existing live-reader eviction protections unchanged. No cryptographic or payload hashing work."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

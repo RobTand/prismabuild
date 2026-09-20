@@ -4185,15 +4185,21 @@ reclaimable bytes: the sweep relieved one phase, the gate kept refusing on
 cur+next, and nothing re-pressured (2026-09-20, attributable pristine-main
 failure `44b15d345804`). `window_pressure` now probes each true newcomer —
 nothing published, landed or accepted — through `gate_newcomer` itself, with
-over-estimated obligations (full queued demand; every progressing window's
-protected next) so the relief it asks for always covers what the real gate
-will check; the relief is stated as the free the sweep must reach
+conservative obligations (full queued demand and a minimum next-step term
+from progressing windows). The relief is stated as the free the sweep must reach
 (`free + shortfall`) and is bounded to the tier's orphans. A window that
 cannot fit even after every orphan returns — permanently oversize, or blocked
-by live readers — asks for no relief and evicts nothing, and the sweep still
-takes only orphans, never a live reader's bytes. The real gate re-checks
+by live readers — adds no admission-relief term. The ordinary next-phase
+pressure remains independent, and the sweep still takes only eligible orphans.
+The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
+
+This repair is scoped to stage newcomer admission. It retains the previous
+RAM pressure calculation, and its full queued-demand estimate can defer
+additional relief when some ready rows are already funded. It is not a
+complete liveness proof. The source, CPU results and outstanding live checks
+are recorded in `orphan_pressure_acceptance_2026-09-20.json`.
 
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on
