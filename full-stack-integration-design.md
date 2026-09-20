@@ -53,25 +53,30 @@ file lands only with root's candidate-commit API bindings. Until then the
 harness is hermetic: fixtures generated in-test, zero PQ imports. No
 parallel reader implementation is vendored to fill the gap (§4).
 
-## 4. PQ wiring (real functions, pinned source, no stubs)
+## 4. PQ wiring (no stubs; cross-repo tests requested)
 
 The staged-only chain cannot be proven without the real PQ source,
 render, and activation readers plus the join — and no stub, fake parser,
 unavailable-assertion, or parallel reader is vendored to pretend
-otherwise. `test_fullstack_pq_contract.py` wires REAL current PQ
-functions for the policy baseline: the pure producer spellings PQ's own
-joiner contract names as shared (`quantum_id`, `roster_digest`,
-`qname_layer`, `phase_ranges`) plus the canonical-JSON compat rule
-receipts depend on. Source resolution is `PRISMAQUANT_CHECKOUT`
-(default `/home/rob/prismaquant`, the existing fleet precedent),
-asserted at exactly `PQ_PINNED_COMMIT`; any drift fails loudly — a
-mutable checkout is never silently trusted, and the pin updates only by
-explicit review. Reader and lease integration beyond these pure
-functions waits on the published candidate: root reviews the API before
-any interface-rigid test is written against it. The future
-`tools/resolve_pq_fixture_pin.py` (target-env pip case) lands with that
-work. The approved follow-on is designing the source-snapshot/artifact
-dependency the bound readers run against.
+otherwise. Attempted here and rejected with evidence: wiring PQ imports
+through box-local checkouts fails fleet-wide — sparky carries
+`22149e1a` but dl380g10 carries `3541205a`, which predates the joint API
+entirely, so no single checkout pin can hold across workers (proven by
+PB actions `b5256f8ea000` and the pin-mismatch setup error, not by
+reasoning). Mutable per-box checkouts are therefore not a dependency
+mechanism.
+
+Resolution (bounded ownership requested via root): PQ-contract tests —
+`roster_digest` / `quantum_id` / `qname_layer` / `phase_ranges` /
+canonical-JSON compat against real PQ code, then reader and lease
+integration once the published candidate lands — belong in the PQ repo
+against declared published PB, where the source is the checkout under
+test. This lane keeps fixture-shape stability tests only (sorted keys,
+sha256 names, documented wire order), which guard our own helper
+against drift and claim no PQ conformance. Root reviews the API before
+any interface-rigid test is written. The approved follow-on is
+designing the source-snapshot/artifact dependency the bound readers run
+against.
 
 ## 5. GPU path (deferred, bounded)
 
@@ -86,8 +91,8 @@ Design only until the CPU harness is accepted.
 |----|-----------------|--------------|--------|
 | ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` | implement now (PB-side manifest/row shapes) |
 | ACC-02 | lifecycle/race incl. staged-lease races | existing PB suites + `test_fullstack_reader_boundaries.py` (egress-vs-hold, double release) | implement now |
-| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) + `test_fullstack_pq_contract.py` (real producer spellings) | PB boundaries + contract now; reader/lease integration blocked on published candidate |
-| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) + `test_fullstack_pq_contract.py` (canonical compat receipts depend on) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
+| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) | PB boundaries now; PQ-contract tests requested PQ-side via root; reader/lease integration blocked on published candidate |
+| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
 | ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (needs runnable PQ work) |
 | ACC-06 | staged-only campaign output, bytes_from_pool==0 bulk legs | pending strict-reader enforcement + live lane | pending |
 

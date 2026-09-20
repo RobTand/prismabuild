@@ -154,6 +154,26 @@ def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
     assert storage_tiers.manifest_phase_ranges(manifest) == []
 
 
+def test_fixture_join_shapes_are_stable_and_sorted() -> None:
+    """Future-join input shapes stay byte-stable (sorted keys, sha256 names).
+
+    This guards OUR fixture format against silent drift of our own helper —
+    not PQ conformance. Real PQ conformance (roster_digest, quantum_id,
+    qname_layer, phase_ranges, canonical compat) belongs to PQ-side tests
+    running real PQ code; bounded ownership requested via root (see design
+    §4). The sorted/no-trailing-newline roster wire follows PQ's joiner
+    contract §7 as read in the normative spec.
+    """
+    from fullstack_fixtures import quantum_payload, roster
+    units = ["unit-b", "unit-a"]
+    first = quantum_payload("layer-000", units)
+    assert first == quantum_payload("layer-000", list(reversed(units)))
+    assert list(first["costs"]) == sorted(units)
+    assert roster(units) == roster(list(reversed(units)))
+    assert roster(units)["roster_sha256"] == hashlib.sha256(
+        "\n".join(sorted(units)).encode()).hexdigest()
+
+
 def test_placement_tags_are_conjoined_class_tags(tmp_path: Path) -> None:
     """Rows carry the gb10 class tag; no host is named (ACC-01 placement input)."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
