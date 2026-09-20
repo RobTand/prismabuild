@@ -768,8 +768,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # genuinely live reader, and only that defers.
             if pins:
                 reclaimed = reader_lease.auto_reclaim(
-                    queue, consumer_action_key=consumer_action_key,
-                    residency_root=root)
+                    queue, residency_root=root)
                 auto_reclaimed.extend(reclaimed["released"])
                 if reclaimed["released"]:
                     pins, pin_taint_again = reader_lease.live_for(

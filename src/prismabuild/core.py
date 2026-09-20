@@ -115,13 +115,21 @@ RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
 #: from the exact launch identity (never the broker token) and protected
 #: here the same way as the action key: a sealed variable of any of these
 #: names is a refusal rather than an overwrite, so an action cannot spoof
-#: the attempt its readers bind their pins to.  Core sets no values for
-#: these two; they arrive with the execution, and readers fall back to the
-#: live claim row (marked as such) where no proxy forwarded them.
+#: the attempt its readers bind their pins to, nor the sealed helper root
+#: they import from.  Core sets no values for these three; they arrive
+#: with the execution.  Strict readers without forwarded identity refuse
+#: (legacy inspection without acquiring is a separate helper).
 ACTION_NONCE_ENV = "PRISMABUILD_ACTION_NONCE"
 ACTION_SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
+#: Sealed helper root for reader-lease imports, set by the resource_exec
+#: proxy from its own sealed script path (never the broker token, never a
+#: user value): consumers add ``<root>/src`` to ``sys.path`` and import
+#: ``prismabuild.reader_lease`` from sealed bytes.  Protected exactly like
+#: the action key below.
+READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV,
-                        ACTION_NONCE_ENV, ACTION_SCOPE_ENV)
+                        ACTION_NONCE_ENV, ACTION_SCOPE_ENV,
+                        READER_HELPER_ROOT_ENV)
 
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action

@@ -163,6 +163,12 @@ def write_material(root: str | Path, *, consumer_action_key: str,
     dates the vouching.  Rewriting under a retry mints a new ``generation``.
     """
 
+    # Exact sidecar convention (Q4): SSD material carries no epoch
+    # (absent or ""); only the RAM tier dates its sidecars.  A staged
+    # epoch is corrupt at write time, never discovered at open.
+    if not tier_id.startswith("ram:") and epoch:
+        raise ReaderLeaseError(
+            "staged material must not carry an epoch")
     body: dict[str, object] = {
         "schema": MATERIAL_SCHEMA_V1,
         "consumer_action_key": consumer_action_key,
@@ -297,19 +303,40 @@ def leases_root(queue, residency_root=None) -> Path:
 
 
 def pin_id_for(*, consumer_action_key: str, tier_id: str, epoch: str,
-               start: int, end: int, movers: list[str],
-               generations: Mapping[str, str]) -> str:
-    """Deterministic pin name for a window generation: one file, many refs.
+               stage_root: str, start: int, end: int, movers: list[str],
+               generations: Mapping[str, str],
+               keys: Mapping[str, Mapping[str, object]]) -> str:
+    """Deterministic pin name for a window generation AND object keyset.
 
-    The material generations join the name, so a republish files a new pin
-    beside the old one instead of joining (or aliasing) it: the old pin
-    keeps protecting its own readers until they release.
+    The requested object keyset joins the name: two equal-sized distinct
+    files under one mover (both offset 0 in source coordinates) must never
+    share a pin, or the second acquire would append a ref to entries that
+    do not name its bytes.  Canonical form per key is
+    ``key|bytes|sha256|generation``; physical identity (inode/mtime) is
+    enforced at open, not hashed here.  One file per keyset, many refs.
     """
 
-    window = "|".join((consumer_action_key, tier_id, epoch, str(start),
-                       str(end), ",".join(sorted(movers))))
+    window = "|".join((consumer_action_key, tier_id, epoch, stage_root,
+                       str(start), str(end), ",".join(sorted(movers))))
     gens = ",".join(f"{mover}={generations[mover]}" for mover in sorted(movers))
-    return hashlib.sha256((window + "|" + gens).encode("utf-8")).hexdigest()[:32]
+    objects = ",".join(
+        f"{key}={keys[key].get('bytes')}:{keys[key].get('sha256')}:"
+        f"{keys[key].get('generation')}" for key in sorted(keys))
+    body = "|".join((window, gens, objects))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+
+
+def _entry_identity(entries: list[Mapping[str, object]]) -> list[tuple[str, ...]]:
+    """Canonical per-entry identity for same-window comparison."""
+
+    return sorted(
+        (str(entry.get("key") or ""),
+         str(entry.get("stage_path") or ""),
+         str(entry.get("bytes") or ""),
+         str(entry.get("sha256") or ""),
+         str(entry.get("mover_action_key") or ""),
+         str(entry.get("generation") or ""))
+        for entry in entries)
 
 
 def ref_id_for(*, acquire_token: str, host: str, nonce: str,
@@ -326,7 +353,8 @@ def validate_pin(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise ReaderLeaseError("a reader pin must be an object")
     unknown = sorted(set(value) - {
-        "schema", "pin_id", "consumer_action_key", "tier_id", "epoch",
+        "schema", "pin_id", "consumer_action_key", "owner_action_key",
+        "tier_id", "epoch",
         "manifest_sha256", "range", "covers", "entries", "ram", "refs",
         "stage_root",
     })
@@ -412,6 +440,15 @@ def validate_pin(value: object) -> dict[str, object]:
     span = value.get("range")
     if not isinstance(span, Mapping):
         raise ReaderLeaseError("pin range must be an object")
+    # Coordinate space is machine-checked: the span is RNG-01
+    # declared-file coordinates ([offset, offset+bytes)); split staged
+    # objects live at FD offset 0 (RNG-02); no logical phase cursor
+    # (RNG-03) is ever inferred from this span.  Multi-entry windows
+    # carry unambiguous per-key ranges via their map keys, never one
+    # cumulative source offset.
+    if span.get("coordinate_space") != "rng01-source":
+        raise ReaderLeaseError(
+            "pin range must declare coordinate_space 'rng01-source'")
     stage_root = value.get("stage_root")
     if (not isinstance(stage_root, str) or not stage_root.startswith("/")
             or stage_root != os.path.normpath(stage_root)):
@@ -422,11 +459,15 @@ def validate_pin(value: object) -> dict[str, object]:
         "consumer_action_key": _hex(
             value.get("consumer_action_key"), 64,
             where="pin consumer_action_key"),
+        "owner_action_key": _hex(
+            value.get("owner_action_key"), 64,
+            where="pin owner_action_key"),
         "tier_id": str(value.get("tier_id") or ""),
         "epoch": str(value.get("epoch") or ""),
         "stage_root": stage_root,
         "manifest_sha256": str(value.get("manifest_sha256") or ""),
-        "range": {"start_bytes": span.get("start_bytes"),
+        "range": {"coordinate_space": "rng01-source",
+                  "start_bytes": span.get("start_bytes"),
                   "end_bytes": span.get("end_bytes")},
         "covers": [dict(cover) for cover in covers],
         "entries": checked_entries,
@@ -586,7 +627,9 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None
                 path = os.path.normpath(str(entry["stage_path"]))
                 if wanted is not None and path not in wanted:
                     continue
-                owners.setdefault(path, []).append(pin_id)
+                known = owners.setdefault(path, [])
+                if pin_id not in known:
+                    known.append(pin_id)
     return owners, tainted
 
 
@@ -988,73 +1031,85 @@ def release_refs(queue, refs: list[dict[str, str]],
 # Automatic reclamation: the egress frees contained attempts by itself
 # --------------------------------------------------------------------------
 
-def auto_reclaim(queue, *, consumer_action_key: str,
-                 residency_root=None) -> dict[str, object]:
+def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
     """Release exactly the refs whose attempts are provably contained.
 
-    For every pin of this consumer, group refs by attempt and verify each
-    attempt's terminal broker telemetry plus the broker-persisted proof;
-    release only the refs that verify, never anything else.  Called by the
-    egress when live pins block a delete, so ordinary completion,
-    crash/withdrawal cleanup, and old-attempt drains retire without an
-    operator once their evidence exists.  Missing evidence retains with
-    reasons, per attempt, exactly as manual containment would.
+    Scans every owner directory: for each pin, group refs by attempt and
+    verify each attempt's terminal broker telemetry plus the
+    broker-persisted proof against the pin OWNER's action (never the
+    material namespace's terminal); release only the refs that verify,
+    never anything else.  Called by the egress when live pins block a
+    delete, so ordinary completion, crash/withdrawal cleanup and
+    old-attempt drains retire without an operator once their evidence
+    exists.  Missing evidence retains with reasons, per attempt, exactly
+    as manual containment would.
     Returns ``{"released": [...], "retained": {ref_id: reason}}``.
     """
 
     root = leases_root(queue, residency_root)
-    directory = root / consumer_action_key
     try:
-        names = sorted(entry.name for entry in os.scandir(directory)
-                       if entry.is_file() and entry.name.endswith(".lease.json"))
+        owners = sorted(entry.name for entry in os.scandir(root)
+                        if entry.is_dir())
     except OSError:
         return {"released": [], "retained": {}}
     released: list[str] = []
     retained: dict[str, str] = {}
-    for name in names:
-        path = directory / name
-        pin = _read_pin(path)
-        if pin is None or isinstance(pin, Exception):
+    for owner in owners:
+        directory = root / owner
+        try:
+            names = sorted(entry.name for entry in os.scandir(directory)
+                           if entry.is_file()
+                           and entry.name.endswith(".lease.json"))
+        except OSError:
             continue
-        refs_map = pin["refs"]
-        assert isinstance(refs_map, dict)
-        pin_id = str(pin["pin_id"])
-        by_attempt: dict[tuple[str, str], list[str]] = {}
-        for ref_id, ref in refs_map.items():
-            if not isinstance(ref, dict):
+        for name in names:
+            path = directory / name
+            pin = _read_pin(path)
+            if pin is None or isinstance(pin, Exception):
                 continue
-            attempt = ref.get("attempt")
-            if not isinstance(attempt, dict):
-                continue
-            by_attempt.setdefault(
-                (str(attempt.get("nonce") or ""),
-                 str(attempt.get("scope_id") or "")),
-                []).append(ref_id)
-        for (nonce, scope_id), ref_ids in by_attempt.items():
-            if not nonce or not scope_id:
-                for ref_id in ref_ids:
-                    retained[ref_id] = "attempt unbound"
-                continue
-            holder0 = refs_map[ref_ids[0]]
-            holder = holder0.get("holder") if isinstance(holder0, dict) else None
-            certificate: dict[str, object] = {
-                "action_key": consumer_action_key,
-                "nonce": nonce,
-                "scope_id": scope_id,
-            }
-            if isinstance(holder, Mapping):
-                for field in ("worker", "host"):
-                    if isinstance(holder.get(field), str) and holder.get(field):
-                        certificate[field] = holder[field]
-            outcome = release_refs(
-                queue,
-                [{"consumer_action_key": consumer_action_key,
-                  "pin_id": pin_id, "ref_id": ref_id} for ref_id in ref_ids],
-                certificate, residency_root=residency_root)
-            released.extend(outcome["released"])
-            reason = str(outcome["reason"])
-            for skipped in outcome["skipped"]:
-                retained[str(skipped).split(":")[0]] = reason
+            if str(pin.get("owner_action_key") or "") != owner:
+                continue  # path/field disagreement: leave for inspection
+            refs_map = pin["refs"]
+            assert isinstance(refs_map, dict)
+            pin_id = str(pin["pin_id"])
+            by_attempt: dict[tuple[str, str], list[str]] = {}
+            for ref_id, ref in refs_map.items():
+                if not isinstance(ref, dict):
+                    continue
+                attempt = ref.get("attempt")
+                if not isinstance(attempt, dict):
+                    continue
+                by_attempt.setdefault(
+                    (str(attempt.get("nonce") or ""),
+                     str(attempt.get("scope_id") or "")),
+                    []).append(ref_id)
+            for (nonce, scope_id), ref_ids in by_attempt.items():
+                if not nonce or not scope_id:
+                    for ref_id in ref_ids:
+                        retained[ref_id] = "attempt unbound"
+                    continue
+                first = refs_map[ref_ids[0]]
+                holder = first.get("holder") if isinstance(first, dict) else None
+                certificate: dict[str, object] = {
+                    "action_key": owner,
+                    "nonce": nonce,
+                    "scope_id": scope_id,
+                }
+                if isinstance(holder, Mapping):
+                    for field in ("worker", "host"):
+                        if (isinstance(holder.get(field), str)
+                                and holder.get(field)):
+                            certificate[field] = holder[field]
+                outcome = release_refs(
+                    queue,
+                    [{"consumer_action_key": owner,
+                      "pin_id": pin_id, "ref_id": ref_id}
+                     for ref_id in ref_ids],
+                    certificate, residency_root=residency_root)
+                released.extend(outcome["released"])
+                reason = str(outcome["reason"])
+                for skipped in outcome["skipped"]:
+                    retained[str(skipped).split(":")[0]] = reason
     return {"released": released, "retained": retained}
 
 
@@ -1062,91 +1117,159 @@ def auto_reclaim(queue, *, consumer_action_key: str,
 # Window cover lookup (PQ-facing helper): what to acquire, without inventing
 # --------------------------------------------------------------------------
 
+def covers_for_keys(root: str | Path, consumer_action_key: str,
+                    keys: list[str], *, tier_id: str,
+                    manifest_sha256: str, epoch: str,
+                    context: dict | None = None) -> dict[str, object]:
+    """Resolve a window's covering material from PB-owned records.
+
+    Given requested map keys on one tier, returns the minimal covering
+    mover set plus the expected per-key proof (``covers``/``expected``
+    for :func:`acquire`) -- read off the consumer's fragments plus
+    publish-time sidecars, batched at window granularity, never per
+    tensor.  Both SSD and RAM tiers: RAM covers come from ram-tier
+    fragments carrying the announced epoch (SSD fragments carry epoch
+    ``""``, explicit absence, never a RAM epoch).  ``manifest_sha256``
+    and ``epoch`` are REQUIRED keywords so no other readset's material
+    can be adopted.  Callers (including PQ) must not invent RAM covers
+    from SSD leads: only material the fleet published qualifies.
+    Freshness is re-validated under the ownership lock inside
+    :func:`acquire`; this lookup is selection, not admission.
+
+    Returns ``{"ok": True, "covers":
+    [{mover_action_key, manifest_sha256}], "manifest_sha256": ...,
+    "expected": {key: {bytes, sha256}}}`` or ``{"ok": False,
+    "refusal": ...}``.
+    """
+
+    from prismabuild import residency_map as map_mod
+
+    base = Path(root)
+    if context is None:
+        context = {}
+    try:
+        names = sorted(entry.name for entry in os.scandir(
+            base / "material" / consumer_action_key)
+            if entry.is_file() and entry.name.endswith(".json"))
+    except OSError:
+        return {"ok": False, "refusal": "unpublished"}
+    wanted = set(keys)
+    covers: list[dict[str, str]] = []
+    expected: dict[str, dict[str, object]] = {}
+    for name in names:
+        mover = name[:-len(".json")]
+        if len(mover) != 64 or any(c not in _HEX for c in mover):
+            continue
+        material = read_material(base, consumer_action_key, mover)
+        if not isinstance(material, dict):
+            continue
+        if str(material.get("tier_id") or "") != tier_id:
+            continue
+        if str(material.get("manifest_sha256") or "") != manifest_sha256:
+            continue
+        # Exact sidecar convention: SSD material carries no epoch (absent
+        # or ""), RAM material carries the announced epoch it landed
+        # under.  A non-RAM tier naming an epoch is corrupt, not staged.
+        material_epoch = material.get("epoch")
+        if tier_id.startswith("ram:"):
+            if not isinstance(material_epoch, str) or not material_epoch:
+                continue
+            if material_epoch != str(epoch or ""):
+                continue
+        else:
+            if isinstance(material_epoch, str) and material_epoch:
+                return {"ok": False,
+                        "refusal": "ownership-uncertain: staged epoch set"}
+            if str(material.get("epoch") or "") != str(epoch or ""):
+                continue
+        try:
+            with open(map_mod.fragment_path(
+                    base, consumer_action_key, mover)) as stream:
+                fragment = map_mod.validate_fragment(json.load(stream))
+        except (OSError, ValueError):
+            continue
+        if (str(fragment.get("tier_id") or "") != tier_id
+                or str(fragment.get("manifest_sha256") or "")
+                != manifest_sha256
+                or str(fragment.get("epoch") or "") != str(epoch or "")):
+            continue
+        material_entries = material.get("entries")
+        if not isinstance(material_entries, dict):
+            continue
+        contributed = False
+        for key, mention in material_entries.items():
+            if str(key) not in wanted or not isinstance(mention, dict):
+                continue
+            expected[str(key)] = {
+                "bytes": mention.get("bytes"),
+                "sha256": mention.get("sha256"),
+            }
+            contributed = True
+        if contributed:
+            covers.append({
+                "mover_action_key": mover,
+                "manifest_sha256": manifest_sha256,
+            })
+    if not covers:
+        return {"ok": False, "refusal": "unpublished"}
+    missing = [key for key in keys if key not in expected]
+    if missing:
+        return {"ok": False, "refusal": "source-coverage-gap"}
+    return {"ok": True,
+            "covers": covers,
+            "manifest_sha256": manifest_sha256,
+            "expected": expected}
+
+
 def resolve_window_covers(queue, *, consumer_action_key: str,
                           tier_id: str, epoch: str,
                           keys: list[str] | None = None,
                           manifest_sha256: str | None = None,
                           residency_root=None, context: dict | None = None
                           ) -> dict[str, object]:
-    """Resolve a window's covering material from PB-owned records.
+    """Queue-rooted cover lookup; prefers :func:`covers_for_keys`.
 
-    Given requested map keys (or ``None`` for a mover's whole window),
-    returns the ``covers``/``expected``/tier/epoch/stage-root tuple
-    :func:`acquire` needs -- read off the consumer's fragments plus
-    publish-time sidecars, batched at window granularity, never per
-    tensor.  Callers (including PQ) must not invent RAM covers from SSD
-    leads: only material the fleet published qualifies.  Freshness is
-    re-validated under the ownership lock inside :func:`acquire`; this
-    lookup is selection, not admission.
-
-    Returns ``{"ok": True, "tier_id": ..., "epoch": ..., "stage_root":
-    ..., "covers": [...], "expected": {...}}`` or ``{"ok": False,
-    "refusal": ...}``.
+    Kept for PB-internal callers that already hold the queue.  New code
+    (including PQ) calls :func:`covers_for_keys` directly.
     """
 
     from prismabuild import pool as pool_mod
-    from prismabuild import residency_map as map_mod
 
     root = Path(residency_root if residency_root is not None
                 else Path(queue.root) / pool_mod.RESIDENCY)
-    if context is None:
-        context = {}
-    try:
-        names = sorted(entry.name for entry in os.scandir(root / "material"
-                                                          / consumer_action_key)
-                       if entry.is_file() and entry.name.endswith(".json"))
-    except OSError:
-        return {"ok": False, "refusal": "unpublished"}
-    covers: list[dict[str, str]] = []
-    expected: dict[str, dict[str, object]] = {}
-    stage_root = ""
-    for name in names:
-        mover = name[:-len(".json")]
-        if len(mover) != 64 or any(c not in _HEX for c in mover):
-            continue
-        material = read_material(root, consumer_action_key, mover)
-        if not isinstance(material, dict):
-            continue
-        if str(material.get("tier_id") or "") != tier_id:
-            continue
-        if str(material.get("epoch") or "") != str(epoch or ""):
-            continue
-        if (manifest_sha256 is not None
-                and str(material.get("manifest_sha256") or "")
-                != manifest_sha256):
-            continue
+    if manifest_sha256 is None:
+        return {"ok": False, "refusal": "manifest-unbound"}
+    if keys is None:
+        all_keys: set[str] = set()
         try:
-            with open(map_mod.fragment_path(
-                    root, consumer_action_key, mover)) as stream:
-                fragment = map_mod.validate_fragment(json.load(stream))
-        except (OSError, ValueError):
-            continue
-        if not stage_root:
-            stage_root = str(fragment.get("stage_root") or "")
-        material_entries = material.get("entries")
-        assert isinstance(material_entries, dict)
-        covers.append({
-            "mover_action_key": mover,
-            "manifest_sha256": str(material.get("manifest_sha256") or ""),
-        })
-        for key, mention in material_entries.items():
-            if keys is not None and str(key) not in keys:
+            names = sorted(entry.name for entry in os.scandir(
+                root / "material" / consumer_action_key)
+                if entry.is_file() and entry.name.endswith(".json"))
+        except OSError:
+            return {"ok": False, "refusal": "unpublished"}
+        for name in names:
+            mover = name[:-len(".json")]
+            if len(mover) != 64:
                 continue
-            if not isinstance(mention, dict):
+            material = read_material(root, consumer_action_key, mover)
+            if not isinstance(material, dict):
                 continue
-            expected[str(key)] = {
-                "bytes": mention.get("bytes"),
-                "sha256": mention.get("sha256"),
-            }
-    if not covers:
-        return {"ok": False, "refusal": "unpublished"}
-    if keys is not None:
-        missing = [key for key in keys if key not in expected]
-        if missing:
-            return {"ok": False, "refusal": "source-coverage-gap"}
+            if (str(material.get("tier_id") or "") != tier_id
+                    or str(material.get("manifest_sha256") or "")
+                    != manifest_sha256):
+                continue
+            material_entries = material.get("entries")
+            if isinstance(material_entries, dict):
+                all_keys.update(str(key) for key in material_entries)
+        keys = sorted(all_keys)
+    result = covers_for_keys(
+        root, consumer_action_key, keys, tier_id=tier_id,
+        manifest_sha256=manifest_sha256, epoch=epoch, context=context)
+    if not result.get("ok"):
+        return result
     return {"ok": True, "tier_id": tier_id, "epoch": str(epoch or ""),
-            "stage_root": stage_root, "covers": covers,
-            "expected": expected}
+            "covers": result["covers"],
+            "expected": result["expected"]}
 
 
 # --------------------------------------------------------------------------
@@ -1160,8 +1283,17 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
             expected: Mapping[str, Mapping[str, object]] | None = None,
             ram=None, residency_root=None, context: dict | None = None,
             file_pin: bool = True,
+            owner_action_key: str | None = None,
             ) -> dict[str, object]:
     """Pin one window's covering material; refuse anything less than published.
+
+    ``consumer_action_key`` names the MATERIAL namespace (the producing
+    consumer whose fragments/sidecars vouch); ``owner_action_key`` names
+    the pin owner (the running action holding the ref), defaulting to the
+    consumer for single-namespace reads.  Produced-output readers pass
+    both: the pin files under the owner, the proof resolves in the
+    material namespace, and neither is inferred from terminal records.
+    Refs stay attempt-bound to the reader in every case.
 
     ``covers`` names the mover fragments that must hold the window
     (``[{mover_action_key, manifest_sha256}]``) -- one mover for a consumer
@@ -1211,6 +1343,9 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     movers = [str(cover.get("mover_action_key") or "") for cover in covers]
     if not movers or any(len(mover) != 64 for mover in movers):
         return {"ok": False, "refusal": "ownership-uncertain: bad covers"}
+    owner = owner_action_key or consumer_action_key
+    if len(owner) != 64 or any(c not in _HEX for c in owner):
+        return {"ok": False, "refusal": "ownership-uncertain: bad owner"}
 
     # Retiring closes one material generation, never a path: a mark for an
     # older generation than the live material is stale -- ignore it and clean
@@ -1279,6 +1414,17 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
             return {"ok": False, "refusal": "retiring"}
         if str(material.get("manifest_sha256") or "") != manifest:
             return {"ok": False, "refusal": "unpublished"}
+        # Exact sidecar convention: the sidecar dates this fragment's
+        # vouching, so their epochs must agree; a staged epoch is
+        # corrupt, never a RAM epoch by another name.
+        material_epoch = material.get("epoch")
+        if tier_id.startswith("ram:"):
+            if material_epoch != fragment_epoch:
+                return {"ok": False,
+                        "refusal": "ownership-uncertain: sidecar/fragment disagree"}
+        elif isinstance(material_epoch, str) and material_epoch:
+            return {"ok": False,
+                    "refusal": "ownership-uncertain: staged epoch set"}
         if not stage_root:
             stage_root = str(fragment.get("stage_root") or "")
         elif str(fragment.get("stage_root") or "") != stage_root:
@@ -1408,13 +1554,14 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                                for mover in movers]}
         pin_id = pin_id_for(
             consumer_action_key=consumer_action_key, tier_id=tier_id,
-            epoch=str(epoch or ""), start=start, end=end, movers=movers,
-            generations=generations)
+            epoch=str(epoch or ""), stage_root=stage_root,
+            start=start, end=end, movers=movers, generations=generations,
+            keys={item["key"]: item for item in entries})
         ref_id = ref_id_for(
             acquire_token=acquire_token, host=str(holder.get("host") or ""),
             nonce=str(attempt.get("nonce") or ""),
             scope_id=str(attempt.get("scope_id") or ""))
-        directory = leases / consumer_action_key
+        directory = leases / owner
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{pin_id}.lease.json"
         pin = _read_pin(path)
@@ -1426,14 +1573,19 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                 str(pin["tier_id"]) == tier_id
                 and str(pin["epoch"]) == str(epoch or "")
                 and str(pin.get("stage_root") or "") == stage_root
+                and str(pin.get("owner_action_key") or "") == owner
                 and [(str(cover.get("mover_action_key") or ""),
                       str(cover.get("generation") or ""))
                      for cover in pin["covers"]]  # type: ignore[union-attr]
-                == [(mover, generations[mover]) for mover in movers])
+                == [(mover, generations[mover]) for mover in movers]
+                and _entry_identity(pin["entries"])  # type: ignore[index]
+                == _entry_identity(entries))
             if not same_window:
-                # A new publish superseded the material this pin names: the
-                # caller re-resolves and acquires the new generation; the old
-                # pin keeps protecting its own readers until they release.
+                # A new publish superseded the material this pin names, or
+                # the keyset changed under a colliding name (impossible for
+                # names this function mints, defense in depth): the caller
+                # re-resolves and acquires the new generation; the old pin
+                # keeps protecting its own readers until they release.
                 return {"ok": False, "refusal": "generation-changed"}
             refs_map = pin["refs"]
             assert isinstance(refs_map, dict)
@@ -1458,11 +1610,13 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                 "schema": LEASE_SCHEMA_V1,
                 "pin_id": pin_id,
                 "consumer_action_key": consumer_action_key,
+                "owner_action_key": owner,
                 "tier_id": tier_id,
                 "epoch": str(epoch or ""),
                 "stage_root": stage_root,
                 "manifest_sha256": str(covers[0].get("manifest_sha256") or ""),
-                "range": {"start_bytes": start, "end_bytes": end},
+                "range": {"coordinate_space": "rng01-source",
+                          "start_bytes": start, "end_bytes": end},
                 "covers": [{"mover_action_key": mover,
                             "generation": generations[mover]}
                            for mover in movers],
@@ -1536,8 +1690,8 @@ def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
 
     checked = validate_pin(pin)
     pin_id = str(checked["pin_id"])
-    consumer = str(checked["consumer_action_key"])
-    live = _read_pin(leases_root(queue, residency_root) / consumer
+    owner = str(checked["owner_action_key"])
+    live = _read_pin(leases_root(queue, residency_root) / owner
                      / f"{pin_id}.lease.json")
     if live is None or isinstance(live, Exception):
         raise ReaderLeaseError("pin is not live: refusing")
@@ -1931,16 +2085,22 @@ def acquire_for(ctx: Mapping[str, object], *, tier_id: str, epoch: str,
                 span: Mapping[str, int], acquire_token: str,
                 ram=None, context: dict | None = None,
                 residency_root=None,
+                material_namespace: str | None = None,
                 file_pin: bool = True) -> dict[str, object]:
     """Acquire as an injected context: identity fixed, data selected.
 
-    The PQ-facing entry point.  Identity (consumer, attempt, holder)
+    The PQ-facing entry point.  Identity (owner, attempt, holder)
     comes only from ``ctx`` (see :func:`injected_context`): the holder
     records the PB-qualified fleet host and worker (plus incarnation
     where published), never the container-local hostname, so
     ``refs_for_holder`` finds container readers under the fleet alias.
     The caller selects data (tier, epoch, covers, expected window) from
-    its map lookup.  Exact signature; no invented IDs cross this boundary.
+    its map lookup.  ``material_namespace`` names the producing consumer
+    whose fragments/sidecars vouch (default: the owner itself); the pin
+    files under the owner either way, and refs stay attempt-bound to the
+    reader -- an output namespace is never treated as the running
+    action, and no namespace is inferred from terminal records.
+    Exact signature; no invented IDs cross this boundary.
     """
 
     from prismabuild import pool as pool_mod
@@ -1956,16 +2116,18 @@ def acquire_for(ctx: Mapping[str, object], *, tier_id: str, epoch: str,
         }
         if isinstance(ctx.get("incarnation"), str) and ctx.get("incarnation"):
             holder["incarnation"] = str(ctx["incarnation"])
-        consumer = str(ctx["action_key"])
+        owner = str(ctx["action_key"])
+        namespace = (str(material_namespace) if material_namespace
+                     else owner)
     except (KeyError, TypeError, ValueError) as exc:
         return {"ok": False, "refusal": f"bad-context: {exc}"}
     return acquire(
-        queue, consumer_action_key=consumer, attempt=attempt,
+        queue, consumer_action_key=namespace, attempt=attempt,
         tier_id=tier_id, epoch=epoch,
         span=span, holder=holder, acquire_token=acquire_token,
         covers=covers, expected=expected, ram=ram,
         residency_root=residency_root, context=context,
-        file_pin=file_pin)
+        file_pin=file_pin, owner_action_key=owner)
 
 
 def adopted_generation(old_material: Mapping[str, object]) -> str:
@@ -2026,6 +2188,7 @@ __all__ = [
     "read_scope_attestation",
     "injected_context",
     "inspect_claim_context",
+    "covers_for_keys",
     "resolve_window_covers",
     "acquire_for",
     "adopted_generation",

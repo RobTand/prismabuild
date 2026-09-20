@@ -1275,3 +1275,294 @@ def test_resolve_window_covers_from_published_material(fleet) -> None:
         covers=resolved["covers"], expected=resolved["expected"],  # type: ignore[index]
         residency_root=root)
     assert acquired["ok"], acquired
+
+
+def test_distinct_same_shape_files_never_share_a_pin(fleet) -> None:
+    """Pin identity binds the object keyset: equal size/offset files split.
+
+    Two equal-sized distinct files under one mover (both source offset 0)
+    must file two pins.  Before the keyset joined the pin identity, the
+    second acquire appended a ref to entries naming the first file's
+    bytes, and opening the second key failed or served the wrong window.
+    """
+
+    import threading
+
+    queue, stage = fleet
+    first = stage / "model" / "a.bin"
+    second = stage / "model" / "b.bin"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"\x31" * 4096)
+    second.write_bytes(b"\x32" * 4096)
+    root = queue.root / pool.RESIDENCY
+    key_a = residency_map.residency_map_key("/mnt/shared/model/a.bin", 0)
+    key_b = residency_map.residency_map_key("/mnt/shared/model/b.bin", 0)
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": "a" * 64,
+        "entries": {
+            key_a: {"stage_path": str(first), "bytes": 4096,
+                    "sha256": "b" * 64, "offset": 0},
+            key_b: {"stage_path": str(second), "bytes": 4096,
+                    "sha256": "c" * 64, "offset": 0},
+        }})
+    generation = reader_lease.mint_generation()
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+        generation=generation,
+        entries={
+            key_a: {"stage_path": str(first), "bytes": 4096,
+                    "sha256": "b" * 64,
+                    "file_id": reader_lease.stat_identity(str(first))},
+            key_b: {"stage_path": str(second), "bytes": 4096,
+                    "sha256": "c" * 64,
+                    "file_id": reader_lease.stat_identity(str(second))}})
+
+    def acquire_key(key, digest, token):
+        return reader_lease.acquire(
+            queue, consumer_action_key=CONSUMER, attempt=ATTEMPT,
+            tier_id=TIER, epoch="",
+            span={"start_bytes": 0, "end_bytes": 4096},
+            holder=HOLDER, acquire_token=token,
+            covers=[{"mover_action_key": MOVER,
+                     "manifest_sha256": "a" * 64}],
+            expected={key: {"bytes": 4096, "sha256": digest}},
+            residency_root=root)
+
+    pin_a = acquire_key(key_a, "b" * 64, "token-a")
+    pin_b = acquire_key(key_b, "c" * 64, "token-b")
+    assert pin_a["ok"] and pin_b["ok"]
+    assert pin_a["pin_id"] != pin_b["pin_id"]
+    fd, _ = reader_lease.open_pinned(queue, pin_a["pin"],
+                                     pin_a["ref_id"], key_a,
+                                     residency_root=root)
+    try:
+        assert os.read(fd, 4096) == b"\x31" * 4096
+    finally:
+        os.close(fd)
+    with pytest.raises(reader_lease.ReaderLeaseError):
+        reader_lease.open_pinned(queue, pin_a["pin"], pin_a["ref_id"],
+                                 key_b, residency_root=root)
+
+    # Concurrent distinct keysets keep independent lifetimes, repeatedly.
+    for round in range(10):
+        start = threading.Barrier(3)
+        outcomes: dict[str, object] = {}
+
+        def take_a() -> None:
+            start.wait(timeout=30)
+            outcomes["a"] = acquire_key(key_a, "b" * 64, f"race-a-{round}")
+
+        def take_b() -> None:
+            start.wait(timeout=30)
+            outcomes["b"] = acquire_key(key_b, "c" * 64, f"race-b-{round}")
+
+        first_t = threading.Thread(target=take_a)
+        second_t = threading.Thread(target=take_b)
+        first_t.start()
+        second_t.start()
+        start.wait(timeout=30)
+        first_t.join(timeout=30)
+        second_t.join(timeout=30)
+        assert outcomes["a"]["ok"] and outcomes["b"]["ok"]  # type: ignore[index]
+        assert outcomes["a"]["pin_id"] != outcomes["b"]["pin_id"]  # type: ignore[index]
+        assert reader_lease.release(
+            queue, outcomes["a"]["pin_id"], outcomes["a"]["ref_id"],  # type: ignore[index]
+            consumer_action_key=CONSUMER) is True
+        assert reader_lease.release(
+            queue, outcomes["b"]["pin_id"], outcomes["b"]["ref_id"],  # type: ignore[index]
+            consumer_action_key=CONSUMER) is True
+
+    # Independent release: freeing A deletes only A (per-keyset pins mean
+    # per-object lifetimes); B stays pinned behind its own pin.
+    assert reader_lease.release(queue, pin_a["pin_id"], pin_a["ref_id"],
+                                consumer_action_key=CONSUMER) is True
+    kept = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                               stage_root=str(stage))
+    assert not first.exists() and second.exists()
+    assert kept["entries_deleted"] == 1
+    assert reader_lease.release(queue, pin_b["pin_id"], pin_b["ref_id"],
+                                consumer_action_key=CONSUMER) is True
+    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                               stage_root=str(stage))
+    assert not first.exists() and not second.exists()
+    assert done["entries_deleted"] == 1
+
+
+def test_covers_for_keys_both_tiers_minimal(fleet) -> None:
+    """covers_for_keys: exact manifest+epoch filter, minimal movers, gaps."""
+
+    queue, stage = fleet
+    ram_tier = "ram:testhost"
+    stage_file = stage / "model" / "s.bin"
+    ram_file = stage / "model" / "r.bin"
+    stage_file.parent.mkdir(parents=True)
+    stage_file.write_bytes(b"\x41" * 1024)
+    ram_file.write_bytes(b"\x42" * 1024)
+    root = queue.root / pool.RESIDENCY
+    stage_key = residency_map.residency_map_key("/mnt/shared/s.bin", 0)
+    ram_key = residency_map.residency_map_key("/mnt/shared/r.bin", 0)
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/s.bin",
+             stage_file, 1024, "b" * 64)
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
+        "tier_id": ram_tier, "stage_root": str(stage),
+        "manifest_sha256": "a" * 64, "epoch": "epoch-1",
+        "entries": {ram_key: {"stage_path": str(ram_file), "bytes": 1024,
+                              "sha256": "c" * 64, "offset": 0}}})
+    identity = reader_lease.stat_identity(str(ram_file))
+    assert identity is not None
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
+        tier_id=ram_tier, stage_root=str(stage), manifest_sha256="a" * 64,
+        generation=reader_lease.mint_generation(),
+        entries={ram_key: {"stage_path": str(ram_file), "bytes": 1024,
+                           "sha256": "c" * 64, "file_id": identity}},
+        epoch="epoch-1")
+
+    stage_only = reader_lease.covers_for_keys(
+        root, CONSUMER, [stage_key], tier_id=TIER,
+        manifest_sha256="a" * 64, epoch="")
+    assert stage_only["ok"], stage_only
+    # Minimal: the ram mover does not cover the stage key.
+    assert stage_only["covers"] == [  # type: ignore[index]
+        {"mover_action_key": MOVER, "manifest_sha256": "a" * 64}]
+
+    ram_only = reader_lease.covers_for_keys(
+        root, CONSUMER, [ram_key], tier_id=ram_tier,
+        manifest_sha256="a" * 64, epoch="epoch-1")
+    assert ram_only["ok"], ram_only
+
+    wrong_epoch = reader_lease.covers_for_keys(
+        root, CONSUMER, [ram_key], tier_id=ram_tier,
+        manifest_sha256="a" * 64, epoch="epoch-2")
+    assert wrong_epoch == {"ok": False, "refusal": "unpublished"}
+
+    wrong_manifest = reader_lease.covers_for_keys(
+        root, CONSUMER, [stage_key], tier_id=TIER,
+        manifest_sha256="d" * 64, epoch="")
+    assert wrong_manifest == {"ok": False, "refusal": "unpublished"}
+
+    both = reader_lease.covers_for_keys(
+        root, CONSUMER, [stage_key], tier_id=TIER,
+        manifest_sha256="a" * 64, epoch="")
+    missing = reader_lease.covers_for_keys(
+        root, CONSUMER, [stage_key, "0:/mnt/shared/nope.bin"], tier_id=TIER,
+        manifest_sha256="a" * 64, epoch="")
+    assert missing == {"ok": False, "refusal": "source-coverage-gap"}
+    assert both["ok"]
+
+
+def test_staged_sidecar_with_epoch_refuses_at_write(fleet) -> None:
+    """Q4: a staged epoch is corrupt at write time, never at open."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "e2.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x43" * 64)
+    root = queue.root / pool.RESIDENCY
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    with pytest.raises(reader_lease.ReaderLeaseError):
+        reader_lease.write_material(
+            root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
+            tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+            generation=reader_lease.mint_generation(),
+            entries={"0:/mnt/shared/e2.bin": {
+                "stage_path": str(staged), "bytes": 64, "sha256": "b" * 64,
+                "file_id": identity}},
+            epoch="epoch-1")
+
+
+def test_payload_identity_env_is_assignment_not_leak() -> None:
+    """resource_exec stamps exact launch identity; outer values never leak."""
+
+    import resource_exec
+
+    outer = {"PRISMABUILD_ACTION_NONCE": "o" * 32,
+             "PRISMABUILD_ACTION_SCOPE": "outer-scope",
+             "OTHER": "kept"}
+    stamped = resource_exec.payload_identity_env(
+        outer, action_key="a" * 64, nonce="b" * 32)
+    assert stamped["PRISMABUILD_ACTION_NONCE"] == "b" * 32
+    assert stamped["OTHER"] == "kept"
+    assert outer["PRISMABUILD_ACTION_NONCE"] == "o" * 32
+    scope = stamped["PRISMABUILD_ACTION_SCOPE"]
+    assert scope.startswith("prismabuild-job") and scope.endswith(".slice")
+    helper = stamped["PRISMABUILD_READER_HELPER_ROOT"]
+    assert helper.endswith("/src")
+
+
+def test_owner_and_material_namespace_stay_split(fleet) -> None:
+    """Produced-output shape: pin owned by the reader, proof in the
+    producer namespace; the output namespace is never the running action."""
+
+    PRODUCER = "e" * 64
+    READER = "f" * 64
+    queue, stage = fleet
+    staged = stage / "model" / "o.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x51" * 2048)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/model/o.bin", 0)
+    _publish(root, stage, PRODUCER, MOVER, "/mnt/shared/model/o.bin",
+             staged, 2048, "b" * 64)
+    got = reader_lease.acquire(
+        queue, consumer_action_key=PRODUCER,
+        attempt={"nonce": "n1", "scope_id": "s1"}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": 2048},
+        holder={"host": "test-host", "worker": "worker-7", "pid": 5},
+        acquire_token="owner-split-token",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        expected={key: {"bytes": 2048, "sha256": "b" * 64}},
+        residency_root=root, owner_action_key=READER)
+    assert got["ok"], got
+    assert got["pin"]["consumer_action_key"] == PRODUCER  # type: ignore[index]
+    assert got["pin"]["owner_action_key"] == READER  # type: ignore[index]
+    assert (root / "leases" / READER
+            / f"{got['pin_id']}.lease.json").exists()
+    assert not (root / "leases" / PRODUCER
+                / f"{got['pin_id']}.lease.json").exists()
+    fd, serving = reader_lease.open_pinned(
+        queue, got["pin"], got["ref_id"], key, residency_root=root)
+    try:
+        assert os.read(fd, 2048) == b"\x51" * 2048
+        assert serving["tier_id"] == TIER
+    finally:
+        os.close(fd)
+    # The producer's egress defers to the reader-owned pin...
+    blocked = stage_release.evict(queue, MOVER,
+                                  consumer_action_key=PRODUCER,
+                                  stage_root=str(stage))
+    assert staged.exists()
+    assert blocked["entries_deleted"] == 0
+    # ...and the READER's terminal (never the producer's) reclaims it.
+    _attest_for(queue, READER, "n1", worker="worker-7")
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{READER}.json").write_text(json.dumps(
+        {"action_key": READER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": READER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    freed = stage_release.evict(queue, MOVER,
+                                consumer_action_key=PRODUCER,
+                                stage_root=str(stage))
+    assert freed["auto_reclaimed"] == [got["ref_id"]]
+    assert not staged.exists()
+    assert freed["entries_deleted"] == 1
+
+
+def _attest_for(queue, action, nonce, scope_empty=True, host="test-host",
+                worker="w1"):
+    path = reader_lease.attestation_path(queue, action, nonce)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+        "action_key": action, "nonce": nonce, "scope_id": "s1",
+        "host": host, "worker": worker, "incarnation": "i1",
+        "scope_empty": scope_empty, "unix": 1789880000.0}) + "\n")

@@ -28,6 +28,38 @@ def process_umask() -> int:
     raise OSError('cannot read this launcher process umask')
 
 
+def payload_identity_env(env, *, action_key, nonce):
+    """Stamp public attempt identity plus the sealed helper root.
+
+    Pure and unit-testable: copies ``env`` and assigns
+    ``PRISMABUILD_ACTION_NONCE``/``PRISMABUILD_ACTION_SCOPE`` from the
+    exact launch identity (never the broker token) plus
+    ``PRISMABUILD_READER_HELPER_ROOT`` from this proxy's sealed script
+    path (the immutable generation root, ``.../src``).  Assignment, not
+    setdefault: an outer attempt's variables must not leak into the
+    inner payload.  When the sibling broker module is not importable
+    the attempt pair stays unset (strict readers refuse) while the
+    helper root is still derived.
+    """
+
+    payload_env = dict(env)
+    try:
+        from resource_broker import scope_id as broker_scope_id
+    except ImportError:
+        broker_scope_id = None  # type: ignore[assignment]
+    if broker_scope_id is not None:
+        payload_env['PRISMABUILD_ACTION_NONCE'] = nonce
+        payload_env['PRISMABUILD_ACTION_SCOPE'] = broker_scope_id(
+            action_key, nonce)
+    try:
+        from runtime_paths import generation_root as sealed_root
+        payload_env['PRISMABUILD_READER_HELPER_ROOT'] = str(
+            sealed_root(__file__) / "src")
+    except (ImportError, OSError):
+        pass
+    return payload_env
+
+
 def main() -> int:
     # Resolve source versus published layout only when executing the proxy.
     source = Path(__file__).resolve().parents[1] / 'src'
@@ -70,20 +102,10 @@ def main() -> int:
         # them and compare it to the live claim, so a superseded process
         # can never silently adopt its successor's attempt.  Names match
         # core's protected residency forwarding, which refuses sealed
-        # spoofs of either variable.  When the sibling broker module is
-        # not importable the variables stay unset and readers fall back
-        # to the live claim row (marked as such, never guessed).
-        payload_env = dict(os.environ)
-        try:
-            from resource_broker import scope_id as broker_scope_id
-        except ImportError:
-            broker_scope_id = None  # type: ignore[assignment]
-        if broker_scope_id is not None:
-            # Assignment, not setdefault: an outer attempt's variables must
-            # not leak into the inner payload this proxy launches.
-            payload_env['PRISMABUILD_ACTION_NONCE'] = args.nonce
-            payload_env['PRISMABUILD_ACTION_SCOPE'] = broker_scope_id(
-                args.action_key, args.nonce)
+        # spoofs of either variable.  The sealed helper root rides along
+        # so readers import from sealed bytes, never the mutable repo.
+        payload_env = payload_identity_env(
+            os.environ, action_key=args.action_key, nonce=args.nonce)
         request = {'op': 'run', **identity, 'argv': argv,
                    'cwd': os.getcwd(), 'env': payload_env,
                    'affinity': sorted(os.sched_getaffinity(0)), 'umask': process_umask()}
