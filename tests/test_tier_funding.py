@@ -804,3 +804,100 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     got = queue.claim(tags=["dl380g10"], owner="w-real-steal-2")
     assert got is not None and got["action_key"] == stealer
     queue.finish(stealer, status="executed")
+
+
+def test_funding_write_enforces_binding_and_table(tmp_path: Path) -> None:
+    """Same-generation rewrites cannot move states or bindings.
+
+    The published write path enforces the single transition table and
+    per-generation binding immutability: consumed->transferring (recovery
+    of physical holdings as credit), reserved->consumed (skipping the
+    claim), range/consumer edits under a live generation, and fresh-gen
+    rotation without the reserve path's proof all refuse.  Legitimate
+    reserve rotation still mints a new generation.
+    """
+    import uuid
+
+    queue = _queue(tmp_path, stage_gib=6)
+    mover, consumer = _hexkey("wrt-mover"), _hexkey("wrt-consumer")
+    plan = _plan(queue, consumer, mover, tag="wrt")
+    row = _publish_mover(queue, plan, mover)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-wrt")
+    fields = _fields(queue, plan, mover, row, kind="stage_gib")
+    assert queue.reserve_fence(TIER, grant, fields, 2) is True
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "reserved"
+    gen = str(record["generation"])
+
+    assert queue.advance_funding_state(
+        mover, TIER, expect="reserved", advance_to="transferring",
+        generation=gen) is True
+    live = queue.read_funding(mover, TIER)
+    assert live is not None
+
+    # Backward step under the same generation refuses.
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(dict(live, state="reserved"),
+                            expect_generation=gen)
+    # Binding edits under the same generation refuse.
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(
+            dict(live, range_end_bytes=int(live["range_end_bytes"]) + 1),
+            expect_generation=gen)
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(
+            dict(live, consumer_action_key=_hexkey("wrt-intruder")),
+            expect_generation=gen)
+    assert queue.read_funding(mover, TIER)["state"] == "transferring"
+
+    # Table-legal advance still works; then consumed->transferring refuses.
+    assert queue.advance_funding_state(
+        mover, TIER, expect="transferring", advance_to="consumed",
+        generation=gen) is True
+    spent = queue.read_funding(mover, TIER)
+    assert spent is not None and spent["state"] == "consumed"
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(dict(spent, state="transferring"),
+                            expect_generation=gen)
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(dict(spent, state="released"),
+                            expect_generation=gen)
+
+    # Fresh-generation rotation without the reserve path refuses, with or
+    # without naming the filed generation.
+    fresh = dict(spent, generation=uuid.uuid4().hex, state="reserved")
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(fresh, expect_generation=gen)
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(fresh)
+    assert queue.read_funding(mover, TIER)["state"] == "consumed"
+
+    # Skipping steps refuses on a live reserved record.
+    mover2, consumer2 = _hexkey("wrt-mover2"), _hexkey("wrt-consumer2")
+    plan2 = _plan(queue, consumer2, mover2, tag="wrt2")
+    row2 = _publish_mover(queue, plan2, mover2)
+    grant2 = window_credit.grant_key(consumer2, TIER, "mover_row", "ph-wrt2")
+    assert queue.reserve_fence(
+        TIER, grant2, _fields(queue, plan2, mover2, row2, kind="stage_gib"),
+        2) is True
+    rec2 = queue.read_funding(mover2, TIER)
+    assert rec2 is not None and rec2["state"] == "reserved"
+    with pytest.raises(pool.PoolContractError):
+        queue.write_funding(dict(rec2, state="consumed"),
+                            expect_generation=str(rec2["generation"]))
+
+    # Legitimate rotation still works: republish, then the reserve path
+    # mints a fresh reserved generation for the new publication.
+    queue.publish(action_key=mover, cas_root=queue.root / "cas",
+                  checkout_root=queue.root / "co",
+                  worker_script=queue.root / "worker.py", tags=["dl380g10"],
+                  resources={STAGE_KIND: 2}, residency=row["residency"])
+    row3 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    assert isinstance(row3, dict)
+    assert float(row3["published_unix"]) != float(row["published_unix"])
+    assert queue.reserve_fence(
+        TIER, grant, _fields(queue, plan, mover, row3, kind="stage_gib"),
+        2) is True
+    rotated = queue.read_funding(mover, TIER)
+    assert rotated is not None and rotated["state"] == "reserved"
+    assert str(rotated["generation"]) != gen

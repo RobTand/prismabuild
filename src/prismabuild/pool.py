@@ -299,6 +299,25 @@ TIER_FUNDING_SCHEMA_V1 = "prismabuild.tier_funding.v1"
 TIER_FUNDING_STATES = frozenset({
     "reserved", "transferring", "consumed", "released",
 })
+#: Legal funding state steps, the single table every writer enforces.
+#: :meth:`PoolQueue._advance_funding_state_locked` and
+#: :meth:`PoolQueue._write_funding_locked` both read it; there is no second
+#: state machine.  Fresh generations are born ``reserved``, and only the
+#: reserve path mints them (see
+#: :meth:`PoolQueue._rotate_funding_locked`).
+_FUNDING_TRANSITIONS = {
+    "reserved": frozenset({"transferring", "released"}),
+    "transferring": frozenset({"consumed", "released"}),
+}
+#: Binding fields, immutable within one generation.  Everything except
+#: ``state`` (which advances through :data:`_FUNDING_TRANSITIONS`) and
+#: ``unix`` (a diagnostic stamp) -- a same-generation rewrite changing any
+#: of these is a different binding wearing a spent generation, and refuses.
+_FUNDING_BINDING_FIELDS = frozenset({
+    "schema", "tier_id", "consumer_action_key", "plan_sha256",
+    "mover_action_key", "range_start_bytes", "range_end_bytes",
+    "kind", "tokens", "generation", "published_unix",
+})
 #: Which plan leg role one funding kind pays for.  A fence funds staged
 #: (or promoted) occupancy; rate kinds and tiers with no movement legs
 #: never carry advance credit, so a record naming any other kind covers
@@ -4534,13 +4553,84 @@ class PoolQueue:
 
     def _write_funding_locked(self, record: Mapping[str, object], *,
                               expect_generation: str | None = None) -> Path:
-        """File one generation's binding; caller holds the mover lock.
+        """Advance one generation's record; caller holds the mover lock.
 
         ``expect_generation`` names the record this write replaces (``None``
-        when creating).  A mismatch refuses instead of overwriting.
+        when creating).  Enforces, against the filed record: the generation
+        still matches (a mismatch refuses instead of overwriting), the
+        binding is unchanged (every field but ``state``/``unix`` must equal
+        the filed record -- a rewrite changing consumer, plan, range, tokens
+        or generation itself is a different binding wearing a live
+        generation), and the state step is legal in
+        :data:`_FUNDING_TRANSITIONS` (same-state rewrites are idempotent and
+        allowed; ``consumed`` -> ``transferring`` and every other backward
+        or skipping step refuses, so physical holdings can never be
+        reclassified as credit).  Births must be ``reserved``.  Rotation to
+        a fresh generation is not this function's job -- see
+        :meth:`_rotate_funding_locked`, owned by the reserve path alone.
         """
 
         checked = self.validate_funding(record)
+        path = self.funding_path(str(checked["mover_action_key"]),
+                                 str(checked["tier_id"]))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = _read_json(path)
+        except (OSError, PoolContractError):
+            raise PoolContractError("funding record unreadable for CAS")
+        if raw is None:
+            if expect_generation is not None:
+                raise PoolContractError(
+                    "funding record vanished underneath this write")
+            if checked.get("state") != "reserved":
+                raise PoolContractError(
+                    "funding records are born reserved")
+        else:
+            try:
+                current = self.validate_funding(raw)
+            except (PoolContractError, ValueError):
+                raise PoolContractError(
+                    "funding record unreadable for CAS")
+            if (expect_generation is None
+                    or str(current.get("generation")) != str(expect_generation)
+                    or str(checked.get("generation")) != str(
+                        current.get("generation"))):
+                raise PoolContractError(
+                    "funding generation rotated underneath this write")
+            for field in _FUNDING_BINDING_FIELDS:
+                if current.get(field) != checked.get(field):
+                    raise PoolContractError(
+                        f"funding {field} is immutable within one generation")
+            if (str(checked.get("state")) != str(current.get("state"))
+                    and str(checked.get("state")) not in _FUNDING_TRANSITIONS.get(
+                        str(current.get("state")), frozenset())):
+                raise PoolContractError(
+                    "funding state step "
+                    f"{current.get('state')!r}->{checked.get('state')!r} "
+                    "is not a legal advance")
+        _write_json_atomic(path, checked)
+        return path
+
+    def _rotate_funding_locked(self, record: Mapping[str, object], *,
+                               expect_generation: str | None) -> Path:
+        """Replace one generation with a fresh ``reserved`` one, reserve path.
+
+        Caller holds the mover lock and has already applied the reserve
+        path's keep-or-rotate rules (see :meth:`_reserve_fence_locked`): a
+        live ``reserved`` binding whose names still match is kept, never
+        rotated, and anything handed off or spent is left alone.  This only
+        checks the replaced generation is still the one the reserve read,
+        the replacement mints a strictly fresh generation, and the fresh
+        record is ``reserved`` -- it cannot advance a state, edit a binding,
+        or reclassify physical holdings, because those go through
+        :meth:`_write_funding_locked`.  Fresh creates (no filed record)
+        require ``expect_generation=None``.
+        """
+
+        checked = self.validate_funding(record)
+        if checked.get("state") != "reserved":
+            raise PoolContractError(
+                "rotated funding generations are born reserved")
         path = self.funding_path(str(checked["mover_action_key"]),
                                  str(checked["tier_id"]))
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -4562,6 +4652,9 @@ class PoolQueue:
                     or str(current.get("generation")) != str(expect_generation)):
                 raise PoolContractError(
                     "funding generation rotated underneath this write")
+            if str(checked.get("generation")) == str(current.get("generation")):
+                raise PoolContractError(
+                    "rotation must mint a fresh generation")
         _write_json_atomic(path, checked)
         return path
 
@@ -4594,13 +4687,14 @@ class PoolQueue:
         Caller holds the mover's transition lock (see
         :meth:`advance_funding_state`).
 
-        Legal steps only run forward (``reserved`` -> ``transferring`` ->
-        ``consumed``; any live state -> ``released``; ``reserved`` may be
-        rewritten by a fresh reservation, which mints a new generation
-        instead).  When ``generation`` is given it must match the filed
-        record: the check turns a stale writer into a loud ``False``, while
-        the mover lock (held by the caller) is what keeps two writers from
-        interleaving the read and the replace.
+        Legal steps are :data:`_FUNDING_TRANSITIONS` -- the same table
+        :meth:`_write_funding_locked` enforces, so the two can never
+        disagree about what a step is.  When ``generation`` is given it must
+        match the filed record: the check turns a stale writer into a loud
+        ``False``, while the mover lock (held by the caller) is what keeps
+        two writers from interleaving the read and the replace.  A fresh
+        reservation never edits a live binding: it mints a new generation
+        through the reserve path instead.
         """
 
         current = self.read_funding(mover_action_key, tier_id)
@@ -4611,11 +4705,7 @@ class PoolQueue:
             return False
         if expect == advance_to:
             return True
-        legal = ({expect} == {"reserved"}
-                 and advance_to in ("transferring", "released"))
-        legal = legal or ({expect} == {"transferring"}
-                          and advance_to in ("consumed", "released"))
-        if not legal:
+        if advance_to not in _FUNDING_TRANSITIONS.get(str(expect), frozenset()):
             return False
         updated = dict(current)
         updated["state"] = advance_to
@@ -4890,7 +4980,10 @@ class PoolQueue:
         # is never pulled out from under it -- a lost race simply defers to
         # next cycle.  A torn file (present but unparsable, so
         # ``read_funding`` answered ``None``) carries no live binding: remove
-        # it first rather than wedge on an unreadable CAS base.
+        # it first rather than wedge on an unreadable CAS base.  Creates go
+        # through the validated write path; replacements go through rotation,
+        # which mints a fresh ``reserved`` generation and cannot advance a
+        # state or edit a binding.
         try:
             if current is None:
                 with suppress(OSError, PoolContractError, ValueError):
@@ -4898,7 +4991,8 @@ class PoolQueue:
                         self.funding_path(mover, str(tier_id)).unlink()
                 self.write_funding(record)
             else:
-                self.write_funding(record, expect_generation=current_generation)
+                self._rotate_funding_locked(
+                    record, expect_generation=current_generation)
         except (OSError, PoolContractError, ValueError):
             return False
         return True

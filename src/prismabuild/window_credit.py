@@ -187,60 +187,18 @@ def cancel_due(*, consumer_live: bool, superseded: bool,
     return None
 
 
-def reserve(ledger, kind: str, grant: str, need_gib: int) -> dict[str, int]:
-    """Hold one next-need under the grant key; idempotent across restarts.
-
-    A held grant short-circuits (no double take -- the single writer inspects
-    before acquiring, and a restart reads the same ledger truth).  Returns
-    ``{"held": bool, "tokens": int}``; ``held=False`` defers the caller.
-    """
-
-    try:
-        have = int(ledger.holder_tokens(grant).get(kind, 0))
-    except (OSError, ValueError):
-        return {"held": False, "tokens": 0}
-    if have >= need_gib:
-        return {"held": True, "tokens": have}
-    try:
-        if not ledger.acquire(grant, {kind: int(need_gib)}):
-            return {"held": False, "tokens": 0}
-    except (OSError, ValueError):
-        return {"held": False, "tokens": 0}
-    try:
-        have = int(ledger.holder_tokens(grant).get(kind, 0))
-    except (OSError, ValueError):
-        return {"held": False, "tokens": 0}
-    return {"held": have >= need_gib, "tokens": have}
-
-
-def handoff(ledger, grant: str, mover: str, *, mover_terminal: bool) -> dict[str, int]:
-    """Move a held fence onto its next mover; release it when moot or dead.
-
-    A terminal mover (done/failed outcome already filed) can never claim, so
-    fusing tokens onto it would strand them under a key no egress serves for
-    this plan generation: release instead.  ``transfer`` is sum-preserving and
-    retryable -- a crash mid-move leaves the sum split, never lost -- and a
-    repeated call moves the ``0`` remainder.  The mover's claim then counts
-    the fused fence toward its demand through its funding record, so the
-    handoff never double-charges: the claim takes only the remainder from
-    free.  The record binding (generation plus token names) is advanced by
-    the caller holding the mover's transition lock.
-    """
-
-    if mover_terminal:
-        return {"moved": 0, "released": cancel(ledger, grant)["released"]}
-    try:
-        moved = int(ledger.transfer(grant, mover))
-    except (OSError, ValueError):
-        return {"moved": 0, "released": 0}
-    return {"moved": moved, "released": 0}
-
-
 def cancel(ledger, grant: str) -> dict[str, int]:
     """Release a fence: safe in every direction, twice included.
 
-    Releasing only frees capacity (under-protection stalls, never over-admits)
-    and a second release of an absent holder returns ``0``.
+    A pure ledger release, never a funding-record effect: it moves no
+    generations and edits no bindings, so it needs no mover lock of its
+    own.  Every caller in the frozen wiring either holds the mover's
+    transition lock already (settle, non-blocking) or names a grant key no
+    claim ever verifies against (pre-pass cancel of an unhanded fence).
+    Releasing only frees capacity (under-protection stalls, never
+    over-admits) and a second release of an absent holder returns ``0``.
+    Funding-record closure beside a release always goes through
+    ``PoolQueue.advance_funding_state``, which serializes on the lock.
     """
 
     try:
@@ -250,7 +208,12 @@ def cancel(ledger, grant: str) -> dict[str, int]:
 
 
 def held_grants(ledger) -> list[str]:
-    """Every fence holder on this ledger.  Stateless recovery reads this."""
+    """Every fence holder on this ledger.  Stateless recovery reads this.
+
+    Read-only listing: no mutation, no lock needed.  Callers reconcile what
+    they find against funding records (which carry the generations) rather
+    than acting on names alone.
+    """
 
     try:
         keys = ledger.held_keys()
