@@ -6658,7 +6658,11 @@ class PoolQueue:
                          + int(classes.get("temp", 0)))
         except (TypeError, ValueError):
             return False
-        return pre_total == total
+        # Ceiling reconciliation: the durable prewrite admits per-class
+        # upper bounds; the intent's bound range is the actual total AT OR
+        # UNDER the prewrite's admitted total (exact sizes are the special
+        # case of an exact ceiling).
+        return pre_total >= total
 
 
     def stage_output_intent(self, *, tier_id: str, owner_key: str,

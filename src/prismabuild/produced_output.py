@@ -1092,6 +1092,93 @@ def namespace_for_batch_reference(*, owner_action_key: str,
                                    where="reference manifest_digest")))
 
 
+def refill_window(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object], *, tier: str
+                   ) -> dict[str, object]:
+    """Bounded lifecycle refill of a long-lived producer window.
+
+    Retirement returns spent credits to FREE (the egress releases by mover
+    key; the fleet never restores producer holdings), so a producer whose
+    batches completed must re-acquire its OWN admitted window capacity
+    before the next batch can spend it. This acquires from free, under the
+    owner key, exactly up to the aggregate window bound -- holdings plus
+    outstanding intent names never exceed the template's window_gib on the
+    tier, before or after. It is a lifecycle return of the producer's own
+    admitted window, never a batch's fresh acquisition: batches still fund
+    only by exact transfer. Requires the live owner and a provable census;
+    a shortfall below the window refuses with the typed
+    tier-reservation-unavailable rather than exceeding the bound. The
+    lane's sequential-writer contract applies (one producer action per
+    instance, as everywhere in this lane).
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import storage_tiers as tiers_mod
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
+    if tier not in checked_template["permitted_tiers"]:
+        return {"ok": False, "refusal": "tier-not-permitted"}
+    window = int(checked_template["working_demands"][tier]["window_gib"])
+    owner = str(checked_instance["owner_action_key"])
+    kind = tiers_mod.capacity_kind_of(tier)
+    gated = _require_live_owner(queue, checked_instance)
+    if gated is not None:
+        return gated
+    spoken, census_unknown = queue._output_spoken_token_names(owner, tier)
+    if census_unknown:
+        return {"ok": False, "refusal": "unknown-retain: funding-census"}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        ledger = queue.tier_ledger(tier)
+        held = ledger.holder_tokens(owner).get(kind, 0)
+        room = window - held - len(spoken)
+        if room <= 0:
+            return {"ok": True, "tier": tier, "acquired": 0, "held": held,
+                    "outstanding": len(spoken), "window_gib": window}
+        available = ledger.available().get(kind, 0)
+        take = min(room, available)
+        if take <= 0:
+            return {"ok": False, "refusal": "tier-reservation-unavailable",
+                    "available": ledger.available(), "window_gib": window,
+                    "held": held, "outstanding": len(spoken)}
+        if not ledger.acquire(owner, {kind: take}):
+            return {"ok": False, "refusal": "tier-reservation-unavailable",
+                    "available": ledger.available(), "window_gib": window,
+                    "held": held, "outstanding": len(spoken)}
+        held = ledger.holder_tokens(owner).get(kind, 0)
+    return {"ok": True, "tier": tier, "acquired": take, "held": held,
+            "outstanding": len(spoken), "window_gib": window,
+            "kind": kind}
+
+
+def _actual_within_ceiling(prewrite: Mapping[str, object],
+                           sealed: list[dict[str, object]]) -> bool:
+    """Actual per-class bytes at or under the admitted prewrite ceiling.
+
+    The prewrite admits per-class UPPER BOUNDS for the batch's temporary
+    lifetime (the conservative shape a producer serializes before sizes
+    are known); the actual descriptors must land at or under each bound.
+    Exact equality remains the special case of an exact ceiling.
+    """
+
+    planned = prewrite.get("class_bytes")
+    if not isinstance(planned, Mapping):
+        return False
+    actual = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for desc in sealed:
+        actual[str(desc["artifact_class"])] += int(desc["bytes"])
+    for cls, value in actual.items():
+        try:
+            if value > int(planned.get(cls, -1)):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def describe_output_precommit_for_funding(
         queue, instance: Mapping[str, object],
         template: Mapping[str, object], batch_id: str,
@@ -1144,10 +1231,14 @@ def describe_output_precommit_for_funding(
     class_bytes: dict[str, int] = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
+    # Ceiling reconciliation (conservative prewrite -> actual): same tier,
+    # owner and attempt; actual paths are a SUBSET of the planned superset
+    # (unwritten planned paths stay absent, which abort already requires);
+    # actual per-class bytes land at or under the admitted ceiling.
     if (prewrite.get("tier") != tier
-            or dict(prewrite.get("class_bytes", {})) != class_bytes
-            or sorted(str(d["path"]) for d in sealed)
-            != sorted(prewrite.get("paths", []))
+            or not _actual_within_ceiling(prewrite, sealed)
+            or not set(str(d["path"]) for d in sealed)
+            <= set(prewrite.get("paths", []))
             or prewrite.get("owner_action_key")
             != checked_instance["owner_action_key"]
             or dict(prewrite.get("owner_attempt", {})) != dict(
@@ -1388,11 +1479,16 @@ def require_prewrite(queue, instance: Mapping[str, object],
     """File a prewrite budget claim BEFORE any HDD byte is written.
 
     The production writer path must call this (not an optional helper):
-    uncharged temp/checkpoint writes refuse here. `paths` names the exact
-    durable-origin files this batch will write (absolute, normalized, under
-    the template prefix, distinct); the commit must present descriptors for
-    exactly this set, and abort requires every one absent. Uncommitted does
-    NOT mean unwritten: files without a batch never enter staged accounting.
+    uncharged temp/checkpoint writes refuse here. `paths` names the PLANNED
+    durable-origin files of this batch (absolute, normalized, under the
+    template prefix, distinct) -- a conservative superset is allowed, and
+    the commit's descriptors must be a subset of it. `class_bytes` are
+    per-class CEILINGS for the batch's temporary lifetime: the headroom
+    charges them while the prewrite lives, and the commit's actual bytes
+    must land at or under each bound (exact sizes remain the special case
+    of an exact ceiling). Abort requires every PLANNED path absent.
+    Uncommitted does NOT mean unwritten: files without a batch never enter
+    staged accounting.
     Checks the bound admission record (binding metadata, never funding) +
     durable headroom for the planned class bytes, and files an immutable
     prewrite record the later commit must present. Physical funding happens
@@ -1640,10 +1736,15 @@ def commit_batch(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
         if prewrite is None:
             return {"ok": False, "refusal": "prewrite-reservation-missing"}
+        # Ceiling reconciliation (conservative prewrite -> actual): same
+        # binding fields; actual paths subset of the planned superset;
+        # actual per-class bytes at or under the admitted ceiling. The
+        # prewrite is consumed here either way, and the class maxima were
+        # charged against the (larger) ceiling while it lived.
         if (prewrite.get("tier") != tier
-                or dict(prewrite.get("class_bytes", {})) != class_bytes
-                or sorted(str(d["path"]) for d in sealed)
-                != sorted(prewrite.get("paths", []))
+                or not _actual_within_ceiling(prewrite, sealed)
+                or not set(str(d["path"]) for d in sealed)
+                <= set(prewrite.get("paths", []))
                 or prewrite.get("owner_action_key")
                 != checked_instance["owner_action_key"]
                 or dict(prewrite.get("owner_attempt", {})) != dict(
@@ -3214,6 +3315,7 @@ __all__ = [
     "require_prewrite",
     "commit_batch",
     "publish_prepaid_batch",
+    "refill_window",
     "build_stage_manifest",
     "retire_batch",
     "reclaim_origin",
