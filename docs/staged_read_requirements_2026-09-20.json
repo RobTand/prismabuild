@@ -344,7 +344,7 @@
    },
    "id": "RNG-02",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "src/prismabuild/reader_lease.py material sidecars (reader_material.v1, per-publish uuid generation, portable ino/size/mtime/ctime identity, never st_dev); acquire/open_pinned enforce generation+identity with ABA refusal; fragment schema v1 unchanged",
     "state": "partial"
    },
@@ -352,7 +352,7 @@
    "target_enforcement": "ABA-negative plus prefetch/mmap lifetime tests",
    "text": "Staged-object identity (tier, epoch, name, length, materialization generation, content identity); same epoch/path/length MUST NOT ABA-rebind new bytes. Lease pins the physical object; acquisition/open validates bound identity and pins lifetime including async prefetch/mmap with no stat/open race.",
    "validation": {
-    "detail": "partial: 11 pin-lifetime tests green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); red-first record /home/rob/tmp/pb-reader-lease-red2-20260920.json (6 failed pre-wire: egress deleted under live pin). PQ reader adoption + campaign proof outstanding",
+    "detail": "partial: 11 pin-lifetime tests green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); red-first record /home/rob/tmp/pb-reader-lease-red2-20260920.json (6 failed pre-wire: egress deleted under live pin). PQ reader adoption + campaign proof outstanding",
     "state": "partial"
    },
    "workload_proof": {
@@ -452,7 +452,7 @@
    },
    "id": "SM-02",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
     "state": "partial"
    },
@@ -460,7 +460,7 @@
    "target_enforcement": "retiring-mark, delete-only absent, epoch revalidation paths",
    "text": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
    "validation": {
-    "detail": "partial: retiring/deferral/adopt paths green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); deletion-failure retention + orphan pressure paths covered by wide net (6d27af6a8afc,f0b125f1dcd5,d26e281f9cf0,3fcc5ae382bf,44ef9fd84fc2,1fa8ec1233a1)",
+    "detail": "partial: retiring/deferral/adopt paths green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); deletion-failure retention + orphan pressure paths covered by wide net (6d27af6a8afc,f0b125f1dcd5,d26e281f9cf0,3fcc5ae382bf,44ef9fd84fc2,1fa8ec1233a1)",
     "state": "partial"
    },
    "workload_proof": {
@@ -480,7 +480,7 @@
    },
    "id": "SM-03",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "src/prismabuild/reader_lease.py acquire (covers+expected, claimed-first snapshot order under ownership lock, typed refusals, file_pin=False proof mode) / open_pinned (descriptor fence + ID-07) / release (exact ref) / register_inherited_ref; no lease-intent files; bounded wait lives in claim path, not acquire",
     "state": "partial"
    },
@@ -488,7 +488,7 @@
    "target_enforcement": "lease issue/hold/release paths (new) mapped onto pins/fragments",
    "text": "Reader lease acquisition/use/release; abstract mapping onto pins/fragments where present, gaps named.",
    "validation": {
-    "detail": "partial: acquire/use/release incl. retiring/ABA/fork/containment green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); claim-path bounded-wait policy unchanged",
+    "detail": "partial: acquire/use/release incl. retiring/ABA/fork/containment green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); claim-path bounded-wait policy unchanged",
     "state": "partial"
    },
    "workload_proof": {
@@ -664,7 +664,7 @@
    },
    "id": "INV-07",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard",
     "state": "partial"
    },
@@ -672,7 +672,7 @@
    "target_enforcement": "separate egress-ownership lane acceptance",
    "text": "Serialize copy/publish/lease/release; last reader incl. pending handoff blocks eviction; retiring charge ordering per SM-02 (delete-only absent, logical owner release distinct from physical state).",
    "validation": {
-    "detail": "partial: simultaneous-egress exactly-once, last-reader deferral, promotion-handoff skip green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); contended-adopt decline path unchanged",
+    "detail": "partial: simultaneous-egress exactly-once, last-reader deferral, promotion-handoff skip green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); contended-adopt decline path unchanged",
     "state": "partial"
    },
    "workload_proof": {
@@ -937,7 +937,7 @@
    },
    "id": "PRG-01",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "src/prismabuild/reader_lease.py release drops exactly its ref, never consults progress; tools/fleet/stage_release.py eviction consults pin state (live_for) behind every delete decision",
     "state": "partial"
    },
@@ -945,7 +945,7 @@
    "target_enforcement": "lease-state query backing eviction decisions (new)",
    "text": "Releasable safe frontier established separately from durable compute progress.",
    "validation": {
-    "detail": "partial: releasable frontier distinct from progress proven by deferral-until-last-release tests, green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964)",
+    "detail": "partial: releasable frontier distinct from progress proven by deferral-until-last-release tests, green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed))",
     "state": "partial"
    },
    "workload_proof": {
@@ -1232,7 +1232,7 @@
    },
    "id": "SAFE-01",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "tools/fleet/stage_release.py delete blocked by ANY current ref (pins join the ownership snapshot under one lock); tools/fleet/ram_promote.py cover proof + digest-verified copy; malformed pins/marks taint fail-closed",
     "state": "partial"
    },
@@ -1240,7 +1240,7 @@
    "target_enforcement": "live-lease eviction coverage across prefetch/two-consumer/epoch",
    "text": "No eviction of a live lease.",
    "validation": {
-    "detail": "partial: no live-ref eviction across async/fork/dual-consumer/epoch/promotion cases, green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964)",
+    "detail": "partial: no live-ref eviction across async/fork/dual-consumer/epoch/promotion cases, green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed))",
     "state": "partial"
    },
    "workload_proof": {
@@ -1336,7 +1336,7 @@
    },
    "id": "ACC-02",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
     "state": "partial"
    },
@@ -1344,7 +1344,7 @@
    "target_enforcement": "new: PB lifecycle/race suite incl. staged-lease races",
    "text": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
    "validation": {
-    "detail": "partial: 11/11 new tests green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); red-first 6 failed pre-wire; legacy suites regression-green (6d27af6a8afc,f0b125f1dcd5,d26e281f9cf0,3fcc5ae382bf,44ef9fd84fc2,1fa8ec1233a1)",
+    "detail": "partial: 11/11 new tests green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); red-first 6 failed pre-wire; legacy suites regression-green (6d27af6a8afc,f0b125f1dcd5,d26e281f9cf0,3fcc5ae382bf,44ef9fd84fc2,1fa8ec1233a1)",
     "state": "partial"
    },
    "workload_proof": {
@@ -1390,7 +1390,7 @@
    },
    "id": "ACC-04",
    "implementation": {
-    "commit": "PB:0607db1f45",
+    "commit": "PB:5794c45d8e",
     "path": "tests/test_reader_lease_lifetime.py: fork inheritance (parent release cannot unpin child), certified containment (terminal+attestation, superseded-attempt refusal), ABA republish re-verify, retry-token idempotency",
     "state": "partial"
    },
@@ -1398,7 +1398,7 @@
    "target_enforcement": "new: lease-crash restart/retry suite",
    "text": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
    "validation": {
-    "detail": "partial: lease-crash cases green at -10 with CAS (shards f9ac155ea771,604390d64380,6c7d27a0180b,e7f66d735964); broker attestation writer is the membership lane's to call",
+    "detail": "partial: lease-crash cases green at -10 with CAS (shards 658595a1c71b,2fbb8f8e48c3,c84e10d4c985,ce87c2983a8e (R3: locked mutations, live-ref open, SDK; 123 passed)); broker attestation writer is the membership lane's to call",
     "state": "partial"
    },
    "workload_proof": {
