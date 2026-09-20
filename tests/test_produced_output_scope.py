@@ -356,19 +356,24 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     # HDD origin preserved through staged-copy eviction.
     assert (origin / "boundary-1.pt").is_file()
     assert (origin / "checkpoint-0.pt").is_file()
+    # With window 1 still unretired, the batches retain sorts before owner.
+    early = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
+    assert early["ok"] is False
+    assert early["refusal"] == "active-batches-retain"
 
     # Safe release retains while the owner is still active (no terminal yet).
-    held = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
-    assert held["ok"] is False
-    assert held["refusal"] == "owner-active-retain"
-    # Retire window 1, finish the owner, release leftovers (none: egress
-    # already released each mover exactly once — receipts + empty ledger
-    # below are the proof; safe_release stays idempotent).
+    # (Both batches are retired here, so the refusal names the owner rather
+    # than the batches — the two retains are ordered deterministically.)
     ret1 = po.retire_batch(queue, batch1, stage_root=str(stage),
                            residency_root=str(out_base))
     assert ret1["ok"] is True
     assert ret1["receipt"]["tokens_released"] == 1
     po.mark_batch_retired(queue.root, instance, "batch-0001")
+    held = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
+    assert held["ok"] is False
+    assert held["refusal"] == "owner-active-retain"
+    # Finish the owner; leftover reclaim is idempotent (egress already
+    # released each mover exactly once — receipts + empty ledger are proof).
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
     first = po.safe_release_instance(queue, instance, _TEMPLATE_CACHE)
