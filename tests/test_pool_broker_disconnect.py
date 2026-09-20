@@ -158,8 +158,8 @@ def make_failed_attempt(tmp_path, monkeypatch, *, publish_receipt=True,
         return value
 
     original_wrap = resource_scope.ResourceScope.wrap_argv
-    def wrap(scope, argv):
-        wrapped = original_wrap(scope, argv)
+    def wrap(scope, argv, *args, **kwargs):
+        wrapped = original_wrap(scope, argv, *args, **kwargs)
         wrapped[wrapped.index("--socket") + 1] = str(socket_path)
         return wrapped
 

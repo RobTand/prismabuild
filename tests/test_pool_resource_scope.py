@@ -292,9 +292,9 @@ def test_broker_wrapper_encloses_taskset_affinity(scoped, monkeypatch):
     item['cpu_allocation'] = queue.ledger().cpu_allocation(item['action_key'], tiers)
     seen = []
     original = resource_scope.ResourceScope.wrap_argv
-    def wrap(scope, argv):
+    def wrap(scope, argv, *args, **kwargs):
         seen.append(argv)
-        return original(scope, argv)
+        return original(scope, argv, *args, **kwargs)
     monkeypatch.setattr(resource_scope.ResourceScope, 'wrap_argv', wrap)
     _process(monkeypatch, queue, item, calls)
     queue.execute(item, containment=True)

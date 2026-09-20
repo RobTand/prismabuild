@@ -107,15 +107,15 @@
    },
    "id": "ID-02",
    "implementation": {
-    "commit": "PB:ca0f5555",
-    "path": "src/prismabuild/pool.py nonce/scope plumbing",
+    "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+    "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
     "state": "yes"
    },
    "owner": "PB:pool-claim",
    "text": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "unknown",
@@ -264,15 +264,15 @@
    },
    "id": "ID-08",
    "implementation": {
-    "commit": "PB:ca0f5555",
-    "path": "runtime generation link; worker attestations",
+    "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+    "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
     "state": "yes"
    },
    "owner": "PB:fleet-runtime",
    "text": "Behavior attributed per (runtime_commit, generation_id).",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "unknown",
