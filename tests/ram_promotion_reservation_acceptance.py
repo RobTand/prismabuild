@@ -49,14 +49,34 @@ ACTION = "a" * 64
 
 
 def cgroup_memory_peak_bytes() -> int | None:
-    """This process's cgroup memory peak, from the kernel, or ``None``."""
+    """This attempt's cgroup memory peak, from the kernel, or ``None``.
+
+    The payload runs in a child cgroup of the attempt's job slice, and the
+    memory controller's files are published on the slice, not on the payload
+    child (the worker's own accounting reads the slice for the same reason).
+    Walk from the process cgroup to the nearest ancestor that publishes
+    ``memory.peak``; for an admitted action that ancestor is the one attempt
+    scope, so the number is this action's own containment peak.
+    """
 
     try:
         relative = Path("/proc/self/cgroup").read_text().strip().split(":")[-1]
-        peak = Path("/sys/fs/cgroup") / relative.lstrip("/") / "memory.peak"
-        return int(peak.read_text().strip())
-    except (OSError, ValueError):
+    except OSError:
         return None
+    root = Path("/sys/fs/cgroup")
+    path = root / relative.lstrip("/")
+    for candidate in (path, *path.parents):
+        if candidate != root and root not in candidate.parents:
+            break
+        peak = candidate / "memory.peak"
+        try:
+            if peak.is_file():
+                return int(peak.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if candidate == root:
+            break
+    return None
 
 
 def manifest_bytes(relative: str) -> bytes:
@@ -102,8 +122,24 @@ def run(scratch: Path) -> dict[str, object]:
     source.parent.mkdir(parents=True, exist_ok=True)
     before = cgroup_memory_peak_bytes()
     try:
+        # Stream the source in bounded buffers: allocating the whole range as
+        # one ``bytes`` object would charge the *generator* the range and
+        # make the arm pass or die for a reason that is not the promotion.
+        block = b"\x00" * (8 * 1024 * 1024)
         with open(source, "wb") as sink:
-            sink.write(b"\x00" * RANGE_BYTES)
+            remaining = RANGE_BYTES
+            while remaining > 0:
+                step = min(len(block), remaining)
+                sink.write(block[:step])
+                remaining -= step
+        # Durable mid-phase checkpoint: if containment kills the promotion,
+        # this file says the source phase's peak, so the OOM is attributable
+        # to the promotion's destination rather than to building the source.
+        after_source = cgroup_memory_peak_bytes()
+        (scratch / "source_phase.json").write_text(json.dumps({
+            "source_bytes": RANGE_BYTES,
+            "cgroup_peak_after_source_bytes": after_source,
+        }) + "\n")
         started = time.time()
         receipt = ram_promote.promote(args)
         elapsed = max(1e-9, time.time() - started)
@@ -129,6 +165,7 @@ def run(scratch: Path) -> dict[str, object]:
             "mb_per_s_file_side": receipt.get("mb_per_s_file_side"),
             "epoch": receipt.get("epoch"),
             "cgroup_peak_before_bytes": before,
+            "cgroup_peak_after_source_bytes": after_source,
             "cgroup_peak_after_bytes": after,
             "checks": checks,
             "ok": all(checks.values()),
