@@ -2,10 +2,11 @@
 
 Status: TARGET CONTRACT with honest per-requirement evidence in
 `staged_read_requirements_2026-09-20.json` (schema
-`pb.staged_read_requirements.v2`). This document is normative for what it
+`pb.staged_read_requirements.v3`). This document is normative for what it
 names and silent otherwise. It claims no deployment by prose: each
 requirement records five orthogonal axes — owner, implementation, validation,
-deployment, workload proof — and any axis may read `unknown`. A requirement's
+deployment, workload proof — plus independent target facts, and any axis may
+read `unknown`. A requirement's
 target stands irrespective of current partial support. PB owns all admission,
 placement, stage movement, retries, and cleanup. PQ declares work, read sets,
 and progress, and consumes. No parallel dispatcher, cache, preload,
@@ -32,8 +33,9 @@ no new PB scheduler responsibility.
 
 ## 2. Typed identities
 
-Three orthogonal facts travel separately; no single field asserts more
-than one of them.
+The identities below are independent facts; no single field asserts more
+than one of them. "Independent" means separately recorded and separately
+checked — including the four facts ID-05 splits into.
 
 - ID-01 action: `action_key` (content hash of the sealed action). Identity
   of *intent*, never of outcome.
@@ -140,6 +142,7 @@ refused.
 | admitted → running | worker loop | leases acquired (SM-03) | payload executes | attempt `(nonce, scope_id)`; request immutable | lease refused → back to waiting with reason |
 | running → terminal-success | worker loop | exit 0 AND PB publication succeeds (terminal record filed plus CAS receipt for PB's own records) | record in `done/`, status `executed` | terminal record + CAS receipt | nonzero exit, timeout, or worker-observed refusal → failed. Exit 0 with ingestion failure → `result-ingestion-failed`, a failure distinct from execution failure; bytes unpublished. Payload-identity verification (ID-04/ID-06) is the application consumer's check on its own inputs, not something the worker performs on arbitrary payloads and not something terminal success attests |
 | running → terminal-failed | worker loop / reaper | nonzero exit, timeout, or identity refusal; attempt identity + terminal reason preserved | record in `done/` failed or `failed/` | terminal record + log tail | — |
+| terminal-failed → waiting (retry) | authorized PB lifecycle only | remaining attempt budget authorizes it; identical request, new attempt, old attempt contained | row re-enters contention as a new attempt | new attempt record linked to the terminal one | no automatic retry of `unsupported-workset` or policy refusals; retry-before-terminal forbidden |
 | waiting/admitted/running → withdrawn | authorized PB lifecycle only (plan revision, duplicate, supersede policy) | running attempts reach containment, then a durable terminal record for the attempt, before any resource release or retry | row leaves contention without verdict | `withdrawn/superseded/` drop plus the attempt's terminal record | a drop is never read as a verdict; release-or-retry-before-terminal is forbidden |
 
 ### SM-02 materialization (per staged range)
@@ -150,7 +153,10 @@ refused.
 | copying → published | mover | tokens reserved for range ceiling; source readable; length == range length; integrity computed during the necessary copy | atomic rename into place; map names it under epoch with the recorded actual digest plus source change-detection evidence | `movers/` receipt via `record_move` + map fragment | expected digest null → the actual digest is recorded, never claimed as "matches known expected". Mismatch against a present expectation → delete temp, range unpublished. Dev certification unchanged (DEV-04) |
 | published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
 | retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
+| copying → absent (failed copy) | mover / reaper | temp and any published orphans safely reclaimed; charge retained until then | range unstaged, tokens released exactly once | reclaim record + single release | charge released before reclaim forbidden; orphan bytes left addressable forbidden |
 | published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
+| readiness-invalid → published | tier loop / reader | revalidation under the new epoch plus new lease binding | readiness restored under the new epoch only | revalidation record + new lease | old-epoch lease reused → refused |
+| readiness-invalid → retiring | tier loop / egress, under ownership guard | range superseded under the new epoch | closed to new leases with charges held per SM-02 retiring | retiring mark + retained charge | — |
 
 Ownership transfer is not a transition to absent: a transfer keeps the
 physical object published for the remaining owners under the same epoch
@@ -162,6 +168,13 @@ gone.
 
 Crash reaper: proves owned child processes and readers stopped (not merely
 a stale timestamp) before releasing tokens or pins.
+
+Reason labels in these tables (`residency_lead_not_resident`,
+`unsupported-workset`, `result-ingestion-failed`, …) are logical target
+labels. A label governs only where it is mapped to an existing wire enum
+or denial string; unmapped labels define the spec, they do not fabricate
+current status strings. No new runtime implementation is implied by any
+row above.
 
 ### SM-03 reader lease (abstract; maps to pins/fragments where present)
 

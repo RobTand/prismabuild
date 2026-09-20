@@ -55,6 +55,11 @@ steps read `{"status": "not-this-step"}`. `unknown` is legitimate for
 `role_convergence` and `open_unknowns` entries — never for hiding a
 required check.
 
+A documentation review record (schema/ID/enum coherence of a docs-only
+merge, as in the worked example) is an allowed acceptance record: it
+proves documentation coherence and nothing runtime. It must state that
+scope explicitly and never borrow runtime proof.
+
 ## Worked example: documentation-contract merge step (this lane)
 
 Documentation coherence only. It proves no invariant, no SAFE-03, and no
