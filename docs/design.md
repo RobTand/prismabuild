@@ -2472,10 +2472,12 @@ daemon:
 * **`--ensure` ensures the declared role, not a process's existence.** A
   running role whose argv differs from the current `fleet_boxes.json`
   declaration, or whose executable resolves outside the active generation,
-  is stopped when idle and respawned from the active generation on the same
-  tick. The idle rule is every restart path's: SIGTERM only, never a role
-  mid-cycle, so a stale role finishes the service cycle it is inside and
-  cycles on a later tick.
+  is stopped when idle and respawned from the active generation once the
+  census reports it gone (since #709; a SIGTERM request is not an exit, and
+  an old generation's role holds no singleton lock that could keep the
+  replacement from serving beside it). The idle rule is every restart path's:
+  SIGTERM only, never a role mid-cycle, so a stale role finishes the service
+  cycle it is inside and cycles on a later tick.
 * **Every refusal is stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
   `worker_loop.py` (the module the roles already import as `runtime_gate`
@@ -2493,6 +2495,64 @@ daemon:
   finishes under the generation that claimed it, and a worker that refuses
   leaves the ready record for a successor to claim. Nothing interrupts
   work in flight, so the handshake cannot fight a converge.
+
+### The role singleton and stopped-role health (2026-09-19, #709)
+
+The handshake above makes a running role *fresh*; it does not make it
+*single*.  On the same night a duplicate supervisor ran beside the primary on
+the storage box, and each was free to start its own ``prewarm_loop`` and
+``tier_loop`` against one queue: two readers of one ready list, double-published
+movers and contradictory fill measurements compounding the fill-capacity wedge.
+The supervisor's own host-wide claim already refuses a second supervisor, but
+the claim is the launcher's, not the role's: role entrypoints previously had
+no per-role lock, so a direct invocation, a legacy loop or a stale
+generation's supervisor could serve a second role beside the current one.
+The guard exists because a role cannot depend on its launcher being single.
+
+* **A service role owns a host-local singleton lock.**  ``worker_loop``'s
+  ``take_role_singleton`` takes a nonblocking ``flock`` on
+  ``/tmp/prismabuild-roles-<uid>/<script-stem>.lock``: a private per-uid
+  directory under the admission lock's discipline, the script name rather
+  than a generation so a republished role and a stale one contend on the
+  same inode, and the file is never unlinked.  The exclusion lives on the
+  open file description and is released by its final close on every exit
+  from the serving block -- a service rotation, a one-shot return, an
+  exception -- never by an unlock or an unlink, so a lock taken by a
+  one-shot invocation cannot leak into a hosting interpreter.  A loser exits
+  ``3``; the holder pid is a diagnostic from the admission lock's own
+  ``/proc/locks`` rule, read only when a refusal needs decorating, and an
+  unreadable holder is "unknown", never "nobody", and never changes the
+  refusal.  The one-cycle operator form is not exempt: a ``--once``
+  invocation can mint, announce, warm and publish against the real queue, so
+  it takes the same lock and the same refusal.  An operator cycle beside a
+  running role needs the role stopped first (or another box); the per-tier
+  mint lock still serializes the one-shot runs that do start.
+* **The supervisor probes the lock before spawning.**  A live role the
+  ownership census cannot prove -- a duplicate supervisor's child, a
+  hand-started loop, a stale generation's -- can still hold the lock.  The
+  probe reports the holder in the supervisor's own log and starts nothing
+  that would only refuse; the child proves the same lock again at startup.
+  Anything unproven remains unsignalled, exactly as before.
+* **A SIGTERM request is not an exit.**  A signalled stale role stays
+  counted as live until the ownership census reports it gone -- whether it is
+  stopped with the TERM queued behind ``T``/``t`` or still finishing a cycle,
+  and whether or not it is new enough to hold the singleton lock at all (an
+  old generation's role holds none).  The replacement starts on the next
+  tick, after the predecessor exits: at most one interval later, and never
+  as a second reader beside it.  The health line names a stopped one and an
+  operator's stop is not raced.
+* **A stopped role is named.**  A SIGSTOPped loop answers ``pgrep`` and
+  appears present in every census, exactly as a quiet one does, so the
+  supervisor reports ``/proc/<pid>/stat``'s scheduler state on each
+  transition: ``role storage pid N state T (stopped)`` in its log, and the
+  shut down pending line names the state holding a stop open.  A state that
+  cannot be read is "unreadable", never "stopped"; ``Z`` is a zombie, dead
+  and awaiting reap, not an alarm.  The guard never sends ``SIGCONT`` and
+  never starts a replacement before the predecessor actually exits; the
+  existing stale-role rotation may still queue its ``SIGTERM``, which the
+  kernel holds while the role is stopped.  Resuming is the operator's to
+  undo (``kill -CONT``), and the stopped holder keeps the singleton lock
+  while it is diagnosed.
 
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
@@ -3197,9 +3257,12 @@ its capacity is the pool's own arithmetic. No tier quantity is a constant.
 
 Minting is serialized per tier (#593): `PoolQueue.mint_tier_capacity` holds
 the tier's mint lock across `ensure_capacity` and `retire_free_capacity`, so
-an operator `tier_loop --once` beside the supervised role waits rather than
-interleaving a second mint with the first. One tier's lock never blocks
-another's.
+two one-shot minters that do start (for example during an operator's
+maintenance window with no role running) wait rather than interleave a
+second mint with the first. One tier's lock never blocks another's. Since
+#709 a `tier_loop --once` beside the supervised role does not even get that
+far: the role's own host-local singleton refuses the second minter at
+startup (exit 3), so stop the role first or run the cycle on another box.
 
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side

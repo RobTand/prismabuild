@@ -204,14 +204,18 @@ def test_the_storage_role_declares_the_paced_shape() -> None:
     """``fleet_boxes.json`` is what actually runs on dl380g10.
 
     A default fixed only in the parser is a default the live box never sees,
-    because the role passes its arguments explicitly.
+    because the role passes its arguments explicitly.  The pin names the
+    shape #703 published -- readers 4, lookahead 2, max-readers 8 -- not the
+    first deployment's readers 1 (#499), which this assertion kept expecting
+    after the configuration had moved.
     """
 
     boxes = json.loads((REPO / "tools/fleet/fleet_boxes.json").read_text())
     role = boxes["boxes"]["dl380g10"]["roles"]["storage"]
 
-    assert role[role.index("--readers") + 1] == "1"
-    assert role[role.index("--lookahead") + 1] == "1"
+    assert role[role.index("--readers") + 1] == "4"
+    assert role[role.index("--lookahead") + 1] == "2"
+    assert role[role.index("--max-readers") + 1] == "8"
     assert role[role.index("--pace-pool") + 1] == "storage_pool"
     why = boxes["boxes"]["dl380g10"]["_roles_why"]
     assert "#499" in why and "c_max" in why, (

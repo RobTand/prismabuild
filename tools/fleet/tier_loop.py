@@ -2330,7 +2330,14 @@ def cycle(
     return announced
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
+    """The role's own parser, built before anything takes the singleton.
+
+    Help and argument refusal must not depend on the lock: ``--help`` beside
+    a running role has to print usage, and an unparseable invocation is not a
+    second minter.
+    """
+
     parser = argparse.ArgumentParser(
         description="mint and announce this box's storage tiers from what the box says",
     )
@@ -2345,9 +2352,10 @@ def main(argv: list[str] | None = None) -> int:
                              "re-read each cycle")
     parser.add_argument("--once", action="store_true",
                         help="run one cycle, print the records as JSON and exit")
-    args = parser.parse_args(argv)
-    if args.interval_s <= 0:
-        raise SystemExit("--interval-s must be positive")
+    return parser
+
+
+def _serve(args) -> int:
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.ensure_layout()
     host = socket.gethostname()
@@ -2395,6 +2403,43 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(records, indent=1, default=str))
             return 0
         time.sleep(max(0.0, args.interval_s - (time.monotonic() - started)))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Mint the tiers, single-instance on this box.
+
+    Every valid invocation takes the role's host-local singleton lock around
+    the whole cycle, one-shot included: a ``--once`` mints and announces
+    against the real queue just as the service does, so exempting it would be
+    the bypass the guard exists to close (#709).  Two minters against one
+    tier are outside what the per-tier mint lock was analysed for, and on
+    2026-09-19 a duplicate supervisor's copy raced the primary's.  The lock
+    is taken by the process that serves, so the launcher cannot matter, and
+    the winner holds until the block's final close (never an unlink or an
+    explicit unlock).
+
+    Safety never depends on naming the holder: the holder pid is a
+    /proc/locks diagnostic the ``RoleLockHeld`` message may carry, read only
+    when the flock is refused, and an unreadable holder is still a refusal.
+    """
+
+    args = _parser().parse_args(argv)
+    if args.interval_s <= 0:
+        raise SystemExit("--interval-s must be positive")
+    try:
+        with runtime_gate.role_singleton(Path(__file__)):
+            return _serve(args)
+    except runtime_gate.RoleLockHeld as held:
+        print(f"tier_loop: refusing a second tiers role; "
+              f"{runtime_gate.role_lock_path(Path(__file__))} is held by "
+              + (f"pid {held.holder}" if held.holder is not None
+                 else "an unreadable holder"),
+              file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+    except runtime_gate.RoleLockUnavailable as exc:
+        print(f"tier_loop: refusing to serve without the tiers role "
+              f"singleton lock: {exc}", file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
 
 
 if __name__ == "__main__":

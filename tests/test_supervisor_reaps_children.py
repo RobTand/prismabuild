@@ -62,6 +62,9 @@ def test_tick_reaps_children_from_previous_process_image(tmp_path, exit_before_e
         supervise.CLAIM = Path({str(tmp_path / 'claim')!r})
         supervise.SYSTEMD_UNIT = Path({str(tmp_path / 'absent.service')!r})
         supervise.ensure_roles = lambda *a, **k: []
+        # The role pass and its health census are outside this tick's subject;
+        # with none declared the harness stays off the live process table.
+        supervise.declared_roles = lambda *a, **k: []
         supervise.declared_shape = lambda *a, **k: (0, [])
         supervise._loaded_published_generation = lambda: None
         supervise._next_log_index = lambda: 0
