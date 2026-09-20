@@ -1955,6 +1955,51 @@ class ResourceLedger:
                 retired[kind] = retired.get(kind, 0) + 1
         return retired
 
+    def retire_held(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
+        """Destroy up to ``counts`` HELD tokens of one holder, permanently.
+
+        The shared-egress decharge (#733): a mover whose bytes stay on the
+        stage under a co-owner must not hand its tokens back as writable
+        free capacity, and it must not keep them either -- keeping them
+        leaks the tier, freeing them mints a phantom.  Destroying them drops
+        the holder and the total together, so free never moves.
+
+        Crash ordering mirrors ``retire_free_capacity``'s recoverable
+        direction: the mint marker goes FIRST, then the token.  Marker-first
+        leaves a token with no marker, which the next ``ensure_capacity``
+        adoption re-marks -- the decharge simply did not happen and the
+        caller's retry redoes it.  Token-first would leave a marker with no
+        token, which ``ensure_capacity`` skips forever: silently and
+        permanently lost capacity.  Missing tokens (an earlier decharge, a
+        raced release) count as already gone, so this is safe to call twice;
+        only actual destructions are returned.
+        """
+
+        destroyed: dict[str, int] = {}
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return destroyed
+        for kind, count in sorted(counts.items()):
+            want = int(count)
+            if want <= 0:
+                continue
+            taken = 0
+            for token in sorted(_glob(holder, f"{kind}-*"), reverse=True):
+                if taken >= want:
+                    break
+                if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                    continue
+                # Recoverable direction: marker first, token second.
+                (self.minted_dir / token.name).unlink(missing_ok=True)
+                try:
+                    token.unlink()
+                except OSError:
+                    continue
+                taken += 1
+            if taken:
+                destroyed[kind] = taken
+        return destroyed
+
     def capacity(self) -> dict[str, int]:
         """Total tokens of each kind, free or held."""
 
@@ -4540,11 +4585,74 @@ class PoolQueue:
             wanted = {str(kind): int(count) for kind, count in tokens.items()}
             if any(count < 0 for count in wanted.values()):
                 raise PoolContractError("tier capacity must not be negative")
-            ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
-            total = ledger.capacity()
-            lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
-            retired = ledger.retire_free_capacity(lower) if lower else {}
-            return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+            return self._apply_tier_capacity(tier_id, ledger, wanted)
+
+    def _apply_tier_capacity(
+        self, tier_id: str, ledger: ResourceLedger, wanted: dict[str, int],
+    ) -> dict[str, object]:
+        """Grow then shrink one tier ledger to ``wanted``, sans lock.
+
+        The body of :meth:`mint_tier_capacity` once inside the tier mint
+        lock.  Factored so a caller that must snapshot the wanted number
+        under the SAME lock (the tier loop's landed count, which an egress
+        decharge may change between a read and a mint) can do so without a
+        second minter interleaving; see :meth:`mint_tier_capacity_guarded`.
+        Never call without holding :meth:`tier_mint_lock` for the tier.
+        """
+
+        ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
+        total = ledger.capacity()
+        lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
+        retired = ledger.retire_free_capacity(lower) if lower else {}
+        return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+
+    def mint_tier_capacity_guarded(self, tier_id: str, wanted_fn) -> dict[str, object]:
+        """Mint one tier's capacity to a number snapshotted under the lock.
+
+        ``wanted_fn(ledger)`` is called holding the tier mint lock and must
+        return the wanted ``{kind: count}`` mapping; the ensure+retire then
+        applies before the lock is released.  This closes the read-then-mint
+        race a shared-egress decharge would otherwise lose to: a landed
+        count read before the egress and minted after it would reintroduce
+        the very credits the egress just decharged.  Callers that need no
+        snapshot use :meth:`mint_tier_capacity`.
+        """
+
+        with self.tier_mint_lock(tier_id):
+            ledger = self.tier_ledger(tier_id)
+            wanted = wanted_fn(ledger)
+            wanted = {str(kind): int(count) for kind, count in dict(wanted).items()}
+            if any(count < 0 for count in wanted.values()):
+                raise PoolContractError("tier capacity must not be negative")
+            return self._apply_tier_capacity(tier_id, ledger, wanted)
+
+    def release_tier_holder_for_egress(
+        self, tier_id: str, action_key: str, *,
+        destroy: Mapping[str, int],
+    ) -> dict[str, object]:
+        """Settle one egressing mover's tier hold: decharge, then release.
+
+        ``destroy`` names per-kind token counts whose bytes stay on the
+        stage under a co-owner (the shared-egress duplicate): they are
+        destroyed first via :meth:`ResourceLedger.retire_held`, and only
+        then is the holder's remainder returned to free with
+        :meth:`ResourceLedger.release`.  Destroy-before-release is what
+        makes an interrupted settle retry-safe: the retry recomputes both
+        counts from the fragment's stable byte buckets capped at the still-
+        held remainder, so a crash after the destroy frees exactly the freed
+        bytes' worth, and a crash before it leaves everything held.
+
+        No lock is taken here: the caller (the egress, under the mover
+        transition lock, the stage ownership lock and the tier mint lock as
+        its leaf) already excludes concurrent ownership decisions and
+        stale-snapshot mints.  Returns ``{"destroyed": {...},
+        "released": <int>}``; both count actual token files.
+        """
+
+        ledger = self.tier_ledger(tier_id)
+        destroyed = ledger.retire_held(action_key, destroy)
+        released = ledger.release(action_key)
+        return {"destroyed": destroyed, "released": released}
 
     def tier_record_path(self, tier_id: str) -> Path:
         return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"

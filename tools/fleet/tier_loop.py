@@ -450,7 +450,8 @@ def release_incomplete_ram_promotions(
                     "bytes_staged": receipt.get("bytes_staged"),
                     "receipt_errors": list(receipt_errors),
                     "entries_deleted": outcome.get("entries_deleted"),
-                    "tokens_released": outcome.get("tokens_released")}
+                    "tokens_released": outcome.get("tokens_released"),
+                    "tokens_decharged": outcome.get("tokens_decharged")}
             if outcome.get("complete") is True and not evict_errors:
                 events.append({"event": "ram-mover-incomplete-released",
                                **base})
@@ -1948,6 +1949,39 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
+def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
+                      writable_tokens: int,
+                      cap: int | None = None) -> dict[str, object]:
+    """Mint one tier's supply as writable-plus-landed, atomically (#733).
+
+    The supply is what the dataset may still hold plus what has *landed*;
+    ``landed_and_in_flight`` draws the line (#621/#623).  The landed
+    snapshot and the ensure+retire apply under the SAME tier mint lock
+    (via :meth:`PoolQueue.mint_tier_capacity_guarded`): a shared-egress
+    decharge landing between a read and a mint would otherwise reintroduce
+    the very credits the egress just destroyed.  ``cap`` bounds the supply
+    (the ram policy window); without it the supply is exactly
+    ``writable + landed``.  Returns ``{"landed", "in_flight", "supply",
+    "ledger"}``; the caller stamps its own record fields.
+    """
+
+    seen: dict[str, int] = {}
+
+    def wanted(ledger) -> dict[str, int]:
+        landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
+        supply = int(writable_tokens) + landed
+        if cap is not None:
+            supply = min(supply, int(cap))
+        seen["landed"] = landed
+        seen["in_flight"] = in_flight
+        seen["supply"] = supply
+        return {kind: supply}
+
+    result = queue.mint_tier_capacity_guarded(tier_id, wanted)
+    return {"landed": seen["landed"], "in_flight": seen["in_flight"],
+            "supply": seen["supply"], "ledger": result}
+
+
 def _same_host_chunk(
         tiers: Mapping[str, Mapping[str, object]], host: str) -> int | None:
     """The effective promotion chunk the ram tier on this host announces.
@@ -2041,13 +2075,15 @@ def cycle(
             # counted a claimed mover's unlanded bytes as free and admitted ten
             # windows against one (#623).  The supply is what is writable plus
             # what has *landed*; ``landed_and_in_flight`` draws the line.
-            landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
+            minted = mint_stage_supply(
+                queue, tier_id=tier_id, kind=kind,
+                writable_tokens=tokens[kind])
             record["writable_gib"] = tokens[kind]
-            record["held_gib"] = landed + in_flight
-            record["landed_gib"] = landed
-            record["in_flight_gib"] = in_flight
+            record["held_gib"] = minted["landed"] + minted["in_flight"]
+            record["landed_gib"] = minted["landed"]
+            record["in_flight_gib"] = minted["in_flight"]
             record["capacity_basis"] = "zfs available + landed"
-            tokens[kind] = tokens[kind] + landed
+            tokens[kind] = minted["supply"]
         if record.get("tier") == "stage":
             # The second cache layer's precondition, announced with the tier
             # and refused out loud (#638).  A stage dataset whose
@@ -2091,14 +2127,16 @@ def cycle(
             window = record.get("window_gib")
             if (kind in tokens and isinstance(window, int)
                     and not isinstance(window, bool) and window > 0):
-                landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
+                minted = mint_stage_supply(
+                    queue, tier_id=tier_id, kind=kind,
+                    writable_tokens=tokens[kind], cap=window)
                 record["writable_gib"] = tokens[kind]
-                record["held_gib"] = landed + in_flight
-                record["landed_gib"] = landed
-                record["in_flight_gib"] = in_flight
+                record["held_gib"] = minted["landed"] + minted["in_flight"]
+                record["landed_gib"] = minted["landed"]
+                record["in_flight_gib"] = minted["in_flight"]
                 record["capacity_basis"] = (
                     "statvfs f_bavail + landed, capped by the policy window")
-                tokens[kind] = min(tokens[kind] + landed, window)
+                tokens[kind] = minted["supply"]
             admission = record.get("ram_admission")
             if isinstance(admission, Mapping) and not admission.get("admissible"):
                 print(json.dumps({

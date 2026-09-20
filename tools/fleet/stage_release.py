@@ -484,7 +484,10 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
           consumer_action_key: str, stage_root: str,
           residency_root: str | Path | None = None,
           reason: str = "egress") -> dict[str, object]:
-    """Delete one mover's staged files and return its tier tokens.
+    """Delete one mover's staged files and settle its tier tokens.
+
+    Tokens for deleted bytes return; tokens for bytes staying under a
+    co-owner are decharged (#733).
 
     Idempotent in both halves: a file already gone is counted as gone rather
     than raised on, and ``ResourceLedger.release`` is documented safe to call
@@ -522,11 +525,13 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     Deleting on one owner's egress while another owner's fragment still
     vouches for the file leaves a hole behind a live map, so a path another
     live fragment -- or a claimed copy with no fragment yet -- still names is
-    kept, its tokens still released, and its own fragment still dropped.  The
-    last owner to leave deletes the file.  The whole check-and-act runs under
+    kept, and this mover's tokens for those bytes are decharged rather than
+    freed, while its own fragment is still dropped (#733).  The last owner
+    to leave deletes the file.  The whole check-and-act runs under
     the stage root's ownership lock (taken here, inside the transition lock --
     adoption takes them in the same order), so two concurrent egresses order
-    instead of both concluding "unshared".
+    instead of both concluding "unshared", and the tier mint lock is taken
+    last, as a leaf, around the settle alone.
     """
 
     refusal = stage_root_refusal(queue, stage_root)
@@ -581,7 +586,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     """Unlink what is exclusively this mover's, under the ownership lock."""
 
     deleted = missing = shared = 0
-    bytes_deleted = 0
+    bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
@@ -642,11 +647,13 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 f"{consumer[:12]}/{mover[:12]}" for consumer, mover in co_owners)
             if _relative_under(stage, resolved) in claimed:
                 shared_with.append("in-flight-copy")
+            bytes_shared += int(entry["bytes"])
             continue
         try:
             os.unlink(path)
         except FileNotFoundError:
             missing += 1
+            bytes_gone += int(entry["bytes"])
             continue
         except OSError as exc:
             errors.append(f"{key}: {exc}")
@@ -655,7 +662,46 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         bytes_deleted += int(entry["bytes"])
         _prune_empty(path.parent, stage)
 
-    released = 0 if errors else queue.release_tier_reservations(mover_action_key)
+    released = decharged = 0
+    if errors:
+        pass
+    elif tier_id is None:
+        # No fragment at all: nothing is known shared, so every token comes
+        # back exactly as before -- holding them would cost the tier its
+        # capacity for good.
+        released = queue.release_tier_reservations(mover_action_key)
+    else:
+        # Tokens whose bytes left the stage (deleted here, or already gone)
+        # return to free; tokens whose bytes stay under a co-owner are
+        # DECHARGED -- destroyed, never freed -- so no steal gap opens
+        # before the next mint (#733).  Both counts derive from the
+        # fragment's stable byte buckets through the same GiB-ceil the
+        # demand was sealed with, capped at what is still held, so a retry
+        # after an interruption settles exactly once; anything unaccounted
+        # (slack between demand and ceil) returns to free, as before.
+        # Rates are not byte-backed and always return.  The mint lock is
+        # the leaf here (transition -> ownership -> mint; nothing takes it
+        # in the other order), so a stale-snapshot mint cannot slip
+        # between the decharge and the fragment drop.
+        occupancy = storage_tiers.capacity_kind_of(tier_id)
+        held = queue.tier_ledger(tier_id).holder_tokens(mover_action_key)
+        destroy: dict[str, int] = {}
+        for kind, count in held.items():
+            if kind in pool.TIER_RATE_KINDS or kind != occupancy:
+                continue
+            freed = min(count, _tokens_for_egressed_bytes(
+                bytes_deleted + bytes_gone))
+            shared_part = min(count - freed, _tokens_for_egressed_bytes(
+                bytes_shared))
+            if shared_part:
+                destroy[kind] = shared_part
+        with queue.tier_mint_lock(tier_id):
+            outcome = queue.release_tier_holder_for_egress(
+                tier_id, mover_action_key, destroy=destroy)
+        decharged = sum(outcome["destroyed"].values())
+        released = int(outcome["released"])
+        # Movers hold on one tier; sweep any other tier the old path freed.
+        released += queue.release_tier_reservations(mover_action_key)
     if not errors:
         fragment_path.unlink(missing_ok=True)
     return {
@@ -669,18 +715,36 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "entries_shared": shared,
         "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
         "bytes_deleted": bytes_deleted,
+        "bytes_shared": bytes_shared,
         "tokens_released": released,
+        "tokens_decharged": decharged,
         # Errors mean the stage still holds bytes, so the tokens stay held:
         # releasing them would let the ledger admit a mover onto capacity that
         # is not there.  The receipt says so and the next sweep retries.
-        # A shared skip is not an error: the bytes live on under another
-        # owner while this mover's own tokens come back and its own vouching
+        # A shared skip is not an error, but its tokens no longer come back
+        # either: the bytes live on under another owner, so the duplicate
+        # ownership is decharged (#733) and only this mover's own vouching
         # is dropped.
         "complete": not errors,
         "errors": errors,
         "host": socket.gethostname(),
         "unix": time.time(),
     }
+
+
+def _tokens_for_egressed_bytes(stage_bytes: int) -> int:
+    """Token count a bucket of egressed bytes settles, in whole GiB.
+
+    The same ceil the demand was sealed with
+    (:func:`storage_tiers.stage_tokens_for_bytes`): a sealed demand is
+    always at least this floor, so capping the freed share at this number
+    can only decharge more, never free more -- the safe direction.  Zero
+    bytes settle zero tokens.
+    """
+
+    if stage_bytes <= 0:
+        return 0
+    return storage_tiers.stage_tokens_for_bytes(int(stage_bytes))
 
 
 def _relative_under(stage: Path, resolved: str) -> str | None:

@@ -3714,6 +3714,18 @@ published one more window every cycle while the first was still copying: ten
 record that does not name the writable source (a fake, a legacy tier) is
 minted as it was.
 
+Two owners of one staged file counted its bytes twice on both sides of the
+ledger: each complete holder's tokens read as landed, so the mint carried
+the duplicate, and the first owner's shared egress handed its tokens back
+as writable free while the bytes stayed -- a newcomer claimed the phantom
+before the next mint (#733). A shared egress now decharges instead of
+freeing: tokens for bytes staying under a co-owner are destroyed
+(`ResourceLedger.retire_held`, marker-first so an interruption retries
+rather than leaks), tokens for bytes actually deleted return to free, and
+the landed snapshot and the mint apply under one tier mint lock, so a
+stale count cannot reintroduce the credits. The last owner to leave still
+deletes the file and frees its tokens.
+
 ### A copy has no result to replay
 
 A mover's action key is a content hash and its receipt is filed in the CAS
