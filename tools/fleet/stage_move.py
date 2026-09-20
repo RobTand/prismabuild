@@ -212,6 +212,77 @@ class _Copier:
         return destination.with_name(
             f".{destination.name}.{self.owner[:16]}.partial")
 
+    def _adopt_identical(self, destination: Path, want: int,
+                         declared: str) -> dict[str, int] | None:
+        """Adopt staged bytes already holding the declared content, if so.
+
+        Overlapping consumers stage one content-addressed name for the
+        same bytes; replacing it per copy mints a fresh inode/mtime/ctime
+        and invalidates every other consumer's published material identity
+        (and any live cover proof or pin fenced on it). When the
+        destination already holds exactly the declared bytes, adopt it:
+        return its fresh stat identity with no rename and no new bytes.
+
+        Same size with a different digest is a genuine conflict -- two
+        contents claiming one staged name -- and refuses instead of
+        invalidating whoever the bytes belong to. A missing, irregular,
+        or differently-sized destination, an unreadable one, or a file
+        replaced mid-verify takes the ordinary copy path (``None``).
+        Payload reads stay outside every lock; the pre/post lstat pair
+        bounds the verify window, and a replace inside it merely falls
+        back to copying verified-fresh bytes.
+        """
+
+        try:
+            before = os.lstat(destination)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
+        if not statmod.S_ISREG(before.st_mode):
+            return None
+        if before.st_size != want:
+            # Same staged name, different length: either another owner's
+            # bytes or ownerless garbage. Both refuse: replacing would
+            # invalidate whoever the bytes belong to, and an unnamed
+            # conflict needs an owner (egress/reconcile), not a blind
+            # overwrite. (.pbrange names embed their size, so only a
+            # whole-file name shared across contents can arrive here.)
+            raise OSError(
+                f"staged destination holds different bytes than manifest "
+                f"digest {declared[:12]}: {destination}; refusing to "
+                f"invalidate its owner")
+        fd = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            fresh = os.fstat(fd)
+        finally:
+            os.close(fd)
+        try:
+            after = os.lstat(destination)
+        except OSError:
+            return None
+        if ((after.st_ino, after.st_mtime_ns, after.st_ctime_ns,
+             after.st_size)
+                != (before.st_ino, before.st_mtime_ns, before.st_ctime_ns,
+                    before.st_size)
+                or (fresh.st_dev, fresh.st_ino)
+                != (after.st_dev, after.st_ino)):
+            return None
+        if digest.hexdigest() != declared:
+            raise OSError(
+                f"staged destination holds different bytes than manifest "
+                f"digest {declared[:12]}: {destination}; refusing to "
+                f"invalidate its owner")
+        return {"ino": after.st_ino, "size": after.st_size,
+                "mtime_ns": after.st_mtime_ns,
+                "ctime_ns": int(getattr(after, "st_ctime_ns", 0))}
+
     def _copy_one(self, entry: dict[str, object], destination: Path,
                   admission, stop: threading.Event,
                   source: Path | str | None = None,
@@ -236,6 +307,15 @@ class _Copier:
                      if source_offset is not None else entry["offset"])
         want = int(entry["bytes"])
         destination.parent.mkdir(parents=True, exist_ok=True)
+        declared = entry.get("sha256")
+        if want > 0 and isinstance(declared, str) and declared:
+            # Converge overlapping identical copies onto the published
+            # incarnation instead of replacing it per mover: the replace
+            # is what invalidates other consumers' material identity and
+            # live cover proofs on the same staged name.
+            adopted = self._adopt_identical(destination, want, declared)
+            if adopted is not None:
+                return want, declared, adopted
         temporary = self._temporary(destination)
         digest = hashlib.sha256()
         written = 0
