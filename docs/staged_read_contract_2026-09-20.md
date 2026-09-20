@@ -1,18 +1,19 @@
 # Staged-read contract: allowed tiers, leases, and readiness (target + status ledger)
 
-Status: TARGET CONTRACT with honest per-requirement status in
-`staged_read_requirements_2026-09-20.json`. This document is normative for
-what it names and silent otherwise. It claims no deployment by prose: every
-requirement carries `status` (proposed / implemented / validated / deployed /
-workload-proven) in the ledger, and prose `IMPLEMENTED`/`DEPLOYED` notes cite
-the enforcing code and test. PB owns all admission, placement, stage
-movement, retries, and cleanup. PQ declares work, read sets, and progress,
-and consumes. No parallel dispatcher, cache, preload, residency, or
-scheduler is created here; no application steering of placement. The PQ
-endgame (Stage A → quanta → equality gate → join → allocation → export →
-served) is an application acceptance boundary that consumes this contract;
-it is referenced, not re-specified, and it imposes no new PB scheduler
-responsibility.
+Status: TARGET CONTRACT with honest per-requirement evidence in
+`staged_read_requirements_2026-09-20.json` (schema
+`pb.staged_read_requirements.v2`). This document is normative for what it
+names and silent otherwise. It claims no deployment by prose: each
+requirement records five orthogonal axes — owner, implementation, validation,
+deployment, workload proof — and any axis may read `unknown`. A requirement's
+target stands irrespective of current partial support. PB owns all admission,
+placement, stage movement, retries, and cleanup. PQ declares work, read sets,
+and progress, and consumes. No parallel dispatcher, cache, preload,
+residency, or scheduler is created here; no application steering of
+placement. The PQ endgame (Stage A → quanta → equality gate → join →
+allocation → export → served) is an application acceptance boundary that
+consumes this contract; it is referenced, not re-specified, and it imposes
+no new PB scheduler responsibility.
 
 ## 1. Scope and authority
 
@@ -21,69 +22,107 @@ responsibility.
   and reads the verdicts.
 - SC-02: PB moves bytes (movers), publishes tier residency, and retires it.
   PQ names byte ranges and reports durable progress. Neither side duplicates
-  the other's job: a second mover path, cache, or placement knob is a
-  violation of this contract, not an implementation of it.
-- SC-03: This document is a target plus a status ledger. A MUST whose ledger
-  status is `proposed` is owed work, not a claim. Root merges validated
-  changes; no merged contract change completes a campaign — only the
-  application gates in §10 do.
+  the other's job: a second mover path, cache, or placement knob violates
+  this contract rather than implementing it.
+- SC-03: this document is a target plus an evidence ledger. An axis reading
+  `unknown` is owed work or an unrun check — never a claim, never a blank
+  to be filled by assertion. "Suites" or "the live loop" named without an
+  exact test path, action key, or receipt are not evidence and are not
+  cited as such below.
 
 ## 2. Typed identities
 
-- ID-01 action: `action_key` (content hash of the sealed action). Identity of
-  *intent*, never of outcome.
-- ID-02 attempt: `(action_key, nonce, scope_id)`. Retries mint new attempts;
-  results are keyed per attempt and adopted per action only through the
-  rules in INV-08.
-- ID-03 manifest wire identity: SHA-256 over the sealed file bytes
-  (gzip member included where the manifest ships gzipped). What pbrun seals
-  into the action key and what the dispatcher binds on the wire.
-- ID-04 manifest canonical identity: SHA-256 over `canonical_json` of the
-  decoded document (sorted keys, fixed separators, UTF-8, no trailing
-  whitespace beyond the single writer newline excluded from the digest
-  input). Decoded-compare goes canonical-vs-canonical via the one producer
-  seal function; raw-bytes-vs-seal comparisons are forbidden (they refuse
-  valid writer output).
-- ID-05 payload identity and trust mode: every materialized payload names
-  `{producer_digest, manifest_wire_sha256, manifest_canonical_sha256,
-  trust: staged-verified | pool-declared}`. `staged-verified` means each
-  byte was read through a held lease on a pinned range (INV-05, INV-06);
-  `pool-declared` means bytes came from the declared path and the payload
-  is ineligible for staged-only acceptance. The mode travels in the
-  payload; a consumer that requires staged input refuses
-  `pool-declared` without opening it.
-- ID-06 tier epoch: `(tier_id, epoch)` from the pool's tier record. All
-  residency statements are epoch-qualified; an epoch change invalidates
-  outstanding readiness (SM-02 `retiring`).
-- ID-07 range: half-open `[offset, end)` in manifest byte space, mapped to
-  exactly one staged object. Ranges tile without overlap; a cut through an
-  entry is refused at seal.
-- ID-08 lease: `(lease_id, holder_action_key, tier_id, epoch, range,
-  acquired_unix)`. The unit of "these bytes stay here while I read".
-- ID-09 worker/runtime generation: `(runtime_commit, generation_id)`.
+Three orthogonal facts travel separately; no single field asserts more
+than one of them.
+
+- ID-01 action: `action_key` (content hash of the sealed action). Identity
+  of *intent*, never of outcome.
+- ID-02 attempt: `(action_key, nonce, scope_id)`. Retries mint new attempts
+  with the request immutable; results are keyed per attempt and adopted per
+  action only through INV-08. Timeout and retry transitions preserve attempt
+  identity and record a terminal reason; a retry never rewrites the request.
+- ID-03 manifest wire identity: SHA-256 over the sealed file bytes (gzip
+  member included where the manifest ships gzipped). What pbrun seals into
+  the action key and what the dispatcher binds on the wire.
+- ID-04 manifest canonical identity: SHA-256 over the decoded document
+  canonicalized by exactly `cost_stage_checkpoint.canonical_json_sha256`
+  (sorted keys, fixed separators, UTF-8 encode, `NaN`/`Infinity` refused —
+  non-finite floats have no canonical form and refuse at seal; the single
+  writer newline is excluded from the digest input). Decoded-compare goes
+  canonical-vs-canonical through that one function. Raw-bytes-vs-seal
+  comparisons are forbidden. Not every manifest needs both identities: a
+  manifest consumed only as sealed wire carries ID-03; a manifest compared
+  after decode carries ID-04; a manifest doing both carries both, each
+  checked at its own boundary.
+- ID-05 provenance and certification, independent of location: `{origin:
+  pool-produced | staged-verified, certification: dev_uncertified |
+  certified, sealed_by, tree_digest?}`. A pool-produced payload CAN be
+  promoted into RAM and re-certified — promotion re-verifies manifest
+  binding, digest, and epoch, then re-issues certification; nothing is
+  barred forever for having originated on HDD. Digest integrity does not
+  certify quality; RAM residency does not prove correctness; certification
+  does not assert either — it asserts the checks actually ran.
+- ID-06 content and change-detection evidence: `{manifest_wire_sha256,
+  manifest_canonical_sha256?, range_digest?, epoch}`. Logical requirements
+  are carried by existing metadata (tier receipts, map fragments, journal
+  envelopes); any new every-payload wire field is explicitly target, not
+  implemented, and is proposed only where an existing carrier cannot hold
+  the fact.
+- ID-07 serving tier, epoch, and lease: `{tier_id, epoch, lease_id,
+  range_ref}`. The fact of *where bytes were actually served from, under
+  which epoch and lease* — recorded at open time (INV-04), not inferred
+  from counters afterwards.
+- ID-08 worker/runtime generation: `(runtime_commit, generation_id)`.
   Behavior is attributed per generation; a source merge alone establishes
   no deployed support.
-- ID-10 completion vs correctness: a terminal record (`done/`, status
-  `executed`) attests the action ran to exit 0 under the named generation.
-  It attests nothing about payload bytes. Artifact correctness comes only
-  from identity checks (ID-04/ID-05) and the application gates (§10).
+- ID-09 completion vs correctness, four distinct facts: (a) submit
+  acknowledgement (row accepted, no promise); (b) terminal exit (process
+  ended, reason recorded); (c) CAS publication (bytes content-addressed);
+  (d) application validity (identity checks plus application gates).
+  PB attests (a)–(c) for its own records and never inspects arbitrary PQ
+  payload semantics. No claim of terminal success guarantees ID-04/ID-06
+  of arbitrary application output.
 
-## 3. State machines
+## 3. Coordinates and ranges
 
-States map to existing PB fields only; no competing runtime control is
-introduced. Durable record per transition is named; any transition without
-its record is refused.
+Three coordinates, defined separately; conflating them is refused.
+
+- RNG-01 source-file offset: `[o, o+n)` in the declared (pool-path) file's
+  bytes. Source ranges MAY overlap and MAY be co-owned across phases and
+  consumers; there is no universal tile-without-overlap across physical
+  files.
+- RNG-02 staged-object identity: `(tier_id, epoch, object_name,
+  object_length)` where split ranges live at offset 0 of their own object.
+  The lease pins this physical byte object, generation included; a
+  re-published object under a new epoch or generation is a different
+  lease target even at the same name.
+- RNG-03 logical read-plan cursor: `(phase, position)` in consumption
+  order, which MAY repeat the same source ranges (forward reference,
+  reverse replay, chain rebuild). Coverage is proven once per logical
+  phase; repeats are explicit in the plan, never implied.
+- RNG-04 mapping capacity: no assumption that a full tensor fits one
+  mapping. Where production supports gathering ranges, the plan declares
+  the gather set; absence of supported coverage for a span is refused
+  (`unsupported-workset`), never silently narrowed to whatever fits.
+
+## 4. State machines
+
+States map to existing PB fields or are named as missing features; lease
+states below are abstract mappings onto pins/fragments where those exist
+(SM-03 notes each gap). No lease-intent files or stale-lease records are
+pretended to exist. Any transition without its named durable record is
+refused.
 
 ### SM-01 action lifecycle
 
 | From → to | Actor | Precondition | Effect | Durable record | Failure |
 |---|---|---|---|---|---|
-| submitted → waiting | submitter | sealed action, manifests bound (ID-03/ID-04) | row visible in `ready/` | sealed request in CAS | malformed seal → never published |
-| waiting → admitted | claiming worker | tokens fit (INV-01); declared initial working set ready (INV-02); runtime supported (ID-09) | `ready/` → `claimed/` rename under queue discipline | claim record + lease intent | shortage → denial naming tier/shortage; no pass recorded |
-| admitted → running | worker loop | leases acquired (SM-03) | payload executes | attempt `(nonce, scope_id)` | lease refused → back to waiting with reason |
-| running → terminal-success | worker loop | exit 0 AND payload identities verify (ID-04/ID-05) | record in `done/`, status `executed` | terminal record + CAS receipt | identity mismatch → failed, bytes unpublished |
-| running → terminal-failed | worker loop / reaper | nonzero exit, timeout, or identity refusal | record in `done/` failed or `failed/` | terminal record + log tail | — |
-| any → withdrawn | coordinator / supersede | plan revision or duplicate | row leaves contention without verdict | `withdrawn/superseded/` drop | a drop is never read as a verdict |
+| submitted → waiting | submitter | sealed action, manifests bound (ID-03/ID-04 as applicable) | row visible in `ready/` | sealed request in CAS | malformed seal → never published; ack (ID-09a) is acceptance, not promise |
+| waiting → admitted | claiming worker | tokens fit (INV-01); declared initial working set ready (INV-02); runtime supported (ID-08) | `ready/` → `claimed/` rename under queue discipline | claim record + lease intent | shortage → denial naming tier/shortage; no pass recorded |
+| admitted → running | worker loop | leases acquired (SM-03) | payload executes | attempt `(nonce, scope_id)`; request immutable | lease refused → back to waiting with reason |
+| running → terminal-success | worker loop | exit 0 AND payload identities verify (ID-04/ID-06 as applicable) | record in `done/`, status `executed` | terminal record + CAS receipt | identity mismatch → failed, bytes unpublished |
+| running → terminal-failed | worker loop / reaper | nonzero exit, timeout, or identity refusal; attempt identity + terminal reason preserved | record in `done/` failed or `failed/` | terminal record + log tail | — |
+| waiting/admitted → withdrawn | authorized PB lifecycle only (plan revision, duplicate, supersede policy) | withdrawal authorized AND, if running, owned child containment completed before any resource release | row leaves contention without verdict | `withdrawn/superseded/` drop | a drop is never read as a verdict; release-before-containment is forbidden |
 
 ### SM-02 materialization (per staged range)
 
@@ -91,211 +130,198 @@ its record is refused.
 |---|---|---|---|---|---|
 | absent → copying | mover | tokens reserved for range ceiling; source readable | bytes copy to temp beside final name | mover row receipt (started) | overrun vs reservation → `residency_overran_reservation`, refused before copy |
 | copying → published | mover | digest matches manifest entry; length == range length | atomic rename into place; map names it under epoch | `movers/` receipt via `record_move` + map fragment | mismatch → delete temp, range unpublished |
-| published → retiring | tier loop / egress | no live lease covers the range (INV-06: last reader incl. pending copy handoff) | fragment dropped, tokens released | fragment removal + token release | live lease → eviction refused, range stays |
-| retiring → absent | tier loop | fragment gone, tokens released | range unstaged | ledger state | — |
-| any → absent (epoch) | tier loop | epoch change | all prior readiness invalid | new epoch announcement | readers re-verify, never assume |
+| published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
+| retiring → absent | tier loop | physical bytes reclaimed, OR atomically transferred to another accounted owner (verified shared owner) | ownership released exactly once; tokens freed | safe-deletion / transfer record + single release | deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
+| published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
 
-### SM-03 reader lease
+Crash reaper: proves owned child processes and readers stopped (not merely
+a stale timestamp) before releasing tokens or pins.
+
+### SM-03 reader lease (abstract; maps to pins/fragments where present)
 
 | From → to | Actor | Precondition | Effect | Durable record | Failure |
 |---|---|---|---|---|---|
-| — → acquisition | consumer | range published under current epoch; request names ID-07 + ID-06 | lease ID-08 issued, pin held | lease intent beside holder record | unpublished/stale-epoch → wait with reason (bounded, §5) or clear fail; never pool fallback for bulk input |
-| acquisition → use | consumer | lease held | actual reads instrumented per tier (INV-04) | per-tier byte counters | forbidden-tier open → fail before payload bytes |
-| use → release | consumer | reads complete | pin released; range becomes evictable | progress/lease release record | crash → reaper releases via stale-lease path; bytes never trusted without re-verify |
+| — → acquisition | consumer | range published under current epoch; request names RNG-02 + epoch | lease issued, pin held (MISSING: no lease-issue path exists today — gap) | lease intent beside holder record (MISSING — gap) | unpublished/stale-epoch → bounded wait with reason or clear fail; never pool fallback for bulk input |
+| acquisition → use | consumer | lease held | actual reads instrumented per tier (ID-07 recorded at open) | per-tier byte counters + serving-tier record | forbidden-tier open → fail before payload bytes |
+| use → release | consumer | reads complete | pin released; range becomes evictable | progress/lease release record (MISSING as distinct record — gap; progress channel exists) | crash → reaper path above; bytes never trusted without re-verify |
 
-## 4. Invariants (MUST, stable IDs)
+## 5. Invariants (MUST, stable IDs)
 
 - INV-01 admitted resources fit aggregate real lifetimes: a claim's CPU,
   memory, GPU, and tier tokens fit the box and tier ledgers simultaneously;
-  a claim that reserved on a tier is concluded on both ledtger sides via
-  one release helper. (IMPLEMENTED: tier reservation paths; ledger cited
-  in design §"Cluster-scoped storage tiers".)
+  a claim that reserved on a tier is concluded on both ledger sides via one
+  release helper.
 - INV-02 claim requires the declared initial working set ready: every lead
   movement node has a `done/` `executed` record for the same manifest the
-  consumer names, still token-pinned (adoption counts; `cache_hit` movers
-  that moved nothing do not). IMPLEMENTED + DEPLOYED: `PoolQueue.
-  residency_verdict` gates admission; denials `residency_lead_not_resident`
-  (may arrive) vs `residency_lead_terminal` (never will).
-- INV-03 actual reads only allowed tiers: GPU-consumed bulk input opens
-  only RAM or explicitly-allowed SSD staged objects. HDD (declared pool
-  path) opens for bulk input are forbidden. STATUS: proposed (missing —
-  current readers fall back to pool; see §9 G1/G2).
-- INV-04 tier of every actual read is instrumented: the open path records
-  which tier served each byte before payload bytes are trusted; counters
-  checked after a read do not retroactively authorize it. STATUS: proposed
-  (current `bytes_from_pool` accounting observes but does not gate —
-  rejected as enforcement).
-- INV-05 prefer valid RAM, then explicitly allowed SSD: lease acquisition
-  tries the RAM leg first within the announced epoch; SSD serves only
-  ranges the plan explicitly permits; anything else waits or fails.
-  STATUS: proposed (RAM leg exists `--residency-ram auto`; preference rule
-  missing).
+  consumer names, still token-pinned (adoption counts; no-byte `cache_hit`
+  does not). Live denial reasons `residency_lead_not_resident` (may arrive)
+  vs `residency_lead_terminal` (never will).
+- INV-03 actual bulk-input reads open only RAM or explicitly-allowed SSD
+  staged objects. HDD (declared pool path) bulk opens are forbidden.
+  (Target: current readers fall back to pool — the gap ACC-03 closes.)
+- INV-04 the serving tier of every actual read (ID-07) is recorded at open
+  time, before payload bytes are trusted. After-read counters observe;
+  they do not authorize.
+- INV-05 lease acquisition prefers valid RAM, then explicitly-allowed SSD
+  for ranges the plan permits; anything else waits or fails. (RAM leg
+  `--residency-ram auto` exists; the preference rule is target.)
 - INV-06 stale epoch, corrupt, or missing data never falls back to HDD:
   stale-epoch reads refuse; digest mismatch deletes temp and unpublishes;
-  missing ranges wait boundedly with reason or fail clearly. STATUS:
-  proposed (map refuses whole on mismatch — IMPLEMENTED; pool-fallback on
-  miss is the gap).
+  missing ranges wait boundedly with reason or fail clearly.
 - INV-07 copy/publish/lease/release serialize safely: rename-before-
   fragment (temp beside final name, atomic rename); claim handoff ordered;
   simultaneous egress serialized with shared-path ownership; last reader
-  including pending copy handoff blocks eviction. STATUS: implemented for
-  rename/egress paths under review (shared-path worker lane; this document
-  changes none of it).
-- INV-08 retries never double-count: new attempts mint new nonces; results
-  adopted once per action; checkpoint adoption verifies identity/trust
-  without recompute. STATUS: implemented (journal re-verify grammar).
+  including pending copy handoff blocks eviction; retiring retains charge
+  until reclaim-or-transfer with exactly-once release (§4 SM-02 ordering).
+- INV-08 retries never double-count: new attempts mint new nonces with the
+  request immutable; results adopted once per action; checkpoint adoption
+  verifies identity/trust without recompute.
 - INV-09 durable units monotonic and once: progress counters cumulative;
-  published units never retracted; replays are idempotent. STATUS:
-  implemented (progress channel + checkpoint journals).
+  published units never retracted; replays idempotent.
 - INV-10 failed/gapped outputs never publish campaign success: gapped
-  joins exit advisories; consumers refuse gapped payloads. STATUS:
-  implemented in joiner contract (application side; referenced).
-- INV-11 eligibility is any-gb10-class, never AND-of-both-hosts:
-  class-tag conjunction semantics stay as implemented; host-pair tags that
-  admit neither box are a plan error refused at dispatch. STATUS:
-  implemented (dispatch conjunction rule).
-- INV-12 checkpoint adoption checks identity/trust without recompute:
-  adopted ranges verify manifest binding + digest + epoch; adopted trust
-  mode caps at the source's mode (adopted `pool-declared` never becomes
-  `staged-verified`). STATUS: proposed.
+  joins exit advisories; consumers refuse gapped payloads (application
+  side; referenced, PB attests only ID-09a–c for its own records).
+- INV-11 eligibility is class-tag conjunction as implemented; host-pair
+  tags admitting neither box are plan errors refused at dispatch.
+- INV-12 checkpoint adoption checks identity/trust without recompute, caps
+  trust at the source mode, and never upgrades adopted `pool-declared`
+  to `staged-verified` without promotion re-verification (ID-05).
 
-## 5. Progress vs read frontier; fit and bounded waits
+## 6. Prefetch, tiers, and the read set
 
-- PRG-01: durable compute progress (units committed, checkpoints journaled)
-  is NOT proof that async readers released prior bytes. Eviction needs the
-  lease state (SM-03), never the progress counter alone.
-- PRG-02: the exact read plan names forward and reverse repeats and the
-  source/render/activation legs. Lookahead (prefetch depth × chunk) fits in
-  RAM/SSD budget plus compute memory *before* admission of the window; the
-  plan refuses an infeasible window at seal with `unsupported-workset`
-  naming the overshoot.
-- PRG-03: a later phase whose window is not yet resident waits boundedly
-  with a named reason (`residency_lead_not_resident` + owning mover);
-  the wait is bounded by mover retry/timeout policy, never circular:
-  a consumer holds only its current window while waiting (no
-  hold-and-wait on the next window's tokens).
-- PRG-04: EITHER the reservation policy proves at least the next feasible
-  window fits (admit), OR the plan is terminally refused as
-  `unsupported-workset`. There is no third state that silently streams
-  the missing window from HDD.
-- PRG-05: no requirement that a whole working set (or any named GiB
-  total) fit RAM. Windows, not totals, are the unit of fit.
+- TIER-01: RAM preferred; explicitly-permitted SSD allowed; no forbidden
+  HDD bulk opens (INV-03). Residency readiness (is the window staged?) and
+  source-tier enforcement (where did these bytes actually come from?) are
+  audited separately — `require_prefetched` proves local prefetch timing
+  only, never the tier.
+- TIER-02 metadata allowance is bounded header/index/control bytes only
+  (header from declared file, map/tier records, journal manifests). Any
+  call that can materialize payload bytes — including `get_slice` — is a
+  data reader under INV-03/INV-04, never an exemption by naming.
+- TIER-03 boundary and activation bulk inputs are in the read set and
+  dependency graph, or the plan fails `unsupported-workset`. Existing
+  unstaged boundary reads are an explicit implementation gap, not a
+  standing exception. Dynamically produced artifacts are planned only
+  after their durable receipt exists: no phantom input hashes, no
+  rerun-the-whole-producer to conjure inputs.
+- TIER-04 no waiver checkbox: no flag, role, or agent acceptance lets a
+  run waive the user's staged-only policy. Legacy diagnostics that must
+  read pool bytes require explicit scoped user authorization naming the
+  ranges and the reason; the authorization rides the sealed request, and
+  resulting payloads stay `pool-declared`. Our own acceptance never
+  substitutes.
 
-## 6. Dev mode
+## 7. Progress, frontier, and liveness
 
-- DEV-01: giant input/output resealing and per-unit source walks are
-  disabled in dev mode. Reuse existing identity/change-detection evidence
-  where valid (CAS digests, sealed manifests, tier receipts).
-- DEV-02: missing or changed evidence MUST NOT trigger hidden whole-model
-  hashing. A wall that cannot be checked cheaply is reported as
-  `dev_uncertified` with the missing evidence named.
-- DEV-03: small manifest-binding checks (ID-03/ID-04 comparisons,
-  argv-digest checks) and integrity-on-copy (digest on the way through)
-  are always on and are distinct from expensive sealing.
-- DEV-04: explicit `dev_uncertified: true` + executing-tree digest on
-  every dev result. Certified release gate unchanged; the final artifact
-  carries actual end-artifact evidence, never dev stamps.
-- DEV-05 (open gap, stated): cross-host source-identity (a source that
-  validates on one box reading as identical on another) has no cheap
-  check yet; current posture is same-host re-verification. STATUS:
-  proposed.
+- PRG-01 durable compute progress is NOT proof of reader release. A
+  consumer's releasable safe frontier (leases it can drop without
+  re-read) is established separately from its durable compute progress;
+  eviction needs lease state, never the progress counter alone.
+- PRG-02 the exact read plan names forward and reverse repeats and the
+  source/render/activation legs. Lookahead fits in budget plus compute
+  memory before the window is admitted; infeasible windows refuse at seal
+  as `unsupported-workset`.
+- PRG-03 waits are typed: fit-lack waits (`residency_lead_not_resident`
+  + owning mover) vs permanent-oversize refusals (`unsupported-workset`).
+  A missing initial phase may wait before GPU admission; mid-phase waits
+  carry explicit grace and progress semantics (no forward movement within
+  grace → terminal reason, not silent stall).
+- PRG-04 no circular hold-and-wait by assertion: PRG-03's "holds current
+  window" alone proves nothing with multiple consumers. The contract
+  requires the formal inequality over all competing consumers —
+  active leases + copy buffers + next minimum feasible advance + reserve
+  ≤ announced capacity — OR a deterministic PB policy guaranteeing at
+  least one admissible next step. No new agent scheduler is created to
+  discharge this; the inequality or the policy is proved, named, and
+  tested, else PRG-04 stays `proposed`.
+- PRG-05 no whole-working-set RAM requirement; windows are the unit of
+  fit.
+- LIVE-01 conditional liveness: fair eligible workers + finite I/O + a
+  fitting workset lead to advancement or a named bounded failure. Queue
+  wait timeout implies neither withdrawal nor process containment.
+  Fairness premises, finite-I/O premises, and the uninterruptible-NFS
+  limitation are stated honestly wherever liveness is claimed; unknown
+  or unreadable telemetry is never read as zero.
 
-## 7. Safety and conditional liveness
+## 8. Dev mode and reuse without recompute
 
-Safety (never violated, no liveness owed without the conditions):
+- DEV-01 giant input/output resealing and per-unit source walks are
+  disabled in dev mode. Existing identity/change-detection evidence is
+  reused where valid (CAS digests, sealed manifests, tier receipts).
+- DEV-02 missing or changed evidence MUST NOT trigger hidden whole-model
+  hashing and MUST NOT stamp-and-trust an old checksum: refuse reuse and
+  open an explicit new lineage, or fail. "No recompute" means reuse of
+  VALID banked units — it is never an absolute prohibition when inputs
+  changed, which would be mathematically unsatisfiable.
+- DEV-03 small manifest-binding checks and integrity-on-copy stay always
+  on, distinct from expensive sealing.
+- DEV-04 every dev result carries `dev_uncertified` plus executing-tree
+  digest; the certified release gate stays distinct and demands actual
+  end-artifact evidence.
+- DEV-05 cross-host source identity: PR844 is implemented and under
+  review — not proven. Until proven, posture is same-host
+  re-verification, stated as incomplete rather than implied as sufficient.
 
-- SAFE-01 no eviction of a live lease (INV-06/INV-07).
-- SAFE-02 no bulk-input read from a forbidden tier (INV-03/INV-04).
-- SAFE-03 no false complete: terminal success requires exit 0 plus
-  identity verification (ID-10); wrapper exit/shard counts alone complete
-  nothing.
+## 9. Acceptance ladder (executable; every test maps an ID with an assertion)
 
-Conditional liveness: fair eligible workers + finite I/O + a fitting
-workset (PRG-04 admit arm) lead to advancement or a named bounded failure.
-Unknown or unreadable telemetry is never read as zero (capacity, fill,
-residency, power).
+- ACC-01 schema plus real-producer parser fixtures including gzip
+  members, path shapes, and writer serialization variants: parse valid,
+  refuse tampered bytes/content, refuse mis-rooted records.
+- ACC-02 PB lifecycle state-machine, property, and race tests: rename
+  atomicity, simultaneous egress exactly-once, claim-handoff abandonment
+  releasing both ledgers, epoch invalidation, withdrawal-only-by-policy
+  with containment-before-release.
+- ACC-03 thin actual-PB-storage plus real-reader chain for source AND
+  render AND activation readers: stage bytes through a real tier, open
+  through the real reader with default flags, assert payload bytes equal
+  AND serving tier staged AND zero forbidden opens — including negative
+  assertions that a forbidden open fails before payload bytes, gzip and
+  actual path resolution covered, end-to-end parser defaults. No fixture
+  that manually opens RAM substitutes for the actual reader.
+- ACC-04 restart and retry including lease-crash cases: single adoption,
+  no double-count, bytes re-verified; attempt identity and terminal
+  reason preserved across timeout/retry.
+- ACC-05 both-Spark acceptance with actually independent results on each
+  box concurrently wherever enough runnable work exists; PB owns
+  placement. "Either box" placement that lets one GPU idle does not pass.
+- ACC-06 real campaign output staged-only with `bytes_from_pool == 0` on
+  bulk legs plus the application gates green.
+- No test merely restates prose: each asserts a state transition, a
+  refusal, or a byte/tier equality. Lease and read lifetimes are covered
+  across async prefetch, two consumers, eviction, and epoch restart.
 
-Failure matrix (each names the refusal/status, the record, and the repair):
+## 10. Delivery evidence levels; root operating checklists
 
-| Failure | Refusal / status | Durable record | Repair |
-|---|---|---|---|
-| rename-before-fragment race | second publisher waits; exactly-once visible | fragment + owner-keyed temp | ownership-serialized egress (existing lane) |
-| claim handoff contention | loser abandons both ledgers, records tier denial | `_release_reservation` both sides | re-claim when fit |
-| simultaneous egress | serialized; last-owner deletes | ordered egress records | — (mechanism) |
-| restart / epoch change | readiness invalid; SM-02 `retiring` | epoch announcement | re-verify, re-stage |
-| expired worker / stale lease | reaper releases; bytes untrusted until re-verified | stale-lease record | re-acquire |
-| malformed metadata/index | map refused whole with reason | `[residency] refused` print + state | fix producer, republish map |
-| read miss (unstaged range) | bounded wait with reason, else clear fail (never pool) | pending-lead record + reader refusal | stage the range / shrink window |
-| oversized next window | `unsupported-workset` at seal | plan refusal | re-chunk the plan |
-| retry / join gaps | per-action single adoption; gapped join advisory | attempt nonces; gap list | resubmit sealed key; re-join |
+Levels are distinct axes, never one YES: `proposed` → `implemented`
+(commit) → `validated` (exact action keys, terminal status, logs, CAS
+receipts plus recorded exceptions) → `deployed` (generation id plus role
+convergence on the fleet) → `workload-proven` (real outputs, counters,
+profiles on campaign bytes). Root may merge validated changes; nothing is
+called campaign-complete before the application gates. Reports cite actual
+paths and keys and preserve failures. No self-graded green from wrapper
+exit or shard counts. Bounded-search rule VER-01: state index, filters,
+window, truncation before declaring evidence missing; query authoritative
+indexes first; counts/timings alone are not verification.
 
-## 8. Acceptance ladder (executable; every test maps an ID with an assertion)
+Staged workflow checklists (each machines-readable: every box names its
+ledger requirement id; reasoned exceptions cite explicit user authority;
+no agent waiver; no performance/quality numbers set here):
 
-- ACC-01 schema + real-producer parser fixtures incl. gzip member, path
-  shapes, and writer serialization variants: parse valid, refuse tampered
-  bytes/content, refuse HERE-rooted records. (Precedent: PQ #842 contract
-  tests. STATUS: pattern proven; staged-read fixtures missing.)
-- ACC-02 PB lifecycle state-machine/property/race tests: rename atomicity,
-  simultaneous egress exactly-once, claim-handoff abandonment releases
-  both ledgers, epoch invalidation. (STATUS: largely implemented in PB
-  suites; staged-lease races missing.)
-- ACC-03 thin actual-PB-storage + real-reader chain: stage bytes through a
-  real tier, open through the real PQ reader, assert payload bytes equal
-  AND serving tier == staged AND zero forbidden opens (open-path
-  instrumentation, INV-04). A direct-RAM-read fixture is NOT a substitute
-  for the actual PQ reader. STATUS: missing — the ladder's load-bearing
-  rung.
-- ACC-04 restart/retry: kill during copy/lease/use; assert single adoption,
-  no double-count, bytes re-verified. STATUS: partially implemented
-  (journal grammar); lease-crash cases missing.
-- ACC-05 both-Spark real placement + results: eligible rows drain on
-  either box with per-box byte/energy counters. STATUS: missing live proof
-  in this lane (PB720 proved CPU placement/admission only).
-- ACC-06 real campaign output: end-to-end staged-only run with
-  `bytes_from_pool == 0` on bulk legs and the §10 application gates green.
-  STATUS: missing (blocked on reader strictness + Stage A run).
-
-No test merely restates prose: each asserts a state transition, a refusal,
-or a byte/tier equality.
-
-## 9. Delivery evidence levels (distinct axes, never one YES)
-
-`proposed` (this ledger) → `implemented` (commit) → `validated` (exact
-action keys, terminal status, logs, CAS receipts + recorded exceptions) →
-`deployed` (generation id + role convergence on the fleet) →
-`workload-proven` (real outputs, counters, profiles on campaign bytes).
-Root may merge `validated` changes; nothing is called campaign-complete
-before the §10 gates. Reports cite actual paths/keys and preserve
-failures (e.g. PQ action `38c8b4fd…` returned 1 with 195 passed / 3
-failed is a failure with evidence, not a green; root's later generator
-gzip/path/reproduction defects stay open repairs). No self-graded green
-from wrapper exit or shard counts.
-
-VER-01, bounded search completeness: before declaring evidence missing or
-unrecoverable, state the index queried, the filters, the time window, and
-the truncation bound — and query the authoritative indexes first
-(`pb_actions` with `snapshot_parent`/`checkout_root`, the CAS/request
-index). Counts and timings alone are not verification. (Precedent: the
-PB720 final-shard keys were declared unrecoverable from `done/`-scan
-truncation while the endings had not rotated; `pb_actions
-snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935 limit 1000`
-recovered all three. The ledger records the corrected keys.)
-
-## 10. Root operating checklist (before each launch / merge / claim)
-
-- [ ] Ledger statuses re-read (no prose claim treated as deployed).
-- [ ] Action/attempt/manifest/payload/epoch identities bound (ID-01–ID-09).
-- [ ] Initial working set ready per `residency_verdict` (INV-02).
-- [ ] Strict tier opens enforced on bulk legs (INV-03/INV-04) or the run
-      is explicitly accepted as non-staged with `pool-declared` payloads.
-- [ ] Window fit proven or `unsupported-workset` refused (PRG-02/PRG-04).
-- [ ] Progress channel committed per durable unit; leases released (SM-03).
-- [ ] Terminal success = exit 0 + identity verification (SAFE-03).
-- [ ] Endgame application gates, each stating what its output proves:
-  Stage A receipt (adjoints bound) → bounded quanta admitted (per-layer
-  payloads) → equality gate (bitwise match) → join coverage (exact roster)
-  → full-menu allocation (per-Linear assignment) → export on pinned
-  native cells (shippable bytes) → served quality + prefill/decode +
-  memory/perf vs same baseline (production claim). Open unknowns: numeric
-  tradeoff thresholds are an open calibration item (engineering continues;
-  Rob prices the tradeoff when evidence exists — not a premature ask).
+- Before launch: identities bound (ID-01–ID-09 as applicable); initial
+  working set ready per verdict (INV-02); strict tier opens enforced on
+  bulk legs or the run is explicitly non-staged with `pool-declared`
+  payloads (INV-03/INV-04 or TIER-04 authorization); window fit proven or
+  `unsupported-workset` refused (PRG-02/PRG-04). A future terminal receipt
+  is never demanded before launch.
+- Before merge: scoped validated repair with documented remaining gaps
+  may merge; full-policy claims may not ride it.
+- After deploy: generation plus role convergence observed; strict-reader
+  and prerequisite gates re-checked on the fleet before any staged-only
+  claim or certification.
+- At completion: endgame application gates in order — Stage A receipt,
+  bounded quanta, equality gate, join coverage, full-menu allocation,
+  export on pinned native cells, served quality plus prefill/decode plus
+  memory/perf against the same baseline — each stating what its output
+  proves and its open unknowns. Numeric tradeoff thresholds stay an open
+  calibration item: engineering continues on evidence; Rob prices the
+  tradeoff when evidence exists.
