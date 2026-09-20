@@ -1,0 +1,28 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "scope": ["ID-02", "ID-08", "SM-03"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "issue": "https://github.com/RobTand/prismabuild/issues/749",
+    "pr": "https://github.com/RobTand/prismabuild/pull/750",
+    "source": "e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+    "note": "Component source acceptance: forward the validated broker-owned attempt tuple and helper root into payloads; carry retained worker runtime explicitly through affinity wrapping; verify retained proxy and its pre-containment import closure against its published generation. Accepted main includes PB728 and PB742.",
+    "remaining_gaps": ["Deployed native/container strict-reader qualification on both Sparks", "Shared publication incarnation repair", "Full campaign and model validity"]
+  },
+  "validation": {
+    "mode": "Published PrismaBuild priority -10, x86 CPU fixtures and subprocesses, bounded threads and aggregate memory",
+    "integrated": "0e713a348876 and f6eaf47b9a0a:247 passed, zero skips atb8be07408e8; actual CAS checkout bundles match source plus closure metadata.",
+    "root_red": "eda2cd41f25a:2 failed,8 deselected onb8be07408e8 plus tests only; changed package initializer and unmanifested resource_scope import incorrectly permitted a retained proxy.",
+    "root_green": "d12ef15ec8fb, ea5a7219920e, c9c09df393f6:80 passed, zero skips ate9f0ec176b8. All three source bundles match plus closure metadata. Counts overlap with integrated qualification.",
+    "retained_launch": "Actual PoolQueue.execute affinity/worker carry uses controlled broker and Popen fixtures. Separate subprocesses exercise the real proxy identity helper and real run_local_action payload. These are component proofs, not a live cross-generation broker launch.",
+    "prior_red_limit": "Executor R11 has8 failed,9 passed,6 errors; it is mixed assertions and harness incompatibility, not14 proven behavioral regressions.",
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb750-root-review.json"
+  },
+  "deploy": {
+    "status": "not-this-step",
+    "requires": "Review and qualify an integrated published generation, retain prior rollback bytes, honor PB742 quiescent worker/storage convergence, then qualify actual native/container staged readers on both Sparks. Existing live495461 generation does not forward this tuple."
+  },
+  "complete": {"status": "not-achieved"},
+  "exceptions": []
+}

@@ -156,7 +156,9 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     required = {generation / "docs/agent_execution_policy.md",
                 generation / "docs/operating_prismabuild.md"}
     assert required <= references, "the skill no longer identifies both companion policies"
-    pending = list(references)
+    # AGENTS also requires the machine-readable contract ledgers. Follow
+    # their links as immutable publication members, like the prose guides.
+    pending = [*references, generation / "AGENTS.md"]
     visited = set()
     while pending:
         document = pending.pop().resolve()
@@ -170,7 +172,8 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
         assert document.stat().st_mode & 0o222 == 0, f"published guide is writable: {name}"
         for link in re.findall(r"\]\(([^)]+)\)", document.read_text()):
             parsed = urlsplit(link)
-            if not parsed.scheme and not parsed.netloc and parsed.path.endswith(".md"):
+            if (not parsed.scheme and not parsed.netloc
+                    and parsed.path.endswith((".md", ".json"))):
                 pending.append(document.parent / unquote(parsed.path))
 
 

@@ -12348,8 +12348,11 @@ class PoolQueue:
         scope = self._start_resource_scope(item) if containment else None
         if scope is not None:
             # The broker launches taskset inside the aggregate slice. The
-            # stdio proxy itself is not an attributed action process.
-            argv = scope.wrap_argv(argv)
+            # stdio proxy itself is not an attributed action process. The
+            # sealed worker_script names the runtime being launched --
+            # retained or current -- so the proxy comes from that same
+            # proven runtime however the argv is prefixed.
+            argv = scope.wrap_argv(argv, worker_script=item["worker_script"])
         # Read immediately before the launch and again at every way out, so
         # the difference is this child's and not the worker loop's history.
         rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
