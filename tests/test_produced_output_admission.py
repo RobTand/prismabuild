@@ -315,6 +315,73 @@ def test_runtime_binds_declared_template_not_caller_template(
     assert po.template_sha256(foreign) != po.template_sha256(declared)
 
 
+def test_pbrun_sealing_publish_claim_path(tmp_path: Path) -> None:
+    import subprocess
+
+    import pbrun as pbrun_mod
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"],
+                   check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"],
+                   check=True)
+    (repo / "run.sh").write_text("#!/bin/sh\necho hi\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"],
+                   check=True)
+    out_prefix = tmp_path / "outputs"
+    out_prefix.mkdir()
+    template = _template(str(out_prefix), "pbrun-path-v1")
+    tpath = tmp_path / "template.json"
+    _write_template(tpath, template)
+    terms = po.owner_demand_terms(template)
+    demand = {"cpu": 1, "mem_gb": 1, **terms}
+    frozen = pbrun_mod.freeze_action_template(
+        command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
+        demand=demand, placement={"required_tags": []},
+        variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
+        retry_policy={"max_attempts": 1, "retry_safe": False},
+        host_class=None, measurement=False, transport="pool",
+        pool_measurement_class=False, data_manifest_path=None,
+        produced_output_template_path=str(tpath),
+        checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
+        exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
+        progress=None, profile=None, container_image_refs=(),
+        wrapper_dir=tmp_path / "wrapper")
+    assert frozen["produced_output_template"]["template_id"] == "pbrun-path-v1"
+    assert pb.PRODUCED_OUTPUT_TEMPLATE_PARAM in frozen["params"]
+    sealed = pbrun_mod.seal_action_from_template(frozen)
+    key = sealed["action_key"]
+    # A second template seals a different key.
+    _write_template(tpath, _template(str(out_prefix), "pbrun-path-v2"))
+    frozen2 = pbrun_mod.freeze_action_template(
+        command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
+        demand={"cpu": 1, "mem_gb": 1,
+                **po.owner_demand_terms(
+                    _template(str(out_prefix), "pbrun-path-v2"))},
+        placement={"required_tags": []},
+        variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
+        retry_policy={"max_attempts": 1, "retry_safe": False},
+        host_class=None, measurement=False, transport="pool",
+        pool_measurement_class=False, data_manifest_path=None,
+        produced_output_template_path=str(tpath),
+        checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
+        exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
+        progress=None, profile=None, container_image_refs=(),
+        wrapper_dir=tmp_path / "wrapper")
+    assert (pbrun_mod.seal_action_from_template(frozen2)["action_key"]
+            != key)
+    # The sealed row publishes and claims against the real ledgers.
+    queue = _queue(tmp_path / "q2")
+    args = pbrun_mod.parse_args(["--cpus", "1", "--", "true"])
+    row = pbrun_mod.publication_row(sealed, args=args, queue=queue)
+    row["produced_output_template"] = frozen["produced_output_template"]
+    queue.publish(**row)
+    assert queue.claim(owner="w-seal") is not None
+
+
 def test_pbcampaign_row_forwards_template_option() -> None:
     import pbcampaign
 
