@@ -1041,6 +1041,44 @@ def batch_namespace(instance: Mapping[str, object], batch_id: str,
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def namespace_for_batch_reference(*, owner_action_key: str,
+                                  template_sha256: str, nonce: str,
+                                  scope_id: str, template_id: str,
+                                  output_prefix: str, batch_id: str,
+                                  manifest_digest: str) -> tuple[str, str]:
+    """Recompute (instance_ns, batch_ns) for a sealed batch reference.
+
+    Pure helper reusing the existing identity validators (no formula
+    duplication, no writer mutation): builds the minimal bound instance
+    through :func:`validate_instance` (filed template supplies the prefix)
+    and returns :func:`instance_namespace` + :func:`batch_namespace`.
+    Raises :class:`ProducedOutputError` on any malformed field.
+    """
+
+    instance = validate_instance({
+        "schema": INSTANCE_SCHEMA_V1,
+        "version": 1,
+        "template_id": _name(template_id, where="reference template_id"),
+        "template_sha256": _hex64(template_sha256,
+                                  where="reference template_sha256"),
+        "owner_action_key": _hex64(owner_action_key,
+                                   where="reference owner_action_key"),
+        "owner_attempt": {
+            "nonce": _hex32(nonce, where="reference nonce"),
+            "scope_id": _name(scope_id, where="reference scope_id"),
+        },
+        "attempt_source": "broker-launch",
+        "output_prefix": _abs_norm(output_prefix,
+                                   where="reference output_prefix"),
+        "bound_unix": 0,
+    })
+    return (instance_namespace(instance),
+            batch_namespace(instance,
+                            _name(batch_id, where="reference batch_id"),
+                            _hex64(manifest_digest,
+                                   where="reference manifest_digest")))
+
+
 def describe_output_precommit_for_funding(
         queue, instance: Mapping[str, object],
         template: Mapping[str, object], batch_id: str,

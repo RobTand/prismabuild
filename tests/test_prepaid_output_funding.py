@@ -140,16 +140,24 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
 
 
 def _publish_mover(q: pool.PoolQueue, mover: str, manifest: str,
-                   total: int, gib: int = 1) -> dict:
+                   total: int, gib: int = 1, batch_ref=None) -> dict:
     q.publish(action_key=mover, cas_root="/cas", worker_script="/w.py",
               checkout_root="/co",
               resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": gib},
               residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": manifest, "manifest_bytes": total,
-                         "range_start_bytes": 0, "range_end_bytes": total})
+                         "range_start_bytes": 0, "range_end_bytes": total},
+              produced_output_batch=batch_ref)
     row = pool._read_json(q.item_path(pool.READY, mover))
     assert isinstance(row, dict)
     return row
+
+
+def _ref(inst: dict, template: dict, batch_id: str, descs: list) -> dict:
+    """Sealed batch reference via the writer-facing builder (R4)."""
+    return pool.PoolQueue.build_produced_output_batch_ref(
+        instance=inst, template=template, batch_id=batch_id,
+        descriptors=descs, tier_id=TIER)
 
 
 def _file_batch(q: pool.PoolQueue, inst: dict, template: dict,
@@ -228,7 +236,8 @@ def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
 
     funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
@@ -291,7 +300,8 @@ def test_reject_stale_bindings(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, batch_ref=ref)
 
     # Stale owner (tamper live nonce) refuses.
     live_path = q.item_path(pool.CLAIMED, owner)
@@ -370,7 +380,8 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path) -> None
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, batch_ref=ref)
     funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
@@ -401,7 +412,8 @@ def test_owner_finish_race_serialized(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, batch_ref=ref)
     ledger = q.tier_ledger(TIER)
     total_cap = ledger.capacity().get(KIND)
 
@@ -464,7 +476,8 @@ def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, batch_ref=ref)
     funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
@@ -497,7 +510,8 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, batch_ref=ref)
     cap = ledger.capacity().get(KIND)
 
     # 1) Intent write fails -> no intent, no mutation, sum intact.
@@ -677,7 +691,8 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
     # Publish mover (crash immediately after READY publication, before drive).
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     assert q.item_path(pool.READY, mover).exists()
     # Claim now refuses (intent reserved with 0.0 publication, no transfer,
     # no commit): no free-credit fallback, stays READY.
@@ -710,7 +725,8 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -754,7 +770,8 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -779,7 +796,8 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b2", TIER, descs2)
     manifest2 = po.output_manifest_sha256(descs2)
     total2 = sum(int(d["bytes"]) for d in descs2)
-    _publish_mover(q, mover2, manifest2, total2, gib=1)
+    ref2 = _ref(inst, template, "b2", descs2)
+    _publish_mover(q, mover2, manifest2, total2, gib=1, batch_ref=ref2)
     staged2 = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover2, instance=inst,
         template=template, batch_id="b2", descriptors=descs2)
@@ -817,7 +835,8 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -845,7 +864,8 @@ def test_required_corrupt_intent_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -870,7 +890,8 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -881,7 +902,7 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
     q.finish(mover, status="executed")
     # Republish the same mover key (new publication, same bytes): the old
     # consumed record exists => required-terminal, never fresh credit.
-    _publish_mover(q, mover, manifest, total, gib=1)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-con2") is None
     assert q.item_path(pool.READY, mover).exists()
@@ -907,7 +928,8 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path) -> None:
         template=template, batch_id="b1", descriptors=descs,
         mover_published=1234567.0)
     assert staged.get("ok") is True, staged
-    _publish_mover(q, mover, manifest, total, gib=1)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     cap = ledger.capacity().get(KIND)
     out = q.drive_output_funding(mover, TIER)
     assert out.get("ok") is False, out
@@ -985,3 +1007,216 @@ def test_publishable_helper_rejects_before_exposure(tmp_path: Path) -> None:
         instance=inst, template=template, batch_id="b1", descriptors=descs,
         mover_key=mover, tier_id=TIER, residency=bad_residency)
     assert out.get("ok") is False, out
+
+
+def _sealed_cas_with_ref(tmp_path: Path, ref: dict, tag: str):
+    """File a REAL CAS action request carrying the batch reference (R4)."""
+    from prismabuild import core as _pb
+    checkout = tmp_path / f"co-sealed-{tag}"
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "task.py").write_text("print('sealed-mover')\n")
+    body = {
+        'schema': _pb.ACTION_SCHEMA_V2,
+        'task': {'definition_id': 'tests/sealed-mover',
+                 'definition_version': 'v1',
+                 'task_class': 'generation', 'determinism': 'deterministic',
+                 'artifact_family': 'generic', 'artifact_kind': 'generic',
+                 'argv': [sys.executable, 'task.py'], 'working_directory': '.',
+                 'result_path': 'result'},
+        'inputs': [],
+        'code_closure': _pb.build_code_closure(checkout, ['task.py']),
+        'params': {'produced_output_batch': dict(ref)},
+        'environment': {'variables': {}, 'toolchain': {}},
+        'execution_scope': {'portability': 'portable', 'platform_key': None,
+                            'host_class': None},
+    }
+    action = _pb.seal_action(body)
+    cas = _pb.PrismaBuildCAS(tmp_path / f'cas-sealed-{tag}')
+    cas.publish_action_request(action)
+    return cas, action, checkout
+
+
+def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path) -> None:
+    """Real filed request + publish WITHOUT kwarg => derived projection (R4)."""
+    owner = _hexkey("sq-owner")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "derive")
+    mover = action["action_key"]
+    # No kwarg: derivation from the real sealed params is required.
+    q.publish(action_key=mover, cas_root=cas.root,
+              worker_script="/w.py", checkout_root=checkout,
+              resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": manifest, "manifest_bytes": total,
+                         "range_start_bytes": 0, "range_end_bytes": total})
+    row = pool._read_json(q.item_path(pool.READY, mover))
+    assert isinstance(row, dict)
+    assert row.get("produced_output_batch") == ref
+
+
+def test_sealed_contradictory_kwarg_refuses(tmp_path: Path) -> None:
+    """Sealed ref b1 + kwarg ref b2 => publish refuses before exposure (R4)."""
+    owner = _hexkey("sq-contra-owner")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "contra")
+    mover = action["action_key"]
+    other = dict(ref, batch_id="b2")
+    with pytest.raises(pool.PoolContractError):
+        q.publish(action_key=mover, cas_root=cas.root,
+                  worker_script="/w.py", checkout_root=checkout,
+                  resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "tier_id": TIER, "manifest_sha256": manifest,
+                             "manifest_bytes": total,
+                             "range_start_bytes": 0,
+                             "range_end_bytes": total},
+                  produced_output_batch=other)
+    assert pool._read_json(q.item_path(pool.READY, mover)) is None
+
+
+def test_sealed_corrupt_request_refuses_not_legacy(tmp_path: Path) -> None:
+    """Garbage at the request path refuses; never silently legacy (R4)."""
+    mover = _hexkey("sq-corrupt-mover")
+    q = _queue(tmp_path)
+    cas_root = tmp_path / "cas-corrupt"
+    req_path = cas_root / "requests" / mover[:2] / f"{mover}.json"
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    req_path.write_bytes(b"{not-json")
+    with pytest.raises(pool.PoolContractError):
+        q.publish(action_key=mover, cas_root=cas_root,
+                  worker_script="/w.py", checkout_root="/co",
+                  resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "tier_id": TIER, "manifest_sha256": "a" * 64,
+                             "manifest_bytes": 1024,
+                             "range_start_bytes": 0, "range_end_bytes": 1024})
+    assert pool._read_json(q.item_path(pool.READY, mover)) is None
+
+
+def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> None:
+    """Stage + sealed publish, then lose intent with no commit: claim defers."""
+    owner = _hexkey("sq-crash-owner")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    # Publish via the sealed path (derivation, no kwarg) for a mover key
+    # bound to a real filed request. No intent is staged and no batch is
+    # committed for this mover: the sealed key alone makes this row required.
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "crash")
+    mover = action["action_key"]
+    q.publish(action_key=mover, cas_root=cas.root,
+              worker_script="/w.py", checkout_root=checkout,
+              resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": manifest, "manifest_bytes": total,
+                         "range_start_bytes": 0, "range_end_bytes": total})
+    # Crash prefix: no filed commit exists for this mover, and the staged
+    # intent is lost. No commitments scan is consulted: the sealed key alone
+    # makes this row required.
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-sq-crash") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND) == free_before
+
+
+def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path) -> None:
+    """Legacy row (no sealed key) + existing funding file => refuse, no fresh."""
+    owner = _hexkey("mp-owner")
+    mover = _hexkey("mp-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    # Legacy publish: no sealed request, no kwarg, no projection.
+    _publish_mover(q, mover, manifest, total, gib=1)
+    # Forge a reserved funding file for the row (simulates funding that lost
+    # its sealed requirement): claim must refuse, never fresh-acquire.
+    ledger.acquire(owner, {KIND: 1})
+    import uuid as _uuid, time as _time
+    rec = {"schema": pool.TIER_FUNDING_OUTPUT_SCHEMA_V1, "tier_id": TIER,
+           "kind": KIND, "mover_action_key": mover,
+           "tokens": sorted(p.name for p in (ledger.held_dir / owner).iterdir()
+                            if p.name.startswith(KIND + "-")),
+           "generation": _uuid.uuid4().hex, "state": "reserved",
+           "unix": _time.time(), "published_unix": 1.0,
+           "owner_action_key": owner, "owner_nonce": "0" * 32,
+           "owner_scope_id": "s", "owner_published_unix": 1.0,
+           "template_id": "t", "template_sha256": "a" * 64, "batch_id": "b1",
+           "manifest_digest": manifest, "range_start_bytes": 0,
+           "range_end_bytes": total}
+    with q.mover_transition_lock(mover, blocking=True):
+        q._write_output_funding_locked(rec, expect_generation=None)
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-mp") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND) == free_before
+
+
+def test_claim_corrupt_projection_refuses(tmp_path: Path) -> None:
+    """Tampered sealed projection + valid funding => refuse, no fresh (R4)."""
+    owner = _hexkey("cp-owner")
+    mover = _hexkey("cp-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    # Tamper the sealed projection in place (corrupt authority).
+    ready_path = q.item_path(pool.READY, mover)
+    row = pool._read_json(ready_path)
+    assert isinstance(row, dict)
+    row["produced_output_batch"] = {"schema": "garbage"}
+    pool._write_json_atomic(ready_path, row)
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-cp") is None
+    assert pool._read_json(q.item_path(pool.READY, mover)) is not None
+    assert ledger.available().get(KIND) == free_before
+
+
+def test_legacy_mover_without_reference_claims_fresh(tmp_path: Path) -> None:
+    """Legacy rows (no sealed key, no funding file) keep existing admission."""
+    mover = _hexkey("leg-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    total = 1024
+    manifest = "b" * 64
+    _publish_mover(q, mover, manifest, total, gib=1)
+    free_before = ledger.available().get(KIND)
+    got = q.claim(owner="w-leg")
+    assert got is not None and got["action_key"] == mover, got
+    assert ledger.available().get(KIND) == free_before - 1
+    q.finish(mover, status="executed")

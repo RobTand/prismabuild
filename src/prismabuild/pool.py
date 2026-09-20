@@ -337,6 +337,14 @@ _FUNDING_OUTPUT_BINDING_FIELDS = frozenset({
     "template_sha256", "batch_id", "manifest_digest",
     "range_start_bytes", "range_end_bytes",
 })
+#: Typed immutable produced-output batch reference in a mover's sealed params
+#: (R4 required admission carrier). Identifies producer action + existing
+#: attempt/instance identity, batch id, manifest digest, target tier and
+#: range/canonical batch namespace. NEVER the mover's own action key in its
+#: own key, NEVER the mutable funding generation/publication timestamp: the
+#: action key commits to required-output semantics permanently while the
+#: funding generation rotates (0.0 sentinel -> live publication) beside it.
+PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1 = "prismabuild.produced_output_batch_ref.v1"
 #: Which plan leg role one funding kind pays for.  A fence funds staged
 #: (or promoted) occupancy; rate kinds and tiers with no movement legs
 #: never carry advance credit, so a record naming any other kind covers
@@ -684,6 +692,48 @@ def progress_policy(
         ceiling,
         cycle=bool(declared.get("cycle")),
     )
+
+
+def _sealed_produced_output_batch(
+    cas_root: str | Path,
+    action_key: str,
+) -> Mapping[str, object] | None:
+    """Read the sealed batch reference from the CAS-filed action request.
+
+    Returns the raw ``action.params.produced_output_batch`` value, or None
+    when no request file exists (legacy direct publish declares nothing).
+    A request file that exists but is unreadable, undecodable, invalid, or
+    bound to a different key refuses: missing/corrupt authority never
+    silently becomes legacy. Shape validation belongs to the caller
+    (filed template + namespace + residency bind), which never trusts this
+    mapping beyond it being the real sealed params.
+    """
+
+    key = str(action_key)
+    request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        return None
+    try:
+        action = pb.validate_action(
+            pb._decode_strict_json(raw, where="pool action request"))
+    except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
+            ValueError, OSError) as exc:
+        raise PoolContractError(
+            f"pool action request unreadable: {exc}") from exc
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    params = action.get("params")
+    if not isinstance(params, Mapping):
+        raise PoolContractError("pool action request params must be an object")
+    value = params.get("produced_output_batch")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PoolContractError(
+            "action.params.produced_output_batch must be an object")
+    return value
 
 
 def _sealed_progress_policy(
@@ -3377,6 +3427,7 @@ class PoolQueue:
         preempted_claim: Mapping[str, object] | None = None,
         residency: Mapping[str, object] | None = None,
         produced_output_template: Mapping[str, object] | None = None,
+        produced_output_batch: Mapping[str, object] | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
     ) -> Path:
@@ -3462,6 +3513,68 @@ class PoolQueue:
                 raise
             except ValueError as exc:
                 raise PoolContractError(str(exc)) from exc
+        produced_batch_ref = None
+        # Required immutable admission carrier (R4): bound to the REAL sealed
+        # params, never to the kwarg alone. The CAS-filed action request is
+        # read through the existing request loader with key validation
+        # (`_sealed_produced_output_batch`, same machinery as the sealed
+        # progress policy): no request file means legacy direct publish
+        # (kwarg governs, fully validated); a sealed reference is derived
+        # from it even when the kwarg is omitted (the requirement cannot be
+        # omitted while the request carries it); a contradictory kwarg
+        # refuses; an unreadable/invalid sealed request refuses before READY
+        # exposure and never silently becomes legacy.
+        try:
+            sealed_batch_raw = _sealed_produced_output_batch(
+                cas_root, action_key)
+        except PoolContractError:
+            raise
+        except (ValueError, OSError) as exc:
+            raise PoolContractError(
+                f"pool action request unreadable: {exc}") from exc
+        if sealed_batch_raw is not None:
+            if produced_output_template is not None:
+                raise PoolContractError(
+                    "produced-output batch and template are mutually exclusive: "
+                    "a mover carries a batch reference, an owner a template")
+            try:
+                produced_batch_ref = self.validate_produced_output_batch(
+                    sealed_batch_raw, demand,
+                    residency_block=residency_block)
+            except PoolContractError:
+                raise
+            except ValueError as exc:
+                raise PoolContractError(str(exc)) from exc
+            if produced_output_batch is not None:
+                try:
+                    kwarg_checked = self.validate_produced_output_batch(
+                        produced_output_batch, demand,
+                        residency_block=residency_block)
+                except PoolContractError:
+                    raise
+                except ValueError as exc:
+                    raise PoolContractError(str(exc)) from exc
+                if kwarg_checked != produced_batch_ref:
+                    raise PoolContractError(
+                        "produced-output batch kwarg contradicts the sealed "
+                        "action request: the sealed params govern")
+        elif produced_output_batch is not None:
+            if produced_output_template is not None:
+                raise PoolContractError(
+                    "produced-output batch and template are mutually exclusive: "
+                    "a mover carries a batch reference, an owner a template")
+            try:
+                produced_batch_ref = self.validate_produced_output_batch(
+                    produced_output_batch, demand,
+                    residency_block=residency_block)
+            except PoolContractError:
+                raise
+            except ValueError as exc:
+                raise PoolContractError(str(exc)) from exc
+            if tier_demand and residency is None:
+                raise PoolContractError(
+                    "a produced-output batch mover must carry the residency "
+                    "block its reference binds")
         if tier_demand and residency is None and produced_ref is None:
             # Derived, never typed (#595): every tier demand the fleet's own
             # submitters seal travels beside the residency block whose
@@ -3579,6 +3692,8 @@ class PoolQueue:
             item["residency"] = residency_block
         if produced_ref is not None:
             item["produced_output"] = produced_ref
+        if produced_batch_ref is not None:
+            item["produced_output_batch"] = produced_batch_ref
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -5320,8 +5435,9 @@ class PoolQueue:
             with open(path, "rb") as handle:
                 raw_bytes = handle.read(1024 * 1024 + 1)
         except FileNotFoundError:
-            return (None, "absent")
-        except NotADirectoryError:
+            # Proven ENOENT only is absent. Any other failure (including
+            # NotADirectoryError: a path component is a file, i.e. corrupt
+            # namespace, never proof an intent never existed) is UNKNOWN.
             return (None, "absent")
         except OSError:
             return (None, "corrupt")
@@ -6114,6 +6230,23 @@ class PoolQueue:
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         if mover_range != bound_range:
             return {"ok": False, "refusal": "mover-publication-mismatch"}
+        # Sealed requirement (R4): funding binds only to a mover row carrying
+        # the matching immutable `produced_output_batch` projection. A row
+        # without it (legacy, or omitted requirement) or with a contradictory
+        # one refuses here, before any token moves.
+        sealed_ref = mover_row.get("produced_output_batch")
+        if (not isinstance(sealed_ref, Mapping)
+                or sealed_ref.get("schema")
+                != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
+                or str(sealed_ref.get("batch_id")) != str(binding.get("batch_id"))
+                or str(sealed_ref.get("manifest_digest")) != str(
+                    binding.get("manifest_digest"))
+                or str(sealed_ref.get("tier_id")) != tier
+                or str(sealed_ref.get("owner_action_key")) != str(
+                    binding.get("owner_action_key"))
+                or str(sealed_ref.get("template_sha256")) != str(
+                    binding.get("template_sha256"))):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
             ledger = self.tier_ledger(tier)
         except (OSError, PoolContractError, ValueError) as exc:
@@ -6304,8 +6437,34 @@ class PoolQueue:
         key = item.get("action_key")
         if not isinstance(key, str):
             return (0, None)
+        # Sealed requirement (R4): output cover applies ONLY to movers whose
+        # sealed item carries the immutable `produced_output_batch` projection.
+        # Legacy movers without it retain existing admission and never scan
+        # output history. A sealed requirement with absent/unknown/invalid
+        # proof defers via the claim gate below, never fresh acquisition.
+        sealed_ref = item.get("produced_output_batch")
+        if not isinstance(sealed_ref, Mapping):
+            return (0, None)
+        if sealed_ref.get("schema") != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1:
+            return (0, None)
         record = self.read_output_funding(key, str(tier_id))
         if record is None or record.get("state") != "transferring":
+            return (0, None)
+        # The committed generation/record must bind back to the sealed
+        # reference (stable batch identity; generation/publication stay
+        # mutable beside it and are checked separately).
+        for field in ("batch_id", "manifest_digest", "tier_id",
+                      "owner_action_key", "owner_nonce", "owner_scope_id",
+                      "template_id", "template_sha256"):
+            if str(record.get(field)) != str(sealed_ref.get(field)):
+                return (0, None)
+        try:
+            if (int(sealed_ref.get("range_start_bytes")) != int(  # type: ignore[arg-type]
+                    record.get("range_start_bytes"))  # type: ignore[arg-type]
+                    or int(sealed_ref.get("range_end_bytes")) != int(  # type: ignore[arg-type]
+                        record.get("range_end_bytes"))):  # type: ignore[arg-type]
+                return (0, None)
+        except (TypeError, ValueError):
             return (0, None)
         if (str(record.get("tier_id")) != str(tier_id)
                 or str(record.get("mover_action_key")) != key
@@ -6742,85 +6901,6 @@ class PoolQueue:
                     keep.add(name)
         return (keep, False)
 
-    def _output_mover_required_via_commit(
-            self, mover_key: str, tier_id: str,
-            residency: Mapping[str, object] | None) -> bool | None:
-        """Required-output signal from filed commits (R3, bounded, no loader).
-
-        True: a filed commitments entry names (mover_key, tier, manifest).
-        False: clean scan with no match (legacy mover, fresh ok). None:
-        UNKNOWN scan (unreadable dir/file/commitments => defer, retain).
-        Reads small commitments JSONs only (capped 1MB, no batch
-        files/descriptors); cover later validates the filed batch strictly
-        via the R4 loader. Other-owner scoping positively established per
-        entry (exact mover/tier/manifest match); anything unreadable is
-        UNKNOWN.
-        """
-
-        if not isinstance(residency, Mapping):
-            return False
-        try:
-            manifest = str(residency.get("manifest_sha256") or "")
-            tier = str(residency.get("tier_id") or "")
-        except (TypeError, ValueError, AttributeError):
-            return None
-        if not manifest or tier != str(tier_id):
-            return False
-        try:
-            from . import produced_output as produced_mod
-            import json as _json
-        except ImportError:
-            return None
-        try:
-            scopes_root = (Path(self.root) / "residency"
-                           / produced_mod.OUTPUT_SCOPES_SUBDIR)
-            try:
-                with os.scandir(scopes_root) as owners:
-                    owner_names = sorted(
-                        entry.name for entry in owners
-                        if entry.is_dir(follow_symlinks=False))
-            except FileNotFoundError:
-                return False
-            except OSError:
-                return None
-        except (OSError, PoolContractError, ValueError):
-            return None
-        for owner_name in owner_names:
-            owner_dir = scopes_root / owner_name
-            try:
-                with os.scandir(owner_dir) as children:
-                    child_names = sorted(
-                        entry.name for entry in children
-                        if entry.is_dir(follow_symlinks=False))
-            except OSError:
-                return None
-            for child_name in child_names:
-                cpath = owner_dir / child_name / "commitments.json"
-                try:
-                    with open(cpath, "rb") as handle:
-                        raw = handle.read(1024 * 1024 + 1)
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    return None
-                if len(raw) > 1024 * 1024:
-                    return None
-                try:
-                    parsed = _json.loads(raw.decode())
-                except (ValueError, UnicodeDecodeError):
-                    return None
-                if (not isinstance(parsed, Mapping)
-                        or not isinstance(parsed.get("batches"), Mapping)):
-                    return None
-                for entry in parsed["batches"].values():  # type: ignore[union-attr]
-                    if not isinstance(entry, dict):
-                        continue
-                    if (str(entry.get("mover_key")) == str(mover_key)
-                            and str(entry.get("tier")) == str(tier_id)
-                            and str(entry.get("manifest_digest")) == manifest):
-                        return True
-        return False
-
     def validate_output_mover_publishable(
             self, *, instance, template, batch_id: str,
             descriptors: list[Mapping[str, object]],
@@ -7241,22 +7321,43 @@ class PoolQueue:
             remainder = {kind: int(need) - int(covered.get(kind, 0))
                          for kind, need in needs.items()}
             if not any(covered.values()):
-                # Output claim gate (R3): REQUIRED-output rows never fall back
-                # to fresh acquisition from free. Required iff (a) the output
-                # funding file exists in ANY state (reserved/transferring =
-                # pending; consumed/released = terminal credit, never reusable;
-                # corrupt/unreadable = UNKNOWN), OR (b) a filed committed batch
-                # names (mover, tier, manifest) while no valid cover exists
-                # (deleted required intent). Legacy movers (no file + clean
-                # filed-batch scan with no match) proceed V1/normal. Refusals
-                # defer (mover stays READY for drive/commit recovery); an
-                # explicitly valid recovery generation is supplied only via a
-                # successful cover above, never by paying again from free.
+                # Output claim gate (R4): presence of the sealed
+                # `produced_output_batch` KEY is the positive required signal
+                # (valid or corrupt: a present-but-malformed projection is
+                # tampering, never legacy), with no history-wide admission
+                # scans. Required rows defer/refuse on absent/unknown/pending/
+                # invalid/terminal proof unless cover succeeded above; never
+                # fresh acquisition, even if every mutable output file is
+                # absent (precommit crash with sealed ref but no intent/commit
+                # yet defers). A funding file in any parsed state without a
+                # covering record is likewise never fresh credit (missing/
+                # corrupt projection with existing funding defers). Legacy
+                # movers (no sealed key, no funding file) retain existing
+                # admission behavior.
+                _sealed_has_key = (
+                    isinstance(sealed, Mapping)
+                    and "produced_output_batch" in sealed)
                 try:
                     _rec, _fstate = self.output_funding_file_state(
                         action_key, tier_id)
                 except (OSError, PoolContractError, ValueError):
                     _rec, _fstate = None, "corrupt"
+                if _sealed_has_key:
+                    if _fstate == "ok":
+                        _st = str((_rec or {}).get("state"))
+                        return {"tier_id": tier_id,
+                                "reason": ("output_funding_pending"
+                                           if _st in ("reserved",
+                                                      "transferring")
+                                           else "output_funding_terminal"),
+                                "demand": dict(needs)}
+                    if _fstate == "corrupt":
+                        return {"tier_id": tier_id,
+                                "reason": "output_funding_unknown",
+                                "demand": dict(needs)}
+                    return {"tier_id": tier_id,
+                            "reason": "output_funding_required_absent",
+                            "demand": dict(needs)}
                 if _fstate == "ok":
                     _st = str((_rec or {}).get("state"))
                     return {"tier_id": tier_id,
@@ -7265,23 +7366,6 @@ class PoolQueue:
                                        else "output_funding_terminal"),
                             "demand": dict(needs)}
                 if _fstate == "corrupt":
-                    return {"tier_id": tier_id,
-                            "reason": "output_funding_unknown",
-                            "demand": dict(needs)}
-                try:
-                    _sig = self._output_mover_required_via_commit(
-                        action_key, tier_id,
-                        sealed.get("residency") if isinstance(
-                            sealed, Mapping) else None)
-                except (OSError, PoolContractError, ValueError):
-                    _sig = None
-                except Exception:
-                    _sig = None
-                if _sig is True:
-                    return {"tier_id": tier_id,
-                            "reason": "output_funding_required_absent",
-                            "demand": dict(needs)}
-                if _sig is None:
                     return {"tier_id": tier_id,
                             "reason": "output_funding_unknown",
                             "demand": dict(needs)}
@@ -7504,6 +7588,223 @@ class PoolQueue:
             "template_sha256": produced_mod.template_sha256(validated),
         }
         return validated, ref
+
+    @staticmethod
+    def build_produced_output_batch_ref(*, instance, template,
+                                        batch_id: str,
+                                        descriptors: list,
+                                        tier_id: str) -> dict[str, object]:
+        """Build the sealed immutable batch reference for an output mover (R4).
+
+        Writer-facing builder so #744 wires stage->publish->drive->commit
+        without inventing another field: validates the bound precommit with
+        existing produced_output validators (bound contract, descriptors,
+        manifest recompute) and returns the closed reference the mover's
+        sealed params must carry. Carries NO mover key and NO funding
+        generation/publication timestamp (stable batch identity across
+        generation rotation). Raises PoolContractError on any mismatch.
+        """
+
+        try:
+            from . import produced_output as produced_mod
+        except ImportError as exc:
+            raise PoolContractError(
+                f"produced-output batch needs produced_output: {exc}"
+            ) from None
+        try:
+            checked_template = produced_mod.validate_template(template)
+            checked_instance = produced_mod.validate_instance(instance)
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        if (str(checked_instance.get("template_sha256"))
+                != produced_mod.template_sha256(checked_template)):
+            raise PoolContractError("batch reference: template-mismatch")
+        if str(tier_id) not in checked_template.get("permitted_tiers", []):
+            raise PoolContractError("batch reference: tier-not-permitted")
+        if (not isinstance(batch_id, str) or not batch_id or "/" in batch_id
+                or "\x00" in batch_id):
+            raise PoolContractError(
+                "batch reference batch_id must be a non-empty name with no '/'")
+        if not isinstance(descriptors, list) or not descriptors:
+            raise PoolContractError("batch reference descriptors required")
+        try:
+            sealed = [produced_mod.validate_descriptor(
+                dict(d), checked_template, checked_instance)
+                for d in descriptors]
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        manifest = produced_mod.output_manifest_sha256(sealed)
+        total = sum(int(d["bytes"]) for d in sealed)
+        if total <= 0:
+            raise PoolContractError("batch reference total must be positive")
+        attempt = checked_instance.get("owner_attempt")
+        if not isinstance(attempt, dict):
+            raise PoolContractError("batch reference: bad owner attempt")
+        try:
+            _ns, batch_ns = produced_mod.namespace_for_batch_reference(
+                owner_action_key=str(checked_instance["owner_action_key"]),
+                template_sha256=str(checked_instance["template_sha256"]),
+                nonce=str(attempt["nonce"]), scope_id=str(attempt["scope_id"]),
+                template_id=str(checked_template["template_id"]),
+                output_prefix=str(checked_template["output_prefix"]),
+                batch_id=batch_id, manifest_digest=manifest)
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        return {
+            "schema": PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1,
+            "owner_action_key": str(checked_instance["owner_action_key"]),
+            "owner_nonce": str(attempt["nonce"]),
+            "owner_scope_id": str(attempt["scope_id"]),
+            "template_id": str(checked_template["template_id"]),
+            "template_sha256": produced_mod.template_sha256(checked_template),
+            "batch_id": batch_id,
+            "manifest_digest": manifest,
+            "tier_id": str(tier_id),
+            "range_start_bytes": 0,
+            "range_end_bytes": total,
+            "batch_namespace": batch_ns,
+        }
+
+    def validate_produced_output_batch(
+            self, ref, demand: Mapping[str, int],
+            residency_block: Mapping[str, object] | None = None) -> dict[str, object]:
+        """Refuse a produced-output batch reference that is not exact (R4).
+
+        Strict scalar shapes (closed set; hex widths; no '/' or NUL names;
+        finite ranges; total>0 with start 0); filed template by template_id
+        must exist and its sha must equal the reference; namespace recomputed
+        through produced_output's existing validators must equal the
+        reference; tier must be permitted with demand exactly the range floor
+        on that tier alone (single-tier output movers); sealed residency, when
+        given, must name the same tier/manifest/range. Returns the checked
+        reference. Publication stores this projection immutably in the item.
+        """
+
+        if not isinstance(ref, Mapping):
+            raise PoolContractError("produced-output batch must be an object")
+        unknown = sorted(set(ref) - {
+            "schema", "owner_action_key", "owner_nonce", "owner_scope_id",
+            "template_id", "template_sha256", "batch_id", "manifest_digest",
+            "tier_id", "range_start_bytes", "range_end_bytes",
+            "batch_namespace",
+        })
+        if unknown:
+            raise PoolContractError(
+                f"unknown produced-output batch fields: {unknown}")
+        if ref.get("schema") != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1:
+            raise PoolContractError(
+                "produced-output batch schema must be "
+                f"{PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1!r}")
+        owner = ref.get("owner_action_key")
+        if (not isinstance(owner, str) or len(owner) != 64
+                or any(c not in "0123456789abcdef" for c in owner)):
+            raise PoolContractError(
+                "batch reference owner_action_key must be a 64-character key")
+        nonce = ref.get("owner_nonce")
+        if (not isinstance(nonce, str) or len(nonce) != 32
+                or any(c not in "0123456789abcdef" for c in nonce)):
+            raise PoolContractError(
+                "batch reference owner_nonce must be a 32-character nonce")
+        for field in ("owner_scope_id", "template_id", "batch_id"):
+            text = ref.get(field)
+            if (not isinstance(text, str) or not text or "/" in text
+                    or "\x00" in text):
+                raise PoolContractError(
+                    f"batch reference {field} must be a non-empty name with no '/'")
+        for field in ("template_sha256", "manifest_digest", "batch_namespace"):
+            digest = ref.get(field)
+            if (not isinstance(digest, str) or len(digest) != 64
+                    or any(c not in "0123456789abcdef" for c in digest)):
+                raise PoolContractError(
+                    f"batch reference {field} must be a 64-character digest")
+        tier_id = ref.get("tier_id")
+        if not isinstance(tier_id, str) or not tier_id:
+            raise PoolContractError(
+                "batch reference tier_id must be a non-empty string")
+        try:
+            kind = storage_tiers.capacity_kind_of(str(tier_id))
+        except ValueError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        start = ref.get("range_start_bytes")
+        end = ref.get("range_end_bytes")
+        if (isinstance(start, bool) or type(start) is not int or start != 0
+                or isinstance(end, bool) or type(end) is not int
+                or int(end) <= 0):
+            raise PoolContractError(
+                "batch reference range must be 0..positive total")
+        total = int(end)
+        try:
+            from . import produced_output as produced_mod
+        except ImportError as exc:
+            raise PoolContractError(
+                f"produced-output batch needs produced_output: {exc}"
+            ) from None
+        try:
+            with open(self.root / "residency"
+                      / produced_mod.OUTPUT_TEMPLATES_SUBDIR
+                      / f"{ref['template_id']}.json", "rb") as handle:
+                raw_tmpl = handle.read(1024 * 1024 + 1)
+        except FileNotFoundError:
+            raise PoolContractError(
+                "batch reference template is not declared") from None
+        except OSError as exc:
+            raise PoolContractError(
+                f"batch reference template unreadable: {exc}") from None
+        if len(raw_tmpl) > 1024 * 1024:
+            raise PoolContractError("batch reference template oversize")
+        try:
+            import json as _json
+            filed_template = produced_mod.validate_template(
+                _json.loads(raw_tmpl.decode()))
+        except (ValueError, UnicodeDecodeError,
+                produced_mod.ProducedOutputError) as exc:
+            raise PoolContractError(
+                f"batch reference template: {exc}") from exc
+        if (produced_mod.template_sha256(filed_template)
+                != str(ref.get("template_sha256"))):
+            raise PoolContractError("batch reference template-mismatch")
+        if str(tier_id) not in filed_template.get("permitted_tiers", []):
+            raise PoolContractError("batch reference tier-not-permitted")
+        try:
+            _inst_ns, batch_ns = produced_mod.namespace_for_batch_reference(
+                owner_action_key=str(owner),
+                template_sha256=str(ref.get("template_sha256")),
+                nonce=str(nonce),
+                scope_id=str(ref.get("owner_scope_id")),
+                template_id=str(ref.get("template_id")),
+                output_prefix=str(filed_template["output_prefix"]),
+                batch_id=str(ref.get("batch_id")),
+                manifest_digest=str(ref.get("manifest_digest")))
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        if batch_ns != str(ref.get("batch_namespace")):
+            raise PoolContractError("batch reference namespace-mismatch")
+        try:
+            floor = storage_tiers.stage_tokens_for_bytes(total)
+        except ValueError as exc:
+            raise PoolContractError(f"batch reference: {exc}") from exc
+        try:
+            _, declared_grouped = storage_tiers.split_demand(
+                {str(k): int(v) for k, v in dict(demand).items()})
+        except (TypeError, ValueError) as exc:
+            raise PoolContractError(f"batch reference demand: {exc}") from exc
+        tier_needs = declared_grouped.get(str(tier_id), {})
+        if (set(tier_needs) != {kind} or int(tier_needs[kind]) != int(floor)
+                or len(declared_grouped) != 1):
+            raise PoolContractError(
+                "batch reference tier demand must be exactly the range floor "
+                f"on {tier_id} alone: expected {{{kind}: {floor}}}")
+        if residency_block is not None:
+            if not isinstance(residency_block, Mapping):
+                raise PoolContractError("batch reference needs a residency block")
+            if (str(residency_block.get("tier_id")) != str(tier_id)
+                    or str(residency_block.get("manifest_sha256")) != str(
+                        ref.get("manifest_digest"))
+                    or residency_block.get("range_start_bytes") != 0
+                    or residency_block.get("range_end_bytes") != total):
+                raise PoolContractError(
+                    "batch reference residency mismatch")
+        return dict(ref)
 
     @staticmethod
     def _residency_manifest_of(record: Mapping[str, object] | None) -> str | None:

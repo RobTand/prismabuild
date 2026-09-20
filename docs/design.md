@@ -4021,7 +4021,7 @@ window also needs an exact-owner transfer extension; a second acquisition is
 not evidence that the same bytes have been accounted once. Component tests
 establish neither deployed support nor whole-fleet conformance.
 
-#### Prepaid-output funding from the admitted window (candidate, R3)
+#### Prepaid-output funding from the admitted window (candidate, R4)
 
 Funds one precommitted produced-output batch from the producer's existing
 window with an exact token-subset transfer (`ResourceLedger.transfer_tokens`),
@@ -4041,9 +4041,13 @@ the owner lock with fail-retain census: UNKNOWN retains all). Pending output
 intents refuse fresh-acquisition fallback in `_begin_tier_acquire`
 (`output_funding_pending`). Release proves mover nonexecution (no
 CLAIMED/DONE/FAILED/receipt/lease) before retiring credit. See
-`prepaid-output-pool-api-design.md` (R3) and
+`prepaid-output-pool-api-design.md` (R4) and
 `tests/test_prepaid_output_funding.py` (candidate-component scope; parent
-stack root-unaccepted).
+stack root-unaccepted). The sealed `produced_output_batch` reference in mover
+params (derived from the CAS-filed action request at publication, kwarg only
+for direct API) is the positive required signal; claim never scans output
+history. Writer (744) MUST include the reference for every output mover via
+`build_produced_output_batch_ref` (omission yields legacy treatment).
 
 ### The window
 
