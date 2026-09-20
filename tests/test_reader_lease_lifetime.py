@@ -436,7 +436,8 @@ def test_malformed_retiring_fails_closed_then_recovers(fleet) -> None:
 
 
 
-def _attest(queue, nonce="n1", scope_empty=True, host="test-host"):
+def _attest(queue, nonce="n1", scope_empty=True, host="test-host",
+            worker="w1"):
     """Fabricate the membership lane's broker attestation (their writer).
 
     The file is the membership worker's input to file from a token-gated
@@ -450,7 +451,7 @@ def _attest(queue, nonce="n1", scope_empty=True, host="test-host"):
     path.write_text(json.dumps({
         "schema": reader_lease.ATTESTATION_SCHEMA_V1,
         "action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
-        "host": host, "worker": "w1", "incarnation": "i1",
+        "host": host, "worker": worker, "incarnation": "i1",
         "scope_empty": scope_empty, "unix": 1789880000.0}) + "\n")
 
 def test_containment_needs_terminal_and_attestation(fleet) -> None:
@@ -789,14 +790,8 @@ def test_injected_context_comes_from_pb_sources(fleet,
     assert reader_lease.injected_context(
         queue, env=env)["refusal"] == "attempt-superseded"
 
-    # Missing env, missing claim, missing scope each refuse distinctly.
-    assert reader_lease.injected_context(
-        queue, env={})["refusal"] == "no-action-context"
-    assert reader_lease.injected_context(
-        queue, env={"PRISMABUILD_ACTION_KEY": "0" * 64,
-                    "PRISMABUILD_RESIDENCY_MAP": str(
-                        queue.root / pool.RESIDENCY / "x.map.json")},
-    )["refusal"] == "no-claim-context"
+    # Strict: no live-claim fallback.  Launch env present but the claim
+    # carries no control to check against: unbound, refuse.
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
          "claimed_host": "sparky",
@@ -806,7 +801,19 @@ def test_injected_context_comes_from_pb_sources(fleet,
             "PRISMABUILD_RESIDENCY_MAP": str(
                 queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
     assert reader_lease.injected_context(
-        queue, env=bare)["refusal"] == "no-attempt-context"
+        queue, env={**bare,
+                    "PRISMABUILD_ACTION_NONCE": nonce,
+                    "PRISMABUILD_ACTION_SCOPE": "unit-1"},
+    )["refusal"] == "no-control-context"
+    # No launch env at all: refuse even with a complete claim.  There is
+    # no strict pin from a live claim alone.
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "claimed_by": "worker-7",
+         "claimed_host": "sparky",
+         "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
+                            "scope_id": "unit-1"}}))
+    assert reader_lease.injected_context(
+        queue, env=bare)["refusal"] == "no-launch-context"
     # Nothing names a box: no local hostname substitution, ever.
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
@@ -817,6 +824,29 @@ def test_injected_context_comes_from_pb_sources(fleet,
                     "PRISMABUILD_ACTION_NONCE": nonce,
                     "PRISMABUILD_ACTION_SCOPE": "unit-1"},
     )["refusal"] == "no-host-context"
+
+
+def test_legacy_inspection_never_acquires(fleet) -> None:
+    """inspect_claim_context reports the claim unqualified; acquire refuses it."""
+
+    queue, stage = fleet
+    claimed = queue.dir(pool.CLAIMED)
+    claimed.mkdir(parents=True, exist_ok=True)
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
+        "action_key": CONSUMER, "claimed_by": "worker-7",
+        "claimed_host": "sparky",
+        "resource_scope": {"action_key": CONSUMER, "nonce": "n" * 32,
+                           "scope_id": "unit-1"}}))
+    seen = reader_lease.inspect_claim_context(queue, CONSUMER)
+    assert seen["ok"] is True
+    assert seen["inspection"]["qualified"] is False  # type: ignore[index]
+    assert seen["inspection"]["nonce"] == "n" * 32  # type: ignore[index]
+    # The inspection carries no launch binding, so strict context refuses.
+    env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
+           "PRISMABUILD_RESIDENCY_MAP": str(
+               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
+    assert reader_lease.injected_context(
+        queue, env=env)["refusal"] == "no-launch-context"
 
 
 def test_acquire_for_carries_fleet_identity_into_refs(fleet) -> None:
@@ -1077,3 +1107,171 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
+
+
+def test_release_refs_keeps_worker_correspondence(fleet) -> None:
+    """A certificate for one worker incarnation never frees another's ref."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "w2.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x18" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/w2.safetensors", staged, 4096)
+    acquired = _acquire(queue, MOVER, "worker-token",
+                        holder={"host": "test-host", "worker": "worker-7",
+                                "pid": 11})
+    assert acquired["ok"]
+    target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
+              "ref_id": acquired["ref_id"]}
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    other_worker = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+                    "worker": "worker-9", "host": "test-host"}
+    _attest(queue, scope_empty=True, worker="worker-9")
+    refused = reader_lease.release_refs(queue, [target], dict(other_worker))
+    assert refused["ok"] is False, refused
+    assert refused["skipped"] == ["%s: worker mismatch" % acquired["ref_id"]]
+    assert staged.exists()
+    same_worker = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+                   "worker": "worker-7", "host": "test-host"}
+    _attest(queue, scope_empty=True, worker="worker-7")
+    freed = reader_lease.release_refs(queue, [target], dict(same_worker))
+    assert freed["ok"] is True, freed
+
+
+def test_export_after_release_keeps_full_proof(tmp_path) -> None:
+    """Repeated export after release keeps retired/empty/evidence detail."""
+
+    authority = _broker(tmp_path / "broker-state")
+    req, record = _broker_create(authority)
+    _broker_token_call(authority, req, record, "stop")
+    _broker_token_call(authority, req, record, "release")
+    first = _broker_token_call(authority, req, record, "export_stopped")
+    second = _broker_token_call(authority, req, record, "export_stopped")
+    assert first["released"] is True
+    assert second["released"] is True
+    assert second["empty"] is True
+    assert first == second
+
+
+def test_egress_auto_reclaims_contained_pins(fleet) -> None:
+    """No manual release_refs: terminal + proof present, egress frees itself."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "auto.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x19" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/auto.safetensors", staged, 4096)
+    acquired = _acquire(queue, MOVER, "auto-token")
+    assert acquired["ok"]
+    _attest(queue, scope_empty=True)
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                                  stage_root=str(stage))
+    assert receipt["auto_reclaimed"] == [acquired["ref_id"]]
+    assert not staged.exists()
+    assert receipt["complete"] is True
+    assert receipt["entries_deleted"] == 1
+
+
+def test_bare_withdrawn_record_frees_nothing(fleet) -> None:
+    """A withdrawal note saying withdrawn, without attempt telemetry, retains."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "wd.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x1a" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/wd.safetensors", staged, 4096)
+    acquired = _acquire(queue, MOVER, "withdrawn-token")
+    assert acquired["ok"]
+    target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
+              "ref_id": acquired["ref_id"]}
+    _attest(queue, scope_empty=True)
+    withdrawn = queue.dir(pool.WITHDRAWN)
+    withdrawn.mkdir(parents=True, exist_ok=True)
+    (withdrawn / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "reason": "superseded"}))
+    cert = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+            "host": "test-host"}
+    refused = reader_lease.release_refs(queue, [target], dict(cert))
+    assert refused["ok"] is False
+    assert refused["reason"] == "no-terminal-evidence-retain"
+    kept = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                               stage_root=str(stage))
+    assert staged.exists()
+    assert kept["entries_deleted"] == 0
+
+
+def test_resolve_window_covers_from_published_material(fleet) -> None:
+    """PQ cover lookup: keys in, covers+expected out; gaps refuse; nothing invented."""
+
+    queue, stage = fleet
+    first = stage / "m" / "00.bin"
+    second = stage / "m" / "01.bin"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"\x21" * 1024)
+    second.write_bytes(b"\x22" * 1024)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/pkg/shard.bin", first, 1024, "b" * 64)
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": "a" * 64,
+        "entries": {"1048576:/mnt/shared/pkg/big.bin": {
+            "stage_path": str(second), "bytes": 1024,
+            "sha256": "c" * 64, "offset": 1048576}}})
+    identity = reader_lease.stat_identity(str(second))
+    assert identity is not None
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+        generation=reader_lease.mint_generation(),
+        entries={"1048576:/mnt/shared/pkg/big.bin": {
+            "stage_path": str(second), "bytes": 1024, "sha256": "c" * 64,
+            "file_id": identity}})
+    resolved = reader_lease.resolve_window_covers(
+        queue, consumer_action_key=CONSUMER, tier_id=TIER, epoch="",
+        keys=["0:/mnt/shared/pkg/shard.bin",
+              "1048576:/mnt/shared/pkg/big.bin"],
+        manifest_sha256="a" * 64, residency_root=root)
+    assert resolved["ok"], resolved
+    assert sorted(cover["mover_action_key"]  # type: ignore[index]
+                  for cover in resolved["covers"]) == sorted([MOVER, MOVER2])
+    assert sorted(resolved["expected"]) == [  # type: ignore[index]
+        "0:/mnt/shared/pkg/shard.bin", "1048576:/mnt/shared/pkg/big.bin"]
+    gapped = reader_lease.resolve_window_covers(
+        queue, consumer_action_key=CONSUMER, tier_id=TIER, epoch="",
+        keys=["0:/mnt/shared/pkg/shard.bin", "9:/mnt/shared/pkg/nope.bin"],
+        manifest_sha256="a" * 64, residency_root=root)
+    assert gapped == {"ok": False, "refusal": "source-coverage-gap"}
+    whole = reader_lease.resolve_window_covers(
+        queue, consumer_action_key=CONSUMER, tier_id=TIER, epoch="",
+        keys=None, manifest_sha256="a" * 64, residency_root=root)
+    assert whole["ok"] and len(whole["expected"]) == 2  # type: ignore[index]
+    # The lookup feeds acquire directly: selection proves under the lock.
+    acquired = reader_lease.acquire(
+        queue, consumer_action_key=CONSUMER, attempt=ATTEMPT, tier_id=TIER,
+        epoch="", span={"start_bytes": 0, "end_bytes": 2048},
+        holder=HOLDER, acquire_token="lookup-token",
+        covers=resolved["covers"], expected=resolved["expected"],  # type: ignore[index]
+        residency_root=root)
+    assert acquired["ok"], acquired

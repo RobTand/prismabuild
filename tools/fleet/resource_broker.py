@@ -530,19 +530,30 @@ class Authority:
                 return {'ok':True,'scope_id':scope,'released':True}
             if record is None or not hmac.compare_digest(token,record['token']):
                 raise PermissionError('attempt authority does not match')
-            if record.get('released_unix'):
-                # Recovery after a worker crash may repeat cleanup. Retain
-                # authority, but never touch a subsequently recreated group.
-                return {'ok':True,'scope_id':scope,'released':True,**self._stop_details(record)}
             if op=='export_stopped':
-                # Read-only verdict for containment export: the token holder
-                # learns whether this attempt's scope provably stopped and
-                # empty, without mutating authority.  A stopped-but-populated
-                # scope -- unresolved Docker tickets, a live cgroup --
-                # exports empty False, which authorizes nothing.  The
-                # membership lane files queue attestations from this verdict;
-                # reader containment additionally requires terminal broker
-                # telemetry, so the verdict alone never frees a ref.
+                # Read-only verdict for containment export, BEFORE the
+                # released-record shortcut below: a repeated export after
+                # release must keep the full proof (retired/empty/evidence),
+                # not the shortcut's reduced shape.  The token holder (or
+                # the membership lane it hands the verdict to) learns
+                # whether this attempt's scope provably stopped and empty,
+                # without mutating authority.  Unknown kernel state after a
+                # reboot answers released only through the absent-group rule
+                # above; a stopped-but-populated scope -- unresolved Docker
+                # tickets, a live cgroup -- exports empty False, which
+                # authorizes nothing.  The membership lane files queue
+                # attestations from this verdict; reader containment
+                # additionally requires terminal broker telemetry, so the
+                # verdict alone never frees a ref.
+                if record.get('released_unix'):
+                    try:empty=self.backend.empty(scope)
+                    except Exception:empty=not self.backend.exists(scope)
+                    return {'ok':True,'scope_id':scope,'stopped':True,
+                            'empty':bool(empty),'released':True,
+                            'retired':bool(record.get('retired_unix')),
+                            'settled':bool(record.get('settled_unix')),
+                            'tickets_pending':bool(record.get('container_tickets')) and not empty,
+                            **self._stop_details(record)}
                 if not record.get('stopped_unix'):
                     raise ValueError('scope not stopped')
                 try:empty=self.backend.empty(scope)
@@ -553,6 +564,10 @@ class Authority:
                         'settled':bool(record.get('settled_unix')),
                         'tickets_pending':bool(record.get('container_tickets')) and not empty,
                         **self._stop_details(record)}
+            if record.get('released_unix'):
+                # Recovery after a worker crash may repeat cleanup. Retain
+                # authority, but never touch a subsequently recreated group.
+                return {'ok':True,'scope_id':scope,'released':True,**self._stop_details(record)}
             if record.get('pending'):
                 if (op not in {'stop','release'} or record.get('launched_unix')
                         or record.get('container_tickets') or not self.backend.empty(scope)):

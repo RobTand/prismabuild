@@ -5268,6 +5268,56 @@ class PoolQueue:
         return scope
 
     @_serialized_key
+    def _persist_reader_scope_proof(self, record: Mapping[str, object],
+                                      scope, released: object) -> None:
+        """File the broker's stopped-and-empty verdict for reader containment.
+
+        Called with the broker release verdict in hand (pool resource-scope
+        cleanup owns this hunk, not the membership retry branch): the
+        release refused unless the scope provably stopped and emptied, so
+        this file is the broker's proof, not a caller assertion.  The
+        egress's automatic reclamation reads it together with the attempt's
+        terminal broker telemetry; either alone authorizes nothing.
+        Best-effort: raises only for programming errors, and the caller
+        contains every other failure without failing the cleanup.
+        """
+
+        from prismabuild import reader_lease
+
+        action_key = str(record.get("action_key") or "")
+        nonce = str(getattr(scope, "nonce", "") or "")
+        scope_id = str(getattr(scope, "unit", "") or "")
+        if len(action_key) != 64 or not nonce or not scope_id:
+            return  # unbound verdicts are not proof; retain as before
+        payload = {
+            "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+            "action_key": action_key,
+            "nonce": nonce,
+            "scope_id": scope_id,
+            "host": socket.gethostname(),
+            "worker": str(record.get("claimed_by") or ""),
+            "scope_empty": True,
+            "released": bool(isinstance(released, Mapping)
+                             and released.get("released")),
+            "retired": bool(isinstance(released, Mapping)
+                            and released.get("retired")),
+            "termination_evidence": (
+                dict(released.get("termination_evidence"))
+                if isinstance(released, Mapping)
+                and isinstance(released.get("termination_evidence"), Mapping)
+                else None),
+            "unix": time.time(),
+        }
+        path = reader_lease.attestation_path(self, action_key, nonce)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(tmp, "w") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion",
         scope_only: bool = False,
@@ -5358,6 +5408,20 @@ class PoolQueue:
                 except Exception as exc:                             # noqa: BLE001
                     settle_error = f"{type(exc).__name__}: {exc}"
             released = scope.release()
+            # The broker just proved this scope stopped and empty (its
+            # release refuses otherwise): persist that verdict as the
+            # reader-containment attestation for this attempt, so a staged
+            # range its readers pinned can be reclaimed automatically once
+            # the terminal record lands.  Best-effort and contained: proof
+            # persistence must never fail a cleanup that already proved
+            # emptiness -- a missing file retains, exactly as before.
+            try:
+                self._persist_reader_scope_proof(record, scope, released)
+            except Exception as exc:                             # noqa: BLE001
+                telemetry = dict(telemetry) if isinstance(telemetry, Mapping) else {}
+                telemetry.setdefault(
+                    "proof_persistence_error",
+                    f"{type(exc).__name__}: {exc}")
             if scope.authority_path is not None:
                 # The scope is empty: nothing will sample it again, and no
                 # holder remains for admission to attribute it to. The shared

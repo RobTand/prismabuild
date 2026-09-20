@@ -724,6 +724,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     bytes_deleted = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
+    auto_reclaimed: list[str] = []
     retiring_written = False
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
@@ -759,21 +760,45 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             blind = False
         own_generation: str | None = None
         if not blind:
+            # Automatic reclamation first: refs whose attempts are
+            # provably contained (terminal broker telemetry plus
+            # broker-persisted proof) retire here, so ordinary
+            # completion, crash/withdrawal cleanup and old-attempt drains
+            # free their pins without an operator.  Whatever stays is a
+            # genuinely live reader, and only that defers.
+            if pins:
+                reclaimed = reader_lease.auto_reclaim(
+                    queue, consumer_action_key=consumer_action_key,
+                    residency_root=root)
+                auto_reclaimed.extend(reclaimed["released"])
+                if reclaimed["released"]:
+                    pins, pin_taint_again = reader_lease.live_for(
+                        queue, wanted, residency_root=root)
+                    if pin_taint_again:
+                        errors.extend(
+                            f"ownership uncertain: {item}"
+                            for item in pin_taint_again)
+                        owners, claimed = {}, set()
+                        pins, source_paths = {}, set()
+                        blind = True
             # The retiring mark this deferral may file binds the material
             # generation, never the path: without a sidecar the generation
             # is unknowable, so a pinned legacy range taints instead of
             # filing a mark that could wedge the path's future generations.
-            material = reader_lease.read_material(
-                root, consumer_action_key, mover_action_key)
-            if isinstance(material, dict):
-                own_generation = str(material.get("generation") or "")
-            elif material is not None:
-                errors.append(
-                    f"ownership uncertain: material unreadable for "
-                    f"{mover_action_key[:12]}")
-                owners, claimed = {}, set()
-                pins, source_paths = {}, set()
-                blind = True
+            # Skipped when the reclaim re-read already went blind: the
+            # pass is fail-closed and needs no further evidence.
+            if not blind:
+                material = reader_lease.read_material(
+                    root, consumer_action_key, mover_action_key)
+                if isinstance(material, dict):
+                    own_generation = str(material.get("generation") or "")
+                elif material is not None:
+                    errors.append(
+                        f"ownership uncertain: material unreadable for "
+                        f"{mover_action_key[:12]}")
+                    owners, claimed = {}, set()
+                    pins, source_paths = {}, set()
+                    blind = True
     else:
         owners, claimed = {}, set()
         pins, source_paths = {}, set()
@@ -877,6 +902,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
         "entries_deferred": deferred,
         "live_pins": sorted(set(live_pins)),
+        "auto_reclaimed": sorted(set(auto_reclaimed)),
         "retiring": retiring_written,
         "bytes_deleted": bytes_deleted,
         "tokens_released": released,

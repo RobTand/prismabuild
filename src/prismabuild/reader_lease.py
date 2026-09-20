@@ -836,7 +836,9 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
     def telemetry_names(telemetry: Mapping[str, object]) -> bool:
         return (str(telemetry.get("action_key") or "") == action_key
                 and str(telemetry.get("nonce") or "") == nonce
-                and str(telemetry.get("scope_unit") or "") == scope_id)
+                and str(telemetry.get("scope_unit") or "") == scope_id
+                and str(telemetry.get("host") or "")
+                == str(attestation.get("host") or ""))
 
     terminal_state = None
     names_this_attempt: bool | None = None
@@ -897,7 +899,6 @@ def release_refs(queue, refs: list[dict[str, str]],
                 "skipped": [str(ref.get("ref_id", "?")) for ref in refs]}
     attempt_nonce = str(certificate.get("nonce") or "")
     attempt_scope = str(certificate.get("scope_id") or "")
-    cert_host = str(certificate.get("host") or "")
     attestation = read_scope_attestation(
         queue, str(certificate.get("action_key") or ""), attempt_nonce)
     attested_host = (str(attestation.get("host") or "")
@@ -955,7 +956,15 @@ def release_refs(queue, refs: list[dict[str, str]],
                 # one host never frees another host's ref.
                 skipped.append(f"{ref_id}: host mismatch")
                 continue
-            _ = cert_host  # bound at certificate verification already
+            cert_worker = str(certificate.get("worker") or "")
+            held_worker = (str(held_holder.get("worker") or "")
+                           if isinstance(held_holder, Mapping) else "")
+            if cert_worker and held_worker and held_worker != cert_worker:
+                # Exact host/worker/action/attempt correspondence: a
+                # certificate for one worker incarnation never frees
+                # another's ref.
+                skipped.append(f"{ref_id}: worker mismatch")
+                continue
             del refs_map[ref_id]
             released.append(ref_id)
             if refs_map:
@@ -973,6 +982,171 @@ def release_refs(queue, refs: list[dict[str, str]],
                     released.remove(ref_id)
     return {"ok": not skipped, "reason": reason, "released": released,
             "skipped": skipped}
+
+
+# --------------------------------------------------------------------------
+# Automatic reclamation: the egress frees contained attempts by itself
+# --------------------------------------------------------------------------
+
+def auto_reclaim(queue, *, consumer_action_key: str,
+                 residency_root=None) -> dict[str, object]:
+    """Release exactly the refs whose attempts are provably contained.
+
+    For every pin of this consumer, group refs by attempt and verify each
+    attempt's terminal broker telemetry plus the broker-persisted proof;
+    release only the refs that verify, never anything else.  Called by the
+    egress when live pins block a delete, so ordinary completion,
+    crash/withdrawal cleanup, and old-attempt drains retire without an
+    operator once their evidence exists.  Missing evidence retains with
+    reasons, per attempt, exactly as manual containment would.
+    Returns ``{"released": [...], "retained": {ref_id: reason}}``.
+    """
+
+    root = leases_root(queue, residency_root)
+    directory = root / consumer_action_key
+    try:
+        names = sorted(entry.name for entry in os.scandir(directory)
+                       if entry.is_file() and entry.name.endswith(".lease.json"))
+    except OSError:
+        return {"released": [], "retained": {}}
+    released: list[str] = []
+    retained: dict[str, str] = {}
+    for name in names:
+        path = directory / name
+        pin = _read_pin(path)
+        if pin is None or isinstance(pin, Exception):
+            continue
+        refs_map = pin["refs"]
+        assert isinstance(refs_map, dict)
+        pin_id = str(pin["pin_id"])
+        by_attempt: dict[tuple[str, str], list[str]] = {}
+        for ref_id, ref in refs_map.items():
+            if not isinstance(ref, dict):
+                continue
+            attempt = ref.get("attempt")
+            if not isinstance(attempt, dict):
+                continue
+            by_attempt.setdefault(
+                (str(attempt.get("nonce") or ""),
+                 str(attempt.get("scope_id") or "")),
+                []).append(ref_id)
+        for (nonce, scope_id), ref_ids in by_attempt.items():
+            if not nonce or not scope_id:
+                for ref_id in ref_ids:
+                    retained[ref_id] = "attempt unbound"
+                continue
+            holder0 = refs_map[ref_ids[0]]
+            holder = holder0.get("holder") if isinstance(holder0, dict) else None
+            certificate: dict[str, object] = {
+                "action_key": consumer_action_key,
+                "nonce": nonce,
+                "scope_id": scope_id,
+            }
+            if isinstance(holder, Mapping):
+                for field in ("worker", "host"):
+                    if isinstance(holder.get(field), str) and holder.get(field):
+                        certificate[field] = holder[field]
+            outcome = release_refs(
+                queue,
+                [{"consumer_action_key": consumer_action_key,
+                  "pin_id": pin_id, "ref_id": ref_id} for ref_id in ref_ids],
+                certificate, residency_root=residency_root)
+            released.extend(outcome["released"])
+            reason = str(outcome["reason"])
+            for skipped in outcome["skipped"]:
+                retained[str(skipped).split(":")[0]] = reason
+    return {"released": released, "retained": retained}
+
+
+# --------------------------------------------------------------------------
+# Window cover lookup (PQ-facing helper): what to acquire, without inventing
+# --------------------------------------------------------------------------
+
+def resolve_window_covers(queue, *, consumer_action_key: str,
+                          tier_id: str, epoch: str,
+                          keys: list[str] | None = None,
+                          manifest_sha256: str | None = None,
+                          residency_root=None, context: dict | None = None
+                          ) -> dict[str, object]:
+    """Resolve a window's covering material from PB-owned records.
+
+    Given requested map keys (or ``None`` for a mover's whole window),
+    returns the ``covers``/``expected``/tier/epoch/stage-root tuple
+    :func:`acquire` needs -- read off the consumer's fragments plus
+    publish-time sidecars, batched at window granularity, never per
+    tensor.  Callers (including PQ) must not invent RAM covers from SSD
+    leads: only material the fleet published qualifies.  Freshness is
+    re-validated under the ownership lock inside :func:`acquire`; this
+    lookup is selection, not admission.
+
+    Returns ``{"ok": True, "tier_id": ..., "epoch": ..., "stage_root":
+    ..., "covers": [...], "expected": {...}}`` or ``{"ok": False,
+    "refusal": ...}``.
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import residency_map as map_mod
+
+    root = Path(residency_root if residency_root is not None
+                else Path(queue.root) / pool_mod.RESIDENCY)
+    if context is None:
+        context = {}
+    try:
+        names = sorted(entry.name for entry in os.scandir(root / "material"
+                                                          / consumer_action_key)
+                       if entry.is_file() and entry.name.endswith(".json"))
+    except OSError:
+        return {"ok": False, "refusal": "unpublished"}
+    covers: list[dict[str, str]] = []
+    expected: dict[str, dict[str, object]] = {}
+    stage_root = ""
+    for name in names:
+        mover = name[:-len(".json")]
+        if len(mover) != 64 or any(c not in _HEX for c in mover):
+            continue
+        material = read_material(root, consumer_action_key, mover)
+        if not isinstance(material, dict):
+            continue
+        if str(material.get("tier_id") or "") != tier_id:
+            continue
+        if str(material.get("epoch") or "") != str(epoch or ""):
+            continue
+        if (manifest_sha256 is not None
+                and str(material.get("manifest_sha256") or "")
+                != manifest_sha256):
+            continue
+        try:
+            with open(map_mod.fragment_path(
+                    root, consumer_action_key, mover)) as stream:
+                fragment = map_mod.validate_fragment(json.load(stream))
+        except (OSError, ValueError):
+            continue
+        if not stage_root:
+            stage_root = str(fragment.get("stage_root") or "")
+        material_entries = material.get("entries")
+        assert isinstance(material_entries, dict)
+        covers.append({
+            "mover_action_key": mover,
+            "manifest_sha256": str(material.get("manifest_sha256") or ""),
+        })
+        for key, mention in material_entries.items():
+            if keys is not None and str(key) not in keys:
+                continue
+            if not isinstance(mention, dict):
+                continue
+            expected[str(key)] = {
+                "bytes": mention.get("bytes"),
+                "sha256": mention.get("sha256"),
+            }
+    if not covers:
+        return {"ok": False, "refusal": "unpublished"}
+    if keys is not None:
+        missing = [key for key in keys if key not in expected]
+        if missing:
+            return {"ok": False, "refusal": "source-coverage-gap"}
+    return {"ok": True, "tier_id": tier_id, "epoch": str(epoch or ""),
+            "stage_root": stage_root, "covers": covers,
+            "expected": expected}
 
 
 # --------------------------------------------------------------------------
@@ -1587,38 +1761,73 @@ def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
 # Injected reader context (SDK): identity from the execution environment
 # --------------------------------------------------------------------------
 
+def _read_claim(queue, action_key: str):
+    from prismabuild import pool as pool_mod
+
+    try:
+        return pool_mod._read_json(
+            queue.item_path(pool_mod.CLAIMED, action_key))
+    except (OSError, pool_mod.PoolContractError) as exc:
+        return exc
+
+
+def inspect_claim_context(queue, action_key: str) -> dict[str, object]:
+    """Legacy inspection of a live claim's identity; never acquiring.
+
+    Reports what the live claim row names (attempt, worker, holder) for
+    diagnostics and offline inspection.  The result is UNQUALIFIED: it
+    must never back an acquire, because a superseded process reading a
+    successor's claim would bind the wrong attempt.  Strict readers use
+    :func:`injected_context`, which requires launch-bound identity.
+    """
+
+    claim = _read_claim(queue, action_key)
+    if isinstance(claim, Exception):
+        return {"ok": False, "refusal": f"claim-unreadable: {claim}"}
+    if not isinstance(claim, Mapping):
+        return {"ok": False, "refusal": "no-claim-context"}
+    control = claim.get("resource_scope")
+    nonce = ""
+    scope_id = ""
+    if isinstance(control, Mapping):
+        candidate = control.get("nonce")
+        if isinstance(candidate, str) and candidate:
+            nonce = candidate
+        for field in ("scope_id", "scope_unit", "unit"):
+            unit = control.get(field)
+            if isinstance(unit, str) and unit:
+                scope_id = unit
+                break
+    return {"ok": True, "inspection": {
+        "action_key": action_key,
+        "nonce": nonce,
+        "scope_id": scope_id,
+        "worker": claim.get("claimed_by"),
+        "qualified": False,
+    }}
+
+
 def injected_context(queue=None, *, env=None, residency_root=None):
-    """Build this reader's identity from PB-owned sources, never invented.
+    """Build this reader's identity from launch-bound sources, never guessed.
 
-    Precedence, strongest first:
+    STRICT: requires a COMPLETE launch-bound nonce/scope pair
+    (``ACTION_NONCE_ENV``/``ACTION_SCOPE_ENV``, set by the resource_exec
+    proxy from the exact launch identity) AND a COMPLETE matching current
+    control record (the live claim row's broker-issued ``resource_scope``
+    naming the same nonce and scope).  Either half missing, or any
+    mismatch, refuses: a strict pin is never bound from a live claim
+    alone, and launch values with no matching claim to check against are
+    unbound.  Offline inspection without acquiring is
+    :func:`inspect_claim_context`.
 
-    1. Launch-bound identity: ``ACTION_NONCE_ENV``/``ACTION_SCOPE_ENV``,
-       set by the resource_exec proxy from the exact launch identity
-       (action key + nonce, never the broker token).  When present, the
-       live claim row must name the same attempt -- a superseded process
-       holding an old launch identity refuses (``attempt-superseded``)
-       instead of silently adopting its successor's attempt.  An old
-       process is never bound from whichever live claim merely exists.
-    2. Live-claim identity: the claim row's broker-issued
-       ``resource_scope`` control record (nonce + scope unit).  Marked
-       ``attempt_source: "live-claim"`` (local path / legacy launches).
-
-    The host is the claim's PB-qualified launcher host (fleet alias), not
-    the local hostname: inside Docker the local name is a container
-    hostname no census would find.  The worker is the claim's
-    ``claimed_by``.  A worker incarnation binds when a source publishes
-    one, and is otherwise absent rather than guessed.  The helper
-    generation root is the tree this module was imported from (the sealed
-    generation when imported via the published runtime).
-
-    No broker token crosses into reader context.  Any gap refuses --
-    a context with a guessed nonce, scope or worker would pin (or free)
-    another attempt's bytes.
-
-    Returns ``{"ok": True, "ctx": {...}}`` or ``{"ok": False,
-    "refusal": ...}``.  ``ctx`` carries ``queue_root, action_key, nonce,
-    scope_id, worker, host, incarnation|None, attempt_source, map_path,
-    helper_root``.
+    The host is the claim's PB-qualified launcher host (fleet alias) via
+    the queue's holder resolution, never the container-local hostname.
+    The worker -- and the holder incarnation -- is the claim's full
+    ``claimed_by`` identity (repository convention
+    ``<host>:<pid>:<tag>``: the worker process incarnation that launched
+    this attempt, documented here rather than re-derived from a clock).
+    No broker token crosses into reader context.  Returns ``{"ok": True,
+    "ctx": {...}}`` or ``{"ok": False, "refusal": ...}``.
     """
 
     from prismabuild import pool as pool_mod
@@ -1675,22 +1884,17 @@ def injected_context(queue=None, *, env=None, residency_root=None):
             claim_nonce = candidate
     launch_nonce = source.get(ACTION_NONCE_ENV) or ""
     launch_scope = source.get(ACTION_SCOPE_ENV) or ""
-    if launch_nonce or launch_scope:
-        # Launch-bound: the process knows its own attempt.  The live claim
-        # must agree where it speaks; a superseded process refuses.
-        if not launch_nonce or not launch_scope:
-            return {"ok": False, "refusal": "partial-launch-context"}
-        if claim_nonce and claim_nonce != launch_nonce:
-            return {"ok": False, "refusal": "attempt-superseded"}
-        if claim_scope and claim_scope != launch_scope:
-            return {"ok": False, "refusal": "attempt-superseded"}
-        nonce, scope_id = launch_nonce, launch_scope
-        attempt_source = "launch-env"
-    else:
-        if not claim_nonce or not claim_scope:
-            return {"ok": False, "refusal": "no-attempt-context"}
-        nonce, scope_id = claim_nonce, claim_scope
-        attempt_source = "live-claim"
+    # Strict: a COMPLETE launch-bound pair plus a COMPLETE matching
+    # control record.  No live-claim fallback -- binding from whichever
+    # claim merely exists is the successor-adoption path.
+    if not launch_nonce or not launch_scope:
+        return {"ok": False, "refusal": "no-launch-context"}
+    if not claim_nonce or not claim_scope:
+        return {"ok": False, "refusal": "no-control-context"}
+    if claim_nonce != launch_nonce or claim_scope != launch_scope:
+        return {"ok": False, "refusal": "attempt-superseded"}
+    nonce, scope_id = launch_nonce, launch_scope
+    attempt_source = "launch-env"
     worker = claim.get("claimed_by")
     if not isinstance(worker, str) or not worker:
         return {"ok": False, "refusal": "no-worker-context"}
@@ -1703,9 +1907,10 @@ def injected_context(queue=None, *, env=None, residency_root=None):
         host = None
     if not isinstance(host, str) or not host:
         return {"ok": False, "refusal": "no-host-context"}
-    incarnation = claim.get("worker_incarnation")
-    if not isinstance(incarnation, str) or not incarnation:
-        incarnation = None
+    # The holder incarnation IS the full claimed_by identity
+    # (<host>:<pid>:<tag>): the worker process incarnation that launched
+    # this attempt.  No separate clock ID is invented.
+    incarnation = worker
     return {"ok": True, "ctx": {
         "queue_root": str(queue.root),
         "action_key": action_key,
@@ -1820,6 +2025,8 @@ __all__ = [
     "write_retiring",
     "read_scope_attestation",
     "injected_context",
+    "inspect_claim_context",
+    "resolve_window_covers",
     "acquire_for",
     "adopted_generation",
 ]
