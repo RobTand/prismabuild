@@ -48,14 +48,19 @@ def _staged_once(tmp_path: Path):
     return queue, manifest, files_len
 
 
-def _ram_fragment_for(mapping: dict, base: dict, epoch: str, *, digest: str) -> dict:
+def _ram_fragment_for(mapping: dict, base: dict, ram: Path, epoch: str,
+                        *, digest: str) -> dict:
     key = next(iter(mapping["entries"]))
+    ram.mkdir(parents=True, exist_ok=True)
+    staged = Path(mapping["entries"][key]["stage_path"])
+    placed = ram / staged.name
+    placed.write_bytes(staged.read_bytes())
     fragment = json.loads(json.dumps(base))
     fragment["tier_id"] = "ram:dl380g10"
     fragment["epoch"] = epoch
     entry = dict(fragment["entries"][key])
     entry["sha256"] = digest
-    entry["stage_path"] = str(mapping.get("stage_root", "") + "/x")
+    entry["stage_path"] = str(placed)
     fragment["entries"] = {key: entry}
     return fragment
 
@@ -67,7 +72,8 @@ def test_mismatched_ram_copy_refuses_overlay(tmp_path: Path) -> None:
                  residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(fragments)
     base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
-    bad = _ram_fragment_for(mapping, base, "epoch-1", digest="0" * 64)
+    bad = _ram_fragment_for(mapping, base, tmp_path / "ram", "epoch-1",
+                            digest="0" * 64)
     with pytest.raises(residency_map.ResidencyMapError):
         residency_map.overlay_ram(
             mapping, [bad], ram_tier_id="ram:dl380g10",
@@ -83,7 +89,7 @@ def test_matching_ram_copy_lays_ram_path(tmp_path: Path) -> None:
     key = next(iter(mapping["entries"]))
     base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
     good = _ram_fragment_for(
-        mapping, base, "epoch-1",
+        mapping, base, tmp_path / "ram", "epoch-1",
         digest=str(mapping["entries"][key]["sha256"]))
     overlaid = residency_map.overlay_ram(
         mapping, [good], ram_tier_id="ram:dl380g10",
@@ -103,9 +109,9 @@ def test_unstaged_entry_lookup_is_visible_not_silent(tmp_path: Path) -> None:
 def test_pool_tripwire_no_silent_fallback(tmp_path: Path) -> None:
     """chmod-000 pool after staging: staged reads succeed, pool reads raise."""
     queue, manifest, _ = _staged_once(tmp_path)
-    whole_declared = str(manifest["entries"][1]["path"])
+    whole_declared = str(manifest["entries"][0]["path"])
     pool_file = Path(whole_declared)
-    expected_sha = manifest["entries"][1]["sha256"]
+    expected_sha = manifest["entries"][0]["sha256"]
     os.chmod(pool_file, 0)
     try:
         fragments = [residency_map.validate_fragment(f) for f in
