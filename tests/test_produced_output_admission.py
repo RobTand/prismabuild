@@ -315,11 +315,15 @@ def test_runtime_binds_declared_template_not_caller_template(
     assert po.template_sha256(foreign) != po.template_sha256(declared)
 
 
-def test_pbrun_sealing_publish_claim_path(tmp_path: Path) -> None:
+def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
+                                           monkeypatch) -> None:
     import subprocess
 
     import pbrun as pbrun_mod
 
+    # Redirect the submitter's shared handles into the fixture: freeze seals
+    # against SH, so without this the test would ingest into the live CAS.
+    monkeypatch.setattr(pbrun_mod, "SH", tmp_path / "fleet")
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
