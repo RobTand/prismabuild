@@ -173,21 +173,6 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
                               "reported_unix": time.time()}})
 
 
-def _claim_row(queue: pool.PoolQueue, key: str) -> None:
-    """Move one published mover row into ``claimed``: a live reader.
-
-    The live half of a landed range -- the state a claimed mover that
-    finished its copy keeps until its consumer reads past it.
-    """
-
-    source = queue.item_path(pool.READY, key)
-    item = json.loads(source.read_text())
-    source.unlink()
-    item.update({"action_key": key, "claimed_unix": time.time(),
-                 "claimed_by": "adoption-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
-
-
 @contextmanager
 def _lock_held_elsewhere(queue: pool.PoolQueue, mover: str):
     """Hold one mover's transition lock from another thread, as an egress does.
@@ -591,20 +576,11 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
     orphan_files = _stage_range(q, mover=_hexkey("stalemover0"),
                                 consumer="8" * 64, stage=stage, ordinal=1,
                                 manifest="e" * 64)
-    # FIRST's own window is live and landed: its lead's row is published
-    # and claimed (a ready row would double-count in the gate's queued
-    # term; a claimed one is simply a live reader holding its bytes), and
-    # its plan is final so no protected next of its own is in play.
-    first_plan = _plan(q, FIRST, label="first", phases=1)
-    residency_plan.freeze(q, first_plan)
-    lead_row = first_plan["phases"][0]["mover_row"]  # type: ignore[index]
-    q.publish(action_key=_hexkey("firstmover0"),
-              cas_root=lead_row["cas_root"],  # type: ignore[arg-type]
-              checkout_root=lead_row["checkout_root"],  # type: ignore[arg-type]
-              worker_script=lead_row["worker_script"],  # type: ignore[arg-type]
-              tags=["dl380g10"], resources=lead_row["resources"],  # type: ignore[arg-type]
-              residency=lead_row["residency"])  # type: ignore[arg-type]
-    _claim_row(q, _hexkey("firstmover0"))
+    # One phase: FIRST is final once its single range lands, so the only
+    # protected next in play is the newcomer's own; FIRST's claim keeps
+    # its range a live reader's, never a sweep candidate.
+    _publish_consumer(q, FIRST, _plan(q, FIRST, label="first", phases=1))
+    _claim_with_progress(q, FIRST, phase="phase-0")
     _publish_consumer(q, SECOND, _plan(q, SECOND, label="second"))
     assert q.tier_ledger(TIER).available()["stage_gib"] == 2
 
