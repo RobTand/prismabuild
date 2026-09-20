@@ -1,0 +1,111 @@
+{
+  "complete": {
+    "status": "not-this-step"
+  },
+  "contract_commit": "e91a55d",
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "ledger_commit": "c4dd607671 (reviewed production source, final acceptance/design documentation follows)",
+  "merge": {
+    "branch": "feat/worker-expansion-join-resign-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/727",
+    "note": "Root-reviewed join/resign implementation using existing roster, broker gate, pool claim/withdrawal lineage and worker reaper. Component qualification only; no live worker was joined or resigned by these fixtures, no runtime capability advertised.",
+    "remaining_gaps": [
+      "Deployed native/container worker JOIN/RESIGN and containment on both Sparks",
+      "Heterogeneous runtime qualification beyond CPU capability fixtures",
+      "Cohort barrier #567, WSL-GPU limits and newly introduced execution backends"
+    ],
+    "validated_repairs": [
+      {
+        "actions": [
+          "b65e3678e8f8",
+          "ef46b65cef8a",
+          "1a9f66674bf6",
+          "b477211853a6",
+          "4a7965e42d3c"
+        ],
+        "result": "179 passed, zero skips, terminal rc0 and CAS receipts; fetched source bundles differ only by PB closure and final design-note appendix",
+        "scope": "membership component",
+        "source": "f773c9e44cb8fe1daa1a5f573f156e15ad9248ef"
+      },
+      {
+        "actions": [
+          "b59647d1720c",
+          "064d48d277e3"
+        ],
+        "result": "92 passed, zero skips, exact committed production and docs source plus PB closure",
+        "scope": "broker/park overlap"
+      },
+      {
+        "actions": [
+          "3874d3f939d8",
+          "3bd4d8a94a69",
+          "c8b884777ab1",
+          "993739267331",
+          "dd264bf7cfb9",
+          "60ec29bb35fd"
+        ],
+        "result": "9 carrier passes plus198 overlapping integration passes; root verified actual source bundles (combined runs differ only by final29-line design appendix and PB closure). R15 RED ad3f2bf6d616 has3behavioral failures on842766 plus test-only delta.",
+        "scope": "Exact-generation handoff carrier and all shared readers",
+        "source": "2d425dd0a00b6c5708d7744994bf0d403b8f7b76"
+      },
+      {
+        "actions": [
+          "597945ba17f4",
+          "d8f8e6e3d647",
+          "e012aaec7cc4",
+          "65145d69926b",
+          "1699baedf303",
+          "f6328d7141ab",
+          "d3cbb035af69",
+          "19d938967784"
+        ],
+        "result": "6270 passed, 3 failed, 4 skipped plus6 passed subtests. Failures: missing CLI help, un-repointed test queue constant, import bootstrap guard. All8 source bundles root-fetched: closure-only deltas. Four skips reported as counts only; reasons not emitted by this run. This original suite is not recorded as green.",
+        "scope": "Complete CPU regression suite before final tool-guard repairs",
+        "source": "324ffb6607bac95b7f27031274664a03ae11c6c9"
+      },
+      {
+        "actions": [
+          "710036f887a9",
+          "9fdfc3d5a0f3",
+          "91cb64e193d5"
+        ],
+        "result": "276 passed, zero skips. Root verified terminal rc0, logs, CAS receipts and all3 source bundles: closure-only deltas from committed source. No runtime deployment or live membership change.",
+        "scope": "Final repair of all3 suite failures plus publication/JOIN/busy-RESIGN regressions",
+        "source": "c4dd607671"
+      }
+    ]
+  },
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "schema": "pb.staged_read_acceptance.v1",
+  "scope": [
+    "FLEET-01",
+    "FLEET-02",
+    "FLEET-03",
+    "FLEET-04",
+    "FLEET-05",
+    "FLEET-06",
+    "FLEET-07",
+    "FLEET-08",
+    "FLEET-09",
+    "FLEET-10",
+    "FLEET-11",
+    "FLEET-12",
+    "FLEET-13",
+    "FLEET-14",
+    "FLEET-15"
+  ],
+  "step": "merge",
+  "validation": {
+    "lane": "Earlier scoped179+92+9+198 overlapping passes; full CPU6270passed/3failed/4skipped at324ff; all3 integration failures repaired and final276passed/0skipped atc4dd607671. Do not sum overlapping counts as unique coverage.",
+    "limitations": "Controlled broker/kernel peers and tiny data; full-suite four skips lacked emitted reasons. No live JOIN/RESIGN, heterogeneous fleet deployment, GPU or campaign performance claim. Final production changes after the complete suite are limited to CLI help, import bootstrap and test queue isolation; affected guards and membership tests rerun.",
+    "overlap": "92 broker/park tests at exact f773 source, additional verification not unique coverage",
+    "publication_layout": "RED8910f2aa90b8:2fail/1pass onR15+newtestonly; missing publication member and flat-layout import. GREEN30c2ed12c60f/7b3bea9fafd0/4891f5cd2d0f:55pass/0skip, exact final production with later acceptance-doc delta only. Rechecked in final276-pass gate.",
+    "red_evidence": "c33766fa761da2a314d00e70464d8b451438643643dc03c10d7ecd0972852f51: actual unreadable withdrawal census returns empty on99b96d; 1failed/34passed, rc1. Fetched source delta is new test plus PB closure only.",
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb728-root-acceptance.json"
+  }
+}
