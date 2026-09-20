@@ -1250,6 +1250,7 @@ def _spawn_role(role: str, args: list[str]) -> int:
 def ensure_roles(host: str, stop_requested=lambda: False, *,
                  holders: Collection[int] | None = None,
                  declared: list[tuple[str, list[str]]] | None = None,
+                 census: dict[str, list[int]] | None = None,
                  ) -> list[tuple[str, int]]:
     """Keep exactly one live child per declared role, **as declared**.
 
