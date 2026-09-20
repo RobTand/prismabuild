@@ -261,6 +261,13 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
                             batch_id="w0", tier=STAGE_TIER, mover_key=MOVER0)
     assert batch["ok"] is True
     _move(queue, batch, origin, stage, out_base, tmp_path, "w0")
+    # The owner finishes before the egress sweep: a live producer claim
+    # carries the window tier demand without movement argv, which the
+    # egress claimed-copy attribution must not read as a mover copy
+    # (owning lanes: lease/liveness distinguish producer holders;
+    # here the valid finish-then-sweep interleaving is exercised).
+    queue.finish(OWNER, status="executed", detail={"status": "executed"},
+                 claim_snapshot=bound["claimed"])
     retired = po.retire_batch(queue, instance, template, "w0",
                               stage_root=str(stage),
                               residency_root=str(out_base))
@@ -384,6 +391,14 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         _move(queue, batch, origin, stage, out_base, tmp_path, "full")
         total = BIG
 
+        # The owner finishes before the sweep (see durable test note on
+        # producer-holder attribution): containment proof persists for the
+        # later release; downstream reads proceed independently.
+        terminal = queue.finish(owner, status="executed", detail={})
+        assert terminal == queue.item_path(pool.DONE, owner)
+        proof = rlc.read_scope_attestation(queue, owner, nonce)
+        assert isinstance(proof, dict) and proof["scope_empty"] is True
+
         # A distinct downstream consumer pins the staged window: retirement
         # must refuse while the read is live.
         host = socket.gethostname()
@@ -436,10 +451,6 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
             paths=[str(origin / "full2.pt")])["ok"] is True
 
-        terminal = queue.finish(owner, status="executed", detail={})
-        assert terminal == queue.item_path(pool.DONE, owner)
-        proof = rlc.read_scope_attestation(queue, owner, nonce)
-        assert isinstance(proof, dict) and proof["scope_empty"] is True
         released = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
         assert released["ok"] is True, released
