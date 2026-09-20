@@ -4298,6 +4298,32 @@ def main(argv: list[str] | None = None) -> int:
                         help="append one JSON object per cycle here")
     args = parser.parse_args(argv)
 
+    # Every valid invocation is a box singleton, one-shot included: an
+    # operator's ``--once`` warms bytes and publishes records just as the
+    # service does, so exempting it would be the bypass this guard exists to
+    # close (#709).  Two readers warm the same bytes twice and publish
+    # contradictory receipts; on 2026-09-19 a duplicate supervisor's copy did
+    # exactly that and compounded the fill-capacity wedge.  The lock is taken
+    # here, by the process that serves, so the launcher cannot matter -- a
+    # supervisor, a stale generation's supervisor, or a hand-started loop all
+    # contend on one inode.  Safety never depends on naming the holder: the
+    # holder pid is a diagnostic from /proc/locks, and an unreadable one is
+    # still a refusal.  The descriptor is held for the process's whole life:
+    # released by its final close at exit, never unlinked.
+    try:
+        _singleton = runtime_gate.take_role_singleton(Path(__file__))
+    except runtime_gate.RoleLockHeld as held:
+        print(f"prewarm: refusing a second storage role; "
+              f"{runtime_gate.role_lock_path(Path(__file__))} is held by "
+              + (f"pid {held.holder}" if held.holder is not None
+                 else "an unreadable holder"),
+              file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+    except (OSError, RuntimeError) as exc:
+        print(f"prewarm: refusing to serve without the storage role "
+              f"singleton lock: {exc}", file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+
     mounts = MountMap(list(args.mount_map))
     if not args.dry_run and not mounts.usable():
         raise SystemExit(

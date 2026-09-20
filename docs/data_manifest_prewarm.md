@@ -705,6 +705,15 @@ process. Current storage loops detect the new generation between cycles and
 exit for the supervisor to replace them. An active read or pacing hold can
 delay that boundary, and an older loop may lack the rotation check.
 
+Any second instance refuses to start while the supervised role holds its
+host-local singleton lock (exit 3); the one-cycle form takes the same lock
+because it can publish a warm and its receipt too, so stop the role first if
+an operator cycle is needed.  A stopped (`T`) role holds that lock as well:
+the supervisor's log names the state, `SIGTERM` is queued until the process
+is continued, and a replacement cannot take the role until it exits.  Resume
+it with `kill -CONT <pid>`, or terminate it with `kill -TERM <pid>` followed
+by `kill -CONT <pid>`, then verify the replacement below.
+
 If the role needs a targeted restart, use its supervisor log to identify the
 storage child. Record its PID, parent PID, `/proc/<pid>/stat` start time,
 `/proc/<pid>/cmdline`, and service cgroup. Confirm that its parent is this

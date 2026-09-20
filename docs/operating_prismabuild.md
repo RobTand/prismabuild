@@ -111,7 +111,11 @@ alone is larger than the budget.
 
 Current loops detect a new generation between cycles and exit for supervisor
 replacement. An active cycle can delay that boundary; older loops may lack
-the check. For a targeted restart, identify the storage child from its supervisor
+the check. Any second invocation of a role on the same box refuses to start
+while the supervised role holds its host-local singleton lock (exit 3); the
+one-cycle form takes the same lock because it can mint, announce and warm
+too. Stop the role first, or run the cycle on a box that is not serving that
+role. For a targeted restart, identify the storage child from its supervisor
 log and verify its PID/start time, parent supervisor, command line, service
 cgroup and old generation path. Recheck that identity immediately before
 sending `SIGTERM` to the exact child. A process-name match alone is insufficient.
@@ -3099,7 +3103,17 @@ graceful drain; publication's in-process re-exec still preserves running work.
 
 No shutdown timeout cancels an action. A worker blocked in filesystem I/O or
 an externally stopped role can keep the stop pending; inspect exact process
-identity, state and logs rather than treating elapsed time as completion. The
+identity, state and logs rather than treating elapsed time as completion.
+The supervisor names a stopped role itself rather than leaving it to `ps`:
+its log carries `role <name> pid <pid> state T (stopped)` when an owned role
+enters `T`/`t` (and a cleared line when it runs again), and the shutdown
+pending line names the state holding a stop open.  A stopped role keeps the
+role's host-local singleton lock, so no replacement starts while it is
+stopped -- that is the guard working, not a fault -- and `SIGTERM` to a
+stopped process is queued until it is continued.  To resume the role,
+`kill -CONT <pid>`; to remove it, `kill -TERM <pid>` then `kill -CONT
+<pid>`, and verify the replacement's PID/start time and a new cycle event.
+The
 stop covers this supervisor's attributed workers and roles, not manually
 started readers or unrelated users of `/mnt/shared`. Old shared offers may
 remain visible until their ordinary freshness interval expires. For mount

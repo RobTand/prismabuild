@@ -112,6 +112,11 @@ LIVE_DEFAULTS = (
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
     ("worker_loop", "PUBLICATION_LOCK_ROOT", "offer-publication"),
+    # Role singleton locks are host-local and per-uid (#709): left pointed at
+    # the live namespace, a routine ``ensure_roles`` or role-entrypoint test
+    # would contend with the box's own running role or file stray lock
+    # directories into /tmp.
+    ("worker_loop", "ROLE_LOCK_ROOT", "role-locks"),
     ("prewarm_loop", "SH", "fleet"),
     ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
@@ -193,6 +198,8 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         if (Path(getattr(module, "__file__", "")).name == "worker_loop.py"
                 and hasattr(module, "PUBLICATION_LOCK_ROOT")):
             module.PUBLICATION_LOCK_ROOT = root / "offer-publication"
+            if hasattr(module, "ROLE_LOCK_ROOT"):
+                module.ROLE_LOCK_ROOT = root / "role-locks"
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
                         isolated_worker_import)
     for name, sub in LIVE_ENV:
