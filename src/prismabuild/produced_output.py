@@ -1552,9 +1552,23 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                     queue, None, residency_root=str(out_base))
             except Exception as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            if live:
+            # Coherent-shape normalization (read off the actual package,
+            # never assumed): current pins return (owners, tainted).
+            owners: Mapping[str, object] = {}
+            tainted: list[object] = []
+            if (isinstance(live, tuple) and len(live) == 2
+                    and isinstance(live[0], Mapping)):
+                owners, tainted = live[0], list(live[1] or [])
+            elif isinstance(live, Mapping):
+                owners = live
+            else:
+                return {"ok": False,
+                        "refusal": "unknown-retain: lease-census-shape"}
+            if tainted:
+                return {"ok": False, "refusal": "unknown-retain: pin-census-tainted"}
+            if owners:
                 return {"ok": False, "refusal": "live-refs-retain",
-                        "pins": sorted(str(k) for k in live)[:8]}
+                        "pins": sorted(str(k) for k in owners)[:8]}
             lease_proof = "sdk-census-clean"
         owner = str(checked["owner_action_key"])
         attempt = checked["owner_attempt"]

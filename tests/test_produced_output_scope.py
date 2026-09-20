@@ -1042,3 +1042,27 @@ def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
     assert po.label_span_for_manifest(14336) == {
         "coordinate_space": "output-manifest",
         "start_bytes": 0, "end_bytes": 14336}
+
+
+def test_pin_census_taint_retains(tmp_path: Path) -> None:
+    if rlc is None:
+        pytest.skip(PIN_DEPENDENCY)
+    origin = tmp_path / "pool-origin" / "outputs"
+    origin.mkdir(parents=True)
+    template = _template(str(origin))
+    queue = _queue(tmp_path)
+    bound = _bind(queue, template)
+    instance, claimed = bound["instance"], bound["claimed"]
+    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    queue.finish(OWNER, status="executed", detail={"status": "executed"},
+                 claim_snapshot=claimed)
+    junk_dir = out_base / "leases" / OWNER
+    junk_dir.mkdir(parents=True, exist_ok=True)
+    (junk_dir / "junk.json").write_text("{}")
+    tainted = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
+    assert tainted["ok"] is False
+    assert tainted["refusal"] == "unknown-retain: pin-census-tainted"
+    (junk_dir / "junk.json").unlink()
+    clean = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
+    assert clean == {"ok": True, "released": 0, "lease_proof": "sdk-census-clean"}
