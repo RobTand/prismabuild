@@ -214,6 +214,20 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     pool._write_json_atomic(path, record)
 
 
+def _tier_host(q: pool.PoolQueue) -> str:
+    for record in q.tiers():
+        if isinstance(record, dict) and record.get("tier_id") == TIER:
+            return str(record.get("host") or "")
+    return ""
+
+
+def _claim_mover(q: pool.PoolQueue, owner: str) -> dict:
+    """Claim the next READY row AS the storage owner (ordinary placement)."""
+    claimed = q.claim(owner=owner, tags=[_tier_host(q)])
+    assert claimed is not None, "mover row must be claimable on its host"
+    return claimed
+
+
 def _producer_request(tmp_path: Path, cas_root: Path,
                       template: dict) -> str:
     """Seal and file the PRODUCER's own request; return its action key.
@@ -340,8 +354,8 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     assert ledger.acquire(squatter, {KIND: free_after_fund}) is True
     assert ledger.available().get(KIND, 0) == 0
 
-    claimed = q.claim(owner="w-integ-mover")
-    assert claimed is not None and claimed["action_key"] == mover
+    claimed = _claim_mover(q, "w-integ-mover")
+    assert claimed["action_key"] == mover
     entry = (claimed.get("tier_funding") or {}).get(TIER)
     assert isinstance(entry, dict) and entry.get("variant") == "output"
     rec = q.read_output_funding(mover, TIER)
@@ -391,8 +405,8 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
         # Sequential use: claim, execute the sealed argv, finish, retire.
-        claimed = q.claim(owner=f"w-{tag}")
-        assert claimed is not None and claimed["action_key"] == mover
+        claimed = _claim_mover(q, f"w-{tag}")
+        assert claimed["action_key"] == mover
         receipt = _execute_mover(q, cas_root, mover,
                                  tmp_path / "mover-checkout")
         assert receipt["complete"] is True, receipt
@@ -445,8 +459,8 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
         command_extra=["--unpaced"])
     assert res3.get("ok") is True, res3
     mover3 = str(res3["mover_key"])
-    claimed3 = q.claim(owner="w-p3")
-    assert claimed3 is not None and claimed3["action_key"] == mover3
+    claimed3 = _claim_mover(q, "w-p3")
+    assert claimed3["action_key"] == mover3
     receipt3 = _execute_mover(q, cas_root, mover3,
                               tmp_path / "mover-checkout")
     assert receipt3["complete"] is True, receipt3
@@ -526,8 +540,8 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     free = ledger.available().get(KIND, 0)
     if free:
         assert ledger.acquire(squatter, {KIND: free}) is True
-    claimed = q.claim(owner="w-restart")
-    assert claimed is not None and claimed["action_key"] == mover
+    claimed = _claim_mover(q, "w-restart")
+    assert claimed["action_key"] == mover
 
 
 def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
@@ -552,8 +566,8 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     # The claim still works after the refused release.
-    claimed = q.claim(owner="w-d1")
-    assert claimed is not None and claimed["action_key"] == mover
+    claimed = _claim_mover(q, "w-d1")
+    assert claimed["action_key"] == mover
 
 
 def test_abort_guards_the_precommit_authority(tmp_path: Path) -> None:
@@ -705,8 +719,8 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
             assert ledger.acquire(_hexkey(f"null-squatter-{batch_id}"),
                                   {KIND: free}) is True
             squatted += free
-        claimed = q.claim(owner=f"w-null-{tag}")
-        assert claimed is not None and claimed["action_key"] == mover
+        claimed = _claim_mover(q, f"w-null-{tag}")
+        assert claimed["action_key"] == mover
         funding = q.read_output_funding(mover, TIER)
         # The funded claim consumed the prepaid record (the mover's copy
         # runs after consumption; the fence is already fused).
@@ -769,6 +783,7 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
     _announce_tier(q, tmp_path / "stage")
 
     origin = Path(template["output_prefix"])
+    origin.mkdir(parents=True, exist_ok=True)
     payload = b"q" * 700
     (origin / "c1.bin").write_bytes(payload)
     # Planned superset: c1.bin plus an unwritten sibling; ceiling 4096.
@@ -794,8 +809,8 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
         command_extra=["--unpaced"])
     assert res.get("ok") is True, res
     mover = str(res["mover_key"])
-    claimed = q.claim(owner="w-ceiling")
-    assert claimed is not None and claimed["action_key"] == mover
+    claimed = _claim_mover(q, "w-ceiling")
+    assert claimed["action_key"] == mover
     receipt = _execute_mover(q, cas_root, mover, tmp_path / "mover-checkout")
     assert receipt["complete"] is True, receipt
     q.finish(mover, status="executed")
