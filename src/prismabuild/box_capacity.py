@@ -400,10 +400,14 @@ def observe(
                 detail["gpu_power_measured_fraction"] = max(measured_fractions)
                 detail["gpu_power_sampled_unix"] = gpu_sample["sampled_unix"]
                 limited_flags = [device.get("limited") for device in devices]
-                if all(flag is None for flag in limited_flags):
-                    detail["gpu_limited"] = None
+                if any(flag is True for flag in limited_flags):
+                    detail["gpu_limited"] = True
+                elif all(flag is False for flag in limited_flags):
+                    detail["gpu_limited"] = False
                 else:
-                    detail["gpu_limited"] = any(flag is True for flag in limited_flags)
+                    # Mixed known/unknown (e.g. [False, None]) is unknown,
+                    # never a clean reading.
+                    detail["gpu_limited"] = None
                 detail["gpu_throttle_mask"] = [
                     device.get("throttle_active_mask") for device in devices
                 ] if any("throttle_active_mask" in device for device in devices) else None

@@ -309,6 +309,28 @@ def test_legacy_proxy_is_preserved_for_existing_consumers():
     assert seen.detail["gpu_power_measured_fraction"] == pytest.approx(0.75)
 
 
+@pytest.mark.parametrize('flags,expected', [
+    ([True, False], True),
+    ([True, None], True),
+    ([False, False], False),
+    ([False, None], None),
+    ([None, None], None),
+])
+def test_gpu_limited_aggregation_is_fail_closed_on_unknown(flags, expected):
+    """Mixed known/unknown limiter flags must not read as clean."""
+    sample = gpu_sample(devices=2)
+    for device, flag in zip(sample["devices"], flags):
+        device.update(
+            power_w=10.0,
+            power_limit_w=140.0,
+            power_reference_w=140.0,
+            power_reference_scope="gpu_power_limit",
+            limited=flag,
+        )
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=1)
+    assert seen.detail["gpu_limited"] is expected
+
+
 def test_unknown_power_withholds_both_fractions():
     sample = gpu_sample()
     sample["devices"][0].update(
