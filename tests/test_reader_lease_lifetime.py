@@ -1078,13 +1078,15 @@ class _ConnectedBroker:
 
 
 def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
-                     source="/mnt/shared/cx.bin", name="cx.bin", size=2048):
+                     source="/mnt/shared/cx.bin", name="cx.bin", size=2048,
+                     owner=None):
     """Publish, create a real scope, file the real claim, acquire a ref.
 
     Returns ``(unit, host, worker, staged, acquired)``.  The CLAIMED row
-    carries the broker-minted control record; the host is the real local
+    carries the broker-minted control; the host is the real local
     hostname everywhere (claim, holder, telemetry) via real derivation,
-    never handwritten to match.
+    never handwritten to match.  ``owner`` files a real container_owner
+    (Docker shim entered: marker + daemon census decide settlement).
     """
 
     from prismabuild import resource_scope
@@ -1097,7 +1099,8 @@ def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
     worker = f"{host}:4242:9d001122"
     scope = resource_scope.ResourceScope(
         CONSUMER, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
-        socket_path=broker.endpoint)
+        socket_path=broker.endpoint,
+        **({"docker_owner": owner} if owner is not None else {}))
     control = scope.create()
     assert control["scope_id"] == scope.unit
     unit = scope.unit
@@ -1110,6 +1113,7 @@ def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
         # always seal resources, and a consumer is not a copy (the
         # egress taints a claim that cannot establish non-mover).
         "resources": {"cpu": 1, "mem_gb": 1},
+        **({"container_owner": owner} if owner is not None else {}),
         "resource_scope": control}))
     key = residency_map.residency_map_key(source, 0)
     acquired = reader_lease.acquire(
@@ -2455,20 +2459,27 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         fleet, tmp_path, monkeypatch) -> None:
     """Finish while unsettled retains the claim; the reaper finishes it.
 
-    Normal order, production callers only: ``queue.finish`` while a
-    container ticket is unresolved does NOT publish DONE -- cleanup
-    reports incomplete (live refs, unproven export), finish files
-    ``finish_pending`` and retains CLAIMED plus its charge.  The egress
-    retains.  After the holder settles through the real broker authority,
-    the existing ``reap_stale`` worker path retries the saved finish to
-    DONE, and the egress reclaims exactly once.  A successor attempt's
-    refs are untouched by the old attempt throughout.  Fault injection
-    is broker state only; no handwritten proof, terminal, or verdict,
+    Normal order, production callers only: the claim carries a real
+    container_owner with no marker (a previous cleanup closed the owner
+    leg), the stubbed label census still lists one unresolved container
+    on the scope leg, and the broker mirror holds its ticket.
+    ``queue.finish`` does NOT publish DONE -- the submitted settlement
+    is refused, release retires without settlement, the export stays
+    unproven, and live refs hold the claim: finish files
+    ``finish_pending`` and retains CLAIMED plus its charge.  The egress retains.  After
+    the daemon observation clears, the existing ``reap_stale`` worker
+    path retries: production cleanup builds the settlement via
+    ``_container_settlement`` and submits it through the real socket
+    ``settle_containers`` RPC, the broker settles, release retires,
+    export proves, finish files DONE, and the egress reclaims exactly
+    once.  A successor attempt's refs are untouched by the old proof.
+    No handwritten settlement/proof/terminal, no direct broker settle,
     no private helpers.
     """
 
     from prismabuild import resource_scope
 
+    OWNER = "a" * 64
     queue, stage = fleet
     root = queue.root / pool.RESIDENCY
     nonce = "d" * 32
@@ -2476,26 +2487,42 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
         unit, host, worker, staged, acquired = _connected_setup(
             queue, stage, root, tmp_path, broker, nonce, "ticket-token",
-            source="/mnt/shared/tk.bin", name="tk.bin", size=1024)
+            source="/mnt/shared/tk.bin", name="tk.bin", size=1024,
+            owner=OWNER)
         control = json.loads(
             (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text()
         )["resource_scope"]
-        # External daemon condition: a late container lands with an
-        # unresolved ticket.
+        # External daemon state: no marker (a previous cleanup already
+        # closed the owner leg), but the scope leg still lists one
+        # unresolved container; the broker mirror holds its ticket.
+        # The only stub is the label census itself.
+        daemon = {"scope": ["c1"]}
+        monkeypatch.setattr(
+            pool, "_docker_containers_with_label",
+            lambda label, value: list(daemon["scope"])
+            if label == pool.CONTAINER_SCOPE_LABEL else [])
         broker.authority.records[unit]["container_tickets"] = ["ticket-1"]
+        # A real held reservation: capacity must survive uncertainty.
+        queue.ledger(host).ensure_capacity({"cpu": 4, "mem_gb": 8})
+        assert queue.ledger(host).acquire(CONSUMER, {"cpu": 1}) is True
+        assert queue.claim_reservation_hosts(CONSUMER) == [host]
         pending_path = queue.finish(CONSUMER, status="executed", detail={})
         assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
         assert not queue.item_path(pool.DONE, CONSUMER).exists()
         retained = json.loads(
             queue.item_path(pool.CLAIMED, CONSUMER).read_text())
         assert isinstance(retained.get("finish_pending"), dict)
+        # The settlement was really submitted and refused, release
+        # retired, export stayed unproven: the pool filed False.
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
         assert proof["scope_empty"] is False
         assert proof["retired"] is True
         assert proof["settled"] is False
-        # Persistent uncertainty retains refs AND charge: no terminal to
-        # reclaim against, and the claim still stands.
+        # Persistent uncertainty retains exact refs AND real charge.
+        assert reader_lease.attempt_refs_live(
+            queue, CONSUMER, nonce, unit) == (True, "attempt-ref-live")
+        assert queue.ledger(host).held().get("cpu") == 1
         kept = stage_release.evict(queue, MOVER,
                                    consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
@@ -2505,30 +2532,28 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
             acquired["ref_id"]: "scope-not-empty-retain"}
         with pytest.raises(pool.PoolContractError):
             queue.reclaim_terminal_reservation(CONSUMER)
-        # The holder settles through the real broker authority; the
-        # existing worker reaper retries the saved finish to DONE.
-        evidence = {"schema": broker.module.SETTLEMENT_SCHEMA,
-                    "marker_absent": True, "owner_container_ids": [],
-                    "scope_container_ids": [], "checked_unix": 1789870000.0}
-        settled = broker.authority.handle(
-            os.getuid(), os.getpid(),
-            {"op": "settle", "action_key": CONSUMER, "nonce": nonce,
-             "token": control["token"], "evidence": evidence})
-        assert settled["settled"] is True
+        # The daemon observation clears to actually empty; the existing
+        # worker reaper retries the saved finish through the full
+        # production path to DONE.
+        daemon["scope"] = []
         assert queue.reap_stale() == []
         terminal = queue.item_path(pool.DONE, CONSUMER)
         assert terminal.exists()
-        proof2 = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
-        assert isinstance(proof2, dict)
-        assert proof2["scope_empty"] is True
-        assert proof2["settled"] is True
-        assert proof2["retired"] is True
+        assert queue.ledger(host).held().get("cpu", 0) == 0
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is True
+        assert proof["settled"] is True
+        assert proof["retired"] is True
+        assert proof["scope_id"] == unit
         receipt = stage_release.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
         assert not staged.exists()
         assert receipt["entries_deleted"] == 1
+        assert reader_lease.attempt_refs_live(
+            queue, CONSUMER, nonce, unit) == (False, "attempt-refs-released")
         # A successor attempt's refs are never freed by the old proof:
         # the old certificate mismatches, and the new attempt has no
         # proof of its own yet.  A fresh window is published for it (the
@@ -2565,6 +2590,60 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert second["ref_id"] in latched["auto_retained"], latched
+
+
+def test_released_refs_let_unproven_finish_publish(
+        fleet, tmp_path, monkeypatch) -> None:
+    """The hold needs live refs: explicit release lets DONE publish.
+
+    Ownerless claim, broker-side ticket, live SDK ref: finish retains
+    CLAIMED with finish_pending (no DONE) while refs stand and the
+    export stays unproven.  After the holder explicitly releases its
+    ref through the ordinary SDK path, the existing reaper retries to
+    DONE despite the still-incomplete export -- nothing pins bytes
+    anymore -- and the egress deletes.  No broker settle anywhere; the
+    proof stays False and no replay invents one.
+    """
+
+    from prismabuild import resource_scope
+
+    queue, stage = fleet
+    root = queue.root / pool.RESIDENCY
+    nonce = "b" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "gate-token",
+            source="/mnt/shared/gt.bin", name="gt.bin", size=1024)
+        broker.authority.records[unit]["container_tickets"] = ["ticket-1"]
+        pending_path = queue.finish(CONSUMER, status="executed", detail={})
+        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
+        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is False
+        kept = stage_release.evict(queue, MOVER,
+                                   consumer_action_key=CONSUMER,
+                                   stage_root=str(stage))
+        assert staged.exists()
+        assert kept["auto_retained"] == {
+            acquired["ref_id"]: "scope-not-empty-retain"}
+        assert reader_lease.release(
+            queue, acquired["pin_id"], acquired["ref_id"],
+            consumer_action_key=CONSUMER) is True
+        assert queue.reap_stale() == []
+        terminal = queue.item_path(pool.DONE, CONSUMER)
+        assert terminal.exists()
+        still = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(still, dict)
+        assert still["scope_empty"] is False
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert receipt["auto_reclaimed"] == []
+        assert receipt["auto_retained"] == {}
+        assert not staged.exists()
+        assert receipt["entries_deleted"] == 1
 
 
 def test_broker_transport_down_retains_then_reaper_recovers(
