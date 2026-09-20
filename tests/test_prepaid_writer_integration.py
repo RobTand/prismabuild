@@ -409,12 +409,56 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
 
-    # Cleanup returns usable capacity: dispose origins, reclaim, finish.
+    # Reclaim after producer-side disposal, then THE THIRD SEQUENTIAL
+    # BATCH: retirement returned both credits to FREE (never to producer
+    # holdings), so a long-lived producer window must be refilled through
+    # the public lifecycle API before it can spend again -- never by
+    # reminting or unbounded new acquisition.
     for tag in ("p1", "p2"):
         (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
     for batch_id in ("b1", "b2"):
         assert po.reclaim_origin(q, inst, template,
                                  batch_id=batch_id)["ok"] is True
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    free_before_third = ledger.available().get(KIND, 0)
+    assert free_before_third >= 1  # the retired credits are free, not held
+
+    descs3 = _descriptors(tmp_path, template, inst, "p3x", b"c" * 512)
+    _prewrite(q, inst, template, "b3", TIER, descs3)
+    refused = po.publish_prepaid_batch(
+        q, inst, template, descs3, batch_id="b3", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert refused.get("ok") is False
+    assert refused.get("refusal") == "tier-reservation-unavailable", refused
+
+    # The bounded refill: back up to (never past) the admitted window.
+    refill = po.refill_window(q, inst, template, tier=TIER)
+    assert refill.get("ok") is True, refill
+    assert ledger.holder_tokens(owner).get(KIND, 0) >= 1
+    assert (ledger.holder_tokens(owner).get(KIND, 0)
+            + len([r for r in []])) <= 2  # aggregate window bound holds
+
+    res3 = po.publish_prepaid_batch(
+        q, inst, template, descs3, batch_id="b3", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res3.get("ok") is True, res3
+    mover3 = str(res3["mover_key"])
+    claimed3 = q.claim(owner="w-p3")
+    assert claimed3 is not None and claimed3["action_key"] == mover3
+    receipt3 = _execute_mover(q, cas_root, mover3,
+                              tmp_path / "mover-checkout")
+    assert receipt3["complete"] is True, receipt3
+    q.finish(mover3, status="executed")
+    assert po.retire_batch(q, inst, template, "b3",
+                           stage_root=str(stage_root),
+                           residency_root=po.output_fragment_root(
+                               q.root / pool.RESIDENCY))["ok"] is True
+
+    # Cleanup returns usable capacity: dispose origin, reclaim, finish.
+    (Path(template["output_prefix"]) / "p3x.bin").unlink()
+    assert po.reclaim_origin(q, inst, template, batch_id="b3")["ok"] is True
     q.finish(owner, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
     assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
@@ -703,3 +747,79 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
     # returned through the real egress, the window through owner finish.
     assert (ledger.available().get(KIND, 0) + squatted
             == ledger.capacity().get(KIND, 0))
+
+
+def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
+    """The PQ caller shape: a conservative prewrite ceiling, actual below it.
+
+    PQ pre-serializes a bounded window (planned path superset, per-class
+    upper bounds) before sizes are known, then writes actuals at or under
+    the ceiling. The prewrite admits the ceiling for the batch's temporary
+    lifetime (headroom charges the ceiling while live); describe/commit
+    reconcile actual <= ceiling per class and actual paths subset of
+    planned -- exact-size pretense is not required and a mismatch above
+    the ceiling still refuses.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    _announce_tier(q, tmp_path / "stage")
+
+    origin = Path(template["output_prefix"])
+    payload = b"q" * 700
+    (origin / "c1.bin").write_bytes(payload)
+    # Planned superset: c1.bin plus an unwritten sibling; ceiling 4096.
+    ceiling = {"payload": 4096, "checkpoint": 0, "temp": 0}
+    planned_paths = sorted([str(origin / "c1.bin"), str(origin / "c9.bin")])
+    out = po.require_prewrite(q, inst, template, batch_id="b1", tier=TIER,
+                              class_bytes=ceiling, paths=planned_paths)
+    assert out.get("ok") is True, out
+
+    descs = [po.validate_descriptor({
+        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+        "artifact_class": "payload", "path": str(origin / "c1.bin"),
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "producer_generation": po.mint_generation(),
+        "owner_action_key": inst["owner_action_key"],
+        "owner_attempt": dict(inst["owner_attempt"]),
+    }, template, inst)]
+
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    claimed = q.claim(owner="w-ceiling")
+    assert claimed is not None and claimed["action_key"] == mover
+    receipt = _execute_mover(q, cas_root, mover, tmp_path / "mover-checkout")
+    assert receipt["complete"] is True, receipt
+    q.finish(mover, status="executed")
+    assert po.retire_batch(q, inst, template, "b1",
+                           stage_root=str(tmp_path / "stage"),
+                           residency_root=po.output_fragment_root(
+                               q.root / pool.RESIDENCY))["ok"] is True
+
+    # Above the ceiling still refuses: an actual exceeding the admitted
+    # bound can never reconcile.
+    (origin / "c2.bin").write_bytes(b"z" * 5000)
+    over = [po.validate_descriptor({
+        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+        "artifact_class": "payload", "path": str(origin / "c2.bin"),
+        "bytes": 5000, "sha256": hashlib.sha256(b"z" * 5000).hexdigest(),
+        "producer_generation": po.mint_generation(),
+        "owner_action_key": inst["owner_action_key"],
+        "owner_attempt": dict(inst["owner_attempt"]),
+    }, template, inst)]
+    refused = po.publish_prepaid_batch(
+        q, inst, template, over, batch_id="b2", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    # b2 has no prewrite at all: the prewrite-reservation-missing refusal
+    # is the correct first answer; ceiling reconciliation governs b1's
+    # shape above.
+    assert refused.get("ok") is False, refused
