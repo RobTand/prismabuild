@@ -1539,28 +1539,88 @@ def mark_batch_retired(queue_root: str | Path, instance: Mapping[str, object],
     _write_commitments(path, {"batches": batches})
 
 
+def _require_coherent_lease_sdk(lease_sdk: object):
+    """The accepted SDK object, or the reason it cannot vouch.
+
+    Production release never runs without the coherent package: ``None``,
+    a stub, or a foreign copy retains. Coherence is the accepted
+    ``prismabuild.reader_lease`` package itself -- same tag, same file the
+    fleet imports (no bare ``reader_lease`` import, no vendored copy) --
+    exposing the census and containment predicates this path calls.
+    Returns ``(sdk, None)`` or ``(None, refusal)``.
+    """
+
+    if lease_sdk is None:
+        return None, "unknown-retain: lease-sdk-missing"
+    try:
+        from prismabuild import reader_lease as installed
+    except ImportError as exc:
+        return None, f"unknown-retain: lease-sdk-unimportable: {exc}"
+    tag = getattr(lease_sdk, "READER_LEASE_TAG", None)
+    if tag != getattr(installed, "READER_LEASE_TAG", "reader-lease-v1"):
+        return None, "unknown-retain: lease-sdk-incoherent-tag"
+    for name in ("live_for", "containment_certificate_ok", "leases_root"):
+        if not callable(getattr(lease_sdk, name, None)):
+            return None, f"unknown-retain: lease-sdk-missing-{name}"
+    own_file = getattr(lease_sdk, "__file__", None)
+    installed_file = getattr(installed, "__file__", None)
+    try:
+        same = (isinstance(own_file, str) and isinstance(installed_file, str)
+                and os.path.realpath(own_file) == os.path.realpath(installed_file))
+    except OSError:
+        same = False
+    if not same:
+        return None, "unknown-retain: lease-sdk-foreign-package"
+    return lease_sdk, None
+
+
+def _lease_pin_files(lease_sdk: object, queue, consumer: str) -> list[str] | None:
+    """Pin file names under one consumer namespace, or None when unreadable."""
+
+    try:
+        root = lease_sdk.leases_root(queue)
+    except Exception:
+        return None
+    directory = Path(root) / consumer
+    try:
+        return sorted(p.name for p in directory.iterdir()
+                      if p.is_file() and p.name.endswith(".lease.json"))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+
+
 def safe_release_instance(queue, instance: Mapping[str, object],
                           template: Mapping[str, object],
                           lease_sdk: object = None) -> dict[str, object]:
     """Release leftover holder tokens ONLY when retirement is proven safe.
 
     Movers release their exact tokens through egress (`retire_batch`); this
-    reclaims remainders (partial-transfer leftovers, crash-prefix funding)
-    after a fresh census under the prefix lock. EVERY check is exact:
+    reclaims remainders after a fresh census under the prefix lock. EVERY
+    check is exact:
 
     - instance + commitments readable, else unknown-retain;
+    - coherent accepted SDK required (same package the fleet imports; a
+      missing, foreign, or unreadable SDK retains -- never
+      `sdk-absent-structural`);
     - every committed batch retired AND its mover holder empty AND its
       fragments gone, else active-batches/movers-retain;
-    - funding-intent movers: live (READY/CLAIMED) or DONE-executed (bytes
-      may exist unattributed) retain; only absent/withdrawn release;
-    - live pins: any `*.lease.json` under the owner leases dir retains;
-      with the coherent SDK (`from prismabuild import reader_lease`,
-      passed as `lease_sdk`) a `live_for` census runs too, else the result
-      records `lease_proof: sdk-absent-structural` (never silently passed);
-    - owner containment: a live claim with the SAME nonce/scope retains
-      (owner-active); a live claim with a DIFFERENT attempt retains
-      (owner-superseded — the old terminal never frees a successor's
-      scope); terminal by key alone never overrides a live claim;
+    - funding-intent-only movers ALWAYS retain with
+      `funding-intent-reconcile-retain`: a mover that never published may
+      still have copied partial bytes, and metadata absence never proves
+      physical absence. The funding/reconciliation lane owns these intents;
+      this path never releases them;
+    - live pins: pin files under the owner and every batch namespace
+      retain; the SDK `live_for` census must additionally be untainted
+      (unknown census retains);
+    - owner containment: a live claim in any form retains (same attempt =
+      owner-active, other attempt = owner-superseded); a corrupt or
+      unreadable live claim retains as unknown and never falls through to
+      an old terminal. With no live claim, the accepted SDK
+      `containment_certificate_ok` over the exact owner nonce/scope must
+      authorize (broker attestation + matching terminal telemetry); ANY
+      bare DONE/FAILED/WITHDRAWN record by key alone is insufficient;
     - every ledger release is attempted individually: the FIRST exception
       retains (ok False), never ok True after a release failure;
     - physical files are never deleted here (no unlink of staged bytes).
@@ -1576,6 +1636,9 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         checked = validate_instance(instance)
     except ProducedOutputError as exc:
         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    sdk, sdk_refusal = _require_coherent_lease_sdk(lease_sdk)
+    if sdk is None:
+        return {"ok": False, "refusal": str(sdk_refusal)}
     with queue.stage_ownership_lock(str(checked["output_prefix"])):
         try:
             commitments = _read_commitments(
@@ -1612,11 +1675,11 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                                 "batch_id": batch_id}
                 except OSError as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        # Funding-intent-only movers: physical disposition is unknown, so
-        # only holders provably holding no copy release. A mover that is
-        # live (copying) or DONE-executed (bytes may sit unattributed on
-        # the tier, owned by the lease lane's reconcile) retains; absent
-        # or withdrawn releases. Physical files are never unlinked here.
+        # Funding-intent-only movers: physical disposition is unknown and
+        # metadata absence never proves physical absence, so every such
+        # intent retains for the funding/reconciliation lane with a
+        # specific recoverable refusal. No mover state (absent, withdrawn,
+        # failed, or done) authorizes release here.
         try:
             intent_names = sorted(
                 p.name for p in _funding_dir(queue.root, checked).iterdir()
@@ -1636,62 +1699,63 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             if funding is None:
                 continue
-            mover = funding.get("mover_key")
-            if not isinstance(mover, str) or not mover:
-                return {"ok": False, "refusal": "unknown-retain: bad-funding"}
-            state = _mover_live_state(queue, mover)
-            if state in ("claimed", "ready"):
-                return {"ok": False, "refusal": "funding-mover-live-retain",
-                        "batch_id": batch_id}
-            if state == "done":
-                return {"ok": False, "refusal": "funding-orphaned-staged-retain",
-                        "batch_id": batch_id}
-            if state == "unknown":
-                return {"ok": False, "refusal": "unknown-retain: mover-state"}
-        # Live pins: pin files under the owner leases dir retain. With the
-        # coherent SDK (`from prismabuild import reader_lease`, passed as
-        # `lease_sdk`) a path census runs too; without it the result
-        # records the structural proof (never silently passed).
-        leases_owner = out_base / "leases" / str(checked["owner_action_key"])
-        try:
-            live_pins = sorted(p.name for p in leases_owner.iterdir()
-                               if p.is_file() and p.name.endswith(".lease.json"))
-        except FileNotFoundError:
-            live_pins = []
-        except OSError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        if live_pins:
-            return {"ok": False, "refusal": "live-refs-retain",
-                    "pins": live_pins[:8]}
-        lease_proof = "sdk-absent-structural"
-        if lease_sdk is not None:
-            try:
-                live = lease_sdk.live_for(
-                    queue, None, residency_root=str(out_base))
-            except Exception as exc:
-                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            # Coherent-shape normalization (read off the actual package,
-            # never assumed): current pins return (owners, tainted).
-            owners: Mapping[str, object] = {}
-            tainted: list[object] = []
-            if (isinstance(live, tuple) and len(live) == 2
-                    and isinstance(live[0], Mapping)):
-                owners, tainted = live[0], list(live[1] or [])
-            elif isinstance(live, Mapping):
-                owners = live
-            else:
-                return {"ok": False,
-                        "refusal": "unknown-retain: lease-census-shape"}
-            if tainted:
-                return {"ok": False, "refusal": "unknown-retain: pin-census-tainted"}
-            if owners:
-                return {"ok": False, "refusal": "live-refs-retain",
-                        "pins": sorted(str(k) for k in owners)[:8]}
-            lease_proof = "sdk-census-clean"
+            return {"ok": False,
+                    "refusal": "funding-intent-reconcile-retain",
+                    "batch_id": batch_id}
+        # Live pins: structural per-namespace scan (owner + every batch
+        # namespace) around the SDK census. Either scan finding pins
+        # retains; an unreadable scan or a tainted census retains as
+        # unknown. Other consumers' pins never block this instance.
         owner = str(checked["owner_action_key"])
         attempt = checked["owner_attempt"]
         assert isinstance(attempt, dict)
-        live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        namespaces = [owner] + [
+            str(entry.get("batch_namespace") or "")
+            for entry in batches.values()
+            if isinstance(entry, Mapping) and entry.get("batch_namespace")]
+        for consumer in namespaces:
+            if not consumer:
+                continue
+            pins = _lease_pin_files(sdk, queue, consumer)
+            if pins is None:
+                return {"ok": False, "refusal": "unknown-retain: pin-scan"}
+            if pins:
+                return {"ok": False, "refusal": "live-refs-retain",
+                        "pins": pins[:8]}
+        try:
+            census = sdk.live_for(queue, None)
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        owners: Mapping[str, object] = {}
+        tainted: list[object] = []
+        if (isinstance(census, tuple) and len(census) == 2
+                and isinstance(census[0], Mapping)):
+            owners, tainted = census[0], list(census[1] or [])
+        elif isinstance(census, Mapping):
+            owners = census
+        else:
+            return {"ok": False,
+                    "refusal": "unknown-retain: lease-census-shape"}
+        if tainted:
+            return {"ok": False, "refusal": "unknown-retain: pin-census-tainted"}
+        for consumer in namespaces:
+            if not consumer:
+                continue
+            pins = _lease_pin_files(sdk, queue, consumer)
+            if pins is None:
+                return {"ok": False, "refusal": "unknown-retain: pin-scan"}
+            if pins:
+                return {"ok": False, "refusal": "live-refs-retain",
+                        "pins": pins[:8]}
+        lease_proof = "sdk-census-clean"
+        # Owner containment: any live claim retains; an unreadable claim
+        # retains as unknown and never falls through to an old terminal.
+        # With no live claim, only the accepted SDK containment predicate
+        # over the exact nonce/scope authorizes.
+        try:
+            live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if isinstance(live_claim, Mapping):
             control = live_claim.get("resource_scope")
             live_nonce = live_scope = ""
@@ -1711,11 +1775,18 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             # never freed by this attempt's terminal: exact containment or
             # nothing.
             return {"ok": False, "refusal": "owner-superseded-retain"}
-        terminal = (pool_mod._read_json(queue.item_path(pool_mod.DONE, owner))
-                    or pool_mod._read_json(queue.item_path(pool_mod.FAILED, owner))
-                    or pool_mod._read_json(queue.item_path(pool_mod.WITHDRAWN, owner)))
-        if terminal is None:
-            return {"ok": False, "refusal": "unknown-retain: no-terminal"}
+        elif live_claim is not None:
+            return {"ok": False, "refusal": "unknown-retain: claim-shape"}
+        try:
+            contained, reason = sdk.containment_certificate_ok(queue, {
+                "action_key": owner,
+                "nonce": attempt["nonce"],
+                "scope_id": attempt["scope_id"],
+            })
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if not contained:
+            return {"ok": False, "refusal": str(reason)}
         released = 0
         holders: set[str] = set()
         for batch_id, entry in batches.items():
@@ -1726,36 +1797,6 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             mover = str(entry.get("mover_key") or "")
             if mover:
                 holders.add(mover)
-        try:
-            funding_names = sorted(
-                p.name for p in _funding_dir(queue.root, checked).iterdir()
-                if p.is_file() and p.name.endswith(".funding.json"))
-        except FileNotFoundError:
-            funding_names = []
-        except OSError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        for name in funding_names:
-            batch_id = name[:-len(".funding.json")]
-            if batch_id in batches:
-                continue
-            try:
-                funding = _read_funding(
-                    _funding_dir(queue.root, checked) / name)
-            except ProducedOutputError as exc:
-                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            if funding is None:
-                continue
-            # Funded but never committed (crash prefix): recompute the batch
-            # namespace from the intent's exact manifest and reclaim both
-            # holders (batch remainder + partial mover share).
-            try:
-                holders.add(batch_namespace(
-                    checked, batch_id, str(funding["manifest_digest"])))
-            except ProducedOutputError as exc:
-                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            mover = funding.get("mover_key")
-            if isinstance(mover, str) and mover:
-                holders.add(mover)
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
                 try:
@@ -1763,9 +1804,9 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                 except Exception as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Holders are empty post-transfer by construction; leftovers
-        # (partial transfers, crash-prefix funding) release here, once,
-        # idempotently. Any release failure above already retained with
-        # ok False — this line is unreachable after a release exception.
+        # release here, once, idempotently. Any release failure above
+        # already retained with ok False -- this line is unreachable
+        # after a release exception.
         return {"ok": True, "released": released, "lease_proof": lease_proof}
 
 
