@@ -750,27 +750,44 @@ def test_injected_context_comes_from_pb_sources(fleet,
     queue, stage = fleet
     claimed = queue.dir(pool.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
+    nonce = "n" * 32
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER,
         "claimed_by": "worker-7",
-        "resource_scope": {"action_key": CONSUMER, "nonce": "n" * 32,
+        "claimed_host": "sparky",
+        "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
                            "scope_id": "unit-1"}}))
     env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
            "PRISMABUILD_RESIDENCY_MAP": str(
-               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
+               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json"),
+           "PRISMABUILD_ACTION_NONCE": nonce,
+           "PRISMABUILD_ACTION_SCOPE": "unit-1"}
     got = reader_lease.injected_context(queue, env=env)
     assert got["ok"], got
     ctx = got["ctx"]
     assert ctx["action_key"] == CONSUMER
-    assert ctx["nonce"] == "n" * 32
+    assert ctx["nonce"] == nonce
     assert ctx["scope_id"] == "unit-1"
     assert ctx["worker"] == "worker-7"
-    assert ctx["host"] == socket.gethostname()
+    # Fleet alias from the claim, never the container-local hostname.
+    assert ctx["host"] == "sparky"
+    assert ctx["attempt_source"] == "launch-env"
     assert ctx["helper_root"] == str(
         Path(reader_lease.__file__).resolve().parents[2])
 
     # No token is exposed through the context.
     assert "token" not in json.dumps(ctx)
+
+    # A superseded process holding an old launch identity refuses instead
+    # of adopting the live claim's newer attempt.
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
+        "action_key": CONSUMER,
+        "claimed_by": "worker-7",
+        "claimed_host": "sparky",
+        "resource_scope": {"action_key": CONSUMER, "nonce": "m" * 32,
+                           "scope_id": "unit-2"}}))
+    assert reader_lease.injected_context(
+        queue, env=env)["refusal"] == "attempt-superseded"
 
     # Missing env, missing claim, missing scope each refuse distinctly.
     assert reader_lease.injected_context(
@@ -782,10 +799,101 @@ def test_injected_context_comes_from_pb_sources(fleet,
     )["refusal"] == "no-claim-context"
     (claimed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "claimed_by": "worker-7",
+         "claimed_host": "sparky",
          "resource_scope": {"action_key": CONSUMER, "nonce": "",
                             "scope_id": ""}}))
+    bare = {"PRISMABUILD_ACTION_KEY": CONSUMER,
+            "PRISMABUILD_RESIDENCY_MAP": str(
+                queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
     assert reader_lease.injected_context(
-        queue, env=env)["refusal"] == "no-attempt-context"
+        queue, env=bare)["refusal"] == "no-attempt-context"
+
+
+def test_acquire_for_carries_fleet_identity_into_refs(fleet) -> None:
+    """Container readers are found under the fleet alias, not localhost."""
+
+    import socket
+
+    queue, stage = fleet
+    staged = stage / "model" / "f.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x15" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/f.safetensors", staged, 4096)
+    ctx = {"queue_root": str(queue.root), "action_key": CONSUMER,
+           "nonce": "n1", "scope_id": "s1", "worker": "worker-7",
+           "host": "sparky", "incarnation": None,
+           "attempt_source": "launch-env", "map_path": "x",
+           "helper_root": "y"}
+    got = reader_lease.acquire_for(
+        ctx, tier_id=TIER, epoch="",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        expected=None, span={"start_bytes": 0, "end_bytes": 4096},
+        acquire_token="fleet-token", residency_root=root)
+    assert got["ok"], got
+    pin = reader_lease._read_pin(
+        root / "leases" / CONSUMER / f"{got['pin_id']}.lease.json")
+    assert isinstance(pin, dict)
+    holder = pin["refs"][got["ref_id"]]["holder"]  # type: ignore[index]
+    assert holder["host"] == "sparky"
+    assert holder["worker"] == "worker-7"
+    # Found under the fleet alias even though this process runs elsewhere.
+    found = reader_lease.refs_for_holder(queue, "sparky",
+                                         residency_root=root)
+    assert [entry["ref_id"] for entry in found] == [got["ref_id"]]
+
+
+def test_open_revalidates_ram_epoch(fleet) -> None:
+    """An epoch that moves between acquire and open refuses the open."""
+
+    queue, stage = fleet
+    ram_tier = "ram:testhost"
+    staged = stage / "model" / "p.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x16" * 4096)
+    root = queue.root / pool.RESIDENCY
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
+        "tier_id": ram_tier, "stage_root": str(stage),
+        "manifest_sha256": "a" * 64, "epoch": "epoch-1",
+        "entries": {residency_map.residency_map_key(
+            "/mnt/shared/model/p.safetensors", 0): {
+                "stage_path": str(staged), "bytes": 4096,
+                "sha256": "b" * 64, "offset": 0}}})
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
+        tier_id=ram_tier, stage_root=str(stage),
+        manifest_sha256="a" * 64,
+        generation=reader_lease.mint_generation(),
+        entries={residency_map.residency_map_key(
+            "/mnt/shared/model/p.safetensors", 0): {
+                "stage_path": str(staged), "bytes": 4096,
+                "sha256": "b" * 64, "file_id": identity}},
+        epoch="epoch-1")
+    tiers = queue.root / "tiers"
+    tiers.mkdir(parents=True, exist_ok=True)
+    (tiers / f"{ram_tier}.json").write_text(json.dumps({"epoch": "epoch-1"}))
+    acquired = reader_lease.acquire(
+        queue, consumer_action_key=CONSUMER, attempt=ATTEMPT,
+        tier_id=ram_tier, epoch="epoch-1",
+        span={"start_bytes": 0, "end_bytes": 4096},
+        holder=HOLDER, acquire_token="epoch-token",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        residency_root=root)
+    assert acquired["ok"], acquired
+    key = residency_map.residency_map_key("/mnt/shared/model/p.safetensors",
+                                          0)
+    # The tier re-announces mid-hold: the old header epoch cannot make a
+    # stale generation current.
+    (tiers / f"{ram_tier}.json").write_text(json.dumps({"epoch": "epoch-2"}))
+    with pytest.raises(reader_lease.ReaderLeaseError):
+        reader_lease.open_pinned(queue, acquired["pin"],
+                                 acquired["ref_id"], key,
+                                 residency_root=root)
 
 
 def test_adopted_generation_is_stable_reuse(fleet) -> None:
@@ -806,3 +914,156 @@ def test_adopted_generation_is_stable_reuse(fleet) -> None:
     with pytest.raises(reader_lease.ReaderLeaseError):
         reader_lease.adopted_generation(
             {"generation": generation, "entries": {}})
+
+
+class _FakeBrokerBackend:
+    """Kernel seam fake (precedent: test_resource_broker.Backend)."""
+
+    def __init__(self):
+        self.groups = {}
+
+    def create(self, scope, budget):
+        self.groups[scope] = {"populated": False}
+        return {}
+
+    def stop(self, scope):
+        self.groups[scope]["populated"] = False
+
+    def empty(self, scope):
+        return scope not in self.groups or not self.groups[scope]["populated"]
+
+    def exists(self, scope):
+        return scope in self.groups
+
+    def release(self, scope):
+        if self.groups[scope]["populated"]:
+            raise ValueError("scope still populated")
+        self.groups.pop(scope)
+
+
+def _broker(authority_path, backend=None):
+    import resource_broker
+
+    backend = backend if backend is not None else _FakeBrokerBackend()
+    return resource_broker.Authority(
+        authority_path, os.getuid(), backend,
+        max_memory_bytes=1024 ** 3)
+
+
+def _broker_create(authority, nonce="b" * 32):
+    req = {"op": "create", "action_key": CONSUMER, "nonce": nonce,
+           "memory_max_bytes": 64 * 1024 ** 2}
+    return req, authority.handle(
+        os.getuid(), os.getpid(), req)
+
+
+def _broker_token_call(authority, req, record, op):
+    return authority.handle(os.getuid(), os.getpid(),
+                            {**req, "op": op, "token": record["token"]})
+
+
+def test_broker_export_verdict_needs_stop_and_token(tmp_path) -> None:
+    """The export op extends broker authority: token-gated, read-only."""
+
+    authority = _broker(tmp_path / "broker-state")
+    req, record = _broker_create(authority)
+    scope = record["scope_id"]
+
+    with pytest.raises(ValueError, match="scope not stopped"):
+        _broker_token_call(authority, req, record, "export_stopped")
+    with pytest.raises(PermissionError):
+        authority.handle(os.getuid(), os.getpid(),
+                         {**req, "op": "export_stopped", "token": "0" * 64})
+
+    _broker_token_call(authority, req, record, "stop")
+    verdict = _broker_token_call(authority, req, record, "export_stopped")
+    assert verdict["stopped"] is True
+    assert verdict["empty"] is True
+    assert verdict["released"] is False
+    assert verdict["scope_id"] == scope
+    # Read-only: nothing mutated by the export.
+    assert "released_unix" not in verdict
+
+
+def test_broker_export_reports_tickets_and_live_scope(tmp_path) -> None:
+    """Unresolved Docker tickets / live cgroup export proof-negative."""
+
+    backend = _FakeBrokerBackend()
+    authority = _broker(tmp_path / "broker-state", backend)
+    req, record = _broker_create(authority)
+    scope = record["scope_id"]
+    _broker_token_call(authority, req, record, "stop")
+    # A late container lands after the stop: populated with an unresolved
+    # ticket.  The export reports proof-negative (empty False, tickets
+    # pending), which authorizes nothing downstream.
+    backend.groups[scope]["populated"] = True
+    authority.records[scope]["container_tickets"] = ["ticket-1"]
+    verdict = _broker_token_call(authority, req, record, "export_stopped")
+    assert verdict["stopped"] is True
+    assert verdict["empty"] is False
+    assert verdict["tickets_pending"] is True
+
+
+def test_ordinary_completion_reclaims_after_broker_containment(fleet,
+                                                              tmp_path) -> None:
+    """End to end: real broker lifecycle -> membership attestation ->
+    terminal telemetry -> exact-ref release -> egress delete."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "j.safetensors"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x17" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/j.safetensors", staged, 4096)
+    nonce = "b" * 32
+    holder = {"host": "sparky", "worker": "worker-7", "pid": 31337}
+    acquired = reader_lease.acquire(
+        queue, consumer_action_key=CONSUMER,
+        attempt={"nonce": nonce, "scope_id": "s1"}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": 4096}, holder=holder,
+        acquire_token="e2e-token",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        residency_root=root)
+    assert acquired["ok"], acquired
+
+    # Real broker lifecycle for this attempt (fake kernel seam, real op
+    # logic): create, run to populated, stop, release.
+    authority = _broker(tmp_path / "broker-state")
+    req, record = _broker_create(authority, nonce=nonce)
+    authority.backend.groups[record["scope_id"]]["populated"] = True
+    _broker_token_call(authority, req, record, "stop")
+    _broker_token_call(authority, req, record, "release")
+    verdict = _broker_token_call(authority, req, record, "export_stopped")
+    assert verdict["released"] is True
+
+    # Membership files the attestation FROM the export verdict (their
+    # writer; fabricated here as their input, labeled as such).
+    assert verdict["scope_id"] == record["scope_id"]
+    attest = reader_lease.attestation_path(queue, CONSUMER, nonce)
+    attest.parent.mkdir(parents=True, exist_ok=True)
+    attest.write_text(json.dumps({
+        "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+        "action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
+        "host": "sparky", "worker": "worker-7",
+        "scope_empty": True, "unix": 1789880000.0}) + "\n")
+
+    # Terminal broker telemetry from the execution path (their record).
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": nonce, "scope_unit": "s1",
+             "host": "sparky"}}))
+    cert = {"action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
+            "worker": "worker-7", "host": "sparky"}
+    freed = reader_lease.release_refs(
+        queue, [{"consumer_action_key": CONSUMER,
+                 "pin_id": acquired["pin_id"],
+                 "ref_id": acquired["ref_id"]}], dict(cert))
+    assert freed["ok"] is True, freed
+    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                               stage_root=str(stage))
+    assert not staged.exists()
+    assert done["entries_deleted"] == 1

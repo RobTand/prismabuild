@@ -1371,6 +1371,17 @@ def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
     assert isinstance(refs_map, dict)
     if ref_id not in refs_map:
         raise ReaderLeaseError("opening ref is not live: refusing")
+    tier_id = str(live["tier_id"])
+    epoch = str(live["epoch"])
+    if epoch:
+        # A window open needs the lifetime's epoch, not the header's: if
+        # the tier re-announced after this acquire, the material generation
+        # this pin names is not current, and reporting the old header epoch
+        # must not make it so.
+        current = _announced_epoch(queue, tier_id)
+        if current is None or current != epoch:
+            raise ReaderLeaseError(
+                f"tier {tier_id!r} epoch moved during the hold: refusing")
     entries = live["entries"]
     assert isinstance(entries, list)
     match: dict[str, object] | None = None
@@ -1579,24 +1590,36 @@ def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
 def injected_context(queue=None, *, env=None, residency_root=None):
     """Build this reader's identity from PB-owned sources, never invented.
 
-    Reads: the action key from ``ACTION_KEY_ENV`` (launcher-forwarded),
-    the composed map path from ``RESIDENCY_MAP_ENV`` (campaign scope),
-    and the attempt (nonce, scope unit) plus worker from this action's
-    live claim row (``resource_scope`` control record, broker-issued).
-    The host is this machine's own hostname, never caller-supplied, and
-    the helper generation root is the tree this module was imported from
-    (the sealed generation when imported via the published runtime).
+    Precedence, strongest first:
 
-    No broker token is exposed: the control record's token never leaves
-    this function.  Anything missing refuses -- a context with a guessed
-    nonce, scope or worker would pin (or free) another attempt's bytes.
+    1. Launch-bound identity: ``ACTION_NONCE_ENV``/``ACTION_SCOPE_ENV``,
+       set by the resource_exec proxy from the exact launch identity
+       (action key + nonce, never the broker token).  When present, the
+       live claim row must name the same attempt -- a superseded process
+       holding an old launch identity refuses (``attempt-superseded``)
+       instead of silently adopting its successor's attempt.  An old
+       process is never bound from whichever live claim merely exists.
+    2. Live-claim identity: the claim row's broker-issued
+       ``resource_scope`` control record (nonce + scope unit).  Marked
+       ``attempt_source: "live-claim"`` (local path / legacy launches).
+
+    The host is the claim's PB-qualified launcher host (fleet alias), not
+    the local hostname: inside Docker the local name is a container
+    hostname no census would find.  The worker is the claim's
+    ``claimed_by``.  A worker incarnation binds when a source publishes
+    one, and is otherwise absent rather than guessed.  The helper
+    generation root is the tree this module was imported from (the sealed
+    generation when imported via the published runtime).
+
+    No broker token crosses into reader context.  Any gap refuses --
+    a context with a guessed nonce, scope or worker would pin (or free)
+    another attempt's bytes.
 
     Returns ``{"ok": True, "ctx": {...}}`` or ``{"ok": False,
     "refusal": ...}``.  ``ctx`` carries ``queue_root, action_key, nonce,
-    scope_id, worker, host, map_path, helper_root``.
+    scope_id, worker, host, incarnation|None, attempt_source, map_path,
+    helper_root``.
     """
-
-    import socket
 
     from prismabuild import pool as pool_mod
 
@@ -1605,6 +1628,11 @@ def injected_context(queue=None, *, env=None, residency_root=None):
         from prismabuild.core import ACTION_KEY_ENV
     except ImportError:
         ACTION_KEY_ENV = "PRISMABUILD_ACTION_KEY"
+    try:
+        from prismabuild.core import ACTION_NONCE_ENV, ACTION_SCOPE_ENV
+    except ImportError:
+        ACTION_NONCE_ENV = "PRISMABUILD_ACTION_NONCE"
+        ACTION_SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
     try:
         from prismabuild.residency_map import RESIDENCY_MAP_ENV
     except ImportError:
@@ -1628,31 +1656,61 @@ def injected_context(queue=None, *, env=None, residency_root=None):
         return {"ok": False, "refusal": "no-claim-context"}
     control = claim.get("resource_scope")
     intent = claim.get("resource_scope_intent")
-    nonce = ""
-    scope_id = ""
+    claim_nonce = ""
+    claim_scope = ""
     if isinstance(control, Mapping):
         candidate = control.get("nonce")
         if isinstance(candidate, str) and candidate:
-            nonce = candidate
-        unit = control.get("scope_id")
-        if isinstance(unit, str) and unit:
-            scope_id = unit
-    if not nonce and isinstance(intent, Mapping):
+            claim_nonce = candidate
+        # Control record uses scope_id (verified against
+        # ResourceScope.control_record); older rows may use scope_unit.
+        for field in ("scope_id", "scope_unit", "unit"):
+            unit = control.get(field)
+            if isinstance(unit, str) and unit:
+                claim_scope = unit
+                break
+    if not claim_nonce and isinstance(intent, Mapping):
         candidate = intent.get("nonce")
         if isinstance(candidate, str) and candidate:
-            nonce = candidate
-    if not nonce or not scope_id:
-        return {"ok": False, "refusal": "no-attempt-context"}
+            claim_nonce = candidate
+    launch_nonce = source.get(ACTION_NONCE_ENV) or ""
+    launch_scope = source.get(ACTION_SCOPE_ENV) or ""
+    if launch_nonce or launch_scope:
+        # Launch-bound: the process knows its own attempt.  The live claim
+        # must agree where it speaks; a superseded process refuses.
+        if not launch_nonce or not launch_scope:
+            return {"ok": False, "refusal": "partial-launch-context"}
+        if claim_nonce and claim_nonce != launch_nonce:
+            return {"ok": False, "refusal": "attempt-superseded"}
+        if claim_scope and claim_scope != launch_scope:
+            return {"ok": False, "refusal": "attempt-superseded"}
+        nonce, scope_id = launch_nonce, launch_scope
+        attempt_source = "launch-env"
+    else:
+        if not claim_nonce or not claim_scope:
+            return {"ok": False, "refusal": "no-attempt-context"}
+        nonce, scope_id = claim_nonce, claim_scope
+        attempt_source = "live-claim"
     worker = claim.get("claimed_by")
     if not isinstance(worker, str) or not worker:
         return {"ok": False, "refusal": "no-worker-context"}
+    # Fleet alias, never the container-local hostname: a census for this
+    # host must find container readers holding under the alias.
+    host = claim.get("claimed_host")
+    if not isinstance(host, str) or not host:
+        return {"ok": False, "refusal": "no-host-context"}
+    incarnation = claim.get("worker_incarnation")
+    if not isinstance(incarnation, str) or not incarnation:
+        incarnation = None
     return {"ok": True, "ctx": {
         "queue_root": str(queue.root),
         "action_key": action_key,
         "nonce": nonce,
         "scope_id": scope_id,
         "worker": worker,
-        "host": socket.gethostname(),
+        "host": host,
+        "incarnation": incarnation,
+        "attempt_source": attempt_source,
         "map_path": map_path,
         "helper_root": str(Path(__file__).resolve().parents[2]),
     }}
@@ -1667,13 +1725,14 @@ def acquire_for(ctx: Mapping[str, object], *, tier_id: str, epoch: str,
                 file_pin: bool = True) -> dict[str, object]:
     """Acquire as an injected context: identity fixed, data selected.
 
-    The PQ-facing entry point.  Identity (consumer, attempt, holder) comes
-    only from ``ctx`` (see :func:`injected_context`); the caller selects
-    data (tier, epoch, covers, expected window) from its map lookup.  Exact
-    signature; no invented IDs cross this boundary.
+    The PQ-facing entry point.  Identity (consumer, attempt, holder)
+    comes only from ``ctx`` (see :func:`injected_context`): the holder
+    records the PB-qualified fleet host and worker (plus incarnation
+    where published), never the container-local hostname, so
+    ``refs_for_holder`` finds container readers under the fleet alias.
+    The caller selects data (tier, epoch, covers, expected window) from
+    its map lookup.  Exact signature; no invented IDs cross this boundary.
     """
-
-    import socket
 
     from prismabuild import pool as pool_mod
 
@@ -1681,7 +1740,13 @@ def acquire_for(ctx: Mapping[str, object], *, tier_id: str, epoch: str,
         queue = pool_mod.PoolQueue(Path(str(ctx["queue_root"])))
         attempt = {"nonce": str(ctx["nonce"]),
                    "scope_id": str(ctx["scope_id"])}
-        holder = {"host": socket.gethostname(), "pid": os.getpid()}
+        holder: dict[str, object] = {
+            "host": str(ctx["host"]),
+            "worker": str(ctx["worker"]),
+            "pid": os.getpid(),
+        }
+        if isinstance(ctx.get("incarnation"), str) and ctx.get("incarnation"):
+            holder["incarnation"] = str(ctx["incarnation"])
         consumer = str(ctx["action_key"])
     except (KeyError, TypeError, ValueError) as exc:
         return {"ok": False, "refusal": f"bad-context: {exc}"}

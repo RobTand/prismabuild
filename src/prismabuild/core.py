@@ -111,7 +111,17 @@ ACTION_PROGRESS_ENV = (
 #: and a key inside the argv the key is computed from does not converge.
 ACTION_KEY_ENV = "PRISMABUILD_ACTION_KEY"
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
-ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV)
+#: The payload's public attempt identity, set by the resource_exec proxy
+#: from the exact launch identity (never the broker token) and protected
+#: here the same way as the action key: a sealed variable of any of these
+#: names is a refusal rather than an overwrite, so an action cannot spoof
+#: the attempt its readers bind their pins to.  Core sets no values for
+#: these two; they arrive with the execution, and readers fall back to the
+#: live claim row (marked as such) where no proxy forwarded them.
+ACTION_NONCE_ENV = "PRISMABUILD_ACTION_NONCE"
+ACTION_SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
+ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV,
+                        ACTION_NONCE_ENV, ACTION_SCOPE_ENV)
 
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action

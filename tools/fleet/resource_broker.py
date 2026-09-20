@@ -520,7 +520,7 @@ class Authority:
                     raise
                 record.pop('pending',None);_atomic(path,record)
                 return {'ok':True,**record}
-            if op not in {'stop','release','status','settle'}:raise ValueError('unknown operation')
+            if op not in {'stop','release','status','settle','export_stopped'}:raise ValueError('unknown operation')
             record=self.records.get(scope)
             token=request.get('token')
             if not isinstance(token,str) or HEX64.fullmatch(token) is None:raise PermissionError('invalid attempt token')
@@ -534,6 +534,25 @@ class Authority:
                 # Recovery after a worker crash may repeat cleanup. Retain
                 # authority, but never touch a subsequently recreated group.
                 return {'ok':True,'scope_id':scope,'released':True,**self._stop_details(record)}
+            if op=='export_stopped':
+                # Read-only verdict for containment export: the token holder
+                # learns whether this attempt's scope provably stopped and
+                # empty, without mutating authority.  A stopped-but-populated
+                # scope -- unresolved Docker tickets, a live cgroup --
+                # exports empty False, which authorizes nothing.  The
+                # membership lane files queue attestations from this verdict;
+                # reader containment additionally requires terminal broker
+                # telemetry, so the verdict alone never frees a ref.
+                if not record.get('stopped_unix'):
+                    raise ValueError('scope not stopped')
+                try:empty=self.backend.empty(scope)
+                except Exception:raise ValueError('scope emptiness unavailable')
+                return {'ok':True,'scope_id':scope,'stopped':True,
+                        'empty':bool(empty),'released':False,
+                        'retired':bool(record.get('retired_unix')),
+                        'settled':bool(record.get('settled_unix')),
+                        'tickets_pending':bool(record.get('container_tickets')) and not empty,
+                        **self._stop_details(record)}
             if record.get('pending'):
                 if (op not in {'stop','release'} or record.get('launched_unix')
                         or record.get('container_tickets') or not self.backend.empty(scope)):

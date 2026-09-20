@@ -64,8 +64,28 @@ def main() -> int:
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
     try:
+        # The payload's public attempt identity, from the exact launch
+        # identity this proxy was invoked with (never the broker token):
+        # readers downstream bind their pins to the attempt that launched
+        # them and compare it to the live claim, so a superseded process
+        # can never silently adopt its successor's attempt.  Names match
+        # core's protected residency forwarding, which refuses sealed
+        # spoofs of either variable.  When the sibling broker module is
+        # not importable the variables stay unset and readers fall back
+        # to the live claim row (marked as such, never guessed).
+        payload_env = dict(os.environ)
+        try:
+            from resource_broker import scope_id as broker_scope_id
+        except ImportError:
+            broker_scope_id = None  # type: ignore[assignment]
+        if broker_scope_id is not None:
+            # Assignment, not setdefault: an outer attempt's variables must
+            # not leak into the inner payload this proxy launches.
+            payload_env['PRISMABUILD_ACTION_NONCE'] = args.nonce
+            payload_env['PRISMABUILD_ACTION_SCOPE'] = broker_scope_id(
+                args.action_key, args.nonce)
         request = {'op': 'run', **identity, 'argv': argv,
-                   'cwd': os.getcwd(), 'env': dict(os.environ),
+                   'cwd': os.getcwd(), 'env': payload_env,
                    'affinity': sorted(os.sched_getaffinity(0)), 'umask': process_umask()}
         message = json.dumps(request, separators=(',', ':')).encode() + b'\n'
         if len(message) > MAX_MESSAGE_BYTES:
