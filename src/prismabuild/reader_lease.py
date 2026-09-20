@@ -863,6 +863,55 @@ def attestation_proves_empty(queue, action_key: str, nonce: str,
     return True, attestation
 
 
+def attempt_refs_live(queue, owner_action_key: str, nonce: str,
+                        scope_id: str, *, residency_root=None
+                        ) -> tuple[bool, str]:
+    """Whether live refs for this exact attempt still pin bytes.
+
+    Scans the owner's pin directory for refs whose attempt is exactly
+    ``(nonce, scope_id)`` (owner from the pin body, never the directory).
+    Returns ``(True, reason)`` when at least one such ref stands --
+    including when the census is uncertain -- and ``(False, reason)``
+    only for proven absence.  Unknown absence holds: an unreadable
+    directory is never proof of none; a never-created leases root is
+    genuinely empty.  Read-only; never a reaper trigger on its own.
+    """
+
+    if not owner_action_key or not nonce or not scope_id:
+        return True, "attempt-unbound-hold"
+    root = leases_root(queue, residency_root)
+    directory = root / owner_action_key
+    try:
+        names = sorted(entry.name for entry in os.scandir(directory)
+                       if entry.is_file()
+                       and entry.name.endswith(".lease.json"))
+    except FileNotFoundError:
+        return False, "no-pins"
+    except OSError as exc:
+        return True, f"pin-census-uncertain-hold: {exc}"
+    for name in names:
+        path = directory / name
+        try:
+            with open(path) as stream:
+                pin = validate_pin(json.load(stream))
+        except (OSError, ValueError) as exc:
+            return True, f"pin-unreadable-hold: {name}: {exc}"
+        refs = pin["refs"]
+        assert isinstance(refs, dict)
+        if str(pin.get("owner_action_key") or "") != owner_action_key:
+            continue
+        for ref in refs.values():
+            if not isinstance(ref, dict):
+                continue
+            attempt = ref.get("attempt")
+            if not isinstance(attempt, dict):
+                continue
+            if (str(attempt.get("nonce") or "") == nonce
+                    and str(attempt.get("scope_id") or "") == scope_id):
+                return True, "attempt-ref-live"
+    return False, "attempt-refs-released"
+
+
 def _replay_attestation_from_terminal(queue, action_key: str, nonce: str,
                                       scope_id: str) -> tuple[bool, str]:
     """Refile a lost attestation from the terminal's stored broker export.
@@ -2577,6 +2626,7 @@ __all__ = [
     "acquire",
     "attestation_path",
     "attestation_proves_empty",
+    "attempt_refs_live",
     "clear_retiring",
     "containment_certificate_ok",
     "export_verdict_proves_empty",

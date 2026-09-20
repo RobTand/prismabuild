@@ -2451,16 +2451,20 @@ def test_finish_write_failure_heals_on_egress_tick(
         assert proof["host"] == host
 
 
-def test_unsettled_ticket_retains_then_settles_through_cleanup(
+def test_unsettled_ticket_retains_then_settles_through_reaper(
         fleet, tmp_path, monkeypatch) -> None:
-    """Empty-but-unsettled retains; settlement releases, production only.
+    """Finish while unsettled retains the claim; the reaper finishes it.
 
-    A container ticket left unresolved at cleanup retires the scope
-    without settlement: the pool files scope_empty False and the egress
-    retains.  After the holder settles through the real broker settle
-    op, the next production cleanup (shortcut recovery reading a fresh
-    export) republishes True and the egress reclaims.  No invented
-    proof at any step; an incomplete export never replays.
+    Normal order, production callers only: ``queue.finish`` while a
+    container ticket is unresolved does NOT publish DONE -- cleanup
+    reports incomplete (live refs, unproven export), finish files
+    ``finish_pending`` and retains CLAIMED plus its charge.  The egress
+    retains.  After the holder settles through the real broker authority,
+    the existing ``reap_stale`` worker path retries the saved finish to
+    DONE, and the egress reclaims exactly once.  A successor attempt's
+    refs are untouched by the old attempt throughout.  Fault injection
+    is broker state only; no handwritten proof, terminal, or verdict,
+    no private helpers.
     """
 
     from prismabuild import resource_scope
@@ -2473,19 +2477,25 @@ def test_unsettled_ticket_retains_then_settles_through_cleanup(
         unit, host, worker, staged, acquired = _connected_setup(
             queue, stage, root, tmp_path, broker, nonce, "ticket-token",
             source="/mnt/shared/tk.bin", name="tk.bin", size=1024)
-        record = json.loads(
-            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text())
-        control = record["resource_scope"]
-        # A late container lands with an unresolved ticket (broker state).
+        control = json.loads(
+            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text()
+        )["resource_scope"]
+        # External daemon condition: a late container lands with an
+        # unresolved ticket.
         broker.authority.records[unit]["container_tickets"] = ["ticket-1"]
-        first = queue.cleanup_action_containers(record)
-        assert first["complete"] is True
-        assert first["resource_scope"]["released"]["retired"] is True
+        pending_path = queue.finish(CONSUMER, status="executed", detail={})
+        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
+        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        retained = json.loads(
+            queue.item_path(pool.CLAIMED, CONSUMER).read_text())
+        assert isinstance(retained.get("finish_pending"), dict)
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
         assert proof["scope_empty"] is False
         assert proof["retired"] is True
         assert proof["settled"] is False
+        # Persistent uncertainty retains refs AND charge: no terminal to
+        # reclaim against, and the claim still stands.
         kept = stage_release.evict(queue, MOVER,
                                    consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
@@ -2493,8 +2503,10 @@ def test_unsettled_ticket_retains_then_settles_through_cleanup(
         assert kept["auto_reclaimed"] == []
         assert kept["auto_retained"] == {
             acquired["ref_id"]: "scope-not-empty-retain"}
-        # The holder settles through the real broker authority; the next
-        # production cleanup reads a fresh export and republishes True.
+        with pytest.raises(pool.PoolContractError):
+            queue.reclaim_terminal_reservation(CONSUMER)
+        # The holder settles through the real broker authority; the
+        # existing worker reaper retries the saved finish to DONE.
         evidence = {"schema": broker.module.SETTLEMENT_SCHEMA,
                     "marker_absent": True, "owner_container_ids": [],
                     "scope_container_ids": [], "checked_unix": 1789870000.0}
@@ -2503,21 +2515,113 @@ def test_unsettled_ticket_retains_then_settles_through_cleanup(
             {"op": "settle", "action_key": CONSUMER, "nonce": nonce,
              "token": control["token"], "evidence": evidence})
         assert settled["settled"] is True
-        second = queue.cleanup_action_containers(record)
-        assert second["complete"] is True
+        assert queue.reap_stale() == []
+        terminal = queue.item_path(pool.DONE, CONSUMER)
+        assert terminal.exists()
         proof2 = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof2, dict)
         assert proof2["scope_empty"] is True
         assert proof2["settled"] is True
         assert proof2["retired"] is True
-        # Ordinary finish files the terminal; the egress reclaims.
-        terminal = queue.finish(CONSUMER, status="executed", detail={})
-        assert terminal == queue.item_path(pool.DONE, CONSUMER)
         receipt = stage_release.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
         assert not staged.exists()
+        assert receipt["entries_deleted"] == 1
+        # A successor attempt's refs are never freed by the old proof:
+        # the old certificate mismatches, and the new attempt has no
+        # proof of its own yet.  A fresh window is published for it (the
+        # old bytes were legitimately deleted on reclaim).
+        staged2 = stage / "model" / "tk2.bin"
+        staged2.parent.mkdir(parents=True)
+        staged2.write_bytes(b"\x6a" * 1024)
+        _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/tk2.bin",
+                 staged2, 1024)
+        second = reader_lease.acquire(
+            queue, consumer_action_key=CONSUMER,
+            attempt={"nonce": "e" * 32, "scope_id": "unit-2"},
+            tier_id=TIER, epoch="",
+            span={"start_bytes": 0, "end_bytes": 1024},
+            holder={"host": host, "worker": worker, "pid": 4242},
+            acquire_token="successor-token",
+            covers=[{"mover_action_key": MOVER,
+                     "manifest_sha256": "a" * 64}],
+            expected={residency_map.residency_map_key(
+                "/mnt/shared/tk2.bin", 0): {"bytes": 1024,
+                                            "sha256": "b" * 64}},
+            residency_root=root)
+        assert second["ok"], second
+        old_cert = {"action_key": CONSUMER, "nonce": nonce,
+                    "scope_id": unit, "worker": worker, "host": host}
+        refused = reader_lease.release_refs(
+            queue, [{"consumer_action_key": CONSUMER,
+                     "pin_id": second["pin_id"],
+                     "ref_id": second["ref_id"]}], dict(old_cert))
+        assert refused["ok"] is False, refused
+        assert refused["skipped"] == [
+            "%s: attempt mismatch" % second["ref_id"]]
+        latched = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert second["ref_id"] in latched["auto_retained"], latched
+
+
+def test_broker_transport_down_retains_then_reaper_recovers(
+        fleet, tmp_path, monkeypatch) -> None:
+    """Broker RPC failure retains the claim; the reaper recovers.
+
+    Transport condition only: the socket server is shut down, so the
+    production cleanup's broker RPCs fail and finish retains CLAIMED
+    with finish_pending and no proof file.  The egress retains.  The
+    same authority is served again, the existing reaper retries the
+    saved finish to DONE, and the egress reclaims exactly once.
+    """
+
+    from prismabuild import resource_scope
+
+    queue, stage = fleet
+    root = queue.root / pool.RESIDENCY
+    nonce = "f" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "rpc-token",
+            source="/mnt/shared/rp.bin", name="rp.bin", size=1024)
+        broker.server.shutdown()
+        broker.thread.join(timeout=10)
+        broker.server.server_close()
+        broker.endpoint.unlink(missing_ok=True)
+        pending_path = queue.finish(CONSUMER, status="executed", detail={})
+        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
+        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        assert reader_lease.read_scope_attestation(
+            queue, CONSUMER, nonce) is None
+        kept = stage_release.evict(queue, MOVER,
+                                   consumer_action_key=CONSUMER,
+                                   stage_root=str(stage))
+        assert staged.exists()
+        assert kept["auto_reclaimed"] == []
+        # Same authority, transport restored: the reaper recovers.
+        broker.server = broker.module.Server(
+            str(broker.endpoint), broker.module.Handler)
+        broker.server.authority = broker.authority
+        broker.thread = threading.Thread(
+            target=broker.server.serve_forever,
+            kwargs={"poll_interval": 0.01}, daemon=True)
+        broker.thread.start()
+        assert queue.reap_stale() == []
+        terminal = queue.item_path(pool.DONE, CONSUMER)
+        assert terminal.exists()
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is True
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
+        assert not staged.exists()
+        assert receipt["entries_deleted"] == 1
 
 
 def test_unknown_scan_never_reports_released(fleet) -> None:

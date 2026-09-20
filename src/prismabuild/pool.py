@@ -5538,6 +5538,31 @@ class PoolQueue:
                 telemetry.setdefault(
                     "proof_persistence_error",
                     f"{type(exc).__name__}: {exc}")
+            # Reader-containment hold: an export that cannot prove this
+            # attempt contained must not conclude a claim whose readers
+            # still pin bytes.  Return incomplete so the claim -- with
+            # its finish_pending authority and its charge -- survives
+            # for the existing worker reaper to retry once settlement
+            # lands; only a proven export, or explicitly released refs,
+            # lets the terminal publish.  A positive export with a lost
+            # proof file still completes here (the egress tick replays
+            # the persisted export), so this holds exactly the unproven.
+            from prismabuild import reader_lease
+            proof_ok, proof_reason = (
+                reader_lease.export_verdict_proves_empty(
+                    export if isinstance(export, Mapping) else {},
+                    scope_id=scope.unit))
+            if not proof_ok:
+                held, hold_reason = reader_lease.attempt_refs_live(
+                    self, str(record.get("action_key") or ""),
+                    scope.nonce, scope.unit)
+                if held:
+                    return {"complete": False, "used": True,
+                            "removed": [], "remaining": [],
+                            "error": f"reader refs live, containment "
+                                     f"unproven ({proof_reason}; "
+                                     f"{hold_reason})",
+                            "nonce": scope.nonce, "export": export}
             if scope.authority_path is not None:
                 # The scope is empty: nothing will sample it again, and no
                 # holder remains for admission to attribute it to. The shared
