@@ -21,9 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
 import pbstatus  # noqa: E402
+import residency_publication  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
+EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
@@ -241,6 +243,18 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
         "leads": residency_plan.leads_for(plan)})
     queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
     assert queue.tier_ledger(RAM_TIER).acquire(_key(0, 0), {"ram_gib": 1})
+    # The booking above is the room; these are the records the finished
+    # promotion left, which is what the census now reports (#759).
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier": "ram",
+        "tier_id": RAM_TIER, "host": "dl380g10",
+        "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
+        "capacity_bytes": 8 * GIB})
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
+        tier_id=RAM_TIER, stage_root=tmp_path / "ram",
+        manifest_sha256=MANIFEST, range_start_bytes=0,
+        range_end_bytes=GIB, epoch=EPOCH)
 
     entry = pbstatus._starvation_plan_entry(
         queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),

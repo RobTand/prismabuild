@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbstatus  # noqa: E402
+import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -238,6 +239,12 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
         "leads": residency_plan.leads_for(plan)})
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
     assert queue.tier_ledger(STAGE_TIER).acquire(_key(0, 0), {"stage_gib": 1})
+    # The booking above is the room; these are the records the finished
+    # copy left, which is what the census now reports (#759).
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
+        tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+        manifest_sha256=MANIFEST, range_start_bytes=0, range_end_bytes=GIB)
 
     entry = pbstatus._starvation_plan_entry(
         queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
+import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -89,7 +90,12 @@ def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
 
 def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
              landed: int) -> pool.PoolQueue:
-    """A consumer, its frozen plan, and the first ``landed`` stage ranges resident."""
+    """A consumer, its frozen plan, and the first ``landed`` stage ranges resident.
+
+    Landed means landed: tokens held AND the finished fragment plus the
+    mover's complete receipt filed (issue #759).  Reservations alone are
+    accounting, never bytes.
+    """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
@@ -106,14 +112,14 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
         stage_lead = _hexkey(f"mover{ordinal}")
         assert queue.tier_ledger(STAGE_TIER).acquire(
             stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
-        queue.record_move(stage_lead, {
-            "consumer_action_key": CONSUMER, "tier_id": STAGE_TIER,
-            "stage_root": "/stage/prewarm", "manifest_sha256": MANIFEST,
-            "range_start_bytes": start,
-            "range_end_bytes": start + PHASE_GIB[ordinal] * GIB,
-            "bytes_staged": PHASE_GIB[ordinal] * GIB, "complete": True,
-            "seconds": 1.0, "unix": 1000.0 + ordinal})
-        start += PHASE_GIB[ordinal] * GIB
+        end = start + PHASE_GIB[ordinal] * GIB
+        residency_publication.vouch_landed(
+            queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,
+            tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+            manifest_sha256=MANIFEST, range_start_bytes=start,
+            range_end_bytes=end, name=f"phase{ordinal}",
+            unix=1000.0 + ordinal)
+        start = end
     return queue
 
 

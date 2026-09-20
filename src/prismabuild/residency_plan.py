@@ -76,7 +76,7 @@ the consumer never waits on a mover that is waiting on the consumer.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 import hashlib
 import json
 import os
@@ -86,6 +86,7 @@ import time
 
 from . import core as pb
 from . import pool as _pool
+from . import residency_map
 from . import storage_tiers
 
 RESIDENCY_PLAN_SCHEMA_V1 = "prismaquant.prismabuild.residency_plan.v1"
@@ -1403,6 +1404,263 @@ def ram_mover_keys(plan: Mapping[str, object]) -> list[str]:
         elif "ram_mover_row" in phase:
             out.append(str(phase["ram_mover_row"]["action_key"]))
     return out
+
+
+class ResidencyEvidenceUnreadable(OSError):
+    """The filed publication evidence for one consumer could not be read.
+
+    Distinct from "nothing is published": a fragment directory that is simply
+    absent is a consumer nobody has staged for yet, which is a known-empty
+    answer.  A directory that exists and cannot be listed is an *unknown*
+    answer, and a caller that flattened it to empty would report a stalled
+    mount as a clean unstaged window.  Raised so every caller has to decide;
+    the tier loop fails that consumer's cycle closed and says so, the status
+    census reports the readiness as unknown rather than false.
+    """
+
+
+def _sealed_spans(plan: Mapping[str, object], *,
+                  ram: bool) -> dict[str, tuple[int, int]]:
+    """The byte span this plan seals per mover key on one leg.
+
+    Plan arithmetic only -- no payload is opened and nothing is stat-ed.  A
+    whole-phase leg seals the phase's range; a chunked leg seals each chunk's
+    own range under that chunk's mover key, and the span widens to the union
+    if one key is ever sealed over several chunks.  The span is what a
+    receipt has to *cover* before the key counts as resident, so a copy that
+    finished a narrower range than the plan sealed is not this range.
+    """
+
+    row_key = "ram_mover_row" if ram else "mover_row"
+    chunks_key = "ram_chunks" if ram else "stage_chunks"
+    spans: dict[str, tuple[int, int]] = {}
+
+    def _note(key: str, start: object, end: object) -> None:
+        if isinstance(start, bool) or not isinstance(start, int):
+            return
+        if isinstance(end, bool) or not isinstance(end, int):
+            return
+        if not key or end < start:
+            return
+        prior = spans.get(key)
+        spans[key] = ((start, end) if prior is None
+                      else (min(prior[0], start), max(prior[1], end)))
+
+    for phase in plan.get("phases", []):                 # type: ignore[union-attr]
+        if not isinstance(phase, Mapping):
+            continue
+        chunks = phase.get(chunks_key)
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                if not isinstance(chunk, Mapping):
+                    continue
+                row = chunk.get(row_key)
+                if isinstance(row, Mapping):
+                    _note(str(row.get("action_key") or ""),
+                          chunk.get("start_bytes"), chunk.get("end_bytes"))
+            continue
+        row = phase.get(row_key)
+        if isinstance(row, Mapping):
+            _note(str(row.get("action_key") or ""),
+                  phase.get("start_bytes"), phase.get("end_bytes"))
+    return spans
+
+
+def _plan_fragments(queue: _pool.PoolQueue, consumer_action_key: str,
+                    keys: Collection[str]) -> list[dict[str, object]]:
+    """Every filed fragment for one consumer, read strictly for ``keys``.
+
+    ``residency_map.read_fragments`` deliberately *skips* a file it cannot
+    read or validate, and that is right where it lives: a consumer composing
+    its map must still find the copies its other movers really did make, and
+    one bad file must not cost it the rest.
+
+    It is wrong for readiness.  Skipping turns "I could not tell" into "not
+    staged", and ``staged: false`` asserts a fact a caller acts on --
+    exactly the unproven-reported-as-known error #759 was.  So a file whose
+    name is one of *this plan's* mover keys is read through the same
+    validator and, if it cannot be read or does not validate, raises
+    :class:`ResidencyEvidenceUnreadable` rather than vanishing.
+
+    A file no leg of this plan names is still skipped: it cannot change what
+    this plan's movers published, so refusing on it would be a stall with no
+    reason.  Names are authoritative because ``residency_map.fragment_path``
+    writes exactly ``<consumer>/<mover>.json`` and nothing else does.  No
+    payload byte is opened here.
+    """
+
+    directory = (Path(queue.residency_fragment_root())
+                 / str(consumer_action_key))
+    try:
+        names = sorted(entry.name for entry in os.scandir(directory)
+                       if entry.is_file() and entry.name.endswith(".json"))
+    except FileNotFoundError:
+        return []           # never published: known empty, not unknown
+    except OSError as exc:
+        raise ResidencyEvidenceUnreadable(
+            f"residency fragments for {str(consumer_action_key)[:12]} "
+            f"unreadable: {exc!r}") from exc
+    wanted = set(keys)
+    out: list[dict[str, object]] = []
+    for name in names:
+        try:
+            with open(directory / name) as stream:
+                out.append(residency_map.validate_fragment(json.load(stream)))
+        except (OSError, ValueError) as exc:
+            if name[:-len(".json")] in wanted:
+                raise ResidencyEvidenceUnreadable(
+                    f"residency fragment {name[:12]} for "
+                    f"{str(consumer_action_key)[:12]} unreadable: {exc!r}"
+                ) from exc
+            continue        # a file no leg of this plan names
+    return out
+
+
+def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
+                    tier_id: str, *,
+                    tier_record: Mapping[str, object] | None = None,
+                    ) -> set[str]:
+    """Which of a plan's movers this tier both accounts for and has published.
+
+    The one shared readiness predicate.  The tier window gates RAM
+    publication on it and the status census reports it, so a gate and a
+    cursor can never again disagree about what is resident -- which is
+    exactly how issue #759 stayed invisible: two predicates, one premature
+    trigger.
+
+    A tier token is a *reservation*.  It is taken at claim, before a byte
+    moves, and it is what stops the tier being over-committed; it says the
+    room is booked, never that the bytes arrived.  Residency needs both, and
+    this asks for both:
+
+    1. **The tier still accounts for the range.**  ``holder_tokens`` is
+       non-empty for the key.  This is the guard the old docstring was
+       written for and it is kept exactly: an egress that released the
+       tokens but failed before unlinking the fragment leaves a vouch for
+       bytes that are going, and a reboot leaves a ram ledger with no
+       tokens at all.
+    2. **A current fragment vouches for the bytes, under this plan's
+       identity.**  The consumer's own fragment for this mover, naming this
+       ``tier_id`` and this ``manifest_sha256``, with a non-empty entry set.
+       Relevance is checked per leg: a stage fragment must name the plan's
+       stage root, and a ram fragment must name the *announced* ram root
+       under the *announced* epoch -- never the plan's stage root, which is
+       where the promotion read from, not where it landed.
+    3. **The key is not CLAIMED.**  ``stage_move`` republishes its fragment
+       as entries land, on purpose, so a running copy's fragment is a
+       prefix and whatever receipt is on disk belongs to a previous run.
+    4. **A complete receipt covers the sealed span.**  ``complete is True``,
+       the same manifest, and a filed range that contains the span this plan
+       sealed for the key.
+    5. **That receipt describes *this* fragment.**  ``entries_staged ==
+       entries_declared`` and the current fragment holds exactly that many
+       entries.  Entries are keyed and a mover stages exactly its window, so
+       a short count is a hole and never a straddle.  This is what stops a
+       historical complete receipt from resurrecting a new partial copy:
+       after a crash or a requeue the predecessor's receipt is still on
+       disk, the pin is still holding its tokens because of it, and only the
+       count tie notices that the fragment beside it is a prefix.
+
+    Adoption passes unchanged: ``tier_loop.adopt`` re-issues the donor's
+    fragment under the successor's name and files a receipt whose declared
+    and staged counts are that fragment's own, with the tokens transferred
+    rather than released.
+
+    Bounded by design: one listing of this consumer's fragment directory,
+    each of its (small) fragment documents, and one small receipt read per
+    fragment-backed key this plan names.  No payload byte is read, nothing
+    is hashed, and no model is stat-ed.
+
+    Absent evidence and unreadable evidence are different answers and stay
+    different.  A fragment directory that is simply not there is
+    known-empty.  A directory that cannot be listed, or a fragment named for
+    one of this plan's movers that cannot be read or does not validate,
+    raises :class:`ResidencyEvidenceUnreadable` -- because reporting that as
+    "not staged" would assert a fact nothing supports, which is #759's own
+    error in another costume.  See :func:`_plan_fragments`.
+
+    ``tier_record`` is the announced record for ``tier_id`` when the caller
+    already has the cycle's census in hand; left out, it is read back from
+    the queue.  It is consulted for the ram leg only.
+    """
+
+    consumer = str(plan["consumer_action_key"])
+    keys = set(ram_mover_keys(plan) if _is_ram_tier(tier_id)
+               else mover_keys(plan))
+    if not keys:
+        return set()
+    fragments = _plan_fragments(queue, consumer, keys)
+    ram = _is_ram_tier(tier_id)
+    manifest = str(plan.get("manifest_sha256") or "")
+    if ram:
+        if tier_record is None:
+            tier_record = next(
+                (record for record in queue.tiers()
+                 if str(record.get("tier_id") or "") == str(tier_id)), None)
+        epoch = str((tier_record or {}).get("epoch") or "")
+        root_wanted = str((tier_record or {}).get("mountpoint") or "")
+        if not epoch or not root_wanted:
+            # An undated or unannounced ram tier is not resident, ever: the
+            # tmpfs empties on reboot and only the announced epoch says which
+            # incarnation the fragments on the shared mount belong to.
+            return set()
+    else:
+        epoch = ""
+        root_wanted = str(plan.get("stage_root") or "")
+    spans = _sealed_spans(plan, ram=ram)
+    ledger = queue.tier_ledger(tier_id)
+    out: set[str] = set()
+    for fragment in fragments:
+        mover = fragment.get("mover_action_key")
+        if not isinstance(mover, str) or mover not in keys or mover in out:
+            continue
+        if str(fragment.get("tier_id") or "") != str(tier_id):
+            continue
+        if manifest and str(fragment.get("manifest_sha256") or "") != manifest:
+            continue
+        if root_wanted and os.path.normpath(
+                str(fragment.get("stage_root") or "")) != os.path.normpath(
+                    root_wanted):
+            continue
+        if ram and str(fragment.get("epoch") or "") != epoch:
+            continue
+        entries = fragment.get("entries")
+        if not isinstance(entries, Mapping) or not entries:
+            continue
+        span = spans.get(mover)
+        if span is None:
+            continue            # no leg of this plan seals that key
+        if not ledger.holder_tokens(mover):
+            continue            # the tier no longer accounts for the range
+        if queue.item_path(_pool.CLAIMED, mover).exists():
+            continue            # a running copy; its receipt is a prior run's
+        receipt = queue.move_record(mover)
+        if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
+            continue
+        if manifest and str(receipt.get("manifest_sha256") or "") != manifest:
+            continue
+        try:
+            filed = (int(receipt["range_start_bytes"]),
+                     int(receipt["range_end_bytes"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if filed[0] > span[0] or filed[1] < span[1]:
+            continue
+        declared, landed = receipt.get("entries_declared"), receipt.get(
+            "entries_staged")
+        if (isinstance(declared, bool) or not isinstance(declared, int)
+                or isinstance(landed, bool) or not isinstance(landed, int)):
+            continue            # a receipt that cannot be tied to a fragment
+        if landed != declared or len(entries) != landed:
+            continue
+        out.add(mover)
+    return out
+
+
+def _is_ram_tier(tier_id: object) -> bool:
+    """Whether a tier id names a ram tier, by the one prefix that defines it."""
+
+    return str(tier_id).startswith(storage_tiers.RAM_TIER_PREFIX)
 
 
 def remaining(plan: Mapping[str, object],

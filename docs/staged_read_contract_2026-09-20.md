@@ -254,6 +254,55 @@ row above.
   resulting payloads carry uncertified integrity/location records with no
   staged tier claim. Our own acceptance never
   substitutes.
+- TIER-05 a reservation is not residency, and one predicate answers both
+  the gate and the report (#759). Tier tokens are taken at CLAIM, before a
+  byte moves: they are the booking that bounds occupancy and that an egress
+  gives back, and they never establish that bytes arrived. A movement node
+  counts as RESIDENT only when, together: it still holds its tier tokens; a
+  current map fragment for this consumer, tier and manifest vouches for the
+  bytes, naming the plan's stage root on the stage leg and the ANNOUNCED ram
+  root under the ANNOUNCED epoch on the ram leg; the node is not `claimed/`,
+  because a running copy republishes its fragment as a prefix and whatever
+  receipt is on disk belongs to a previous run; a `complete` `record_move`
+  receipt covers the span the frozen plan sealed for that key; and that
+  receipt's `entries_declared == entries_staged` equals the current
+  fragment's entry count, so a historical complete receipt cannot speak for
+  a later partial copy after a crash or requeue. Adoption satisfies this by
+  re-issuing the donor's fragment under the successor with a receipt
+  carrying that fragment's counts and the tokens transferred. Deciding
+  residency by reading payload bytes, hashing a model, or stat-ing a whole
+  manifest per cycle is forbidden; the evidence is the records above.
+  `residency_plan.resident_movers` is the single implementation, and
+  `tier_loop` (RAM publication precondition) and `pbstatus`/`pb_cursors`
+  (reported state) both read it, so a gate and a cursor cannot disagree.
+  Evidence that cannot be READ is UNKNOWN, and UNKNOWN is never reported as
+  NOT STAGED. `staged: false` asserts a fact a caller acts on; unreadable or
+  malformed evidence supports no such assertion, and collapsing the two is
+  the same unproven-reported-as-known error as reserved-equals-resident.
+  Concretely: a fragment directory that is absent is known-empty; a directory
+  that cannot be listed, and a fragment file named for one of this plan's
+  movers that cannot be opened or does not validate, are UNKNOWN. The
+  map-composition reader (`residency_map.read_fragments`) deliberately skips
+  such a file so a consumer still finds its other movers' copies, and that
+  stays; readiness must NOT reuse that tolerance, because skipping is what
+  flattens unknown into false. A file no leg of the plan names is still
+  skipped -- it cannot change this plan's answer. On UNKNOWN the window
+  gates closed and says so (`ram-window-unknown`) and the census reports
+  `staged: null`; neither may report `false`. The census reports the booking as `reserved` beside
+  `staged`, so capacity in use is never hidden behind the stricter
+  readiness answer, and token holdings keep their own jobs -- window
+  eviction of a passed phase and the advance fence still count what the
+  ledger holds.
+  UNKNOWN survives AGGREGATION, not only the leg. `cursor_gap` counts a
+  phase as `unstaged_phases`/`unstaged_bytes` only when its leg is `false`,
+  carries `unknown_phases`/`unknown_bytes` beside them, and keeps the three
+  additive against `remaining_phases`; a chunked leg is `true` only when
+  every chunk is, `false` as soon as one chunk is known missing, and
+  UNKNOWN otherwise. A two-way test (`is not True`) over a three-state
+  answer is banned here for the same reason `staged: false` is: it reports
+  an unproven state as a known one, one level above the leg that was fixed.
+  `prismabuild_residency_unstaged_*` therefore counts KNOWN backlog only,
+  and unknown bytes are not yet exported as a family of their own.
 
 ## 7. Progress, frontier, and liveness
 

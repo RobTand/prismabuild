@@ -3690,9 +3690,57 @@ keeps the leg it was frozen with — a node whose range is its phase's whole
 range follows the whole-phase rules, byte-identically. A promotion holds
 `ram_gib` the way a mover holds
 `stage_gib`: from claim, past finish — the pin, read off its receipt — and
-back only when an egress deletes its files, because held tokens equal bytes
-on the tmpfs at every instant and held-by-nobody bytes on a roof-limited
-tmpfs are ENOSPC waiting to happen. Its action demand carries a second
+back only when an egress deletes its files, because held-by-nobody bytes on
+a roof-limited tmpfs are ENOSPC waiting to happen.
+
+**A reservation is not residency.** Those tokens are taken at *claim*, before
+a byte moves: they bound what the tier may hold and they are what an egress
+gives back, and they say the room is booked, never that the bytes arrived.
+Until #759 the tier loop read them as both — `_mover_state` and
+`_ram_mover_state` set `staged` from `holder_tokens` alone, and
+`_stage_source_staged` let a RAM promotion publish on that — so on 2026-09-20
+the live Stage A head promotion published while its 10.9 GB stage copy was
+still running, found no per-consumer fragment, and refused
+`source-coverage-gap` through 80 retained attempts across 27 publication
+generations. The `pb_cursors` census read the same equivalence and called the
+head phase staged while the identity proof saw nothing: two predicates, one
+premature trigger.
+
+Readiness is now one shared predicate,
+`residency_plan.resident_movers(queue, plan, tier_id)`, which the tier
+window gates on and the status census reports, so a gate and a cursor cannot
+disagree. It asks for the reservation *and* the publication: the key still
+holds its tier tokens; a current fragment for this consumer, tier and
+manifest vouches for the bytes, naming the plan's stage root on the stage leg
+and the **announced** ram root under the **announced** epoch on the ram leg;
+the key is not `CLAIMED`, because `stage_move` republishes its fragment as
+entries land and a running copy's receipt belongs to a previous run; a
+`complete` receipt covers the span the plan sealed for that key; and that
+receipt's `entries_declared == entries_staged` equals the current fragment's
+entry count, which is what stops a historical complete receipt from speaking
+for a new partial copy after a crash or a requeue. Adoption passes unchanged
+— `tier_loop.adopt` re-issues the donor's fragment under the successor and
+files a receipt carrying that fragment's own counts, with the tokens
+transferred rather than released. Cost is one fragment-directory listing per
+plan plus one small receipt read per fragment-backed key; no payload is read
+and no model is stat-ed. Evidence that cannot be *read* is unknown, not absent, and unknown is never
+reported as not-staged: `staged: false` asserts a fact a caller acts on, and
+a corrupt or unopenable fragment supports no such assertion — the same
+unproven-reported-as-known error in another costume. A missing fragment
+directory is known-empty; a directory that cannot be listed, or a fragment
+named for one of this plan's movers that cannot be opened or does not
+validate, is unknown, so the window gates closed and emits
+`ram-window-unknown` and the census reports `staged: null`. The
+map-composition reader keeps skipping such a file — a consumer that can still
+find three of its four movers' copies must read those three — and readiness
+deliberately does not reuse that tolerance, because skipping is exactly what
+flattens unknown into false (`residency_plan._plan_fragments`). A file no leg
+of the plan names is still skipped: it cannot change this plan's answer, so
+refusing on it would be a stall with no reason. Token holdings
+keep their own jobs untouched — the window still evicts a passed phase on
+what the ledger holds, the advance fence still counts it, and the census
+reports it as `reserved` beside `staged`, so capacity in use is never
+hidden behind the stricter readiness answer. Its action demand carries a second
 number, and the two answer different questions: `ram_gib` is the tier
 occupancy the range retains, while `mem_gb` is the action's own containment
 cap — the copier's runtime working set that the mover receipts price, plus

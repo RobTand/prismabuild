@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
+import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -125,13 +126,15 @@ def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
         stage_lead = _hexkey(f"mover{ordinal}")
         assert queue.tier_ledger(STAGE_TIER).acquire(
             stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
-        queue.record_move(stage_lead, {
-            "consumer_action_key": CONSUMER, "tier_id": STAGE_TIER,
-            "stage_root": "/stage/prewarm", "manifest_sha256": MANIFEST,
-            "range_start_bytes": int(phase["start_bytes"]),
-            "range_end_bytes": int(phase["end_bytes"]),
-            "bytes_staged": PHASE_GIB[ordinal] * GIB, "complete": True,
-            "seconds": 1.0, "unix": 1000.0 + ordinal})
+        # Landed means landed (#759): the tokens are the booking, and the
+        # fragment beside the receipt is what says the bytes arrived.
+        residency_publication.vouch_landed(
+            queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,
+            tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+            manifest_sha256=MANIFEST,
+            range_start_bytes=int(phase["start_bytes"]),
+            range_end_bytes=int(phase["end_bytes"]),
+            name=f"phase{ordinal}", unix=1000.0 + ordinal)
     return queue
 
 

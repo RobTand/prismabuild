@@ -558,7 +558,11 @@ def _ram_setup(tmp_path: Path, *, stage_gib: int, ram_gib: int):
         "ram_egress_row": _row(_hexkey("wpp-ramre-0"), {"mem_gb": 1}, queue),
     }]
     plan = residency_plan.build_plan(
-        consumer_action_key=CONSUMER_A, tier_id=TIER, stage_root="/stage/prewarm",
+        # The root the movers below actually copy to: a plan that named a
+        # different stage than its own mover writes would vouch for bytes
+        # nobody can match to it, which is what readiness now checks (#759).
+        consumer_action_key=CONSUMER_A, tier_id=TIER,
+        stage_root=str(tmp_path / "stage"),
         manifest_sha256=digest, manifest_bytes=2 * SPAN, phases=built,
         ram_tier_id=RAM_TIER)
     _publish_consumer(queue, plan, CONSUMER_A)
@@ -573,8 +577,10 @@ def _ram_tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
     tiers = _tiers(tmp_path)
     ram = tmp_path / "ram"
     record = None
-    return {**tiers, RAM_TIER: {"tier_id": RAM_TIER, "tier": "ram",
-                                "mountpoint": str(ram)}}
+    announced = storage_tiers.read_ram_epoch(ram)
+    return {**tiers, RAM_TIER: {
+        "tier_id": RAM_TIER, "tier": "ram", "mountpoint": str(ram),
+        "epoch": str(announced["epoch"]) if announced else ""}}
 
 
 def _promote_args(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,

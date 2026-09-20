@@ -196,20 +196,33 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
 
 def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
                  tier_id: str) -> tuple[set[str], set[str]]:
-    """Which of a plan's movers count as published, and which are on the stage.
+    """Which of a plan's movers count as published, and which hold the tier.
 
-    A mover holding tier tokens is resident by definition -- that is the
-    invariant the pin exists to keep -- so the ledger answers "what is on the
-    stage" without walking the device.  ``published`` deliberately excludes a
-    terminal mover that holds nothing: its key is a content hash, so the same
-    manifest seals the same key on a second campaign, and a ``done`` record
-    left over from an evicted range would otherwise be mistaken for a window
-    that is already staged and never republished by anyone.
+    Both sets are *accounting*.  ``held`` names the movers whose tokens the
+    tier ledger is still carrying -- the booking, taken at claim, which is
+    what bounds occupancy and what an egress gives back.  It is what the
+    window evicts on and what the advance fence counts, and neither question
+    is "have the bytes arrived".
+
+    That last question has its own answer, and it is deliberately not here:
+    :func:`residency_plan.resident_movers` reads the filed publication
+    evidence.  Issue #759 is what the split is for -- this function's old
+    docstring said a mover holding tokens "is resident by definition", the
+    RAM publication gate believed it, and the head promotion published
+    against a copy that was still running and refused ``source-coverage-gap``
+    80 times.  A reservation says the room is booked, never that the bytes
+    are in it.
+
+    ``published`` deliberately excludes a terminal mover that holds nothing:
+    its key is a content hash, so the same manifest seals the same key on a
+    second campaign, and a ``done`` record left over from an evicted range
+    would otherwise be mistaken for a window that is already staged and never
+    republished by anyone.
     """
 
     ledger = queue.tier_ledger(tier_id)
     published: set[str] = set()
-    staged: set[str] = set()
+    staged: set[str] = set()      # held: see the docstring, not residency
     for key in residency_plan.mover_keys(plan):
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
@@ -223,18 +236,20 @@ def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
 
 def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
                      ram_tier_id: str) -> tuple[set[str], set[str]]:
-    """Which of a plan's promotions count as published, and which are in the tmpfs.
+    """Which of a plan's promotions count as published, and which hold the tmpfs.
 
     The same ledger-answered question :func:`_mover_state` asks of the stage,
-    asked of the ram tier: a promotion holding ``ram_gib`` is resident by
-    definition -- held tokens equal bytes on the tmpfs at every instant --
-    and a terminal promotion holding nothing counts as unpublished, so a
-    reboot's ghost is republished rather than read as staged.
+    asked of the ram tier, and with the same #759 caveat: ``held`` is the
+    ``ram_gib`` booking, not a claim that the tmpfs has the bytes.  A
+    terminal promotion holding nothing counts as unpublished, so a reboot's
+    ghost is republished rather than read as staged; what the bytes are
+    doing is :func:`residency_plan.resident_movers`' question, asked of the
+    announced ram root under the announced epoch.
     """
 
     ledger = queue.tier_ledger(ram_tier_id)
     published: set[str] = set()
-    staged: set[str] = set()
+    staged: set[str] = set()      # held: see the docstring, not residency
     for key in residency_plan.ram_mover_keys(plan):
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
@@ -244,6 +259,32 @@ def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
                 or pinned):
             published.add(key)
     return published, staged
+
+
+def _resident_movers(
+        queue: pool.PoolQueue, plan: Mapping[str, object], tier_id: str,
+        tiers: Mapping[str, Mapping[str, object]],
+) -> tuple[set[str], bool]:
+    """One tier's published, complete, relevant coverage for this plan.
+
+    The tier loop's side of the one shared readiness predicate that
+    ``pbstatus`` also reports through, so the gate and the cursor cannot
+    disagree (#759).  Distinct from :func:`_mover_state`'s ``held``: that is
+    the reservation, this is the publication.
+
+    Returns ``(resident, known)``.  Evidence that cannot be read answers
+    ``(set(), False)``, which gates closed *and* keeps the distinction the
+    cycle has to report: unknown readiness is not the same answer as a
+    range that is honestly not there yet.  The cycle's own tier census is
+    passed through, so the ram leg's announced root and epoch cost no extra
+    read.
+    """
+
+    try:
+        return residency_plan.resident_movers(
+            queue, plan, tier_id, tier_record=tiers.get(tier_id)), True
+    except (OSError, pool.PoolContractError, ValueError):
+        return set(), False
 
 
 def _withdrawn_keys(queue: pool.PoolQueue,
@@ -509,6 +550,11 @@ def _stage_source_staged(phase: Mapping[str, object], start: int, end: int,
                          stage_staged: set[str]) -> bool:
     """Whether the stage already holds the bytes one promotion copies.
 
+    ``stage_staged`` is publication state -- :func:`_resident_movers`, never
+    bare token holdings.  The distinction is the whole of #759: a booking
+    exists from claim, while the evidence that predicate reads exists only
+    once a copy has landed and vouched for itself.
+
     A promotion's source is the stage and nothing else: with a whole-phase
     stage leg that is the phase's mover, and with a chunked one (#675) it is
     every stage chunk the promoted range overlaps -- a later chunk the
@@ -603,8 +649,12 @@ def _ram_window_state(
         # in front of it.
         return None
     already, staged = _ram_mover_state(queue, plan, ram_tier_id)
-    _stage_published, stage_staged = _mover_state(
-        queue, plan, str(plan["tier_id"]))
+    # The promotion's precondition is the stage's *publication*, never its
+    # booking: the tokens the stage mover holds were taken at claim, and
+    # reading them as bytes is what published the head promotion against a
+    # copy that was still running (#759).
+    stage_resident, stage_known = _resident_movers(
+        queue, plan, str(plan["tier_id"]), tiers)
     ledger = queue.tier_ledger(ram_tier_id)
     kind = storage_tiers.capacity_kind_of(ram_tier_id)
     free = int(ledger.available().get(kind, 0))
@@ -629,13 +679,14 @@ def _ram_window_state(
             continue
         if not _stage_source_staged(
                 phase, int(entry["start_bytes"]), int(entry["end_bytes"]),
-                stage_staged):
+                stage_resident):
             continue
         publishable.append((mover_row, entry))
     return {"ram_tier_id": ram_tier_id, "decision": decision,
             "phases": phases, "publishable": publishable,
             "already": already, "staged": staged,
-            "stage_staged": stage_staged, "free_gib": free}
+            "stage_resident": stage_resident,
+            "stage_resident_known": stage_known, "free_gib": free}
 
 
 def ram_residency_window(
@@ -711,6 +762,15 @@ def ram_residency_window(
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
+        if not state["stage_resident_known"]:
+            # Said, not swallowed: the window has already gated closed on it
+            # (an unknown source is not a staged one), and an operator
+            # reading a quiet cycle would otherwise see a consumer that
+            # simply never promotes.  The next cycle asks again.
+            events.append({
+                "event": "ram-window-unknown", "consumer": key,
+                "tier_id": ram_tier_id,
+                "reason": "stage publication evidence unreadable"})
         decision = state["decision"]
         superseded = residency_plan.superseded(queue, plan)
         stall = decision["stall"]
@@ -1694,7 +1754,7 @@ def window_pressure(
             and _stage_source_staged(
                 ram_phases[str(entry["phase"])],
                 int(entry["start_bytes"]), int(entry["end_bytes"]),
-                state["stage_staged"])]
+                state["stage_resident"])]
         if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
