@@ -196,7 +196,11 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                       resources={"cpu": 1, "mem_gb": 1, **terms},
                       produced_output_template=bad)
     assert pool._read_json(queue.item_path(pool.READY, "3" * 64)) is None
-    # Conflicting filed body refuses as foreign/tampered.
+    # File the original, then a conflicting body for the same id refuses.
+    queue.publish(action_key="0" * 64, cas_root="/cas",
+                  worker_script="/w.py", checkout_root="/co",
+                  resources={"cpu": 1, "mem_gb": 1, **terms},
+                  produced_output_template=template)
     other = _template(str(origin), template_id="admit-v1")
     other = dict(other)
     other["durable_maxima"] = dict(other["durable_maxima"])
