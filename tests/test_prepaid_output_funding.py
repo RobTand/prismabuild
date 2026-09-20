@@ -114,10 +114,16 @@ def _bind(q: pool.PoolQueue, template: dict, owner: str):
 
 
 def _descriptors(tmp_path: Path, template: dict, inst: dict,
-                 batch_payload: bytes = b"x" * 1024) -> list[dict]:
+                 batch_payload: bytes = b"x" * 1024,
+                 name: str = "a.bin") -> list[dict]:
+    # `name` gives a second live batch in one test its own origin file:
+    # one origin path has at most one live writer, so two concurrently
+    # live batches cannot both reserve it (`require_prewrite`
+    # `prewrite-path-owned-by-live-batch`). Nothing here asserts path
+    # sharing; the batches just need to be distinct.
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True, exist_ok=True)
-    p = origin / "a.bin"
+    p = origin / name
     p.write_bytes(batch_payload)
     return [po.validate_descriptor({
         "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
@@ -832,7 +838,7 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     # True not-started cancellation on a fresh mover/batch releases once:
     # prewrite b2, stage (READY never claimed, no receipt/lease/terminal).
     mover2 = _hexkey("nrel-mover2")
-    descs2 = _descriptors(tmp_path, template, inst)
+    descs2 = _descriptors(tmp_path, template, inst, name="b.bin")
     _prewrite(q, inst, template, "b2", TIER, descs2)
     manifest2 = po.output_manifest_sha256(descs2)
     total2 = sum(int(d["bytes"]) for d in descs2)
@@ -1346,7 +1352,7 @@ def test_publish_mismatched_intent_refuses(tmp_path: Path) -> None:
     inst, _, _, _ = _bind(q, template, owner)
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    descs2 = _descriptors(tmp_path, template, inst)
+    descs2 = _descriptors(tmp_path, template, inst, name="b.bin")
     _prewrite(q, inst, template, "b2", TIER, descs2)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)

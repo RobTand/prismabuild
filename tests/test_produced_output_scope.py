@@ -1207,26 +1207,27 @@ def test_pin_census_taint_retains(tmp_path: Path, broker_endpoint) -> None:
     clean = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
     assert clean == {"ok": True, "released": 0, "lease_proof": "sdk-census-clean"}
 
-
-def test_one_origin_path_per_live_batch_refuses_late_at_stage(
+def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
         tmp_path: Path) -> None:
-    """A second live batch on one origin path refuses -- but only at stage.
+    """A planned path owned by a live batch refuses at prewrite.
 
-    RECORDED GAP, measured, not waived: staged material identity is keyed
-    by the ORIGIN PATH, so one path belongs to at most one unretired
-    batch -- replacing it would invalidate the first batch's published
-    material and anything fenced on it, which `_StagedPublisher` refuses.
-    `require_prewrite` and `commit_batch` nonetheless ACCEPT a second live
-    batch naming that same path: they account class bytes, maxima and
-    owner liveness, never paths across batches (`_outstanding_sums`). So
-    the producer is authorized to write the bytes and to commit them, and
-    only the mover refuses -- after the HDD write. `require_prewrite`
-    documents itself as the gate that refuses "BEFORE the first payload
-    byte"; for this case it does not.
+    Staged material identity is keyed by the ORIGIN PATH, so one path
+    belongs to at most one live writer: replacing a live owner's staged
+    bytes would invalidate its published material and anything fenced on
+    it. The mover enforces that at the end (`_StagedPublisher`), but by
+    then the producer has already written the HDD bytes and committed the
+    batch. `require_prewrite` is the write-authorization gate -- its
+    success IS the producer's permission to start writing -- so it
+    answers first, before the first payload byte.
 
-    This pins both halves so neither can change silently, and records the
-    supported sequence: retire the owning batch, then the path
-    regenerates.
+    Three properties stay pinned:
+      1. a committed, unretired owner refuses the second planner, with no
+         reservation filed for it;
+      2. an owner that has only prewritten -- not yet committed -- refuses
+         too, because it already holds permission to write that path;
+      3. ownership ends at retirement, which evicts the staged copy, so
+         the supported sequence regenerates the path.
+    The mover's own refusal is kept as defense in depth.
     """
 
     origin = tmp_path / "pool-origin" / "outputs"
@@ -1255,31 +1256,62 @@ def test_one_origin_path_per_live_batch_refuses_late_at_stage(
     assert batch_a["ok"] is True
     _stage_batch(queue, batch_a, origin, stage, out_base, tmp_path)
 
-    # The gap: the write is authorized and the commit is accepted while
-    # batch-a still owns that path.
-    assert po.require_prewrite(
+    # 1. The committed, unretired owner refuses the second planner
+    #    BEFORE it is authorized to write a byte.
+    refused = po.require_prewrite(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[shared])
+    assert refused["ok"] is False, refused
+    assert refused["refusal"] == "prewrite-path-owned-by-live-batch"
+    assert refused["path"] == shared
+    assert refused["owner_batch_id"] == "batch-a"
+    # No side effect: a refused planner holds no reservation.
+    assert not (po._prewrites_dir(queue.root, instance)
+                / "batch-b.prewrite.json").exists()
+    # The owner's own replay is unaffected -- it is not its own rival.
+    assert po.require_prewrite(
+        queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[shared])["ok"] is True
+
+    # 2. A planner that has not committed yet already owns its paths.
+    second = str(origin / "boundary-0.pt")
+    assert po.require_prewrite(
+        queue, instance, template, batch_id="batch-c", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[second])["ok"] is True
+    rival = po.require_prewrite(
+        queue, instance, template, batch_id="batch-d", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[second])
+    assert rival["ok"] is False, rival
+    assert rival["refusal"] == "prewrite-path-owned-by-live-batch"
+    assert rival["owner_batch_id"] == "batch-c"
+
+    # Defense in depth: if the gate is ever bypassed, the mover still
+    # refuses to invalidate the live owner. The reservation is filed
+    # directly here (white-box, the only way past the gate above) so the
+    # late refusal stays pinned rather than becoming unreachable.
+    po._publish_prewrite_record(
+        queue, instance, batch_id="batch-b", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[shared])
     desc_b = _desc(origin, template, "cotangent-0", "payload",
                    "cotangent-0.pt", b"Z" * 4096, instance)
     batch_b = po.commit_batch(queue, instance, template, [desc_b],
                               batch_id="batch-b", tier=STAGE_TIER,
                               mover_key=MOVER1)
     assert batch_b["ok"] is True
-
-    # ... and the mover is where it actually refuses, naming the path it
-    # declined to invalidate. Nothing destructive ran: batch-a's staged
-    # bytes stand.
-    refused = _stage_batch_receipt(queue, batch_b, origin, stage, out_base,
-                                   tmp_path)
-    assert refused["complete"] is False, refused
+    late = _stage_batch_receipt(queue, batch_b, origin, stage, out_base,
+                                tmp_path)
+    assert late["complete"] is False, late
     assert any("cotangent-0.pt" in str(err) and "different bytes" in str(err)
-               for err in refused["errors"]), refused["errors"]
+               for err in late["errors"]), late["errors"]
     assert (stage / "cotangent-0.pt").read_bytes() == b"A" * 4096
 
-    # The supported sequence: retire the owning batch, then the same path
-    # regenerates through the ordinary mover.
+    # 3. Retirement evicts the staged copy and ends ownership, so the
+    #    same path regenerates through the ordinary mover.
     assert po.retire_batch(queue, instance, template, "batch-a",
                            stage_root=str(stage),
                            residency_root=str(out_base))["ok"] is True

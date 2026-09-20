@@ -991,6 +991,121 @@ def _outstanding_sums(queue_root: str | Path, instance: Mapping[str, object],
     return sums
 
 
+def _publish_prewrite_record(queue, instance: Mapping[str, object], *,
+                             batch_id: str, tier: str,
+                             class_bytes: Mapping[str, int],
+                             paths: Sequence[str]) -> Path:
+    """File one outstanding prewrite reservation immutably.
+
+    The single construction of a prewrite record, so the gate above it
+    and any caller that must file one cannot drift on its shape.
+    Raises whatever `_publish_immutable` raises for a conflicting body;
+    `require_prewrite` owns the idempotent-replay interpretation.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    directory = _prewrites_dir(queue.root, instance)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{batch_id}.prewrite.json"
+    record = {"batch_id": batch_id, "tier": tier,
+              "class_bytes": dict(class_bytes), "paths": list(paths),
+              "owner_action_key": str(instance["owner_action_key"]),
+              "owner_attempt": dict(instance["owner_attempt"])}
+    raw = json.dumps(record, sort_keys=True,
+                     separators=(",", ":")).encode() + b"\n"
+    pool_mod._publish_immutable(path, raw, where="produced-output prewrite")
+    return path
+
+
+def _live_path_owner(queue_root: str | Path,
+                     checked_instance: Mapping[str, object],
+                     checked_template: Mapping[str, object],
+                     planned_paths: Sequence[str],
+                     exclude_batch_id: str) -> tuple[str, str, str] | None:
+    """The live writer that already owns one of these origin paths.
+
+    Staged material identity is keyed by the ORIGIN PATH, so a path
+    belongs to at most one live writer: a second writer replacing those
+    bytes would invalidate the owner's published material and anything
+    fenced on it, which the mover refuses outright. That refusal lands
+    only after the bytes are written and the batch committed, so
+    ownership is answered HERE, at the write-authorization gate.
+
+    Two kinds of owner, both live:
+
+    * a committed batch that is not `retired` -- its staged copy stands
+      and its entries name the paths;
+    * an outstanding prewrite for another batch id -- it already holds
+      permission to write those paths, whether or not it has committed.
+
+    Ownership ends at retirement, which evicts the staged copy; the
+    durable charge outlives it but does not reserve the name, so a
+    retired batch's paths regenerate. Unknown state fails closed: an
+    unreadable batch record or prewrite raises rather than reading as
+    unowned, because absent metadata never proves an absent owner.
+
+    Returns ``(path, owner_kind, owner_batch_id)`` for the first owned
+    path in sorted order, or None when every path is free.
+    """
+
+    wanted = set(planned_paths)
+    if not wanted:
+        return None
+    commitments = _read_commitments(_commitments_path(queue_root,
+                                                      checked_instance))
+    batches = commitments["batches"]
+    assert isinstance(batches, Mapping)
+    owners: dict[str, tuple[str, str]] = {}
+    for owner_id in sorted(batches):
+        entry = batches[owner_id]
+        if owner_id == exclude_batch_id:
+            continue
+        if not isinstance(entry, Mapping):
+            raise ProducedOutputError(
+                f"unknown-retain: bad committed batch {owner_id!r}")
+        if entry.get("retired"):
+            continue
+        indexed = entry.get("paths")
+        if isinstance(indexed, list):
+            owned_paths = [str(item) for item in indexed]
+        else:
+            # Entry predating the index: fall back to the immutable
+            # record, which fails closed when it cannot be validated.
+            _filed, sealed = _load_batch_record(
+                queue_root, checked_instance, checked_template, entry,
+                owner_id)
+            owned_paths = [str(desc["path"]) for desc in sealed]
+        for owned_path in owned_paths:
+            owners.setdefault(owned_path, ("batch", owner_id))
+    directory = _prewrites_dir(queue_root, checked_instance)
+    try:
+        with os.scandir(directory) as iterator:
+            names = sorted(entry.name for entry in iterator
+                           if entry.name.endswith(".prewrite.json"))
+    except FileNotFoundError:
+        names = []
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    for name in names:
+        owner_id = name[:-len(".prewrite.json")]
+        if owner_id == exclude_batch_id:
+            continue
+        record = _read_prewrite(directory / name)
+        if record is None:
+            continue
+        reserved = record.get("paths")
+        if not isinstance(reserved, list):
+            raise ProducedOutputError("unknown-retain: bad prewrite record")
+        for reserved_path in reserved:
+            owners.setdefault(str(reserved_path), ("prewrite", owner_id))
+    for candidate in sorted(wanted):
+        owner = owners.get(candidate)
+        if owner is not None:
+            return (candidate, owner[0], owner[1])
+    return None
+
+
 def _read_funding(path: Path) -> dict[str, object] | None:
     """One batch's durable funding intent, None when no attempt was made.
 
@@ -1522,8 +1637,13 @@ def require_prewrite(queue, instance: Mapping[str, object],
     of an exact ceiling). Abort requires every PLANNED path absent.
     Uncommitted does NOT mean unwritten: files without a batch never enter
     staged accounting.
-    Checks the bound admission record (binding metadata, never funding) +
-    durable headroom for the planned class bytes, and files an immutable
+    Checks the bound admission record (binding metadata, never funding),
+    durable headroom for the planned class bytes, and PATH OWNERSHIP --
+    one origin path has at most one live writer, so a path a committed
+    unretired batch or another outstanding prewrite already owns refuses
+    `prewrite-path-owned-by-live-batch` here rather than at the mover,
+    after the bytes are written (`_live_path_owner`). Ownership ends at
+    retirement, which evicts the staged copy. Then files an immutable
     prewrite record the later commit must present. Physical funding happens
     only at `commit_batch` (exact ledger acquire) and in the liveness
     window primitive (pending). Zero-byte classes are valid (explicit
@@ -1582,18 +1702,30 @@ def require_prewrite(queue, instance: Mapping[str, object],
             if sums[cls] + planned[cls] > cap:
                 return {"ok": False, "refusal": f"prewrite-exceeds-{cls}-maxima",
                         "class": cls}
-        directory = _prewrites_dir(queue.root, checked_instance)
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{batch_id}.prewrite.json"
-        record = {"batch_id": batch_id, "tier": tier, "class_bytes": planned,
-                  "paths": planned_paths,
-                  "owner_action_key": str(checked_instance["owner_action_key"]),
-                  "owner_attempt": dict(checked_instance["owner_attempt"])}
-        raw = json.dumps(record, sort_keys=True,
-                         separators=(",", ":")).encode() + b"\n"
+        # One origin path, one live writer. Staged material identity is
+        # keyed by the path, so authorizing a second writer here would
+        # authorize bytes the mover must later refuse -- after they are
+        # written and committed. This gate is where that is answered,
+        # before the first payload byte, which is the contract this
+        # function already states for a stale or absent owner.
         try:
-            from prismabuild import pool as pool_mod
-            pool_mod._publish_immutable(path, raw, where="produced-output prewrite")
+            owned = _live_path_owner(queue.root, checked_instance,
+                                     checked_template, planned_paths,
+                                     batch_id)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if owned is not None:
+            owned_path, owner_kind, owner_batch_id = owned
+            return {"ok": False,
+                    "refusal": "prewrite-path-owned-by-live-batch",
+                    "path": owned_path, "owner_kind": owner_kind,
+                    "owner_batch_id": owner_batch_id}
+        path = _prewrites_dir(queue.root, checked_instance) / \
+            f"{batch_id}.prewrite.json"
+        try:
+            _publish_prewrite_record(
+                queue, checked_instance, batch_id=batch_id, tier=tier,
+                class_bytes=planned, paths=planned_paths)
         except Exception as exc:
             # Same body republishes idempotently; a different body for a
             # live batch id refuses (the first reservation stands).
@@ -1934,6 +2066,13 @@ def commit_batch(queue, instance: Mapping[str, object],
             "tier": tier,
             "mover_key": mover,
             "class_bytes": class_bytes,
+            # The origin paths this batch owns while it is live. Indexed
+            # here so `_live_path_owner` can answer ownership from the
+            # commitments record alone: re-deriving it from the immutable
+            # batch record would make one damaged record freeze every
+            # later prewrite for the instance, including paths that batch
+            # never owned.
+            "paths": sorted(str(d["path"]) for d in sealed),
             "retired": False,
             "origin_reclaimed": False,
         }
