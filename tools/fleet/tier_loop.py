@@ -1530,6 +1530,17 @@ def window_pressure(
     window also declines phases its run-ahead bound covers, and an orphan
     evicted for one of those would be evicted for room nobody asks for.
 
+    Beside that next-phase term, a NEWCOMER gated by a transient joint-fit
+    stall contributes its ADMISSION shortfall, bounded to the tier's
+    orphans (#orphan-pressure): the joint gate admits a window only when
+    held + queued + cur + next fits, and a feasible newcomer waiting on
+    room that only orphan reclamation can return would otherwise deadlock
+    -- the next-phase term alone never covers cur+next.  The shortfall is
+    asked through ``gate_newcomer`` itself with over-estimated
+    obligations, and a window that cannot fit even after every orphan
+    returns (permanently oversize, or held by live work) asks for
+    nothing: no futile eviction.
+
     A tier no live window is waiting on is absent from the answer, and an
     orphan there stays resident -- held, counted, and ready for the next
     artifact that names it.
@@ -1545,6 +1556,13 @@ def window_pressure(
         consumers = _planned_consumers(queue, tiers)
     cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
+    # Newcomer admission probes (#orphan-pressure): collected during the
+    # walk, probed once per tier after it.  A newcomer is a live consumer
+    # whose window has published nothing yet; its admission is the joint
+    # gate's cur+next contract, and the relief it can wait for is the
+    # tier's orphans.
+    newcomers: dict[str, list[tuple[object, object]]] = {}
+    landed_next: dict[str, int] = {}
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
@@ -1583,6 +1601,13 @@ def window_pressure(
                              int(phase.get("stage_gib", 0))))
         waiting = [key for key, _gib in legs
                    if key in already - staged and key not in cancelled]
+        if not already and not staged and accepted is None:
+            # Nothing published, nothing landed, no accepted phase: this
+            # window's admission is the joint gate's to decide, probed
+            # for the sweep after the walk.  A consumer already inside
+            # its window is not a newcomer whatever its rows look like.
+            newcomers.setdefault(str(tier_id), []).append(
+                (plan, accepted))
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -1603,6 +1628,16 @@ def window_pressure(
         assert isinstance(wanted, list)
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
+            if already or staged or accepted is not None:
+                # A window with progress (published, landed or accepted)
+                # is not the newcomer below; its next is the joint gate's
+                # ``existing_min_next`` term, minimum first, collected so
+                # the newcomer probe asks with the same shape.  Counted
+                # for every progressing window so the probe never asks
+                # for less relief than the real gate will require.
+                stage = int(wanted[0]["stage_gib"])
+                landed_next[tier_id] = min(landed_next.get(tier_id, stage),
+                                            stage)
         # The ram leg asks the same question of the ram ledger (#640): the
         # next promotion the ram window would publish is the next thing that
         # will ask the tmpfs for room, and its GiB is what the sweep on that
@@ -1663,6 +1698,90 @@ def window_pressure(
         if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
+    # Newcomer admission pressure (#orphan-pressure): the joint-fit gate's
+    # own decision, asked here for the sweep.  A newcomer gated by a
+    # TRANSIENT joint-fit stall is waiting on room that may exist as safe
+    # orphans; without this term the sweep only ever relieves the next
+    # phase's GiB, the gate keeps refusing on cur+next, and a feasible
+    # window deadlocks beside reclaimable bytes.  The probe reuses
+    # ``gate_newcomer`` itself -- no second admission arithmetic -- with
+    # over-estimated obligations (full queued demand, every landed
+    # window's protected next), so the relief it asks for always covers
+    # what the real gate will check and never falls short of it; relief
+    # is bounded to the tier's orphans, so a window that cannot fit even
+    # after every orphan returns asks for nothing and evicts nothing.
+    for tier_id, waiting_newcomers in newcomers.items():
+        if not waiting_newcomers:
+            continue
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            held_total = int(ledger.held().get(kind, 0))
+            free_gib = int(ledger.available().get(kind, 0))
+            capacity_gib = int(ledger.capacity().get(kind, 0))
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if capacity_gib <= 0:
+            continue
+        try:
+            wanted_claims, owners = stage_release.live_claims(queue)
+            orphan_gib = 0
+            for holder in ledger.held_keys():
+                if holder in wanted_claims or holder in owners:
+                    continue
+                record = queue.move_record(holder)
+                if (isinstance(record, Mapping)
+                        and record.get("consumer_action_key")):
+                    orphan_gib += int(
+                        ledger.holder_tokens(holder).get(kind, 0))
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if orphan_gib <= 0:
+            continue
+        try:
+            ready_full = 0
+            for item in queue.ready_items():
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    _host, demands = storage_tiers.split_demand(
+                        item.get("resources") or {})
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                tier_needs = demands.get(tier_id)
+                if isinstance(tier_needs, Mapping):
+                    ready_full += int(tier_needs.get(kind, 0) or 0)
+        except (OSError, pool.PoolContractError, ValueError):
+            ready_full = 0
+        existing_next = landed_next.get(tier_id, 0)
+        for plan, accepted in waiting_newcomers:
+            try:
+                needs = window_credit.decision_needs(
+                    plan, accepted, published=[])
+            except (ValueError, TypeError, KeyError, OSError):
+                continue
+            cur = int(needs.get("current_min_gib") or 0)
+            nxt = needs.get("next_min_gib")
+            next_gib = int(nxt) if isinstance(nxt, int) else 0
+            decision = window_credit.gate_newcomer(
+                held_gib=held_total, ready_gib=ready_full, output_gib=0,
+                capacity_gib=capacity_gib, cur_min_gib=cur,
+                next_min_gib=nxt if isinstance(nxt, int) else None,
+                existing_min_next_gib=existing_next)
+            if decision.get("admit"):
+                continue
+            if str(decision.get("reason")) != window_credit.REASON_STALL:
+                # Permanent (oversize) or unknown: no relief could admit
+                # it, and evicting for it would be futile by definition.
+                continue
+            shortfall = (held_total + ready_full + cur + next_gib
+                         + existing_next - capacity_gib)
+            if 0 < shortfall <= orphan_gib:
+                # Relief, stated as the free the sweep must reach: evicting
+                # ``shortfall`` admits this newcomer, and the sweep's
+                # oldest-first, stop-at-needed order keeps it to that.
+                need[tier_id] = max(need.get(tier_id, 0),
+                                    free_gib + shortfall)
     return need
 
 

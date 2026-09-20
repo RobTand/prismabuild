@@ -200,18 +200,19 @@ def _lock_held_elsewhere(queue: pool.PoolQueue, mover: str):
         thread.join(30)
 
 
-def _tier_record(stage: Path) -> dict[str, object]:
+def _tier_record(stage: Path, *, gib: int = STAGE_GIB) -> dict[str, object]:
     return {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
             "host": "dl380g10", "tier": "stage", "mountpoint": str(stage),
-            "capacity_bytes": STAGE_GIB * GIB}
+            "capacity_bytes": gib * GIB}
 
 
-def _cycle(queue: pool.PoolQueue, stage: Path) -> None:
+def _cycle(queue: pool.PoolQueue, stage: Path, *, gib: int = STAGE_GIB) -> None:
     """One whole tier cycle, the way the loop on the storage box runs it."""
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: {TIER: _tier_record(stage)})
+                    discover=lambda **_kwargs: {
+                        TIER: _tier_record(stage, gib=gib)})
 
 
 # ------------------------------------------------------------- the invariant
@@ -237,6 +238,16 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     held = {key: ledger.holder_tokens(key).get("stage_gib", 0)
             for key in ledger.held_keys()}
     held = {key: gib for key, gib in held.items() if gib}
+    # An advance fence holds tokens with no bytes yet, by design (the
+    # window lane's protected next): it is reserved-but-unwritten credit,
+    # not a ledger/stage disagreement.  Fence holders are exactly holders
+    # with a live funding record and no move receipt -- a landed mover
+    # always has its receipt and stays compared.
+    fenced = {key for key in held
+              if (record := queue.read_funding(key, TIER)) is not None
+              and record.get("state") in ("reserved", "transferring")
+              and queue.move_record(key) is None}
+    held = {key: gib for key, gib in held.items() if key not in fenced}
     root = queue.residency_fragment_root()
     accounted: dict[str, int] = {}
     consumers = sorted(entry.name for entry in root.iterdir() if entry.is_dir())
@@ -466,8 +477,11 @@ def test_an_orphan_is_evicted_when_a_window_cannot_be_placed_without_it(
     """"The tier needs the tokens" is measured off the window, not off a clock.
 
     Four of the five GiB are orphaned under two finished movers of another
-    manifest, so the live consumer's first phase does not fit.  The eviction
-    stops as soon as it does.
+    manifest, and the new consumer's window is current-plus-next (2+2
+    GiB): it fits only once the orphans are taken back, and the joint gate
+    that protects the next step is also what the relief answers to -- the
+    sweep reclaims what ADMISSION needs, not just the first phase, and
+    the window publishes in the same cycle.
     """
 
     other = "8" * 64
@@ -483,14 +497,111 @@ def test_an_orphan_is_evicted_when_a_window_cannot_be_placed_without_it(
     _cycle(queue, stage)
 
     assert_ledger_matches_the_stage(queue)
-    free = queue.tier_ledger(TIER).available()["stage_gib"]
-    assert free >= PHASE_GIB, "the window's next phase has room now"
-    # Only as much as the window needed: the older range goes first and the
-    # newer one stays, rather than the stage being emptied on principle.
+    # Admission under the cur+next contract needs 4 GiB against 1 free, so
+    # BOTH orphan ranges go -- the oldest first, and the stage is not
+    # emptied on principle: what stays held afterwards is exactly the
+    # window's protected next (its advance fence), nothing else.
     assert queue.tier_ledger(TIER).holder_tokens(_hexkey("stalemover0")) == {}
     assert queue.tier_ledger(TIER).holder_tokens(
-        _hexkey("stalemover1")) == {"stage_gib": PHASE_GIB}
+        _hexkey("stalemover1")) == {}
+    free = queue.tier_ledger(TIER).available()["stage_gib"]
+    assert free == STAGE_GIB - PHASE_GIB, free
+    # Useful progress, not just reclamation: the admitted window publishes
+    # its first mover and protects its next.
     assert queue.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    record = queue.read_funding(_hexkey("secondmover1"), TIER)
+    assert record is not None and record["state"] in (
+        "reserved", "transferring"), record
+
+
+def test_an_unfittable_newcomer_adds_no_admission_pressure(
+        queue, stage) -> None:
+    """No futile relief: a window the orphans cannot fit asks for none.
+
+    A live reader's protected bytes sit beside the orphan, so even taking
+    every orphan back leaves the joint gate refusing (2 live + 4 window
+    against 5).  The admission probe must contribute NOTHING beyond the
+    ordinary next-phase term -- evicting for it would empty room nobody
+    can use -- and the live reader's bytes and tokens survive the cycle
+    regardless.
+    """
+
+    live_files = _stage_range(queue, mover=_hexkey("firstmover0"),
+                              consumer=FIRST, stage=stage, ordinal=0)
+    _stage_range(queue, mover=_hexkey("stalemover0"),
+                 consumer="8" * 64, stage=stage, ordinal=1,
+                 manifest="e" * 64)
+    # One phase: FIRST is final once its single range lands, so its own
+    # protected next is empty and SECOND's admission turns on the orphan.
+    _publish_consumer(queue, FIRST, _plan(queue, FIRST, label="first",
+                                          phases=1))
+    _claim_with_progress(queue, FIRST, phase="phase-0")
+    _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
+    assert queue.tier_ledger(TIER).available()["stage_gib"] == 1
+
+    # The probe itself, on the actual function: only the ordinary
+    # next-phase term (one phase's GiB), never free+shortfall (1+3=4).
+    pressure = tier_loop.window_pressure(
+        queue, tiers={TIER: _tier_record(stage)})
+    assert pressure.get(TIER) == PHASE_GIB, pressure
+
+    _cycle(queue, stage)
+
+    # The live reader is never the relief: its bytes and tokens stay.
+    assert queue.tier_ledger(TIER).holder_tokens(_hexkey("firstmover0")) == {
+        "stage_gib": PHASE_GIB}
+    assert all(path.exists() for path in live_files)
+    # And a window that still cannot be placed publishes nothing.
+    assert not queue.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    assert_ledger_matches_the_stage(queue)
+
+
+def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
+        tmp_path: Path) -> None:
+    """Relief is bounded to orphans: the live reader's bytes survive it.
+
+    Capacity 6: a claimed consumer's landed range (2, protected) beside an
+    orphan (2), free 2, and a newcomer's 2+2 window.  The admission
+    shortfall is exactly the orphan, the sweep takes it alone, and the
+    newcomer publishes in the same cycle.
+    """
+
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.ensure_layout()
+    q.mint_tier_capacity(TIER, {"stage_gib": 6})
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(q, tier_id=TIER, stage_root=stage)
+    live_files = _stage_range(q, mover=_hexkey("firstmover0"),
+                              consumer=FIRST, stage=stage, ordinal=0)
+    orphan_files = _stage_range(q, mover=_hexkey("stalemover0"),
+                                consumer="8" * 64, stage=stage, ordinal=1,
+                                manifest="e" * 64)
+    # One phase: FIRST is final once its single range lands, so the only
+    # protected next in play is the newcomer's own; FIRST's claim keeps
+    # its range a live reader's, never a sweep candidate.
+    _publish_consumer(q, FIRST, _plan(q, FIRST, label="first", phases=1))
+    _claim_with_progress(q, FIRST, phase="phase-0")
+    _publish_consumer(q, SECOND, _plan(q, SECOND, label="second"))
+    assert q.tier_ledger(TIER).available()["stage_gib"] == 2
+
+    # The actual probe: free (2) + the admission shortfall (2).
+    pressure = tier_loop.window_pressure(
+        q, tiers={TIER: _tier_record(stage, gib=6)})
+    assert pressure.get(TIER) == 4, pressure
+
+    _cycle(q, stage, gib=6)
+
+    assert q.tier_ledger(TIER).holder_tokens(_hexkey("firstmover0")) == {
+        "stage_gib": PHASE_GIB}
+    assert all(path.exists() for path in live_files)
+    assert q.tier_ledger(TIER).holder_tokens(_hexkey("stalemover0")) == {}
+    assert not any(path.exists() for path in orphan_files)
+    assert q.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    record = q.read_funding(_hexkey("secondmover1"), TIER)
+    assert record is not None and record["state"] in (
+        "reserved", "transferring"), record
+    assert_ledger_matches_the_stage(q)
 
 
 def test_a_direct_sweep_with_no_pressure_named_still_takes_every_orphan(
