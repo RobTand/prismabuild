@@ -1181,6 +1181,25 @@ def _glob_visible(directory: Path, pattern: str):
                   if fnmatch.fnmatchcase(path.name, pattern))
 
 
+def held_names_visible(ledger, key: str) -> set[str]:
+    """One holder's capacity-token names, error-visible.
+
+    True absence (no holder directory) reads empty, exactly like the
+    tolerant scans: a key that holds nothing holds nothing.  Every other
+    listing failure -- an unreadable holder directory above all -- raises,
+    because an authoritative mutation cannot tell "holds nothing" from
+    "cannot see it holding" and must retain (:func:`_glob_visible` is the
+    accepted #742 census semantics this reuses; ``Path.glob`` hides
+    ``EACCES`` as an empty listing, which is the trap this exists for).
+    """
+
+    try:
+        return {path.name
+                for path in _glob_visible(ledger.held_dir / key, "*-*")}
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
+
+
 def _process_alive(pid: int) -> bool:
     """True while ``pid`` exists and has not already exited.
 
@@ -4941,21 +4960,55 @@ class PoolQueue:
                      tier_id: str) -> dict[str, object] | None:
         """A mover's funding record, or ``None`` when absent or unparsable.
 
-        Malformed records authorize nothing and wedge nothing: every consumer
-        of this answer treats ``None`` as "no funding", which claims the full
-        sealed demand and lets the coordinator re-fence next cycle.
+        The tolerant spelling for reads that decide nothing: ``None`` covers
+        both true absence and unreadable/corrupt/empty records.  A mutation
+        that would destroy or replace the record's authority (reserve,
+        settle, cancel) must instead use :meth:`read_funding_evidence`,
+        which names the difference -- a present but unreadable record is
+        unproved authority, never absence, and may not be unlinked, closed,
+        or fenced beside.
         """
 
+        status, record, _reason = self.read_funding_evidence(
+            mover_action_key, tier_id)
+        return record if status == "record" else None
+
+    def read_funding_evidence(self, mover_action_key: str,
+                              tier_id: str) -> tuple[str,
+                                                     dict[str, object] | None,
+                                                     str | None]:
+        """``("record", record, None)`` / ``("absent", None, None)`` /
+        ``("unknown", None, reason)`` for one funding record.
+
+        The authoritative spelling (see :meth:`read_funding`): I/O errors, a
+        present-but-empty file, unparsable bytes, and validation failures
+        are all *unknown* -- the record exists and may still bind tokens, so
+        an unknown answer retains authority instead of licensing a fresh
+        fence or a replace.  Only a path that is genuinely not there reads
+        absent.
+        """
+
+        path = self.funding_path(mover_action_key, tier_id)
         try:
-            raw = _read_json(self.funding_path(mover_action_key, tier_id))
-        except (OSError, PoolContractError):
-            return None
+            raw = _read_json(path)
+        except OSError as exc:
+            return ("unknown", None, f"funding record unreadable: {exc!r}")
+        except PoolContractError as exc:
+            return ("unknown", None, f"funding record unparsable: {exc}")
         if raw is None:
-            return None
+            try:
+                present = path.exists()
+            except OSError as exc:
+                return ("unknown", None,
+                        f"funding record census unreadable: {exc!r}")
+            if present:
+                return ("unknown", None,
+                        "funding record present but empty")
+            return ("absent", None, None)
         try:
-            return self.validate_funding(raw)
-        except (PoolContractError, ValueError):
-            return None
+            return ("record", self.validate_funding(raw), None)
+        except (PoolContractError, ValueError) as exc:
+            return ("unknown", None, f"funding record invalid: {exc}")
 
     def write_funding(self, record: Mapping[str, object], *,
                       expect_generation: str | None = None) -> Path:
@@ -5296,10 +5349,15 @@ class PoolQueue:
         fresh ``reserved`` generation.  A fence already handed off (record
         ``transferring`` with its tokens verified under the mover, or
         ``consumed``) is left alone: re-reserving beside it would double-fence
-        one advance.  ``fields`` must carry the mover row's ``published_unix``
-        alongside the plan binding.  Returns whether the fence is now held
-        and bound.  Never raises for queue-state reasons; unknown is
-        ``False`` (the caller defers).
+        one advance.  A stale ``transferring`` split re-home verifies
+        exact post-transfer ownership across mover+grant before closing
+        (a short or failed per-token rename retains the record and the
+        split for the next cycle).  ``fields`` must carry the mover row's
+        ``published_unix`` alongside the plan binding.  Returns whether the
+        fence is now held and bound.  Never raises for queue-state reasons;
+        unknown -- an unreadable funding record or holder census -- is
+        ``False`` (the caller defers), never a replace or a fresh take
+        beside unknown authority.
 
         NOTE for the next output integration unit (not this primitive): this
         call acquires a fresh grant from free.  A later produced batch funded
@@ -5310,7 +5368,12 @@ class PoolQueue:
         """
 
         mover = str(fields["mover_action_key"])
-        current = self.read_funding(mover, str(tier_id))
+        status, current, funding_reason = self.read_funding_evidence(
+            mover, str(tier_id))
+        if status == "unknown":
+            # A present-but-unreadable record may still bind held tokens:
+            # retain it (defer), never fence beside unknown authority.
+            return False
         current_generation = (str(current.get("generation"))
                               if isinstance(current, dict)
                               and isinstance(current.get("generation"), str)
@@ -5333,21 +5396,194 @@ class PoolQueue:
             # generation rather than wedge on a terminal record.
         if current is not None and current.get("state") == "transferring":
             try:
-                ledger_names = {path.name for path in _glob(
-                    self.tier_ledger(str(tier_id)).held_dir / mover, "*-*")}
+                ledger = self.tier_ledger(str(tier_id))
+                ledger_names = held_names_visible(ledger, mover)
             except (OSError, PoolContractError, ValueError):
                 return False
             bound = current.get("tokens")
             if (isinstance(bound, list) and bound
                     and all(str(name) in ledger_names for name in bound)):
-                return True
+                # Bound, but to which publication?  A republished mover (new
+                # published_unix), replaced plan, or new range never inherits
+                # an older generation's fence: the claim path would refuse
+                # cover while the tokens stay held, stranding the fence and
+                # double-holding the retry.  Re-home exactly the bound names
+                # mover->grant without touching free (per-token renames under
+                # held/, never via free_dir, so a competing key acquiring
+                # from free cannot take them mid-move; a crash part-way
+                # leaves the split sum recoverable by retrying the same
+                # transfer), close the record through the legal
+                # transferring->released step (checked: False is not a
+                # completed transition), and fence afresh below -- all under
+                # this mover's lock, same order as every reserve/settle path
+                # (mover lock -> ledger -> funding file), so the #742 tier
+                # lock composes outside without a new order and no second
+                # queue or lifetime authority is introduced.  Output
+                # accounting stays unenforced here (#748 owns the prepaid
+                # variant; this still acquires fresh grant credit from free,
+                # never a second output protocol).
+                try:
+                    fields_published = float(  # type: ignore[arg-type]
+                        fields["published_unix"])
+                    record_published = float(  # type: ignore[arg-type]
+                        current.get("published_unix"))
+                    stale = (
+                        record_published != fields_published
+                        or str(current.get("consumer_action_key")) != str(
+                            fields["consumer_action_key"])
+                        or str(current.get("plan_sha256")) != str(
+                            fields["plan_sha256"])
+                        or str(current.get("range_start_bytes")) != str(
+                            fields["range_start_bytes"])
+                        or str(current.get("range_end_bytes")) != str(
+                            fields["range_end_bytes"]))
+                except (KeyError, TypeError, ValueError):
+                    stale = True
+                if stale:
+                    bound_set = {str(name) for name in bound}
+                    keep = set(ledger_names) - bound_set
+                    if keep:
+                        # Mover holds more than the bound fence (pins,
+                        # physical, or another live use the stale comparison
+                        # does not establish as unused): retain, do not
+                        # free or move anything.  The caller defers.
+                        return False
+                    # Mover holds exactly the bound set (no extras): move
+                    # it to the grant without a free interval.
+                    try:
+                        moved = int(self.transfer_tier_reservation(
+                            str(tier_id), mover, grant))
+                    except (OSError, PoolContractError, ValueError):
+                        return False
+                    # transfer moves the whole holder; keep is empty so the
+                    # count must equal the bound size -- anything else is a
+                    # partial move (crash/race) to finish next cycle.
+                    if moved != len(bound_set):
+                        # Complete the remainder if split, else retain.
+                        try:
+                            rest = held_names_visible(ledger, mover)
+                        except (OSError, PoolContractError, ValueError):
+                            return False
+                        if rest:
+                            return False
+                        # Nothing left under the mover but the count is
+                        # short: names collided under the grant (another
+                        # incarnation's tokens) -- retain, do not double.
+                        return False
+                    if not self._advance_funding_state_locked(
+                            mover, str(tier_id), expect="transferring",
+                            advance_to="released",
+                            generation=(str(current.get("generation"))
+                                        if isinstance(
+                                            current.get("generation"), str)
+                                        else None)):
+                        return False
+                    # Re-read: the released record below rotates (never
+                    # unlinks) so the generation chain stays auditable,
+                    # including across a metadata write failure (a failed
+                    # rotate returns False below with the released record
+                    # preserved, never torn away).  An unknown re-read
+                    # defers: fencing afresh beside an unreadable record
+                    # is fencing beside unknown authority.
+                    _status, current, _reason = self.read_funding_evidence(
+                        mover, str(tier_id))
+                    if _status == "unknown":
+                        return False
+                else:
+                    return True
+            elif (isinstance(bound, list) and bound):
+                # Bound names not all under the mover: either a previous
+                # stale re-home moved them to the grant but the close is
+                # pending, or an owner path freed them.  Complete a pending
+                # re-home (bound all accounted for across mover+grant, mover
+                # holding no extras) instead of fencing afresh beside the
+                # remainder; otherwise retain -- stale evidence alone does
+                # not establish unused authority for a fresh take.
+                try:
+                    fields_published = float(  # type: ignore[arg-type]
+                        fields["published_unix"])
+                    record_published = float(  # type: ignore[arg-type]
+                        current.get("published_unix"))
+                    maybe_stale = (
+                        record_published != fields_published
+                        or str(current.get("consumer_action_key")) != str(
+                            fields["consumer_action_key"])
+                        or str(current.get("plan_sha256")) != str(
+                            fields["plan_sha256"])
+                        or str(current.get("range_start_bytes")) != str(
+                            fields["range_start_bytes"])
+                        or str(current.get("range_end_bytes")) != str(
+                            fields["range_end_bytes"]))
+                except (KeyError, TypeError, ValueError):
+                    maybe_stale = True
+                if maybe_stale:
+                    try:
+                        grant_names = held_names_visible(
+                            self.tier_ledger(str(tier_id)), grant)
+                    except (OSError, PoolContractError, ValueError):
+                        return False
+                    bound_set = {str(name) for name in bound}
+                    if (bound_set <= (set(ledger_names) | grant_names)
+                            and not (set(ledger_names) - bound_set)):
+                        # All bound names accounted for, mover holds no
+                        # extras: finish moving the remainder grant-ward,
+                        # then close (both checked).
+                        try:
+                            self.transfer_tier_reservation(
+                                str(tier_id), mover, grant)
+                        except (OSError, PoolContractError, ValueError):
+                            return False
+                        # Verify exact post-transfer ownership before
+                        # closing: ``transfer`` suppresses individual
+                        # rename errors and returns a short count, and a
+                        # count alone cannot be read here anyway -- the
+                        # previously moved names are already grant-ward
+                        # and never appear in this call's count.  The
+                        # mover must now hold nothing and the grant must
+                        # cover every bound name; anything else is a
+                        # partial move (real failed rename, collision) to
+                        # finish next cycle -- never close
+                        # transferring->released beside a leftover, never
+                        # take a fresh deficit beside the split.
+                        try:
+                            ledger_after = self.tier_ledger(str(tier_id))
+                            mover_left = held_names_visible(
+                                ledger_after, mover)
+                            grant_after = held_names_visible(
+                                ledger_after, grant)
+                        except (OSError, PoolContractError, ValueError):
+                            return False
+                        if mover_left or not (bound_set <= grant_after):
+                            return False
+                        if not self._advance_funding_state_locked(
+                                mover, str(tier_id), expect="transferring",
+                                advance_to="released",
+                                generation=(str(current.get("generation"))
+                                            if isinstance(
+                                                current.get("generation"),
+                                                str) else None)):
+                            return False
+                        _status, current, _reason = (
+                            self.read_funding_evidence(
+                                mover, str(tier_id)))
+                        if _status == "unknown":
+                            return False
+                    else:
+                        return False
+                # else: live binding for this publication but tokens moved
+                # (owner/claim path): fall through and fence afresh below
+                # only when the record is not a stale transferring one.
+                # A non-stale transferring record whose tokens moved belongs
+                # to a live handoff -- report held (the claim verifies).
+                if not maybe_stale:
+                    return True
             # Bound tokens gone (released by an owner path): fall through and
             # fence afresh with a new generation rather than report held.
         if (current is not None and current.get("state") == "reserved"
                 and isinstance(current.get("tokens"), list)):
             try:
-                grant_names = {path.name for path in _glob(
-                    self.tier_ledger(str(tier_id)).held_dir / grant, "*-*")}
+                grant_names = held_names_visible(
+                    self.tier_ledger(str(tier_id)), grant)
             except (OSError, PoolContractError, ValueError):
                 return False
             try:
@@ -5390,8 +5626,7 @@ class PoolQueue:
             except (OSError, PoolContractError, ValueError):
                 return False
         try:
-            names = sorted(path.name for path in _glob(
-                ledger.held_dir / grant, "*-*"))
+            names = sorted(held_names_visible(ledger, grant))
         except (OSError, PoolContractError, ValueError):
             return False
         generation = uuid.uuid4().hex
@@ -5411,17 +5646,20 @@ class PoolQueue:
         # Compare-and-swap on generation: a live binding is replaced only
         # against the generation this cycle read, so a verifying claim's pin
         # is never pulled out from under it -- a lost race simply defers to
-        # next cycle.  A torn file (present but unparsable, so
-        # ``read_funding`` answered ``None``) carries no live binding: remove
-        # it first rather than wedge on an unreadable CAS base.  Creates go
-        # through the validated write path; replacements go through rotation,
-        # which mints a fresh ``reserved`` generation and cannot advance a
-        # state or edit a binding.
+        # next cycle.  Creates are births and require TRUE absence: a
+        # present-but-unreadable record (torn write, empty file, I/O error)
+        # may still bind held tokens, and unlinking it to unblock a fresh
+        # fence destroys unknown authority -- R4's rule is that only a path
+        # that is genuinely not there reads absent.  Replacements go
+        # through rotation, which mints a fresh ``reserved`` generation and
+        # cannot advance a state or edit a binding.
         try:
             if current is None:
-                with suppress(OSError, PoolContractError, ValueError):
-                    if self.funding_path(mover, str(tier_id)).exists():
-                        self.funding_path(mover, str(tier_id)).unlink()
+                if self.funding_path(mover, str(tier_id)).exists():
+                    # Appeared or unreadable since the read above (the
+                    # mover lock makes the funding writer race impossible,
+                    # so this is unknown evidence): retain, defer.
+                    return False
                 self.write_funding(record)
             else:
                 self._rotate_funding_locked(

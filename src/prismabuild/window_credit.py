@@ -119,7 +119,10 @@ def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
     their actual overlapping lifetime, plus the already-admitted minimum
     next: a second current may not land in the room the first advance was
     promised.  A final window (``next_min_gib=None``) needs no future credit.
-    ``capacity_gib=None`` is unknown capacity and always defers.
+    ``capacity_gib=None`` is unknown capacity and always defers.  A minimum
+    that exceeds capacity with no unrelated obligations held, queued, owed,
+    or protected is permanent (nothing can retire into room); any obligation
+    keeps the stall transient.
     """
 
     if capacity_gib is None:
@@ -133,6 +136,15 @@ def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
              + (next_min_gib or 0) + existing_min_next_gib)
     if total <= capacity_gib:
         return {"admit": True, "reason": "",
+                "output_note": OUTPUT_UNENFORCED_NOTE}
+    if (held_gib + ready_gib + output_gib + existing_min_next_gib == 0
+            and cur_min_gib + (next_min_gib or 0) > capacity_gib):
+        # Permanent unsupported workset, not an endless transient: nothing
+        # is held, queued, owed, or protected that any retirement could
+        # return, so the minimum overlapping lifetime (lead plus protected
+        # next under it) can never fit however long the window waits.  Any
+        # unrelated obligation at all keeps the transient stall instead.
+        return {"admit": False, "reason": REASON_OVERSIZE, "permanent": True,
                 "output_note": OUTPUT_UNENFORCED_NOTE}
     return {"admit": False, "reason": REASON_STALL, "permanent": False,
             "output_note": OUTPUT_UNENFORCED_NOTE}

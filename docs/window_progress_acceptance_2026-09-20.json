@@ -1,0 +1,53 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "67d429594a934b7f65437cfbb5b0957e5718de32",
+  "ledger_commit": "af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420",
+  "scope": [
+    "PRG-04",
+    "INV-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "impl/window-progress-policy-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/745",
+    "pr": "https://github.com/RobTand/prismabuild/pull/746",
+    "source": "af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420",
+    "validated_repairs": [
+      {
+        "id": "PRG-04",
+        "actions": [
+          "a482d944ce9c",
+          "cfd0e1e0ecd1",
+          "8559ab549080",
+          "199541df9401"
+        ],
+        "outcome": "Competing-consumer next-window reservations, actual tiny stage/RAM copies and retirement, publication gating: 5+16+4+28 passes. The 16-pass result is an existing CAS result reused under the same action, not a new execution."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "a64c02618303",
+          "e73399c05860",
+          "151d538763eb"
+        ],
+        "outcome": "Four behavioral RED failures before the R4 fix; unknown funding/census/terminal proof retains credit, partial transfer resumes without a free interval. Final funding16+settle2 pass; R4 tests are included in the five-pass result above."
+      }
+    ],
+    "remaining_gaps": [
+      "Produced-output integration remains separate",
+      "Live large-workload/window performance and full contract conformance",
+      "Stale donor adoption discovered by the live dev reader is assigned separately"
+    ],
+    "note": "71 passing component tests across recorded scopes; no skips, existing fork warning in tier-funding. Root checked actual terminals/logs/receipts and submitted source: five snapshots add only checkout metadata plus an unexecuted diagnostic script, retained outside the worktree; final snapshot adds metadata only. Final source delta after those five jobs only isolates two synthetic launcher fixtures from their enclosing admitted job. No full-suite, deployment or campaign-completion claim."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
