@@ -4641,20 +4641,15 @@ class PoolQueue:
         residency range, be cut as a leg for this mover over exactly that
         range by the live frozen plan in the role this kind funds, and name
         token files that are all still held under this key right now with
-        this kind's prefix.  Stale physical holdings -- a landed range's
+        this kind's prefix.  Consumed records never cover anything: a
+        successful mover intentionally keeps its whole token set after
+        landing bytes, so full holdings prove physical occupancy, not
+        unspent credit.  Stale physical holdings -- a landed range's
         complete receipt, a previous attempt's leftovers, another
         generation's fence, a superseded plan's credit, a mover outside the
         sealed plan -- never match, so an old copy always pays its full
         demand.  Never raises for queue-state reasons; unknown is
         ``(0, None)``.
-
-        The record may sit in ``transferring`` (awaiting this claim) or in
-        ``consumed`` with the full bound token set still held: spending
-        always ends DONE, released, or requeued-with-release, so a
-        ``consumed`` fence still held in full under the same publication is
-        provably unspent -- exactly what a marking-failure unwind leaves
-        behind, and exactly what the retry re-covers without taking it
-        twice.  Anything partially held covers nothing.
         """
 
         if need <= 0 or not isinstance(item, Mapping):
@@ -4663,11 +4658,7 @@ class PoolQueue:
         if not isinstance(key, str):
             return (0, None)
         record = self.read_funding(key, tier_id)
-        if record is None:
-            return (0, None)
-        if record.get("state") == "consumed":
-            pass  # retry-reuse, proven below by the full held token set
-        elif record.get("state") != "transferring":
+        if record is None or record.get("state") != "transferring":
             return (0, None)
         if (str(record.get("tier_id")) != str(tier_id)
                 or str(record.get("mover_action_key")) != key
@@ -4786,6 +4777,13 @@ class PoolQueue:
         alongside the plan binding.  Returns whether the fence is now held
         and bound.  Never raises for queue-state reasons; unknown is
         ``False`` (the caller defers).
+
+        NOTE for the next output integration unit (not this primitive): this
+        call acquires a fresh grant from free.  A later produced batch funded
+        from the producer's already-declared prepaid working window must
+        arrive by exact bound transfer from that existing window, not by a
+        second acquire from free here -- no second output funding protocol;
+        see output admission (PR735) via root.
         """
 
         mover = str(fields["mover_action_key"])
@@ -5209,13 +5207,10 @@ class PoolQueue:
                 # keeps from the remainder it returns, and names read later
                 # could be a rotated generation's.  Anything off -- moved
                 # state, rotated generation, unnamed tokens -- fails closed
-                # to no cover, and the claim pays its full demand.  Both
-                # ``transferring`` and held-in-full ``consumed`` qualify,
-                # exactly the states ``funded_cover`` covers.
+                # to no cover, and the claim pays its full demand.
                 proof = self.read_funding(action_key, tier_id)
                 names: list[str] = []
-                if (proof is not None
-                        and proof.get("state") in ("transferring", "consumed")
+                if (proof is not None and proof.get("state") == "transferring"
                         and isinstance(proof.get("generation"), str)
                         and str(proof.get("generation")) == generation
                         and isinstance(proof.get("tokens"), list)
@@ -7984,15 +7979,12 @@ class PoolQueue:
                             # Exact token set: the fence the rollback keeps
                             # must be exactly what is still held -- a rotated
                             # generation's names fail closed here, never as a
-                            # half-kept fence.  ``consumed`` qualifies exactly
-                            # when held in full (see ``funded_cover``): the
-                            # retry of a marking-failure unwind.
+                            # half-kept fence.
                             live = self.read_funding(key, funded_tier)
                             live_names = (live.get("tokens")
                                           if isinstance(live, dict) else None)
                             if (not isinstance(live, dict)
-                                    or live.get("state") not in (
-                                        "transferring", "consumed")
+                                    or live.get("state") != "transferring"
                                     or live.get("generation") != pinned
                                     or not isinstance(live_names, list)
                                     or sorted(str(name) for name in live_names)
@@ -8093,15 +8085,12 @@ class PoolQueue:
                     # complete durable proof.  One claim carries at most one
                     # funded tier in practice (a row has a single residency
                     # block, and ``funded_cover`` requires the row's
-                    # residency tier to equal the record's tier), so the loop
-                    # below iterates once; it stays generic, and the
-                    # consumed-reuse rule in ``funded_cover`` recovers even a
-                    # hypothetical partial fuse exactly.  The claim holds this
-                    # key's transition lock throughout, so no coordinator
-                    # transfer/cancel interleaves between the pre-persistence
-                    # verification and these marks; only I/O can still fail,
-                    # and I/O failure keeps the entitlement (records stay
-                    # ``transferring``) for the next attempt.
+                    # residency tier to equal the record's tier).  The claim
+                    # holds this key's transition lock throughout, so no
+                    # coordinator transfer/cancel interleaves between the
+                    # pre-persistence verification and these marks; only I/O
+                    # can still fail, and I/O failure keeps the entitlement
+                    # (records stay ``transferring``) for the next attempt.
                     funding_sealed = True
                     failed_tier: str | None = None
                     for funded_tier, entry in tier_funded.items():

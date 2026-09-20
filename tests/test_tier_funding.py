@@ -498,11 +498,9 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     assert str(record["generation"]) == generation
 
     # Retired credit metadata frees nothing: every state effect refuses,
-    # the idempotent reserve moves nothing.  The cover still answers the
-    # full fence while it is held in full under the same publication --
-    # that is the retry-reuse of an unexecuted attempt, unreachable for a
-    # DONE row (no DONE row ever claims again), and it dies the moment the
-    # set is partial or the key republishes (see the next test).
+    # the idempotent reserve moves nothing, and a consumed fence never
+    # re-covers -- not even held in full under the same publication, which
+    # is physical occupancy by then, never unspent credit.
     assert queue.advance_funding_state(
         mover, TIER, expect="consumed", advance_to="released",
         generation=generation) is False
@@ -514,7 +512,7 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
         queue, plan, mover, row, kind="stage_gib"), 2) is True
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
     assert ledger.available().get("stage_gib") == free_before
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     # Only the owner path may return landed bytes; until it does the
     # ledger still charges them to the mover that staged them.
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
@@ -683,8 +681,15 @@ def test_mark_failure_unwinds_without_execution(
     assert ram_ledger.available().get("ram_gib") == 4
 
 
-def test_consumed_cover_needs_full_held_set(tmp_path: Path) -> None:
-    """Retry-reuse dies the moment the bound set is partial."""
+def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
+    """Consumed is physical-or-spent, never respendable credit.
+
+    A successful mover intentionally keeps its whole token set after
+    landing bytes, so full holdings prove occupancy, not unspent credit.
+    The old row of a pinned DONE mover re-covers nothing -- in full, in
+    part, or released -- and only a live ``transferring`` binding with the
+    full set held authorizes a subtraction.
+    """
     queue = _queue(tmp_path, stage_gib=4)
     ledger = queue.tier_ledger(TIER)
     mover, consumer = _hexkey("part-mover"), _hexkey("part-consumer")
@@ -700,9 +705,9 @@ def test_consumed_cover_needs_full_held_set(tmp_path: Path) -> None:
     assert record is not None and record["state"] == "consumed"
     bound = [str(name) for name in record["tokens"]]
     assert len(bound) == 2
-    # Fully held under the same publication: the retry re-covers.
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
-    # One bound token gone: nothing is covered, never a half credit.
+    # Fully held under the same publication: still no cover.
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    # One bound token gone: nothing.
     assert ledger.release_except(mover, bound[1:]) == 1
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     # All gone: still nothing.
@@ -712,7 +717,17 @@ def test_consumed_cover_needs_full_held_set(tmp_path: Path) -> None:
 
 
 def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
-    """One small ACTUAL mover path: copy bytes, pin, delete, release."""
+    """One small copy lifecycle with real bytes on a real stage.
+
+    Component scope, labeled honestly: real bytes are written to a real
+    stage directory, and the production pool receipt/fragment/evict path
+    files, pins, and deletes them.  The device copy itself
+    (``stage_move.move`` against real pools) is out of scope here; what
+    this proves is the ledger invariant around it -- landed bytes stay
+    charged to the stager as physical occupancy (never respendable as
+    credit, not even with the full token set held under the same
+    publication) until the owner path deletes them.
+    """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]
                            / "tools" / "fleet"))
     import stage_release
@@ -771,6 +786,13 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     assert queue.advance_funding_state(
         mover, TIER, expect="consumed", advance_to="released",
         generation=generation) is False
+    # The pin is physical, not credit: the old row re-covers nothing even
+    # with the full set held, and a newcomer cannot spend landed capacity.
+    assert queue.funded_cover(TIER, row, "stage_gib", 1) == (0, None)
+    stealer = _hexkey("real-stealer")
+    _stealer_row(queue, stealer, 3)
+    assert queue.claim(tags=["dl380g10"], owner="w-real-steal") is None
+    assert queue.item_path(pool.READY, stealer).exists()
     # Only the owner path returns landed bytes: the real egress deletes the
     # real file, releases the charge, and drops the fragment.
     receipt = stage_release.evict(
@@ -779,3 +801,6 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     assert int(receipt.get("tokens_released", 0)) == 1
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
     assert ledger.available().get("stage_gib") == 3
+    got = queue.claim(tags=["dl380g10"], owner="w-real-steal-2")
+    assert got is not None and got["action_key"] == stealer
+    queue.finish(stealer, status="executed")
