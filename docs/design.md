@@ -3188,6 +3188,23 @@ design envelope is explicitly a reference, not an NVML GPU power limit, and
 GPU utilization percentage does not drive admission. Performance claims require
 useful work, elapsed time, energy and the relevant host observations.
 
+Idle SW-cap first-job exception (narrow, Sep-20): a GB10 (`NVIDIA GB10`,
+`shared_system`, `soc_tdp`) at idle power (≤0.65×reference) and idle clocks
+(≤10% of valid max SM clock, e.g. 208/3003) whose `limited` is explained only
+by `sw_power_cap` (all other limiters incl. `sync_boost` false, mask only
+idle/SW-cap bits, mask consistent with reasons) may admit one first
+generation job when holders, broker jobs and foreign processes are all zero,
+evidence is fresh/complete/attributed, and existing memory/CPU-pressure gates
+pass. `mask 0x4` is the SW cap, never idle (`gpu_idle` is `0x1`); the two are
+not interchanged. The exception grants no `low` credit (so sharing probes
+still need genuinely free samples), never applies to `measurement=True`, and
+never applies with holders present. Missing clocks, missing limiter
+breakdown, or unknown mask bits deny the exception and keep the existing
+`host_or_device_congested` refusal. Thermal, power-brake, HW/SW-thermal,
+foreign, pressure, attribution and budget gates are unchanged. The admitted
+metadata records `sw_cap_idle_exception` with the threshold and observations;
+refusals record the exception diagnosis alongside the congested reason.
+
 New GPU submissions seal `params.gpu_exclusive` as an explicit boolean.
 Measurements and exclusive work never overlap another GPU holder. Legacy
 requests without that marker are conservatively exclusive because an old

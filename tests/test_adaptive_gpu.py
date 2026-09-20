@@ -729,3 +729,141 @@ def test_absent_power_without_the_declaration_still_refuses(gpu_rig):
     publish(0)
     tick()
     assert claim() is None
+
+
+def _sw_cap_idle_device(**overrides):
+    """Sparklina Sep-20 capture: GB10 idle at 4.32 W, SW-cap mask 0x4."""
+    device = {
+        'uuid': 'GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705',
+        'name': 'NVIDIA GB10',
+        'power_w': 4.32,
+        'power_limit_w': None,
+        'power_reference_w': 140.0,
+        'power_reference_scope': 'soc_tdp',
+        'memory_domain': 'shared_system',
+        'limited': True,
+        'sm_clock_mhz': 208.0,
+        'max_sm_clock_mhz': 3003.0,
+        'throttle_active_mask': 0x4,
+        'throttle_reasons': {
+            'gpu_idle': False,
+            'hw_power_brake_slowdown': False,
+            'hw_slowdown': False,
+            'hw_thermal_slowdown': False,
+            'sw_power_cap': True,
+            'sw_thermal_slowdown': False,
+            'sync_boost': False,
+        },
+    }
+    device.update(overrides)
+    return device
+
+
+def _arm_sw_cap(sample, tick, **overrides):
+    sample['devices'][0] = _sw_cap_idle_device(**overrides)
+    tick()
+
+
+def test_sw_cap_idle_admits_first_job_with_exception_recorded(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    _arm_sw_cap(sample, tick)
+    admitted = claim()
+    assert admitted, 'idle SW-capped GB10 must admit its first generation job'
+    exception = admitted['gpu_admission'].get('sw_cap_idle_exception')
+    assert exception and exception['exception_reason'] == 'sw_cap_idle_first_job'
+    assert exception['clock_threshold_fraction'] == 0.10
+    assert exception['power_gate_fraction'] == 0.65
+    assert exception['clock_ratio'] == 208.0 / 3003.0
+    assert exception['power_ratio'] == 4.32 / 140.0
+
+
+def test_sw_cap_idle_second_job_still_needs_free_samples(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    _arm_sw_cap(sample, tick)
+    assert claim()
+    publish(1)
+    tick()
+    # Holders present: no sharing exception; the SW cap still congests.
+    assert claim() is None
+
+
+def test_sw_cap_idle_never_excepts_measurement(gpu_rig, monkeypatch):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    monkeypatch.setattr(adaptive_gpu, 'action_contract', lambda item, demand:
+                        ('shape', True, False, demand['mem_gb'] * adaptive_gpu.GIB))
+    publish(0)
+    _arm_sw_cap(sample, tick)
+    assert claim() is None
+
+
+def test_sw_cap_idle_no_exception_with_broker_jobs_or_foreign(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    _arm_sw_cap(sample, tick)
+    sample['jobs'] = [{'action_key': 'f' * 64, 'nonce': 'g' * 32,
+                       'scope_id': 's', 'complete': True}]
+    assert claim() is None
+    sample['jobs'] = []
+    sample['foreign_processes'] = [{'pid': 4242}]
+    tick()
+    assert claim() is None
+
+
+@pytest.mark.parametrize('field,value', [
+    ('power_w', 100.0),
+    ('sm_clock_mhz', 1500.0),
+    ('sm_clock_mhz', None),
+    ('max_sm_clock_mhz', None),
+    ('throttle_reasons', None),
+    ('throttle_active_mask', None),
+    ('throttle_active_mask', 0x8),
+    ('limited', False),
+    ('name', 'NVIDIA H100'),
+    ('memory_domain', 'discrete'),
+    ('power_reference_scope', 'gpu_power_limit'),
+])
+def test_sw_cap_idle_negative_guards_refuse_first_job(gpu_rig, field, value):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    override = {field: value}
+    if field == 'limited' and value is False:
+        # A free device admits via the normal path, not the exception; force
+        # congestion through power so the exception gate is what is tested.
+        override = {'limited': False, 'power_w': 130.0}
+    _arm_sw_cap(sample, tick, **override)
+    assert claim() is None
+
+
+@pytest.mark.parametrize('reason', [
+    'hw_slowdown', 'hw_thermal_slowdown', 'hw_power_brake_slowdown',
+    'sw_thermal_slowdown', 'sync_boost',
+])
+def test_sw_cap_idle_other_limiters_refuse(gpu_rig, reason):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    reasons = dict(_sw_cap_idle_device()['throttle_reasons'])
+    reasons[reason] = True
+    _arm_sw_cap(sample, tick, throttle_reasons=reasons, throttle_active_mask=0xC)
+    assert claim() is None
+
+
+def test_sw_cap_idle_mask_mismatch_refuses(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    reasons = dict(_sw_cap_idle_device()['throttle_reasons'])
+    reasons['gpu_idle'] = True
+    # Mask still 0x4 while reasons claim idle: inconsistent, refuse.
+    _arm_sw_cap(sample, tick, throttle_reasons=reasons, throttle_active_mask=0x4)
+    assert claim() is None
+
+
+def test_sw_cap_idle_pressure_refuses(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    _arm_sw_cap(sample, tick)
+    sample['cpu_pressure_some'] = 10.0
+    tick()
+    assert claim() is None
