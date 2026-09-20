@@ -1232,8 +1232,8 @@ def retire_predecessor_cancellations(
         plan: Mapping[str, object]) -> dict[str, object]:
     """Retire a reaped window's visible child cancellations for a fresh seal.
 
-    A submission publishes its consumer and its first lead, and nothing else:
-    the later phases are the window's to publish as the consumer advances.  An
+    A submission publishes its consumer and nothing else: every phase is the
+    window's to publish, the first included, as the consumer advances.  An
     action key is a content hash, so a resubmission of the same consumer,
     price and tool seals the same child keys -- and the *visible* withdrawal
     markers the predecessor generation left on those keys (an operator's
@@ -1264,11 +1264,10 @@ def retire_predecessor_cancellations(
     marker is moved while the child's transition lock is held, so a
     cancellation filed for that child after that instant survives, and the
     window's next cycle reads it as live: it refuses to publish the child and
-    marks the fresh plan superseded.  The first lead is not special-cased
-    here: retiring its marker in this pass is redundant with the explicit
-    publication the submission runs immediately afterwards, and that
-    publication -- ``publish``'s own transition lock -- is the lead's ordinary
-    boundary, which this helper neither widens nor replaces.  The automatic
+    marks the fresh plan superseded.  That is the rule for the first lead
+    too, with no special case: ``child_keys`` names every phase, so the
+    lead's marker is retired here under its own transition lock, on the same
+    boundary as any later child.  The automatic
     publisher never retires a cancellation.  ``None`` from
     ``withdrawn_keys``-backed reads is the ordinary first seal, which is not a
     renewal at all and returns an empty answer without taking a lock.
@@ -1319,11 +1318,12 @@ def retire_predecessor_cancellations(
 
 
 def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:
-    """The row the submitter publishes at once: the first chunk's, or the mover's.
+    """The row the consumer's admission waits on: the first chunk's, or the mover's.
 
     The consumer depends only on its first phase, and a first phase sealed
-    chunked (#675) starts with its first chunk: the rest is the tiers loop's
-    to publish as accepted progress advances.
+    chunked (#675) starts with its first chunk.  Naming the row is all this
+    does: the tiers loop publishes it, and the rest as accepted progress
+    advances.
     """
 
     phases = plan["phases"]

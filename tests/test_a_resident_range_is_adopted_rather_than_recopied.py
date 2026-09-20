@@ -33,6 +33,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import reader_lease  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
@@ -113,12 +114,17 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 
 def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
                  stage: Path, ordinal: int = 0, files: int = 2,
-                 manifest: str = MANIFEST) -> list[Path]:
+                 manifest: str = MANIFEST,
+                 material: int | None = 2) -> list[Path]:
     """Drive the ledger and the stage into the state a finished mover leaves.
 
-    Tokens held, files on the device, a fragment naming them and a receipt
-    saying the copy completed -- the four things every reader downstream reads,
-    filed the way ``stage_move`` files them.
+    Tokens held, files on the device, a fragment naming them, a sidecar dating
+    them and a receipt saying the copy completed -- the things every reader
+    downstream reads, filed the way ``stage_move`` files them.
+
+    ``material`` is how many of the fragment's entries the sidecar dates: all
+    of them by default, fewer for a partial vouch, ``None`` for a legacy range
+    with no sidecar at all.
     """
 
     start, end = ordinal * PHASE_GIB * GIB, (ordinal + 1) * PHASE_GIB * GIB
@@ -139,6 +145,15 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": manifest,
         "entries": entries})
+    if material is not None:
+        reader_lease.write_material(
+            queue.residency_fragment_root(), consumer_action_key=consumer,
+            mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
+            manifest_sha256=manifest, generation="a" * 32,
+            entries={key: {**dict(mention),  # type: ignore[dict-item]
+                           "file_id": reader_lease.stat_identity(
+                               str(mention["stage_path"]))}  # type: ignore[index]
+                     for key, mention in list(entries.items())[:material]})
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": manifest,
@@ -250,7 +265,11 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     held = {key: gib for key, gib in held.items() if key not in fenced}
     root = queue.residency_fragment_root()
     accounted: dict[str, int] = {}
-    consumers = sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+    # ``material/`` sits beside the consumer directories, not among them
+    # (``reader_lease.material_path``), so it is not a consumer to read.
+    consumers = sorted(entry.name for entry in root.iterdir()
+                       if entry.is_dir()
+                       and entry.name != reader_lease.MATERIAL_SUBDIR)
     for consumer in consumers:
         for fragment in residency_map.read_fragments(root, consumer):
             mover = str(fragment["mover_action_key"])
@@ -737,3 +756,111 @@ def test_a_range_whose_fragment_cannot_be_read_is_not_adopted(
     assert queue.tier_ledger(TIER).holder_tokens(
         first_mover) == {"stage_gib": PHASE_GIB}
     assert queue.tier_ledger(TIER).holder_tokens(_hexkey("secondmover0")) == {}
+
+
+@pytest.mark.parametrize("material, shape", [
+    (None, "no sidecar at all"),
+    (1, "a sidecar dating only some of the files"),
+])
+def test_a_donor_the_reader_could_not_prove_is_declined(
+    queue, stage, material: int | None, shape: str,
+) -> None:
+    """Undated and partial donors are refused rather than adopted blind.
+
+    The dated material is the only thing that survives into the successor:
+    with none, the live-stat comparison is skipped and the successor is
+    vouched by a fragment alone -- a range the strict reader cannot prove.
+    Adopting it hands a consumer bytes it will refuse to read, which is worse
+    than copying them again, so it is declined and the copy runs.
+    """
+
+    donor = _hexkey("firstmover0")
+    _stage_range(queue, mover=donor, consumer=FIRST, stage=stage,
+                 material=material)
+    _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
+
+    events = tier_loop.adopt_resident_ranges(
+        queue, tiers={TIER: _tier_record(stage)})
+
+    assert events, f"{shape} was passed over silently"
+    assert not any(event.get("adopted") for event in events), (
+        f"{shape} was adopted: the reader could not prove that range")
+    assert {str(event.get("reason")) for event in events} <= {
+        "donor_undated", "donor_material_partial"}
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_GIB}, "a declined donor lost its tokens"
+    assert_ledger_matches_the_stage(queue)
+
+
+def test_a_donor_whose_material_names_another_object_is_declined(
+    queue, stage,
+) -> None:
+    """Covering the same keys is not describing the same object.
+
+    A sidecar can pass live ``file_id`` validation against a different valid
+    file, so key coverage alone would adopt bytes that qualify individually
+    while describing another manifest.  ``covers_for_keys`` requires the
+    material's own tier, manifest and epoch to match before it takes a cover;
+    adoption qualifies its donor the same way and falls back to the copy.
+    """
+
+    donor = _hexkey("firstmover0")
+    files = _stage_range(queue, mover=donor, consumer=FIRST, stage=stage)
+    _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
+
+    # Same files, same keys, same live identities -- another manifest.
+    sidecar = reader_lease.material_path(
+        queue.residency_fragment_root(), FIRST, donor)
+    body = json.loads(sidecar.read_text())
+    body["manifest_sha256"] = "b" * 64
+    sidecar.write_text(json.dumps(body))
+
+    events = tier_loop.adopt_resident_ranges(
+        queue, tiers={TIER: _tier_record(stage)})
+
+    assert events and not any(event.get("adopted") for event in events), (
+        "a sidecar describing another manifest was adopted")
+    assert {str(event.get("reason")) for event in events} == {
+        "donor_material_mismatch"}
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_GIB}
+    assert all(path.exists() for path in files)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("stage_path", "/somewhere/else.bin"),
+    ("bytes", 64),
+    ("sha256", "c" * 64),
+])
+def test_a_sidecar_entry_that_dates_other_bytes_is_declined(
+    queue, stage, field: str, value: object,
+) -> None:
+    """Per entry, the sidecar must date the bytes the fragment vouches.
+
+    A live ``file_id`` can be valid for a file that is not the one the
+    fragment names, so key coverage and material-level agreement still leave
+    the entries free to describe different bytes.  ``covers_for_keys``
+    compares path, length and digest per entry and taints the cover when they
+    disagree; adoption declines the donor for the same reason.
+    """
+
+    donor = _hexkey("firstmover0")
+    _stage_range(queue, mover=donor, consumer=FIRST, stage=stage)
+    _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
+
+    sidecar = reader_lease.material_path(
+        queue.residency_fragment_root(), FIRST, donor)
+    body = json.loads(sidecar.read_text())
+    entry = sorted(body["entries"])[0]
+    body["entries"][entry][field] = value
+    sidecar.write_text(json.dumps(body))
+
+    events = tier_loop.adopt_resident_ranges(
+        queue, tiers={TIER: _tier_record(stage)})
+
+    assert events and not any(event.get("adopted") for event in events), (
+        f"a sidecar whose {field} names other bytes was adopted")
+    assert {str(event.get("reason")) for event in events} == {
+        "donor_material_mismatch"}
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_GIB}

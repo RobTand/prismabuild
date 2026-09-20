@@ -5728,11 +5728,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--residency", choices=("none", "stage"), default="none",
         help="stage this action's declared bytes onto a storage tier before it "
              "runs (#583).  'stage' seals one movement node per phase of the "
-             "data manifest's read order and one egress node each, publishes "
-             "the first phase, and admits the action only once that phase's "
-             "bytes are on the tier and still pinned there; the tiers loop "
-             "publishes the rest of the window as the action's own accepted "
-             "progress advances.  Needs --data-manifest, because a byte range "
+             "data manifest's read order and one egress node each, and admits "
+             "the action only once its first phase's bytes are on the tier and "
+             "still pinned there; the tiers loop publishes the window -- the "
+             "first phase included -- taking over a range already resident "
+             "rather than copying it, as accepted progress advances.  Needs --data-manifest, because a byte range "
              "is meaningless without the list it indexes.  'none', the "
              "default, publishes exactly what it published before",
     )
@@ -6606,8 +6606,7 @@ def main() -> int:
     staged = None
     if args.residency == "stage":
         # One ownership transaction, under the consumer's existing transition
-        # lock: handoff, seal, consumer publication and lead publication are
-        # indivisible.  A dead consumer's cleanup rereads an old failed or
+        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
         # withdrawn terminal every cycle, and between ``freeze`` and the
         # consumer's own row it would see a filed plan nobody owns and reap
         # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
@@ -6643,17 +6642,19 @@ def main() -> int:
             publication = publication_row(action, args=args, queue=q)
             publication["residency"] = staged["residency"]
             queued_path = publish_or_refuse(q, publication)
-            # The first phase only -- its first chunk when that phase sealed
-            # chunked (#675).  The rest is the tiers loop's to publish as
-            # this action's accepted progress advances: publishing the whole
-            # plan here would put every phase of a 223-phase read order in
-            # ``ready`` at once, and reserve a stage several times its size.
+            # The consumer's row and nothing else.  Every phase of the
+            # frozen plan is the tiers loop's to publish, the first included:
+            # the loop adopts before it publishes, and its adoption pass skips
+            # any leg whose row already exists, so a lead published here could
+            # never be taken over from a range already on the tier.  One
+            # publisher also means no interleaving to arbitrate.  A cold lead
+            # therefore waits for the next cycle, which staged submissions
+            # already depend on for phases 1..n.
             lead = staged["plan"]["phases"][0]
-            publish_or_refuse(
-                q, dict(residency_plan.lead_mover_row(staged["plan"])))
             print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
-                  f"{staged['plan']['tier_id']}; published phase "
-                  f"{lead['name']!r} ({lead['stage_gib']} GiB)",
+                  f"{staged['plan']['tier_id']}; phase {lead['name']!r} "
+                  f"({lead['stage_gib']} GiB) next, for the tiers loop to "
+                  f"adopt or publish",
                   file=sys.stderr, flush=True)
     else:
         publication = publication_row(action, args=args, queue=q)
