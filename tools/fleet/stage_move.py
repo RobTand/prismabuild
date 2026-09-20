@@ -209,12 +209,14 @@ class _StagedPublisher:
       needed on this path;
     * present and provably different -- a record that dates the current
       incarnation names a digest that matches neither the declared nor
-      the computed digest: refuse at once, without replacing.  A shared
-      name with divergent content is a conflict for an owner to resolve,
-      never a blind overwrite.  A record whose sidecar dates a
-      superseded incarnation is not this: it is deferred like an
-      undated vouch while another record may still prove the current
-      one (#755);
+      the computed digest, or the very inode a record dates was modified
+      in place (no legitimate publication writes in place): refuse at
+      once, without replacing.  A shared name with divergent content is
+      a conflict for an owner to resolve, never a blind overwrite.  A
+      record whose sidecar dates a superseded incarnation -- a different
+      inode, the name replaced by a real publication -- is not this: it
+      is deferred like an undated vouch while another record may still
+      prove the current one (#755);
     * present but unproven, live-pinned, or unreadable: refuse at once
       for pins and unreadable proof state; otherwise wait out the grace
       for a late fragment or an in-flight publisher, then refuse --
@@ -517,11 +519,15 @@ class _StagedPublisher:
           fast path (the published file still carries this copy's source
           identity) with the sidecar digest riding along;
         * ``"divergent"`` -- a record that dates the *current* incarnation
-          names the path but the bytes are provably not these (digest
-          mismatch): immediate refuse, never wait.  A record whose
-          ``file_id`` names a superseded incarnation is not this: it says
-          nothing about the bytes that are there now, so it is skipped and
-          the search keeps looking for one that does (#755);
+          names the path but the bytes are provably not these: a digest
+          mismatch, or the very inode the record dates was modified in
+          place (same ``ino``, drifted mtime/ctime/size -- no legitimate
+          publication writes in place).  Immediate refuse, never wait.
+          A record whose ``file_id`` names a *different inode* -- the name
+          was replaced by a real publication, exactly what the pre-fix
+          unconditional rename did -- says nothing about the bytes that
+          are there now, so it is skipped and the search keeps looking
+          for one that dates the current incarnation (#755);
         * ``"owned"`` -- a fragment names the path without proving it
           (sidecar missing, undated, or dating a superseded incarnation):
           defer, a rerun may date it;
@@ -594,11 +600,13 @@ class _StagedPublisher:
         "owned", "tainted" or None (names nothing here).
 
         Identity before content: the sidecar's ``file_id`` is compared
-        against the live stat first, because a record dating a superseded
-        incarnation says nothing about the bytes that are there now --
-        whatever digest it carries (#755).  Only a record that dates the
-        current incarnation may prove these bytes (digest match) or
-        disprove them (digest mismatch, ``divergent``).
+        against the live stat first.  A record dating a different inode
+        names a superseded incarnation and says nothing about the bytes
+        that are there now, whatever digest it carries (#755); a record
+        dating the *same* inode that has since changed in place, or a
+        digest mismatch on the current incarnation, is divergence.  Only
+        a record that dates the current incarnation may prove these
+        bytes.
         """
 
         try:
@@ -661,12 +669,19 @@ class _StagedPublisher:
             # Identity unreadable: the record can neither prove these bytes
             # nor clear them, and the fail-closed answer stays divergent.
             return "divergent"
-        if not reader_lease.file_id_matches(published, file_id):
-            # A date for an incarnation this name no longer carries -- the
-            # file was replaced after this sidecar was written.  Not proof,
-            # not divergence, not permission to overwrite: another record
-            # may still date the incarnation that is there (#755).
+        if int(published.get("ino", -1)) != int(file_id["ino"]):
+            # A date for an incarnation this name no longer carries: the
+            # name was replaced -- a publication mints a fresh inode, which
+            # is exactly what the pre-fix unconditional rename did.  Not
+            # proof, not divergence, not permission to overwrite: another
+            # record may still date the incarnation that is there (#755).
             return "stale"
+        if not reader_lease.file_id_matches(published, file_id):
+            # Same inode, changed since the record dated it: an in-place
+            # write, which no legitimate publication performs.  The dated
+            # bytes are provably not the bytes that are there -- the one
+            # shape of stat mismatch that is immediate divergence.
+            return "divergent"
         if isinstance(declared, str) and declared:
             if digest != declared:
                 return "divergent"
