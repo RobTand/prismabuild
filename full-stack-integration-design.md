@@ -53,20 +53,25 @@ file lands only with root's candidate-commit API bindings. Until then the
 harness is hermetic: fixtures generated in-test, zero PQ imports. No
 parallel reader implementation is vendored to fill the gap (§4).
 
-## 4. PQ-reader bindings (real APIs, manifest-gated qualification)
+## 4. PQ wiring (real functions, pinned source, no stubs)
 
 The staged-only chain cannot be proven without the real PQ source,
 render, and activation readers plus the join — and no stub, fake parser,
-or parallel reader is vendored to pretend otherwise. The bindings arrive
-as `tests/fullstack_pq_bindings.json` carrying root's candidate commit,
-the module + attribute per capability, and the source snapshot and
-artifact dependency the chain runs against. `test_fullstack_qualification.py`
-requires that file: until root provides it the gate FAILS and the suite
-reports not-qualified. No module paths are invented in this lane — every
-import comes from the bindings file. Root reviews the API before any
-interface-rigid test is written against it. The approved follow-on is
-designing the source-snapshot/artifact dependency the bound readers run
-against.
+unavailable-assertion, or parallel reader is vendored to pretend
+otherwise. `test_fullstack_pq_contract.py` wires REAL current PQ
+functions for the policy baseline: the pure producer spellings PQ's own
+joiner contract names as shared (`quantum_id`, `roster_digest`,
+`qname_layer`, `phase_ranges`) plus the canonical-JSON compat rule
+receipts depend on. Source resolution is `PRISMAQUANT_CHECKOUT`
+(default `/home/rob/prismaquant`, the existing fleet precedent),
+asserted at exactly `PQ_PINNED_COMMIT`; any drift fails loudly — a
+mutable checkout is never silently trusted, and the pin updates only by
+explicit review. Reader and lease integration beyond these pure
+functions waits on the published candidate: root reviews the API before
+any interface-rigid test is written against it. The future
+`tools/resolve_pq_fixture_pin.py` (target-env pip case) lands with that
+work. The approved follow-on is designing the source-snapshot/artifact
+dependency the bound readers run against.
 
 ## 5. GPU path (deferred, bounded)
 
@@ -81,8 +86,8 @@ Design only until the CPU harness is accepted.
 |----|-----------------|--------------|--------|
 | ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` | implement now (PB-side manifest/row shapes) |
 | ACC-02 | lifecycle/race incl. staged-lease races | existing PB suites + `test_fullstack_reader_boundaries.py` (egress-vs-hold, double release) | implement now |
-| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) + bindings-gated PQ legs | PB boundaries now; PQ legs blocked on bindings |
-| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
+| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) + `test_fullstack_pq_contract.py` (real producer spellings) | PB boundaries + contract now; reader/lease integration blocked on published candidate |
+| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) + `test_fullstack_pq_contract.py` (canonical compat receipts depend on) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
 | ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (needs runnable PQ work) |
 | ACC-06 | staged-only campaign output, bytes_from_pool==0 bulk legs | pending strict-reader enforcement + live lane | pending |
 
