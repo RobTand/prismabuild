@@ -4900,14 +4900,58 @@ class PoolQueue:
             # generation rather than wedge on a terminal record.
         if current is not None and current.get("state") == "transferring":
             try:
+                ledger = self.tier_ledger(str(tier_id))
                 ledger_names = {path.name for path in _glob(
-                    self.tier_ledger(str(tier_id)).held_dir / mover, "*-*")}
+                    ledger.held_dir / mover, "*-*")}
             except (OSError, PoolContractError, ValueError):
                 return False
             bound = current.get("tokens")
             if (isinstance(bound, list) and bound
                     and all(str(name) in ledger_names for name in bound)):
-                return True
+                # Bound, but to which publication?  A republished mover (new
+                # published_unix), replaced plan, or new range never inherits
+                # an older generation's fence: the claim path would refuse
+                # cover while the tokens stay held, stranding the fence and
+                # double-holding the retry.  Reclaim exactly the bound names
+                # (leftovers stay), close the record legally, and fence
+                # afresh below -- all under this mover's lock, no free gap
+                # for the named set beyond this call.
+                try:
+                    fields_published = float(  # type: ignore[arg-type]
+                        fields["published_unix"])
+                    record_published = float(  # type: ignore[arg-type]
+                        current.get("published_unix"))
+                    stale = (
+                        record_published != fields_published
+                        or str(current.get("consumer_action_key")) != str(
+                            fields["consumer_action_key"])
+                        or str(current.get("plan_sha256")) != str(
+                            fields["plan_sha256"])
+                        or str(current.get("range_start_bytes")) != str(
+                            fields["range_start_bytes"])
+                        or str(current.get("range_end_bytes")) != str(
+                            fields["range_end_bytes"]))
+                except (KeyError, TypeError, ValueError):
+                    stale = True
+                if stale:
+                    keep = {str(name) for name in ledger_names
+                            } - {str(name) for name in bound}
+                    try:
+                        ledger.release_except(mover, keep)
+                        self.advance_funding_state(
+                            mover, str(tier_id), expect="transferring",
+                            advance_to="released",
+                            generation=(str(current.get("generation"))
+                                        if isinstance(
+                                            current.get("generation"), str)
+                                        else None))
+                    except (OSError, PoolContractError, ValueError):
+                        return False
+                    # Re-read: the released record below rotates (never
+                    # unlinks) so the generation chain stays auditable.
+                    current = self.read_funding(mover, str(tier_id))
+                else:
+                    return True
             # Bound tokens gone (released by an owner path): fall through and
             # fence afresh with a new generation rather than report held.
         if (current is not None and current.get("state") == "reserved"
