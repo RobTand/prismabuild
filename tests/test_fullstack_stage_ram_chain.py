@@ -29,6 +29,7 @@ CONSUMER = "c" * 64
 WHOLE_MOVER = "a" * 64
 SPLIT_MOVER = "b" * 64
 WHOLE_RAM_MOVER = "d" * 64
+SPLIT_RAM_MOVER = "e" * 64
 STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 
@@ -151,6 +152,11 @@ def _run_chain(tmp_path: Path):
         tmp_path, queue, manifest_path, WHOLE_RAM_MOVER, 0, whole_len))
     assert whole_promoted["complete"] is True
     queue.record_move(WHOLE_RAM_MOVER, whole_promoted)
+    split_promoted = ram_promote.promote(_promote_args(
+        tmp_path, queue, manifest_path, SPLIT_RAM_MOVER,
+        whole_len, whole_len + SPLIT_BYTES))
+    assert split_promoted["complete"] is True
+    queue.record_move(SPLIT_RAM_MOVER, split_promoted)
     return queue, manifest, whole_len, str(epoch["epoch"])
 
 
@@ -194,3 +200,7 @@ def test_ram_promotion_lands_under_epoch_with_map_lookup(tmp_path: Path) -> None
     assert overlaid_entry is not None
     assert overlaid_entry.get("ram_path") is not None
     assert Path(overlaid_entry["ram_path"]).read_bytes() == files["/pool/model/shard-0.bin"]
+    overlaid_split = residency_map.lookup(overlaid, split_declared, SPLIT_OFFSET)
+    assert overlaid_split is not None
+    assert overlaid_split.get("ram_path") is not None
+    assert Path(overlaid_split["ram_path"]).read_bytes() == files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]

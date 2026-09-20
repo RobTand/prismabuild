@@ -71,9 +71,9 @@ Resolution (bounded ownership requested via root): PQ-contract tests —
 canonical-JSON compat against real PQ code, then reader and lease
 integration once the published candidate lands — belong in the PQ repo
 against declared published PB, where the source is the checkout under
-test. This lane keeps fixture-shape stability tests only (sorted keys,
-sha256 names, documented wire order), which guard our own helper
-against drift and claim no PQ conformance. Root reviews the API before
+test. This lane keeps no fixture-conformance tests: invented payload/roster
+helpers and their sha tests are deleted. Real PQ-side join coverage uses
+actual roster/receipts when root's bindings land. Root reviews the API before
 any interface-rigid test is written. The approved follow-on is
 designing the source-snapshot/artifact dependency the bound readers run
 against.
@@ -89,30 +89,28 @@ Design only until the CPU harness is accepted.
 
 | ID | Contract demand | Harness file | Status |
 |----|-----------------|--------------|--------|
-| ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` | implement now (PB-side manifest/row shapes) |
-| ACC-02 | lifecycle/race incl. staged-lease races | existing PB suites + `test_fullstack_reader_boundaries.py` (egress-vs-hold, double release) | implement now |
-| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) | PB boundaries now; PQ-contract tests requested PQ-side via root; reader/lease integration blocked on published candidate |
+| ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` (phase tiling, freeze first-writer, wire/canonical split, empty-range refusal, class tags) | PB-side now |
+| ACC-02 | lifecycle/race incl. staged-lease races | `test_fullstack_reader_boundaries.py` (charged double-egress balances, cleanup orphans) + `test_fullstack_progress_retry.py` (freeze refusal) | implemented PB legs; staged-lease races await lease API |
+| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_stage_ram_chain.py` (whole+split stage, whole+split RAM promotion, composed lookup byte equality) + `test_fullstack_reader_boundaries.py` (overlay mismatch/happy, epoch revalidation refusal) | PB legs now; PQ-reader legs requested PQ-side via root; reader/lease integration blocked on published candidate |
 | ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
 | ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (needs runnable PQ work) |
 | ACC-06 | staged-only campaign output, bytes_from_pool==0 bulk legs | pending strict-reader enforcement + live lane | pending |
 
 ## 7. Negative matrix (each a real boundary, not a mock)
 
-- forbidden pool open reads zero pool bytes: pool fixture chmod-000 after
-  staging; staged reads succeed; any pool fallback surfaces as EACCES.
+- (removed: chmod tripwire claimed a refusal policy its manual staged read
+  cannot prove; pool-touching reads belong to the PQ-reader lane.)
 - live hold beats egress: blocked on the lease API (single assertion when it lands);
   today double-egress balances exactly once and cleanup leaves no orphans.
-- invalidated RAM serves only permitted SSD: epoch bump → lookup resolves
-  the stage copy, pool untouched (pool chmod-000 as tripwire).
-- both tiers gone → clear fail: lookup unresolvable AND open raises;
-  never silent pool bytes.
+- invalidated RAM serves only permitted SSD: reboot voids the epoch and the
+  old fragment refuses the new epoch in production overlay.
+- (removed: stdlib FileNotFoundError plus lookup-None proves no policy.)
 - epoch/restart: bumped epoch demands revalidation, never assumption.
 - ram copy disagreeing with stage-vouched bytes/digest: overlay refuses;
   tampered map shapes refuse whole via validate.
 - resources reclaimed exactly once: double release balances the ledger.
-- gapped join refused: `residency_plan.remaining` reports the gap and never
-  narrows to fit survivors (PB side now); full join refusal waits on the
-  bindings-gated PQ join (§4).
+- unaccepted phases stay in the residency window (PB accounting only —
+  not a join verdict); full join refusal waits on the PQ join (§4).
 
 Failures, gzip/raw-canonical mismatches, required argv, placement tags,
 defaults, and container bindings are caught by real boundary tests

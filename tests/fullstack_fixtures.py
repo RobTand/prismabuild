@@ -36,24 +36,3 @@ def corpus() -> dict[str, bytes]:
 def manifest_entry(path: str, offset: int, payload: bytes) -> dict[str, object]:
     return {"path": path, "offset": offset, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
-
-
-def quantum_payload(quantum_id: str, units: list[str]) -> dict[str, object]:
-    """Fixture per-quantum payload in future-join shape (sorted keys)."""
-    costs = {name: {"row_sha256": hashlib.sha256(
-        f"{quantum_id}:{name}".encode()).hexdigest()} for name in sorted(units)}
-    return {"costs": costs,
-            "provenance": {"quantum_id": quantum_id,
-                           "payload": "fullstack-fixture"}}
-
-
-def roster(units: list[str]) -> dict[str, object]:
-    ordered = sorted(units)
-    digest = hashlib.sha256(("\n".join(ordered)).encode()).hexdigest()
-    return {"units": ordered, "roster_sha256": digest}
-
-
-def gzip_member(payload: dict) -> tuple[bytes, str]:
-    """Deterministic gzip seal (mtime=0) plus wire digest."""
-    raw = gzip.compress(json.dumps(payload, sort_keys=True).encode(), mtime=0)
-    return raw, hashlib.sha256(raw).hexdigest()

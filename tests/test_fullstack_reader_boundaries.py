@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -28,7 +27,7 @@ import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
 from test_fullstack_stage_ram_chain import (  # noqa: E402
-    CONSUMER, STAGE_TIER, _fleet, _move_args, _pool_fixture,
+    CONSUMER, RAM_TIER, STAGE_TIER, _fleet, _move_args, _pool_fixture,
 )
 
 WHOLE = "shard-0.bin"
@@ -107,55 +106,46 @@ def test_unstaged_entry_lookup_is_visible_not_silent(tmp_path: Path) -> None:
     assert residency_map.lookup(mapping, "/pool/model/never-staged.bin", 0) is None
 
 
-def test_pool_tripwire_no_silent_fallback(tmp_path: Path) -> None:
-    """chmod-000 pool after staging: staged reads succeed, pool reads raise."""
-    queue, manifest, _ = _staged_once(tmp_path)
-    whole_declared = str(manifest["entries"][0]["path"])
-    pool_file = Path(whole_declared)
-    expected_sha = manifest["entries"][0]["sha256"]
-    os.chmod(pool_file, 0)
-    try:
-        fragments = [residency_map.validate_fragment(f) for f in
-                     residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
-        mapping = residency_map.compose(fragments)
-        found = residency_map.lookup(mapping, whole_declared, 0)
-        assert found is not None
-        staged_bytes = Path(found["stage_path"]).read_bytes()
-        assert hashlib.sha256(staged_bytes).hexdigest() == expected_sha
-        with pytest.raises(OSError):
-            pool_file.read_bytes()
-    finally:
-        os.chmod(pool_file, 0o644)
-
-
-def test_both_tiers_gone_fails_clearly(tmp_path: Path) -> None:
-    """No staged copy and no map entry: lookup None AND open raises."""
-    assert residency_map.lookup({"entries": {}}, "/pool/model/shard-0.bin", 0) is None
-    with pytest.raises(FileNotFoundError):
-        Path(tmp_path / "stage" / "model" / "shard-0.bin").read_bytes()
-
-
 def test_double_egress_reclaims_exactly_once(tmp_path: Path) -> None:
-    """Second egress of the same range is a no-op receipt, not a double free."""
+    """Charged tier tokens return once across two egresses; balances prove it."""
     queue, manifest, files_len = _staged_once(tmp_path)
+    ledger = queue.tier_ledger(STAGE_TIER)
+    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 4})
+    assert ledger.acquire(WHOLE_MOVER, {"stage_gib": 1}) is True
+    assert ledger.holder_tokens(WHOLE_MOVER) == {"stage_gib": 1}
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=tmp_path / "stage") == "registered"
     first = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                 stage_root=tmp_path / "stage")
+    assert first["complete"] is True
+    assert ledger.holder_tokens(WHOLE_MOVER) == {}
+    assert ledger.available() == {"stage_gib": 4}
     second = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                  stage_root=tmp_path / "stage")
-    assert first["complete"] is True
     assert second["complete"] is True
+    assert ledger.holder_tokens(WHOLE_MOVER) == {}
+    assert ledger.available() == {"stage_gib": 4}
     assert not (tmp_path / "stage" / "model" / WHOLE).exists()
 
 
-def test_prior_epoch_ram_range_is_not_resident(tmp_path: Path) -> None:
-    """An epoch bump voids ram readiness: revalidation required, never assumed."""
+def test_prior_epoch_ram_range_demands_revalidation(tmp_path: Path) -> None:
+    """Reboot voids ram readiness: the old fragment refuses the new epoch."""
+    import shutil
+    from test_fullstack_stage_ram_chain import _run_chain
+    queue, manifest, whole_len, epoch = _run_chain(tmp_path)
     ram = tmp_path / "ram"
-    ram.mkdir()
-    first = storage_tiers.ensure_ram_epoch(ram, host="dl380g10")
-    assert first is not None
-    (ram / "epoch").write_text("epoch-prior")
+    shutil.rmtree(ram / "model")
+    (ram / ".prismabuild-ram-epoch.json").unlink()
     second = storage_tiers.ensure_ram_epoch(ram, host="dl380g10")
     assert second is not None
-    assert str(second["epoch"]) != "epoch-prior"
+    assert str(second["epoch"]) != epoch
+    fragments = [residency_map.validate_fragment(f) for f in
+                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+    mapping = residency_map.compose(
+        [f for f in fragments if f["tier_id"] == STAGE_TIER])
+    ram_frags = [f for f in fragments if f["tier_id"] == RAM_TIER]
+    assert ram_frags, "a ram fragment was published under the old epoch"
+    with pytest.raises(residency_map.ResidencyMapError):
+        residency_map.overlay_ram(
+            mapping, ram_frags, ram_tier_id=RAM_TIER,
+            ram_root=str(ram), ram_epoch=str(second["epoch"]))

@@ -82,7 +82,7 @@ def test_accepted_progress_advances_the_window(tmp_path: Path) -> None:
 
 
 def test_gap_never_shrinks_to_fit_survivors(tmp_path: Path) -> None:
-    """An unaccepted phase stays reported: coverage refuses, never narrows."""
+    """An unaccepted phase stays in the window: residency accounting, not a join."""
     queue = _fleet(tmp_path)
     plan = residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
