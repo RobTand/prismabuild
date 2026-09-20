@@ -1180,8 +1180,8 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
 
 
 def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
-                     reserved: set[str]) -> dict[tuple, str]:
-    """Descriptor -> mover key, for resident ranges no live item still names.
+                     reserved: set[str]) -> dict[tuple, list[str]]:
+    """Descriptor -> candidate donor mover keys, resident, no live item naming.
 
     Exactly the set the orphan sweep would take back: a range whose consumer
     has finished, failed or been withdrawn, still pinned because its bytes are
@@ -1189,11 +1189,14 @@ def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
     of it -- that is the distinction #598 said was missing, and it is read off
     the queue's own live state rather than from a clock.
 
-    First key wins when two finished movers left the same range, so the answer
-    does not depend on directory order.
+    Candidates are listed in sorted key order, so the answer does not depend
+    on directory order.  ``adopt`` verifies each candidate's dated material
+    against the files that are actually there and falls through to the next
+    on a stale one, so a donor whose sidecar names a superseded incarnation
+    no longer shadows the donor that dates the current one (#755).
     """
 
-    index: dict[tuple, str] = {}
+    index: dict[tuple, list[str]] = {}
     try:
         held = queue.tier_ledger(tier_id).held_keys()
     except (OSError, pool.PoolContractError):
@@ -1207,7 +1210,7 @@ def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
         index.setdefault(
             _descriptor(str(staged["manifest_sha256"]), tier_id,
                         int(staged["range_start_bytes"]),
-                        int(staged["range_end_bytes"])), key)
+                        int(staged["range_end_bytes"])), []).append(key)
     return index
 
 
@@ -1221,18 +1224,27 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
     No byte is copied and no instant has bytes on the stage that no key holds.
     The order is the whole argument:
 
-    1. **The successor vouches for the same files under its own name.**  Two
+    1. **The donor's material still dates the files that are there.**  Under
+       the stage ownership lock, every dated entry's ``file_id`` is compared
+       against a live stat of its staged path -- the same comparison the
+       strict reader will make.  A donor whose sidecar names a superseded
+       incarnation (or bytes that are gone) publishes nothing: no successor,
+       no material, no transfer (#755).  Legacy ranges without a sidecar
+       adopt without one, exactly as before.
+    2. **The successor vouches for the same files under its own name.**  Two
        fragments then name one range, which every reader already tolerates:
        ``compose`` is per consumer, and the reconciliation unions them.
-    2. **The tokens change owner.**  ``ResourceLedger.transfer`` renames each
+       Published under the ownership lock, never before it, so no egress
+       scan can interleave between the vouch and the transfer.
+    3. **The tokens change owner.**  ``ResourceLedger.transfer`` renames each
        token between two directories under ``held/``, so the tier's occupancy
        is the same number throughout and a crash part-way splits the
        attribution without changing the sum.
-    3. **Only then does the old name stop accounting for the bytes.**  Dropping
+    4. **Only then does the old name stop accounting for the bytes.**  Dropping
        the old fragment before the transfer would leave an egress able to
        release tokens for bytes that are still there; dropping it after means
        the worst an interrupted adoption leaves is a range named twice.
-    4. **The receipt the pin and the gate read.**  An adopted mover never runs,
+    5. **The receipt the pin and the gate read.**  An adopted mover never runs,
        so it files no terminal record; ``adopted_from`` plus the ledger is what
        ``residency_verdict`` reads instead.
 
@@ -1271,9 +1283,6 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             # this range is, and a range nobody can name is not one to take
             # over.  The same refusal ``evict`` makes, for the same reason.
             return {**outcome, "reason": "range_not_named", "error": repr(exc)}
-        residency_map.write_fragment(residency_root, residency_map.reissue(
-            source, consumer_action_key=consumer_action_key,
-            mover_action_key=new_key))
         # Same bytes, same generation: the successor dates its vouching with
         # the publish it took over, never a new one (a new generation is for
         # new bytes).  Legacy ranges without a sidecar adopt without one.
@@ -1282,33 +1291,58 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         if isinstance(old_material, Exception):
             return {**outcome, "reason": "range_not_named",
                     "error": repr(old_material)}
-        if isinstance(old_material, dict):
-            material_entries = old_material.get("entries")
-            assert isinstance(material_entries, dict)
-            reader_lease.write_material(
-                residency_root, consumer_action_key=consumer_action_key,
-                mover_action_key=new_key,
-                tier_id=str(source.get("tier_id") or ""),
-                stage_root=str(source.get("stage_root") or ""),
-                manifest_sha256=str(source.get("manifest_sha256") or ""),
-                generation=reader_lease.adopted_generation(old_material),
-                entries=material_entries,  # type: ignore[arg-type]
-                epoch=(str(source.get("epoch") or "")
-                       if source.get("epoch") is not None else None))
         with queue.stage_ownership_lock(str(source["stage_root"]),
                                         blocking=False) as owned:
             if not owned:
                 # An egress is mid-scan on this stage root; its snapshot
-                # predates this fragment, so proceeding could interleave the
+                # predates this adoption, so proceeding could interleave the
                 # transfer between its scan and its unlink.  Declining costs
-                # a copy, the same price as a busy transition lock.
-                try:
-                    residency_map.fragment_path(
-                        residency_root, consumer_action_key,
-                        new_key).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                # a copy, the same price as a busy transition lock.  Nothing
+                # has been published yet: the successor's fragment and
+                # material land only under this lock.
                 return {**outcome, "reason": "ownership_busy"}
+            if isinstance(old_material, dict):
+                # The dated vouch must still describe the incarnation that
+                # is there: the strict reader takes the successor's material
+                # as proof, so adopting a donor that names a superseded
+                # incarnation would publish a refusal into the consumer
+                # (#755).  Verified under the ownership lock, so no egress
+                # or publisher can be changing the same name at the same
+                # time; a file that is gone is the same answer.
+                stale: list[str] = []
+                missing: list[str] = []
+                for key, mention in dict(
+                        old_material["entries"]).items():
+                    mention = mention if isinstance(mention, Mapping) else {}
+                    live = reader_lease.stat_identity(
+                        str(mention.get("stage_path") or ""))
+                    if live is None:
+                        missing.append(str(key))
+                    elif not reader_lease.file_id_matches(
+                            mention.get("file_id"), live):
+                        stale.append(str(key))
+                if missing:
+                    return {**outcome, "reason": "donor_file_missing",
+                            "missing": missing}
+                if stale:
+                    return {**outcome, "reason": "donor_file_changed",
+                            "stale": stale}
+            residency_map.write_fragment(residency_root, residency_map.reissue(
+                source, consumer_action_key=consumer_action_key,
+                mover_action_key=new_key))
+            if isinstance(old_material, dict):
+                material_entries = old_material.get("entries")
+                assert isinstance(material_entries, dict)
+                reader_lease.write_material(
+                    residency_root, consumer_action_key=consumer_action_key,
+                    mover_action_key=new_key,
+                    tier_id=str(source.get("tier_id") or ""),
+                    stage_root=str(source.get("stage_root") or ""),
+                    manifest_sha256=str(source.get("manifest_sha256") or ""),
+                    generation=reader_lease.adopted_generation(old_material),
+                    entries=material_entries,  # type: ignore[arg-type]
+                    epoch=(str(source.get("epoch") or "")
+                           if source.get("epoch") is not None else None))
             expected = sum(before.values())
             moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
             if moved != expected:
@@ -1382,6 +1416,11 @@ def adopt_resident_ranges(
     that names it is marked superseded in this cycle (#708), and moving
     occupancy onto a key nobody will publish leaves tokens holding bytes the
     sweep then has to take back.
+
+    A donor whose dated material no longer describes the incarnation on the
+    stage is declined rather than taken over, and the next candidate for the
+    same descriptor is tried (#755): publishing superseded identity into a
+    live consumer is how a resident range turns into a refusal.
     """
 
     events: list[dict[str, object]] = []
@@ -1389,7 +1428,7 @@ def adopt_resident_ranges(
     wanted, owners = stage_release.live_claims(queue)
     reserved = set(wanted) | set(owners)
     root = queue.residency_fragment_root()
-    index_by_tier: dict[str, dict[tuple, str]] = {}
+    index_by_tier: dict[str, dict[tuple, list[str]]] = {}
     if consumers is None:
         consumers = _planned_consumers(queue, tiers)
     for consumer_key, consumer, plan, tier_id in consumers:
@@ -1437,25 +1476,41 @@ def adopt_resident_ranges(
                     continue
                 if new_key in cancelled:
                     continue      # the plan is being retired; do not pin to it
-                descriptor = _descriptor(digest, tier_id, cstart, cend)
-                old_key = index.get(descriptor)
-                if old_key is None or old_key == new_key:
+                candidates = index.get(_descriptor(digest, tier_id, cstart, cend))
+                if not candidates:
                     continue
                 if ledger.holder_tokens(new_key):
                     continue      # this leg already holds tokens of its own
                 if (queue.item_path(pool.READY, new_key).exists()
                         or queue.item_path(pool.CLAIMED, new_key).exists()):
                     continue      # its own copy is queued or running; let it finish
-                event = adopt(queue, old_key=old_key, new_key=new_key,
-                              consumer_action_key=consumer_key, tier_id=tier_id,
-                              phase=str(phase["name"]),
-                              range_start_bytes=cstart,
-                              range_end_bytes=cend,
-                              residency_root=root,
-                              chunk_index=chunk_index)
-                events.append(event)
-                if event.get("adopted"):
-                    index.pop(descriptor, None)
+                for old_key in list(candidates):
+                    if old_key == new_key:
+                        continue
+                    event = adopt(queue, old_key=old_key, new_key=new_key,
+                                  consumer_action_key=consumer_key,
+                                  tier_id=tier_id,
+                                  phase=str(phase["name"]),
+                                  range_start_bytes=cstart,
+                                  range_end_bytes=cend,
+                                  residency_root=root,
+                                  chunk_index=chunk_index)
+                    events.append(event)
+                    if event.get("adopted"):
+                        index.pop(_descriptor(digest, tier_id, cstart, cend),
+                                  None)
+                        break
+                    reason = str(event.get("reason") or "")
+                    if reason in ("donor_file_changed", "donor_file_missing"):
+                        # The donor's dated material no longer describes the
+                        # incarnation on the stage, and it stays that way
+                        # until somebody republishes: not this cycle, not a
+                        # later one.  The next candidate for the same
+                        # descriptor is the range the consumer can actually
+                        # take over (#755).
+                        candidates.remove(old_key)
+                        continue
+                    break          # busy or unnamed: this cycle's answer stands
     return events
 
 
