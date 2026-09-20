@@ -570,9 +570,11 @@ def test_due_rows_and_failed_mover_recovery(tmp_path: Path) -> None:
         ("batch-0000", "needs-publish")]
     assert rows[0]["action_key"] == MOVER0
     assert rows[0]["manifest_digest"] == batch["manifest_digest"]
-    # A FAILED mover terminal reports retry (real queue records).
+    # A FAILED mover terminal reports retry (real queue records: publish
+    # with max_attempts=1 so the first failure files FAILED, not requeue).
     queue.publish(action_key=MOVER0, cas_root="/cas", worker_script="/w.py",
-                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
+                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1},
+                  max_attempts=1)
     mover_claim = queue.claim(owner="mover-worker")
     assert mover_claim is not None and mover_claim["action_key"] == MOVER0
     queue.finish(MOVER0, status="failed", detail={"status": "failed"},
@@ -607,7 +609,7 @@ def test_candidate_pin_lifecycle_owner_split(tmp_path: Path) -> None:
     assert po.admit_instance(queue, instance, template)["ok"] is True
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0000", tier=STAGE_TIER,
-        class_bytes={"payload": 12288, "checkpoint": 0, "temp": 0})["ok"] is True
+        class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0})["ok"] is True
     descs = [
         _desc(origin, template, "boundary-0", "payload", "boundary-0.pt", b"A" * 4096, instance),
         _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b"B" * 8192, instance),
