@@ -159,6 +159,8 @@ LIVE_DEFAULTS = (
     ("dispatch_tessera_shards", "PARTS", "mount/models/parts"),
     ("render_identity", "MODEL", "mount/models/render"),
     ("prismabuild.pool", "DEFAULT_POOL_ROOT", "pb-queue"),
+    ("prismabuild.resource_scope", "RETAINED_GENERATION_STORE",
+     "fleet/runtime-generations"),
     # Two spellings of one root, and each transport reads its own: the SLURM
     # job entry reads ``materialize.LOCAL_CHECKOUT_ROOT`` and the pull queue
     # reads ``pool.LOCAL_CHECKOUT_ROOT``, which is a copy taken at import.
