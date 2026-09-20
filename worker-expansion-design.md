@@ -79,6 +79,13 @@ What this forbids:
 
 ## 2. Stable FLEET IDs → actual fields (minimal amendment sketch)
 
+> HISTORICAL SKETCH — SUPERSEDED. The five-row table below was the
+> provisional amendment sketch. The normative requirements are the 15-ID
+> ledger `docs/fleet_expansion_requirements_2026-09-20.json`
+> (FLEET-01..FLEET-15, root-reviewed). The table and its qualification
+> paragraph are preserved as history; where they conflict with the
+> ledger, the ledger governs.
+
 The staged-read ledger owns SC/ID/SM/INV/TIER IDs; this lane adds only
 `FLEET-*` rows in a **new** ledger file
 (`docs/fleet_expansion_requirements_2026-09-20.json`, this lane owns) and
@@ -264,15 +271,23 @@ Execution: all candidate tests/compile checks via published
 aggregate reservations, bounded native threads, JSON saved outside the
 checkout. No local candidate execution, no new nodes, no capacity inflation.
 
-## 5. Remaining gaps (honest)
+## 5. Remaining gaps (current)
 
-- The in-claim gate hook (§3.5) is proposed, not implemented here.
+- The in-claim gate hook (§3.5) is implemented, not proposed: the
+  admission-time fence, the claim-time handshake, and the per-key
+  transition lock (§6.5, refined R8/R9). No gap remains in this lane.
 - Cohort (multi-host measurement barrier, #567) stays design-only.
 - `wsl-gpu` limits stay: memory-only telemetry, no concurrency/measurement,
   no per-scope GPU enforcement; Windows-side load invisible.
 - No Windows-native/macOS/ROCm-native qualification claimed.
-- Stage/lease proofs (SM-02/SM-03 gaps in the staged-read ledger) are untouched
-  by this lane.
+- Stage/lease proofs (SM-02/SM-03 gaps in the staged-read ledger) are
+  outside this lane; this lane consumes only the consumer-side refs
+  gate, and the writer side belongs to the lease worker.
+- Staged retry bindings beyond the accepted set (e.g. the stacked
+  produced-output template): the requeue projection carries every
+  accepted publish-supported binding and refuses what publish would
+  refuse rather than silently erasing it; extension coordinates with
+  root once admitted (R11).
 
 ## 6. Revision after root critical review (2026-09-20)
 
@@ -693,3 +708,39 @@ Root final review, accepted direction pending qualification:
   not reach `int` at all.
 - Merged accepted main 6deb388 (PR726 integration fixtures) into this
   branch; accepted files preserved, no main push.
+
+## R11 addendum (2026-09-20): retry preserves the staged action
+
+Root review: `PoolQueue._requeue_arguments` projected every
+publish-supported field except the staged bindings, so a requeued
+consumer lost its leads block (successor claimable as ordinary work,
+silently bypassing lead readiness) and a requeued mover kept tier
+demand with no residency block (`publish` refuses tier demand without
+one, after the work was stopped).
+
+- The shared projection now carries the sealed `residency` block (by
+  value; `publish` re-validates the same sealed arithmetic against the
+  same demand) and `recompute`, and returns `None` for a binding
+  `publish` would refuse instead of silently erasing it. This lane owns
+  `_requeue_arguments`/`plan_requeue` and the membership retry
+  identity; tier-acquire, window progress, supply/mint, SDK refs, and
+  output publishing are untouched.
+- Proven RED on 99edea (mover publish refuses tier-demand-without-
+  residency; consumer successor has no `residency` key) and GREEN after:
+  a sealed `build_plan`/`freeze`/`residency_window` fixture runs the
+  ordinary withdraw/finish/requeue/publish/claim flow for a retryable
+  staged mover (range/tier/`recompute` intact, re-claimed with tier
+  reservations) and a staged consumer (successor carries the identical
+  leads block; claim denied while leads pending, admitted once pinned
+  with a composed map; budgets and revival linkage exact).
+- Withdrawal plan classification checked, not changed: withdrawing the
+  consumer retires its frozen filing like an operator cancel does
+  (`residency_plan_superseded is True`), yet the retry is not stranded
+  -- the claim path never reads supersede markers and a fresh seal
+  replaces the filing. Withdrawing the mover marks nothing (it names
+  no plan). No tier-loop change; any planner-side extension coordinates
+  with liveness.
+- Produced-output template (stacked PR735) deliberately not
+  implemented: no such binding exists in the accepted tree, and the
+  projection refuses rather than drops whatever `publish` will not
+  take. Concrete extension coordinates with root once admitted.

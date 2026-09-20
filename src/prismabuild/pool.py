@@ -6215,6 +6215,17 @@ class PoolQueue:
         same work again. The admission-only handoff charges the interrupted
         launch to the existing attempt budget and links its immutable
         generation-scoped withdrawal. It never refunds a previous attempt.
+
+        The projection carries every ``publish``-supported binding the
+        record holds -- addressing, budget, container fields, and the
+        staged-action bindings (``residency``, ``recompute``) -- so a
+        retry re-enters the same gates the original passed instead of
+        slipping past them or refusing after the work was stopped.  A
+        binding ``publish`` would refuse (including a corrupt residency
+        block) returns ``None`` rather than being silently erased; a
+        future publish-supported binding (e.g. the stacked
+        produced-output template) needs a coordinated extension here,
+        never a quiet drop -- coordinate with root once it is admitted.
         """
 
         addressing: dict[str, object] = {}
@@ -6241,6 +6252,21 @@ class PoolQueue:
                       "container_images"):
             if record.get(field) is not None:
                 arguments[field] = record[field]
+        residency = record.get("residency")
+        if residency is not None:
+            # The sealed staged binding: a consumer's leads, a mover's
+            # range/tier/manifest.  Carried by value; ``publish``
+            # re-validates the same sealed arithmetic against the same
+            # demand, so a retry cannot bypass lead readiness and a
+            # tier-demanded mover is not refused after being stopped.
+            if not isinstance(residency, Mapping):
+                return None
+            arguments["residency"] = dict(residency)
+        if record.get("recompute") is True:
+            # A movement node stays a movement node: without this the
+            # retry's key could be answered by an old CAS receipt for
+            # bytes that need restaging.
+            arguments["recompute"] = True
         return arguments
 
     def plan_requeue(self, record: Mapping[str, object]) -> dict[str, object]:
