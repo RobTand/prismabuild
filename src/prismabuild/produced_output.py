@@ -26,17 +26,29 @@ maps, pins and ledger holders and has NO terminal record. A certificate
 naming a namespace is invalid. Writer digests are reused from the streaming
 receipt, never recomputed by rereading HDD payloads.
 
-CREDIT vs TOKENS (liveness R2 direction, binding here): bound admission
-credit (minimum/window per tier, recorded in commitments) is NOT ledger
-tokens. Physical tokens are held ONLY by batch movers, exact per range,
+IDENTITY (R3, no fallback): binding requires BOTH halves complete and
+equal: launch env (`PRISMABUILD_ACTION_KEY/NONCE/SCOPE`, set by the
+resource_exec proxy from the exact launch identity) AND the live claim
+row's broker-issued `resource_scope` control (32-hex nonce + broker-formula
+scope_id + matching action_key). Either half missing, or any mismatch,
+refuses (`no-launch-context` / `no-control-context` / `attempt-superseded`,
+same names as the PB730 `injected_context` contract). No intent fallback,
+no claim-derived nonce, no live-claim-only binding. Fixtures file a
+realistic broker control through the existing `ResourceScope` verification
+(`_adopt_created_scope` over a canned broker response); production accepts
+only broker-issued controls.
+
+CREDIT vs TOKENS (liveness R2 direction, binding here): the admission
+record (`admit_instance`) is binding metadata, NOT funding and NOT
+capacity. Physical tokens are held ONLY by batch movers, exact per range,
 acquired under the batch holder and TRANSFERRED whole to mover ownership
 with no free interval (existing `transfer_tier_reservation`). No standing
-ledger pool is held beside movers: that H+D+F double-hold is rejected.
-The liveness lane owns the general funded-claim primitive (funding record
-+ eligible-token verification + serialized transfer + window admission);
-this lane's batch acquire+transfer is the single-consumer exact case and
-migrates to that API once committed (exact dependency in SDK_DEPENDENCY,
-no second ledger here, never subtracts unrelated holders' tokens).
+ledger pool is held beside movers. The general funded-window admission
+(current+next need) is the liveness lane's funded-claim primitive:
+`admit_funded_window` validates the request fully, then refuses
+`funding-primitive-pending` naming that exact dependency until it is
+delivered. No second ledger here, never subtracts unrelated holders'
+tokens.
 
 PB730 owns: corrected `pin_id_for` (canonical object set), the additive
 owner/material-namespace SDK contract, the containment writer, and the
@@ -76,12 +88,16 @@ READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 SDK_DEPENDENCY = (
     "PB730 additive owner/material-namespace SDK contract "
     "(acquire/open/release binding material under the batch namespace to "
-    "the registered OWNER attempt) + corrected pin_id_for including the "
-    "canonical expected object set and material generations; "
+    "the registered OWNER attempt; pin files under the owner, proof "
+    "resolves in the material namespace) + corrected pin_id_for including "
+    "the canonical expected object set and material generations "
+    "(candidate pin 2637a9d0f7, R7-returned: auto-cleanup paths excluded); "
     "LIVENESS funded-claim primitive (funding record binding credit to "
     "exact tier/plan-window/mover/range/generation, eligible-token "
     "verification, serialized transfer without free interval, window "
-    "admission covering current+next need) for the general window path"
+    "admission covering current+next need) for the general window path; "
+    "liveness `admit_funded_window` refuses funding-primitive-pending "
+    "until that API is delivered"
 )
 
 ARTIFACT_CLASSES = frozenset({"payload", "checkpoint", "temp"})
@@ -281,47 +297,63 @@ def declare_template(queue_root: str | Path, template: Mapping[str, object]) -> 
 # Instances (runtime; bound to the live claim, never caller-supplied)
 # --------------------------------------------------------------------------
 
-def _claim_attempt(queue, live: Mapping[str, object]) -> tuple[dict[str, str], str]:
-    """Derive the owner attempt from the PROTECTED live claim.
+def _broker_scope_id(action_key: str, nonce: str) -> str:
+    """The scope id the broker issues for an action+nonce (existing rule).
 
-    Broker path (production): the live claimed record carries
-    `resource_scope` with a 32-hex `nonce` and a `scope_id`; use it.
-    Claim path (fixture): derive a 32-hex nonce from the claim's protected
-    identity (action + claimed_unix + claimed_by) and a `claim-<pub>-<unix>`
-    scope id. Returns (attempt, source). Never trusts caller arguments.
+    Same formula `ResourceScope._adopt_created_scope` enforces on every
+    broker response: `prismabuild-job` + sha256(action+nonce)[:32] + `.slice`.
+    Reused here as the control-identity check, never redefined.
     """
 
-    control = live.get("resource_scope")
-    if isinstance(control, Mapping):
-        nonce, scope_id = control.get("nonce"), control.get("scope_id")
-        if (isinstance(nonce, str) and len(nonce) == 32
-                and all(c in _HEX for c in nonce)
-                and isinstance(scope_id, str) and scope_id and "/" not in scope_id):
-            return {"nonce": nonce, "scope_id": scope_id}, "broker"
-    action = str(live.get("action_key") or "")
-    claimed_unix = live.get("claimed_unix")
-    claimed_by = str(live.get("claimed_by") or "")
-    published_unix = live.get("published_unix")
-    seed = f"{action}:{claimed_unix}:{claimed_by}".encode()
-    nonce = hashlib.sha256(seed).hexdigest()[:32]
+    return ("prismabuild-job"
+            + hashlib.sha256((action_key + nonce).encode()).hexdigest()[:32]
+            + ".slice")
+
+
+def _launch_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    """Launch-bound identity halves (same names as PB730 `injected_context`).
+
+    Read from the execution environment by default (the resource_exec proxy
+    sets them from the exact launch identity); tests pass an explicit env
+    mapping. Names resolve exactly as the candidate does: `core` constants
+    where they exist, literal `PRISMABUILD_ACTION_*` otherwise (the NONCE /
+    SCOPE names exist only in the PB730 lane on main).
+    """
+
+    import os as _os
+
     try:
-        scope_id = f"claim-{int(published_unix)}-{int(float(claimed_unix))}"
-    except (TypeError, ValueError):
-        raise ProducedOutputError("live claim lacks a usable claim identity")
-    return {"nonce": nonce, "scope_id": scope_id}, "claim"
+        from prismabuild.core import ACTION_KEY_ENV as _KEY_ENV
+    except ImportError:
+        _KEY_ENV = "PRISMABUILD_ACTION_KEY"
+    try:
+        from prismabuild.core import ACTION_NONCE_ENV as _NONCE_ENV
+    except ImportError:
+        _NONCE_ENV = "PRISMABUILD_ACTION_NONCE"
+    try:
+        from prismabuild.core import ACTION_SCOPE_ENV as _SCOPE_ENV
+    except ImportError:
+        _SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
+    source = dict(_os.environ) if env is None else dict(env)
+    return {"action_key": source.get(_KEY_ENV) or "",
+            "nonce": source.get(_NONCE_ENV) or "",
+            "scope_id": source.get(_SCOPE_ENV) or ""}
 
 
 def bind_instance(queue, template: Mapping[str, object], *,
                   owner_action_key: str,
-                  claim_snapshot: Mapping[str, object]) -> dict[str, object]:
-    """Bind a runtime instance to the LIVE claim; refuse foreign/stale context.
+                  claim_snapshot: Mapping[str, object],
+                  env: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Bind a runtime instance to launch + control identity; refuse all else.
 
-    `claim_snapshot` is the dict `queue.claim()` returned. The live claimed
-    record is re-read and compared with `pool._same_claim`; a missing record,
-    an action-key mismatch, or a generation/owner mismatch refuses
-    (foreign/stale). The attempt comes from the live record (broker nonce
-    when present, else claim-derived) — caller-supplied nonce/scope are not
-    accepted in any form.
+    Requires BOTH halves complete and equal (the PB730 both-halves rule):
+    launch env (`PRISMABUILD_ACTION_KEY/NONCE/SCOPE`) AND the live claim
+    row's broker-issued `resource_scope` control (matching action_key,
+    32-hex nonce, broker-formula scope_id). Refusals name the missing half
+    (`no-launch-context` / `no-control-context`) or the mismatch
+    (`attempt-superseded`); a missing/moved claim refuses
+    (foreign/stale). There is no intent fallback, no derived nonce, and no
+    live-claim-only binding in production or fixture.
     """
 
     from prismabuild import pool as pool_mod
@@ -341,15 +373,38 @@ def bind_instance(queue, template: Mapping[str, object], *,
         raise ProducedOutputError(f"stale claim snapshot: {exc}") from None
     if not same:
         raise ProducedOutputError("stale claim snapshot: live claim moved on")
-    attempt, source = _claim_attempt(queue, live)
+    control = live.get("resource_scope")
+    claim_nonce = claim_scope = ""
+    if isinstance(control, Mapping):
+        if control.get("action_key") == owner:
+            candidate = control.get("nonce")
+            if (isinstance(candidate, str) and len(candidate) == 32
+                    and all(c in _HEX for c in candidate)):
+                claim_nonce = candidate
+            unit = control.get("scope_id")
+            if isinstance(unit, str) and unit:
+                claim_scope = unit
+    if not claim_nonce or not claim_scope:
+        raise ProducedOutputError("no-control-context: live claim names no "
+                                  "complete broker-issued nonce/scope")
+    if claim_scope != _broker_scope_id(owner, claim_nonce):
+        raise ProducedOutputError("no-control-context: scope_id is not the "
+                                  "broker-issued identity for this nonce")
+    launch = _launch_env(env)
+    if not launch["nonce"] or not launch["scope_id"]:
+        raise ProducedOutputError("no-launch-context: launch env names no nonce/scope")
+    if launch["action_key"] != owner:
+        raise ProducedOutputError("foreign launch env: action key mismatch")
+    if launch["nonce"] != claim_nonce or launch["scope_id"] != claim_scope:
+        raise ProducedOutputError("attempt-superseded: launch and control disagree")
     return {
         "schema": INSTANCE_SCHEMA_V1,
         "version": 1,
         "template_id": str(checked["template_id"]),
         "template_sha256": template_sha256(checked),
         "owner_action_key": owner,
-        "owner_attempt": attempt,
-        "attempt_source": source,
+        "owner_attempt": {"nonce": claim_nonce, "scope_id": claim_scope},
+        "attempt_source": "broker-launch",
         "output_prefix": str(checked["output_prefix"]),
         "bound_unix": time.time(),
     }
@@ -381,8 +436,9 @@ def validate_instance(value: object) -> dict[str, object]:
     nonce = _hex32(attempt.get("nonce"), where="instance owner_attempt.nonce")
     scope_id = _name(attempt.get("scope_id"), where="instance owner_attempt.scope_id")
     source = value.get("attempt_source")
-    if source not in ("broker", "claim"):
-        raise ProducedOutputError("instance attempt_source must be broker|claim")
+    if source != "broker-launch":
+        raise ProducedOutputError(
+            "instance attempt_source must be broker-launch (both halves)")
     prefix = _abs_norm(value.get("output_prefix"), where="instance output_prefix")
     return {
         "schema": INSTANCE_SCHEMA_V1,
@@ -703,15 +759,14 @@ def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
 
 def admit_instance(queue, instance: Mapping[str, object],
                    template: Mapping[str, object]) -> dict[str, object]:
-    """Bind admission credit for the instance lifetime (idempotent).
+    """Record the instance's bound admission metadata (idempotent).
 
-    Records the template's per-tier minimum/window demands in commitments as
-    BOUND CREDIT. Credit is not ledger tokens: physical tokens are held ONLY
-    by batch movers, exact per range (see `commit_batch`). No standing pool
-    is held beside movers, so nothing is double-held. The general funded
-    window admission (current+next need) is the liveness lane's funded-claim
-    primitive; this record carries the scope side of that contract and
-    migrates to its API once committed. Returns {"ok": True, ...}.
+    Copies the template's per-tier minimum/window demands into commitments
+    as the scope side of the funding contract. This record is BINDING
+    metadata only: it authorizes no bytes and funds nothing. Physical
+    funding happens per batch at `commit_batch` (exact ledger acquire +
+    whole transfer); general window admission is `admit_funded_window`
+    (pending on the liveness primitive). Returns {"ok": True, ...}.
     """
 
     checked_template = validate_template(template)
@@ -740,10 +795,61 @@ def admit_instance(queue, instance: Mapping[str, object],
 
 def reserve_working_minimum(queue, instance: Mapping[str, object],
                             template: Mapping[str, object]) -> dict[str, object]:
-    """Deprecated alias of `admit_instance` (credit-only since the liveness
-    R2 ruling; no ledger tokens are acquired here)."""
+    """Deprecated alias of `admit_instance` (binding metadata, never funding)."""
 
     return admit_instance(queue, instance, template)
+
+
+def admit_funded_window(queue, instance: Mapping[str, object],
+                        template: Mapping[str, object], *,
+                        need_gib_per_tier: Mapping[str, int]) -> dict[str, object]:
+    """General funded-window admission gate (production: refuses pending).
+
+    Fully validates the window request (bound instance + template match,
+    permitted tiers, positive-integer needs, need within window demand and
+    within minted tier capacity), then refuses `funding-primitive-pending`:
+    the liveness-owned funded-claim primitive (funding record + eligible-
+    token verification + serialized transfer + current+next admission) is
+    the only authority that may fund a window, and it is not delivered yet.
+    Per-batch exact physical funding at `commit_batch` (existing ledger
+    acquire + whole transfer) is unaffected: it funds one amount, not a
+    window. Returns {"ok": False, "refusal": ..., "dependency": ...}.
+    """
+
+    from prismabuild import storage_tiers as tiers_mod
+
+    checked_template = validate_template(template)
+    try:
+        checked_instance = validate_instance(instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"bad-instance: {exc}"}
+    if checked_instance["template_sha256"] != template_sha256(checked_template):
+        return {"ok": False, "refusal": "template-mismatch"}
+    if not isinstance(need_gib_per_tier, Mapping) or not need_gib_per_tier:
+        return {"ok": False, "refusal": "bad-window-need"}
+    for tier, need in need_gib_per_tier.items():
+        if tier not in checked_template["permitted_tiers"]:
+            return {"ok": False, "refusal": "tier-not-permitted", "tier_id": tier}
+        if type(need) is not int or need <= 0:
+            return {"ok": False, "refusal": "bad-window-need", "tier_id": tier}
+        window = int(checked_template["working_demands"][tier]["window_gib"])
+        if need > window:
+            return {"ok": False, "refusal": "window-need-exceeds-demand",
+                    "tier_id": tier}
+        kind = tiers_mod.capacity_kind_of(tier)
+        try:
+            capacity = queue.tier_ledger(tier).capacity().get(kind, 0)
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if need > capacity:
+            return {"ok": False, "refusal": "never-fits-tier-capacity",
+                    "tier_id": tier}
+    return {"ok": False, "refusal": "funding-primitive-pending",
+            "dependency": ("liveness funded-claim primitive: funding record "
+                           "binding credit to exact tier/plan-window/mover/"
+                           "range/generation + eligible-token verification + "
+                           "serialized transfer + current+next window "
+                           "admission")}
 
 
 def require_prewrite(queue, instance: Mapping[str, object],
@@ -752,9 +858,11 @@ def require_prewrite(queue, instance: Mapping[str, object],
     """File a prewrite budget claim BEFORE any HDD byte is written.
 
     The production writer path must call this (not an optional helper):
-    uncharged temp/checkpoint writes refuse here. Checks bound admission
-    credit + durable headroom for the planned class bytes and
-    files an immutable prewrite record the later commit must present.
+    uncharged temp/checkpoint writes refuse here. Checks the bound admission
+    record (binding metadata, never funding) + durable headroom for the
+    planned class bytes, and files an immutable prewrite record the later
+    commit must present. Physical funding happens only at `commit_batch`
+    (exact ledger acquire) and in the liveness window primitive (pending).
     Zero-byte classes are valid (explicit zeros, never missing keys).
     """
 
@@ -1166,6 +1274,160 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     return events
 
 
+def _mover_live_state(queue, mover_key: str) -> str:
+    """Where one mover key is queued right now (existing queue states only)."""
+
+    from prismabuild import pool as pool_mod
+
+    for state in (pool_mod.CLAIMED, pool_mod.READY):
+        try:
+            if pool_mod._read_json(queue.item_path(state, mover_key)) is not None:
+                return state
+        except Exception:
+            return "unknown"
+    for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+        try:
+            record = pool_mod._read_json(queue.item_path(state, mover_key))
+        except Exception:
+            return "unknown"
+        if isinstance(record, Mapping):
+            return state
+    return "absent"
+
+
+def due_mover_rows(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object]) -> list[dict[str, object]]:
+    """Frozen mover-row skeletons for batches needing (re)publication.
+
+    NEW method owned by this lane (pure preparation, no queue mutation).
+    For each committed unretired batch: staged fragments composing under
+    their own namespace need nothing; a FAILED mover needs a retry row; an
+    absent mover with no staged fragments needs its first row. Rows carry
+    the frozen identity (batch/mover/tier/manifest/generation) a submitter
+    seals; publication itself (`queue.publish`, behind the funding gate)
+    stays with the tier loop. Deterministic order: batch_id ascending.
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import residency_map as map_mod
+    from prismabuild import storage_tiers as tiers_mod
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError:
+        return []
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    rows: list[dict[str, object]] = []
+    for batch_id in sorted(batches):
+        entry = batches[batch_id]
+        if not isinstance(entry, Mapping) or entry.get("retired"):
+            continue
+        ns = str(entry.get("batch_namespace") or "")
+        mover = str(entry.get("mover_key") or "")
+        tier = str(entry.get("tier") or "")
+        if not ns or not mover or not tier:
+            continue
+        try:
+            fragments = map_mod.read_fragments(out_base, ns)
+            staged = bool(fragments) and bool(map_mod.compose(fragments))
+        except Exception:
+            staged = False
+        if staged:
+            continue
+        state = _mover_live_state(queue, mover)
+        if state in ("claimed", "ready"):
+            continue
+        class_bytes = entry.get("class_bytes")
+        total = sum(int(class_bytes.get(c, 0)) for c in
+                    ("payload", "checkpoint", "temp")) \
+            if isinstance(class_bytes, Mapping) else 0
+        kind = tiers_mod.capacity_kind_of(tier)
+        try:
+            gib = tiers_mod.stage_tokens_for_bytes(total) if total > 0 else 0
+        except ValueError:
+            gib = 0
+        rows.append({
+            "batch_id": batch_id,
+            "action_key": mover,
+            "tier": tier,
+            "manifest_digest": str(entry.get("manifest_digest") or ""),
+            "batch_namespace": ns,
+            "resources": ({kind: gib, "cpu": 1, "mem_gb": 1}
+                          if gib > 0 else {"cpu": 1, "mem_gb": 1}),
+            "reason": ("retry-failed-mover" if state == "failed"
+                       else "needs-publish"),
+        })
+    return rows
+
+
+def recover_batches(queue, instance: Mapping[str, object],
+                    template: Mapping[str, object]) -> list[dict[str, object]]:
+    """Classify every batch for deterministic recovery (read-only).
+
+    NEW method owned by this lane. Uses existing receipts/ledgers/fragments
+    only: staged (composes), unstaged (no fragments, mover absent → due),
+    mover-failed (terminal FAILED → retry), mover-live (claimed/ready →
+    wait), unknown (unreadable scan → defer). Returns events in batch_id
+    order; callers act through existing publish/evict paths, never here.
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import residency_map as map_mod
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError as exc:
+        return [{"event": "output-recovery-unknown", "error": repr(exc)}]
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    events: list[dict[str, object]] = []
+    for batch_id in sorted(batches):
+        entry = batches[batch_id]
+        if not isinstance(entry, Mapping):
+            events.append({"event": "output-recovery-unknown",
+                           "batch_id": batch_id})
+            continue
+        if entry.get("retired"):
+            events.append({"event": "output-batch-retired",
+                           "batch_id": batch_id})
+            continue
+        ns = str(entry.get("batch_namespace") or "")
+        mover = str(entry.get("mover_key") or "")
+        try:
+            fragments = map_mod.read_fragments(out_base, ns) if ns else []
+            staged = bool(fragments) and bool(map_mod.compose(fragments))
+        except Exception as exc:
+            events.append({"event": "output-recovery-unknown",
+                           "batch_id": batch_id, "error": repr(exc)})
+            continue
+        state = _mover_live_state(queue, mover) if mover else "absent"
+        if staged:
+            events.append({"event": "output-batch-staged",
+                           "batch_id": batch_id, "namespace": ns})
+        elif state == "failed":
+            events.append({"event": "output-mover-failed-retry",
+                           "batch_id": batch_id, "mover": mover})
+        elif state in ("claimed", "ready"):
+            events.append({"event": "output-mover-live-wait",
+                           "batch_id": batch_id, "mover": mover})
+        elif state == "unknown":
+            events.append({"event": "output-recovery-unknown",
+                           "batch_id": batch_id})
+        else:
+            events.append({"event": "output-batch-unstaged",
+                           "batch_id": batch_id, "namespace": ns})
+    return events
+
+
 def checked_instance_maxima(template: Mapping[str, object]) -> dict[str, int]:
     maxima = validate_template(template)["durable_maxima"]
     assert isinstance(maxima, dict)
@@ -1206,6 +1468,7 @@ __all__ = [
     "output_fragment_root",
     "batch_namespace",
     "admit_instance",
+    "admit_funded_window",
     "reserve_working_minimum",
     "require_prewrite",
     "commit_batch",
@@ -1214,4 +1477,6 @@ __all__ = [
     "mark_batch_retired",
     "safe_release_instance",
     "output_scope_tick",
+    "due_mover_rows",
+    "recover_batches",
 ]
