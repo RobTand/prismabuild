@@ -3359,14 +3359,14 @@ class PoolQueue:
                     or (live is not None and not _same_claim(live, preempted_claim))
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
-        superseded = self._supersede_withdrawal(action_key)
         if validated_produced_template is not None:
-            # File the immutable template beside the queue before the item
-            # that attributes it: a conflicting body for the same id refuses
-            # here (foreign/tampered), with no queue row written. All
-            # precondition checks above already passed, so a refusal below
-            # still leaves no refused-publication side effect beyond the
-            # pre-existing filed body.
+            # File the immutable template BEFORE any queue mutation: a
+            # conflicting body for the same id refuses here
+            # (foreign/tampered) with no withdrawal retired and no row
+            # written. Declaration is first-writer-wins and atomic, so a
+            # concurrent conflicting filing loses here rather than after a
+            # withdrawal was already retired. All precondition checks above
+            # already passed.
             try:
                 from . import produced_output as produced_mod
 
@@ -3375,6 +3375,7 @@ class PoolQueue:
             except produced_mod.ProducedOutputError as exc:
                 raise PoolContractError(
                     f"produced-output template conflict: {exc}") from exc
+        superseded = self._supersede_withdrawal(action_key)
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,

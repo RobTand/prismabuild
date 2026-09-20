@@ -382,10 +382,18 @@ def declared_template(queue, action_key: str) -> dict[str, object]:
     assert isinstance(digest, str)
     path = (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
             / f"{template_id}.json")
+    # Bounded intake: filed bodies from this path are tiny envelopes; a
+    # larger file at this name is foreign, never the declared template.
     try:
-        raw = path.read_bytes()
+        from prismabuild.core import PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES as _MAX
+
+        with open(path, "rb") as handle:
+            raw = handle.read(_MAX + 1)
     except OSError as exc:
         raise ProducedOutputError(f"undeclared-template: {exc}") from None
+    if len(raw) > _MAX:
+        raise ProducedOutputError(
+            "tampered-template: filed body exceeds the template envelope")
     try:
         body = json.loads(raw.decode())
     except (UnicodeDecodeError, ValueError) as exc:

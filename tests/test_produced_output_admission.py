@@ -384,6 +384,71 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     row["produced_output_template"] = frozen["produced_output_template"]
     queue.publish(**row)
     assert queue.claim(owner="w-seal") is not None
+    # Post-seal mutation changes nothing the worker reads: the sealed CAS
+    # input still names the captured v1 bytes, and the runtime declared body
+    # is v1, not the file's new bytes.
+    _write_template(tpath, _template(str(out_prefix), "pbrun-path-v3"))
+    cas = frozen["cas"]
+    decl = sealed["params"][pb.PRODUCED_OUTPUT_TEMPLATE_PARAM]
+    captured = cas.input_path(decl["input"]).read_bytes()
+    assert json.loads(captured.decode())["template_id"] == "pbrun-path-v1"
+    assert captured != tpath.read_bytes()
+    runtime_body = po.declared_template(queue, key)
+    assert runtime_body["template_id"] == "pbrun-path-v1"
+    assert po.template_sha256(runtime_body) == decl["template_sha256"]
+
+
+def test_refused_declaration_leaves_withdrawal_untouched(
+        tmp_path: Path) -> None:
+    origin = tmp_path / "outputs"
+    origin.mkdir(parents=True)
+    first = _template(str(origin), "conflict-v1")
+    terms = po.owner_demand_terms(first)
+    queue = _queue(tmp_path)
+    key = "7" * 64
+    queue.publish(action_key=key, cas_root="/cas", worker_script="/w.py",
+                  checkout_root="/co",
+                  resources={"cpu": 1, "mem_gb": 1, **terms},
+                  produced_output_template=first)
+    queue.withdraw(key, reason="operator hold", by="test",
+                   signal_child=False)
+    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+    # Same id, different durable maxima, same window so the demand matches:
+    # the declaration conflict must refuse BEFORE any withdrawal is retired.
+    other = _template(str(origin), template_id="conflict-v1")
+    other = dict(other)
+    other["durable_maxima"] = dict(other["durable_maxima"])
+    other["durable_maxima"]["payload_max_bytes"] = 2 << 20
+    other_validated = po.validate_template(other)
+    with pytest.raises(pool.PoolContractError):
+        queue.publish(
+            action_key=key, cas_root="/cas", worker_script="/w.py",
+            checkout_root="/co",
+            resources={"cpu": 1, "mem_gb": 1,
+                       **po.owner_demand_terms(other_validated)},
+            produced_output_template=other_validated)
+    assert pool._read_json(queue.item_path(pool.READY, key)) is None
+    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+
+
+def test_core_declaration_rejects_empty_and_oversized_input() -> None:
+    template = _template("/out")
+    digest = po.template_sha256(template)
+    empty = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+             "sha256": "a" * 64, "bytes": 0}
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_produced_output_declaration(
+            {"schema": pb.PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
+             "template_id": "admit-v1", "template_sha256": digest,
+             "input": empty}, [empty])
+    big = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+           "sha256": "b" * 64,
+           "bytes": pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1}
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_produced_output_declaration(
+            {"schema": pb.PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
+             "template_id": "admit-v1", "template_sha256": digest,
+             "input": big}, [big])
 
 
 def test_pbcampaign_row_forwards_template_option() -> None:

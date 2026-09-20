@@ -2526,6 +2526,13 @@ def validate_produced_output_declaration(
         input_ref["bytes"],
         where="action.params.produced_output_template.input.bytes",
     )
+    # The declaration binds a tiny envelope, never a payload: empty and
+    # oversized inputs refuse here rather than becoming action keys no
+    # worker can honestly execute.
+    if input_bytes <= 0 or input_bytes > PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+        _fail(
+            "action.params.produced_output_template.input.bytes must be "
+            f"within 1..{PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES}")
     if inputs is not None:
         matches = [
             entry for entry in inputs

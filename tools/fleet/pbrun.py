@@ -4649,8 +4649,16 @@ def freeze_action_template(
     if produced_output_template_path is not None:
         from prismabuild import produced_output as produced_mod
 
+        # Single bounded capture: read at most MAX+1 once, publish those
+        # exact bytes to the CAS, then validate the captured blob. A second
+        # read of the path could bind OLD bytes in params while the CAS
+        # captures changed NEW bytes; ingesting the held bytes closes it.
+        # Reuses the existing CAS staging/hard-link machinery via
+        # ingest_bytes (indistinguishable blob, same race handling).
         try:
-            raw_template = Path(produced_output_template_path).read_bytes()
+            with open(produced_output_template_path, "rb") as handle:
+                raw_template = handle.read(
+                    pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
         except OSError as exc:
             raise SystemExit(
                 f"pbrun: cannot read --produced-output-template: {exc}") from None
@@ -4659,6 +4667,14 @@ def freeze_action_template(
                 "pbrun: --produced-output-template exceeds "
                 f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes: "
                 "templates are envelopes, not payloads")
+        try:
+            template_input, _ = cas.ingest_bytes(
+                raw_template,
+                input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+            )
+        except pb.ActionContractError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template ingest: {exc}") from None
         try:
             candidate = json.loads(raw_template.decode())
         except (UnicodeDecodeError, ValueError) as exc:
@@ -4683,13 +4699,9 @@ def freeze_action_template(
                     "pbrun: --produced-output-template window demand "
                     f"{qualified}={need} disagrees with the sealed demand; "
                     "the template is the only source of tier demand")
-        template_input, _ = cas.ingest_input(
-            produced_output_template_path,
-            input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
-        )
-        # The CAS digest covers the file bytes; the declaration below binds
-        # the canonical template identity to that input row, so the key
-        # moves with the template and a post-seal edit changes nothing.
+        # The CAS digest covers the captured bytes; the declaration below
+        # binds the canonical template identity to that input row, so the
+        # key moves with the template and a post-seal edit changes nothing.
         try:
             produced_declaration = produced_mod.build_declaration(
                 produced_validated, template_input)
@@ -6235,8 +6247,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
                 "tier working-window reservations live in the pool ledgers")
         from prismabuild import produced_output as produced_mod
 
+        # Bounded pre-read for demand derivation only; freeze captures once
+        # and cross-checks, so a file swapped between here and there fails
+        # closed there rather than sealing drifted demand.
         try:
-            raw_pre = Path(produced_template_opt).read_bytes()
+            with open(produced_template_opt, "rb") as handle:
+                raw_pre = handle.read(pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
         except OSError as exc:
             raise SystemExit(
                 f"pbrun: cannot read --produced-output-template: {exc}") from None
