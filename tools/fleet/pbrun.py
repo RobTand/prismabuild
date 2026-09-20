@@ -5475,7 +5475,18 @@ def residency_stage_rows(
                     fallback_mem_gb=int(args.residency_mover_mem_gb),
                     pool_identity=ram_identity)
                 ram_demand["cpu"] = int(ram_priced["cpu"])
-                ram_demand["mem_gb"] = int(ram_priced["mem_gb"])
+                # The runtime term only bounds the copier's own buffers and
+                # metadata.  The destination is a tmpfs, whose pages stay
+                # charged to the writing cgroup (writeback never reclaims
+                # them), so the row must reserve the range it will write as
+                # well -- otherwise the promotion OOMs at its own cap partway
+                # through, which is how four live 4-11 GiB promotions died at
+                # exactly 1 GiB on 2026-09-19.  ``ram_gib`` for the range's
+                # retention on the tier is untouched; this only makes the
+                # action's memory demand honest.
+                ram_demand["mem_gb"] = storage_tiers.ram_promotion_mem_gb(
+                    runtime_mem_gb=int(ram_priced["mem_gb"]),
+                    range_bytes=cend - cstart)
                 ram_mover = seal_movement_action(
                     template,
                     command=[ram_python, ram_tool,

@@ -1637,6 +1637,31 @@ def stage_tokens_for_bytes(range_bytes: int) -> int:
     return -(-range_bytes // GIB)
 
 
+def ram_promotion_mem_gb(*, runtime_mem_gb: int, range_bytes: int) -> int:
+    """The ``mem_gb`` a tmpfs promotion reserves, destination included.
+
+    A promotion writes its whole range into the tmpfs, and shmem pages are
+    charged to the writing cgroup until something frees them -- unlike a
+    stage copy's dirty page cache, which writeback reclaims.  A row sealed
+    with only the copier's runtime buffers therefore runs out of its own
+    action cap partway through every range bigger than that cap: on
+    2026-09-19 four ``ram:dl380g10`` promotions of 4 and 11 GiB died at
+    exactly 1 GiB with ``memory_limit_oom``, and no promotion above 1 GiB
+    has ever completed.  The reservation is the runtime working set the
+    mover receipts already price, plus the destination range in whole GiB,
+    rounded up like every other token.
+
+    ``ram_gib`` retention accounting is untouched: this is the action's own
+    cap, not the tier's occupancy token, and the destination bytes still
+    ride the range's ``ram_gib`` reservation.
+    """
+
+    if isinstance(runtime_mem_gb, bool) or not isinstance(runtime_mem_gb, int) \
+            or runtime_mem_gb < 1:
+        raise ValueError("runtime_mem_gb must be a positive whole GiB")
+    return runtime_mem_gb + stage_tokens_for_bytes(range_bytes)
+
+
 #: What a mover receipt must carry for a next submission to price CPU and
 #: memory off it rather than off a habit.  Named here because both the reader
 #: (``mover_demand_from_receipts``) and the writer (``stage_move``) are held to
