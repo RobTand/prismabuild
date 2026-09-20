@@ -101,7 +101,31 @@ Failures, gzip/raw-canonical mismatches, required argv, placement tags,
 defaults, and container bindings are caught by real boundary tests
 (producer-row file), not by prose.
 
-## 8. RED/GREEN and delivery
+## 8. Membership lifecycle rungs (stable primitives now, commands later)
+
+Worker JOIN/RESIGN commands, supervision, and qualification belong to the
+membership worker (design pending `worker-expansion-design.md`) — this
+lane edits none of that production. The harness pins the stable
+primitives membership builds on, all real queue/ledger functions on an
+isolated local queue (`tests/test_fullstack_membership.py`):
+
+- qualification before claim: tag conjunction gates both directions, and
+  unknown container-image inventory never counts as capable
+  (presence-positive evidence only).
+- resign as handoff: a resigned worker claims nothing further; owned
+  scopes are contained via finish before tokens return; the next worker
+  claims the requeued work with attempt history preserved.
+- retry-safe takeover: failed retry-safe attempts return to ready with
+  outcomes recorded; unsafe work (`retry_safe=False`) is a publish-time
+  contradiction for retries and ends terminal, never requeued.
+- incarnation safety: a stale second commit onto an owned key leaves
+  existing tokens (short count, fail closed); abandoning unknown handles
+  returns nothing; double release counts once.
+- mixed-capability matrix (classes, not hosts): cpu-only vs gpu+image
+  claimants each take only their class — separate from both-Spark
+  placement qualification, which stays in the live lane (§2).
+
+## 9. RED/GREEN and delivery
 
 - RED: first PB run of the new files (real failures expected at seam
   edges and any misused production API); fix harness-only issues.
