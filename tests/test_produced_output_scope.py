@@ -33,8 +33,8 @@ import stage_release  # noqa: E402
 
 STAGE_TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE_TIER}"
-PRODUCER = "p" * 64
-MOVER = "a" * 64
+PRODUCER = "a" * 64
+MOVER = "b" * 64
 ATTEMPT = {"nonce": "attempt-0", "scope_id": "scope-0"}
 
 
