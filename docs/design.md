@@ -4003,6 +4003,27 @@ being rewritten. `residency_plan.freeze` stays first-writer; a superseded
 filing must be reaped before its successor can be sealed, and the planner
 reaps it itself once the handoff is safe.
 
+**A deliberate seal renews the generation it replaces.** A submission
+publishes its consumer and its first lead and nothing else, so the visible
+cancellations a reaped predecessor left on its later children outlive both the
+plan and the ownership they were made against: the child keys are content
+hashes, and a same-body resubmission -- same consumer, price, tool and ranges
+-- seals the same ones. Read as live, they would supersede the fresh plan
+before its second phase ever published, which is the same-body half of #708
+the filing-identity marker does not cover. So a fresh seal (`pbrun
+--residency stage`, never a reused frozen plan) retires those *visible*
+markers as evidence: under the consumer's transition lock, after
+`residency_plan.handoff_safe` proves no live consumer and no queued or claimed
+child still names the old window, and under each child's own lock in the
+parent-before-child order every writer here keeps. The immutable decision
+under `withdrawn/decisions/` stays, and the visible marker itself is filed
+under `withdrawn/superseded/`. The boundary is the seal: a cancellation filed
+after it -- whether the interleaving lands before or after the fresh plan is
+frozen -- is a decision about the new generation and still supersedes it. The
+renewal never teaches the automatic publisher to ignore a marker: the
+window's `refuse_withdrawn` publications and its supersession pass are
+unchanged, and only the deliberate submission retires one.
+
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
 stay held, so a mover row that reaches the queue without a residency block --

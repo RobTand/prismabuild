@@ -1190,6 +1190,91 @@ def reap(queue, consumer_action_key: str, *,
         return filed
 
 
+def retire_predecessor_cancellations(
+        queue, consumer_action_key: str,
+        plan: Mapping[str, object]) -> dict[str, object]:
+    """Retire a reaped window's visible child cancellations for a fresh seal.
+
+    A submission publishes its consumer and its first lead, and nothing else:
+    the later phases are the window's to publish as the consumer advances.  An
+    action key is a content hash, so a resubmission of the same consumer,
+    price and tool seals the same child keys -- and the *visible* withdrawal
+    markers the predecessor generation left on those keys (an operator's
+    cancellation, or the dead-consumer pass stopping its movers) outlive the
+    plan's own retirement.  Read as live, they supersede the fresh plan before
+    its second phase ever published (#708 review).
+
+    A deliberate seal is a new generation of that consumer's window, so it
+    retires those predecessor markers: the keys are its own sealed children,
+    and the same act that re-submits the consumer is how a person asks for the
+    work again.  Three boundaries keep it honest:
+
+    * :func:`handoff_safe` must prove the predecessor's ownership ended -- no
+      live consumer and no queued or claimed child -- under the consumer's
+      transition lock.  This is the same proof ``reap`` uses; a window whose
+      work is still live refuses by name rather than being replaced.
+    * only the *visible* marker is moved, under each child's own transition
+      lock and in the parent-before-child order every writer here keeps; the
+      immutable decision under ``withdrawn/decisions/`` stays, and the marker
+      itself is filed under ``withdrawn/superseded/`` as evidence, never
+      deleted.
+    * a marker that cannot be read is unknown state, not "no cancellation":
+      the whole renewal refuses while any hit is unreadable, and nothing is
+      retired before that refusal -- an operator resolves it.
+
+    The boundary is this call.  A cancellation filed after it -- under the
+    child's lock, whether the interleaving lands before or after the fresh
+    plan is frozen -- is a decision about the new generation and still
+    supersedes it; the automatic publisher never retires a cancellation.
+    ``None`` from ``withdrawn_keys``-backed reads is the ordinary first seal,
+    which is not a renewal at all and returns an empty answer without taking a
+    lock.
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+    try:
+        cancelled = queue.withdrawn_keys()
+    except OSError as exc:
+        raise ResidencyPlanError(
+            f"the live withdrawal markers could not be listed: {exc}") from None
+    hits = sorted(child for child in child_keys(plan) if child in cancelled)
+    if not hits:
+        return {"consumer_action_key": key, "retired": []}
+    with queue._transition_locked(key):
+        safe, why = handoff_safe(queue, key, plan)
+        if not safe:
+            raise ResidencyPlanError(
+                f"the window filed for {key[:12]} still owns live work "
+                f"({why}); a fresh seal cannot retire its cancellations. Stop "
+                f"the old work and resubmit")
+        # Readability first, retirement second: an unreadable marker refuses
+        # the whole renewal before any decision is moved.
+        readable: list[str] = []
+        for child in hits:
+            with queue._transition_locked(child):
+                marker = queue.live_withdrawal(child)
+                if marker is None:
+                    continue        # already retired by another writer
+                if marker.get("unreadable"):
+                    raise ResidencyPlanError(
+                        f"the cancellation marker for {child[:12]} cannot be "
+                        f"read ({marker.get('reason') or 'unknown state'}); an "
+                        f"operator must resolve it under withdrawn/superseded/ "
+                        f"before this window can be sealed")
+                readable.append(child)
+        retired: list[str] = []
+        for child in readable:
+            with queue._transition_locked(child):
+                try:
+                    if queue._supersede_withdrawal(child) is not None:
+                        retired.append(child)
+                except (_pool.PoolContractError, OSError) as exc:
+                    raise ResidencyPlanError(
+                        f"the cancellation marker for {child[:12]} could not "
+                        f"be retired: {exc}") from None
+        return {"consumer_action_key": key, "retired": retired}
+
+
 def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:
     """The row the submitter publishes at once: the first chunk's, or the mover's.
 

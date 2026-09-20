@@ -21,6 +21,15 @@ resubmission reseals at the *current* measured fill offer through this
 sealing path (key, CAS body and argv agreeing), and a resubmission while the
 old window's work is still claimed refuses rather than replacing the old
 plan.
+
+The renewal tests drive the case a same-body reseal creates (#708 review):
+the submission publishes its consumer and its lead and nothing else, so a
+reaped predecessor's cancellations on its later stage and ram children
+outlive it.  A fresh seal must retire those *visible* predecessor markers --
+under the consumer's transition lock and then each child's, only after
+`handoff_safe` proves nothing still names the old window -- while the
+immutable decisions stay, and a cancellation filed after the seal still
+supersedes the fresh plan.
 """
 
 from __future__ import annotations
@@ -38,9 +47,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 
 TIER = "prismabuild-stage:sparky"
+RAM_TIER = "ram:sparky"
 GIB = storage_tiers.GIB
 PHASE_BYTES = 2 * GIB
 FILL_KIND = f"fill_mb_s_pool_side@{TIER}"
@@ -151,6 +162,11 @@ def _detach_key(capsys) -> str:
              if line.strip()]
     assert len(lines) == 1, f"stdout carried {len(lines)} lines: {lines!r}"
     return json.loads(lines[0])["action_key"]
+
+
+def _published(events: list[dict[str, object]]) -> list[str]:
+    return [str(event.get("action_key")) for event in events
+            if event.get("event") == "mover-published"]
 
 
 def test_the_submission_publishes_the_consumer_and_only_its_first_mover(
@@ -380,3 +396,186 @@ def test_an_admission_preemption_keeps_the_frozen_plan_binding(
     reused = residency_plan.read(queue, consumer_key)
     assert reused == stale
     assert residency_plan.superseded(queue, reused) is None
+
+
+# -- a fresh seal renews the cancellations a reaped window left (#708 review) --
+
+
+def _stage_tier(tmp_path: Path) -> dict[str, object]:
+    """The tier record ``residency_window`` runs a cycle against."""
+
+    return {"tier_id": TIER, "tier": "stage",
+            "mountpoint": str(tmp_path / "stage")}
+
+
+def _announce_ram_tier(queue: pool.PoolQueue, mountpoint: Path) -> None:
+    """Announce the ram tier this stage host fronts, so the seal carries one.
+
+    The ram leg is sealed by the same submission and its promotion keys are
+    children of the same plan, so the renewal's scope is exercised on both.
+    """
+
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": RAM_TIER, "host": "sparky", "tier": "ram",
+        "mountpoint": str(mountpoint),
+        "mover_python": sys.executable,
+        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
+    })
+
+
+def _reaped_window_with_cancelled_children(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> tuple[pool.PoolQueue, str, dict[str, object], str, str]:
+    """The causal chain a same-body renewal exists for, through the real path.
+
+    A submission publishes its consumer and its lead only; the window
+    publishes phase 1's stage copy as the consumer would advance, and the ram
+    window's promotion has been published for it; an operator cancels both
+    later children; the consumer is withdrawn; the dead-consumer pass stops
+    the queued lead and archives the plan; and a deliberate resubmission
+    seals the identical body -- same price, same tool, same consumer, so the
+    same child keys.
+
+    Returns ``(queue, consumer_key, fresh_plan, late_stage, late_ram)``.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    _announce_ram_tier(queue, tmp_path / "ram")
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    late_stage = str(stale["phases"][1]["mover_row"]["action_key"])
+    late_ram = str(stale["phases"][1]["ram_mover_row"]["action_key"])
+
+    events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+    assert late_stage in _published(events), (
+        "the window must publish the later stage copy before it can be cancelled")
+    queue.publish(**dict(stale["phases"][1]["ram_mover_row"]), recompute=True)
+
+    queue.withdraw(late_stage, reason="stale price", by="operator")
+    queue.withdraw(late_ram, reason="stale price", by="operator")
+    tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+    assert residency_plan.superseded(queue, stale) is not None
+
+    # The old ownership ends: the consumer is withdrawn, and the pass that
+    # stops a dead consumer's work withdraws the queued lead and archives the
+    # plan once nothing names it.
+    result = queue.withdraw(consumer_key, reason="stale price", by="operator")
+    assert result.get("residency_plan_superseded") is True
+    tier_loop.withdraw_dead_consumer_movers(queue)
+    assert residency_plan.read(queue, consumer_key) is None, (
+        "the old plan was not reaped; the renewal boundary is not reached")
+
+    assert pbrun.main() == 0
+    assert _detach_key(capsys) == consumer_key
+    fresh = residency_plan.read(queue, consumer_key)
+    assert fresh is not None
+    assert fresh["phases"][1]["mover_row"]["action_key"] == late_stage
+    assert fresh["phases"][1]["ram_mover_row"]["action_key"] == late_ram
+    return queue, consumer_key, fresh, late_stage, late_ram
+
+
+def test_a_deliberate_reseal_renews_a_reaped_windows_cancelled_children(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """RED before the renewal fix: the old markers outlived the reap.
+
+    The fresh plan is a new filing of the same body, so the predecessor's
+    visible cancellations on its later stage and ram movers still stand when
+    the next window cycle reads them -- and would supersede the fresh plan
+    before its second phase ever published.  The deliberate seal retires them
+    as evidence, and the fresh window is a schedule again.
+    """
+
+    queue, _consumer_key, fresh, late_stage, late_ram = (
+        _reaped_window_with_cancelled_children(tmp_path, monkeypatch, capsys))
+
+    assert residency_plan.superseded(queue, fresh) is None, (
+        "the predecessor's cancellations must not cover the fresh filing")
+    assert queue.live_withdrawal(late_stage) is None
+    assert queue.live_withdrawal(late_ram) is None
+    assert queue.withdrawal_decisions(late_stage), (
+        "the operator's decision is evidence, not something retirement erases")
+    assert queue.withdrawal_decisions(late_ram)
+    retired = {path.name for path in queue.superseded_dir().iterdir()}
+    assert any(late_stage in name for name in retired)
+    assert any(late_ram in name for name in retired)
+
+    events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+
+    assert residency_plan.superseded(queue, fresh) is None, (
+        "the fresh plan must survive its own window cycle")
+    assert late_stage in _published(events), (
+        "the fresh plan's later children must be publishable")
+    assert queue.item_path(pool.READY, late_stage).exists()
+    assert queue.live_withdrawal(late_ram) is None
+
+
+def test_a_cancellation_after_the_renewal_still_supersedes_the_fresh_plan(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """The renewal boundary is the seal; a later decision is the new plan's.
+
+    The automatic publisher never broadly ignores cancellations: a marker
+    filed against a child of the renewed window supersedes the fresh plan
+    exactly as one filed against any live window would, and no further mover
+    is published.
+    """
+
+    queue, _consumer_key, fresh, late_stage, _late_ram = (
+        _reaped_window_with_cancelled_children(tmp_path, monkeypatch, capsys))
+    assert residency_plan.superseded(queue, fresh) is None, (
+        "the renewal itself must not supersede the fresh plan")
+
+    events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+    assert late_stage in _published(events), (
+        "the renewed window is a schedule until a new decision cancels it")
+    assert queue.item_path(pool.READY, late_stage).exists()
+
+    queue.withdraw(late_stage, reason="changed my mind", by="operator")
+    events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+
+    assert late_stage not in _published(events)
+    assert not queue.item_path(pool.READY, late_stage).exists()
+    assert residency_plan.superseded(queue, fresh) is not None, (
+        "a cancellation filed after the renewal is a decision about the new plan")
+
+
+def test_a_resubmission_refuses_an_unreadable_child_cancellation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """Unknown cancellation state is not "no cancellation": refuse the seal.
+
+    The marker is present and unreadable, so nobody can say which generation
+    it stopped.  A fresh seal over it would be a guess, and the submission
+    refuses by name instead of clearing it.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    late = str(stale["phases"][1]["mover_row"]["action_key"])
+    events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
+    assert late in _published(events)
+    queue.withdraw(late, reason="stale price", by="operator")
+    queue.withdraw(consumer_key, reason="stale price", by="operator")
+    tier_loop.withdraw_dead_consumer_movers(queue)
+
+    marker = queue.item_path(pool.WITHDRAWN, late)
+    marker.unlink()
+    marker.mkdir()        # present, and unreadable as a marker
+
+    with pytest.raises(SystemExit, match="cannot be read"):
+        pbrun.main()
+
+    assert residency_plan.read(queue, consumer_key) is None, (
+        "no fresh plan may be sealed over a cancellation nobody can read")
+    assert not queue.item_path(pool.READY, consumer_key).exists()

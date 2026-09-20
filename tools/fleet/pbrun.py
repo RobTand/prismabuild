@@ -6411,6 +6411,28 @@ def main() -> int:
                 template, consumer_action_key=key,
                 tier=resolve_stage_tier(q, args.residency_tier),
                 args=args, queue=q, cas=cas)
+            if not staged.get("reused_frozen_plan"):
+                # A fresh seal is a new generation of this consumer's window.
+                # The predecessor's *visible* child cancellations -- an
+                # operator's withdrawal, or the dead-consumer pass that
+                # stopped its movers -- do not cover it, but the window reads
+                # them as live and would supersede it before its second phase
+                # ever published.  A deliberate seal retires them as evidence,
+                # under this consumer's lock and then each child's, before the
+                # fresh plan is filed.  A cancellation filed after that is the
+                # new plan's own decision and still supersedes it; automatic
+                # publication never retires one (#708 review).
+                try:
+                    renewal = residency_plan.retire_predecessor_cancellations(
+                        q, key, staged["plan"])
+                except residency_plan.ResidencyPlanError as exc:
+                    raise SystemExit(f"pbrun: {exc}") from None
+                if renewal["retired"]:
+                    print(
+                        f"pbrun: renewing {key[:12]}: retired "
+                        f"{len(renewal['retired'])} predecessor cancellation "
+                        f"marker(s); their decisions stay under "
+                        f"{q.superseded_dir()}", file=sys.stderr, flush=True)
             residency_plan.freeze(q, staged["plan"])
             publication = publication_row(action, args=args, queue=q)
             publication["residency"] = staged["residency"]
