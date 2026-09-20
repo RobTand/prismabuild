@@ -3941,6 +3941,33 @@ the reservation across two holders: the sum is unchanged, nothing is lost and
 nothing is over-admitted, and calling it again finishes the move. That is the
 whole ledger half of adoption, below.
 
+### Funded mover claims (#738)
+
+A forthcoming window policy can reserve one next movement on the existing
+tier ledger through `PoolQueue.reserve_fence`. Its funding record binds the
+consumer, sealed plan, mover publication, tier, range, token kind and count
+to one generation. These bindings are immutable within that generation.
+The only state steps are `reserved -> transferring -> consumed`, or
+`reserved/transferring -> released` before consumption. Generation rotation
+belongs to the checked reserve path; public writes cannot turn a consumed
+reservation back into credit. Mover transition locks serialize these writes.
+
+Claim transfers the reserved tokens rather than releasing and reacquiring
+them, and acquires only the unfunded remainder. Execution requires the
+durable claim, lease and consumed funding proof. If their publication fails,
+the row returns to READY and only newly acquired remainder tokens return;
+funded holdings stay recoverable. A consumed record never discounts another
+claim, even when the mover still holds the full token count: those tokens may
+already represent physical bytes. Normal pin/egress rules govern those bytes.
+The present single-residency schema permits at most one funded tier per mover.
+
+This is the claim primitive, not the complete progress policy. Joint window
+funding, fairness and two-consumer liveness remain unqualified until the tier
+loop uses it. Funding generated outputs from a producer's already admitted
+window also needs an exact-owner transfer extension; a second acquisition is
+not evidence that the same bytes have been accounted once. Component tests
+establish neither deployed support nor whole-fleet conformance.
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when

@@ -777,6 +777,42 @@ def plan_sha256(plan: Mapping[str, object]) -> str:
         pb._canonical_bytes(validate_plan(plan))).hexdigest()
 
 
+def find_mover_leg(plan: Mapping[str, object], mover_action_key: str,
+                   ) -> dict[str, object] | None:
+    """The sealed leg this mover was cut for, or ``None`` when it has none.
+
+    Searched over every movement role (stage and ram legs, whole-phase and
+    chunked): a mover the frozen decomposition never named -- a foreign key,
+    a stale member of a replaced plan, a row hand-typed beside the plan --
+    has no leg here.  The answer carries the leg's own ``mover_role``,
+    ``phase``, ``start_bytes``, ``end_bytes`` and ``stage_gib``, quoted from
+    the sealed plan rather than from any caller-supplied row, so a funding
+    check can bind credit to the plan's range instead of trusting the row's.
+    Never raises for plan-shape reasons; unknown is ``None``.
+    """
+
+    try:
+        validated = validate_plan(plan)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    key = str(mover_action_key)
+    try:
+        for role in sorted(_MOVEMENT_ROLES):
+            for leg in _legs(validated, mover_role=role):
+                row = leg.get("mover_row")
+                if (isinstance(row, Mapping)
+                        and str(row.get("action_key")) == key):
+                    return {"mover_role": role,
+                            "phase": str(leg.get("phase")),
+                            "start_bytes": int(leg.get("start_bytes")),  # type: ignore[arg-type]
+                            "end_bytes": int(leg.get("end_bytes")),  # type: ignore[arg-type]
+                            "stage_gib": int(leg.get("stage_gib")),  # type: ignore[arg-type]
+                            "chunk_index": leg.get("chunk_index")}
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None
+    return None
+
+
 def _stamped_incarnation(value: object) -> tuple[int, int, int] | None:
     """A marker's filing stamp, only when it is three whole integers.
 
@@ -1673,11 +1709,80 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     return {"publish": publish, "evict": evict, "stall": stall}
 
 
+def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
+                  published: Sequence[str] = (),
+                  mover_role: str = "mover_row") -> dict[str, object]:
+    """The minimum simultaneous current-plus-next needs of one window leg.
+
+    The first two unpublished legs in read order: ``current_min_gib`` is what
+    admission must stage first (the lead), ``next_min_gib`` the advance that
+    must fit beside it for guaranteed progress (``None`` on the final leg --
+    a final phase needs no future credit).  Chunked legs decide per chunk, so
+    a sliding window's minimum is two chunks, never two phases.  A leg the
+    submitter sealed without (``mover_role`` absent) contributes nothing.
+    Raises :class:`ResidencyPlanError` for an unknown mover role, like
+    :func:`window`.
+    """
+
+    if mover_role not in _MOVEMENT_ROLES:
+        raise ResidencyPlanError(
+            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+            f"not {mover_role!r}")
+    ahead = remaining(plan, accepted_phase)
+    ahead_names = [str(phase["name"]) for phase in ahead]
+    done = set(published)
+    waiting = [leg for leg in _legs(plan, mover_role=mover_role)
+               if leg["phase"] in ahead_names
+               and str(leg["mover_row"]["action_key"]) not in done]  # type: ignore[index]
+    if not waiting:
+        return {"current_min_gib": 0, "next_min_gib": None, "final": True,
+                "reading_phase": ahead_names[0] if ahead_names else None,
+                "next_phase": None, "next_mover_action_key": None,
+                "next_chunk_index": None, "waiting": [], "prior": [],
+                "lead_mover_action_key": None}
+    first, rest = waiting[0], waiting[1:]
+    full = _legs(plan, mover_role=mover_role)
+    order = [str(leg["mover_row"]["action_key"]) for leg in full]  # type: ignore[index]
+    prior = full[:order.index(str(first["mover_row"]["action_key"]))]  # type: ignore[index]
+    out: dict[str, object] = {
+        "current_min_gib": int(first["stage_gib"]),
+        "next_min_gib": int(rest[0]["stage_gib"]) if rest else None,
+        "final": not rest,
+        "reading_phase": ahead_names[0] if ahead_names else None,
+        "next_phase": str(rest[0]["phase"]) if rest else None,
+        "next_mover_action_key": (str(rest[0]["mover_row"]["action_key"])  # type: ignore[index]
+                                  if rest else None),
+        "next_chunk_index": rest[0]["chunk_index"] if rest else None,
+        "lead_mover_action_key": (str(full[0]["mover_row"]["action_key"])  # type: ignore[index]
+                                  if full else None),
+        # The advance itself: the first waiting leg is what the fence
+        # protects (its claim), with every earlier leg listed for the
+        # safe-retire check replenish requires.
+        "waiting": [{
+            "phase": str(leg["phase"]),
+            "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
+            "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
+            "stage_gib": int(leg["stage_gib"]),
+            "chunk_index": leg["chunk_index"],
+            "start_bytes": int(leg["start_bytes"]),
+            "end_bytes": int(leg["end_bytes"]),
+        } for leg in waiting],
+        "prior": [{
+            "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
+            "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
+            "stage_gib": int(leg["stage_gib"]),
+        } for leg in prior],
+    }
+    return out
+
+
 __all__ = [
     "RESIDENCY_PLAN_SCHEMA_V1",
     "ResidencyPlanError",
     "accepted",
+    "advance_needs",
     "build_plan",
+    "find_mover_leg",
     "freeze",
     "lead_mover_row",
     "leads_for",
