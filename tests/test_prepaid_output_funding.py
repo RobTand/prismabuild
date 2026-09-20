@@ -1071,6 +1071,17 @@ def test_publishable_helper_rejects_before_exposure(tmp_path: Path) -> None:
 
 def _sealed_cas_with_ref(tmp_path: Path, ref: dict, tag: str):
     """File a REAL CAS action request carrying the batch reference (R4)."""
+    return _sealed_cas_with_params(
+        tmp_path, {'produced_output_batch': dict(ref)}, tag)
+
+
+def _sealed_cas_with_params(tmp_path: Path, params: dict, tag: str):
+    """File a REAL CAS action request with arbitrary params (R7).
+
+    Same sealing machinery as the production submitter (content-addressed
+    key, real CAS publication); ``params`` is exactly what the pool's
+    sealed-request reader sees at publish and claim.
+    """
     from prismabuild import core as _pb
     checkout = tmp_path / f"co-sealed-{tag}"
     checkout.mkdir(parents=True, exist_ok=True)
@@ -1085,7 +1096,7 @@ def _sealed_cas_with_ref(tmp_path: Path, ref: dict, tag: str):
                  'result_path': 'result'},
         'inputs': [],
         'code_closure': _pb.build_code_closure(checkout, ['task.py']),
-        'params': {'produced_output_batch': dict(ref)},
+        'params': dict(params),
         'environment': {'variables': {}, 'toolchain': {}},
         'execution_scope': {'portability': 'portable', 'platform_key': None,
                             'host_class': None},
@@ -1483,3 +1494,211 @@ def test_transfer_tokens_concurrent_exclusion(tmp_path: Path) -> None:
     assert ledger.holder_tokens(mover_b).get(KIND, 0) == 2
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
     assert (ledger.available().get(KIND, 0) + 4) == cap
+
+
+# ---------------------------------------------------------------------------
+# R7: real-CAS positive path + immutable agreement on a successful cover
+# ---------------------------------------------------------------------------
+
+
+def _real_cas_chain(tmp_path: Path, tag: str, *, squatter_seed: str = "rcq"):
+    """Real sealed request -> stage -> publish (derived) -> fund -> batch.
+
+    Returns everything the R7 claim tests assert on. The request is REAL
+    (content-addressed key, real CAS publication), the projection is DERIVED
+    from it at publish (never a kwarg), funding is an exact transfer of the
+    owner's existing window, and the batch is filed through the loader-
+    compatible commit shapes (`_file_batch`).
+    """
+    owner = _hexkey(f"{tag}-owner")
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, tag)
+    mover = action["action_key"]
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
+    q.publish(action_key=mover, cas_root=cas.root,
+              worker_script="/w.py", checkout_root=checkout,
+              resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": manifest, "manifest_bytes": total,
+                         "range_start_bytes": 0, "range_end_bytes": total})
+    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+                                 mover_key=mover, instance=inst,
+                                 template=template, batch_id="b1",
+                                 descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    return {"q": q, "ledger": ledger, "owner": owner, "mover": mover,
+            "ref": ref, "cas": cas, "inst": inst, "template": template,
+            "descs": descs, "squatter": _hexkey(f"{squatter_seed}-{tag}")}
+
+
+def _exhaust_free(ledger, key: str) -> None:
+    """Take every free token of the kind so only a cover can admit."""
+    free = ledger.available().get(KIND, 0)
+    if free:
+        assert ledger.acquire(key, {KIND: free}) is True
+    assert ledger.available().get(KIND, 0) == 0
+
+
+def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path) -> None:
+    """TRUE real-CAS flow claims through the prepaid cover (R7 RED).
+
+    Sealed reference -> stage intent -> publish (derived projection) ->
+    transfer of the EXISTING window -> filed batch -> real claim succeeds
+    with free credits exhausted. The immutable reference necessarily carries
+    ``batch_namespace``; the funding record's closed schema never does, so
+    the record/request binding must be the shared identity fields alone. A
+    matcher that demands the namespace from either carrier rejects every
+    real production funding record and this flow never claims.
+    """
+    chain = _real_cas_chain(tmp_path, "rc7")
+    q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
+    _exhaust_free(ledger, chain["squatter"])
+    free0 = ledger.available().get(KIND, 0)
+    claimed = q.claim(owner="w-rc7-mover")
+    assert claimed is not None, "real-CAS prepaid cover must admit the claim"
+    assert claimed["action_key"] == mover
+    entry = (claimed.get("tier_funding") or {}).get(TIER)
+    assert isinstance(entry, dict) and entry.get("variant") == "output"
+    # The cover, not free credit, admitted it: fence stays on the mover,
+    # nothing new was taken from free, and the record is consumed once.
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.available().get(KIND, 0) == free0
+    assert ledger.holder_tokens(chain["owner"]).get(KIND, 0) == 1
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "consumed"
+    assert q.item_path(pool.CLAIMED, mover).exists()
+
+
+def test_filed_request_without_ref_invented_projection_never_covers(
+        tmp_path: Path) -> None:
+    """Ref-less filed request + invented mutable projection => no cover (R7 RED).
+
+    A successful mutable cover must not bypass immutable request agreement:
+    a REAL filed request that declares no ``produced_output_batch`` can never
+    gain output semantics from a projection injected onto the mutable row.
+    Publish already refuses the kwarg; this is the claim seam after the row
+    exists, with funding and a filed batch that would otherwise cover.
+    """
+    tag = "np7"
+    owner = _hexkey(f"{tag}-owner")
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_params(tmp_path, {}, tag)
+    mover = action["action_key"]
+    # Ordinary legacy publish: the request declares no ref, no kwarg.
+    q.publish(action_key=mover, cas_root=cas.root,
+              worker_script="/w.py", checkout_root=checkout,
+              resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": manifest, "manifest_bytes": total,
+                         "range_start_bytes": 0, "range_end_bytes": total})
+    ready_path = q.item_path(pool.READY, mover)
+    row = pool._read_json(ready_path)
+    assert isinstance(row, dict) and "produced_output_batch" not in row
+    # Invent the mutable projection the immutable request never declared.
+    row["produced_output_batch"] = dict(ref)
+    pool._write_json_atomic(ready_path, row)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
+    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+                                 mover_key=mover, instance=inst,
+                                 template=template, batch_id="b1",
+                                 descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    _exhaust_free(ledger, _hexkey(f"{tag}-squatter"))
+    free0 = ledger.available().get(KIND, 0)
+    claimed = q.claim(owner=f"w-{tag}-mover")
+    assert claimed is None, "invented projection must never cover a claim"
+    assert ready_path.exists()
+    assert ledger.available().get(KIND, 0) == free0
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "transferring"
+
+
+def test_filed_request_corrupt_after_funding_never_claims(
+        tmp_path: Path) -> None:
+    """Valid chain, then unreadable request bytes: unknown never covers (R7).
+
+    The immutable request going unreadable after funding must defer the
+    claim at admission (and at the renamed re-check), never execute on
+    unknown evidence and never fall back to fresh acquisition.
+    """
+    chain = _real_cas_chain(tmp_path, "cr7")
+    q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
+    request_path = (chain["cas"].root / "requests" / mover[:2]
+                    / f"{mover}.json")
+    request_path.write_bytes(b"{not-json")
+    _exhaust_free(ledger, chain["squatter"])
+    free0 = ledger.available().get(KIND, 0)
+    assert q.claim(owner="w-cr7-mover") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND, 0) == free0
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "transferring"
+
+
+def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path) -> None:
+    """Mutable projection swapped to another batch => no cover, no fresh (R7).
+
+    The row's projection must agree with the immutable request ref; a
+    contradictory projection with otherwise-valid funding defers instead of
+    covering or paying fresh.
+    """
+    chain = _real_cas_chain(tmp_path, "cx7")
+    q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
+    other = dict(chain["ref"], batch_id="b2")
+    ready_path = q.item_path(pool.READY, mover)
+    row = pool._read_json(ready_path)
+    assert isinstance(row, dict)
+    row["produced_output_batch"] = other
+    pool._write_json_atomic(ready_path, row)
+    _exhaust_free(ledger, chain["squatter"])
+    free0 = ledger.available().get(KIND, 0)
+    assert q.claim(owner="w-cx7-mover") is None
+    assert ready_path.exists()
+    assert ledger.available().get(KIND, 0) == free0
+
+
+def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path) -> None:
+    """Projection lost while funding survives: the request still rules (R7).
+
+    Ref-loss of the mutable projection alone (funding record and filed batch
+    intact) must defer on the immutable requirement; the funding file never
+    silently becomes legacy fresh credit.
+    """
+    chain = _real_cas_chain(tmp_path, "pl7")
+    q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
+    ready_path = q.item_path(pool.READY, mover)
+    row = pool._read_json(ready_path)
+    assert isinstance(row, dict) and "produced_output_batch" in row
+    del row["produced_output_batch"]
+    pool._write_json_atomic(ready_path, row)
+    _exhaust_free(ledger, chain["squatter"])
+    free0 = ledger.available().get(KIND, 0)
+    assert q.claim(owner="w-pl7-mover") is None
+    assert ready_path.exists()
+    assert ledger.available().get(KIND, 0) == free0
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "transferring"
