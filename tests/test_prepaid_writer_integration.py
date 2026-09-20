@@ -208,7 +208,7 @@ def _producer_request(tmp_path: Path, cas_root: Path) -> str:
                  "definition_version": "v1", "task_class": "generation",
                  "determinism": "deterministic",
                  "artifact_family": "generic", "artifact_kind": "generic",
-                 "argv": ["true"], "working_directory": ".",
+                 "argv": ["/bin/true"], "working_directory": ".",
                  "result_path": "result"},
         "inputs": [],
         "code_closure": pb.build_code_closure(
