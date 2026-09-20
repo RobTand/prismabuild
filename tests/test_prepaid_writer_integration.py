@@ -961,6 +961,8 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
     inst = po.bind_instance(q, template, owner_action_key=owner,
                             claim_snapshot=claimed, env=env)
+    po.declare_instance(q.root, inst)
+    assert po.admit_instance(q, inst, template)["ok"] is True
     _announce_tier(q, tmp_path / "stage")
     descs = _descriptors(tmp_path, template, inst, "p1", b"g" * 64)
     _prewrite(q, inst, template, "b1", TIER, descs)
