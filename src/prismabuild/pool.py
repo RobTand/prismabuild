@@ -6505,23 +6505,44 @@ class PoolQueue:
                 if path.name.startswith(kind + "-"))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        if token_names is not None:
-            try:
-                selected = sorted(str(name) for name in token_names)
-            except (TypeError, ValueError):
-                return {"ok": False, "refusal": "bad-token-names"}
-            if len(set(selected)) != len(selected) or not selected:
-                return {"ok": False, "refusal": "bad-token-names"}
-            if len(selected) != batch_gib:
-                return {"ok": False, "refusal": "token-names-unknown"}
-            for name in selected:
-                if not name.startswith(kind + "-") or name not in held_names:
-                    return {"ok": False, "refusal": "token-names-unknown"}
+        if self.read_output_funding(str(mover_key), tier) is not None:
+            # Re-drive of an already-filed intent needs no fresh selection:
+            # its own names are already filed and would collide with the
+            # disjointness rule below; the in-lock duplicate branch returns
+            # the filed set unchanged. A record that vanishes before the
+            # in-lock read fails closed at validation (empty selection).
+            selected = []
         else:
-            if len(held_names) < batch_gib:
-                return {"ok": False, "refusal": "tier-reservation-unavailable",
-                        "available": ledger.available()}
-            selected = held_names[:batch_gib]
+            # Sequential per-batch funding (R7 liveness): a name already
+            # promised to one of this owner's outstanding intents on this
+            # tier is spoken for. Selecting it again files two intents over
+            # one credit, and whichever funds first strands the other in a
+            # permanent transfer-short. Refuse deterministically instead.
+            spoken, spoken_unknown = self._output_spoken_token_names(
+                str(owner_key), tier)
+            if spoken_unknown:
+                return {"ok": False, "refusal": "unknown-retain: funding-census"}
+            unspoken_names = [name for name in held_names
+                              if name not in spoken]
+            if token_names is not None:
+                try:
+                    selected = sorted(str(name) for name in token_names)
+                except (TypeError, ValueError):
+                    return {"ok": False, "refusal": "bad-token-names"}
+                if len(set(selected)) != len(selected) or not selected:
+                    return {"ok": False, "refusal": "bad-token-names"}
+                if len(selected) != batch_gib:
+                    return {"ok": False, "refusal": "token-names-unknown"}
+                for name in selected:
+                    if not name.startswith(kind + "-") or name not in held_names:
+                        return {"ok": False, "refusal": "token-names-unknown"}
+                    if name in spoken:
+                        return {"ok": False, "refusal": "token-names-spoken"}
+            else:
+                if len(unspoken_names) < batch_gib:
+                    return {"ok": False, "refusal": "tier-reservation-unavailable",
+                            "available": ledger.available()}
+                selected = unspoken_names[:batch_gib]
         with self._transition_locked(str(owner_key),
                                      blocking=False) as owner_acquired:
             if not owner_acquired:
@@ -6742,6 +6763,16 @@ class PoolQueue:
                 if path.name.startswith(kind + "-"))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        # Same disjointness rule as stage_output_intent (R7 liveness): this
+        # branch files a FRESH intent (no staged record exists for this
+        # mover/tier), so every outstanding intent of this owner is another
+        # intent; never select a spoken name.
+        spoken, spoken_unknown = self._output_spoken_token_names(
+            str(owner_key), tier)
+        if spoken_unknown:
+            return {"ok": False, "refusal": "unknown-retain: funding-census"}
+        unspoken_names = [name for name in held_names
+                          if name not in spoken]
         if token_names is not None:
             try:
                 selected = sorted(str(name) for name in token_names)
@@ -6756,11 +6787,13 @@ class PoolQueue:
                     return {"ok": False, "refusal": "token-names-unknown"}
                 if name not in held_names:
                     return {"ok": False, "refusal": "token-names-unknown"}
+                if name in spoken:
+                    return {"ok": False, "refusal": "token-names-spoken"}
         else:
-            if len(held_names) < batch_gib:
+            if len(unspoken_names) < batch_gib:
                 return {"ok": False, "refusal": "tier-reservation-unavailable",
                         "available": ledger.available()}
-            selected = held_names[:batch_gib]
+            selected = unspoken_names[:batch_gib]
         # Owner outer, mover inner (R1): serializes against owner finish.
         with self._transition_locked(str(owner_key),
                                      blocking=False) as owner_acquired:
@@ -7242,6 +7275,16 @@ class PoolQueue:
                 return True
             if state not in ("reserved", "transferring"):
                 return False
+            # Committed batches are recovery, not cancellation (R7 liveness):
+            # once the immutable batch record + commitments entry exist, the
+            # credit belongs to that batch's claim (or committed recovery
+            # after producer finish), and retiring it here would leave a
+            # filed batch whose sealed mover key can never claim or re-fund.
+            try:
+                if self._output_batch_authority(current):
+                    return False
+            except (OSError, PoolContractError, ValueError):
+                return False
             exp_gen = str(current.get("generation"))
             # Durable claim: CLAIMED row of any shape means the mover may hold
             # the fence while the consumed marker failed.
@@ -7367,6 +7410,35 @@ class PoolQueue:
             if str(record.get("state")) in ("reserved", "transferring"):
                 intents.append(record)
         return (intents, unknown)
+
+    def _output_spoken_token_names(
+            self, owner_key: str, tier_id: str) -> tuple[set[str], bool]:
+        """Token names already promised to this owner's outstanding intents.
+
+        R7 liveness for sequential per-batch funding: one name must never be
+        filed into two live intents of the same owner on the same tier,
+        because whichever intent funds first removes the name from the owner
+        and strands the other in a permanent transfer-short. The set is the
+        union of ``tokens`` over every ``reserved``/``transferring`` census
+        record of this owner on this tier. Fail-retain: a census that cannot
+        prove the set returns ``(set(), True)`` and the caller refuses.
+        """
+
+        intents, unknown = self.output_census_for_owner(str(owner_key))
+        if unknown:
+            return (set(), True)
+        spoken: set[str] = set()
+        for record in intents:
+            if str(record.get("tier_id")) != str(tier_id):
+                continue
+            tokens = record.get("tokens")
+            if not isinstance(tokens, list):
+                return (set(), True)
+            for name in tokens:
+                if not isinstance(name, str):
+                    return (set(), True)
+                spoken.add(name)
+        return (spoken, False)
 
     def output_intents_sourcing_from(self, owner_key: str) -> list[dict]:
         """Outstanding output intents whose source window is this owner.

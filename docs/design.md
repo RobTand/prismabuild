@@ -4169,6 +4169,28 @@ kwarg and corrupt requests refuse) and requires staged-or-committed intent
 before READY exposure; claim derives requiredness from the filed request once
 per action (combined mutable-authority loss defers, never fresh).
 
+#### Operational writer path (R7 integration, candidate)
+
+`produced_output.publish_prepaid_batch` is the one production call per
+finished batch: sealed reference -> real CAS request for the stage mover
+(params carry the reference) -> `stage_output_intent` -> `publish` ->
+`fund_output_batch` (exact transfer of the owner's existing window) ->
+`commit_batch`. `commit_batch` reconciles the pool record (drives a
+`reserved` remainder through `drive_output_funding`, requires
+`transferring` with the mover holding the full token set) and files the
+batch with no second acquisition; the legacy per-batch
+`{batch_id}.funding.json` path survives only as in-flight recovery for
+batches that already filed it. Liveness, closed with the integration:
+`release_output_funding` refuses once `_output_batch_authority` holds
+(committed batches are recovery, not cancellation); `abort_prewrite`
+refuses while an owner intent cites the prewrite (`prepaid-intent-exists-
+retain`; retire the intent first); `stage_output_intent`/`fund_output_batch`
+never select a token name already promised to another outstanding intent
+of the same owner (`tier-reservation-unavailable` instead of a wedged
+transfer-short). `admit_funded_window` reports the delivered binding
+(`mode: prepaid-per-batch` + `owner_demand_terms`) once the funded-claim
+primitives are present.
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when
