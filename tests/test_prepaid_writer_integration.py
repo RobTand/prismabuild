@@ -2,38 +2,47 @@
 
 Exercises the production call path end to end on real fixtures:
 
-* `admit_funded_window` reports the delivered prepaid binding;
-* `publish_prepaid_batch` runs prewrite -> sealed CAS request -> stage
-  intent -> publish (derived projection) -> fund from the EXISTING window
-  -> `commit_batch` (no second acquisition), with free credits exhausted;
-* the REAL stage mover (`tools/fleet/stage_move.py`) copies and verifies
-  the tiny files, files its fragment under the batch namespace, and the
-  recorded receipt retires the batch through the real egress;
+* `admit_funded_window` reports the delivered prepaid binding (declaration
+  only; per-batch funding is the authority);
+* `publish_prepaid_batch` seals the mover through the ORDINARY movement
+  construction (`movement_actions.seal_movement_action` with the
+  submitter's `container_owner` and a producer submission template),
+  resolves interpreter/tools/stage-root/placement off the announced TIER
+  RECORD, seals the batch data manifest as the request's input, then runs
+  stage intent -> publish -> fund from the EXISTING window -> `commit_batch`
+  (no second acquisition), with free credits exhausted;
+* the sealed request's OWN argv executes under the real local action
+  runner (derived mover identity, real copy/verify/fragment by the fleet
+  tool), and the recorded receipt retires the batch through the real
+  egress;
 * a second sequential batch funds from disjoint window names and the
   retired capacity returns (retire -> reclaim -> owner finish);
 * a restart at the transfer boundary (fund durable, commit not yet filed)
-  recovers through the same public APIs; the full driver re-call is
-  idempotent;
+  recovers through the same public APIs;
 * committed-but-unclaimed funding survives `release_output_funding`;
   `abort_prewrite` refuses while a pool intent cites the prewrite and
   succeeds after the intent is retired; staged intents never select the
   same credit name twice.
 
-Fixture concessions (dev scope): the mover executes through
-``pb.run_local_action`` -- the sealed request's own bash-wrapped argv under
-the local action runner, which derives the mover identity exactly as the
-worker launcher does -- with ``--unpaced`` sealed into the command (real
-copy/verify/fragment, no ZFS pacer) and ``--manifest`` pointing at a local
-manifest file (the fleet path seals the manifest as a request input); the
-claim is ``PoolQueue.claim`` directly rather than a fleet worker loop;
-``safe_release_instance`` is only shown retaining (its full path needs the
-accepted reader_lease SDK package).
+Fixture concessions (dev scope, all disclosed): the producer submission
+template is fixture-assembled in pbrun's shape over a fixture checkout
+(production gets it from the pbrun/PQ submission machinery, which also
+supplies its `container_owner`); `--unpaced` is passed explicitly as
+fixture behavior via `command_extra` (production seals the ordinary paced
+command); the argv executes through `pb.run_local_action` in a subprocess
+whose environment drops the outer launcher's reader-identity bundle -- a
+real storage-owner box carries no foreign tuple, and the production
+identity check itself is untouched; the claim is `PoolQueue.claim`
+directly rather than a fleet worker loop; `safe_release_instance` is only
+shown retaining (its full path needs the accepted reader_lease SDK).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,9 +51,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
+import pbrun  # noqa: E402
+import prismabuild.core as pb  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -152,18 +162,6 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
     return out
 
 
-def _manifest_file(tmp_path: Path, descs: list[dict],
-                   manifest: str, name: str = "batch-manifest.json") -> Path:
-    # mount_prefix is the ORIGIN DIRECTORY the entries live under: the
-    # merged main's manifest validation requires every entry path inside
-    # it (production identity; the fixture adapts, not the check).
-    batch = {"entries": descs, "batch_id": "b", "manifest_digest": manifest}
-    body = po.build_stage_manifest(batch, str(Path(descs[0]["path"]).parent))
-    path = tmp_path / name
-    path.write_text(json.dumps(body))
-    return path
-
-
 def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     """File the tier record the storage role announces (tier_loop shape).
 
@@ -190,27 +188,72 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     pool._write_json_atomic(path, record)
 
 
-def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str) -> dict:
+def _producer_template(tmp_path: Path, q: pool.PoolQueue) -> dict:
+    """A producer submission template in pbrun's shape over a fixture checkout.
+
+    Production receives this from the submission machinery (git identity,
+    checkout snapshot, wrapper PATH); the fixture assembles the same shape
+    over a checkout carrying the fleet tools, with a fixture identity the
+    real ``container_owner`` hashes exactly as it hashes a real one.
+    """
+    checkout = tmp_path / "mover-checkout"
+    tools = checkout / "tools" / "fleet"
+    tools.mkdir(parents=True, exist_ok=True)
+    for name in ("stage_move.py", "prewarm_loop.py", "stage_release.py"):
+        (tools / name).write_bytes((REPO / "tools" / "fleet" / name)
+                                   .read_bytes())
+    return {
+        "task": {"definition_id": "tests/produced-prepaid-producer",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["true"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [],
+        "code_closure": pb.build_code_closure(
+            checkout, ["tools/fleet/stage_move.py",
+                       "tools/fleet/prewarm_loop.py",
+                       "tools/fleet/stage_release.py"]),
+        "environment": {"variables": {"PATH": "/usr/bin:/bin"},
+                        "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+        "params": {"cwd": ".", "retry_policy": {"max_attempts": 1}},
+        "marker_root": Path(q.root) / pool.CONTAINER_OWNERS,
+        "checkout_identity": {"commit": "0" * 40, "dirty": "fixture"},
+    }
+
+
+def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str,
+                   checkout: Path) -> dict:
     """Execute the SEALED request argv through the real local executor.
 
-    Not an in-process call: the action's own bash-wrapped argv runs under
-    ``run_local_action``, which derives ``PRISMABUILD_ACTION_KEY`` from the
-    action in hand exactly as the worker launcher does (a movement node
-    cannot take its key as an argument -- it would hash the key into
-    itself). The mover records its own receipt under that identity.
+    The subprocess drops the outer launcher's reader-identity bundle (a
+    real storage-owner box carries no foreign tuple): the production
+    identity check stays exactly as deployed, and the runner derives the
+    mover's own identity from the action in hand.
     """
-    import prismabuild.core as pb
-    request = json.loads(
-        (Path(cas_root) / "requests" / mover[:2] / f"{mover}.json")
-        .read_text())
-    # The seal workdir IS the execution checkout: the action's code closure
-    # is verified against it, exactly as a movement child's snapshot is.
-    workdir = Path(q.root) / "produced-output-mover-seal"
-    workdir.mkdir(parents=True, exist_ok=True)
-    result = pb.run_local_action(
-        request, cas_root=cas_root, checkout_root=workdir,
-        timeout_seconds=180)
-    assert result.get("status") in ("published", "cache_hit"), result
+    runner = Path(q.root) / "run-local-action.py"
+    runner.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from prismabuild import core as pb\n"
+        "req, cas, root = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "out = pb.run_local_action(json.loads(Path(req).read_text()),\n"
+        "                          cas_root=cas, checkout_root=root,\n"
+        "                          timeout_seconds=180)\n"
+        "print(out['status'])\n")
+    request_path = Path(cas_root) / "requests" / mover[:2] / f"{mover}.json"
+    scrub = {k: v for k, v in os.environ.items()
+             if k not in (pb.ACTION_NONCE_ENV, pb.ACTION_SCOPE_ENV,
+                          pb.READER_HELPER_ROOT_ENV, pb.ACTION_KEY_ENV)}
+    scrub["PYTHONPATH"] = str(REPO / "src")
+    done = subprocess.run(
+        [sys.executable, str(runner), str(request_path),
+         str(cas_root), str(checkout)],
+        env=scrub, capture_output=True, text=True, timeout=240)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.stdout.strip() in ("published", "cache_hit"), done.stdout
     receipt = q.move_record(mover)
     assert isinstance(receipt, dict), "mover recorded no receipt"
     return receipt
@@ -224,6 +267,8 @@ def test_admit_funded_window_reports_delivered_binding(tmp_path: Path) -> None:
     out = po.admit_funded_window(q, bound, template, need_gib_per_tier={TIER: 2})
     assert out.get("ok") is True, out
     assert out.get("mode") == "prepaid-per-batch"
+    assert out.get("declaration_only") is True
+    assert out.get("authority") == "per-batch-funding"
     assert out.get("owner_demand_terms") == po.owner_demand_terms(template)
     assert out.get("batch_ref_schema") == pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
 
@@ -238,25 +283,24 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     payload = bytes(range(256)) * 8  # 2048 real bytes
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
-    total = sum(int(d["bytes"]) for d in descs)
-    manifest_file = _manifest_file(tmp_path, descs, manifest)
     cas_root = tmp_path / "cas"
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
+    tpl = _producer_template(tmp_path, q)
+    publish = dict(mover_template=tpl, container_owner_fn=pbrun.container_owner,
+                   command_extra=["--unpaced"])
 
     res = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=cas_root, manifest_path=manifest_file)
+        cas_root=cas_root, **publish)
     assert res.get("ok") is True, res
     assert res.get("funding") == "prepaid"
     mover = str(res["mover_key"])
-    batch_ns = str(res["batch_namespace"])
     # Retry with identical inputs re-derives the same sealed key and every
     # step answers a typed duplicate: a restart may simply re-call.
     retry = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=cas_root, manifest_path=manifest_file)
+        cas_root=cas_root, **publish)
     assert retry.get("ok") is True, retry
     assert str(retry["mover_key"]) == mover
     # No second acquisition: the producer's window moved, free untouched.
@@ -277,12 +321,13 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
 
-    # The REAL mover: the sealed request's own argv executes under the
-    # local action runner, which derives the mover identity the worker
-    # launcher would; the copy, verify and fragment filing all happen in
-    # the fleet tool's own process.
-    receipt = _execute_mover(q, cas_root, mover)
+    # The REAL mover: the sealed request's own argv executes; the fleet
+    # tool copies, verifies and files its fragment under the batch
+    # namespace, and records its own receipt.
+    receipt = _execute_mover(q, cas_root, mover,
+                             tmp_path / "mover-checkout")
     assert receipt["complete"] is True, receipt
+    total = sum(int(d["bytes"]) for d in descs)
     assert receipt["bytes_staged"] == total
     staged = Path(stage_root) / "p1.bin"
     assert staged.read_bytes() == payload
@@ -308,24 +353,24 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     stage_root = tmp_path / "stage"
     cas_root = tmp_path / "cas"
     _announce_tier(q, stage_root)
+    tpl = _producer_template(tmp_path, q)
     results = []
     for tag, batch_id in (("p1", "b1"), ("p2", "b2")):
         payload = (b"a" * 700) if tag == "p1" else (b"b" * 900)
         descs = _descriptors(tmp_path, template, inst, tag, payload)
         _prewrite(q, inst, template, batch_id, TIER, descs)
-        manifest = po.output_manifest_sha256(descs)
-        total = sum(int(d["bytes"]) for d in descs)
-        manifest_file = _manifest_file(tmp_path, descs, manifest,
-                                       name=f"{batch_id}-manifest.json")
         res = po.publish_prepaid_batch(
             q, inst, template, descs, batch_id=batch_id, tier=TIER,
-            cas_root=cas_root, manifest_path=manifest_file)
+            cas_root=cas_root, mover_template=tpl,
+            container_owner_fn=pbrun.container_owner,
+            command_extra=["--unpaced"])
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
         # Sequential use: claim, execute the sealed argv, finish, retire.
         claimed = q.claim(owner=f"w-{tag}")
         assert claimed is not None and claimed["action_key"] == mover
-        receipt = _execute_mover(q, cas_root, mover)
+        receipt = _execute_mover(q, cas_root, mover,
+                                 tmp_path / "mover-checkout")
         assert receipt["complete"] is True, receipt
         q.finish(mover, status="executed")
         assert po.retire_batch(
@@ -360,32 +405,32 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     payload = b"c" * 512
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
     _prewrite(q, inst, template, "b1", TIER, descs)
+    _announce_tier(q, tmp_path / "stage")
     ref = pool.PoolQueue.build_produced_output_batch_ref(
         instance=inst, template=template, batch_id="b1",
         descriptors=descs, tier_id=TIER)
     manifest = str(ref["manifest_digest"])
     total = int(ref["range_end_bytes"])
-    from prismabuild import core as core_mod
     checkout = tmp_path / "co-restart"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task.py").write_text("print('restart-mover')\n")
     body = {
-        "schema": core_mod.ACTION_SCHEMA_V2,
+        "schema": pb.ACTION_SCHEMA_V2,
         "task": {"definition_id": "tests/restart", "definition_version": "v1",
                  "task_class": "generation", "determinism": "deterministic",
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "argv": [sys.executable, "task.py"],
                  "working_directory": ".", "result_path": "result"},
-        "inputs": [],
-        "code_closure": core_mod.build_code_closure(checkout, ["task.py"]),
+        "inputs": [], "code_closure": pb.build_code_closure(
+            checkout, ["task.py"]),
         "params": {"produced_output_batch": dict(ref)},
         "environment": {"variables": {}, "toolchain": {}},
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     }
-    action = core_mod.seal_action(body)
+    action = pb.seal_action(body)
     cas_root = tmp_path / "cas-restart"
-    core_mod.PrismaBuildCAS(cas_root).publish_action_request(action)
+    pb.PrismaBuildCAS(cas_root).publish_action_request(action)
     mover = str(action["action_key"])
     assert q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -424,12 +469,13 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     inst = _bind(q, template, owner)
     descs = _descriptors(tmp_path, template, inst, "p1", b"d" * 300)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
     _announce_tier(q, tmp_path / "stage")
     res = po.publish_prepaid_batch(
         q, inst, template, descs, batch_id="b1", tier=TIER,
-        cas_root=tmp_path / "cas",
-        manifest_path=_manifest_file(tmp_path, descs, manifest))
+        cas_root=tmp_path / "cas", mover_template=_producer_template(
+            tmp_path, q),
+        container_owner_fn=pbrun.container_owner,
+        command_extra=["--unpaced"])
     assert res.get("ok") is True, res
     mover = str(res["mover_key"])
     generation = str(res["generation"])
@@ -480,18 +526,19 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
     q = _queue(tmp_path, gib=4)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
-    for tag, batch_id in (("p1", "b1"), ("p2", "b2")):
-        descs = _descriptors(tmp_path, template, inst, tag, b"f" * 64)
-        _prewrite(q, inst, template, batch_id, TIER, descs)
+    descs1 = _descriptors(tmp_path, template, inst, "p1", b"f" * 64)
+    descs2 = _descriptors(tmp_path, template, inst, "p2", b"f" * 64)
+    _prewrite(q, inst, template, "b1", TIER, descs1)
+    _prewrite(q, inst, template, "b2", TIER, descs2)
     first = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m1"),
         instance=inst, template=template, batch_id="b1",
-        descriptors=_descriptors(tmp_path, template, inst, "p1", b"f" * 64))
+        descriptors=descs1)
     assert first.get("ok") is True, first
     second = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m2"),
         instance=inst, template=template, batch_id="b2",
-        descriptors=_descriptors(tmp_path, template, inst, "p2", b"f" * 64))
+        descriptors=descs2)
     assert second.get("ok") is True, second
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
     # Both names spoken and the window exhausted: deterministic refusal,

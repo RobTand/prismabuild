@@ -59,7 +59,7 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import os
@@ -1807,41 +1807,37 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
                           template: Mapping[str, object],
                           descriptors: list[Mapping[str, object]], *,
                           batch_id: str, tier: str, cas_root,
-                          manifest_path: str | Path | None = None,
-                          mover_template: Mapping[str, object] | None = None,
-                          unpaced: bool = True) -> dict[str, object]:
+                          mover_template: Mapping[str, object],
+                          container_owner_fn,
+                          command_extra: Sequence[str] = (),
+                          retry_policy: Mapping[str, object] | None = None,
+                          ) -> dict[str, object]:
     """The operational prepaid writer path for one finished batch (R7).
 
     Production call sequence, all existing mechanisms: build the sealed
     batch reference (``PoolQueue.build_produced_output_batch_ref``) -> seal
-    a REAL CAS action request for the stage mover whose params carry the
-    reference -> stage the funding intent (reserved, no tokens moved) ->
-    publish the mover READY row (projection derived from the sealed
-    request, publication precondition satisfied by the staged intent) ->
-    fund by exact transfer of the producer's existing window
-    (``fund_output_batch``) -> ``commit_batch`` (files the immutable batch
-    against the pool record; no second acquisition from free). The fleet's
-    ordinary claim then admits the mover through the prepaid cover.
+    a movement action off the PRODUCER'S OWN SUBMISSION TEMPLATE through
+    the ordinary ``movement_actions.seal_movement_action`` (the same
+    construction pbrun's movement children use, with the submitter's
+    ``container_owner_fn``; the sealed request carries the batch
+    reference and the batch's own data-manifest input in its params) ->
+    stage the funding intent (reserved, no tokens moved) -> publish the
+    mover READY row -> fund by exact transfer of the producer's existing
+    window (``fund_output_batch``) -> ``commit_batch`` (files the
+    immutable batch against the pool record; no second acquisition from
+    free). The fleet's ordinary claim then admits the mover through the
+    prepaid cover, and the worker executes the sealed argv on the storage
+    owner.
 
-    The mover is constructed like every other movement node, never through
-    a parallel dispatcher: its interpreter, tool paths, stage root and
-    placement host come from the TIER RECORD the storage role announced
-    (``mover_python`` / ``mover_tools_root`` / ``mountpoint`` / ``host``,
-    discovered by ``tier_loop.py`` on the box that runs the movers), and
-    its command is the ordinary ``stage_move`` shape. A tier announcing no
+    The mover's interpreter, tool paths, stage root and placement host
+    come from the TIER RECORD the storage role announced
+    (``movement_actions.movement_tools`` semantics); a tier announcing no
     interpreter or tool root refuses rather than sealing this process's
-    paths onto a box that may not have them. When ``mover_template`` is
-    given (the sealed submission template a pbrun/PQ submitter holds), the
-    action inherits that template's inputs, code closure, environment and
-    execution scope exactly as ``seal_movement_action``'s movement
-    children do; without one, the action is self-contained with its
-    closure over the announced tools root (same-box dev sealing -- a
-    cross-box submitter must pass the template, whose checkout snapshot
-    becomes the published addressing). The stage data manifest may be
-    sealed as a request input by the submitter (the fleet path) or
-    supplied via ``manifest_path`` (``stage_move``'s own ``--manifest``
-    fallback; the path must exist on the box the mover runs on);
-    ``build_stage_manifest`` builds it from the sealed descriptors.
+    paths onto a box that may not have them. The command is the ordinary
+    paced ``stage_move`` shape; ``command_extra`` exists ONLY so a fixture
+    can append explicit flags such as ``--unpaced`` (no ZFS pacer in a
+    sandbox) -- production passes nothing. ``retry_policy`` defaults to
+    the ordinary mover policy (bounded attempts, retry-safe copy).
 
     The mover key is the content-addressed action key of the sealed
     request: retrying with identical inputs re-derives the same key and
@@ -1851,9 +1847,8 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     failing step's typed result under ``step``/``refusal``.
     """
 
-    import shlex
-
     from prismabuild import core as core_mod
+    from prismabuild import movement_actions
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod
 
@@ -1906,13 +1901,33 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         committed["funding"] = "prepaid"
         committed["duplicate"] = True
         return committed
-    kind = tiers_mod.capacity_kind_of(tier)
-    gib = tiers_mod.stage_tokens_for_bytes(total)
+    # The batch's stage data manifest, sealed as the request's data-manifest
+    # input exactly as a consumer submission's is: the mover finds it in its
+    # own sealed request, never on a caller's filesystem.
+    batch_view = {"entries": [dict(d) for d in descriptors],
+                  "batch_id": batch_id, "manifest_digest": manifest_digest}
+    mount_prefix = str(Path.commonpath(
+        [str(d["path"]) for d in descriptors]))
+    try:
+        manifest_body = build_stage_manifest(batch_view, mount_prefix)
+        import tempfile as _tempfile
+        handle, manifest_tmp = _tempfile.mkstemp(
+            prefix="produced-output-manifest-", suffix=".json")
+        with os.fdopen(handle, "w") as stream:
+            json.dump(manifest_body, stream, sort_keys=True)
+        try:
+            core_mod.load_data_manifest(manifest_tmp)
+            cas = core_mod.PrismaBuildCAS(cas_root)
+            manifest_input, _ = cas.ingest_input(
+                manifest_tmp,
+                input_id=core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        finally:
+            os.unlink(manifest_tmp)
+    except Exception as exc:
+        return {"ok": False, "step": "manifest", "refusal": str(exc)}
     # Movement-node resolution off the TIER RECORD (the ordinary path):
     # interpreter/tools/mountpoint/host are facts about the box that runs
-    # the movers, announced beside the tier by tier_loop.py. Sealing this
-    # process's interpreter or a checkout-relative tool path would produce
-    # an argv that cannot start on the only box it can be placed on.
+    # the movers, announced beside the tier by tier_loop.py.
     record = None
     for candidate in queue.tiers():
         if isinstance(candidate, Mapping) and str(
@@ -1922,28 +1937,22 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     if record is None:
         return {"ok": False, "step": "resolve",
                 "refusal": f"tier-not-announced: {tier}"}
-    mover_python = str(record.get("mover_python") or "")
-    tools_root = str(record.get("mover_tools_root") or "")
+    try:
+        mover_python, mover_tool, _egress_tool = (
+            movement_actions.movement_tools(record))
+    except SystemExit as exc:
+        return {"ok": False, "step": "resolve", "refusal": str(exc)}
     stage_root = str(record.get("mountpoint") or "")
-    host = str(record.get("host") or "")
-    if not mover_python.startswith("/") or not tools_root.startswith("/"):
-        return {"ok": False, "step": "resolve",
-                "refusal": (f"stage tier {tier} announces no interpreter or "
-                            f"tool root for its movement nodes "
-                            f"(mover_python={mover_python!r}, "
-                            f"mover_tools_root={tools_root!r}). tier_loop.py "
-                            f"discovers both on the box that runs the "
-                            f"movers; filling them in from this process "
-                            f"would seal an argv naming a python that is "
-                            f"not on that box")}
     if not stage_root.startswith("/"):
         return {"ok": False, "step": "resolve",
                 "refusal": (f"stage tier {tier} announces no mountpoint "
                             f"to write into")}
-    mover_tool = str(Path(tools_root) / "stage_move.py")
+    host = str(record.get("host") or "")
+    kind = tiers_mod.capacity_kind_of(tier)
+    gib = tiers_mod.stage_tokens_for_bytes(total)
     command = [mover_python, mover_tool,
                "--pool-root", str(queue.root),
-               "--cas-root", str(cas_root),
+               "--cas-root", str(cas.root),
                "--consumer-action-key", batch_ns,
                "--tier-id", tier,
                "--stage-root", stage_root,
@@ -1955,70 +1964,25 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
                "--residency-root", str(output_fragment_root(
                    Path(queue.root) / pool_mod.RESIDENCY)),
                "--readers", "2"]
-    if manifest_path is not None:
-        command += ["--manifest", str(Path(manifest_path).resolve())]
-    if unpaced:
-        # Dev/unpaced: the fleet's pacer needs a live ZFS pool's member
-        # devices; the copy itself is identical without it.
-        command += ["--unpaced"]
-    # The ordinary movement wrapper: the fleet tool writes no result file,
-    # so the log the wrapper tees IS the declared result.
-    log_name = f"produced-output-mover-{batch_id}.log"
-    argv = ["/bin/bash", "--noprofile", "--norc", "-c",
-            f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
-            f"exit ${{PIPESTATUS[0]}}"]
-    if mover_template is not None:
-        task = {**dict(mover_template["task"]),  # type: ignore[index]
-                "argv": argv, "result_path": log_name}
-        inputs = list(mover_template["inputs"])  # type: ignore[index]
-        code_closure = dict(mover_template["code_closure"])  # type: ignore[index]
-        environment = dict(mover_template["environment"])  # type: ignore[index]
-        execution_scope = dict(mover_template["execution_scope"])  # type: ignore[index]
-    else:
-        task = {"definition_id": "prismabuild/produced-output-mover",
-                "definition_version": "v1",
-                "task_class": "generation", "determinism": "deterministic",
-                "artifact_family": "generic", "artifact_kind": "generic",
-                "argv": argv, "working_directory": ".",
-                "result_path": log_name}
-        inputs = []
-        # Same-box dev sealing: materialize a dedicated workdir carrying
-        # the announced tool bytes and close over exactly those files, so
-        # the closure verifies wherever the action executes. A cross-box
-        # submitter passes mover_template instead and inherits the
-        # submission's closure + snapshot, as movement children do.
-        workdir = Path(queue.root) / "produced-output-mover-seal"
-        try:
-            workdir.mkdir(parents=True, exist_ok=True)
-            import shutil as _shutil
-            for _tool in ("stage_move.py", "prewarm_loop.py",
-                          "stage_release.py"):
-                _shutil.copyfile(Path(tools_root) / _tool,
-                                 workdir / _tool)
-            code_closure = core_mod.build_code_closure(
-                workdir, ["stage_move.py", "prewarm_loop.py",
-                          "stage_release.py"])
-        except Exception as exc:
-            return {"ok": False, "step": "seal", "refusal": str(exc)}
-        environment = {"variables": {}, "toolchain": {}}
-        execution_scope = {"portability": "portable",
-                           "platform_key": None, "host_class": None}
-    body = {
-        "schema": core_mod.ACTION_SCHEMA_V2,
-        "task": task,
-        "inputs": inputs,
-        "code_closure": code_closure,
-        "params": {"produced_output_batch": dict(ref),
-                   "command": list(command),
-                   "demand": {"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
-                   "placement": {"required_tags": [host] if host else []}},
-        "environment": environment,
-        "execution_scope": execution_scope,
-    }
+    command += [str(flag) for flag in command_extra]
+    mover_retry_policy = (dict(retry_policy) if retry_policy is not None
+                          else {"max_attempts": 3, "retry_safe": True})
     try:
-        action = core_mod.seal_action(body)
-        cas = core_mod.PrismaBuildCAS(cas_root)
+        action = movement_actions.seal_movement_action(
+            mover_template,
+            command=command,
+            demand={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
+            tags=[host] if host else [],
+            log_name=f"produced-output-mover-{batch_id}.log",
+            retry_policy=mover_retry_policy,
+            container_owner_fn=container_owner_fn,
+            extra_params={
+                "produced_output_batch": dict(ref),
+                "data_manifest": {"input": manifest_input},
+            })
         cas.publish_action_request(action)
+    except SystemExit as exc:
+        return {"ok": False, "step": "seal", "refusal": str(exc)}
     except Exception as exc:
         return {"ok": False, "step": "seal", "refusal": str(exc)}
     mover = str(action["action_key"])
@@ -2031,13 +1995,14 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         staged["step"] = "stage"
         return staged
     try:
+        template_inputs = mover_template.get("inputs") or []
         publish_kwargs: dict[str, object] = {}
-        if mover_template is not None and inputs:
+        if template_inputs:
             # The movement-child addressing: the submission's checkout
             # snapshot input, exactly as pbrun's movement rows publish.
-            publish_kwargs["checkout_snapshot"] = inputs[0]
+            publish_kwargs["checkout_snapshot"] = template_inputs[0]
         else:
-            publish_kwargs["checkout_root"] = str(workdir)
+            publish_kwargs["checkout_root"] = str(Path.cwd())
         queue.publish(
             action_key=mover, cas_root=str(cas.root),
             worker_script=mover_tool, **publish_kwargs,

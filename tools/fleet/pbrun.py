@@ -82,8 +82,8 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    adaptive_gpu, container_images, core as pb, decomposition as dc, pool,
-    residency_plan, slurm_lane, storage_tiers,
+    adaptive_gpu, container_images, core as pb, decomposition as dc,
+    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -3380,7 +3380,7 @@ _RESUME_COMMANDS = frozenset({
 
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
-SEALED_ARGV0 = "/bin/bash"
+SEALED_ARGV0 = movement_actions.SEALED_ARGV0
 
 
 def detached_attempts_refusal(max_attempts: int) -> str:
@@ -4942,13 +4942,11 @@ def seal_action_from_template(
 
 
 #: The params a movement node keeps from the template it was cut off.  The
-#: rest are the consumer's own question -- its progress policy bounds its
-#: work and not a copy, its profiler mode profiles it and not a copy, its GPU
-#: fields describe a device no mover touches -- and a mover that carried them
-#: would be admitted against reservations it does not use.
-_MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "retry_policy", "data_manifest")
-
-
+#: construction itself now lives in ``prismabuild.movement_actions`` (the
+#: one ordinary movement path, shared verbatim with the produced-output
+#: writer lane); pbrun keeps its surface and injects its own
+#: ``container_owner``, whose definition stays with the submission
+#: machinery that owns git identity and stamp names.
 def seal_movement_action(
     template: Mapping[str, object],
     *,
@@ -4960,77 +4958,18 @@ def seal_movement_action(
 ) -> dict[str, object]:
     """Seal one movement or egress node off the submission that needs it.
 
-    Not ``seal_action_from_template``: that function's refusal to let a child
-    restate the template's ``demand`` or ``placement`` is deliberate and
-    right, because a decomposed child measures a slice of the *same* work
-    under the *same* reservation.  A movement node is not that.  It is a
-    sibling that shares a checkout snapshot and a data manifest and nothing
-    else: its command is a fleet tool rather than the submitter's, its demand
-    is tier tokens rather than CPU and GPU, and it is placed on the box that
-    owns the stage rather than on the box that will compute.  Bending the
-    child path to carry that would mean a child whose demand no longer
-    describes it -- which is the failure the refusal exists to prevent.
-
-    What it does keep is everything an action's identity is made of and a
-    mover does not vary: the same ``inputs[0]`` checkout snapshot, the same
-    code closure, the same execution scope, the same environment.  So a mover
-    is an ordinary sealed action with an ordinary key, and the data manifest
-    stays in its inputs -- which is how ``stage_move`` finds the list its
-    range refers to without being handed a path.
+    See ``prismabuild.movement_actions.seal_movement_action`` for the
+    construction: a movement node is a sibling that shares the submission's
+    checkout snapshot, code closure, execution scope and environment base,
+    while its command is a fleet tool, its demand is tier tokens, and it is
+    placed on the box that owns the stage. The submitter's
+    ``container_owner`` settles ownership here, exactly as before.
     """
 
-    params: dict[str, object] = {
-        name: template["params"][name]                    # type: ignore[index]
-        for name in _MOVEMENT_PARAM_KEYS
-        if name in template["params"]                     # type: ignore[operator]
-    }
-    params["command"] = list(command)
-    params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
-    params["placement"] = {"required_tags": list(tags)}
-    if retry_policy is not None:
-        # A mover's retry policy is its own, not the consumer's (#603).  The
-        # template's belongs to work that may not be safe to run twice; a mover
-        # copies into a temporary, verifies the digest against the manifest
-        # entry and then ``os.replace``s, so a second attempt either finds the
-        # bytes already right or redoes the copy that failed.  Inheriting a
-        # single-attempt policy makes one transient read error cost the whole
-        # staged range, and the window behind it.
-        params["retry_policy"] = dict(retry_policy)
-    variables = dict(template["environment"]["variables"])  # type: ignore[index]
-    variables.pop(CONTAINER_OWNER_ENV, None)
-    variables.pop(CONTAINER_MARKER_ENV, None)
-    marker_root = template["marker_root"]
-    owner = container_owner(
-        params["command"], params["cwd"], params["demand"], variables,
-        determinism=template["task"]["determinism"],      # type: ignore[index]
-        retry_policy=params["retry_policy"],
-        marker_root=marker_root,
-        identity=template["checkout_identity"],
-        logical_cwd=params["cwd"],
-        placement=params["placement"],
-    )
-    variables[CONTAINER_OWNER_ENV] = owner
-    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
-    body = {
-        "schema": pb.ACTION_SCHEMA_V2,
-        "task": {
-            **template["task"],                           # type: ignore[dict-item]
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
-                     f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
-            "result_path": log_name,
-        },
-        "inputs": template["inputs"],
-        "code_closure": template["code_closure"],
-        "params": params,
-        "environment": {**template["environment"], "variables": variables},
-        "execution_scope": template["execution_scope"],
-    }
-    try:
-        return pb.seal_action(body)
-    except pb.ActionContractError as exc:
-        raise SystemExit(f"pbrun: refusing to seal a movement action: {exc}") from None
+    return movement_actions.seal_movement_action(
+        template, command=command, demand=demand, tags=tags,
+        log_name=log_name, retry_policy=retry_policy,
+        container_owner_fn=container_owner)
 
 
 def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
@@ -5096,39 +5035,13 @@ def movement_tools(tier: Mapping[str, object], *,
                    mover: str = "stage_move.py") -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.
 
-    ``mover`` names the movement node's script -- ``stage_move.py`` for a
-    stage tier's pool-to-stage copy, ``ram_promote.py`` for the ram tier's
-    stage-to-tmpfs promotion (#640); the egress node is ``stage_release.py``
-    for both, pointed at whichever root the row names.
-
-    Off the tier record, never off this process.  A mover runs on the box that
-    owns the stage, and the box that seals it is very often a different one of
-    a different architecture: PrismaQuant's dispatcher submits from an aarch64
-    Spark while the stage is dl380g10's.  ``sys.executable`` here names a venv
-    that does not exist there, and ``RUNTIME_ROOT`` is this process's view of
-    the generation; sealing either produces an action whose argv cannot start
-    on the only box it can be placed on -- and it would fail at exec time,
-    after the tier has already reserved its capacity.
-
-    ``tier_loop.py`` discovers both on that box and announces them beside
-    ``mountpoint``, which is the same kind of fact.  A tier that carries
-    neither is a tier announced by a generation older than this, and the
-    refusal says so rather than guessing.
+    The construction lives in ``prismabuild.movement_actions`` (the one
+    ordinary movement path, shared verbatim with the produced-output
+    writer lane); see there for why the answer comes off the tier record
+    and never off this process.
     """
 
-    tier_id = str(tier.get("tier_id") or "?")
-    python = str(tier.get("mover_python") or "")
-    root = str(tier.get("mover_tools_root") or "")
-    if not python.startswith("/") or not root.startswith("/"):
-        raise SystemExit(
-            f"pbrun: stage tier {tier_id} announces no interpreter or tool "
-            f"root for its movement nodes (mover_python={python!r}, "
-            f"mover_tools_root={root!r}).  tier_loop.py discovers both on the "
-            f"box that runs the movers; a tier last announced by a generation "
-            f"older than this one is the usual cause, and publishing the "
-            f"runtime again fixes it.  Filling them in from this process "
-            f"would seal an argv naming a python that is not on that box")
-    return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
+    return movement_actions.movement_tools(tier, mover=mover)
 
 
 def current_fill_offer(tier: Mapping[str, object],
