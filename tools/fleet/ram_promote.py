@@ -54,6 +54,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 import prewarm_loop  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
@@ -125,6 +126,59 @@ def promote(args, *, stop=None) -> dict[str, object]:
         return _refused(args, "ram_source_stage_absent",
                         epoch=str(epoch["epoch"]))
 
+    # The source coverage proof, before a byte is read: the window may span
+    # several stage movers, so every entry must be shown covered by published
+    # stage material with matching length (and digest where the manifest
+    # declares one).  Missing coverage refuses boundedly here -- never a
+    # faked full file, never the pool path at the manifest offset.  Proof
+    # only, no durable pin: this promotion's live claim (parsed by the stage
+    # egress from the sealed request) protects the sources through the copy,
+    # while a pin would outlive a crashed promotion with no terminal to
+    # contain it against.
+    residency_root = Path(args.residency_root) if args.residency_root else None
+    queue = pool.PoolQueue(Path(args.pool_root))
+    residence = (Path(residency_root) if residency_root is not None
+                 else queue.root / pool.RESIDENCY)
+    covers: list[dict[str, str]] = []
+    stage_tier: str | None = None
+    for fragment in residency_map.read_fragments(
+            residence, args.consumer_action_key):
+        if (str(fragment.get("tier_id") or "") == str(args.tier_id)
+                or str(fragment.get("manifest_sha256") or "")
+                != str(args.manifest_sha256)):
+            continue
+        if (os.path.normpath(str(fragment.get("stage_root") or ""))
+                != os.path.normpath(str(source))):
+            continue
+        mover = str(fragment.get("mover_action_key") or "")
+        if stage_tier is None:
+            stage_tier = str(fragment.get("tier_id") or "")
+        elif str(fragment.get("tier_id") or "") != stage_tier:
+            return _refused(args, "source-spans-tiers",
+                            epoch=str(epoch["epoch"]))
+        covers.append({"mover_action_key": mover,
+                       "manifest_sha256": str(args.manifest_sha256)})
+    if not covers:
+        return _refused(args, "source-coverage-gap",
+                        epoch=str(epoch["epoch"]))
+    expected = {residency_map.residency_map_key(
+        str(entry["path"]), int(entry["offset"])): {
+            "bytes": int(entry["bytes"]), "sha256": entry.get("sha256")}
+        for entry in window}
+    proof = reader_lease.acquire(
+        queue, consumer_action_key=args.consumer_action_key,
+        attempt={"nonce": str(args.action_key), "scope_id": "ram-promotion"},
+        tier_id=stage_tier or "", epoch="",
+        span={"start_bytes": int(args.range_start_bytes),
+              "end_bytes": int(args.range_end_bytes)},
+        holder={"host": socket.gethostname(), "pid": os.getpid()},
+        acquire_token=f"promote:{args.action_key}", covers=covers,
+        expected=expected, residency_root=residence, file_pin=False)
+    if not proof.get("ok"):
+        return _refused(args, str(proof.get("refusal")),
+                        epoch=str(epoch["epoch"]))
+    proven = {str(item["key"]): item for item in proof["entries"]}  # type: ignore[index]
+
     # The same destination-collision check the stage mover makes: two entries
     # that derive one staged name would let the later copy overwrite the
     # earlier while both fragments vouch for it.
@@ -135,6 +189,21 @@ def promote(args, *, stop=None) -> dict[str, object]:
         relative = stage_relative(path, offset, int(entry["bytes"]),
                                   mount_prefix=mount_prefix,
                                   whole_file=path in whole)
+        # The staged name is taken from the proof, never recomputed on
+        # trust: a replace between the proof and this loop must refuse,
+        # not read a new file under an old name.
+        key = residency_map.residency_map_key(path, offset)
+        pinned = proven.get(key)
+        if (pinned is None or os.path.normpath(
+                str(source / relative)) != os.path.normpath(
+                    str(pinned["stage_path"]))):
+            return _refused(args, "source-identity-changed",
+                            epoch=str(epoch["epoch"]))
+        if entry.get("sha256") is None:
+            # A manifest-null digest borrows the stage sidecar's verified
+            # binding, so the copy below verifies against content evidence
+            # rather than copying unchecked.
+            entry["sha256"] = str(pinned["sha256"])
         claimed = destinations.get(relative)
         if claimed is not None:
             raise SystemExit(
@@ -198,11 +267,15 @@ def promote(args, *, stop=None) -> dict[str, object]:
         "errors": copier.errors,
         "unix": time.time(),
     }
+    material_generation = reader_lease.mint_generation()
     if overran:
         receipt["refusal"] = "residency_overran_reservation"
         receipt["complete"] = False
         residency_map.fragment_path(
             Path(args.residency_root), args.consumer_action_key,
+            args.action_key).unlink(missing_ok=True)
+        reader_lease.material_path(
+            residence, args.consumer_action_key,
             args.action_key).unlink(missing_ok=True)
     elif copier.staged:
         # Once, at the end, on purpose: see the module docstring.  The
@@ -218,6 +291,20 @@ def promote(args, *, stop=None) -> dict[str, object]:
             "manifest_sha256": args.manifest_sha256,
             "entries": copier.staged,
         })
+        # The fragment goes first, then the sidecar that dates it (same
+        # crash order as the stage mover: a vouch without a date is safe
+        # and healed by rerun).
+        if copier.sidecar:
+            reader_lease.write_material(
+                residence,
+                consumer_action_key=args.consumer_action_key,
+                mover_action_key=args.action_key,
+                tier_id=args.tier_id, stage_root=str(args.ram_root),
+                manifest_sha256=args.manifest_sha256,
+                generation=material_generation, entries=copier.sidecar,
+                epoch=str(epoch["epoch"]))
+    receipt["material_generation"] = material_generation
+    receipt["source_covers"] = proof.get("covers")
     if not copier.staged and not overran:
         receipt["refusal"] = receipt.get("refusal") or "residency_moved_nothing"
     return receipt

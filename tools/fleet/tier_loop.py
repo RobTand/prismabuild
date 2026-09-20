@@ -46,6 +46,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -1167,6 +1168,27 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         residency_map.write_fragment(residency_root, residency_map.reissue(
             source, consumer_action_key=consumer_action_key,
             mover_action_key=new_key))
+        # Same bytes, same generation: the successor dates its vouching with
+        # the publish it took over, never a new one (a new generation is for
+        # new bytes).  Legacy ranges without a sidecar adopt without one.
+        old_material = reader_lease.read_material(
+            residency_root, old_consumer, old_key)
+        if isinstance(old_material, Exception):
+            return {**outcome, "reason": "range_not_named",
+                    "error": repr(old_material)}
+        if isinstance(old_material, dict):
+            material_entries = old_material.get("entries")
+            assert isinstance(material_entries, dict)
+            reader_lease.write_material(
+                residency_root, consumer_action_key=consumer_action_key,
+                mover_action_key=new_key,
+                tier_id=str(source.get("tier_id") or ""),
+                stage_root=str(source.get("stage_root") or ""),
+                manifest_sha256=str(source.get("manifest_sha256") or ""),
+                generation=str(old_material.get("generation") or ""),
+                entries=material_entries,  # type: ignore[arg-type]
+                epoch=(str(source.get("epoch") or "")
+                       if source.get("epoch") is not None else None))
         with queue.stage_ownership_lock(str(source["stage_root"]),
                                         blocking=False) as owned:
             if not owned:
@@ -1190,6 +1212,12 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 return {**outcome, "reason": "partial_transfer",
                         "tokens_moved": moved, "tokens_expected": expected}
             source_path.unlink(missing_ok=True)
+            try:
+                reader_lease.material_path(
+                    residency_root, old_consumer,
+                    old_key).unlink(missing_ok=True)
+            except OSError:
+                pass
         entries = dict(source["entries"])                # type: ignore[arg-type]
         # The successor's own phase boundaries, which the descriptor match
         # already proved equal to the range this copy made resident.  Taken

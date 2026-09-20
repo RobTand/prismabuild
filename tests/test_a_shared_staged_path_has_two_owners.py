@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
 from stage_move import _Copier, whole_file_paths  # noqa: E402
@@ -142,6 +142,22 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     stage_copier.run(entries, whole=set(), stop=threading.Event())
     assert stage_copier.errors == []
     assert stage_copier.bytes_staged == 2 * MIB
+
+    # What the stage mover filed before this promotion was ever published:
+    # the promotion proves its source window against published material.
+    residency = tmp_path / "residency"
+    residency_map.write_fragment(residency, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER_A, "mover_action_key": MOVER_B,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": "0" * 64,
+        "entries": stage_copier.staged,
+    })
+    reader_lease.write_material(
+        residency, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_B,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256="0" * 64,
+        generation=reader_lease.mint_generation(),
+        entries=stage_copier.sidecar)
 
     args = ram_promote.build_parser().parse_args([
         "--pool-root", str(tmp_path / "pool-root"),
