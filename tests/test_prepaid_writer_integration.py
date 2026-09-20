@@ -189,14 +189,18 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     pool._write_json_atomic(path, record)
 
 
-def _producer_request(tmp_path: Path, cas_root: Path) -> str:
+def _producer_request(tmp_path: Path, cas_root: Path,
+                      template: dict) -> str:
     """Seal and file the PRODUCER's own request; return its action key.
 
     The driver recovers the movement template from exactly this request at
     runtime (inputs/closure/environment/scope/task/cwd), so the fixture
     owner IS the parent request's content-addressed key, as in production.
-    The closure covers a fixture checkout carrying the fleet tools -- the
-    child mover inherits it and executes against the same checkout.
+    The request also seals the produced-output template declaration the
+    accepted-main egress seam requires (template envelope as a CAS input
+    plus params.produced_output_template via the real build_declaration),
+    and the closure covers a fixture checkout carrying the fleet tools --
+    the child mover inherits it and executes against the same checkout.
     """
     checkout = tmp_path / "mover-checkout"
     tools = checkout / "tools" / "fleet"
@@ -204,6 +208,12 @@ def _producer_request(tmp_path: Path, cas_root: Path) -> str:
     for name in ("stage_move.py", "prewarm_loop.py", "stage_release.py"):
         (tools / name).write_bytes((REPO / "tools" / "fleet" / name)
                                    .read_bytes())
+    cas = pb.PrismaBuildCAS(cas_root)
+    envelope = tmp_path / "produced-template.json"
+    envelope.write_text(json.dumps(template, sort_keys=True))
+    template_input, _ = cas.ingest_input(
+        envelope, input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID)
+    declaration = po.build_declaration(template, template_input)
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {"definition_id": "tests/produced-prepaid-producer",
@@ -212,19 +222,20 @@ def _producer_request(tmp_path: Path, cas_root: Path) -> str:
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "argv": ["/bin/true"], "working_directory": ".",
                  "result_path": "result"},
-        "inputs": [],
+        "inputs": [template_input],
         "code_closure": pb.build_code_closure(
             checkout, ["tools/fleet/stage_move.py",
                        "tools/fleet/prewarm_loop.py",
                        "tools/fleet/stage_release.py"]),
-        "params": {"cwd": ".", "command": ["/bin/true"]},
+        "params": {"cwd": ".", "command": ["/bin/true"],
+                   "produced_output_template": declaration},
         "environment": {"variables": {"PATH": "/usr/bin:/bin"},
                         "toolchain": {}},
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     }
     action = pb.seal_action(body)
-    pb.PrismaBuildCAS(cas_root).publish_action_request(action)
+    cas.publish_action_request(action)
     return str(action["action_key"])
 
 
@@ -279,10 +290,10 @@ def test_admit_funded_window_reports_delivered_binding(tmp_path: Path) -> None:
 def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     """One batch through the production path, free credits exhausted."""
     cas_root = tmp_path / "cas"
-    owner = _producer_request(tmp_path, cas_root)
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
-    template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner, cas_root)
     payload = bytes(range(256)) * 8  # 2048 real bytes
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -349,10 +360,10 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
 def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     """A second sequential batch funds from disjoint names; capacity returns."""
     cas_root = tmp_path / "cas"
-    owner = _producer_request(tmp_path, cas_root)
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
-    template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -465,9 +476,9 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
 
 def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     """D1: release never retires a committed batch's funding."""
-    owner = _producer_request(tmp_path, tmp_path / "cas")
-    q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, tmp_path / "cas", template)
+    q = _queue(tmp_path)
     inst = _bind(q, template, owner, tmp_path / "cas")
     descs = _descriptors(tmp_path, template, inst, "p1", b"d" * 300)
     _prewrite(q, inst, template, "b1", TIER, descs)
