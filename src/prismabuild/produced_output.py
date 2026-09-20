@@ -1991,10 +1991,10 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         try:
             workdir.mkdir(parents=True, exist_ok=True)
             import shutil as _shutil
-            for _name in ("stage_move.py", "prewarm_loop.py",
+            for _tool in ("stage_move.py", "prewarm_loop.py",
                           "stage_release.py"):
-                _shutil.copyfile(Path(tools_root) / _name,
-                                 workdir / _name)
+                _shutil.copyfile(Path(tools_root) / _tool,
+                                 workdir / _tool)
             code_closure = core_mod.build_code_closure(
                 workdir, ["stage_move.py", "prewarm_loop.py",
                           "stage_release.py"])
