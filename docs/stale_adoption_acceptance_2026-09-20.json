@@ -1,0 +1,52 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "67d429594a934b7f65437cfbb5b0957e5718de32",
+  "ledger_commit": "e9b88463c6b07b4af87d3c7c75e09607163f7fe4",
+  "scope": [
+    "SM-02",
+    "INV-07"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "fix/stale-adoption-755",
+    "issue": "https://github.com/RobTand/prismabuild/issues/755",
+    "pr": "https://github.com/RobTand/prismabuild/pull/756",
+    "source": "e9b88463c6b07b4af87d3c7c75e09607163f7fe4",
+    "validated_repairs": [
+      {
+        "id": "SM-02",
+        "actions": [
+          "31045eee4854",
+          "5e8573248e99",
+          "af860872900c",
+          "5e35e75b73f5",
+          "5548052482f2"
+        ],
+        "outcome": "103 passed and one explicit inherited window-pressure failure:6 current-donor/reuse tests,57 lease,14 adoption,15 shared-path,11 RAM-publication. Actual terminals/logs/receipts and source snapshots checked; snapshots add checkout metadata only."
+      },
+      {
+        "id": "INV-07",
+        "actions": [
+          "388e4a5dea0a"
+        ],
+        "outcome": "Pre-fix tests-only RED: three functional failures (stale donation, failed current-donor selection, refused valid current reuse), plus two changed-refusal-message expectations. Positive fixed tests read real bytes through the pinned reader and preserve the current inode."
+      }
+    ],
+    "remaining_gaps": [
+      "PR746 orphan-pressure regression reproduced on pristine mainab353 by44b15d345804; original author owns correction before deployment",
+      "Actual live old-fixture retry and RAM/both-Spark qualification",
+      "No full-workload/performance or complete contract claim"
+    ],
+    "note": "Scoped adoption repair accepted. Legacy no-material behavior is unchanged and not newly qualified. The current live dataset has a surviving valid donor7378ecc3, so next runtime can exercise recovery without deleting or rehashing cache bytes."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

@@ -61,7 +61,8 @@ Root cause (two coupled defects, fixed here):
 `/home/rob/venvs/pb-cpu/bin/python`, 1 worker / 1 thread / 2 GiB per shard)
 
 RED on the pre-fix tree (tests-only commits `3cc5f5ab3e0` then helper fix,
-atop merged main `ab3531d`): **5 failed in 7.40s**, each reproducing the
+atop merged main `ab3531d`): **5 failed in 7.40s**: three functional
+regressions and two refusal-message expectations. The functional failures reproduce the
 live failure shape — the tier loop's captured event
 `range-adopted ... adopted_from 61646f6e6f72...` (`adonor0`, the stale
 donor), and the publisher's verbatim live refusal
