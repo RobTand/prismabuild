@@ -97,12 +97,12 @@ def _shaped_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
 
 
 def _publish_claimant(queue: pool.PoolQueue) -> None:
-    """A real READY mover row demanding the whole honest supply."""
+    """A real READY mover demanding more than the two backed credits."""
     queue.publish(
         action_key=CLAIM_KEY, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
         worker_script=str(queue.root / "worker.py"),
-        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 2},
+        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 3},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": "f" * 64, "manifest_bytes": MIB,
                    "range_start_bytes": 0, "range_end_bytes": MIB},
@@ -129,8 +129,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
 
     real_glob = pool._glob
 
-    def _hooked_glob(path, pattern):
-        result = real_glob(path, pattern)
+    def _observe_free_scan(path, pattern, result):
         if (not fired["glob"] and str(path) == str(free_dir)
                 and str(pattern) == "*-*"):
             fired["glob"] = True
@@ -145,7 +144,19 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
             observed["helper_blocked"] = not helper_done.is_set()
         return result
 
+    def _hooked_glob(path, pattern):
+        return _observe_free_scan(path, pattern, real_glob(path, pattern))
+
     monkeypatch.setattr(pool, "_glob", _hooked_glob)
+    # The fixed minter uses the strict census. Interrupt the same actual
+    # headroom scan on both revisions, before either scans held tokens.
+    if hasattr(pool, "_glob_visible"):
+        real_visible = pool._glob_visible
+
+        def _hooked_visible(path, pattern):
+            return _observe_free_scan(path, pattern, real_visible(path, pattern))
+
+        monkeypatch.setattr(pool, "_glob_visible", _hooked_visible)
     real_reclaim = pool.PoolQueue._reclaim_dead_markers
 
     def _hooked_reclaim(self, ledger, wanted):
@@ -205,8 +216,8 @@ def test_r6_reclaim_headroom_atomic_with_exclusion(tmp_path: Path,
                                                    monkeypatch) -> None:
     """GREEN: the real race under the guard closes exact through the
     real claim boundary.  RED (same test on base ``3420951679``): prefix
-    3, claim wins holding the reissued dead name, books converge at 2
-    with the phantom held -- see the R6 report for the action key."""
+    3, claim wins holding all three credits against backing of two, and
+    free-only trimming cannot repair the over-admission."""
     queue, dead_name = _shaped_queue(tmp_path)
     observed = _run_scan_gap_interleaving(queue, monkeypatch)
     # The release serialized outside the apply (helper blocked on the
