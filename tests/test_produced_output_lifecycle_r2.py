@@ -552,7 +552,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-a",
         stage_root=str(tmp_path / "stage-mut-a"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY))))["ok"] is False
+            queue.root / pool.RESIDENCY)))["ok"] is False
     assert po.reclaim_origin(
         queue, instance, template, batch_id="mut-a")["ok"] is False
     assert _state(batch_a) == before
@@ -567,7 +567,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-b",
         stage_root=str(tmp_path / "stage-mut-b"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY))))["ok"] is False
+            queue.root / pool.RESIDENCY)))["ok"] is False
     assert po.reclaim_origin(
         queue, instance, template, batch_id="mut-b")["ok"] is False
     assert _state(batch_b) == before
@@ -582,7 +582,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-c",
         stage_root=str(tmp_path / "stage-mut-c"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY))))
+            queue.root / pool.RESIDENCY)))
     assert refused["ok"] is False
     assert _state(batch_c) == before
     assert calls == []
