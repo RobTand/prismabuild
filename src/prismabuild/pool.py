@@ -1996,7 +1996,7 @@ class ResourceLedger:
         return retired
 
     def retire_held(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
-        """Destroy up to ``counts`` HELD tokens of one holder, permanently.
+        """Destroy up to ``counts`` HELD tokens of one holder, atomically.
 
         The shared-egress decharge (#733): a mover whose bytes stay on the
         stage under a co-owner must not hand its tokens back as writable
@@ -2004,23 +2004,21 @@ class ResourceLedger:
         leaks the tier, freeing them mints a phantom.  Destroying them drops
         the holder and the total together, so free never moves.
 
-        The mint marker is deliberately KEPT while the token is unlinked.
-        A destroyed name with no marker would be re-minted into free by the
-        next ``ensure_capacity`` whose wanted range covers its index -- a
-        transient phantom a concurrent claimant could steal before the same
-        apply's retire removed it again.  A kept marker names a deliberately
-        retired index, which ``ensure_capacity`` skips forever: the name can
-        never reappear as writable free while the bytes remain.  Each
-        destroyed name is also recorded durably beside the markers
-        (``minted/dead/<name>``), so honest regrowth can reclaim exactly
-        those slots when backing exists -- see
-        :meth:`PoolQueue._reclaim_dead_markers`.  There is no
-        marker/token ordering problem to solve -- a single unlink per
-        token, retried idempotently -- and no second ledger: the dead
-        records live in the same ledger directory as the markers
-        themselves.  Missing tokens (an earlier decharge, a raced release)
-        count as already gone, so this is safe to call twice; only actual
-        destructions are returned.
+        The disposition is one atomic rename per token, from its holder
+        directory into the ledger's dead namespace (``minted/dead/``):
+        either the token is still held (rename not yet done) or it is
+        dead (rename done) -- no unlink-then-record gap for a crash to
+        split, and no separate record whose creation can fail apart from
+        the disposition itself.  The mint marker is never touched, so the
+        name can never be re-minted into free while the bytes remain;
+        honest regrowth reissues exactly these filed names when backing
+        exists (see :meth:`PoolQueue._reclaim_dead_markers`).  A second
+        destroy of the same name finds it already dead and counts it
+        without moving anything; a name live elsewhere is never taken.
+        There is no second ledger: the dead namespace lives in the same
+        ledger directory as the markers themselves.  Missing tokens count
+        as already gone, so this is safe to call twice; only actual
+        dispositions are returned.
         """
 
         destroyed: dict[str, int] = {}
@@ -2038,26 +2036,25 @@ class ResourceLedger:
                     break
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                     continue
-                try:
-                    token.unlink()
-                except OSError:
-                    continue
-                taken += 1
                 if dead_dir is None:
                     dead_dir = self.minted_dir / "dead"
                     try:
                         dead_dir.mkdir(parents=True, exist_ok=True)
                     except OSError:
                         dead_dir = None
-                if dead_dir is not None:
-                    try:
-                        descriptor = os.open(
-                            dead_dir / token.name,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-                    except OSError:
-                        pass
-                    else:
-                        os.close(descriptor)
+                if dead_dir is None:
+                    # Nowhere to journal the disposition: retain the token
+                    # and surface the shortfall through the missing count.
+                    continue
+                try:
+                    os.rename(token, dead_dir / token.name)
+                except FileNotFoundError:
+                    if (dead_dir / token.name).exists():
+                        taken += 1
+                    continue
+                except OSError:
+                    continue
+                taken += 1
             if taken:
                 destroyed[kind] = taken
         self._drop_empty_holder(holder)
@@ -5385,23 +5382,32 @@ class PoolQueue:
     def _reclaim_dead_markers(
         self, ledger: ResourceLedger, wanted: Mapping[str, int],
     ) -> dict[str, int]:
-        """Reclaim destroyed names the wanted number has headroom for (#733 R4).
+        """Reissue destroyed names the wanted number has headroom for (#733 R5).
 
-        The authority is the durable dead set (``minted/dead/`` names filed
-        by :meth:`ResourceLedger.retire_held`), never an absence inferred
-        from listings: no scan pair here can miss a rename the way the
-        retired ``ensure_capacity`` analysis showed.  For each name in the
-        set, up to per-kind ``wanted - live`` headroom: guard-stat the
-        token absent from free and held, then unlink the dead record and
-        the original marker, so the ordinary ensure below recreates the
-        slot inside the same wanted bound.  Every intermediate state stays
-        ``<= wanted`` (backed): nothing unbacked is ever claimable.  A
-        guard that finds a live token drops the stale dead record and
-        leaves the original marker alone -- adoption re-marks through its
-        existing path, and the next apply converges.  Dead beyond headroom
-        wait for honest growth.  Crash between set operations converges
-        (markerless and tokenless is never-minted; a rename-caught token
-        is re-marked by adoption).
+        The authority is the durable dead set (``minted/dead/``): each entry
+        IS the destroyed token file itself, renamed there atomically by
+        :meth:`ResourceLedger.retire_held`, so no scan infers absence and
+        no unlink-then-record gap exists.  Reissue is one atomic rename
+        back to free; the original marker was never touched, so the
+        reissued token is immediately consistent -- no ensure pass needed,
+        no transient unmarked state.  Only names with no live token
+        anywhere are reissued, up to per-kind ``wanted - live`` headroom;
+        a name live in free is deduped (its dead file removed, nothing
+        counted), a name live in held drops its stale dead file and stays
+        charged.  Dead beyond headroom wait for honest growth.
+        Intermediate states stay within wanted except for renames landing
+        mid-apply, which converge by the same accounting (see below).
+
+        Residual, stated precisely: the headroom gate counts live tokens
+        with directory listings, and a token renamed between the free scan
+        and the holder scan is missed by both, so headroom can overstate
+        by the rename-in-flight count.  An over-reissued token is an
+        ordinary free token: the same apply's retire trims it when the
+        total exceeds wanted, and only a claimant interleaving inside the
+        apply window can hold it past that trim -- bounded by the
+        in-flight count, stranded at most till its holder finishes, the
+        same dynamics as the documented ``ensure_capacity`` duplicate.
+        The common no-race case is exact.
         """
 
         reclaimed: dict[str, int] = {}
@@ -5414,64 +5420,45 @@ class PoolQueue:
         if not names:
             return reclaimed
         try:
-            live_count: dict[str, int] = {}
+            live: set[str] = set()
             for path in _glob(ledger.free_dir, "*-*"):
-                kind = path.name.rsplit("-", 1)[0]
-                live_count[kind] = live_count.get(kind, 0) + 1
+                live.add(path.name)
             for holder in _scan(ledger.held_dir):
                 if holder.is_dir():
-                    for path in _glob(holder, "*-*"):
-                        kind = path.name.rsplit("-", 1)[0]
-                        live_count[kind] = live_count.get(kind, 0) + 1
+                    live.update(path.name for path in _glob(holder, "*-*"))
         except OSError:
+            return reclaimed
+        try:
+            live_count: dict[str, int] = {}
+            for name in live:
+                kind = name.rsplit("-", 1)[0]
+                live_count[kind] = live_count.get(kind, 0) + 1
+        except (AttributeError, TypeError):
             return reclaimed
         for name in names:
             kind, _, _ = name.rpartition("-")
             if not kind or kind not in wanted:
                 continue
+            if name in live:
+                # Live again (a rename the destroy raced, or a duplicate
+                # aftermath): the slot needs no reissue, just convergence.
+                # Free keeps its token; held keeps its charge; either way
+                # the dead file goes and nothing is counted.
+                try:
+                    (dead_dir / name).unlink()
+                except OSError:
+                    pass
+                continue
             if live_count.get(kind, 0) >= int(wanted[kind]):
                 continue
-            if self._dead_token_live(ledger, name):
-                self._drop_stale_dead(dead_dir, name)
-                continue
             try:
-                (dead_dir / name).unlink()
-            except OSError:
-                continue
-            try:
-                (ledger.minted_dir / name).unlink()
+                os.rename(dead_dir / name, ledger.free_dir / name)
             except OSError:
                 continue
             live_count[kind] = live_count.get(kind, 0) + 1
+            live.add(name)
             reclaimed[kind] = reclaimed.get(kind, 0) + 1
         return reclaimed
-
-    def _dead_token_live(self, ledger: ResourceLedger, name: str) -> bool:
-        """Best-effort guard: does a token called ``name`` exist anywhere.
-
-        Either answer converges (live: drop the stale record, keep the
-        marker; absent: reclaim), so a rename racing this stat cannot
-        strand or duplicate capacity -- adoption and the next apply close
-        whichever side it lands on.
-        """
-
-        try:
-            if (ledger.free_dir / name).exists():
-                return True
-            for holder in _scan(ledger.held_dir):
-                if holder.is_dir() and (holder / name).exists():
-                    return True
-        except OSError:
-            return True
-        return False
-
-    def _drop_stale_dead(self, dead_dir: Path, name: str) -> None:
-        """Forget a dead record whose token is live again, best-effort."""
-
-        try:
-            (dead_dir / name).unlink(missing_ok=True)
-        except OSError:
-            pass
 
     def mint_tier_capacity_guarded(self, tier_id: str, wanted_fn) -> dict[str, object]:
         """Mint one tier's capacity to a number snapshotted under the lock.

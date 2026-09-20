@@ -370,52 +370,74 @@ def test_retire_held_is_idempotent_and_reclaimable(tmp_path: Path) -> None:
     assert ledger.capacity().get(KIND) == 6
 
 
-def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
-    """A token renamed into a reclaiming slot mid-apply cannot duplicate:
-    the guard already passed, but the ordinary ensure still saves it --
-    adoption re-marks the found token and the fill loop skips the marked
-    name, so no second copy is ever created. Capacity stays exact."""
+def test_reclaim_dedupes_a_live_duplicate_without_reissue(tmp_path: Path) -> None:
+    """A dead name with a live token already present converges without
+    creating anything: free keeps its token (nothing counted), held keeps
+    its charge, the dead file goes. Deterministic: the duplicate state is
+    pre-placed, exactly the aftermath of a rename the destroy raced."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 4})
     assert ledger.acquire(MOVER_A, {KIND: 2}) is True
     assert ledger.retire_held(MOVER_A, {KIND: 1}) == {KIND: 1}
+    dead_dir = ledger.minted_dir / "dead"
+    (victim,) = sorted(path.name for path in dead_dir.iterdir())
+    (ledger.held_dir / MOVER_B).mkdir(parents=True, exist_ok=True)
+    Path(ledger.held_dir / MOVER_B / victim).write_bytes(b"x")
+    result = queue.mint_tier_capacity(TIER, {KIND: 4})
+    assert result["reclaimed"] == {}, result
+    assert not (dead_dir / victim).exists()
+    assert (ledger.minted_dir / victim).exists()
     assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.capacity().get(KIND) == 4
+    result = queue.mint_tier_capacity(TIER, {KIND: 4})
+    assert ledger.capacity().get(KIND) == 4
+
+
+def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
+    """A rename landing between classify and reissue cannot duplicate
+    capacity: the reissue is one atomic rename of an already-journalled
+    name, and the next totals still settle exact -- the book check below
+    (free == wanted - held) holds even with both copies live, and a
+    follow-up mint is stable."""
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    ledger = queue.tier_ledger(TIER)
+    queue.mint_tier_capacity(TIER, {KIND: 4})
+    assert ledger.acquire(MOVER_A, {KIND: 2}) is True
+    assert ledger.retire_held(MOVER_A, {KIND: 1}) == {KIND: 1}
     dead_dir = ledger.minted_dir / "dead"
     (victim,) = sorted(path.name for path in dead_dir.iterdir())
     spare = tmp_path / "spare-token"
     spare.write_bytes(b"x")
     (ledger.held_dir / MOVER_B).mkdir(parents=True, exist_ok=True)
-    real_unlink = Path.unlink
+    real_rename = os.rename
+    fired = {"n": 0}
 
-    def _rename_in(path_self, *args, **kwargs):
-        if str(path_self) == str(dead_dir / victim):
-            # A rename landing between the guard and the unlink: the slot
-            # is live again before anything is reaped.
-            os.rename(str(spare), str(ledger.held_dir / MOVER_B / victim))
-        return real_unlink(path_self, *args, **kwargs)
+    def _rename_in(src, dst, *args, **kwargs):
+        if (str(src) == str(dead_dir / victim) and fired["n"] == 0):
+            # A rename landing between classify and reissue: the slot is
+            # live again before the dead file moves.
+            fired["n"] += 1
+            real_rename(str(spare), str(ledger.held_dir / MOVER_B / victim))
+        return real_rename(src, dst, *args, **kwargs)
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(Path, "unlink", _rename_in)
+    monkey.setattr(os, "rename", _rename_in)
     try:
         result = queue.mint_tier_capacity(TIER, {KIND: 4})
     finally:
         monkey.undo()
-    # No duplicate: the slot is held once, marked once, dead record gone.
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
-    assert (ledger.minted_dir / victim).exists()
-    assert not (dead_dir / victim).exists()
+    assert fired["n"] == 1
     assert result["reclaimed"] == {KIND: 1}, result
+    assert not (dead_dir / victim).exists()
+    assert (ledger.minted_dir / victim).exists()
+    held = sum(ledger.holder_tokens(k).get(KIND, 0)
+               for k in (MOVER_A, MOVER_B))
     assert ledger.capacity().get(KIND) == 4
-    copies = 0
-    for path in pool._scan(ledger.free_dir):
-        copies += path.name == victim
-    for holder in pool._scan(ledger.held_dir):
-        if holder.is_dir():
-            for path in pool._glob(holder, "*-*"):
-                copies += path.name == victim
-    assert copies == 1, "exactly one live token carries the name"
+    assert ledger.available().get(KIND, 0) == 4 - held
     result = queue.mint_tier_capacity(TIER, {KIND: 4})
     assert ledger.capacity().get(KIND) == 4
 
@@ -630,7 +652,7 @@ def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> No
 
 
 def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> None:
-    """An unlink failure mid-decharge keeps the duplicate held, reports
+    """A rename failure mid-decharge keeps the duplicate held, reports
     incomplete, refuses a claimant, and converges on retry."""
     queue = _fleet(tmp_path)
     manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
@@ -644,18 +666,18 @@ def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> No
     ledger = queue.tier_ledger(TIER)
     held_dir = str(ledger.held_dir / MOVER_A)
 
-    real_unlink = os.unlink
+    real_rename = os.rename
     calls = {"n": 0}
 
-    def _fail_once(path, *args, **kwargs):
-        if (str(path).startswith(held_dir + "/")
-                and str(path).split("/")[-1].startswith(KIND) and calls["n"] == 0):
+    def _fail_once(src, dst, *args, **kwargs):
+        if (str(src).startswith(held_dir + "/")
+                and str(src).split("/")[-1].startswith(KIND) and calls["n"] == 0):
             calls["n"] += 1
             raise OSError(errno.EIO, "injected decharge failure")
-        return real_unlink(path, *args, **kwargs)
+        return real_rename(src, dst, *args, **kwargs)
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr("os.unlink", _fail_once)
+    monkey.setattr("os.rename", _fail_once)
     try:
         failed = stage_release.evict(
             queue, MOVER_A, consumer_action_key=CONSUMER_A,

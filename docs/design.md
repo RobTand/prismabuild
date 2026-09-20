@@ -3720,18 +3720,20 @@ the duplicate, and the first owner's shared egress handed its tokens back
 as writable free while the bytes stayed -- a newcomer claimed the phantom
 before the next mint (#733). A shared egress now decharges instead of
 freeing: tokens for bytes staying under a co-owner are destroyed
-(`ResourceLedger.retire_held`) while only whole GiB actually leaving the
-stage return to free, so a fractional split can never free more room than
-was made. A destroyed name keeps its mint marker, which
-`ensure_capacity` skips forever: the name can never reappear as writable
-free (re-minting it would reopen a steal gap a concurrent claimant could
-take before the same apply's retire removed it). A decharge that fails
-partway keeps its tokens and fails loudly instead of freeing the
-duplicate. The landed snapshot and the single authoritative per-tier mint
-apply under one tier mint lock -- the cycle stashes the qualified
-writable number first and mints once, over the full token dict so rate
-kinds are never zeroed, after every admission and policy check. The last
-owner to leave still deletes the file and frees its tokens.
+(`ResourceLedger.retire_held`, one atomic rename per token into the
+ledger's dead namespace -- held or dead, never half-moved) while only
+whole GiB actually leaving the stage return to free, so a fractional
+split can never free more room than was made. A destroyed name keeps
+its mint marker, which `ensure_capacity` skips forever, and its token
+file waits in the dead namespace until honest headroom reissues it with
+a second atomic rename: no name reappears except inside a backed wanted
+bound. A decharge that fails partway keeps its tokens and fails loudly
+instead of freeing the duplicate. The mint re-samples writable in-lock
+beside the landed snapshot and apply, and completions file under the
+same tier mint lock, so mixed-time pairs cannot overmint; the single
+authoritative per-tier mint covers the full token dict so rate kinds
+are never zeroed. The last owner to leave still deletes the file and
+frees its tokens.
 
 ### A copy has no result to replay
 
