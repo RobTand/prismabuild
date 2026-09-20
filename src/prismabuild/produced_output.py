@@ -585,12 +585,6 @@ def validate_descriptor(value: object, template: Mapping[str, object],
     }
 
 
-def checked_instance_maxima(template: Mapping[str, object]) -> dict[str, int]:
-    maxima = validate_template(template)["durable_maxima"]
-    assert isinstance(maxima, dict)
-    return {key: int(maxima[key]) for key in maxima}
-
-
 # --------------------------------------------------------------------------
 # Manifest object set (ours) vs pin serialization (PB730's)
 # --------------------------------------------------------------------------
@@ -671,6 +665,116 @@ def reservation_holder(instance: Mapping[str, object]) -> str:
     namespaces (pre-transfer) and mover keys (post-transfer)."""
 
     return instance_namespace(instance)
+
+
+def _prewrites_dir(queue_root: str | Path,
+                   instance: Mapping[str, object]) -> Path:
+    return instance_dir(queue_root, instance) / "prewrites"
+
+
+def _funding_dir(queue_root: str | Path,
+                 instance: Mapping[str, object]) -> Path:
+    return instance_dir(queue_root, instance) / "funding"
+
+
+def _read_prewrite(path: Path) -> dict[str, object] | None:
+    """One outstanding prewrite record, None when absent.
+
+    Raises ProducedOutputError on corrupt/unreadable (unknown state, never
+    an empty reservation).
+    """
+
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ProducedOutputError(
+            f"prewrite record unreadable: {exc}") from None
+    if not isinstance(raw, Mapping):
+        raise ProducedOutputError("prewrite record is corrupt")
+    return dict(raw)
+
+
+def _outstanding_sums(queue_root: str | Path, instance: Mapping[str, object],
+                      exclude_batch_id: str) -> dict[str, int]:
+    """Committed + outstanding class bytes, excluding one batch's own record.
+
+    Outstanding prewrites are real reservations: writers may already hold
+    HDD bytes against them. A corrupt prewrite file fails the whole
+    accounting closed (unknown, never zero).
+    """
+
+    checked = validate_instance(instance)
+    try:
+        commitments = _read_commitments(_commitments_path(queue_root, checked))
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    sums = _class_sums(commitments["batches"])
+    directory = _prewrites_dir(queue_root, checked)
+    try:
+        names = sorted(p.name for p in directory.iterdir()
+                       if p.is_file() and p.name.endswith(".prewrite.json"))
+    except FileNotFoundError:
+        return sums
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    for name in names:
+        if name == f"{exclude_batch_id}.prewrite.json":
+            continue
+        record = _read_prewrite(directory / name)
+        assert record is not None
+        class_bytes = record.get("class_bytes")
+        if not isinstance(class_bytes, Mapping):
+            raise ProducedOutputError("unknown-retain: bad prewrite record")
+        for cls in sums:
+            sums[cls] += int(class_bytes.get(cls, 0) or 0)
+    return sums
+
+
+def _read_funding(path: Path) -> dict[str, object] | None:
+    """One batch's durable funding intent, None when no attempt was made.
+
+    Raises ProducedOutputError on corrupt/unreadable (unknown state, never
+    an unfunded batch).
+    """
+
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ProducedOutputError(
+            f"funding intent unreadable: {exc}") from None
+    if not isinstance(raw, Mapping):
+        raise ProducedOutputError("funding intent is corrupt")
+    return dict(raw)
+
+
+def _write_funding(path: Path, record: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".funding.")
+    try:
+        with os.fdopen(handle, "w") as stream:
+            json.dump(dict(record), stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _delete_funding(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ProducedOutputError(
+            f"funding intent unreleasable: {exc}") from None
 
 
 def output_fragment_root(residency_root: str | Path) -> Path:
@@ -803,19 +907,20 @@ def reserve_working_minimum(queue, instance: Mapping[str, object],
 def admit_funded_window(queue, instance: Mapping[str, object],
                         template: Mapping[str, object], *,
                         need_gib_per_tier: Mapping[str, int]) -> dict[str, object]:
-    """General funded-window admission gate (production: refuses pending).
+    """General funded-window admission gate (liveness-owned primitive).
 
     Fully validates the window request (bound instance + template match,
     permitted tiers, positive-integer needs, need within window demand and
-    within minted tier capacity), then refuses `funding-primitive-pending`:
-    the liveness-owned funded-claim primitive (funding record + eligible-
-    token verification + serialized transfer + current+next admission) is
-    the only authority that may fund a window, and it is not delivered yet.
+    within minted tier capacity). Funding itself belongs to the liveness
+    funded-claim primitive; this probe reports its delivery state read-only
+    (liveness draft names are read, never called and never frozen here):
+    absent → `funding-primitive-pending` with the exact dependency.
     Per-batch exact physical funding at `commit_batch` (existing ledger
     acquire + whole transfer) is unaffected: it funds one amount, not a
-    window. Returns {"ok": False, "refusal": ..., "dependency": ...}.
+    window. Returns {"ok": False, ...} in all current states.
     """
 
+    from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod
 
     checked_template = validate_template(template)
@@ -844,7 +949,11 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         if need > capacity:
             return {"ok": False, "refusal": "never-fits-tier-capacity",
                     "tier_id": tier}
+    delivered = [name for name in ("reserve_fence", "transfer_fence",
+                                   "funded_cover")
+                 if callable(getattr(pool_mod, name, None))]
     return {"ok": False, "refusal": "funding-primitive-pending",
+            "liveness_draft_present": delivered,
             "dependency": ("liveness funded-claim primitive: funding record "
                            "binding credit to exact tier/plan-window/mover/"
                            "range/generation + eligible-token verification + "
@@ -879,22 +988,24 @@ def require_prewrite(queue, instance: Mapping[str, object],
         planned[cls] = _nonneg_int(class_bytes.get(cls),
                                    where=f"prewrite class_bytes.{cls}")
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        commitments = _read_commitments(
-            _commitments_path(queue.root, checked_instance))
-        if not isinstance(commitments.get("admission"), Mapping):
-            # Admission credit proves the instance was bound; without it
-            # nothing is prewritable. (Zero-minimum tiers still need the
-            # bound record, never ledger presence.)
+        try:
+            sums = _outstanding_sums(queue.root, checked_instance, batch_id)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        if not isinstance(_read_commitments(
+                _commitments_path(queue.root, checked_instance)).get(
+                "admission"), Mapping):
+            # The bound admission record proves the instance was admitted;
+            # without it nothing is prewritable. (Zero-minimum tiers still
+            # need the bound record, never ledger presence.)
             return {"ok": False, "refusal": "prewrite-not-admitted"}
-        sums = _class_sums(commitments["batches"])
-        assert isinstance(sums, dict)
         maxima = checked_instance_maxima(checked_template)
-        for cls in sums:
+        for cls in ("payload", "checkpoint", "temp"):
             cap = maxima[f"{cls}_max_bytes"]
             if sums[cls] + planned[cls] > cap:
                 return {"ok": False, "refusal": f"prewrite-exceeds-{cls}-maxima",
                         "class": cls}
-        directory = instance_dir(queue.root, checked_instance) / "prewrites"
+        directory = _prewrites_dir(queue.root, checked_instance)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{batch_id}.prewrite.json"
         record = {"batch_id": batch_id, "tier": tier, "class_bytes": planned,
@@ -906,8 +1017,52 @@ def require_prewrite(queue, instance: Mapping[str, object],
             from prismabuild import pool as pool_mod
             pool_mod._publish_immutable(path, raw, where="produced-output prewrite")
         except Exception as exc:
+            # Same body republishes idempotently; a different body for a
+            # live batch id refuses (the first reservation stands).
+            try:
+                existing = _read_prewrite(path)
+            except ProducedOutputError as inner:
+                return {"ok": False, "refusal": f"prewrite-unreadable: {inner}"}
+            if (existing is not None and existing.get("tier") == tier
+                    and dict(existing.get("class_bytes", {})) == planned):
+                return {"ok": True, "batch_id": batch_id,
+                        "class_bytes": planned, "duplicate": True}
             return {"ok": False, "refusal": f"prewrite-conflict: {exc}"}
     return {"ok": True, "batch_id": batch_id, "class_bytes": planned}
+
+
+def abort_prewrite(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object], *, batch_id: str) -> dict[str, object]:
+    """Attested abort of an outstanding prewrite (producer wrote nothing).
+
+    Allowed only while the batch is uncommitted. Frees the outstanding
+    accounting headroom; no ledger tokens move because prewrites hold none
+    (physical funding happens at commit). HDD files the producer may have
+    written stay the producer's durable-origin problem and never enter
+    staged accounting. Returns {"ok": True, "aborted": ...}.
+    """
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    _name(batch_id, where="batch_id")
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        if batch_id in batches:
+            return {"ok": False, "refusal": "batch-committed"}
+        path = _prewrites_dir(queue.root, checked_instance) / f"{batch_id}.prewrite.json"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return {"ok": True, "batch_id": batch_id, "aborted": False}
+        except OSError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return {"ok": True, "batch_id": batch_id, "aborted": True}
 
 
 def commit_batch(queue, instance: Mapping[str, object],
@@ -951,8 +1106,11 @@ def commit_batch(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "batch-exceeds-window",
                 "batch_gib": batch_gib, "window_gib": window}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        commitments = _read_commitments(
-            _commitments_path(queue.root, checked_instance))
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         batches = commitments["batches"]
         assert isinstance(batches, dict)
         if batch_id in batches:
@@ -963,16 +1121,15 @@ def commit_batch(queue, instance: Mapping[str, object],
                         "batch_namespace": batch_ns,
                         "manifest_digest": manifest_digest}
             return {"ok": False, "refusal": "batch-id-in-use"}
-        prewrite_path = (instance_dir(queue.root, checked_instance) / "prewrites"
-                         / f"{batch_id}.prewrite.json")
         try:
-            prewrite = json.loads(prewrite_path.read_text())
-        except FileNotFoundError:
-            return {"ok": False, "refusal": "prewrite-reservation-missing"}
-        except (OSError, ValueError) as exc:
+            prewrite = _read_prewrite(
+                _prewrites_dir(queue.root, checked_instance)
+                / f"{batch_id}.prewrite.json")
+        except ProducedOutputError as exc:
             return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
-        if (not isinstance(prewrite, Mapping)
-                or prewrite.get("tier") != tier
+        if prewrite is None:
+            return {"ok": False, "refusal": "prewrite-reservation-missing"}
+        if (prewrite.get("tier") != tier
                 or dict(prewrite.get("class_bytes", {})) != class_bytes):
             return {"ok": False, "refusal": "prewrite-mismatch"}
         sums = _class_sums(batches)
@@ -980,14 +1137,59 @@ def commit_batch(queue, instance: Mapping[str, object],
         for cls in sums:
             if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
                 return {"ok": False, "refusal": f"commit-exceeds-{cls}-maxima"}
+        # Durable funding intent covering acquire→transfer→publication:
+        # exact token identity (tier/mover/range/generation) mirroring the
+        # liveness funded-claim record shape for drop-in migration. Filed
+        # only once the ledger holds the tokens and always before transfer,
+        # so every crash point resumes from observed holdings + intent
+        # instead of re-acquiring the same budget. All-or-nothing is proven
+        # by the resume paths, never assumed from the success path.
+        # Unknown occupancy (tokens neither holder names) is never released
+        # to repair bookkeeping: it retains.
+        funding_path = (_funding_dir(queue.root, checked_instance)
+                        / f"{batch_id}.funding.json")
+        try:
+            funding = _read_funding(funding_path)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if funding is not None and (
+                funding.get("mover_key") != mover
+                or funding.get("tier") != tier
+                or int(funding.get("batch_gib", -1)) != batch_gib
+                or funding.get("manifest_digest") != manifest_digest):
+            return {"ok": False, "refusal": "batch-id-in-use"}
         ledger = queue.tier_ledger(tier)
-        if not ledger.acquire(batch_ns, {kind: batch_gib}):
-            return {"ok": False, "refusal": "tier-reservation-unavailable",
-                    "available": ledger.available()}
-        moved = queue.transfer_tier_reservation(tier, batch_ns, mover)
-        if moved != batch_gib:
+        mover_now = ledger.holder_tokens(mover).get(kind, 0)
+        holder_now = ledger.holder_tokens(batch_ns).get(kind, 0)
+        if funding is None and (holder_now > 0 or mover_now > 0):
+            # Tokens without intent: unknown provenance (no record names
+            # this funding). Never top up blindly around them.
+            return {"ok": False, "refusal": "unknown-retain: unfunded holdings"}
+        if holder_now == 0 and mover_now < batch_gib:
+            if funding is not None:
+                # A previous attempt moved some tokens and crashed before
+                # filing the batch; the remainder is gone to unknown hands.
+                return {"ok": False, "refusal": "unknown-retain: funded tokens lost"}
+            if not ledger.acquire(batch_ns, {kind: batch_gib}):
+                return {"ok": False, "refusal": "tier-reservation-unavailable",
+                        "available": ledger.available()}
+            # Intent names allocated tokens only: nothing is recorded before
+            # the ledger holds it, so a crash before this line retries clean
+            # and a crash after it resumes from the record.
+            _write_funding(funding_path, {
+                "batch_id": batch_id, "tier": tier,
+                "mover_key": mover, "batch_gib": batch_gib,
+                "manifest_digest": manifest_digest})
+            holder_now = batch_gib
+        if holder_now > 0:
+            queue.transfer_tier_reservation(tier, batch_ns, mover)
+            mover_now = ledger.holder_tokens(mover).get(kind, 0)
+        if mover_now < batch_gib:
+            # Split tokens stay split (sum intact, nothing released);
+            # retry resumes from live holdings + intent. Unknown loss
+            # retains, never re-funds.
             return {"ok": False, "refusal": "transfer-short",
-                    "moved": moved, "expected": batch_gib}
+                    "moved": mover_now, "expected": batch_gib}
         batch_record = {
             "schema": BATCH_SCHEMA_V1,
             "batch_id": batch_id,
@@ -1032,6 +1234,12 @@ def commit_batch(queue, instance: Mapping[str, object],
         }
         _write_commitments(_commitments_path(queue.root, checked_instance),
                            {"batches": batches})
+        # Funding intent + prewrite consumed only here, after the durable
+        # batch publication: a crash anywhere above resumes from the intent,
+        # never by re-acquiring the same budget.
+        _delete_funding(funding_path)
+        (_prewrites_dir(queue.root, checked_instance)
+         / f"{batch_id}.prewrite.json").unlink(missing_ok=True)
     return {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
             "manifest_digest": manifest_digest, "class_bytes": class_bytes,
             "mover_key": mover, "tier": tier, "entries": sealed}
@@ -1185,18 +1393,52 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                 return {"ok": False, "refusal": "owner-active-retain"}
             return {"ok": False, "refusal": "unknown-retain: no-terminal"}
         released = 0
+        holders: set[str] = set()
+        for batch_id, entry in batches.items():
+            assert isinstance(entry, Mapping)
+            ns = str(entry.get("batch_namespace") or "")
+            if ns:
+                holders.add(ns)
+            mover = str(entry.get("mover_key") or "")
+            if mover:
+                holders.add(mover)
+        try:
+            funding_names = sorted(
+                p.name for p in _funding_dir(queue.root, checked).iterdir()
+                if p.is_file() and p.name.endswith(".funding.json"))
+        except OSError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        for name in funding_names:
+            batch_id = name[:-len(".funding.json")]
+            if batch_id in batches:
+                continue
+            try:
+                funding = _read_funding(
+                    _funding_dir(queue.root, checked) / name)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            if funding is None:
+                continue
+            # Funded but never committed (crash prefix): recompute the batch
+            # namespace from the intent's exact manifest and reclaim both
+            # holders (batch remainder + partial mover share).
+            try:
+                holders.add(batch_namespace(
+                    checked, batch_id, str(funding["manifest_digest"])))
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            mover = funding.get("mover_key")
+            if isinstance(mover, str) and mover:
+                holders.add(mover)
         for tier in checked_template["permitted_tiers"]:
-            for batch_id, entry in batches.items():
-                assert isinstance(entry, Mapping)
-                ns = str(entry.get("batch_namespace") or "")
-                if not ns:
-                    continue
+            for holder in sorted(holders):
                 try:
-                    released += queue.tier_ledger(tier).release(ns)
+                    released += queue.tier_ledger(tier).release(holder)
                 except Exception:
                     break
-        # Batch holders are empty post-transfer by construction; leftovers
-        # (partial transfers) release here, once, idempotently.
+        # Batch/mover holders are empty post-transfer by construction;
+        # leftovers (partial transfers, crash-prefix funding) release here,
+        # once, idempotently.
         return {"ok": True, "released": released}
 
 
@@ -1302,10 +1544,14 @@ def due_mover_rows(queue, instance: Mapping[str, object],
     NEW method owned by this lane (pure preparation, no queue mutation).
     For each committed unretired batch: staged fragments composing under
     their own namespace need nothing; a FAILED mover needs a retry row; an
-    absent mover with no staged fragments needs its first row. Rows carry
-    the frozen identity (batch/mover/tier/manifest/generation) a submitter
-    seals; publication itself (`queue.publish`, behind the funding gate)
-    stays with the tier loop. Deterministic order: batch_id ascending.
+    absent mover with no staged fragments needs its first row. Each row
+    carries the mover-variant residency block (`pool.validate_residency`
+    accepts it: batch manifest digest + 0..total range on the batch tier
+    with demand at/above the range floor) and qualified tier demand, so a
+    submitter seals it through the EXISTING `queue.publish` + claim channel
+    unchanged; `seal_mover_row` merges the sealer-plumbed paths.
+    Publication itself (behind the funding gate) stays with the tier loop.
+    Deterministic order: batch_id ascending.
     """
 
     from prismabuild import pool as pool_mod
@@ -1330,7 +1576,8 @@ def due_mover_rows(queue, instance: Mapping[str, object],
         ns = str(entry.get("batch_namespace") or "")
         mover = str(entry.get("mover_key") or "")
         tier = str(entry.get("tier") or "")
-        if not ns or not mover or not tier:
+        manifest = str(entry.get("manifest_digest") or "")
+        if not ns or not mover or not tier or not manifest:
             continue
         try:
             fragments = map_mod.read_fragments(out_base, ns)
@@ -1351,18 +1598,57 @@ def due_mover_rows(queue, instance: Mapping[str, object],
             gib = tiers_mod.stage_tokens_for_bytes(total) if total > 0 else 0
         except ValueError:
             gib = 0
+        demand = {f"{kind}{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}": gib,
+                  "cpu": 1, "mem_gb": 1} if gib > 0 else {"cpu": 1, "mem_gb": 1}
         rows.append({
             "batch_id": batch_id,
             "action_key": mover,
             "tier": tier,
-            "manifest_digest": str(entry.get("manifest_digest") or ""),
+            "manifest_digest": manifest,
             "batch_namespace": ns,
-            "resources": ({kind: gib, "cpu": 1, "mem_gb": 1}
-                          if gib > 0 else {"cpu": 1, "mem_gb": 1}),
+            "resources": demand,
+            "residency": {
+                "schema": pool_mod.RESIDENCY_SCHEMA_V1,
+                "tier_id": tier,
+                "manifest_sha256": manifest,
+                "manifest_bytes": total if total > 0 else 1,
+                "range_start_bytes": 0,
+                "range_end_bytes": total if total > 0 else 1,
+            },
             "reason": ("retry-failed-mover" if state == "failed"
                        else "needs-publish"),
         })
     return rows
+
+
+def seal_mover_row(row: Mapping[str, object], *, cas_root: str | Path,
+                   worker_script: str | Path, checkout_root: str | Path,
+                   tags: object = (), max_attempts: int = 1) -> dict[str, object]:
+    """Merge sealer-plumbed paths into a due row for `queue.publish`.
+
+    Identity/demand/residency come from `due_mover_rows` (this lane);
+    cas/worker/checkout/tags/attempts come from the submitter (pbrun lane
+    in production, the test here). The result is publishable through the
+    existing channel unchanged (`recompute=True` at the call site, as the
+    tier loop publishes movers). Sealer fields are validated for shape
+    only; content trust stays with the sealer.
+    """
+
+    if not isinstance(row, Mapping):
+        raise ProducedOutputError("seal_mover_row needs a due row")
+    for field in ("action_key", "resources", "residency"):
+        if field not in row:
+            raise ProducedOutputError(f"due row lacks {field}")
+    if type(max_attempts) is not int or max_attempts < 1:
+        raise ProducedOutputError("max_attempts must be a positive integer")
+    sealed = dict(row)
+    sealed["cas_root"] = str(cas_root)
+    sealed["worker_script"] = str(worker_script)
+    sealed["checkout_root"] = str(checkout_root)
+    sealed["tags"] = list(tags) if isinstance(tags, (list, tuple)) else [str(tags)]
+    sealed["max_attempts"] = max_attempts
+    sealed["retry_safe"] = True
+    return sealed
 
 
 def recover_batches(queue, instance: Mapping[str, object],
@@ -1390,6 +1676,18 @@ def recover_batches(queue, instance: Mapping[str, object],
     assert isinstance(batches, dict)
     out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
     events: list[dict[str, object]] = []
+    try:
+        funding_names = sorted(
+            p.name for p in _funding_dir(queue.root, checked_instance).iterdir()
+            if p.is_file() and p.name.endswith(".funding.json"))
+    except OSError:
+        funding_names = []
+    for name in funding_names:
+        batch_id = name[:-len(".funding.json")]
+        if batch_id in batches:
+            continue
+        events.append({"event": "output-funding-intent-pending",
+                       "batch_id": batch_id})
     for batch_id in sorted(batches):
         entry = batches[batch_id]
         if not isinstance(entry, Mapping):
@@ -1434,6 +1732,32 @@ def checked_instance_maxima(template: Mapping[str, object]) -> dict[str, int]:
     return {key: int(maxima[key]) for key in maxima}
 
 
+def owner_demand_terms(template: Mapping[str, object]) -> dict[str, int]:
+    """Owner action tier-demand terms derived from a template (pure).
+
+    Returns the sealed-resources form (`{kind@tier: window_gib}`) the
+    consumer action carries through the EXISTING demand/admission channel
+    (`pbrun --demand` → `queue.publish(resources=...)` → claim-time
+    `_begin/_commit_tier_acquire` with `tier_filed` accounting). The window
+    (not the corpus) is what the owner reserves pre-execution; batch movers
+    are funded from it through the liveness transfer once delivered
+    (per-batch exact via existing ops until then). Durable-origin class
+    budget and host decode memory (`mem_gb`) stay distinct keys beside it.
+    """
+
+    from prismabuild import storage_tiers as tiers_mod
+
+    checked = validate_template(template)
+    demands = checked["working_demands"]
+    assert isinstance(demands, dict)
+    terms: dict[str, int] = {}
+    for tier in checked["permitted_tiers"]:
+        kind = tiers_mod.capacity_kind_of(tier)
+        window = int(demands[tier]["window_gib"])
+        terms[f"{kind}{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}"] = window
+    return terms
+
+
 __all__ = [
     "TEMPLATE_SCHEMA_V1",
     "INSTANCE_SCHEMA_V1",
@@ -1469,6 +1793,8 @@ __all__ = [
     "batch_namespace",
     "admit_instance",
     "admit_funded_window",
+    "abort_prewrite",
+    "owner_demand_terms",
     "reserve_working_minimum",
     "require_prewrite",
     "commit_batch",
@@ -1478,5 +1804,6 @@ __all__ = [
     "safe_release_instance",
     "output_scope_tick",
     "due_mover_rows",
+    "seal_mover_row",
     "recover_batches",
 ]
