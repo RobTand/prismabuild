@@ -123,8 +123,11 @@ def _mover_key(plan: dict[str, object], ordinal: int) -> str:
 
 
 def _ordered_ready(queue: pool.PoolQueue, *keys: str) -> list[dict[str, object]]:
+    # Keys already claimed are gone from ready/: skip them rather than fail --
+    # the order selects among what is still queued, which is all a worker's
+    # prefetched snapshot ever does.
     items = {str(item["action_key"]): item for item in queue.ready_items()}
-    return [items[key] for key in keys]
+    return [items[key] for key in keys if key in items]
 
 
 def _fragment(queue: pool.PoolQueue, consumer: str, mover: str, *,
