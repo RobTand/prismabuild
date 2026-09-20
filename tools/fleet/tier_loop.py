@@ -34,7 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import os
 import socket
 import sys
@@ -242,6 +242,36 @@ def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
                 or pinned):
             published.add(key)
     return published, staged
+
+
+def _withdrawn_keys(queue: pool.PoolQueue,
+                    withdrawn: frozenset[str] | None = None) -> frozenset[str]:
+    """The live withdrawal markers, read once per cycle unless the caller has.
+
+    Enumerated rather than stat-ed, for ``withdrawn_keys``' own NFS reason; a
+    cycle passes one snapshot to every step that needs it so the steps cannot
+    disagree about which keys were cancelled while it ran.
+    """
+
+    return queue.withdrawn_keys() if withdrawn is None else frozenset(withdrawn)
+
+
+def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
+    """Whether one live marker is an operator's decision, not admission's.
+
+    Admission preempts a background holder through the same withdrawal
+    ladder, then republishes it immediately with ``supersedes_withdrawal``
+    naming the cancellation.  That plan must survive -- the requeue is the
+    same work -- while an operator's decision has no successor and retires
+    the window it was made against (#708).  The immutable decision carries
+    ``preempted_by`` when admission made it, so the marker record answers.
+    """
+
+    try:
+        marker = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
+    except (OSError, pool.PoolContractError):
+        return False      # unreadable: not a decision this cycle acts on
+    return isinstance(marker, Mapping) and not marker.get("preempted_by")
 
 
 def drop_prior_ram_epochs(
@@ -527,7 +557,8 @@ def _ram_leg_rows(phase: Mapping[str, object],
 def _ram_window_state(
         queue: pool.PoolQueue, consumer: Mapping[str, object],
         plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
-        *, prefill_depth: int | None) -> dict[str, object] | None:
+        *, prefill_depth: int | None,
+        withdrawn: Sequence[str] = ()) -> dict[str, object] | None:
     """One consumer's ram decision inputs, or ``None`` when it has no ram leg.
 
     The stage window's own question, asked of the ram ledger: what fits, what
@@ -565,7 +596,7 @@ def _ram_window_state(
         # The two sets name promotion keys, so the decision must test
         # promotion keys: against stage keys its evict side would never fire
         # and its already-published skip would never skip (#640).
-        mover_role="ram_mover_row")
+        mover_role="ram_mover_row", withdrawn=withdrawn)
     phases = {str(phase["name"]): phase for phase in plan["phases"]}
     publishable = []
     for entry in decision["publish"]:
@@ -588,7 +619,8 @@ def _ram_window_state(
 
 def ram_residency_window(
         queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
-        now: float | None = None) -> list[dict[str, object]]:
+        now: float | None = None,
+        withdrawn: frozenset[str] | None = None) -> list[dict[str, object]]:
     """Publish the next ram promotions, retire the consumed ones, first.
 
     The stage window's own semantics, pointed at the ram ledger: admission
@@ -599,6 +631,10 @@ def ram_residency_window(
     window publishes its own, so on a box that runs them in queue order the
     tokens that bound the smaller tier come back before the bytes that feed
     it leave (#640).
+
+    ``withdrawn`` is the cycle's snapshot of live withdrawal markers; a
+    promotion key in it is never published here, and the plan that names it
+    is marked superseded by the stage window in the same cycle (#708).
     """
 
     events: list[dict[str, object]] = []
@@ -606,20 +642,25 @@ def ram_residency_window(
                  if record.get("tier") == "ram"}
     if not ram_tiers:
         return events
+    cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
-        plan = residency_plan.read(queue, key)
+        plan, incarnation = residency_plan.read_filed(queue, key)
         if plan is None:
             continue      # a plan this reader refuses is reported once, below
         state = _ram_window_state(queue, consumer, plan, tiers,
-                                  prefill_depth=depth)
+                                  prefill_depth=depth,
+                                  withdrawn=sorted(cancelled))
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
         decision = state["decision"]
+        superseded = residency_plan.superseded(queue, plan)
         stall = decision["stall"]
-        if isinstance(stall, Mapping):
+        # A superseded window promotes nothing -- at any price -- while its
+        # ram egress below still frees the phases the consumer has passed.
+        if isinstance(stall, Mapping) and superseded is None:
             events.append({
                 "event": "ram-window-stalled", "consumer": key,
                 **{field: stall[field] for field in (
@@ -628,7 +669,7 @@ def ram_residency_window(
                     "free_gib", "capacity_gib", "reason", "waiting_for")},
                 "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
-        publishable = state["publishable"]
+        publishable = [] if superseded is not None else state["publishable"]
         ram_tier_record = tiers.get(ram_tier_id)
         if (isinstance(ram_tier_record, Mapping)
                 and not _tier_admits_movers(ram_tier_record)):
@@ -648,8 +689,25 @@ def ram_residency_window(
             row = dict(mover_row)
             try:
                 # A copy has no result to replay, for the same reason the
-                # stage's own rows carry it.
-                queue.publish(**row, recompute=True)
+                # stage's own rows carry it -- and an automatic promotion
+                # refuses a live cancellation under publish's own lock rather
+                # than retiring the operator's marker (#708).
+                queue.publish(**row, recompute=True, refuse_withdrawn=True)
+            except pool.WithdrawnActionError as exc:
+                marked = residency_plan.mark_superseded(
+                    queue, key, plan=plan, filing=incarnation,
+                    reason="mover-withdrawn",
+                    movers=[str(entry.get("mover_action_key") or
+                                row.get("action_key") or "")],
+                    by="tier-loop")
+                events.append({"event": "ram-mover-publish-refused-withdrawn",
+                               "consumer": key, "phase": entry["phase"],
+                               "chunk_index": entry.get("chunk_index"),
+                               "action_key": str(row["action_key"]),
+                               "tier_id": ram_tier_id,
+                               "error": str(exc),
+                               "plan_superseded": marked is not None})
+                break     # the plan is superseded now: no more promotions
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-mover-publish-failed",
                                "consumer": key, "phase": entry["phase"],
@@ -878,10 +936,18 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     off for the same reason -- without it no mover can be attributed -- and
     a withdrawal the queue refuses is reported, never forced: ambiguous
     state fails closed and the bytes stay bounded by the sweep.
+
+    Once the consumer's queued work is stopped, the plan that minted it is
+    archived too (#708) -- but only once :func:`residency_plan.handoff_safe`
+    says nothing still names it, because the next cycle uses the plan to find
+    a mover whose stop is still pending.  A plan whose window an operator
+    withdrew was already marked superseded at withdrawal, so its body stays
+    readable while its claimed children conclude and no publication can come
+    from it in the meantime.
     """
 
     events: list[dict[str, object]] = []
-    for state in (pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.FAILED, pool.WITHDRAWN, pool.DONE):
         try:
             paths = list(pool._scan(queue.dir(state)))
         except OSError:
@@ -898,9 +964,15 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
                     or queue.item_path(pool.CLAIMED, key).exists()):
                 # Resubmitted under the same key: a new generation, live work.
                 continue
-            plan = residency_plan.read(queue, key)
+            plan, incarnation = residency_plan.read_filed(queue, key)
             if plan is None:
                 continue      # not a staged consumer, or an unreadable plan
+            if (state == pool.DONE
+                    and residency_plan.superseded(queue, plan) is None):
+                # A finished consumer that was never superseded keeps its
+                # frozen plan: a retry republishes the same children.
+                continue
+            failed = False
             for mover_key in residency_plan.mover_keys(plan):
                 receipt = queue.move_record(mover_key)
                 if (isinstance(receipt, Mapping)
@@ -920,12 +992,27 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
                         "event": "dead-consumer-mover-withdraw-failed",
                         "consumer": key, "mover": mover_key, "state": origin,
                         "withdrawn": False, "error": repr(exc)})
+                    failed = True
                     continue
                 done = outcome.get("status") in ("withdrawn", "already_withdrawn")
+                if not done:
+                    failed = True
                 events.append({
                     "event": "dead-consumer-mover-withdrawn",
                     "consumer": key, "mover": mover_key, "state": origin,
                     "withdrawn": bool(done), "status": outcome.get("status")})
+            if failed:
+                continue      # the plan is how the next cycle retries
+            reaped = residency_plan.reap(
+                queue, key, reason=f"consumer-{state}",
+                plan=plan, filing=incarnation)
+            if reaped is not None:
+                events.append({
+                    "event": "residency-plan-reaped", "consumer": key,
+                    "tier_id": str(plan["tier_id"]),
+                    "reason": f"consumer-{state}",
+                    "phases": len(reaped.get("phases") or []),
+                    "movers": len(residency_plan.mover_keys(reaped))})
     return events
 
 
@@ -1071,6 +1158,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
 def adopt_resident_ranges(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
+    withdrawn: frozenset[str] | None = None,
 ) -> list[dict[str, object]]:
     """Take over every resident range a live consumer's window still needs (#598).
 
@@ -1085,9 +1173,15 @@ def adopt_resident_ranges(
     that matters, because a stage with room would simply have staged the copy.
     Phases the consumer has already read past are left alone; taking those over
     would pin bytes it will never open again.
+
+    A leg whose key carries a live withdrawal marker is not adopted: the plan
+    that names it is marked superseded in this cycle (#708), and moving
+    occupancy onto a key nobody will publish leaves tokens holding bytes the
+    sweep then has to take back.
     """
 
     events: list[dict[str, object]] = []
+    cancelled = _withdrawn_keys(queue, withdrawn)
     wanted, owners = stage_release.live_claims(queue)
     reserved = set(wanted) | set(owners)
     root = queue.residency_fragment_root()
@@ -1095,6 +1189,9 @@ def adopt_resident_ranges(
     if consumers is None:
         consumers = _planned_consumers(queue, tiers)
     for consumer_key, consumer, plan, tier_id in consumers:
+        if residency_plan.superseded(queue, plan) is not None:
+            continue      # superseded: no new occupancy under its keys, and
+                          # its resident ranges stay named by live_claims
         if tier_id not in index_by_tier:
             index_by_tier[tier_id] = adoptable_ranges(
                 queue, tier_id=tier_id, reserved=reserved)
@@ -1134,6 +1231,8 @@ def adopt_resident_ranges(
                         or (isinstance(chunk_index, int)
                             and not isinstance(chunk_index, bool))):
                     continue
+                if new_key in cancelled:
+                    continue      # the plan is being retired; do not pin to it
                 descriptor = _descriptor(digest, tier_id, cstart, cend)
                 old_key = index.get(descriptor)
                 if old_key is None or old_key == new_key:
@@ -1159,6 +1258,7 @@ def adopt_resident_ranges(
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
+    withdrawn: frozenset[str] | None = None,
 ) -> dict[str, int]:
     """Per tier, the GiB a live window needs and the tier does not have free.
 
@@ -1174,13 +1274,23 @@ def window_pressure(
     A tier no live window is waiting on is absent from the answer, and an
     orphan there stays resident -- held, counted, and ready for the next
     artifact that names it.
+
+    A key with a live withdrawal marker is not pressure either (#708): the
+    coordinator will not publish it, and evicting a resident range to make
+    room for cancelled work is room nobody will use -- the same deadlock
+    shape #632 and #642 closed on the other side.
     """
 
     need: dict[str, int] = {}
     if consumers is None:
         consumers = _planned_consumers(queue, tiers)
+    cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
     for _key, consumer, plan, tier_id in consumers:
+        if residency_plan.superseded(queue, plan) is not None:
+            # A superseded window publishes nothing (#708), so it is not
+            # waiting on room: evicting for it would make room nobody uses.
+            continue
         already, staged = _mover_state(queue, plan, tier_id)
         accepted = consumer["accepted_phase"]
         # Asked of the window rather than of the plan (#632).  A phase the
@@ -1212,7 +1322,8 @@ def window_pressure(
             elif isinstance(phase.get("mover_row"), Mapping):
                 legs.append((str(phase["mover_row"]["action_key"]),  # type: ignore[index]
                              int(phase.get("stage_gib", 0))))
-        waiting = [key for key, _gib in legs if key in already - staged]
+        waiting = [key for key, _gib in legs
+                   if key in already - staged and key not in cancelled]
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -1227,7 +1338,8 @@ def window_pressure(
         decision = residency_plan.window(
             plan, accepted_phase=accepted,                       # type: ignore[arg-type]
             free_gib=unbounded, capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged))
+            published=sorted(already), staged=sorted(staged),
+            withdrawn=sorted(cancelled))
         wanted = decision["publish"]
         assert isinstance(wanted, list)
         if wanted:
@@ -1249,7 +1361,8 @@ def window_pressure(
         # happen, so an orphan there becomes an eviction candidate the
         # moment this need exists.
         state = _ram_window_state(queue, consumer, plan, tiers,
-                                  prefill_depth=depth)
+                                  prefill_depth=depth,
+                                  withdrawn=sorted(cancelled))
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
@@ -1276,7 +1389,8 @@ def window_pressure(
             capacity_gib=ram_capacity,
             published=sorted(state["already"]),                  # type: ignore[arg-type]
             staged=sorted(state["staged"]),                      # type: ignore[arg-type]
-            runahead_cap_gib=depth, mover_role="ram_mover_row")
+            runahead_cap_gib=depth, mover_role="ram_mover_row",
+            withdrawn=sorted(cancelled))
         ram_published = ram_decision["publish"]
         assert isinstance(ram_published, list)
         ram_phases = {str(phase["name"]): phase for phase in plan["phases"]}  # type: ignore[union-attr]
@@ -1402,7 +1516,8 @@ def reclaim_failed_mover_partials(
 
 
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
-                     now: float | None = None) -> list[dict[str, object]]:
+                     now: float | None = None,
+                     withdrawn: frozenset[str] | None = None) -> list[dict[str, object]]:
     """Publish the next movers, retire the consumed ones, recompose the maps.
 
     This is the coordinator half of the decomposition contract: the submitter
@@ -1410,13 +1525,27 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     publishes work.  It runs here because the tier loop already holds the two
     things the decision needs -- the queue and the tier ledger -- and adding a
     second loop would mean two boxes deciding one stage's occupancy.
+
+    A plan one of whose movers was withdrawn stops being a schedule (#708):
+    the withdrawal is marked against the plan's own identity, nothing more is
+    published from it -- no mover and no promotion, at any price -- while its
+    egress rows still run, because freeing bytes the consumer has read past
+    is cleanup rather than staging.  The body stays filed, so the consumer's
+    other resident ranges stay named for the sweep and the successor's
+    adoption; the dead-consumer pass archives it once its work has ended.
+
+    ``withdrawn`` is the cycle's snapshot of live withdrawal markers, so a
+    cancellation filed between the mark pass and this decision cannot leak a
+    publish either.
     """
 
     published: list[dict[str, object]] = []
+    cancelled = _withdrawn_keys(queue, withdrawn)
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
-        plan = residency_plan.read(queue, key, on_unreadable=refusals.append)
+        plan, incarnation = residency_plan.read_filed(
+            queue, key, on_unreadable=refusals.append)
         if plan is None:
             if not refusals:
                 continue      # no plan filed: this consumer is nobody's to stage
@@ -1444,6 +1573,33 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the thing the tier id exists to prevent.
             continue
         tier_record = tiers[tier_id]
+        superseded = residency_plan.superseded(queue, plan)
+        if superseded is None:
+            # An operator's withdrawal of one of the plan's movers retires
+            # the whole window.  Rows are sealed with the resources their
+            # keys hash and the plan is frozen, so there is no supported
+            # in-place repair: publication stops here, and a deliberate
+            # resubmission can seal a fresh window at the current price once
+            # this one's work has ended.  An admission preemption is not an
+            # operator's decision -- it requeues its holder immediately -- so
+            # it does not retire the plan (``preempted_by`` on the marker).
+            hits = [mover for mover in residency_plan.mover_keys(plan)
+                    if mover in cancelled]
+            if hits:
+                operator = [mover for mover in hits
+                            if _operator_withdrawal(queue, mover)]
+                if operator:
+                    superseded = residency_plan.mark_superseded(
+                        queue, key, plan=plan, filing=incarnation,
+                        reason="mover-withdrawn",
+                        movers=operator, by="tier-loop")
+                    if superseded is not None:
+                        published.append({
+                            "event": "residency-plan-superseded",
+                            "consumer": key, "tier_id": tier_id,
+                            "reason": "mover-withdrawn",
+                            "movers": sorted(operator),
+                            "phases": len(plan["phases"])})  # type: ignore[arg-type]
         already, staged = _mover_state(queue, plan, tier_id)
         ledger = queue.tier_ledger(tier_id)
         kind = storage_tiers.capacity_kind_of(tier_id)
@@ -1455,13 +1611,15 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         decision = residency_plan.window(
             plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
             free_gib=int(free), capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged))
+            published=sorted(already), staged=sorted(staged),
+            withdrawn=sorted(cancelled))
         stall = decision["stall"]
-        if isinstance(stall, Mapping):
+        if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
             # prevent was invisible for hours because the only thing a stalled
             # window printed was ``tier-cycle``.  Not a claim denial -- the
-            # consumer is not denied, it is running and reporting nothing.
+            # consumer is not denied, it is running and reporting nothing.  A
+            # superseded window does not stall: nothing is waiting to publish.
             published.append({"event": "window-stalled", "consumer": key,
                               **{field: stall[field] for field in (
                                   "accepted_phase", "reading_phase",
@@ -1471,7 +1629,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "chunk_index": stall.get("chunk_index")})
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
-        publishable = decision["publish"]
+        # A superseded plan publishes its egresses -- cleanup the consumer has
+        # already paid for -- and nothing else.
+        publishable = [] if superseded is not None else decision["publish"]
         if not _tier_admits_movers(tier_record):
             # A root that is present but unregistered admits nothing more
             # (#631): the movers wait while the evict loop below still
@@ -1523,7 +1683,24 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             try:
                 # A copy has no result to replay: published with recompute,
                 # or a republished range is a cache hit that stages nothing.
-                queue.publish(**row, recompute=True)
+                # ``refuse_withdrawn`` closes the race the cycle's snapshot
+                # cannot: a cancellation filed after the snapshot is seen
+                # under publish's own transition lock and outranks this
+                # automatic republication (#708 review).
+                queue.publish(**row, recompute=True, refuse_withdrawn=True)
+            except pool.WithdrawnActionError as exc:
+                marked = residency_plan.mark_superseded(
+                    queue, key, plan=plan, filing=incarnation,
+                    reason="mover-withdrawn",
+                    movers=[str(entry["mover_action_key"])], by="tier-loop")
+                published.append({
+                    "event": "mover-publish-refused-withdrawn", "consumer": key,
+                    "phase": entry["phase"],
+                    "chunk_index": entry.get("chunk_index"),
+                    "action_key": entry["mover_action_key"],
+                    "error": str(exc),
+                    "plan_superseded": marked is not None})
+                break     # the plan is superseded now: no more movers
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "mover-publish-failed", "consumer": key,
                                   "phase": entry["phase"],
@@ -2026,6 +2203,10 @@ def cycle(
     # this list is not reading anything stale; what changes between them is the
     # ledger, and both re-read that.
     planned = _planned_consumers(queue, announced_tiers)
+    # One snapshot of the live withdrawal markers for every step below, so a
+    # cancellation filed mid-cycle cannot have the adoption, the pressure
+    # probe and the two windows disagree about it (#708).
+    withdrawn = queue.withdrawn_keys()
     # Dead consumers' movers first: a consumer that failed with movers
     # published would otherwise keep staging for nobody all cycle (#620).
     # Withdrawing only stops queued work, so adoption below still sees every
@@ -2033,9 +2214,10 @@ def cycle(
     for event in withdraw_dead_consumer_movers(queue):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
-                                       consumers=planned):
+                                       consumers=planned, withdrawn=withdrawn):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
-    pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned)
+    pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
+                               withdrawn=withdrawn)
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
@@ -2048,9 +2230,11 @@ def cycle(
     # before its stage egress: the tokens that bound the smaller tier come
     # back first, and a ram range never outlives the stage range that feeds
     # it (#640).
-    for event in ram_residency_window(queue, tiers=announced_tiers, now=now):
+    for event in ram_residency_window(queue, tiers=announced_tiers, now=now,
+                                      withdrawn=withdrawn):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
-    for event in residency_window(queue, tiers=announced_tiers, now=now):
+    for event in residency_window(queue, tiers=announced_tiers, now=now,
+                                  withdrawn=withdrawn):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
     # its free tokens go now, its held ones as their holders finish, and its

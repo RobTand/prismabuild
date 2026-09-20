@@ -3831,6 +3831,60 @@ that holds no tokens counts as unpublished, because the same manifest seals the
 same key on a second campaign and a leftover `done` record would otherwise read
 as "already staged".
 
+**A withdrawal supersedes the window, and only then can it be repriced (#708).**
+An operator's `--withdraw` of a mover is a decision about the plan that sealed
+it, not about one row: the row cannot be edited or repriced in place -- its
+action key hashes the sealed resources and argv -- and a window that silently
+republished the cancelled copy would undo the decision at the price it was
+cancelled for (2026-09-19: movers sealed at fill 259 republished against a
+measured offer of 65.7, re-wedging the tier the withdrawal was meant to break).
+So the coordinator marks the plan superseded, by the plan body's digest **and
+the filing's incarnation** (inode, mtime, size), and publishes nothing further
+from it: no mover and no promotion, at any price. Egress rows still run --
+freeing bytes the consumer has read past is cleanup, not staging.
+
+Three identities keep the marker honest. The digest keys it to the body it
+retired; the incarnation keys it to the *filing*, so a deliberate same-body
+resubmission after a reap is not covered by the marker of the body it
+replaced; and `preempted_by` on the marker separates an operator's decision
+from admission's own preemption, which republishes its holder with
+`supersedes_withdrawal` in the same breath and must keep its plan. A marker
+that cannot be read or parsed is **not** "no marker": `residency_plan.superseded`
+answers with an `unreadable` record, and the window, adoption, pressure probe
+and planner all refuse or defer on it.
+
+The body stays filed while anything still names it. A withdrawn consumer's
+queued or claimed children are still attributable, so
+`withdraw_dead_consumer_movers` keeps cancelling them; a running consumer's
+other resident ranges stay named by the plan for the orphan sweep and for
+adoption, because a handoff must not expose them. The body is archived -- the
+reason in its name, the retired marker beside it as evidence -- only once
+`residency_plan.handoff_safe` says no consumer and no queued or claimed child
+still refers to it, under the consumer's transition lock. `freeze`,
+`mark_superseded` and `reap` all take that one lock and recheck the exact
+filing inside it, so a stale reaper cannot archive the plan a concurrent
+resubmission just sealed, even when the new body is byte-identical. Until the
+handoff is safe a resubmission refuses by name rather than replacing the old
+plan. Nothing about retirement releases a token: resident ranges keep their
+holders, and their bytes are adopted or evicted by the ordinary paths.
+
+**Automatic republication cannot retire a cancellation.** The cycle's
+withdrawn-key snapshot is a scheduling input, not an exclusion: a cancellation
+filed after the snapshot would otherwise be superseded by the very
+`publish` that hands the mover out again. So the tier loop's publications pass
+`refuse_withdrawn`, and `publish` checks for a live marker *inside its own
+transition lock* before it retires anything: the cancellation either wins
+outright (the publication refuses, the plan is marked) or loses outright (the
+withdrawal runs after and cancels the fresh row). Explicit submissions keep
+their own semantics -- re-submitting a key is how a person asks for the work
+again, and the marker is retired as evidence. A deliberately requested fresh
+plan seals its price through the same `pbrun --residency stage` path: the
+tier's **current announced offer** caps the measured single-reader share, so
+a window sealed after the offer sank is admissible without any sealed row
+being rewritten. `residency_plan.freeze` stays first-writer; a superseded
+filing must be reaped before its successor can be sealed, and the planner
+reaps it itself once the handoff is safe.
+
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
 stay held, so a mover row that reaches the queue without a residency block --

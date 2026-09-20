@@ -173,8 +173,12 @@ def test_a_finished_mover_is_left_for_adoption_not_withdrawn(
 
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert events == []
+    assert [event for event in events
+            if event.get("event") == "dead-consumer-mover-withdrawn"] == []
     assert finished in queue.tier_ledger(TIER).held_keys()
+    # The dead consumer's plan is residue once nothing names it (#708): it is
+    # archived, and the resident range keeps its tokens for adoption.
+    assert residency_plan.read(queue, FIRST) is None
 
 
 def test_a_live_consumer_and_its_egress_rows_are_untouched(

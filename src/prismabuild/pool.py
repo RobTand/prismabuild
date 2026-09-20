@@ -469,6 +469,17 @@ class AmbiguousClaimHolder(PoolContractError):
     """Contradictory committed reservations forbid concluding a claim."""
 
 
+class WithdrawnActionError(PoolContractError):
+    """A publication refused because the key carries a live cancellation.
+
+    Automatic republishing -- the window handing out a mover again -- must
+    never retire an operator's withdrawal marker by writing over it.  The
+    check is made inside ``publish``'s transition lock, so a cancellation
+    racing the publication either wins it outright or is cancelled again;
+    it is never lost between read and write (#708 review).
+    """
+
+
 class ExecutionBudget(NamedTuple):
     """How long this action may run, and why that is the number.
 
@@ -3154,6 +3165,7 @@ class PoolQueue:
         preempted_claim: Mapping[str, object] | None = None,
         residency: Mapping[str, object] | None = None,
         recompute: bool = False,
+        refuse_withdrawn: bool = False,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -3162,6 +3174,13 @@ class PoolQueue:
         the producer that knows it; a worker's ``capacity`` is the matching
         claim about the box.  Omitting it means the action is admitted on
         placement alone, which is the pre-ledger behaviour.
+
+        ``refuse_withdrawn`` is for *automatic* republication: inside this
+        method's transition lock a live cancellation marker refuses the
+        submission with :class:`WithdrawnActionError` instead of retiring it.
+        An explicit submission leaves it False -- re-submitting a key is how
+        a person asks for the same work again, and the marker is retired as
+        evidence either way.
         """
 
         self._refuse_if_fenced()
@@ -3217,6 +3236,18 @@ class PoolQueue:
                 )
             }
         self.ensure_layout()
+        if refuse_withdrawn:
+            # Under this method's transition lock, so a cancellation can only
+            # win outright (the marker is already filed and this refuses) or
+            # lose outright (``withdraw`` runs after and cancels the fresh
+            # record).  An operator's marker is never retired by an automatic
+            # republish (#708 review).
+            cancellation = self.live_withdrawal(action_key)
+            if cancellation is not None:
+                raise WithdrawnActionError(
+                    f"{action_key[:12]} carries a live withdrawal"
+                    f"{' (' + str(cancellation.get('reason')) + ')' if cancellation.get('reason') else ''}"
+                    "; an automatic publication does not supersede one")
         # A submission is what retires a withdrawal.  The key is a content
         # hash -- ``result_and_stamp_names`` says so: *"the same command at the
         # same commit still fingerprints identically"* -- so re-submitting one
@@ -9166,6 +9197,27 @@ class PoolQueue:
             name[: -len(".json")] for name in names if name.endswith(".json")
         )
 
+    def live_withdrawal(self, action_key: str) -> dict[str, object] | None:
+        """The visible cancellation marker filed for this key, if there is one.
+
+        Listed then read, for ``withdrawn_keys``' own NFS reason.  A marker
+        that is present but unreadable still answers with a record (carrying
+        no reason): an automatic publication refuses on it rather than
+        guessing that a damaged cancellation was never filed.
+        """
+
+        key = str(action_key)
+        if key not in self.withdrawn_keys():
+            return None
+        try:
+            marker = _read_json(self.item_path(WITHDRAWN, key))
+        except (OSError, PoolContractError):
+            marker = None
+        if isinstance(marker, dict):
+            return marker
+        return {"action_key": key, "reason": "",
+                "unreadable": True}
+
     def superseded_dir(self) -> Path:
         """Where records go once a generation decision makes them non-live.
 
@@ -9414,6 +9466,45 @@ class PoolQueue:
                 "say more of the key")
         return seen.pop()
 
+    def mark_residency_plan_superseded(self, consumer_action_key: str, *,
+                                       reason: str = "") -> bool:
+        """Mark the frozen window filed under this action key superseded (#708).
+
+        A withdrawal is the one decision that makes a frozen plan dead: the
+        plan that minted the withdrawn action cannot be published again
+        without overriding the decision, and it cannot be repriced in place
+        because a mover's key hashes the resources and argv it was sealed
+        with (#710, #708).  The marker stops publication and lets the
+        ordinary planner seal a fresh plan at the current price once the old
+        window's work has ended; the body itself stays filed, so the dead
+        consumer's queued children are still attributable for withdrawal and
+        a running consumer's resident ranges stay named for the sweep.
+
+        Best effort by design: a mount that refuses the marker leaves the
+        plan live, and the window's own withdrawal guard still refuses to
+        publish a cancelled key.  A failure is said out loud rather than
+        swallowed, because what it leaves behind is a window that could be
+        republished at the price it was cancelled for.
+        """
+
+        try:
+            # Local, because ``residency_plan`` imports this module: the queue
+            # owns the plan directory, but its naming and body are the plan
+            # module's contract.  Without a plan argument the *current* filing
+            # is marked, which is what withdrawing an action by its own key
+            # means; mark_superseded re-reads it under this key's lock.
+            from . import residency_plan
+            return residency_plan.mark_superseded(
+                self, consumer_action_key,
+                reason=reason, by="withdraw") is not None
+        except (OSError, ValueError) as exc:
+            print(
+                f"prismabuild: could not mark the residency plan for "
+                f"{str(consumer_action_key)[:12]} superseded: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return False
+
     @_serialized_key
     def withdraw(
         self,
@@ -9600,11 +9691,24 @@ class PoolQueue:
                 except Exception as exc:  # the durable decision remains effective
                     stop_pending["stop_error"] = f"{type(exc).__name__}: {exc}"
 
+        # The plan that minted a withdrawn *consumer* is marked superseded as
+        # it goes.  A mover's key names no plan -- the plan lives under the
+        # consumer's key -- so this is a no-op for one, and a mover's plan is
+        # marked by the window that would otherwise republish it (#708).
+        # Admission's own preemption is excluded: it requeues its holder in
+        # the same breath, and marking the plan would pause the window it just
+        # put back.
+        plan_superseded = False
+        if preempted_by is None:
+            plan_superseded = self.mark_residency_plan_superseded(
+                key, reason=reason or "withdrawn")
+
         return {
             "action_key": key,
             "status": "already_withdrawn" if existing is not None else "withdrawn",
             "state": origin,
             "host": host,
+            "residency_plan_superseded": plan_superseded,
             # What the holder's worker is running, so the caller can be told
             # whether this withdrawal is one it can see.  ``None`` means no
             # live offer names the host; ``""`` means the offer predates the
