@@ -3192,6 +3192,7 @@ class PoolQueue:
         container_images: Sequence[str] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         residency: Mapping[str, object] | None = None,
+        produced_output_template: Mapping[str, object] | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
     ) -> Path:
@@ -3263,18 +3264,34 @@ class PoolQueue:
                 self._check_tier_id(tier_id)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
-        if tier_demand and residency is None:
-            # Derived, never typed (#595): every tier demand the fleet's own
-            # submitters seal travels beside the residency block whose
-            # manifest range (mover) or leads (consumer) it accounts for.
-            # Demand on a tier with no block names bytes no manifest maps,
-            # so the pool refuses it rather than reserving capacity nothing
-            # can attribute.
-            raise PoolContractError(
-                "tier demand requires a residency block: "
-                f"{sorted(tier_demand)} names no manifest range or leads")
         residency_block = (
             None if residency is None else self.validate_residency(residency, demand))
+        produced_ref = None
+        validated_produced_template = None
+        if produced_output_template is not None:
+            try:
+                validated_produced_template, produced_ref = (
+                    self.validate_produced_output(
+                        produced_output_template, demand,
+                        residency_block=residency_block))
+            except PoolContractError:
+                raise
+            except ValueError as exc:
+                raise PoolContractError(str(exc)) from exc
+        if tier_demand and residency is None and produced_ref is None:
+            # Derived, never typed (#595): every tier demand the fleet's own
+            # submitters seal travels beside the residency block whose
+            # manifest range (mover) or leads (consumer) it accounts for --
+            # or, since this lane, beside the declared produced-output
+            # template whose bounded working window it reserves. Demand on a
+            # tier with neither names bytes no manifest maps and no working
+            # window, so the pool refuses it rather than reserving capacity
+            # nothing can attribute.
+            raise PoolContractError(
+                "tier demand requires a residency block or a declared "
+                "produced-output template: "
+                f"{sorted(tier_demand)} names no manifest range, leads, or "
+                "working window")
         if type(max_attempts) is not int or max_attempts < 1:
             raise PoolContractError("max_attempts must be a positive integer")
         if retry_safe is not None and type(retry_safe) is not bool:
@@ -3343,6 +3360,21 @@ class PoolQueue:
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
         superseded = self._supersede_withdrawal(action_key)
+        if validated_produced_template is not None:
+            # File the immutable template beside the queue before the item
+            # that attributes it: a conflicting body for the same id refuses
+            # here (foreign/tampered), with no queue row written. All
+            # precondition checks above already passed, so a refusal below
+            # still leaves no refused-publication side effect beyond the
+            # pre-existing filed body.
+            try:
+                from . import produced_output as produced_mod
+
+                produced_mod.declare_template(
+                    self.root, validated_produced_template)
+            except produced_mod.ProducedOutputError as exc:
+                raise PoolContractError(
+                    f"produced-output template conflict: {exc}") from exc
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,
@@ -3360,6 +3392,8 @@ class PoolQueue:
         }
         if residency_block is not None:
             item["residency"] = residency_block
+        if produced_ref is not None:
+            item["produced_output"] = produced_ref
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -4712,6 +4746,78 @@ class PoolQueue:
             raise PoolContractError(
                 "a residency block must declare a range, leads, or both")
         return block
+
+    @classmethod
+    def validate_produced_output(
+        cls,
+        template: Mapping[str, object],
+        demand: Mapping[str, int],
+        *,
+        residency_block: Mapping[str, object] | None = None,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        """Refuse a produced-output declaration that is not arithmetic.
+
+        The template is validated by its owner (``produced_output.
+        validate_template``: closed field set, authorized stage/ram tiers,
+        minimum-within-window, permitted == demands). The tier demand the
+        action carries must then be exactly the bounded working window the
+        template derives (``owner_demand_terms``: window GiB, never the
+        durable corpus), plus the input range floor when an input residency
+        range lands on the same tier. Input leads carry no tier demand, so a
+        producer with input residency and an output template still owes
+        exactly the output window. Underdeclared, mismatched, foreign, or
+        extra tier demand refuses; the existing ledger channel then admits
+        the combined host + tier capacity atomically at claim.
+        """
+
+        try:
+            from . import produced_output as produced_mod
+        except ImportError as exc:
+            raise PoolContractError(
+                f"produced-output template needs produced_output: {exc}"
+            ) from None
+        try:
+            validated = produced_mod.validate_template(template)
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"produced-output template: {exc}") from exc
+        try:
+            terms = produced_mod.owner_demand_terms(validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise PoolContractError(f"produced-output demand: {exc}") from exc
+        _, expected_grouped = storage_tiers.split_demand(
+            {str(k): int(v) for k, v in terms.items()})
+        expected: dict[str, dict[str, int]] = {
+            tier: dict(needs) for tier, needs in expected_grouped.items()}
+        if residency_block is not None:
+            start = residency_block.get("range_start_bytes")
+            end = residency_block.get("range_end_bytes")
+            tier_id = residency_block.get("tier_id")
+            if start is not None and end is not None and tier_id is not None:
+                floor = storage_tiers.stage_tokens_for_bytes(
+                    int(end) - int(start))
+                kind = (f"{storage_tiers.capacity_kind_of(str(tier_id))}"
+                        f"{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}")
+                _, tier_only = storage_tiers.split_demand_key(kind)
+                assert tier_only is not None
+                bare = kind.split(
+                    storage_tiers.TIER_DEMAND_SEPARATOR, 1)[0]
+                expected.setdefault(str(tier_id), {})
+                expected[str(tier_id)][bare] = int(
+                    expected[str(tier_id)].get(bare, 0)) + int(floor)
+        _, declared_grouped = storage_tiers.split_demand(
+            {str(k): int(v) for k, v in dict(demand).items()})
+        if declared_grouped != expected:
+            raise PoolContractError(
+                "produced-output tier demand must exactly cover the declared "
+                f"working window (plus input range floor where present): "
+                f"declared {sorted(declared_grouped.items())} != "
+                f"expected {sorted(expected.items())}")
+        ref = {
+            "schema": produced_mod.PRODUCED_OUTPUT_REF_SCHEMA_V1,
+            "template_id": str(validated["template_id"]),
+            "template_sha256": produced_mod.template_sha256(validated),
+        }
+        return validated, ref
 
     @staticmethod
     def _residency_manifest_of(record: Mapping[str, object] | None) -> str | None:

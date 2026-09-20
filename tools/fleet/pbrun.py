@@ -4513,6 +4513,7 @@ def freeze_action_template(
     transport: str,
     pool_measurement_class: bool,
     data_manifest_path: str | None,
+    produced_output_template_path: str | None = None,
     checkout_snapshot_max_bytes: int,
     snapshot_refs: Sequence[str],
     exclusive: bool,
@@ -4643,6 +4644,59 @@ def freeze_action_template(
             data_manifest_summary["content_encoding"] = manifest_encoding
     else:
         data_manifest_summary = None
+    produced_declaration = None
+    produced_validated = None
+    if produced_output_template_path is not None:
+        from prismabuild import produced_output as produced_mod
+
+        try:
+            raw_template = Path(produced_output_template_path).read_bytes()
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_template) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SystemExit(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes: "
+                "templates are envelopes, not payloads")
+        try:
+            candidate = json.loads(raw_template.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            produced_validated = produced_mod.validate_template(candidate)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # Derive the qualified tier demand from the bounded working window
+        # here (never the durable corpus), so the sealed demand and the
+        # sealed declaration cannot drift apart between prepare and freeze.
+        try:
+            window_terms = produced_mod.owner_demand_terms(produced_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template demand: {exc}") from None
+        for qualified, need in window_terms.items():
+            if demand.get(qualified, 0) != int(need):
+                raise SystemExit(
+                    "pbrun: --produced-output-template window demand "
+                    f"{qualified}={need} disagrees with the sealed demand; "
+                    "the template is the only source of tier demand")
+        template_input, _ = cas.ingest_input(
+            produced_output_template_path,
+            input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+        )
+        # The CAS digest covers the file bytes; the declaration below binds
+        # the canonical template identity to that input row, so the key
+        # moves with the template and a post-seal edit changes nothing.
+        try:
+            produced_declaration = produced_mod.build_declaration(
+                produced_validated, template_input)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template declaration: {exc}") from None
+        inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
         host_class, measurement=measurement, transport=transport)
     if pool_measurement_class and demand.get("gpu", 0) and (
@@ -4664,6 +4718,12 @@ def freeze_action_template(
         # 200 KB blob to learn a byte count would put the manifest on the
         # scheduler's hot path. The list itself stays in the CAS.
         params["data_manifest"] = data_manifest_summary
+    if produced_declaration is not None:
+        # Sealed like the data manifest: the input row carries the bytes,
+        # this declaration binds the canonical template identity to it, so
+        # the action key covers both. Absent, the key is byte-identical to
+        # before this flag existed.
+        params[pb.PRODUCED_OUTPUT_TEMPLATE_PARAM] = produced_declaration
     if demand.get("gpu"):
         params["gpu_exclusive"] = bool(exclusive)
         if gpu_memory_gb is not None:
@@ -4697,6 +4757,7 @@ def freeze_action_template(
         "checkout_identity": identity,
         "log_name": log_name,
         "stamp_name": stamp_name,
+        "produced_output_template": produced_validated,
         "task": {
             "definition_id": "fleet/pbrun",
             "definition_version": "v1",
@@ -5725,6 +5786,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "one, and from the same command with a different manifest",
     )
     ap.add_argument(
+        "--produced-output-template", default=None, metavar="PATH",
+        help="path to a tiny validated produced-output template JSON "
+             "(at most 64 KiB) declaring the bounded working window this "
+             "action will stage for bytes it produces itself. Captured as an "
+             "ordinary CAS declared input plus action params, so changing the "
+             "template changes the action key and editing the file after seal "
+             "changes nothing the worker reads. The qualified tier demand is "
+             "derived from the window (never the durable corpus) and added "
+             "to the explicit CPU/memory/GPU reservation; the claim holds "
+             "all of it before the producer starts. Pool transport only.",
+    )
+    ap.add_argument(
         "--residency", choices=("none", "stage"), default="none",
         help="stage this action's declared bytes onto a storage tier before it "
              "runs (#583).  'stage' seals one movement node per phase of the "
@@ -6154,6 +6227,44 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             offer_queue(), tags)
         demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
 
+    produced_template_opt = getattr(args, "produced_output_template", None)
+    if produced_template_opt is not None:
+        if args.transport != "pool":
+            raise SystemExit(
+                "pbrun: --produced-output-template needs the pull queue: "
+                "tier working-window reservations live in the pool ledgers")
+        from prismabuild import produced_output as produced_mod
+
+        try:
+            raw_pre = Path(produced_template_opt).read_bytes()
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_pre) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SystemExit(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes")
+        try:
+            pre_body = json.loads(raw_pre.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            pre_validated = produced_mod.validate_template(pre_body)
+            pre_terms = produced_mod.owner_demand_terms(pre_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # The explicit user reservation (CPU/memory/GPU) is preserved; the
+        # qualified tier demand is derived from the bounded working window,
+        # never typed by hand and never the durable corpus.
+        for qualified, need in pre_terms.items():
+            if qualified in demand:
+                raise SystemExit(
+                    f"pbrun: --demand must not name tier demand {qualified!r}: "
+                    "the produced-output template derives it")
+            demand[qualified] = int(need)
+
     if portable_checkout:
         require_relocatable_checkout(
             command, variables, cwd, repository_root=repository_root
@@ -6213,6 +6324,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
         data_manifest_path=args.data_manifest,
+        produced_output_template_path=produced_template_opt,
         checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
         snapshot_refs=args.snapshot_ref,
         exclusive=args.exclusive,
@@ -6642,6 +6754,9 @@ def main() -> int:
             residency_plan.freeze(q, staged["plan"])
             publication = publication_row(action, args=args, queue=q)
             publication["residency"] = staged["residency"]
+            if template.get("produced_output_template") is not None:
+                publication["produced_output_template"] = template[
+                    "produced_output_template"]
             queued_path = publish_or_refuse(q, publication)
             # The first phase only -- its first chunk when that phase sealed
             # chunked (#675).  The rest is the tiers loop's to publish as
@@ -6657,6 +6772,9 @@ def main() -> int:
                   file=sys.stderr, flush=True)
     else:
         publication = publication_row(action, args=args, queue=q)
+        if template.get("produced_output_template") is not None:
+            publication["produced_output_template"] = template[
+                "produced_output_template"]
         queued_path = publish_or_refuse(q, publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now

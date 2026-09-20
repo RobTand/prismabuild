@@ -73,6 +73,11 @@ INSTANCE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_instance.v1"
 DESCRIPTOR_SCHEMA_V2 = "prismaquant.prismabuild.produced_output_descriptor.v2"
 BATCH_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_batch.v1"
 BATCH_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_manifest.v1"
+#: The queue item's projection of the sealed declaration: which immutable
+#: template this action's tier demand was derived from. The runtime binds
+#: from this ref (filed body + live claim), never from a caller-supplied
+#: template object.
+PRODUCED_OUTPUT_REF_SCHEMA_V1 = "prismabuild.produced_output_ref.v1"
 
 OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
@@ -307,6 +312,111 @@ def declare_template(queue_root: str | Path, template: Mapping[str, object]) -> 
             f"a different template is already filed for {checked['template_id']}: {exc}"
         ) from None
     return path
+
+
+def build_declaration(
+    template: Mapping[str, object], template_input: Mapping[str, object]
+) -> dict[str, object]:
+    """The sealed action-params declaration for one validated template.
+
+    Pure constructor owned here so the submitter (``pbrun``) and the core
+    validator cannot drift: the template body is validated by
+    :func:`validate_template`, the input row by the core input contract, and
+    the digest is the canonical template identity. The file bytes stay in the
+    CAS as an ordinary declared input; this declaration is the params half
+    that makes the action key cover them.
+    """
+
+    from prismabuild.core import (
+        PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
+        PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+        validate_input_contract,
+    )
+
+    checked = validate_template(template)
+    inch = validate_input_contract(template_input)
+    if inch["id"] != PRODUCED_OUTPUT_TEMPLATE_INPUT_ID:
+        raise ProducedOutputError(
+            "template input id must be "
+            f"{PRODUCED_OUTPUT_TEMPLATE_INPUT_ID!r}")
+    return {
+        "schema": PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
+        "template_id": str(checked["template_id"]),
+        "template_sha256": template_sha256(checked),
+        "input": inch,
+    }
+
+
+def declared_template(queue, action_key: str) -> dict[str, object]:
+    """Load the template this sealed action actually declared.
+
+    Reads the queue item's ``produced_output`` ref (projected by
+    ``PoolQueue.publish`` from the validated template whose working window
+    the tier demand covers), then the filed immutable body, and verifies the
+    digest. A caller-supplied template object is never trusted: an arbitrary
+    template plus a real claim binds nothing. Looks in ``claimed/`` first
+    (runtime) then ``ready/`` (submitter verification); anything else
+    refuses.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    owner = _hex64(action_key, where="declared template action_key")
+    item = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+    if item is None:
+        item = pool_mod._read_json(queue.item_path(pool_mod.READY, owner))
+    if not isinstance(item, Mapping):
+        raise ProducedOutputError("no queued item for this action key")
+    ref = item.get("produced_output")
+    if not isinstance(ref, Mapping):
+        raise ProducedOutputError("this action declares no produced-output template")
+    if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
+        raise ProducedOutputError(
+            f"produced-output ref schema must be {PRODUCED_OUTPUT_REF_SCHEMA_V1!r}")
+    template_id = ref.get("template_id")
+    digest = ref.get("template_sha256")
+    if (not isinstance(template_id, str) or not template_id
+            or "/" in template_id):
+        raise ProducedOutputError("produced-output ref names no template")
+    _hex64(digest, where="produced-output ref template_sha256")
+    assert isinstance(digest, str)
+    path = (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            / f"{template_id}.json")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ProducedOutputError(f"undeclared-template: {exc}") from None
+    try:
+        body = json.loads(raw.decode())
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ProducedOutputError(
+            f"undeclared-template: filed body unreadable: {exc}") from None
+    checked = validate_template(body)
+    if (str(checked["template_id"]) != template_id
+            or template_sha256(checked) != digest):
+        raise ProducedOutputError(
+            "tampered-template: filed body differs from the declared ref")
+    return checked
+
+
+def bind_declared_instance(
+    queue, *, owner_action_key: str,
+    claim_snapshot: Mapping[str, object],
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Bind the runtime instance from the sealed declaration, not arguments.
+
+    Loads :func:`declared_template` from the actual sealed queue item, then
+    :func:`bind_instance` against the protected live claim + launch halves.
+    There is no template argument to substitute, invent, or mismatch: a
+    foreign, missing, or tampered declaration refuses before any byte is
+    written.
+    """
+
+    template = declared_template(queue, owner_action_key)
+    return bind_instance(
+        queue, template, owner_action_key=owner_action_key,
+        claim_snapshot=claim_snapshot, env=env)
 
 
 # --------------------------------------------------------------------------
@@ -1943,6 +2053,7 @@ __all__ = [
     "DESCRIPTOR_SCHEMA_V2",
     "BATCH_SCHEMA_V1",
     "BATCH_MANIFEST_SCHEMA_V1",
+    "PRODUCED_OUTPUT_REF_SCHEMA_V1",
     "OUTPUT_TEMPLATES_SUBDIR",
     "OUTPUT_SCOPES_SUBDIR",
     "OUTPUT_BATCHES_SUBDIR",
@@ -1984,4 +2095,7 @@ __all__ = [
     "output_scope_tick",
     "due_mover_rows",
     "recover_batches",
+    "build_declaration",
+    "declared_template",
+    "bind_declared_instance",
 ]

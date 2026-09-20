@@ -3776,6 +3776,44 @@ allowed-tier, lease, and readiness rules this gate participates in, with
 honest per-requirement status. The PQ endgame is an application acceptance
 boundary referencing that contract, not a PB scheduler responsibility.
 
+### Produced-output admission (working window, not the corpus)
+
+A producer that stages bytes it writes itself declares a tiny validated
+immutable template (`pbrun --produced-output-template PATH`, at most 64 KiB,
+`produced_output.validate_template`). The template is captured as an ordinary
+CAS declared input plus sealed action params
+(`produced_output_template` declaration, validated by `core.
+validate_produced_output_declaration` against `action.inputs`), so changing
+the template changes the action key and editing the file after seal changes
+nothing the worker reads. The qualified tier demand is derived from the
+bounded working window (`produced_output.owner_demand_terms`: window GiB,
+never the durable corpus maxima or host decode memory) and added to the
+explicit user CPU/memory/GPU reservation, which is otherwise untouched. Pool
+transport only.
+
+`PoolQueue.publish(..., produced_output_template=...)` validates the template
+(closed fields, stage/ram kinds, minimum-within-window), requires the
+carried tier demand to exactly cover the derived window (plus the input range
+floor when an input residency range lands on the same tier; input leads carry
+none), files the template immutably, and projects
+`item["produced_output"] = {template_id, template_sha256}`. The #595 gate is
+extended narrowly for this declared window only: tier demand with neither an
+input residency block nor a correct produced-output declaration still
+refuses, and underdeclared, mismatched, foreign, tampered, or extra tier
+demand refuses with no refused-publication side effects. Input and output
+demand coexist and are admitted once through the existing host + tier ledger
+channel: the claim holds every required token before the producer starts, so
+insufficient tier capacity denies even with ample CPU/GPU.
+
+The runtime binds from the sealed item, never from caller arguments
+(`produced_output.declared_template` / `bind_declared_instance` over the
+protected live claim + launch halves). The template carries no action key or
+nonce; the instance binds the real protected attempt later. `pbcampaign`
+list rows forward the option (`produced_output_template` row field to
+`--produced-output-template`); decomposed logical children are out of scope.
+Prewrite/commit/retire/release/funding, movement/tick handoff, and the
+general funded-window primitive remain with their owning lanes.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
