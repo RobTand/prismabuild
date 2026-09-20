@@ -8021,14 +8021,22 @@ class PoolQueue:
         nobody) has no such owner and keeps the tier loop's eviction-candidate
         sweep instead; nothing here changes it.
 
-        Retention needs POSITIVE evidence that bytes are there -- a receipt
-        naming this tier with ``bytes_staged`` above zero.  A mover that filed
-        no receipt reported staging nothing, which is what the pool has always
-        read it as, and this predicate does not second-guess it: extending
-        retention where the tier cannot be shown to be occupied would hold
-        capacity for every mover that never ran.  A zero-output failure
-        therefore still frees its reservation, because nothing is occupying
-        anything.
+        Three states, not two: **occupied** retains, **proven empty**
+        releases, and **unknown** retains.  The evidence is ordered by what
+        the mover actually does.  ``stage_move`` publishes a residency
+        fragment **per entry**, as the bytes land, and files its move receipt
+        **once and last** (``tools/fleet/stage_move.py``: ``record_move`` at
+        :1604, after the per-entry ``publish``).  So a missing receipt is
+        silence, not a zero report -- a mover killed after publishing its
+        first entries has bytes on the stage and no receipt at all -- and
+        reading absence of a receipt as absence of bytes frees the charge
+        while the files are still there.  Published material is therefore
+        asked whenever the receipt does not settle it, and only a PROVEN
+        absence of both releases.
+
+        A genuine zero-output failure still frees its reservation: it files
+        a refusal receipt, publishes no fragment, and leaves nothing to
+        charge for.
         """
 
         if not isinstance(record, Mapping):
@@ -8055,12 +8063,51 @@ class PoolQueue:
             receipt = self.move_record(str(action_key))
         except (OSError, PoolContractError):
             return True
-        if not isinstance(receipt, Mapping):
+        if (isinstance(receipt, Mapping) and not receipt.get("refusal")
+                and receipt.get("tier_id") == tier_id):
+            staged = receipt.get("bytes_staged")
+            if not isinstance(staged, int):
+                return True
+            if staged > 0:
+                return True
+        # Everything else -- no receipt, a refused one, one about another
+        # tier, one reporting zero -- is settled by what was published,
+        # because publication happens per entry and the receipt happens once
+        # at the end.  Only proven-nothing releases.
+        return self._output_published_material(str(action_key)) is not False
+
+    def _output_published_material(self, action_key: str) -> bool | None:
+        """Does any produced-output fragment name this mover? (3-valued)
+
+        ``True`` a fragment names it, ``False`` proven none, ``None``
+        unknown.  Fragments are the publication evidence that exists BEFORE
+        the move receipt does, which is what makes the crash window between
+        them answerable at all.  Every read failure that is not a proven
+        ENOENT answers unknown, so a namespace that cannot be scanned never
+        becomes a statement that nothing was published there.
+        """
+
+        from . import produced_output as produced_mod
+
+        root = produced_mod.output_fragment_root(self.root / RESIDENCY)
+        name = f"{action_key}.json"
+        try:
+            namespaces = list(os.scandir(root))
+        except FileNotFoundError:
             return False
-        if receipt.get("tier_id") != tier_id:
-            return False
-        staged = receipt.get("bytes_staged")
-        return isinstance(staged, int) and staged > 0
+        except OSError:
+            return None
+        for entry in namespaces:
+            try:
+                if not entry.is_dir():
+                    continue
+                os.stat(Path(entry.path) / name)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return None
+            return True
+        return False
 
     def pin_holds_tier_tokens(self, record: Mapping[str, object] | None,
                               action_key: str) -> bool:

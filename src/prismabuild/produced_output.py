@@ -3171,7 +3171,10 @@ def safe_release_instance(queue, instance: Mapping[str, object],
 def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, object]]:
     """Deterministic read-only reconciliation for the tier-loop tick.
 
-    NEW method owned by this lane. For each bound instance: compose each
+    NEW method owned by this lane. Staged means fragments compose AND the
+    mover's receipt says complete; fragments whose completeness cannot be
+    read are `output-recovery-unknown`, exactly as in `recover_batches`.
+    For each bound instance: compose each
     unretired batch's fragments (existing validator, one manifest each),
     report staged/retire-needed events. No publishing (liveness), no deletion
     (lease), no placement. Proposed hook: call once per `tier_loop.cycle`
@@ -3232,6 +3235,15 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     events.append({"event": "output-batch-invalid",
                                    "batch_id": batch_id, "error": repr(exc)})
                     continue
+                # Same question, same answer as `recover_batches`: composing
+                # fragments prove bytes landed, not that the batch did, and
+                # two censuses of one lane may not disagree about which.
+                complete = _mover_receipt_complete(
+                    queue, str(entry.get("mover_key") or ""))
+                if complete is not True:
+                    events.append({"event": "output-recovery-unknown",
+                                   "batch_id": batch_id, "namespace": ns})
+                    continue
                 entries = composed.get("entries")
                 events.append({
                     "event": "output-batch-staged",
@@ -3240,6 +3252,31 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     "entries": len(entries) if isinstance(entries, Mapping) else 0,
                 })
     return events
+
+
+def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
+    """Did this mover's own receipt say the batch landed whole? (3-valued)
+
+    True/False from a filed, unrefused receipt; None when there is none to
+    read or it cannot be read. Fragments cannot answer this: `stage_move`
+    publishes one per entry as the bytes land and files its receipt once at
+    the end, so a half-staged batch composes exactly like a whole one and a
+    killed mover leaves fragments with no receipt at all. Every census in
+    this lane asks the same question the same way.
+    """
+
+    if not mover_key:
+        return None
+    try:
+        receipt = queue.move_record(mover_key)
+    except Exception:
+        return None
+    if not isinstance(receipt, Mapping):
+        return None
+    if receipt.get("refusal"):
+        # A filed refusal is evidence, and it is not "complete".
+        return False
+    return receipt.get("complete") is True
 
 
 def _mover_live_state(queue, mover_key: str) -> str:
@@ -3352,10 +3389,12 @@ def recover_batches(queue, instance: Mapping[str, object],
     """Classify every batch for deterministic recovery (read-only).
 
     NEW method owned by this lane. Uses existing receipts/ledgers/fragments
-    only: staged (composes), unstaged (no fragments, mover absent → due),
-    mover-failed (terminal FAILED → retry), mover-live (claimed/ready →
-    wait), unknown (unreadable scan → defer). Returns events in batch_id
-    order; callers act through existing publish/evict paths, never here.
+    only: staged (fragments compose AND the mover's receipt says complete),
+    unstaged (no fragments, mover absent → due), mover-failed (terminal
+    FAILED → retry), mover-live (claimed/ready → wait), unknown (unreadable
+    scan, or fragments whose completeness cannot be read → defer). Returns
+    events in batch_id order; callers act through existing publish/evict
+    paths, never here.
 
     One queued mover is NOT live work: a READY row the retry ladder
     requeued after its terminal consumed the funding can never be funded
@@ -3420,14 +3459,26 @@ def recover_batches(queue, instance: Mapping[str, object],
         mover = str(entry.get("mover_key") or "")
         try:
             fragments = map_mod.read_fragments(out_base, ns) if ns else []
-            staged = bool(fragments) and bool(map_mod.compose(fragments))
+            composed = bool(fragments) and bool(map_mod.compose(fragments))
         except Exception as exc:
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "error": repr(exc)})
             continue
+        # Fragments prove bytes landed; they do NOT prove the batch landed.
+        # A mover that staged 700 of 1200 declared bytes composes exactly
+        # like one that staged all of them, and reporting that as staged
+        # tells the caller this batch needs nothing -- while its row is
+        # unclaimable and its origin files are still the only copy of the
+        # 500 bytes that never arrived. The mover's own receipt is what
+        # says which it was, and an unreadable one leaves it unknown
+        # rather than letting the fragments answer a question they cannot.
+        complete = _mover_receipt_complete(queue, mover) if composed else None
         state = _mover_live_state(queue, mover) if mover else "absent"
-        if staged:
+        if composed and complete is True:
             events.append({"event": "output-batch-staged",
+                           "batch_id": batch_id, "namespace": ns})
+        elif composed and complete is None:
+            events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "namespace": ns})
         elif state == "failed":
             events.append({"event": "output-mover-failed-retry",

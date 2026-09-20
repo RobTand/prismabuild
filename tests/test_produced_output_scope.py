@@ -296,7 +296,12 @@ def _stage_batch_receipt(queue: pool.PoolQueue, batch: dict, origin: Path,
         "--max-readers", "2",
         "--unpaced",
     ])
-    return stage_move.move(args)
+    receipt = stage_move.move(args)
+    # The real mover files its receipt once, last (`stage_move.main`); a
+    # fixture that publishes fragments without it models a killed mover,
+    # not a finished one, and every census reads the difference.
+    queue.record_move(str(batch["mover_key"]), receipt)
+    return receipt
 
 
 def _file_sidecars(queue: pool.PoolQueue, batch: dict, out_base: Path):

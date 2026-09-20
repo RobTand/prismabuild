@@ -4233,6 +4233,52 @@ transfer-short). `admit_funded_window` reports the delivered binding
 (`mode: prepaid-per-batch` + `owner_demand_terms`) once the funded-claim
 primitives are present.
 
+#### Terminal occupancy: a batch stays charged until its bytes are gone
+
+The tier invariant is that held tokens equal bytes on the stage at every
+instant, so a produced-output mover's terminal releases its tier tokens only
+when the stage is proven empty of its material. `PoolQueue.residency_pin_holds`
+answers the complete case (whole declared range, unrefused receipt);
+`PoolQueue.output_partial_pin_holds` answers the rest for this lane, and
+`PoolQueue.pin_holds_tier_tokens` is the union that `finish`, `reap_stale`,
+the tombstone/widowed-lease sweeps and `reclaim_terminal_reservation` all ask,
+so no two concluding paths can disagree.
+
+The contract is three-valued, never two:
+
+* **Occupied — retain.** A receipt naming the tier with `bytes_staged > 0`, or
+  a published residency fragment naming this mover. A partial batch is
+  occupancy: half a batch on the stage is half a stage spent.
+* **Proven empty — release.** A mover that filed a refusal receipt
+  (`residency_moved_nothing`) and published no fragment. A zero-output failure
+  frees its reservation because nothing is occupying anything.
+* **Unknown — retain.** Anything else, including a MISSING move receipt.
+  `stage_move` publishes a fragment per entry as the bytes land and calls
+  `record_move` once, last, so a kill in that window leaves real bytes and no
+  receipt at all. Absence of a receipt is silence, not a report of zero.
+
+Retention is safe here only because the leftovers have a named owner:
+`produced_output.retire_batch` runs `stage_release.evict` for that mover key,
+which deletes the files and returns the holder's tokens in the same call --
+exactly once, with a re-drive answering `duplicate` and returning nothing
+further. The consumer window's twin (#627: a failed mover's partials, held by
+nobody) has no such owner and keeps the tier loop's eviction-candidate sweep
+instead; nothing in this contract changes it.
+
+`produced_output.recover_batches` is the read-only census over the same
+evidence, and it may not turn unproven into a verdict. Fragments prove bytes
+landed, not that the batch landed, so `output-batch-staged` requires the
+mover's receipt to say `complete`; fragments with an unreadable receipt are
+`output-recovery-unknown`. A READY row is judged only by its filed funding
+record through `PoolQueue.output_funding_file_state` (a census path may not
+use `read_output_funding`, which conflates absent with corrupt): `consumed` is
+spent and yields `output-mover-unfundable-retire` with the terminal route
+(retire -> reclaim -> re-plan), `corrupt` and a `released` record beside an
+unretired batch are unknown, and `absent` means no prepaid intent was filed so
+the ordinary claim path applies. A CLAIMED row is never told to retire; its
+recovery is the lease reaper's. Ledger holdings are not an input in either
+direction.
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when

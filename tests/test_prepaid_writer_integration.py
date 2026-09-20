@@ -1284,14 +1284,37 @@ def test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them(
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
 
+    # And the census names the route, from evidence: fragments compose for
+    # this batch exactly as they would for a complete one, so the verdict
+    # has to come from the receipt. Reporting it as staged would tell the
+    # producer this batch needs nothing while 500 of its declared bytes
+    # exist only in the origin file it is about to reclaim.
+    route = [event for event in po.recover_batches(q, inst, template)
+             if event.get("event") == "output-mover-unfundable-retire"]
+    assert len(route) == 1, route
+    assert route[0]["mover"] == mover, route
+    assert route[0]["action"] == "retire-reclaim-replan", route
+    assert all(event.get("event") != "output-batch-staged"
+               for event in po.recover_batches(q, inst, template))
+    target = str(route[0]["batch_id"])
+
     # The egress is what returns them, because it is what deletes the
     # bytes. Both happen in the same call and neither happens without it.
-    retired = po.retire_batch(q, inst, template, "b1",
+    retired = po.retire_batch(q, inst, template, target,
                               stage_root=str(stage_root),
                               residency_root=residency)
     assert retired.get("ok") is True, retired
     assert [Path(p).name for p in retired["staged_paths"]] == ["p1.bin"]
     assert _staged(stage_root, "p1.bin") == []
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+    # Exactly once: the egress that deleted the bytes returned the token,
+    # and re-driving retirement answers duplicate without returning a
+    # second one.
+    again = po.retire_batch(q, inst, template, target,
+                            stage_root=str(stage_root),
+                            residency_root=residency)
+    assert again.get("ok") is True and again.get("duplicate") is True, again
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 3, "holders": {owner: 1}}
     refill2 = po.refill_window(q, inst, template, tier=TIER)
@@ -1438,3 +1461,82 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     assert verdict in events, events
     assert not any(event.get("event") == "output-mover-live-wait"
                    for event in events), events
+
+
+def test_a_mover_killed_after_publishing_keeps_its_charge(
+        tmp_path: Path) -> None:
+    """A missing move receipt is silence, not a report of zero bytes.
+
+    `stage_move` publishes a residency fragment PER ENTRY as the bytes
+    land and files its move receipt ONCE, last
+    (`tools/fleet/stage_move.py`: `record_move` at :1604, after the
+    per-entry `publish`). A kill or an OOM in that window leaves real
+    bytes on the stage and no receipt at all, so reading the absent
+    receipt as "staged nothing" frees the charge while the files are
+    still there -- unproven treated as known-negative, one layer below
+    the holding count that was the same mistake last round.
+
+    Modelled at the evidence level rather than by racing a signal: the
+    mover publishes and stages for real, and its receipt is removed, so
+    the predicate sees exactly what the crash window leaves behind.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    descs = descs + _descriptors(tmp_path, template, inst, "s1", b"c" * 500)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    Path(str(descs[1]["path"])).unlink()
+    claimed = _claim_mover(q, "w-killed")
+    assert claimed["action_key"] == mover
+    q.execute(claimed, timeout_s=240)
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    namespace = str(res["batch_namespace"])
+    fragment = Path(residency) / namespace / f"{mover}.json"
+    assert fragment.is_file(), sorted(Path(residency).rglob("*.json"))
+
+    # The window: published, not yet recorded.
+    q.move_path(mover).unlink()
+    assert q.move_record(mover) is None
+    q.finish(mover, status="failed")
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # Fragments compose, so bytes are there; completeness cannot be read,
+    # so the census says unknown rather than calling the batch staged.
+    events = po.recover_batches(q, inst, template)
+    assert {"event": "output-recovery-unknown", "batch_id": "b1",
+            "namespace": namespace} in events, events
+
+    # The egress still returns the charge, exactly once.
+    retired = po.retire_batch(q, inst, template, "b1",
+                              stage_root=str(stage_root),
+                              residency_root=residency)
+    assert retired.get("ok") is True, retired
+    assert [Path(path).name for path in retired["staged_paths"]] == ["p1.bin"]
+    assert _staged(stage_root, "p1.bin") == []
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
+    again = po.retire_batch(q, inst, template, "b1",
+                            stage_root=str(stage_root),
+                            residency_root=residency)
+    assert again.get("ok") is True and again.get("duplicate") is True, again
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 3, "holders": {owner: 1}}
