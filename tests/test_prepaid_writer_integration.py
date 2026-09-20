@@ -61,6 +61,23 @@ KIND = "stage_gib"
 REPO = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_synthetic_launch_context(monkeypatch):
+    """Standalone synthetic launch contexts never inherit an outer tuple.
+
+    Same proven isolation as test_core (PR746): the published runtime
+    forwards a complete broker-owned reader tuple to launched processes,
+    and production ``_reader_identity_environment`` refuses a foreign
+    tuple rather than feeding it into an unrelated synthetic action.
+    Pool.execute and the launcher it spawns must derive each action's own
+    identity; production validity checks are untouched.
+    """
+
+    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
+                 "PRISMABUILD_READER_HELPER_ROOT", "PRISMABUILD_ACTION_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
@@ -117,8 +134,9 @@ def _bind(q: pool.PoolQueue, template: dict, owner: str,
           cas_root: Path | None = None):
     terms = po.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root=str(cas_root or "/cas"),
-              worker_script="/w.py",
-              checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, **terms},
+              worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
+              checkout_root=str(Path(q.root).parent / "mover-checkout"),
+              resources={"cpu": 1, "mem_gb": 1, **terms},
               produced_output_template=template)
     claimed = q.claim(owner="w-owner")
     assert claimed is not None and claimed["action_key"] == owner
@@ -248,33 +266,20 @@ def _producer_request(tmp_path: Path, cas_root: Path,
 
 def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str,
                    checkout: Path) -> dict:
-    """Execute the SEALED request argv through the real local executor.
+    """The REAL worker seam: Pool.execute over the claimed mover row.
 
-    The subprocess drops the outer launcher's reader-identity bundle (a
-    real storage-owner box carries no foreign tuple): the production
-    identity check stays exactly as deployed, and the runner derives the
-    mover's own identity from the action in hand.
+    ``Pool.execute`` materializes the row's checkout and spawns the
+    canonical worker argv (the row's worker_script -- the PB worker
+    launcher -- with ``run-local --action <request> --cas-root
+    --checkout-root``), exactly as the fleet's worker loop does; the
+    launcher derives the mover's identity and executes the sealed argv
+    (the bash wrapper running stage_move). No direct run_local_action
+    shortcut: this is the runtime callability under test.
     """
-    runner = Path(q.root) / "run-local-action.py"
-    runner.write_text(
-        "import json, sys\n"
-        "from pathlib import Path\n"
-        "from prismabuild import core as pb\n"
-        "req, cas, root = sys.argv[1], sys.argv[2], sys.argv[3]\n"
-        "out = pb.run_local_action(json.loads(Path(req).read_text()),\n"
-        "                          cas_root=cas, checkout_root=root,\n"
-        "                          timeout_seconds=180)\n"
-        "print(json.dumps(sorted(out)))\n")
-    request_path = Path(cas_root) / "requests" / mover[:2] / f"{mover}.json"
-    scrub = {k: v for k, v in os.environ.items()
-             if k not in (pb.ACTION_NONCE_ENV, pb.ACTION_SCOPE_ENV,
-                          pb.READER_HELPER_ROOT_ENV, pb.ACTION_KEY_ENV)}
-    scrub["PYTHONPATH"] = str(REPO / "src")
-    done = subprocess.run(
-        [sys.executable, str(runner), str(request_path),
-         str(cas_root), str(checkout)],
-        env=scrub, capture_output=True, text=True, timeout=240)
-    assert done.returncode == 0, done.stdout + done.stderr
+    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    assert isinstance(row, dict), "mover row must be claimed to execute"
+    outcome = q.execute(row, timeout_s=240)
+    assert outcome.get("returncode") == 0, outcome
     receipt = q.move_record(mover)
     assert isinstance(receipt, dict), "mover recorded no receipt"
     return receipt

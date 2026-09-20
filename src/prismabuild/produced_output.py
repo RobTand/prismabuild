@@ -1855,8 +1855,14 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     admits the mover through the prepaid cover, and the worker executes
     the sealed argv on the storage owner.
 
-    The mover's interpreter, tool paths, stage root and placement host
-    come from the TIER RECORD the storage role announced
+    The mover ROW reuses the producer's FILED launch context: the
+    producer row's worker_script (the PB worker launcher whose run-local
+    verb Pool.execute builds the arguments for -- stage_move is the action
+    PAYLOAD that launcher executes, never the worker script) and its
+    checkout addressing and cas_root; placement tags come from the tier
+    record through ordinary publish semantics. The mover's interpreter,
+    tool paths and stage root come from the TIER RECORD the storage role
+    announced
     (``movement_actions.movement_tools`` semantics); a tier announcing no
     interpreter or tool root refuses rather than sealing this process's
     paths onto a box that may not have them. The command is the ordinary
@@ -2057,6 +2063,37 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         return {"ok": False, "step": "seal", "refusal": str(exc)}
     except Exception as exc:
         return {"ok": False, "step": "seal", "refusal": str(exc)}
+    # The producer's FILED launch context (the claimed row): the mover row
+    # must be launched exactly like the producer action is -- worker_script
+    # is the PB worker launcher (prismabuild_worker.py, whose run-local verb
+    # takes the request/cas/checkout arguments Pool.execute builds), NEVER
+    # the stage tool itself (stage_move is the action payload the launcher
+    # executes). The row's checkout addressing is reused so the launcher
+    # materializes the same tree the producer ran from.
+    try:
+        producer_row = pool_mod._read_json(
+            queue.item_path(pool_mod.CLAIMED, producer))
+    except (OSError, pool_mod.PoolContractError) as exc:
+        return {"ok": False, "step": "launch-context",
+                "refusal": f"producer-claim-unreadable: {exc}"}
+    if not isinstance(producer_row, Mapping):
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-not-claimed: the mover must be "
+                           "published from inside the admitted producer"}
+    worker_script = str(producer_row.get("worker_script") or "")
+    if not worker_script.startswith("/"):
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-launch-context-required: the producer "
+                           "row names no absolute worker script"}
+    addressing = {}
+    if isinstance(producer_row.get("checkout_snapshot"), Mapping):
+        addressing["checkout_snapshot"] = producer_row["checkout_snapshot"]
+    elif str(producer_row.get("checkout_root") or "").startswith("/"):
+        addressing["checkout_root"] = str(producer_row["checkout_root"])
+    else:
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-launch-context-required: the producer "
+                           "row names no checkout addressing"}
     mover = str(action["action_key"])
     owner = str(checked_instance["owner_action_key"])
     staged = queue.stage_output_intent(
@@ -2067,18 +2104,10 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         staged["step"] = "stage"
         return staged
     try:
-        snapshot_entry = next(
-            (entry for entry in child_inputs
-             if str(entry.get("id")) == "pbrun.checkout-snapshot"), None)
-        if snapshot_entry is not None:
-            # The movement-child addressing: the parent request's checkout
-            # snapshot input, exactly as pbrun's movement rows publish.
-            addressing = {"checkout_snapshot": snapshot_entry}
-        else:
-            addressing = {"checkout_root": str(Path.cwd())}
         queue.publish(
             action_key=mover, cas_root=str(cas.root),
-            worker_script=mover_tool, **addressing,
+            worker_script=worker_script, tags=[host] if host else (),
+            **addressing,
             resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
             residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
                        "tier_id": tier,
