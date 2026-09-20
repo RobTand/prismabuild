@@ -1742,6 +1742,7 @@ def _entry_list(legs: Sequence[Mapping[str, object]]) -> list[dict[str, object]]
 def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
                   published: Sequence[str] = (),
                   rowed: Sequence[str] = (),
+                  staged: Sequence[str] = (),
                   mover_role: str = "mover_row") -> dict[str, object]:
     """The minimum simultaneous current-plus-next needs of one window leg.
 
@@ -1754,12 +1755,14 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     Raises :class:`ResidencyPlanError` for an unknown mover role, like
     :func:`window`.
 
-    ``rowed`` names the movers with a queued ready row; ``queued`` returns
-    those ahead legs in read order, with ``queued_prior`` the full-ordered
-    legs before the first of them.  The fence protects the first queued
-    leg's claim -- never an unpublished future (fencing room for a row that
-    does not exist yet would strangle its own publish; unpublished futures
-    are the gate's job, kept in the joint footprint).  The gate reads
+    ``rowed`` names the movers with a queued ready row; ``staged`` the ones
+    holding tokens for landed bytes; ``queued`` returns those ahead legs in
+    read order, with ``queued_prior`` the full-ordered legs before the first
+    of them.  ``fence_target`` names the one advance the fence protects --
+    exactly the leg after the frontier (the earliest unstaged ahead leg),
+    which pays from free under the gate's count -- with ``fence_prior``
+    the legs before it: one fence per window, and the phase the blind
+    pre-publish take and the post-publish bind agree on.  The gate reads
     ``waiting``/``prior`` exactly as before.
     """
 
@@ -1771,6 +1774,7 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     ahead_names = [str(phase["name"]) for phase in ahead]
     done = set(published)
     rowed_set = set(rowed)
+    staged_set = set(staged)
     full = _legs(plan, mover_role=mover_role)
     waiting = [leg for leg in full
                if leg["phase"] in ahead_names
@@ -1778,12 +1782,35 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     queued = [leg for leg in full
               if leg["phase"] in ahead_names
               and str(leg["mover_row"]["action_key"]) in rowed_set]  # type: ignore[index]
+    # Frontier-first fencing: one fence per window per pass.  The frontier
+    # (the earliest unstaged ahead leg) pays from free under the gate's
+    # count; exactly the leg after it is the advance the fence protects.
+    # Blind (unpublished advance) and bind (published advance) target the
+    # same phase, so the pre-publish take and the post-publish bind agree;
+    # legs before the target excluding the frontier are staged by
+    # construction, so the retired check over ``fence_prior`` is a sanity
+    # rail rather than a discovery.
+    frontier_index: int | None = None
+    for index, leg in enumerate(full):
+        if (leg["phase"] in ahead_names
+                and str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                not in staged_set):
+            frontier_index = index
+            break
+    fence_target: dict[str, object] | None = None
+    fence_prior: list[dict[str, object]] = []
+    if frontier_index is not None and frontier_index + 1 < len(full):
+        candidate = full[frontier_index + 1]
+        if candidate["phase"] in ahead_names:
+            fence_target = _advance_entry(candidate)
+            fence_prior = _advance_prior(full[:frontier_index])
     if not waiting:
         return {"current_min_gib": 0, "next_min_gib": None, "final": True,
                 "reading_phase": ahead_names[0] if ahead_names else None,
                 "next_phase": None, "next_mover_action_key": None,
                 "next_chunk_index": None, "waiting": [], "prior": [],
                 "queued": _entry_list(queued), "queued_prior": [],
+                "fence_target": fence_target, "fence_prior": fence_prior,
                 "lead_mover_action_key": None}
     first, rest = waiting[0], waiting[1:]
     order = [str(leg["mover_row"]["action_key"]) for leg in full]  # type: ignore[index]

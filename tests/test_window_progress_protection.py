@@ -667,3 +667,363 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     assert stalled[CONSUMER_B]["permanent"] is False
     assert not queue.item_path(pool.READY, r1).exists()
     assert int(ram_ledger.holder_tokens(ctx["r0"]).get("ram_gib", 0)) == 1
+
+
+def test_gate_permanent_joint_oversize(tmp_path: Path) -> None:
+    """Pure gate: unmeetable minima are permanent; encumbered ones wait."""
+    # Nothing held, queued, owed, or protected: cur+next can never fit.
+    over = window_credit.gate_newcomer(
+        held_gib=0, ready_gib=0, output_gib=0, capacity_gib=5,
+        cur_min_gib=3, next_min_gib=3, existing_min_next_gib=0)
+    assert over == {"admit": False, "reason": "joint-fit-oversize",
+                    "permanent": True,
+                    "output_note": window_credit.OUTPUT_UNENFORCED_NOTE}
+    # Same shape with a live obligation elsewhere: transient, it may free.
+    stall = window_credit.gate_newcomer(
+        held_gib=2, ready_gib=0, output_gib=0, capacity_gib=5,
+        cur_min_gib=3, next_min_gib=3, existing_min_next_gib=0)
+    assert stall["admit"] is False and stall["permanent"] is False
+    assert stall["reason"] == "joint-fit-stall"
+    # Feasible minima still admit; finals need no future credit.
+    assert window_credit.gate_newcomer(
+        held_gib=0, ready_gib=0, output_gib=0, capacity_gib=5,
+        cur_min_gib=2, next_min_gib=2,
+        existing_min_next_gib=0)["admit"] is True
+    assert window_credit.gate_newcomer(
+        held_gib=0, ready_gib=0, output_gib=0, capacity_gib=5,
+        cur_min_gib=5, next_min_gib=None,
+        existing_min_next_gib=0)["admit"] is True
+    assert window_credit.gate_newcomer(
+        held_gib=0, ready_gib=0, output_gib=0, capacity_gib=None,
+        cur_min_gib=1, next_min_gib=1,
+        existing_min_next_gib=0)["reason"] == "advance-deferred-unknown-evidence"
+
+
+def test_unknown_ready_defers_all_publication(tmp_path: Path) -> None:
+    """An unreadable ready scan publishes nothing and says unknown."""
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    ready_dir = queue.dir(pool.READY)
+    ready_dir.chmod(0o000)
+    try:
+        events = tier_loop.residency_window(queue, tiers=tiers)
+    finally:
+        ready_dir.chmod(0o755)
+    assert [e for e in events if e.get("event") == "mover-published"] == []
+    assert [e for e in events if e.get("event") == "window-gated"] == []
+    unknown = [e for e in events
+               if e.get("event") == "advance-deferred-unknown-evidence"]
+    assert unknown, "ready outage must be named, not silent"
+    assert queue.tier_ledger(TIER).available().get("stage_gib") == 3
+
+
+def test_unknown_plan_defers_only_its_consumer(tmp_path: Path) -> None:
+    """A torn plan stops its consumer; the healthy window still publishes."""
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    plan_path = queue.residency_plan_path(CONSUMER_B)
+    original = plan_path.read_bytes()
+    plan_path.chmod(0o644)
+    plan_path.write_text("{torn", encoding="utf-8")
+    try:
+        events = tier_loop.residency_window(queue, tiers=tiers)
+    finally:
+        plan_path.write_bytes(original)
+    unknown = [e for e in events
+               if e.get("event") == "advance-deferred-unknown-evidence"
+               and e.get("consumer") == CONSUMER_B]
+    assert unknown, "torn plan must defer its consumer loudly"
+    # Nobody publishes for a consumer the census cannot see.
+    assert CONSUMER_B not in {c for c, _p in
+                              [(e.get("consumer"), e.get("phase"))
+                               for e in events
+                               if e.get("event") == "mover-published"]}
+    # The healthy consumer is unaffected.
+    assert CONSUMER_A in {e.get("consumer") for e in events
+                          if e.get("event") == "mover-published"}
+
+
+def test_unknown_ledger_defers_tier_keeps_obligations(tmp_path: Path) -> None:
+    """An unreadable tier ledger publishes nothing and frees nothing."""
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    tier_dir = queue.tier_ledger(TIER).base
+    tier_dir.chmod(0o000)
+    try:
+        events = tier_loop.residency_window(queue, tiers=tiers)
+    finally:
+        tier_dir.chmod(0o755)
+    assert [e for e in events if e.get("event") == "mover-published"] == []
+    assert [e for e in events
+            if e.get("event") == "advance-deferred-unknown-evidence"], \
+        "ledger outage must be named"
+    assert [e for e in events if e.get("event") == "advance-released"] == []
+
+
+def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
+    """Tokens split grant/mover by a crash land whole via the normal tick."""
+    import os as _os
+    queue = _queue(tmp_path, stage_gib=3)
+    ledger = queue.tier_ledger(TIER)
+    mover = _hexkey("split-mover")
+    consumer = _hexkey("split-consumer")
+    plan = _plan(queue, consumer, "8" * 64, tag="split")
+    row = dict(_row(mover, {STAGE_KIND: 1, "mem_gb": 1}, queue),
+               residency={
+                   "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": "8" * 64, "manifest_bytes": 2 * SPAN,
+                   "range_start_bytes": 0, "range_end_bytes": SPAN})
+    queue.publish(action_key=mover, cas_root=row["cas_root"],
+                  checkout_root=row["checkout_root"],
+                  worker_script=row["worker_script"], tags=["dl380g10"],
+                  resources=row["resources"], residency=row["residency"])
+    live = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-0")
+    # Two-token fence taken directly: the record below is filed by hand to
+    # stage the exact crash residue (split tokens, unmarked record).
+    assert ledger.acquire(grant, {"stage_gib": 2}) is True
+    names = sorted(path.name for path in (ledger.held_dir / grant).glob("*-*"))
+    assert len(names) == 2
+    # Crash residue: one token moved, the record still reserved.
+    (ledger.held_dir / mover).mkdir(parents=True, exist_ok=True)
+    _os.rename(str(ledger.held_dir / grant / names[0]),
+               str(ledger.held_dir / mover / names[0]))
+    record = {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
+              "consumer_action_key": consumer,
+              "plan_sha256": residency_plan.plan_sha256(plan),
+              "mover_action_key": mover, "range_start_bytes": 0,
+              "range_end_bytes": SPAN, "kind": "stage_gib", "tokens": names,
+              "generation": "a" * 32, "state": "reserved",
+              "unix": 1.0, "published_unix": float(live["published_unix"])}
+    queue._write_funding_locked(record, expect_generation=None)
+    protection = {"protected": {(consumer, TIER): {
+        "grant": grant, "mover": mover, "need_gib": 2, "phase": "phase-0",
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
+    events = tier_loop._settle_protected(queue, protection)
+    # The remainder completed without touching free: 2 under the mover.
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert int(ledger.holder_tokens(grant).get("stage_gib", 0)) == 0
+    assert ledger.available().get("stage_gib") == 1
+    assert queue.read_funding(mover, TIER)["state"] == "transferring"
+    assert [e for e in events if e.get("event") == "advance-handed-off"]
+
+
+def test_republish_recovery_through_tick(tmp_path: Path) -> None:
+    """A republished row re-fences fresh; the stale fence never double-holds."""
+    queue = _queue(tmp_path, stage_gib=3)
+    ledger = queue.tier_ledger(TIER)
+    consumer = _hexkey("repub-consumer")
+    plan = _plan(queue, consumer, "8" * 64, tag="repub")
+    residency_plan.freeze(queue, plan)
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    mover_row = dict(phases[0]["mover_row"])
+    mover = str(mover_row["action_key"])
+    queue.publish(action_key=mover, cas_root=mover_row["cas_root"],
+                  checkout_root=mover_row["checkout_root"],
+                  worker_script=mover_row["worker_script"], tags=["dl380g10"],
+                  resources=mover_row["resources"],
+                  residency=mover_row["residency"])
+    live = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-0")
+    fields = {"consumer_action_key": consumer,
+              "plan_sha256": residency_plan.plan_sha256(plan),
+              "mover_action_key": mover, "range_start_bytes": 0,
+              "range_end_bytes": SPAN, "kind": "stage_gib",
+              "published_unix": float(live["published_unix"])}
+    assert queue.reserve_fence(TIER, grant, fields, 1) is True
+    old = queue.read_funding(mover, TIER)
+    old_gen = str(old["generation"])
+    assert queue.transfer_fence(TIER, grant, mover) == 1
+    assert queue.advance_funding_state(
+        mover, TIER, expect="reserved", advance_to="transferring",
+        generation=old_gen) is True
+    # Unpublish without terminal (row withdrawn by hand): fence stranded.
+    queue.item_path(pool.READY, mover).unlink()
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    # Republish the same key: a new publication never inherits old credit.
+    # The stale fence is reclaimed exactly and a fresh one takes its place.
+    queue.publish(action_key=mover, cas_root=mover_row["cas_root"],
+                  checkout_root=mover_row["checkout_root"],
+                  worker_script=mover_row["worker_script"], tags=["dl380g10"],
+                  resources=mover_row["resources"],
+                  residency=mover_row["residency"])
+    live2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    assert float(live2["published_unix"]) != float(live["published_unix"])
+    fields["published_unix"] = float(live2["published_unix"])
+    assert queue.reserve_fence(TIER, grant, fields, 1) is True
+    new = queue.read_funding(mover, TIER)
+    assert new is not None and new["state"] == "reserved"
+    assert str(new["generation"]) != old_gen
+    # No double hold: exactly the live fence is held, free is exact.
+    assert ledger.available().get("stage_gib") == 2
+    assert queue.transfer_fence(TIER, grant, mover) == 1
+    assert queue.advance_funding_state(
+        mover, TIER, expect="reserved", advance_to="transferring",
+        generation=str(new["generation"])) is True
+    got = queue.claim(tags=["dl380g10"], owner="w-repub",
+                      ready=_ready_only(queue, mover))
+    assert got is not None and got["action_key"] == mover
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    queue.finish(mover, status="executed")
+    assert ledger.available().get("stage_gib") == 3
+
+
+def test_published_nexts_leave_no_unfunded_window(tmp_path: Path) -> None:
+    """Post-cycle invariant: every wanted next is funded or stealer-visible.
+
+    After any window cycle, each published unclaimed mover the window still
+    wants holds a transferring fence for its exact demand -- or the cycle
+    left the room visibly free, in which case a stealer may fairly take it
+    and the window re-fences next cycle.  What must never happen is a
+    published wanted next with neither fence nor free room behind it.
+    """
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    for _ in range(3):
+        tier_loop.residency_window(queue, tiers=tiers)
+        for tag in ("aa", "bb"):
+            for ordinal in (0, 1):
+                mover = ctx[tag]["movers"][ordinal]
+                if not queue.item_path(pool.READY, mover).exists():
+                    continue
+                if queue.read_funding(mover, TIER) is not None:
+                    record = queue.read_funding(mover, TIER)
+                    assert record is not None
+                    assert record.get("state") == "transferring"
+                    names = record.get("tokens")
+                    held = {path.name for path in
+                            (ledger.held_dir / mover).glob("*-*")}
+                    assert isinstance(names, list) and names and all(
+                        str(name) in held for name in names)
+                else:
+                    # Unfunded and exposed: the room must actually be there.
+                    assert ledger.available().get("stage_gib") >= 1, (
+                        f"{mover[:12]} unfunded with no free room behind it")
+
+
+def test_competing_claim_race_stays_exact(tmp_path: Path) -> None:
+    """A stealer racing the fence cycle by thread still ends exact."""
+    import threading
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    p0 = ctx["aa"]["movers"][0]
+    p1 = ctx["aa"]["movers"][1]
+
+    tier_loop.residency_window(queue, tiers=tiers)
+    _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
+          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          owner="w-race")
+    stealer = _hexkey("race-stealer")
+    span2 = 2 * SPAN
+    queue.publish(
+        action_key=stealer, cas_root=queue.root / "cas",
+        checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
+        tags=["dl380g10"], resources={STAGE_KIND: 2},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": "7" * 64, "manifest_bytes": span2,
+                   "range_start_bytes": 0, "range_end_bytes": span2})
+    outcome: dict[str, object] = {}
+
+    def steal() -> None:
+        try:
+            got = queue.claim(tags=["dl380g10"], owner="w-race-steal",
+                              ready=_ready_only(queue, stealer))
+        except Exception as exc:  # never fail the test on transport noise
+            outcome["error"] = repr(exc)
+        else:
+            outcome["claim"] = got["action_key"] if got else None
+
+    racer = threading.Thread(target=steal)
+    racer.start()
+    for _ in range(4):
+        tier_loop.residency_window(queue, tiers=tiers)
+    racer.join(60)
+    assert not racer.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    # Either order ends exact: stealer denied and the window fenced, or the
+    # stealer won the free room first and the window re-fences after it.
+    if outcome.get("claim") == stealer:
+        queue.finish(stealer, status="executed")
+    else:
+        assert outcome.get("claim") is None
+        assert queue.item_path(pool.READY, stealer).exists()
+    for _ in range(6):
+        tier_loop.residency_window(queue, tiers=tiers)
+        record = queue.read_funding(p1, TIER)
+        if record is not None and record.get("state") == "transferring":
+            break
+    _await_funded(queue, p1)
+    before = ledger.available().get("stage_gib")
+    _claim_exact(queue, p1, owner="w-race")
+    assert ledger.available().get("stage_gib") == before
+    queue.record_move(p1, stage_move.move(
+        _move_args(queue, tmp_path, ctx["aa"]["manifest_path"],
+                   ctx["aa"]["digest"], p1, CONSUMER_A, SPAN, 2 * SPAN)))
+    queue.finish(p1, status="executed")
+    # Pins plus fences add up; nothing leaked, nothing doubled.
+    total_held = sum(
+        int(tokens.get("stage_gib", 0))
+        for tokens in (ledger.holder_tokens(holder)
+                       for holder in ledger.held_keys()))
+    assert total_held + ledger.available().get("stage_gib") == 3
+
+
+def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
+    """The production tick (simulated discovery only) advances a window."""
+    ctx = _setup_two_consumers(tmp_path, stage_gib=3)
+    queue = ctx["queue"]
+    ledger = queue.tier_ledger(TIER)
+
+    def discover(*, host, source_pool, fill_records, now, ram_policy,
+                 worker_mem_gb):
+        assert host and source_pool is not None
+        return {TIER: {"tier_id": TIER, "tier": "stage", "host": host,
+                       "capacity_bytes": 3 * GIB}}
+
+    receipts = tier_loop.ReceiptCache()
+    announced = tier_loop.cycle(
+        queue, host="testbox", source_pool="testpool", receipts=receipts,
+        discover=discover)
+    assert {str(record["tier_id"]) for record in announced} == {TIER}
+    ready = {str(item["action_key"]) for item in queue.ready_items()
+             if str(item["action_key"]) in (
+                 ctx["aa"]["movers"] + ctx["bb"]["movers"])}
+    assert ready == set(ctx["aa"]["movers"]) or ready == set(ctx["bb"]["movers"])
+    winner = CONSUMER_A if ctx["aa"]["movers"][0] in ready else CONSUMER_B
+    wtag = "aa" if winner == CONSUMER_A else "bb"
+    w0, w1 = ctx[wtag]["movers"]
+    # The blind advance take is already held: free 2 of 3, no publish gap.
+    assert queue.tier_ledger(TIER).available().get("stage_gib") == 2
+    record = queue.read_funding(w1, TIER)
+    assert record is not None and record.get("state") in (
+        "reserved", "transferring")
+
+    _land(queue, tmp_path, ctx[wtag]["manifest_path"], ctx[wtag]["digest"],
+          w0, winner, 0, SPAN, ctx[wtag]["payloads"]["p0.bin"],
+          owner="w-cycle")
+    tier_loop.cycle(queue, host="testbox", source_pool="testpool",
+                    receipts=receipts, discover=discover)
+    for _ in range(4):
+        tier_loop.cycle(queue, host="testbox", source_pool="testpool",
+                        receipts=receipts, discover=discover)
+        record = queue.read_funding(w1, TIER)
+        if record is not None and record.get("state") == "transferring":
+            break
+    _await_funded(queue, w1)
+    _claim_exact(queue, w1, owner="w-cycle")
+    receipt = stage_move.move(
+        _move_args(queue, tmp_path, ctx[wtag]["manifest_path"],
+                   ctx[wtag]["digest"], w1, winner, SPAN, 2 * SPAN))
+    assert receipt["complete"] is True
+    queue.record_move(w1, receipt)
+    queue.finish(w1, status="executed")
+    assert int(ledger.holder_tokens(w1).get("stage_gib", 0)) == 1
+    assert ledger.available().get("stage_gib") == 1

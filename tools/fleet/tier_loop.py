@@ -660,8 +660,18 @@ def ram_residency_window(
     assert isinstance(ram_gated, dict)
     ram_grants = ram_protection["grants"]
     assert isinstance(ram_grants, dict)
+    ram_unknown_ready = bool(ram_protection.get("unknown_ready"))
+    ram_unknown_tiers = set(ram_protection.get("unknown_tiers") or ())
+    ram_unknown_consumers = set(ram_protection.get("unknown_consumers") or ())
     events.extend(ram_protection["events"])  # type: ignore[arg-type]
-    for consumer in live_consumers(queue):
+    try:
+        ram_cycle_consumers = live_consumers(queue)
+    except (OSError, pool.PoolContractError) as exc:
+        events.append({"event": "ram-window-unknown", "consumer": None,
+                       "tier_id": None,
+                       "reason": f"live census unreadable: {exc!r}"})
+        ram_cycle_consumers = []
+    for consumer in ram_cycle_consumers:
         key = str(consumer["action_key"])
         plan, incarnation = residency_plan.read_filed(queue, key)
         if plan is None:
@@ -700,7 +710,11 @@ def ram_residency_window(
                 "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
         publishable = ([] if (superseded is not None
-                              or (key, ram_tier_id) in ram_gated)
+                              or (key, ram_tier_id) in ram_gated
+                              or ram_unknown_ready
+                              or ram_tier_id in ram_unknown_tiers
+                              or (key, ram_tier_id) in ram_unknown_consumers
+                              or (key, "") in ram_unknown_consumers)
                          else state["publishable"])
         gate = ram_gated.get((key, ram_tier_id))
         if gate is not None and superseded is None:
@@ -712,6 +726,13 @@ def ram_residency_window(
                 "need_gib": gate.get("need_gib"),
                 "output_note": str(gate.get("output_note") or ""),
             })
+        if (gate is None and superseded is None and (
+                ram_unknown_ready or ram_tier_id in ram_unknown_tiers
+                or (key, ram_tier_id) in ram_unknown_consumers
+                or (key, "") in ram_unknown_consumers)):
+            events.append({
+                "event": "ram-window-unknown", "consumer": key,
+                "tier_id": ram_tier_id, "reason": "unknown-evidence"})
         ram_tier_record = tiers.get(ram_tier_id)
         if (isinstance(ram_tier_record, Mapping)
                 and not _tier_admits_movers(ram_tier_record)):
@@ -810,6 +831,17 @@ def ram_residency_window(
                            "mover": str(mover_row["action_key"]),  # type: ignore[index]
                            "tier_id": ram_tier_id})
     events.extend(_settle_protected(queue, ram_protection))
+    # Second pass binds what this cycle published: the blind pre-publish
+    # take already holds the room, so the bind commits no new capacity and
+    # no published row leaves this cycle unfunded.  The pass re-gates from
+    # the fresh census (newcomers are members now) and never publishes.
+    ram_protection_again = _protect_tier_advances(
+        queue, tiers, mover_role="ram_mover_row",
+        tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
+                              if residency_plan.ram_mover_keys(plan) else ""),
+        state_of=_ram_mover_state)
+    events.extend(ram_protection_again["events"])  # type: ignore[arg-type]
+    events.extend(_settle_protected(queue, ram_protection_again))
     return events
 
 
@@ -1658,28 +1690,51 @@ def reclaim_failed_mover_partials(
 def _advance_wants(queue: pool.PoolQueue,
                    tiers: Mapping[str, Mapping[str, object]], *,
                    mover_role: str, tier_of, state_of,
-                   ) -> list[dict[str, object]]:
+                   ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Per-consumer advance needs for one movement leg, in queue scan order.
 
-    One entry per live consumer whose plan carries this leg on a local tier.
-    Plans that do not read, name another box's tier, or fail the needs check
-    are skipped here; the window loops below handle them exactly as before.
+    Returns ``(wants, unknown)``.  One want per live consumer whose plan
+    carries this leg on a local tier; one unknown entry per consumer this
+    census could not decide -- an unreadable plan, unreadable mover state,
+    or a needs check that refuses -- naming the record that stopped it.
+    Unknown is never silence: the window caller must not publish for a
+    consumer it cannot see, and absence of a gate is never permission.
     Order is the queue's own scan order -- the same fairness the claim poll
     already uses -- never a re-ranking invented here.
     """
 
     wants: list[dict[str, object]] = []
-    for consumer in live_consumers(queue):
+    unknown: list[dict[str, object]] = []
+    try:
+        consumers = live_consumers(queue)
+    except (OSError, pool.PoolContractError) as exc:
+        # No census at all: every consumer is unknown, and the empty key
+        # below tells the protection pass the whole tier set is.  Wants are
+        # discarded, not half-kept -- obligations on an incomplete census
+        # stay exactly where they are.
+        return [], [{"consumer": "", "tier_id": "",
+                     "leg": mover_role,
+                     "error": f"live census unreadable: {exc!r}"}]
+    for consumer in consumers:
         key = str(consumer["action_key"])
-        plan = residency_plan.read(queue, key)
+        refusals: list[Exception] = []
+        plan = residency_plan.read(
+            queue, key, on_unreadable=refusals.append)
         if plan is None:
+            if refusals:
+                unknown.append({
+                    "consumer": key, "leg": mover_role,
+                    "error": f"plan unreadable: {refusals[0]!r}"})
             continue
         tier_id = tier_of(plan)
         if not isinstance(tier_id, str) or tier_id not in tiers:
             continue
         try:
             already, staged = state_of(queue, plan, tier_id)
-        except (OSError, pool.PoolContractError):
+        except (OSError, pool.PoolContractError) as exc:
+            unknown.append({
+                "consumer": key, "tier_id": tier_id, "leg": mover_role,
+                "error": f"mover state unreadable: {exc!r}"})
             continue
         try:
             role_keys = (residency_plan.ram_mover_keys(plan)
@@ -1687,14 +1742,20 @@ def _advance_wants(queue: pool.PoolQueue,
                          else residency_plan.stage_mover_keys(plan))
             rowed = [key for key in role_keys
                      if queue.item_path(pool.READY, str(key)).exists()]
-        except (OSError, pool.PoolContractError, ValueError):
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            unknown.append({
+                "consumer": key, "tier_id": tier_id, "leg": mover_role,
+                "error": f"ready census unreadable: {exc!r}"})
             continue
         try:
             needs = residency_plan.advance_needs(
                 plan, consumer["accepted_phase"],  # type: ignore[arg-type]
-                published=sorted(already), rowed=rowed,
+                published=sorted(already), rowed=rowed, staged=sorted(staged),
                 mover_role=mover_role)
-        except residency_plan.ResidencyPlanError:
+        except residency_plan.ResidencyPlanError as exc:
+            unknown.append({
+                "consumer": key, "tier_id": tier_id, "leg": mover_role,
+                "error": f"advance needs refused: {exc!r}"})
             continue
         lead = needs.get("lead_mover_action_key")
         already_set = set(already)
@@ -1708,7 +1769,7 @@ def _advance_wants(queue: pool.PoolQueue,
             # the lead is queued, later cycles treat it as admitted.
             "newcomer": bool(lead) and str(lead) not in already_set,
         })
-    return wants
+    return wants, unknown
 
 
 def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
@@ -1753,42 +1814,72 @@ def _protect_tier_advances(queue: pool.PoolQueue,
 
     Returns ``{"gated": {(key, tier_id): {...}}, "protected":
     {(key, tier_id): {...}}, "grants": {(key, tier_id): grant_key},
-    "events": [...]}``.  The only mutations are fence ``acquire``/``release``
-    (reserve, cancel) plus funding-record writes; transfers run in the
-    post-pass settle, queue rows are never written here.  Unreadable ledger,
-    ready, or capacity evidence defers the tier with the record named.
+    "unknown_ready": bool, "unknown_tiers": {...},
+    "unknown_consumers": {(key, tier_id)}, "events": [...]}``.  The only
+    mutations are fence ``acquire``/``release`` (reserve, cancel) plus
+    funding-record writes; transfers run in the post-pass settle, queue rows
+    are never written here.  Unreadable ledger, ready, or capacity evidence
+    defers with the record named -- and the window caller must publish
+    nothing it cannot see: absence of a gate is never permission.  The
+    dangling-grant cleanup runs only on a complete census, so a grant whose
+    consumer went unreadable is preserved, never freed.
     """
 
     gated: dict[tuple[str, str], dict[str, object]] = {}
     protected: dict[tuple[str, str], dict[str, object]] = {}
     grants: dict[tuple[str, str], str] = {}
     events: list[dict[str, object]] = []
-    wants = _advance_wants(queue, tiers, mover_role=mover_role,
-                           tier_of=tier_of, state_of=state_of)
+    unknown_consumers: set[tuple[str, str]] = set()
+    unknown_tiers: set[str] = set()
+    unknown_ready = False
+    wants, census_unknown = _advance_wants(
+        queue, tiers, mover_role=mover_role,
+        tier_of=tier_of, state_of=state_of)
+    for entry in census_unknown:
+        consumer_key = str(entry.get("consumer", ""))
+        entry_tier = entry.get("tier_id")
+        if consumer_key == "":
+            unknown_ready = True
+        unknown_consumers.add((consumer_key, str(entry_tier or "")))
+        events.append({"event": "advance-deferred-unknown-evidence",
+                       "consumer": consumer_key or None,
+                       "tier_id": entry_tier, "leg": mover_role,
+                       "error": str(entry.get("error", ""))})
     try:
         ready_items = queue.ready_items()
     except (OSError, pool.PoolContractError) as exc:
         events.append({"event": "advance-deferred-unknown-evidence",
                        "leg": mover_role,
                        "error": f"ready scan unreadable: {exc}"})
-        return {"gated": gated, "protected": protected, "events": events}
+        return {"gated": gated, "protected": protected, "grants": grants,
+                "unknown_ready": True, "unknown_tiers": unknown_tiers,
+                "unknown_consumers": unknown_consumers, "events": events}
     by_tier: dict[str, list[dict[str, object]]] = {}
     for want in wants:
         by_tier.setdefault(str(want["tier_id"]), []).append(want)
     for tier_id, tier_wants in sorted(by_tier.items()):
-        ledger = queue.tier_ledger(tier_id)
+        try:
+            ledger = queue.tier_ledger(tier_id)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            unknown_tiers.add(tier_id)
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": f"ledger unreadable: {exc}"})
+            continue
         kind = storage_tiers.capacity_kind_of(tier_id)
         try:
             held = {str(holder): dict(ledger.holder_tokens(holder))
                     for holder in ledger.held_keys()}
             capacity = ledger.capacity().get(kind)
         except (OSError, pool.PoolContractError, ValueError) as exc:
+            unknown_tiers.add(tier_id)
             events.append({"event": "advance-deferred-unknown-evidence",
                            "tier_id": tier_id, "leg": mover_role,
                            "error": f"ledger unreadable: {exc}"})
             continue
         capacity_gib = None if capacity is None else int(capacity)
         if capacity_gib is None:
+            unknown_tiers.add(tier_id)
             events.append({"event": "advance-deferred-unknown-evidence",
                            "tier_id": tier_id, "leg": mover_role,
                            "error": "no minted capacity for tier kind"})
@@ -1824,7 +1915,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             try:
                 covered, _generation = queue.funded_cover(
                     tier_id, ready_by_key[row_key], kind, row_need)
-            except (OSError, PoolContractError, ValueError, KeyError):
+            except (OSError, pool.PoolContractError, ValueError, KeyError):
                 continue
             if covered >= row_need:
                 funded_rows.add(row_key)
@@ -1860,7 +1951,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     try:
                         covered, _generation = queue.funded_cover(
                             tier_id, row_item, kind, need_gib)
-                    except (OSError, PoolContractError, ValueError, KeyError):
+                    except (OSError, pool.PoolContractError, ValueError, KeyError):
                         covered = 0
                 if covered < need_gib and (
                         reserve_next is None or need_gib < reserve_next):
@@ -1892,15 +1983,17 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     }
                     continue
                 running_extra += cur + next_gib
-            # The fence protects the next published-but-unclaimed advance
-            # (see advance_needs): a queued row the window still wants, whose
-            # claim is imminent.  Unpublished futures stay gate-protected in
-            # the joint footprint -- fencing room for a row that does not
-            # exist yet would strangle its own publish.
-            queued = needs.get("queued")
-            if not isinstance(queued, list) or not queued:
+            # One fence per window: the advance after the frontier.  The
+            # frontier pays from free under the gate's count; exactly the
+            # advance is fenced -- bound when its row is queued, taken blind
+            # under the grant before its publish when it is not, so no
+            # admitted current is exposed without its advance reservation
+            # real.  Both spellings target the same phase, so the blind take
+            # and the bind agree.
+            target = needs.get("fence_target")
+            if not isinstance(target, dict):
                 continue
-            first = queued[0]
+            first = target
             assert isinstance(first, dict)
             demand = int(first["stage_gib"])
             phase = str(first["phase"])
@@ -1912,6 +2005,18 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             held_grant = int(held.get(grant, {}).get(kind, 0))
             mover = str(first["mover_action_key"])
             mover_holds = int(held.get(mover, {}).get(kind, 0)) >= demand
+            # A mover holding its own live fence (reserved/transferring
+            # record binding those tokens) is not landed: its holdings are
+            # the advance reservation, and no cancel decision may read them
+            # as bytes.  Only holdings without a live binding count as
+            # landed for cancel purposes.
+            target_fence_live = False
+            if mover_holds:
+                fence_record = queue.read_funding(mover, tier_id)
+                if (isinstance(fence_record, dict)
+                        and fence_record.get("state") in (
+                            "reserved", "transferring")):
+                    target_fence_live = True
             try:
                 mover_rowed = queue.item_path(pool.READY, mover).exists()
             except (OSError, pool.PoolContractError):
@@ -1960,7 +2065,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 superseded = residency_plan.superseded(queue, want["plan"])
                 due = window_credit.cancel_due(
                     consumer_live=True, superseded=superseded is not None,
-                    need_gib=demand, mover_holds_need=mover_holds)
+                    need_gib=demand,
+                    mover_holds_need=(mover_holds and not target_fence_live))
                 if due is not None:
                     released = window_credit.cancel(ledger, grant)["released"]
                     if released:
@@ -1986,7 +2092,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     "leg": mover_role,
                 }
                 continue
-            prior = needs.get("queued_prior")
+            prior = needs.get("fence_prior")
             assert isinstance(prior, list)
             retired = True
             for leg in prior:
@@ -2005,42 +2111,107 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     grant_outstanding=False, need_gib=demand,
                     prior_retired=retired):
                 continue
-            if mover_holds or not mover_rowed:
-                # Claimed-holding needs no fence (its claim committed); an
-                # unpublished mover gets none either, so a fence can neither
-                # strangle its own publish nor strand room no window will ask
-                # for.  The publish-to-fence gap inside one cycle is the
-                # documented residual; every later cycle re-evaluates.
+            if mover_holds:
+                # Already funded and holding (transferred, awaiting claim)
+                # or physically carrying its bytes: nothing to take.
+                continue
+            if not mover_rowed:
+                # Blind take before the publish: the tokens are held under
+                # the grant from this point on, so no unrelated claim can
+                # take the advance's room between its publish and its bind
+                # later this cycle.  A crash between take and bind leaves
+                # grant-held tokens with no record, which binds (rowed by
+                # then) or defers (dangling release if the window died)
+                # next cycle.  Failing the take stalls this window instead
+                # of exposing it: the publish below is skipped.
+                if not window_credit.fence_fits(
+                        held_gib=held_total + running_extra + running_fence,
+                        ready_gib=ready_new_money, output_gib=output_gib,
+                        capacity_gib=capacity_gib):
+                    continue
+                try:
+                    grant_have = int(ledger.holder_tokens(grant).get(kind, 0))
+                except (OSError, pool.PoolContractError, ValueError):
+                    continue
+                deficit = int(demand) - grant_have
+                if deficit > 0:
+                    try:
+                        taken = bool(ledger.acquire(
+                            grant, {kind: int(deficit)}))
+                    except (OSError, pool.PoolContractError, ValueError):
+                        taken = False
+                    if not taken:
+                        gated[(key, tier_id)] = {
+                            "reason": window_credit.REASON_STALL,
+                            "permanent": False, "need_gib": cur,
+                            "tier_id": tier_id,
+                            "output_note":
+                                window_credit.OUTPUT_UNENFORCED_NOTE,
+                        }
+                        continue
+                    running_fence += int(deficit)
                 continue
             # New-money peak: everything held, everything queued that will
             # commit new capacity, and this pass's admitted footprints must
             # leave the tier within capacity.  The protected row will consume
             # its fence instead of free, so it is not counted twice.
+            # ``held_total`` is the pass-start snapshot and already counts
+            # every held token; only the running tallies move here, and a
+            # kept fence (no new take) moves none of them.
             if not window_credit.fence_fits(
                     held_gib=held_total + running_extra + running_fence,
                     ready_gib=ready_new_money, output_gib=output_gib,
                     capacity_gib=capacity_gib):
                 continue
+            try:
+                grant_have = int(ledger.holder_tokens(grant).get(kind, 0))
+            except (OSError, pool.PoolContractError, ValueError):
+                continue
+            try:
+                kept = queue.read_funding(mover, tier_id)
+                kept_generation = (str(kept.get("generation"))
+                                   if isinstance(kept, dict)
+                                   and isinstance(kept.get("generation"), str)
+                                   else None)
+            except (OSError, pool.PoolContractError, ValueError):
+                kept_generation = None
             if not _bind_fence(
                     queue, tier_id, kind, grant, key, want["plan"],
                     first, demand):
                 continue
-            running_fence += demand
-            held_total += demand
-            events.append({"event": "advance-credit-held",
-                           "consumer": key, "tier_id": tier_id,
-                           "leg": mover_role, "phase": phase,
-                           "held_gib": demand})
+            running_fence += max(0, int(demand) - grant_have)
+            bound = queue.read_funding(mover, tier_id)
+            if (kept_generation is None or bound is None
+                    or str(bound.get("generation")) != kept_generation
+                    or bound.get("state") != "reserved"):
+                # Newly bound this pass; a kept fence re-reports nothing.
+                events.append({"event": "advance-credit-held",
+                               "consumer": key, "tier_id": tier_id,
+                               "leg": mover_role, "phase": phase,
+                               "held_gib": demand})
             protected[(key, tier_id)] = {
                 "grant": grant, "mover": mover, "need_gib": demand,
                 "phase": phase, "tier_id": tier_id, "kind": kind,
                 "leg": mover_role,
             }
+        # Dangling-grant cleanup runs only on a complete census: a grant
+        # whose consumer went unreadable this cycle is preserved, never
+        # freed -- releasing on a partial view could return room a live
+        # window still counts on.  A truly dead grant waits one cycle.
+        if unknown_consumers:
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": "consumer census incomplete: "
+                                    "dangling cleanup withheld"})
+            continue
         try:
             dangling = [holder for holder in window_credit.held_grants(ledger)
                         if holder not in expected_grants]
         except (OSError, pool.PoolContractError):
-            dangling = []
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": "grant census unreadable: cleanup withheld"})
+            continue
         for grant in dangling:
             released = window_credit.cancel(ledger, grant)["released"]
             if released:
@@ -2049,7 +2220,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
     return {"gated": gated, "protected": protected, "grants": grants,
-            "events": events}
+            "unknown_ready": False, "unknown_tiers": unknown_tiers,
+            "unknown_consumers": unknown_consumers, "events": events}
 
 
 def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
@@ -2239,29 +2411,15 @@ def _settle_protected(queue: pool.PoolQueue,
                         mover=mover))
                     continue
                 if not rowed:
-                    # No queue row will ever claim this: roll an exact fence
-                    # back to the grant instead of stranding it.
-                    if (bound_names and held_grant <= 0 and record is not None
-                            and record.get("state") == "transferring"):
-                        try:
-                            mover_names = {
-                                path.name for path in pool._glob(
-                                    ledger.held_dir / mover, "*-*")}
-                        except (OSError, pool.PoolContractError, ValueError):
-                            mover_names = set()
-                        if mover_names == bound_names:
-                            queue.transfer_tier_reservation(
-                                str(tier_id), mover, grant)
-                            queue.advance_funding_state(
-                                mover, str(tier_id), expect="transferring",
-                                advance_to="reserved",
-                                generation=bound_generation)
-                            events.append({"event": "advance-released",
-                                           "consumer": key,
-                                           "tier_id": str(tier_id),
-                                           "leg": str(entry["leg"]),
-                                           "reason": "mover-unpublished-rollback",
-                                           "released_gib": 0})
+                    # No queue row will ever claim this, yet the fence sits
+                    # transferred under its key: leave the record
+                    # ``transferring`` exactly as is.  That state is itself
+                    # the recoverable one -- a later publication claims
+                    # against it through the normal cover, and a terminal
+                    # mover is reaped by the terminal scan above -- because
+                    # the accepted state machine has no transferring-to-
+                    # reserved step, and inventing one here would strand a
+                    # permanently transferring record beside returned tokens.
                     continue
                 if held_grant > 0:
                     moved = queue.transfer_fence(str(tier_id), grant, mover)
@@ -2374,8 +2532,18 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     assert isinstance(gated, dict)
     grants = protection["grants"]
     assert isinstance(grants, dict)
+    unknown_ready = bool(protection.get("unknown_ready"))
+    unknown_tiers = set(protection.get("unknown_tiers") or ())
+    unknown_consumers = set(protection.get("unknown_consumers") or ())
     published.extend(protection["events"])  # type: ignore[arg-type]
-    for consumer in live_consumers(queue):
+    try:
+        cycle_consumers = live_consumers(queue)
+    except (OSError, pool.PoolContractError) as exc:
+        published.append({"event": "window-unknown", "consumer": None,
+                          "tier_id": None,
+                          "reason": f"live census unreadable: {exc!r}"})
+        cycle_consumers = []
+    for consumer in cycle_consumers:
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
         plan, incarnation = residency_plan.read_filed(
@@ -2434,10 +2602,21 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                             "reason": "mover-withdrawn",
                             "movers": sorted(operator),
                             "phases": len(plan["phases"])})  # type: ignore[arg-type]
-        already, staged = _mover_state(queue, plan, tier_id)
-        ledger = queue.tier_ledger(tier_id)
-        kind = storage_tiers.capacity_kind_of(tier_id)
-        free = ledger.available().get(kind, 0)
+        try:
+            already, staged = _mover_state(queue, plan, tier_id)
+            ledger = queue.tier_ledger(tier_id)
+            kind = storage_tiers.capacity_kind_of(tier_id)
+            free = ledger.available().get(kind, 0)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            # Fail closed for the whole consumer this cycle -- movers and
+            # its window-driven egress alike, since both decide off ledger
+            # state this read could not see.  Owner-path cleanup with exact
+            # receipts (evict, sweep, dead-consumer pass) runs elsewhere and
+            # is unaffected: it proves per range, never per census.
+            published.append({"event": "window-unknown", "consumer": key,
+                              "tier_id": tier_id,
+                              "reason": f"ledger unreadable: {exc!r}"})
+            continue
         # A fence never blocks its own window: the grant this consumer's next
         # advance holds is readable back into free for this decision alone.
         # Everyone else -- stealers, later windows, the pressure probe --
@@ -2453,7 +2632,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # The minted total, not the free remainder: the run-ahead bound of a
         # rolling window is a fraction of the tier, and a bound read off what
         # is free would shrink as the window it is bounding fills it.
-        capacity = ledger.capacity().get(kind, 0)
+        try:
+            capacity = ledger.capacity().get(kind, 0)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            published.append({"event": "window-unknown", "consumer": key,
+                              "tier_id": tier_id,
+                              "reason": f"ledger unreadable: {exc!r}"})
+            continue
         decision = residency_plan.window(
             plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
             free_gib=int(free), capacity_gib=int(capacity),
@@ -2481,7 +2666,16 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # room a live window's advance was promised, so it waits with the
         # reason named while its egresses and map still run.
         gate = gated.get((key, tier_id))
-        publishable = ([] if (superseded is not None or gate is not None)
+        # Unknown evidence fails closed for publication: a consumer the
+        # census could not see, a tier it could not read, or a ready scan
+        # that failed publishes no movers this cycle.  Absence of a gate is
+        # never permission.  (A ledger this loop itself cannot read waits
+        # one cycle earlier, whole consumer included.)
+        unknown_hit = (unknown_ready or tier_id in unknown_tiers
+                       or (key, tier_id) in unknown_consumers
+                       or (key, "") in unknown_consumers)
+        publishable = ([] if (superseded is not None or gate is not None
+                              or unknown_hit)
                        else decision["publish"])
         if gate is not None and superseded is None:
             assert isinstance(gate, dict)
@@ -2492,6 +2686,10 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 "need_gib": gate.get("need_gib"),
                 "output_note": str(gate.get("output_note") or ""),
             })
+        if unknown_hit and superseded is None and gate is None:
+            published.append({
+                "event": "window-unknown", "consumer": key,
+                "tier_id": tier_id, "reason": "unknown-evidence"})
         if not _tier_admits_movers(tier_record):
             # A root that is present but unregistered admits nothing more
             # (#631): the movers wait while the evict loop below still
@@ -2622,6 +2820,16 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             published.append({"event": "map-compose-failed", "consumer": key,
                               "error": repr(exc)})
     published.extend(_settle_protected(queue, protection))
+    # Second pass binds what this cycle published: the blind pre-publish
+    # take already holds the room, so the bind commits no new capacity and
+    # no published row leaves this cycle unfunded.  The pass re-gates from
+    # the fresh census (newcomers are members now) and never publishes.
+    protection_again = _protect_tier_advances(
+        queue, tiers, mover_role="mover_row",
+        tier_of=lambda plan: plan.get("tier_id"),
+        state_of=_mover_state)
+    published.extend(protection_again["events"])  # type: ignore[arg-type]
+    published.extend(_settle_protected(queue, protection_again))
     return published
 
 
