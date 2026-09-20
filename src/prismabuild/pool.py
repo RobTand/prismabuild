@@ -8023,8 +8023,9 @@ class PoolQueue:
 
         Three states, not two: **occupied** retains, **proven empty**
         releases, and **unknown** retains.  ``stage_move`` renames each
-        destination into place (:886), publishes a residency fragment for it
-        (~:963), and files its move receipt once and last (:1604).  Bytes
+        destination into place (:1247, or :421 when the published-readiness
+        publisher decides it), publishes a residency fragment for it (~:1324),
+        and files its move receipt once and last (:1965).  Bytes
         therefore exist before either record does, so BOTH records can be
         missing while the stage is occupied, and neither absence is a report
         of zero.

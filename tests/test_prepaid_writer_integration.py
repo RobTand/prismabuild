@@ -1475,7 +1475,7 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
 
     `stage_move` publishes a residency fragment PER ENTRY as the bytes
     land and files its move receipt ONCE, last
-    (`tools/fleet/stage_move.py`: `record_move` at :1604, after the
+    (`tools/fleet/stage_move.py`: `record_move` at :1965, after the
     per-entry `publish`). A kill or an OOM in that window leaves real
     bytes on the stage and no receipt at all, so reading the absent
     receipt as "staged nothing" frees the charge while the files are
@@ -1668,9 +1668,11 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     """Bytes exist before either record does, so neither absence is proof.
 
     `stage_move` renames each destination into place
-    (`tools/fleet/stage_move.py:886`), publishes that entry's residency
-    fragment afterwards (~:963), and files its move receipt once at the
-    end (:1604). A contained kill between the rename and the fragment
+    (`tools/fleet/stage_move.py:1247`, or :421 when the
+    published-readiness publisher decides it -- two rename sites since
+    PR #762/#763, one ordering), publishes that entry's residency
+    fragment afterwards (~:1324), and files its move receipt once at the
+    end (:1965). A contained kill between the rename and the fragment
     leaves real bytes on the stage with NEITHER record -- and "I found
     no evidence" is not "there is nothing there". Releasing on that frees
     capacity the stage has already spent.
