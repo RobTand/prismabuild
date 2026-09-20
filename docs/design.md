@@ -3849,9 +3849,56 @@ resubmission after a reap is not covered by the marker of the body it
 replaced; and `preempted_by` on the marker separates an operator's decision
 from admission's own preemption, which republishes its holder with
 `supersedes_withdrawal` in the same breath and must keep its plan. A marker
-that cannot be read or parsed is **not** "no marker": `residency_plan.superseded`
-answers with an `unreadable` record, and the window, adoption, pressure probe
-and planner all refuse or defer on it.
+that cannot be read or parsed is **not** "no marker":
+`residency_plan.superseded` answers with an `unreadable` record, and the
+window, adoption, pressure probe and planner all refuse or defer on it.
+
+`None` from `superseded` -- "not retired" -- is an assertion about identity,
+so it is only allowed on a proof: the stamp must be three whole integers
+(JSON integers, not floats or booleans) **and** the current filing's
+incarnation must have been successfully read. A missing, wrongly shaped or
+non-integer stamp, or a stat of the plan that fails, is *unknown* retirement,
+not a different filing, and answers `unreadable` with the reason. The same
+distinction reaches `read_filed`: a stat that failed is reported through
+`on_unreadable` and never answered as "no plan filed", because a caller about
+to seal or reap over unknown state would be guessing.
+
+**The handoff belongs to its callers, not only to its helpers.** The locked
+helpers were correct before the callers were: a caller that read a plan by
+key and then asked `reap` to archive "whatever is filed" could archive a
+replacement it never saw, and a publication outside the consumer's boundary
+could land after the plan that authorized it was reaped. Three call sites fix
+that by sharing one rule -- capture the filing, then act only on that filing
+under the consumer's transition lock:
+
+* `pbrun.residency_stage_rows` captures `(plan, filing)` through
+  `read_filed`, passes both to `reap`, and decides again from whatever is
+  actually filed when the locked reap removes nothing. A reap that refused is
+  never read as "the old filing is gone": it either refuses by name while
+  live work remains, or adopts the replacement filing that now stands.
+* `pbrun.main` holds the consumer's transition lock across the whole
+  ownership transaction -- handoff, seal, `freeze`, the consumer's own
+  publication and the lead mover's. A dead consumer's cleanup pass rereads an
+  old failed or withdrawn terminal every cycle; between a bare `freeze` and
+  the consumer's row it would see a filed plan nobody owns and reap it.
+* Both automatic window publications (`residency_window` and
+  `ram_residency_window`) call `residency_plan.window_owned` under the
+  consumer's lock immediately before `publish(..., refuse_withdrawn=True)`:
+  the captured filing must still be the filed one and the consumer must still
+  be the live, current generation. A cycle snapshot that went stale in
+  between publishes nothing and files a
+  `mover-publish-deferred-stale-window` (or its ram spelling) event. Egress
+  publication stays outside this boundary: freeing bytes the consumer has
+  read past is cleanup, not a new child.
+
+`handoff_safe` reads under the same discipline. It holds the consumer's lock
+across the whole scan and each child's transition lock across that child's
+two state reads, parent before child -- the one order every writer here keeps
+and the same-thread nesting `posix_lock.held` already supports. Two bare
+`Path.exists` reads let an atomic READY->CLAIMED claim land between them and
+look like a child none of whose states is live; a read that fails is
+uncertainty too, and a state that cannot be read answers "defer", never
+"absent". Only a complete, current scan proves a handoff safe.
 
 The body stays filed while anything still names it. A withdrawn consumer's
 queued or claimed children are still attributable, so

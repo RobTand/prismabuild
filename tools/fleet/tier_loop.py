@@ -685,6 +685,10 @@ def ram_residency_window(
                     "phases": [str(entry["phase"]) for _, entry in publishable
                                if isinstance(entry, Mapping)]})
             publishable = []
+        generation = None
+        item = consumer.get("item")
+        if isinstance(item, Mapping):
+            generation = item.get("published_unix")
         for mover_row, entry in publishable:
             row = dict(mover_row)
             try:
@@ -692,7 +696,24 @@ def ram_residency_window(
                 # stage's own rows carry it -- and an automatic promotion
                 # refuses a live cancellation under publish's own lock rather
                 # than retiring the operator's marker (#708).
-                queue.publish(**row, recompute=True, refuse_withdrawn=True)
+                #
+                # The consumer's lock is the parent boundary, held across the
+                # recheck and the publish exactly as the stage window holds
+                # it: a promotion is never published after the plan that
+                # minted it was reaped or replaced, or after the consumer
+                # itself was withdrawn (#708 review).
+                with queue._transition_locked(key):
+                    owned, why = residency_plan.window_owned(
+                        queue, key, filing=incarnation, generation=generation)
+                    if not owned:
+                        events.append({
+                            "event": "ram-mover-publish-deferred-stale-window",
+                            "consumer": key, "phase": entry["phase"],
+                            "chunk_index": entry.get("chunk_index"),
+                            "action_key": str(row["action_key"]),
+                            "reason": why})
+                        break
+                    queue.publish(**row, recompute=True, refuse_withdrawn=True)
             except pool.WithdrawnActionError as exc:
                 marked = residency_plan.mark_superseded(
                     queue, key, plan=plan, filing=incarnation,
@@ -1647,6 +1668,10 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     "phases": [str(entry["phase"]) for entry in publishable
                                if isinstance(entry, Mapping)]})
             publishable = []
+        generation = None
+        item = consumer.get("item")
+        if isinstance(item, Mapping):
+            generation = item.get("published_unix")
         for entry in publishable:
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
@@ -1687,7 +1712,24 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 # cannot: a cancellation filed after the snapshot is seen
                 # under publish's own transition lock and outranks this
                 # automatic republication (#708 review).
-                queue.publish(**row, recompute=True, refuse_withdrawn=True)
+                #
+                # The consumer's lock is the parent boundary and it is held
+                # across the recheck and the publish, so the captured filing
+                # and generation cannot change in between: a child is never
+                # published after its parent's plan was reaped or replaced,
+                # or after the consumer itself was withdrawn (#708 review).
+                with queue._transition_locked(key):
+                    owned, why = residency_plan.window_owned(
+                        queue, key, filing=incarnation, generation=generation)
+                    if not owned:
+                        published.append({
+                            "event": "mover-publish-deferred-stale-window",
+                            "consumer": key, "phase": entry["phase"],
+                            "chunk_index": entry.get("chunk_index"),
+                            "action_key": entry["mover_action_key"],
+                            "reason": why})
+                        break
+                    queue.publish(**row, recompute=True, refuse_withdrawn=True)
             except pool.WithdrawnActionError as exc:
                 marked = residency_plan.mark_superseded(
                     queue, key, plan=plan, filing=incarnation,
