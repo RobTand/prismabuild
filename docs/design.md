@@ -3741,6 +3741,14 @@ copy-time digest; the existing staged file is never rehashed for adoption.
 The same rule applies to retries by the original consumer. A changed origin
 cannot silently reuse its earlier bytes, and existing readers keep their file.
 
+Range adoption also checks the donor's dated material against the current file
+identity under the ownership lock before publishing a successor or transferring
+credit (#755/#756). A superseded donor is skipped in favor of another current
+donor for the same range. Path-level publication likewise searches past records
+for an older inode; those records do not describe the current file's bytes.
+An in-place modification of a dated inode remains a conflict. These checks use
+metadata and preserve valid zero-copy reuse; they do not rehash staged payloads.
+
 **The window, the sweep, and the egress order.** Promotion scheduling is
 the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
