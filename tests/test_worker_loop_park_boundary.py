@@ -47,6 +47,13 @@ def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
         def __init__(self, root):
             assert root == tmp_path / "pb-queue"
 
+        def dir(self, *args, **kwargs):
+            # Drain-path membership reconciliation may census the
+            # withdrawn/ decisions (read-only, no admission). Report no
+            # queue dir so the census is empty and nothing publishes;
+            # any actual admission still fails below.
+            return tmp_path / "no-such-queue-dir"
+
         def __getattr__(self, name):
             pytest.fail(f"parked loop reached queue operation {name}")
 

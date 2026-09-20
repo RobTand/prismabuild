@@ -108,6 +108,7 @@ LIVE_DEFAULTS = (
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("pbsweep", "SH", "fleet"),
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
+    ("fleet_membership", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),

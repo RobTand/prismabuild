@@ -134,6 +134,9 @@ FLEET_SCRIPTS = (
     # supervisor and the barrier preflight import it on boxes with no
     # checkout, so a generation without it cannot enforce a retirement.
     "fleet_roster.py",
+    # Local JOIN/RESIGN and the worker-loop reconciliation hook must work
+    # on registered hosts with only the published generation available.
+    "fleet_membership.py",
     # Per-job containment clients and root-installed authority sources travel
     # with the generation; installation copies privileged code to root-owned
     # storage rather than executing it from this shared runtime.

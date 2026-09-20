@@ -1,0 +1,131 @@
+{
+  "acceptance_assertion_note": "Each row names its exact executable check; manual-review kind only where governance-only.",
+  "contract": "worker-expansion-design.md",
+  "ledger_schema": "pb.fleet_expansion_requirements.v1",
+  "note": "FLEET contract extension to the staged-read baseline. Component-tested means CPU fixtures through PrismaBuild, not deployed fleet or campaign qualification. Runtime deployment and actual native/container worker join/resign remain unqualified until separately recorded. Unknown remains owed work. Uses the existing roster, broker maintenance gate, queue claim/withdrawal/retry and worker reaper.",
+  "requirements": [
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_two_matching_workers_either_may_claim",
+      "enforcement": "PoolQueue._matching_offers/placeable_hosts/claim",
+      "id": "FLEET-01",
+      "maturity": "tested",
+      "owner": "PB:pool-claim",
+      "text": "Registered boxes place by class-tag conjunction; more gb10 workers need no host listing."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_cpu_x86_vs_cuda_class_conjunction",
+      "enforcement": "has_gpu + tag conjunction in _matching_offers",
+      "id": "FLEET-02",
+      "maturity": "tested",
+      "owner": "PB:pool-claim",
+      "text": "CPU-only x86 vs ARM+CUDA distinguished by class conjunction and has_gpu; no cross-admission."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_discrete_and_unified_budgets_stay_separate",
+      "enforcement": "box_capacity GPU_MEMORY_DOMAINS; mem_gb vs VRAM budgets separate",
+      "id": "FLEET-03",
+      "maturity": "tested",
+      "owner": "PB:capacity",
+      "text": "Discrete (wsl-gpu) vs unified (GB10) memory domains recorded separately; VRAM never inflates host RAM."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_unsupported_backend_is_explicitly_unplaceable",
+      "enforcement": "_matching_offers returns no match; unknown kinds are unknown, never zero",
+      "id": "FLEET-04",
+      "maturity": "tested",
+      "owner": "PB:pool-claim",
+      "text": "Unknown backend explicitly unsupported; no fake memory/GPU advertised."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_stale_offer_is_unavailable_not_zero",
+      "enforcement": "offers(max_age_s=120); placeable None when nobody has said",
+      "id": "FLEET-05",
+      "maturity": "tested",
+      "owner": "PB:pool-claim",
+      "text": "Missing/stale offers read as unavailable, never as zero capacity; heartbeats never release tokens."
+    },
+    {
+      "acceptance": "manual-review: roster status active with provenance before join",
+      "enforcement": "fleet_roster.box_status via fleet_membership.check_roster_active",
+      "id": "FLEET-06",
+      "maturity": "tested",
+      "owner": "PB:roster",
+      "text": "Desired membership is the declaration (active vs retired/offline with reason/by/unix); restart never auto-rejoins an absent box."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_join_refuses_absent_roster + test_join_refuses_unhealthy_broker; tests/test_membership_published_entrypoint.py verifies command publication and both immutable runtime layouts",
+      "enforcement": "fleet_membership.join validates roster + broker health + storage before touching the gate",
+      "id": "FLEET-07",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Join validates runtime/broker/capacity/telemetry/storage before eligibility; any failure leaves the gate as-is."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_gate_shape_is_fail_closed_and_keyed",
+      "enforcement": "worker_loop.read_maintenance_gate/_gate_key mirror",
+      "id": "FLEET-08",
+      "maturity": "tested",
+      "owner": "PB:broker-gate",
+      "text": "Drain gate fail-closed; changed_unix names the epoch; reason is descriptive only."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_resign_begin_then_withdraw_owned_claim + test_replacement_incarnation_markers_do_not_ack",
+      "enforcement": "fleet_membership.resign: begin, exact-loop park acks, withdraw owned claims",
+      "id": "FLEET-09",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Resign stops new claims at begin, waits exact-loop acks for that changed_unix, withdraws owned claims via the ladder; stale epochs never ack."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_join_resign.py::test_resign_never_releases_on_heartbeat_loss",
+      "enforcement": "no gate/broker/queue mutation on refusal paths",
+      "id": "FLEET-10",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Voluntary resign distinct from crash/expiry; heartbeat disappearance alone releases nothing; failed containment stays resigning with reason."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_busy_resign.py chained-resign and uninterruptible-natural-terminal cases; tests/test_fullstack_reader_boundaries.py and test_reader_refs_holder_unknown.py cover the accepted reader SDK component integration. Live containment remains separately owed.",
+      "enforcement": "PoolQueue.plan_requeue/publish withdrawal lineage plus fleet_membership.resign; broker and reader containment remain authoritative.",
+      "id": "FLEET-11",
+      "maturity": "tested",
+      "owner": "PB:pool-claim",
+      "text": "Owned scopes must be contained before release. Retry-safe work yields through the withdrawal ladder and requeues with preserved attempt budgets; retry-unsafe or budget-exhausted work drains to its natural terminal under graceful resign."
+    },
+    {
+      "acceptance": "manual-review: joining host opens only its gate; frozen child scopes immutable",
+      "enforcement": "fleet_membership.join, worker_loop admission_open callback, PoolQueue.claim/_claim/serve_once, broker maintenance epoch CAS.",
+      "id": "FLEET-12",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Joining a qualified worker opens only its own gate; frozen child scopes and other workers remain unchanged. Claim checks the local admission gate under the existing per-key transition lock, with broker scope-create refusal as backstop."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_resign_retains_fence_on_unreadable_reader_refs + test_resign_drained_when_no_leases_namespace",
+      "acceptance_assertion": "Absent leases namespace drains; present-but-unenumerable pins retain with reason.",
+      "enforcement": "fleet_membership.reader_refs_gate in the resign completion chain",
+      "id": "FLEET-13",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Resign reports resigned only with reader refs drained as well as scopes/claims; attestation writing and reclaim are the lease worker's automatic path, consumed here as proof."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_resign_resumes_withdrawn_row_after_crash + test_resign_preserves_newer_unrelated_publication; tests/test_membership_handoff_carrier.py::test_repeat_handoff_never_retargets_successor",
+      "acceptance_assertion": "Withdraw-then-crash resumes with one exact linked successor; ordinary cancellations never revive; an old claimed-generation handoff never retargets a newer READY successor.",
+      "enforcement": "fleet_membership.resume_owed + exact-linkage adopt in the resign rounds",
+      "id": "FLEET-14",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Resign handoff intent survives resigner crash via authoritative withdrawn decisions; new supervisors adopt only provably-gone owners' rows with exact successor lineage, never double-publish, never clobber newer publications."
+    },
+    {
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_terminal_rejects_malformed_and_stale_counters + test_resign_retains_uninterruptible_work_until_natural_terminal",
+      "acceptance_assertion": "Malformed/stale counters never match; uninterruptible rows drain naturally with no withdrawal record.",
+      "enforcement": "fleet_membership._terminal_matches + retained-uninterruptible handoff",
+      "id": "FLEET-15",
+      "maturity": "tested",
+      "owner": "PB:membership",
+      "text": "Exact-attempt terminals require fully typed identity plus the exact transition counter; graceful resign retains retry-unsafe/budget-exhausted work to its natural terminal and never cancels it."
+    }
+  ]
+}
