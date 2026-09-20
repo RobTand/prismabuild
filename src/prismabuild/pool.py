@@ -114,6 +114,7 @@ from typing import NamedTuple
 from contextlib import contextmanager, nullcontext, suppress
 import errno
 import fcntl
+import fnmatch
 from functools import wraps
 from inspect import signature
 import hashlib
@@ -1153,6 +1154,33 @@ def _glob(directory: Path, pattern: str):
         return []
 
 
+def _scan_visible(directory: Path):
+    """List a directory LOUDLY: every error propagates to the caller.
+
+    The counterpart to :func:`_scan` for authoritative censuses (mint
+    grow, dead-name reclaim): a holder this listing cannot read makes
+    the census unknown, and the caller must refuse the decision --
+    retain rather than mint -- instead of narrowing the view.  Reads
+    (``capacity``, ``available``) and shrink-only scans keep the
+    tolerant :func:`_scan`, whose errors understate toward refusal.
+    """
+
+    return sorted(directory.iterdir())
+
+
+def _glob_visible(directory: Path, pattern: str):
+    """Error-visible name match for authoritative censuses.
+
+    Same names as :func:`_glob` on a readable tree (``Path.glob`` uses
+    ``fnmatch`` for the leaf), but unreadable directories raise
+    instead of reading empty: a hidden live holder must abort a
+    reissue, never excuse one.  See :func:`_scan_visible`.
+    """
+
+    return sorted(path for path in _scan_visible(directory)
+                  if fnmatch.fnmatchcase(path.name, pattern))
+
+
 def _process_alive(pid: int) -> bool:
     """True while ``pid`` exists and has not already exited.
 
@@ -1726,6 +1754,45 @@ def _acquisition_claimant(name: str) -> tuple[str, int] | None:
         return None
 
 
+def _guarded_mutation(*, blocking: bool):
+    """Run a ``ResourceLedger`` mutator under its mutation exclusion.
+
+    Tier ledgers built by :meth:`PoolQueue.tier_ledger` carry the tier's
+    mint lock as that exclusion, so every token rename on the ledger
+    serializes against the reclaim headroom scan (see
+    :meth:`PoolQueue._reclaim_dead_markers`): a held/private token renamed
+    to free between the free listing and the holder listing is missed by
+    both, and the overstated headroom reissues a dead name with no backing
+    -- then a claimant takes the phantom before the same apply's retire
+    can trim it (#733 R6).  Host ledgers carry no guard and behave exactly
+    as before.
+
+    ``blocking=False`` is the admission shape: the caller declines with
+    its existing unavailable vocabulary instead of waiting (only
+    :meth:`ResourceLedger.begin_acquire` uses it, returning ``None``).
+    Every other mutator waits and completes under the lock, so a
+    contended commit/abandon is never reported as success nor silently
+    dropped.  A contended non-blocking guard returns ``None`` from the
+    wrapped call.
+
+    Every ``ResourceLedger`` mutator -- including the pending
+    ``transfer_tokens`` extension (PR748), which must add the blocking
+    guard on integration -- takes this.  Readers take nothing.  Internal
+    helpers that assume the caller holds the guard say so; they take
+    nothing themselves.
+    """
+
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            with self._mutation_locked(blocking=blocking) as acquired:
+                if not acquired:
+                    return None
+                return fn(self, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
 class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
@@ -1744,10 +1811,50 @@ class ResourceLedger:
     dropped mid-flight is a configuration change, not a queue operation.
     """
 
-    def __init__(self, root: str | Path, host: str | None = None) -> None:
+    def __init__(self, root: str | Path, host: str | None = None, *,
+                 mutation_guard=None) -> None:
         self.root = Path(root)
         self.host = host or socket.gethostname()
         self.last_token_shortage: dict[str, object] | None = None
+        # Optional ``(*, blocking: bool) -> context manager`` yielding the
+        # acquisition status.  Set only by PoolQueue.tier_ledger (the
+        # tier's mint lock); host ledgers keep None and no new behavior.
+        # The guard is chosen by the explicit factory, never by sniffing
+        # the host/tier name.
+        self._mutation_guard = mutation_guard
+
+    def _mutation_locked(self, *, blocking: bool = True):
+        """The ledger's mutation exclusion, or a no-op for host ledgers."""
+
+        if self._mutation_guard is None:
+            return nullcontext(True)
+        return self._mutation_guard(blocking=blocking)
+
+    def _strict_census(self) -> bool:
+        """Whether this ledger refuses to mint from a partial view.
+
+        Tier ledgers built by :meth:`PoolQueue.tier_ledger` (guard
+        present) enumerate their grow/reclaim census error-visibly and
+        abort the mint/reissue on any census error; host ledgers keep
+        the legacy tolerant scans.  The fork is by explicit factory,
+        never by name.
+        """
+
+        return self._mutation_guard is not None
+
+    def _census_scan(self, directory: Path):
+        """Authoritative-or-tolerant directory listing by ledger kind."""
+
+        if self._strict_census():
+            return _scan_visible(directory)
+        return _scan(directory)
+
+    def _census_glob(self, directory: Path, pattern: str):
+        """Authoritative-or-tolerant name match by ledger kind."""
+
+        if self._strict_census():
+            return _glob_visible(directory, pattern)
+        return _glob(directory, pattern)
 
     @property
     def base(self) -> Path:
@@ -1864,6 +1971,7 @@ class ResourceLedger:
         return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
                    for token in _glob(self.free_dir, "cpu-*"))
 
+    @_guarded_mutation(blocking=True)
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
         """Create any missing token of each declared kind, idempotently.
 
@@ -1907,6 +2015,14 @@ class ResourceLedger:
         operator removes the marker.  That direction under-declares capacity,
         which is the safe one; the marker cannot be created second without
         making the duplicate permanent again.
+
+        Census refusal (#733 R6): on a tier ledger the grow census above
+        (marker listing, adoption, per-name held check) is error-visible:
+        an unreadable directory aborts the whole call having minted
+        nothing -- a just-created marker with no proven token is removed
+        again -- so capacity is never minted from a partial view.  The
+        next cycle retries.  Host ledgers keep the legacy tolerant scans
+        and propagation.
         """
 
         self.free_dir.mkdir(parents=True, exist_ok=True)
@@ -1915,8 +2031,13 @@ class ResourceLedger:
         # One listing per call rather than an O_EXCL attempt per index: a
         # 96-token memory ledger is polled every few seconds, and the marker
         # remains the arbiter for anything this listing did not show.
-        minted = {path.name for path in _scan(self.minted_dir)}
-        minted |= self._adopt_present_tokens(minted)
+        try:
+            minted = {path.name for path in self._census_scan(self.minted_dir)}
+            minted |= self._adopt_present_tokens(minted)
+        except OSError:
+            if not self._strict_census():
+                raise
+            return
         for kind, count in sorted(capacity.items()):
             total = int(count)
             if total < 0:
@@ -1935,7 +2056,17 @@ class ResourceLedger:
                     continue
                 os.close(descriptor)
                 minted.add(name)
-                if self._token_is_held(name):
+                try:
+                    held = self._token_is_held(name)
+                except OSError:
+                    if not self._strict_census():
+                        raise
+                    # Unknown whether a holder has this name: the marker
+                    # just created would strand the index.  Remove it and
+                    # mint nothing this cycle; the next cycle retries.
+                    (self.minted_dir / name).unlink(missing_ok=True)
+                    return
+                if held:
                     # Adoption did not see it, but a holder has it: the marker
                     # now accounts for that token and nothing is minted.  The
                     # check is a scan and can still miss, which is what the
@@ -1952,8 +2083,18 @@ class ResourceLedger:
                 os.close(descriptor)
 
     def _token_is_held(self, name: str) -> bool:
-        """Whether any holder here currently contains a token called ``name``."""
+        """Whether any holder here currently contains a token called ``name``.
 
+        Error-visible on a tier ledger (an unreadable holder aborts the
+        grow census); tolerant on a host ledger, as before.
+        """
+
+        if self._strict_census():
+            return any(
+                name in {path.name for path in _scan_visible(holder)}
+                for holder in _scan_visible(self.held_dir)
+                if holder.is_dir()
+            )
         return any(
             (holder / name).exists()
             for holder in _scan(self.held_dir)
@@ -1970,13 +2111,19 @@ class ResourceLedger:
         ``minted`` is the marker listing already read, so the steady state
         costs the directory walk and no syscall per token: every name is
         already known and only a ledger being adopted opens anything.
+
+        The census is error-visible on a tier ledger: an unreadable free
+        or holder directory propagates and aborts the grow, so adoption
+        never narrows the view it marks from.  Host ledgers keep the
+        tolerant scans.
         """
 
         adopted: set[str] = set()
-        present = {path.name for path in _glob(self.free_dir, "*-*")}
-        for holder in _scan(self.held_dir):
+        present = {path.name for path in self._census_glob(self.free_dir, "*-*")}
+        for holder in self._census_scan(self.held_dir):
             if holder.is_dir():
-                present.update(path.name for path in _glob(holder, "*-*"))
+                present.update(
+                    path.name for path in self._census_glob(holder, "*-*"))
         for name in sorted(present):
             if name in minted:
                 continue
@@ -1995,6 +2142,7 @@ class ResourceLedger:
             adopted.add(name)
         return adopted
 
+    @_guarded_mutation(blocking=True)
     def retire_free_capacity(self, capacity: Mapping[str, int]) -> dict[str, int]:
         """Lower a kind's total to ``capacity`` by deleting FREE tokens only.
 
@@ -2057,6 +2205,135 @@ class ResourceLedger:
                 retired[kind] = retired.get(kind, 0) + 1
         return retired
 
+    @_guarded_mutation(blocking=True)
+    def retire_held(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
+        """Destroy up to ``counts`` HELD tokens of one holder, atomically.
+
+        The shared-egress decharge (#733): a mover whose bytes stay on the
+        stage under a co-owner must not hand its tokens back as writable
+        free capacity, and it must not keep them either -- keeping them
+        leaks the tier, freeing them mints a phantom.  Destroying them drops
+        the holder and the total together, so free never moves.
+
+        The disposition is one atomic rename per token, from its holder
+        directory into the ledger's dead namespace (``minted/dead/``):
+        either the token is still held (rename not yet done) or it is
+        dead (rename done) -- no unlink-then-record gap for a crash to
+        split, and no separate record whose creation can fail apart from
+        the disposition itself.  The mint marker is never touched, so the
+        name can never be re-minted into free while the bytes remain;
+        honest regrowth reissues exactly these filed names when backing
+        exists (see :meth:`PoolQueue._reclaim_dead_markers`).  A second
+        destroy of the same name finds it already dead and counts it
+        without moving anything; a name live elsewhere is never taken.
+        There is no second ledger: the dead namespace lives in the same
+        ledger directory as the markers themselves.  Missing tokens count
+        as already gone, so this is safe to call twice; only actual
+        dispositions are returned.
+        """
+
+        destroyed: dict[str, int] = {}
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return destroyed
+        dead_dir: Path | None = None
+        for kind, count in sorted(counts.items()):
+            want = int(count)
+            if want <= 0:
+                continue
+            taken = 0
+            for token in sorted(_glob(holder, f"{kind}-*"), reverse=True):
+                if taken >= want:
+                    break
+                if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                    continue
+                if dead_dir is None:
+                    dead_dir = self.minted_dir / "dead"
+                    try:
+                        dead_dir.mkdir(parents=True, exist_ok=True)
+                    except OSError:
+                        dead_dir = None
+                if dead_dir is None:
+                    # Nowhere to journal the disposition: retain the token
+                    # and surface the shortfall through the missing count.
+                    continue
+                try:
+                    os.rename(token, dead_dir / token.name)
+                except FileNotFoundError:
+                    if (dead_dir / token.name).exists():
+                        taken += 1
+                    continue
+                except OSError:
+                    continue
+                taken += 1
+            if taken:
+                destroyed[kind] = taken
+        self._drop_empty_holder(holder)
+        return destroyed
+
+    def _drop_empty_holder(self, holder: Path) -> None:
+        """Remove a holder directory left with no token files, best-effort.
+
+        Mirrors :meth:`_empty_into_free`'s tail: readers like
+        :meth:`held_keys` list holder *directories*, so a dir emptied by a
+        count-capped settle must go, exactly as a full release removes it.
+        Adaptive metadata goes only once no token remains, so accounting
+        can never disappear while tokens do.
+        """
+
+        try:
+            remaining = [path for path in _scan(holder)
+                         if path.name not in (cpu_admission.METADATA,
+                                              gpu_admission.METADATA)]
+        except OSError:
+            return
+        if remaining:
+            return
+        for marker in (cpu_admission.METADATA, gpu_admission.METADATA):
+            try:
+                (holder / marker).unlink(missing_ok=True)
+            except OSError:
+                return
+        try:
+            holder.rmdir()
+        except OSError:
+            pass
+
+    @_guarded_mutation(blocking=True)
+    def release_count(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
+        """Return up to ``counts`` held tokens per kind to free, counting actuals.
+
+        The count-capped sibling of :meth:`release`: an egress that must
+        retain a shortfall (a decharge that failed partway) keeps exactly
+        what it names and frees no more.  Missing tokens count as already
+        gone; only actual renames are returned.
+        """
+
+        released: dict[str, int] = {}
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return released
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        for kind, count in sorted(counts.items()):
+            want = int(count)
+            if want <= 0:
+                continue
+            taken = 0
+            for token in sorted(_glob(holder, f"{kind}-*")):
+                if taken >= want:
+                    break
+                if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                    continue
+                try:
+                    os.rename(token, self.free_dir / token.name)
+                except OSError:
+                    continue
+                taken += 1
+            if taken:
+                released[kind] = taken
+        self._drop_empty_holder(holder)
+        return released
+
     def capacity(self) -> dict[str, int]:
         """Total tokens of each kind, free or held."""
 
@@ -2080,6 +2357,7 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
+    @_guarded_mutation(blocking=False)
     def begin_acquire(
         self, action_key: str, demand: Mapping[str, int], *,
         adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
@@ -2110,6 +2388,12 @@ class ResourceLedger:
         metadata write empties the private directory back into ``free/`` before
         it leaves, because a caller that never receives the handle has no way to
         return the tokens itself.
+
+        On a guarded (tier) ledger the take runs under the tier's mint
+        lock, non-blocking: a contended guard returns ``None`` exactly
+        like a shortage, and the tier claim path reports its existing
+        ``tier_reservation_unavailable`` -- never a wait on admission,
+        never a new vocabulary.
         """
 
         self.last_token_shortage = None
@@ -2193,6 +2477,7 @@ class ResourceLedger:
             raise
         return handle
 
+    @_guarded_mutation(blocking=True)
     def commit_acquire(self, action_key: str, handle: str) -> int:
         """Move a claimant's private tokens under its action.  Count moved.
 
@@ -2219,6 +2504,11 @@ class ResourceLedger:
         some earlier incarnation's tokens are filed under this key; replacing
         the file would delete a token with no retire and no marker, and the
         short count instead makes the caller fail closed.
+
+        On a guarded (tier) ledger the move completes under the tier's
+        mint lock: a contended commit waits rather than reporting success
+        it did not earn, and the exact count still fails the caller
+        closed on a swept handle.
         """
 
         source = self.held_dir / handle
@@ -2247,6 +2537,7 @@ class ResourceLedger:
             pass
         return moved
 
+    @_guarded_mutation(blocking=True)
     def transfer(self, from_key: str, to_key: str) -> int:
         """Move one holder's whole reservation to another key.  Count moved.
 
@@ -2309,8 +2600,14 @@ class ResourceLedger:
             pass
         return moved
 
+    @_guarded_mutation(blocking=True)
     def abandon_acquire(self, handle: str) -> int:
-        """Return a claimant's own private tokens.  Its tokens, nothing else."""
+        """Return a claimant's own private tokens.  Its tokens, nothing else.
+
+        On a guarded (tier) ledger the return completes under the tier's
+        mint lock; a count short of the handle is retained for the stale
+        sweep, never reported as freed.
+        """
 
         return self._empty_into_free(self.held_dir / handle)
 
@@ -2320,6 +2617,13 @@ class ResourceLedger:
         The uncontended spelling of begin-then-commit, for a caller that has
         already decided the action is its own.  ``claim`` does not use it: the
         rename that decides ownership sits between the two halves.
+
+        On a guarded (tier) ledger this is two leaf lock operations --
+        a non-blocking begin, then a blocking commit -- which is the
+        accepted shape: the begin declines rather than waits, and the
+        commit completes under the lock.  The private handle between
+        them is recovered by the stale sweep and fail-closed by the
+        commit count, as before.
         """
 
         handle = self.begin_acquire(action_key, demand)
@@ -2332,6 +2636,7 @@ class ResourceLedger:
             return False
         return True
 
+    @_guarded_mutation(blocking=True)
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
     ) -> list[str]:
@@ -2381,11 +2686,13 @@ class ResourceLedger:
             swept.append(holder.name)
         return swept
 
+    @_guarded_mutation(blocking=True)
     def release(self, action_key: str) -> int:
         """Return every token held for this action.  Safe to call twice."""
 
         return self._empty_into_free(self.held_dir / action_key)
 
+    @_guarded_mutation(blocking=True)
     def release_kinds(self, action_key: str, kinds: Container[str]) -> int:
         """Return only the named kinds, leaving the holder's others held.
 
@@ -2419,6 +2726,7 @@ class ResourceLedger:
             released += 1
         return released
 
+    @_guarded_mutation(blocking=True)
     def release_except(self, action_key: str, keep_names: Container[str]) -> int:
         """Return every token except the named ones; count returned.
 
@@ -2461,6 +2769,10 @@ class ResourceLedger:
         returning. Conversely, a partial token return retains the metadata
         until a retry finishes the reservation, so its accounting cannot
         disappear while tokens remain held.
+
+        Assumes the caller holds the ledger's mutation guard (every
+        public caller -- ``abandon_acquire``, ``release``,
+        ``sweep_stale_acquisitions`` -- takes it); takes nothing itself.
         """
 
         if not holder.is_dir():
@@ -4075,7 +4387,32 @@ class PoolQueue:
         fill measurement must survive the action's conclusion -- a tier prices
         its next mover from receipts, and a receipt inside a terminal record
         would be read through a different path on every reaper generation.
+
+        Under the receipt tier's mint lock when the receipt names one: the
+        mint's writable sample and landed snapshot run under the same lock,
+        so filing here is totally ordered against them -- a completion that
+        files before the sample counts with bytes the sample saw, one that
+        files after waits for the next mint (#733 R4).  No payload moves
+        under this lock; the copy already ran.  The mint lock is a leaf
+        everywhere (never held while taking transition/ownership), and
+        same-thread nesting is supported, so filing from inside a mint
+        section cannot deadlock.  A receipt naming no tier files exactly as
+        before (egress receipts are not move receipts and never count).
         """
+
+        tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
+        if isinstance(tier_id, str) and tier_id:
+            try:
+                lock = self.tier_mint_lock(tier_id)
+            except (PoolContractError, OSError):
+                lock = None
+            if lock is not None:
+                with lock:
+                    return self._file_move(action_key, record)
+        return self._file_move(action_key, record)
+
+    def _file_move(self, action_key: str, record: Mapping[str, object]) -> Path:
+        """The atomic receipt write behind :meth:`record_move`."""
 
         path = self.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -4351,9 +4688,27 @@ class PoolQueue:
         hostname and rooted under ``TIER_RESERVATIONS`` so that no reader
         of ``reservations/`` mistakes a tier for a box.  A tier id carries
         a ``:`` (``prismabuild-stage:dl380g10``), which no hostname does.
+
+        The ledger carries this tier's mint lock as its mutation guard
+        (see ``_guarded_mutation``): every token rename through it --
+        claim begin/commit/abandon, release variants, transfer, mint
+        grow/shrink, egress decharge, stale-handle sweep, and the grant
+        ``acquire`` in :meth:`_reserve_fence_locked` -- serializes against
+        the reclaim headroom scan.  Callers need no per-site locking; the
+        factory attaches the guard.  Host ledgers from :meth:`ledger`
+        carry no guard.  Deployment note: workers without this guard
+        (older generations) admit outside the exclusion, so mixed-version
+        operation can still overissue -- see the quiescence requirement
+        on :meth:`_reclaim_dead_markers`.
         """
 
-        return ResourceLedger(self.root / TIER_RESERVATIONS, host=self._check_tier_id(tier_id))
+        checked = self._check_tier_id(tier_id)
+
+        def _tier_guard(*, blocking: bool = True):
+            return self.tier_mint_lock(checked, blocking=blocking)
+
+        return ResourceLedger(self.root / TIER_RESERVATIONS, host=checked,
+                              mutation_guard=_tier_guard)
 
     def tier_mint_lock(self, tier_id: str, *, blocking: bool = True):
         """Serialize the minters of one tier's capacity, never other tiers.
@@ -5282,11 +5637,195 @@ class PoolQueue:
             wanted = {str(kind): int(count) for kind, count in tokens.items()}
             if any(count < 0 for count in wanted.values()):
                 raise PoolContractError("tier capacity must not be negative")
-            ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
-            total = ledger.capacity()
-            lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
-            retired = ledger.retire_free_capacity(lower) if lower else {}
-            return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+            return self._apply_tier_capacity(tier_id, ledger, wanted)
+
+    def _apply_tier_capacity(
+        self, tier_id: str, ledger: ResourceLedger, wanted: dict[str, int],
+    ) -> dict[str, object]:
+        """Grow then shrink one tier ledger to ``wanted``, sans lock.
+
+        The body of :meth:`mint_tier_capacity` once inside the tier mint
+        lock.  Factored so a caller that must snapshot the wanted number
+        under the SAME lock (the tier loop's landed count, which an egress
+        decharge may change between a read and a mint) can do so without a
+        second minter interleaving; see :meth:`mint_tier_capacity_guarded`.
+        Never call without holding :meth:`tier_mint_lock` for the tier:
+        the sequence (reclaim scan, ensure, retire) is atomic only under
+        it.  The ledger calls below re-acquire the same lock through
+        their mutation guard (same-thread nesting is safe); that
+        re-entrancy is what keeps direct ledger users serialized too.
+        """
+
+        reclaimed = self._reclaim_dead_markers(ledger, wanted)
+        ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
+        total = ledger.capacity()
+        lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
+        retired = ledger.retire_free_capacity(lower) if lower else {}
+        return {"tier_id": tier_id, "capacity": ledger.capacity(),
+                "retired": retired, "reclaimed": reclaimed}
+
+    def _reclaim_dead_markers(
+        self, ledger: ResourceLedger, wanted: Mapping[str, int],
+    ) -> dict[str, int]:
+        """Reissue destroyed names the wanted number has headroom for (#733 R5).
+
+        The authority is the durable dead set (``minted/dead/``): each entry
+        IS the destroyed token file itself, renamed there atomically by
+        :meth:`ResourceLedger.retire_held`, so no scan infers absence and
+        no unlink-then-record gap exists.  Reissue is one atomic rename
+        back to free; the original marker was never touched, so the
+        reissued token is immediately consistent -- no ensure pass needed,
+        no transient unmarked state.  Only names with no live token
+        anywhere are reissued, up to per-kind ``wanted - live`` headroom;
+        a name live in free is deduped (its dead file removed, nothing
+        counted), a name live in held drops its stale dead file and stays
+        charged.  Dead beyond headroom wait for honest growth.
+
+        Exclusion, stated precisely (#733 R6): the headroom gate counts
+        live tokens with two directory listings, and a token renamed
+        held/private -> free between the free scan and the holder scan
+        would be missed by both, overstating headroom and reissuing a
+        dead name with no backing -- a phantom a claimant could then
+        take before the same apply's retire trims it.  That interleaving
+        is closed by the ledger's mutation guard: this body runs inside
+        the tier mint lock (see :meth:`_apply_tier_capacity`), and every
+        token rename through a factory-built tier ledger takes the same
+        lock, so no such rename lands between these two listings.  The
+        same apply's retire then trims only genuine excess, and no
+        prefix of the apply exposes unbacked free credit.  The live
+        census itself is error-visible on a tier ledger: an unreadable
+        free or holder directory aborts the reclaim with the dead set
+        retained, so a hidden live holder can never read as headroom.
+
+        Deployment: the exclusion holds only among workers carrying the
+        guard.  Mixed-version operation -- a worker or storage role on a
+        generation without ``_guarded_mutation`` admitting, releasing, or
+        minting on the same tier -- can still land the rename between
+        the scans and overissue with no bounded-overshoot allowance.
+        Deploying this generation requires a quiescent queue and reader
+        state with no new tier-admitted workloads until worker AND
+        storage roles converge on the guarded generation (root reviews
+        the actual publication).
+        """
+
+        reclaimed: dict[str, int] = {}
+        dead_dir = ledger.minted_dir / "dead"
+        try:
+            names = sorted(path.name for path in ledger._census_scan(dead_dir)
+                           if path.is_file())
+        except OSError:
+            # Unknown dead set: retain everything, decide nothing.
+            return reclaimed
+        if not names:
+            return reclaimed
+        try:
+            live: set[str] = set()
+            for path in ledger._census_glob(ledger.free_dir, "*-*"):
+                live.add(path.name)
+            for holder in ledger._census_scan(ledger.held_dir):
+                if holder.is_dir():
+                    live.update(
+                        path.name
+                        for path in ledger._census_glob(holder, "*-*"))
+        except OSError:
+            # Unknown live set: a hidden holder would read as empty and
+            # overstate headroom, so reissue nothing and retain the dead
+            # set for the next cycle.  On a tier ledger the census above
+            # is error-visible; host readers keep their tolerant scans.
+            return reclaimed
+        try:
+            live_count: dict[str, int] = {}
+            for name in live:
+                kind = name.rsplit("-", 1)[0]
+                live_count[kind] = live_count.get(kind, 0) + 1
+        except (AttributeError, TypeError):
+            return reclaimed
+        for name in names:
+            kind, _, _ = name.rpartition("-")
+            if not kind or kind not in wanted:
+                continue
+            if name in live:
+                # Live again (a rename the destroy raced, or a duplicate
+                # aftermath): the slot needs no reissue, just convergence.
+                # Free keeps its token; held keeps its charge; either way
+                # the dead file goes and nothing is counted.
+                try:
+                    (dead_dir / name).unlink()
+                except OSError:
+                    pass
+                continue
+            if live_count.get(kind, 0) >= int(wanted[kind]):
+                continue
+            try:
+                os.rename(dead_dir / name, ledger.free_dir / name)
+            except OSError:
+                continue
+            live_count[kind] = live_count.get(kind, 0) + 1
+            live.add(name)
+            reclaimed[kind] = reclaimed.get(kind, 0) + 1
+        return reclaimed
+
+    def mint_tier_capacity_guarded(self, tier_id: str, wanted_fn) -> dict[str, object]:
+        """Mint one tier's capacity to a number snapshotted under the lock.
+
+        ``wanted_fn(ledger)`` is called holding the tier mint lock and must
+        return the wanted ``{kind: count}`` mapping; the ensure+retire then
+        applies before the lock is released.  This closes the read-then-mint
+        race a shared-egress decharge would otherwise lose to: a landed
+        count read before the egress and minted after it would reintroduce
+        the very credits the egress just decharged.  Callers that need no
+        snapshot use :meth:`mint_tier_capacity`.
+        """
+
+        with self.tier_mint_lock(tier_id):
+            ledger = self.tier_ledger(tier_id)
+            wanted = wanted_fn(ledger)
+            wanted = {str(kind): int(count) for kind, count in dict(wanted).items()}
+            if any(count < 0 for count in wanted.values()):
+                raise PoolContractError("tier capacity must not be negative")
+            return self._apply_tier_capacity(tier_id, ledger, wanted)
+
+    def release_tier_holder_for_egress(
+        self, tier_id: str, action_key: str, *,
+        destroy: Mapping[str, int], free: Mapping[str, int],
+    ) -> dict[str, object]:
+        """Settle one egressing mover's tier hold: decharge, then free.
+
+        ``destroy`` names per-kind token counts whose bytes stay on the
+        stage under a co-owner (the shared-egress duplicate): they are
+        destroyed first via :meth:`ResourceLedger.retire_held`, and only
+        then are up to ``free`` per-kind counts returned with
+        :meth:`ResourceLedger.release_count`.  Destroy-before-release is
+        what makes an interrupted settle retry-safe: the retry recomputes
+        both counts from the fragment's stable byte buckets capped at the
+        still-held remainder, so a crash after the destroy frees exactly
+        the freed bytes' worth, and a crash before it leaves everything
+        held.  A destroy shortfall (unlink failure) is reported and its
+        tokens stay held: a failed decharge must never be freed as the
+        duplicate it was meant to destroy.  Free-side rename failures
+        likewise stay held and converge on retry.
+
+        No lock is taken here beyond what the ledger methods take
+        themselves: the caller (the egress, under the mover transition
+        lock, the stage ownership lock and the tier mint lock as its leaf)
+        already excludes concurrent ownership decisions and
+        stale-snapshot mints, and each ledger call below re-acquires the
+        same tier mint lock (same-thread nesting re-acquires safely), so
+        a direct caller without the outer lock is still serialized
+        against the reclaim scan.  Lock order stays
+        transition -> ownership -> mint throughout.  Returns
+        ``{"destroyed": {...}, "released": {...}, "shortfall": {...}}``;
+        all three count actual token files.
+        """
+
+        ledger = self.tier_ledger(tier_id)
+        destroyed = ledger.retire_held(action_key, destroy)
+        shortfall = {kind: int(count) - int(destroyed.get(kind, 0))
+                     for kind, count in destroy.items()
+                     if int(count) - int(destroyed.get(kind, 0)) > 0}
+        released = ledger.release_count(action_key, free)
+        return {"destroyed": destroyed, "released": released,
+                "shortfall": shortfall}
 
     def tier_record_path(self, tier_id: str) -> Path:
         return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
