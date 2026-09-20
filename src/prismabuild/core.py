@@ -7925,6 +7925,24 @@ def _residency_environment(
 _ATTEMPT_NONCE_RE = re.compile(r"[0-9a-f]{32}")
 
 
+def _executing_generation_root() -> Path | None:
+    """This core module's own generation root, or None when unrecognizable.
+
+    Mirrors the source/published layout rule without a repository import
+    (this file is attested standalone): ``src/prismabuild/core.py`` in
+    both checkout and sealed-generation layouts.  The resource_exec proxy
+    names the same root from its own path, so equality below proves the
+    helper is the executing generation rather than an older or unrelated
+    tree that merely exists.
+    """
+
+    resolved = Path(__file__).resolve()
+    directory = resolved.parent
+    if directory.name != "prismabuild" or directory.parent.name != "src":
+        return None
+    return directory.parent.parent
+
+
 def _reader_identity_environment(action_key: str) -> dict[str, str]:
     """The broker-owned attempt tuple plus helper root, or nothing.
 
@@ -7941,8 +7959,10 @@ def _reader_identity_environment(action_key: str) -> dict[str, str]:
       a guessed identity;
     * nonce must be 32-hex and scope must be exactly this action's broker
       slice for it (wrong-action and wrong-nonce refuse);
-    * helper root must be a canonical absolute path naming a live
-      directory, never through a symlink (stale or malformed refuse).
+    * helper root must be exactly this executing generation's root
+      (canonical absolute path under the shared source/published layout
+      rule -- never a symlink, never an older or unrelated tree, never
+      a missing path).
 
     The broker token and socket never cross this boundary: only these
     three names are read, so only they can arrive.  Binding beyond shape
@@ -7982,16 +8002,12 @@ def _reader_identity_environment(action_key: str) -> dict[str, str]:
             "launcher reader helper root is not a canonical absolute path; "
             "refusing rather than binding a helper tree by a relative or "
             "escaping spelling")
-    try:
-        if os.path.realpath(helper) != helper or not Path(helper).is_dir():
-            raise ActionContractError(
-                "launcher reader helper root names no live directory "
-                "directly (missing, or through a symlink such as the "
-                "mutable link); refusing rather than binding stale bytes")
-    except OSError as exc:
+    expected = _executing_generation_root()
+    if expected is None or helper != str(expected):
         raise ActionContractError(
-            "launcher reader helper root cannot be stat'ed; refusing "
-            "rather than binding an unproven tree") from exc
+            "launcher reader helper root is not this executing generation; "
+            "refusing rather than binding an older, unrelated, or missing "
+            "tree as sealed helpers")
     return {ACTION_NONCE_ENV: nonce, ACTION_SCOPE_ENV: scope,
             READER_HELPER_ROOT_ENV: helper}
 

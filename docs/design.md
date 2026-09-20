@@ -689,6 +689,23 @@ lookup paths remain responsible for the exact matched action. A cache miss
 can submit that same key; this is not a receipts-only switch. Runtime
 execution/attestation provenance remains the existing worker/receipt contract.
 
+### Admitted reader launch identity
+
+Beyond the sealed environment, a claimed action executed under a
+broker-owned scope carries its attempt identity: `PRISMABUILD_ACTION_NONCE`
+and `PRISMABUILD_ACTION_SCOPE` (derived by the `resource_exec` proxy from
+the exact launch key and nonce, never the broker token) plus
+`PRISMABUILD_READER_HELPER_ROOT` (the immutable generation root the proxy
+resolves from its own sealed path). `run_local_action` forwards exactly
+these three from the launcher environment through the residency
+environment contract, so strict readers bind pins to the live claim and
+import sealed helpers. Sealed conflicts on any identity name refuse;
+partial, wrong-action, wrong-nonce, or non-executing-generation helper
+values refuse; absence forwards nothing (legacy behavior for uncontained
+and pre-reader actions). The broker token and socket never cross. These
+values are runtime authority bound to the attempt, not sealed request
+input, so forwarding them cannot change an action key.
+
 ### Fleet command demand vocabulary
 
 `pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary

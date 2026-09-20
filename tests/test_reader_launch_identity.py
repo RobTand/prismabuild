@@ -38,8 +38,14 @@ def _action():
     return {"action_key": KEY}
 
 
+def _executing_root() -> str:
+    """This tree's generation root, the only helper core will forward."""
+
+    return str(Path(pb.__file__).resolve().parents[2])
+
+
 def _launch(monkeypatch, tmp_path, *, nonce=NONCE, scope=SCOPE,
-            helper=None, with_map=True):
+            helper="__executing__", with_map=True):
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT",
                  "PRISMABUILD_RESIDENCY_MAP"):
@@ -51,9 +57,10 @@ def _launch(monkeypatch, tmp_path, *, nonce=NONCE, scope=SCOPE,
         monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", nonce)
     if scope is not None:
         monkeypatch.setenv("PRISMABUILD_ACTION_SCOPE", scope)
-    monkeypatch.setenv("PRISMABUILD_READER_HELPER_ROOT",
-                       str(tmp_path if helper is None else helper))
-    return str(tmp_path)
+    if helper == "__executing__":
+        helper = _executing_root()
+    monkeypatch.setenv("PRISMABUILD_READER_HELPER_ROOT", str(helper))
+    return str(helper)
 
 
 def test_complete_tuple_forwarded_to_payload_env(tmp_path, monkeypatch) -> None:
@@ -128,6 +135,57 @@ def test_stale_helper_refuses_launch(tmp_path, monkeypatch) -> None:
     _launch(monkeypatch, tmp_path, helper=tmp_path / "no-such-generation")
     with pytest.raises(pb.ActionContractError):
         pb._residency_environment(_action(), {})
+
+
+def test_unrelated_existing_helper_refuses_launch(tmp_path, monkeypatch) -> None:
+    """An older-but-existing (or merely unrelated) tree is not the helper."""
+
+    _launch(monkeypatch, tmp_path, helper=tmp_path)
+    assert Path(tmp_path).is_dir()
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
+
+
+def test_run_local_action_forwards_production_identity(
+        tmp_path, monkeypatch) -> None:
+    """The production launch carries the proxy-seeded tuple to the child.
+
+    Seeds through the existing resource_exec.payload_identity_env (never
+    a hand-built bundle) and traverses run_local_action end to end, so
+    removing the integration call fails this test.
+    """
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import resource_exec  # noqa: E402
+    from test_core import _action as _seal  # noqa: E402
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = ("import json, os; open('result.bin','w').write(json.dumps("
+            "{k: os.environ.get(k) for k in "
+            "('PRISMABUILD_ACTION_KEY', 'PRISMABUILD_ACTION_NONCE', "
+            "'PRISMABUILD_ACTION_SCOPE', "
+            "'PRISMABUILD_READER_HELPER_ROOT')}))")
+    action = _seal(checkout, argv=[sys.executable, "-c", code])
+    # Seed for the action in hand (its sealed key), never a fixed key.
+    seeded = resource_exec.payload_identity_env(
+        {}, action_key=str(action["action_key"]), nonce=NONCE)
+    assert set(seeded) == {"PRISMABUILD_ACTION_NONCE",
+                           "PRISMABUILD_ACTION_SCOPE",
+                           "PRISMABUILD_READER_HELPER_ROOT"}
+    for name, value in seeded.items():
+        monkeypatch.setenv(name, value)
+    result = pb.run_local_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout)
+    assert result["status"] == "published"
+    seen = json.loads(Path(result["payload_path"]).read_text())
+    assert seen == {"PRISMABUILD_ACTION_KEY": str(action["action_key"]),
+                    "PRISMABUILD_ACTION_NONCE": NONCE,
+                    "PRISMABUILD_ACTION_SCOPE": seeded[
+                        "PRISMABUILD_ACTION_SCOPE"],
+                    "PRISMABUILD_READER_HELPER_ROOT": seeded[
+                        "PRISMABUILD_READER_HELPER_ROOT"]}
 
 
 def test_legacy_absence_preserves_behavior(tmp_path, monkeypatch) -> None:
