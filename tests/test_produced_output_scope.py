@@ -702,7 +702,7 @@ def test_due_rows_publishable_and_failed_mover_recovery(tmp_path: Path) -> None:
             po.recover_batches(queue, instance, template)] == [
         ("batch-0000", "output-mover-live-wait")]
     # A FAILED mover terminal reports retry (real queue records).
-    mover_claim = queue.claim(owner="mover-worker")
+    mover_claim = queue.claim(owner="mover-worker", tags=["dl380g10"])
     assert mover_claim is not None and mover_claim["action_key"] == MOVER0
     queue.finish(MOVER0, status="failed", detail={"status": "failed"},
                  claim_snapshot=mover_claim)
