@@ -3947,6 +3947,78 @@ allowed-tier, lease, and readiness rules this gate participates in, with
 honest per-requirement status. The PQ endgame is an application acceptance
 boundary referencing that contract, not a PB scheduler responsibility.
 
+### Produced-output admission (working window, not the corpus)
+
+A producer that stages bytes it writes itself declares a tiny validated
+immutable template (`pbrun --produced-output-template PATH`, at most 64 KiB,
+`produced_output.validate_template`). The template is captured as an ordinary
+CAS declared input plus sealed action params
+(`produced_output_template` declaration, validated by `core.
+validate_produced_output_declaration` against `action.inputs`), so changing
+the template changes the action key and editing the file after seal changes
+nothing the worker reads. The qualified tier demand is derived from the
+bounded working window (`produced_output.owner_demand_terms`: window GiB,
+never the durable corpus maxima or host decode memory) and added to the
+explicit user CPU/memory/GPU reservation, which is otherwise untouched. Pool
+transport only.
+
+`PoolQueue.publish(..., produced_output_template=...)` validates the template
+(closed fields, stage/ram kinds, minimum-within-window), requires the
+carried tier demand to exactly cover the derived window (plus the input range
+floor when an input residency range lands on the same tier; input leads carry
+none), files the template immutably, and projects
+`item["produced_output"] = {template_id, template_sha256}`. The #595 gate is
+extended narrowly for this declared window only: tier demand with neither an
+input residency block nor a correct produced-output declaration still
+refuses, and underdeclared, mismatched, foreign, tampered, or extra tier
+demand refuses with no refused-publication side effects. Input and output
+demand coexist and are admitted once through the existing host + tier ledger
+channel: the claim holds every required token before the producer starts, so
+insufficient tier capacity denies even with ample CPU/GPU.
+
+The runtime binds from the sealed item, never from caller arguments
+(`produced_output.declared_template` / `bind_declared_instance` over the
+protected live claim + launch halves). The template carries no action key or
+nonce; the instance binds the real protected attempt later. `pbcampaign`
+list rows forward the option (`produced_output_template` row field to
+`--produced-output-template`); decomposed logical children are out of scope.
+
+Release (`produced_output.safe_release_instance`) requires the coherent
+accepted `prismabuild.reader_lease` package (same file the fleet imports;
+a missing or foreign SDK retains), an untainted SDK pin census over the
+owner and batch namespaces, and exact owner containment: any live claim
+retains, an unreadable claim retains as unknown, and with no live claim
+only `containment_certificate_ok` over the exact owner nonce/scope
+(broker attestation + matching terminal telemetry) authorizes -- a bare
+DONE/FAILED/WITHDRAWN record by key alone never suffices. Funding-intent
+movers always retain with `funding-intent-reconcile-retain` for the
+funding/reconciliation lane: metadata absence never proves physical
+absence. Every mutation re-checks the single admitted-template boundary
+(instance digest equals the passed template; a substituted larger maxima
+is refused). `require_prewrite` SUCCESS is the authorization to start
+writing bytes, so new reservations require the live owner claim to name
+the exact attempt (stale/superseded/absent owners refuse before the
+first payload write; replays grant nothing). `commit_batch`
+additionally requires the live owner for quota consumption and token
+movement. Prewrite aborts prove exact planned-path absence before
+freeing headroom; duplicate commits never re-mint quota. Batches load
+through one bounded validator (schema/binding/strict counts/
+re-validated entries/canonical manifest); damaged records retain.
+Retirement has one public path (`retire_batch` validates provenance
+and the commitments/immutable-record agreement on mover, tier, and
+canonical namespace BEFORE egress, drives egress, and files under
+lock) and frees the tier window only; durable-origin classes stay
+charged until `reclaim_origin` proves every loader-validated entry
+path absent, exactly once. Holder release derives from validated
+records, never mutable fields alone. Census paths attributable to
+recorded staged paths retain by name; unknown census retains;
+unrelated pins never block. The egress claimed-copy attribution skips
+only verified producer holds (item ref equals the sealed request's
+validated declaration, no movement range); substituted or
+declaration-less rows taint. Commit-batch funding, movement/tick
+handoff, and the general funded-window primitive remain with their
+owning lanes.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
@@ -4140,6 +4212,143 @@ loop uses it. Funding generated outputs from a producer's already admitted
 window also needs an exact-owner transfer extension; a second acquisition is
 not evidence that the same bytes have been accounted once. Component tests
 establish neither deployed support nor whole-fleet conformance.
+
+#### Prepaid-output funding from the admitted window (candidate, R6)
+
+Funds one precommitted produced-output batch from the producer's existing
+window with an exact token-subset transfer (`ResourceLedger.transfer_tokens`),
+never a second reservation from free. One pool-owned authoritative intent per
+output mover per tier (`*.output-funding.json`, schema
+`prismabuild.tier_funding.output.v1`, same `TIER_FUNDING` dir, same
+`_FUNDING_TRANSITIONS`, same mover lock as the window binding above; V1
+validation unchanged). Claim-safe writer order: stage intent (reserved, 0.0
+unpublished sentinel) -> publish mover READY -> drive (rotate to real
+publication, transfer, `transferring`) -> commit batch (filed via the R4
+`_load_batch_record`) -> claim. Prewrite is budget, filed batch is commit,
+pool intent is the sole funding authority. Creation needs the exact live
+owner; cover requires live-OR-terminal owner plus the filed commit (never
+prewrite-only); drive accepts precommit-OR-commit. Owner-outer/mover-inner
+lock order serializes fund against owner finish (`_release_reservation` holds
+the owner lock with fail-retain census: UNKNOWN retains all). Pending output
+intents refuse fresh-acquisition fallback in `_begin_tier_acquire`
+(`output_funding_pending`). Release proves mover nonexecution (no
+CLAIMED/DONE/FAILED/receipt/lease) before retiring credit. See
+`prepaid-output-pool-api-design.md` (R6) and
+`tests/test_prepaid_output_funding.py` (candidate-component scope; parent
+stack root-unaccepted). The sealed `produced_output_batch` reference in mover
+params (derived from the CAS-filed action request at publication, kwarg only
+for direct API) is the positive required signal; claim never scans output
+history. At claim, `_begin_tier_acquire` reads the CAS-filed request ONCE per
+action (cas_root from the listing row): requiredness = immutable ref OR sealed
+projection key OR any funding-file state; the READY projection must agree
+with the immutable ref, and output cover must bind back to it; unknown READY
+or request evidence defers, never fresh (key ABSENCE alone is legacy). A
+successful cover rests on that same immutable agreement rather than replacing
+it: unknown request evidence, a filed request that declares no reference, a
+contradictory projection, or a record that fails the immutable binding all
+drop the cover (defer, never fresh); the funding-record binding is the
+shared identity fields, since `batch_namespace` is projection-only (the
+record's closed schema carries no such field). The renamed claim re-checks
+the same agreement.
+Transfer uses the accepted tier mutation guard (`_guarded_mutation`,
+blocking; host ledgers no-op). Writer (744) MUST include the reference for
+every output mover via `build_produced_output_batch_ref` (omission yields
+legacy treatment).
+Publication derives the projection from the CAS-filed request (contradictory
+kwarg and corrupt requests refuse) and requires staged-or-committed intent
+before READY exposure; claim derives requiredness from the filed request once
+per action (combined mutable-authority loss defers, never fresh).
+
+#### Operational writer path (R7 integration, candidate)
+
+`produced_output.publish_prepaid_batch` is the one production call per
+finished batch: sealed reference -> real CAS request for the stage mover
+(params carry the reference) -> `stage_output_intent` -> `publish` ->
+`fund_output_batch` (exact transfer of the owner's existing window) ->
+`commit_batch`. `commit_batch` reconciles the pool record (drives a
+`reserved` remainder through `drive_output_funding`, requires
+`transferring` with the mover holding the full token set) and files the
+batch with no second acquisition; the legacy per-batch
+`{batch_id}.funding.json` path survives only as in-flight recovery for
+batches that already filed it. Liveness, closed with the integration:
+`release_output_funding` refuses once `_output_batch_authority` holds
+(committed batches are recovery, not cancellation); `abort_prewrite`
+refuses while an owner intent cites the prewrite (`prepaid-intent-exists-
+retain`; retire the intent first); `stage_output_intent`/`fund_output_batch`
+never select a token name already promised to another outstanding intent
+of the same owner (`tier-reservation-unavailable` instead of a wedged
+transfer-short). `admit_funded_window` reports the delivered binding
+(`mode: prepaid-per-batch` + `owner_demand_terms`) once the funded-claim
+primitives are present.
+
+#### Terminal occupancy: a batch stays charged until its bytes are gone
+
+The tier invariant is that held tokens equal bytes on the stage at every
+instant, so a produced-output mover's terminal releases its tier tokens only
+when the stage is proven empty of its material. `PoolQueue.residency_pin_holds`
+answers the complete case (whole declared range, unrefused receipt);
+`PoolQueue.output_partial_pin_holds` answers the rest for this lane, and
+`PoolQueue.pin_holds_tier_tokens` is the union that `finish`, `reap_stale`,
+the tombstone/widowed-lease sweeps and `reclaim_terminal_reservation` all ask,
+so no two concluding paths can disagree.
+
+The contract is three-valued, never two:
+
+* **Occupied — retain.** A receipt naming the tier with a positive
+  `bytes_staged`, or a published residency fragment naming this mover. A
+  partial batch is occupancy: half a batch on the stage is half a stage spent.
+  An overrun is occupancy too -- it refused for staging MORE than it declared.
+* **Proven empty — release.** A mover that filed a refusal receipt
+  (`residency_moved_nothing`) naming this tier, reporting `bytes_staged` as
+  EXACT non-boolean integer zero, and published no fragment. All three, as a
+  conjunction. A zero-output failure frees its reservation because nothing is
+  occupying anything.
+* **Unknown — retain.** Anything else, including a MISSING move receipt and a
+  malformed count. `stage_move` publishes a fragment per entry as the bytes
+  land and calls `record_move` once, last, so a kill in that window leaves
+  real bytes and no receipt at all. Absence of a receipt is silence, not a
+  report of zero; a negative count or a `bool` (`isinstance(False, int)` is
+  True) is broken metadata, which is not a measurement of an empty stage.
+
+The tier-token half of a terminal may also be asked when NO terminal record
+exists at all -- a finish tombstone whose finisher died, a lease widowed by a
+record that is gone. `_filed_pin_holds` answers that case, and no ending at
+all is the strongest form of "this cleanup cannot see the ending", never proof
+that nothing is pinned: it retains when the key still holds a prepaid-output
+funding record that is not `released`. A mover outside this lane has no such
+record and is swept exactly as before.
+
+Retention is safe here only because the leftovers have a named owner:
+`produced_output.retire_batch` runs `stage_release.evict` for that mover key,
+which deletes the files and returns the holder's tokens in the same call --
+exactly once, with a re-drive answering `duplicate` and returning nothing
+further. The consumer window's twin (#627: a failed mover's partials, held by
+nobody) has no such owner and keeps the tier loop's eviction-candidate sweep
+instead; nothing in this contract changes it.
+
+`produced_output.recover_batches` is the read-only census over the same
+evidence, and it may not turn unproven into a verdict. Fragments prove bytes
+landed, not that the batch landed, so `output-batch-staged` requires the
+mover's receipt to say `complete`; fragments with an unreadable receipt are
+`output-recovery-unknown`. A READY row is judged only by its filed funding
+record through `PoolQueue.output_funding_file_state` (a census path may not
+use `read_output_funding`, which conflates absent with corrupt): `consumed` is
+spent and yields `output-mover-unfundable-retire` with the terminal route
+(retire -> reclaim -> re-plan), `corrupt` and a `released` record beside an
+unretired batch are unknown, and `absent` means no prepaid intent was filed so
+the ordinary claim path applies. A CLAIMED row is never told to retire; its
+recovery is the lease reaper's. Ledger holdings are not an input in either
+direction.
+
+A spent fence is spent in BOTH queue states. A terminal FAILED mover whose
+funding reads `consumed` can no more be retried than a requeued READY one can
+be claimed -- `output_funded_cover` covers only `transferring`, and
+`publish_prepaid_batch` answers a committed batch with `duplicate`, funding
+nothing -- so that branch reports the same terminal route rather than
+`output-mover-failed-retry`, and `due_mover_rows` emits no row for it. One
+shared question (`_output_funding_verdict`) decides both, because a retry
+event pointing at permanently unclaimable work is the same wait-forever
+defect as a live-wait one.
 
 ### The window
 

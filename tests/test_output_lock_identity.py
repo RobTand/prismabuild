@@ -31,6 +31,24 @@ from prismabuild import core as pb  # noqa: E402
 OVERLAP_BUDGET_S = 1.5
 
 
+@pytest.fixture(autouse=True)
+def _isolated_synthetic_launch_context(monkeypatch):
+    """Standalone synthetic unit contexts never inherit an outer attempt tuple.
+
+    Same proven isolation as test_core (PR746): the published runtime
+    forwards a complete broker-owned reader tuple to every process it
+    launches, and production ``_reader_identity_environment`` refuses
+    rather than feed an outer attempt identity into an unrelated synthetic
+    action. These tests seal and run their own synthetic actions, so each
+    starts with the ambient identity removed; production validity checks
+    are untouched.
+    """
+
+    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
+                 "PRISMABUILD_READER_HELPER_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _action(root: Path, working_directory: str, argv: list[str]) -> dict[str, object]:
     return pb.seal_action(
         {
