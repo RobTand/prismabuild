@@ -28,6 +28,7 @@ from fullstack_fixtures import corpus  # noqa: E402
 CONSUMER = "c" * 64
 WHOLE_MOVER = "a" * 64
 SPLIT_MOVER = "b" * 64
+WHOLE_RAM_MOVER = "d" * 64
 STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 
@@ -147,9 +148,9 @@ def _run_chain(tmp_path: Path):
     queue.record_move(SPLIT_MOVER, split_receipt)
 
     whole_promoted = ram_promote.promote(_promote_args(
-        tmp_path, queue, manifest_path, WHOLE_MOVER, 0, whole_len))
+        tmp_path, queue, manifest_path, WHOLE_RAM_MOVER, 0, whole_len))
     assert whole_promoted["complete"] is True
-    queue.record_move(WHOLE_MOVER, whole_promoted)
+    queue.record_move(WHOLE_RAM_MOVER, whole_promoted)
     return queue, manifest, whole_len, str(epoch["epoch"])
 
 
