@@ -927,6 +927,33 @@
    }
   },
   {
+   "acceptance_assertion": "tests/test_a_reserved_range_is_not_resident_until_published.py (reserve -> no RAM; half a two-entry copy -> no full-range readiness; publish complete -> window offers RAM -> real promote, exact read, clean release; old receipt + new partial refused) and tests/test_unreadable_residency_evidence_is_not_a_clean_unstaged.py (malformed and unreadable fragments raise ResidencyEvidenceUnreadable, the window emits ram-window-unknown and publishes nothing, the census reports staged: null). Both demonstrated RED before the change and GREEN after, through PrismaBuild at --priority -10; keys in the lane acceptance record. The unreadable test also asserts the AGGREGATE cursor_gap (unknown_phases/unknown_bytes carry the phase, unstaged_* stay empty) and the reservation test asserts known-unstaged still counts as backlog; that pair was RED on the pre-fix aggregate, which reported unstaged_phases ['head'] / unstaged_bytes 65536 for evidence it could not read.",
+   "deployment": {
+    "detail": "Source only: branch unmerged, unpushed, no PR; no runtime generation published. Issue #759 stays open through validated repair and deployed adoption.",
+    "state": "no"
+   },
+   "id": "TIER-05",
+   "implementation": {
+    "commit": "PB:branch fix/published-readiness-20260920 on a5c1eee5ef202ded7720cb9e45c0535fda812058 (unmerged)",
+    "path": "src/prismabuild/residency_plan.py resident_movers/_plan_fragments/_sealed_spans; tools/fleet/tier_loop.py _resident_movers and _ram_window_state; tools/fleet/pbstatus.py _starvation_plan_entry; tools/fleet/pbstatus.py _starvation_cursor_gap/_starvation_leg_staged/_starvation_chunked_staged/_starvation_leg_present",
+    "state": "yes"
+   },
+   "owner": "PB:tier-loop",
+   "text": "A reservation is not residency, and one predicate answers both the gate and the report. Tier tokens are taken at CLAIM and only bound occupancy. A movement node is RESIDENT only when it still holds its tier tokens AND a current map fragment for this consumer/tier/manifest vouches for the bytes (plan stage root on the stage leg; announced ram root under the announced epoch on the ram leg) AND it is not claimed/ AND a complete record_move receipt covers the plan-sealed span AND that receipt's entries_declared == entries_staged equals the current fragment's entry count. No payload read, no hashing, no whole-manifest stat. Unreadable or malformed evidence is UNKNOWN and is never reported as not-staged; the census reports the booking as reserved beside staged. UNKNOWN survives aggregation: cursor_gap counts unstaged_phases/unstaged_bytes only for a false leg, carries unknown_phases/unknown_bytes beside them additively against remaining_phases, and a chunked leg is true only when every chunk is, false as soon as one chunk is known missing, unknown otherwise. Testing a three-state answer with 'is not True' is banned. prismabuild_residency_unstaged_* therefore counts known backlog only.",
+   "validation": {
+    "detail": "Focused RED/GREEN pairs plus a 44-file window/adoption/census regression scope, all through PB at --priority -10. Scope is 4/6 shards green; the two red shards carry 12 failures proven identical on clean a5c1eee by a shelved-change baseline run. The aggregate fix adds a third RED/GREEN pair over the 10 census/metrics-touching files of that scope; the other 33 files do not reference pbstatus, pbmcp, pbmetrics or cursor_gap and reuse their receipts.",
+    "state": "yes"
+   },
+   "workload_proof": {
+    "detail": "Not yet exercised against the live Stage A campaign; the flow ran on an isolated tiny real corpus, not on the 10.9 GB head range the defect was observed on.",
+    "state": "no"
+   },
+   "gaps": [
+    "pbmetrics.py exports no unknown family, so unknown bytes are visible in the census (cursor_gap.unknown_bytes) but not in the Prometheus series; outside this lane's ownership and left to astra.",
+    "pool.INV-02 admission still answers 'is this lead resident?' with done/executed + manifest + _lead_is_pinned (tokens, not claimed, complete unrefused receipt onto the tier). TIER-05 additionally requires current fragment coverage, the plan-sealed span and the entry-count tie; TIER-05 does not re-check the receipt's refusal/tier_id fields that _lead_is_pinned checks. Two definitions of 'resident lead' now coexist deliberately; unifying them changes live admission and was not authorized."
+   ]
+  },
+  {
    "acceptance": [
     "ACC-04"
    ],
@@ -1018,16 +1045,16 @@
    },
    "id": "PRG-04",
    "implementation": {
-    "state": "partial",
     "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420",
-    "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked."
+    "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked.",
+    "state": "partial"
    },
    "owner": "PB:tiers",
    "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
    "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
    "validation": {
-    "state": "partial",
-    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate."
+    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate.",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "unknown",

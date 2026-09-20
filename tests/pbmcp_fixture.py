@@ -29,7 +29,9 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+
+import residency_publication  # noqa: E402
 
 READY_KEY = "a" * 64
 CLAIMED_KEY = "c" * 64
@@ -312,6 +314,21 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
         _hexkey("mover0"), {"stage_gib": 2})
     assert queue.tier_ledger(RAM_TIER).acquire(
         _hexkey("rampromote0"), {"ram_gib": 2})
+    # Landed means landed (#759): the booking above is the room, and these
+    # are the records a finished copy leaves.  The promotion's fragment
+    # names the ram root it landed on, under the announced epoch, which is
+    # what ``ram_promote`` writes and what the census now reports.
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
+        stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
+        stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB,
+        epoch=RAM_EPOCH)
     queue.publish(**_tier_row(_hexkey("mover1"),
                               {STAGE_KIND: 2, "mem_gb": 1}, queue),
                    residency={
@@ -320,18 +337,10 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
                        "manifest_bytes": 4 * STARVED_GIB,
                        "range_start_bytes": 2 * STARVED_GIB,
                        "range_end_bytes": 4 * STARVED_GIB})
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
-        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
-        "consumer_action_key": CONSUMER_KEY,
-        "mover_action_key": _hexkey("rampromote0"),
-        "tier_id": RAM_TIER, "stage_root": str(base / "stage"),
-        "manifest_sha256": CONSUMER_MANIFEST, "epoch": RAM_EPOCH,
-        "entries": {residency_map.residency_map_key("/in/shard-0.bin", 0): {
-            "stage_path": f"{base}/stage/model/shard-0.bin", "bytes": 4096,
-            "offset": 0, "sha256": "b" * 64}}})
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": host,
+        "mountpoint": str(base / "stage"),
         "capacity_bytes": 600 * STARVED_GIB, "sampled_unix": now - 5,
         "fill_source": "measured",
         storage_tiers.FILL_RECORD_FIELD: 310.0,
@@ -340,6 +349,7 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": RAM_TIER, "tier": "ram", "host": host,
+        "mountpoint": str(base / "ram"),
         "capacity_bytes": 8 * STARVED_GIB, "sampled_unix": now - 5,
         "epoch": RAM_EPOCH, "window_gib": 4})
     published = json.loads(

@@ -1257,6 +1257,35 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     staged = _starvation_holders(queue, tier_id, mover_keys, notes)
     ram_staged = (_starvation_holders(queue, ram_tier_id, ram_keys, notes)
                   if ram_tier_id is not None else {})
+    # Reservations and residency, reported apart (#759).  ``_starvation_
+    # holders`` above answers the ledger's question -- what is booked -- and
+    # the cursor used to print that as ``staged``, which is how it called the
+    # head phase staged while the copy was still running and the identity
+    # proof saw nothing.  ``staged`` is now the one shared readiness
+    # predicate the tier window gates on, so the census and the gate cannot
+    # disagree; ``reserved`` keeps the booking visible beside it rather than
+    # hiding the capacity it is really using.  Evidence that cannot be read
+    # reports ``None`` -- unknown -- never a clean ``False``.
+    stage_resident: set[str] = set()
+    ram_resident: set[str] = set()
+    resident_known = True
+    try:
+        stage_resident = residency_plan.resident_movers(queue, plan, tier_id)
+        if ram_tier_id is not None:
+            ram_resident = residency_plan.resident_movers(
+                queue, plan, ram_tier_id)
+    except (OSError, ValueError) as exc:
+        notes.append(f"starvation plan {prefix} residency: {exc}")
+        unreadable.append(f"starvation plan {prefix} residency: {exc}")
+        resident_known = False
+
+    def _resident(mover: str, *, ram: bool = False) -> bool | None:
+        """Published residency for one key, or ``None`` when it is unknown."""
+
+        if not resident_known:
+            return None
+        return mover in (ram_resident if ram else stage_resident)
+
     names = [str(phase["name"]) for phase in plan["phases"]]
     accepted_index = names.index(accepted) if accepted in names else None
     phases: list[dict] = []
@@ -1269,7 +1298,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
             stage = {"mover_action_key_prefix": mover_key[:12],
                      "published": mover_key in ready or mover_key in claimed
                                   or bool(staged.get(mover_key)),
-                     "staged": staged.get(mover_key)}
+                     "staged": _resident(mover_key),
+                     "reserved": bool(staged.get(mover_key)),
+                     "fragment": mover_key in fragment_movers}
             stage_fragment = mover_key in fragment_movers
         elif isinstance(phase.get("stage_chunks"), list):
             # A chunked phase reports per chunk, beside the phase's own
@@ -1287,7 +1318,8 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                     "mover_action_key_prefix": chunk_key[:12],
                     "published": chunk_key in ready or chunk_key in claimed
                                  or bool(staged.get(chunk_key)),
-                    "staged": staged.get(chunk_key),
+                    "staged": _resident(chunk_key),
+                    "reserved": bool(staged.get(chunk_key)),
                     "fragment": chunk_fragment,
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         ram: dict | None = None
@@ -1297,7 +1329,8 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
             ram = {"mover_action_key_prefix": ram_key[:12],
                    "published": ram_key in ready or ram_key in claimed
                                 or bool(ram_staged.get(ram_key)),
-                   "staged": ram_staged.get(ram_key),
+                   "staged": _resident(ram_key, ram=True),
+                   "reserved": bool(ram_staged.get(ram_key)),
                    # The question the ram tier exists to answer: which phases
                    # have promotion fragments and which have none.
                    "fragment": ram_key in fragment_movers,
@@ -1316,7 +1349,8 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                     "mover_action_key_prefix": chunk_key[:12],
                     "published": chunk_key in ready or chunk_key in claimed
                                  or bool(ram_staged.get(chunk_key)),
-                    "staged": ram_staged.get(chunk_key),
+                    "staged": _resident(chunk_key, ram=True),
+                    "reserved": bool(ram_staged.get(chunk_key)),
                     "fragment": chunk_key in fragment_movers,
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         phases.append({"name": str(phase["name"]),
@@ -1335,36 +1369,65 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     return entry
 
 
+def _starvation_chunked_staged(chunks: object):
+    """Fold a chunked leg's per-chunk readiness into one tri-state.
+
+    A chunked phase is staged only when every chunk is: a partially moved
+    phase still needs room on the tier, and counting it staged would tell
+    the census the frontier is further than the bytes prove.  One chunk
+    known missing makes the phase known-unstaged, because that hole is a
+    fact whatever the others say.  Otherwise -- no hole, but a chunk whose
+    evidence could not be read -- the phase is UNKNOWN, and folding that to
+    ``False`` here would assert the hole the census could not see (#759).
+    """
+
+    if not isinstance(chunks, list) or not chunks:
+        return None
+    states = [chunk.get("staged") for chunk in chunks
+              if isinstance(chunk, dict)]
+    if states and all(state is True for state in states):
+        return True
+    if any(state is False for state in states):
+        return False
+    return None
+
+
+def _starvation_leg_present(phase: dict, leg: str) -> bool:
+    """Whether this phase has that leg at all, chunked or whole.
+
+    Absence is not readiness and not its negation: a phase with no ram leg
+    has nothing to be unstaged about, so it is counted on neither side.
+    """
+
+    if leg == "stage":
+        return phase["stage"] is not None or phase.get("stage_chunks") is not None
+    return phase["ram"] is not None or phase.get("ram_chunks") is not None
+
+
 def _starvation_leg_staged(phase: dict, leg: str):
     """Whether one census phase counts as staged on one leg.
 
-    A chunked phase is staged only when every chunk is: a partially
-    moved phase still needs room on the tier, and counting it staged would
-    tell the census the frontier is further than the bytes prove.  ``None``
-    is no leg at all, which the caller filters before counting.
+    Three answers, and they stay three: ``True`` staged, ``False`` known
+    not staged, ``None`` either no such leg or evidence that could not be
+    read.  Callers must test ``is True`` and ``is False`` separately --
+    ``is not True`` merges the last two and republishes an unknown as a
+    fact, which is the #759 error one level up from the leg it fixed.
     """
 
     if leg == "stage":
         if phase["stage"] is not None:
             return phase["stage"].get("staged")
-        chunks = phase.get("stage_chunks")
-        if isinstance(chunks, list) and chunks:
-            states = [chunk.get("staged") for chunk in chunks
-                      if isinstance(chunk, dict)]
-            if states and all(state is True for state in states):
-                return True
-            return False
-        return None
+        return _starvation_chunked_staged(phase.get("stage_chunks"))
     if phase["ram"] is not None:
         return phase["ram"].get("staged")
-    chunks = phase.get("ram_chunks")
-    if isinstance(chunks, list) and chunks:
-        states = [chunk.get("staged") for chunk in chunks
-                  if isinstance(chunk, dict)]
-        if states and all(state is True for state in states):
-            return True
-        return False
-    return None
+    return _starvation_chunked_staged(phase.get("ram_chunks"))
+
+
+def _starvation_span(states: list, wanted: object) -> int:
+    """The bytes of every phase whose leg is in exactly ``wanted`` state."""
+
+    return sum(int(phase["end_bytes"]) - int(phase["start_bytes"])
+               for phase, state in states if state is wanted)
 
 
 def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
@@ -1382,21 +1445,26 @@ def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
                               if accepted_index is not None else None,
                               "live_byte_cursor": NOT_OBSERVABLE}
     for leg in ("stage", "ram"):
-        remaining = [(index, phase) for index, phase in enumerate(phases)
+        remaining = [phase for index, phase in enumerate(phases)
                      if (accepted_index is None or index >= accepted_index)
-                     and (leg == "stage" or phase["ram"] is not None
-                          or phase.get("ram_chunks") is not None)]
-        staged = sum(1 for _, phase in remaining
-                     if _starvation_leg_staged(phase, leg) is True)
-        unstaged = [phase["name"] for _, phase in remaining
-                    if _starvation_leg_staged(phase, leg) is not True]
+                     and _starvation_leg_present(phase, leg)]
+        states = [(phase, _starvation_leg_staged(phase, leg))
+                  for phase in remaining]
+        # ``unstaged`` counts ``False`` and only ``False``.  The previous
+        # spelling was ``is not True``, which swept every unknown into a
+        # count of bytes an operator reads as definitely missing -- the leg
+        # reported honestly and the aggregate undid it (#759).
         gap[leg] = {
             "remaining_phases": len(remaining),
-            "staged_phases": staged,
-            "unstaged_phases": unstaged,
-            "unstaged_bytes": sum(
-                int(phase["end_bytes"]) - int(phase["start_bytes"])
-                for _, phase in remaining if phase["name"] in unstaged),
+            "staged_phases": sum(1 for _, state in states if state is True),
+            "unstaged_phases": [phase["name"] for phase, state in states
+                                if state is False],
+            "unstaged_bytes": _starvation_span(states, False),
+            # Additive with the two above: staged + unstaged + unknown is
+            # every remaining phase that has this leg.
+            "unknown_phases": [phase["name"] for phase, state in states
+                               if state is None],
+            "unknown_bytes": _starvation_span(states, None),
         }
     return gap
 

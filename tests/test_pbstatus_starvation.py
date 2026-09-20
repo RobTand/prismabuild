@@ -17,8 +17,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
-from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbstatus  # noqa: E402
+import residency_publication  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -118,22 +119,28 @@ def starved_queue(tmp_path, monkeypatch):
     queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
     assert queue.tier_ledger(STAGE_TIER).acquire(_hexkey("mover0"), {"stage_gib": 2})
     assert queue.tier_ledger(RAM_TIER).acquire(_hexkey("rampromote0"), {"ram_gib": 2})
+    # The bookings above are the room; these are the records the finished
+    # copies left.  The promotion's fragment names the ram root it landed
+    # on, under the announced epoch -- what ``ram_promote`` writes (#759).
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER, mover_action_key=_hexkey("mover0"),
+        tier_id=STAGE_TIER, stage_root=tmp_path / "stage",
+        manifest_sha256=MANIFEST, range_start_bytes=0,
+        range_end_bytes=2 * GIB)
+    residency_publication.vouch_landed(
+        queue, consumer_action_key=CONSUMER,
+        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
+        stage_root=tmp_path / "ram", manifest_sha256=MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * GIB, epoch=EPOCH)
     queue.publish(**_row(_hexkey("mover1"), {STAGE_KIND: 2, "mem_gb": 1}, queue),
                    residency={
                        "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
                        "manifest_sha256": MANIFEST, "manifest_bytes": 4 * GIB,
                        "range_start_bytes": 2 * GIB, "range_end_bytes": 4 * GIB})
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
-        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
-        "consumer_action_key": CONSUMER, "mover_action_key": _hexkey("rampromote0"),
-        "tier_id": RAM_TIER, "stage_root": str(tmp_path / "stage"),
-        "manifest_sha256": MANIFEST, "epoch": EPOCH,
-        "entries": {residency_map.residency_map_key("/in/shard-0.bin", 0): {
-            "stage_path": f"{tmp_path}/stage/model/shard-0.bin", "bytes": 4096,
-            "offset": 0, "sha256": "b" * 64}}})
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
+        "mountpoint": str(tmp_path / "stage"),
         "capacity_bytes": 600 * GIB, "sampled_unix": NOW - 5,
         "fill_source": "measured",
         storage_tiers.FILL_RECORD_FIELD: 310.0,
@@ -142,6 +149,7 @@ def starved_queue(tmp_path, monkeypatch):
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": RAM_TIER, "tier": "ram", "host": HOST,
+        "mountpoint": str(tmp_path / "ram"),
         "capacity_bytes": 8 * GIB, "sampled_unix": NOW - 5,
         "epoch": EPOCH, "window_gib": 4})
     published = json.loads(queue.item_path(pool.READY, _hexkey("mover1")).read_text())
