@@ -471,7 +471,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     unattributed live incarnation.
     """
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0, raising=False)
     queue = _queue(tmp_path)
     manifest, manifest_sha, body = _manifest(tmp_path)
 
