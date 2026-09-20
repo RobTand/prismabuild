@@ -8,8 +8,8 @@ checkout provides it -- the COHERENT `prismabuild.reader_lease` package
 injected_context; R7/R8 auto-cleanup paths never touched). On checkouts
 without the pin family those tests skip with the exact dependency instead
 of a stub. No model bytes, no GPU, no giant hashes. Sparse-file window
-tests use truncate (no pages). No capability is announced. Pending
-general-window admission returns its exact liveness dependency.
+tests use truncate (no pages). No capability is announced. General-window
+admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
 
@@ -146,6 +146,98 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
             "env": env}
 
 
+@pytest.fixture
+def broker_endpoint(tmp_path: Path, monkeypatch):
+    """The ordinary resource broker, over a stub cgroup kernel.
+
+    `safe_release_instance` authorizes its final release only from a
+    broker attestation proving the owner's scope stopped and empty
+    (`containment_certificate_ok`), and the pool files that attestation
+    from the token-gated `export_stopped` verdict at finish. A canned
+    control record can bind an instance but can never produce that
+    proof, so a fixture that needs the contained release runs the real
+    broker; only the cgroup syscalls are a double.
+    """
+
+    import resource_broker
+    from prismabuild import resource_scope
+
+    class _Kernel:
+        def __init__(self):
+            self.groups = {}
+
+        def create(self, scope, budget):
+            self.groups[scope] = {"populated": False}
+            return {"cgroup_path": f"/sys/fs/cgroup/prismabuild.slice/{scope}"}
+
+        def stop(self, scope):
+            self.groups[scope]["populated"] = False
+
+        def empty(self, scope):
+            return scope not in self.groups or not self.groups[scope]["populated"]
+
+        def exists(self, scope):
+            return scope in self.groups
+
+        def release(self, scope):
+            if self.groups[scope]["populated"]:
+                raise ValueError("scope still populated")
+            self.groups.pop(scope)
+
+    authority = resource_broker.Authority(
+        tmp_path / "broker-state", os.getuid(), _Kernel(),
+        max_memory_bytes=1024 ** 3)
+    endpoint = tmp_path / "broker.sock"
+    server = resource_broker.Server(str(endpoint), resource_broker.Handler)
+    server.authority = authority
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01},
+        daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
+        yield endpoint
+    finally:
+        try:
+            server.shutdown()
+        finally:
+            thread.join(timeout=10)
+            server.server_close()
+
+
+def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
+                    endpoint: Path, owner: str = OWNER):
+    """`_bind`, but with a scope the broker itself issued.
+
+    Identical to `_bind` except that the control record comes from
+    `ResourceScope.create()` over the live broker, so `queue.finish`
+    files the attestation the contained release requires.
+    """
+
+    from prismabuild import resource_scope
+
+    claimed = _publish_claim(queue, owner)
+    nonce = secrets.token_hex(16)
+    scope = resource_scope.ResourceScope(
+        owner, nonce, 64 * 1024 ** 2, tmp_path / f"telemetry-{owner[:8]}.json",
+        socket_path=endpoint)
+    control = scope.create()
+    path = queue.item_path(pool.CLAIMED, owner)
+    live = pool._read_json(path)
+    assert isinstance(live, dict)
+    live["resource_scope"] = control
+    pool._write_json_atomic(path, live)
+    env = {"PRISMABUILD_ACTION_KEY": owner,
+           "PRISMABUILD_ACTION_NONCE": control["nonce"],
+           "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
+    po.declare_template(queue.root, template)
+    instance = po.bind_instance(queue, template, owner_action_key=owner,
+                                claim_snapshot=claimed, env=env)
+    po.declare_instance(queue.root, instance)
+    return {"instance": instance, "claimed": claimed, "control": control,
+            "env": env, "nonce": nonce}
+
+
 def _write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
@@ -191,7 +283,10 @@ def _stage_batch(queue: pool.PoolQueue, batch: dict, origin: Path,
         "--unpaced",
     ])
     receipt = stage_move.move(args)
-    assert receipt["complete"] is True
+    assert receipt["complete"] is True, {
+        "refusal": receipt.get("refusal"), "errors": receipt.get("errors"),
+        "bytes_staged": receipt.get("bytes_staged"),
+        "declared_bytes": receipt.get("declared_bytes")}
     return receipt
 
 
@@ -305,11 +400,24 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
         po.reservation_holder(instance)) == {}
-    pending = po.admit_funded_window(queue, instance, template,
-                                     need_gib_per_tier={STAGE_TIER: 1})
-    assert pending["refusal"] == "funding-primitive-pending"
-    assert "liveness" in pending["dependency"].lower()
-    assert pending["liveness_draft_present"] == []
+    # The funded-claim primitive family is delivered, so this answers the
+    # window DECLARATION the producer seals against -- per-batch funding
+    # (exact owner->mover transfer) remains the authority, and this call
+    # verifies no holdings of its own.
+    declared = po.admit_funded_window(queue, instance, template,
+                                      need_gib_per_tier={STAGE_TIER: 1})
+    assert declared["ok"] is True, declared
+    assert declared["mode"] == "prepaid-per-batch"
+    assert declared["declaration_only"] is True
+    assert declared["authority"] == "per-batch-funding"
+    assert declared["owner_action_key"] == OWNER
+    assert declared["owner_demand_terms"] == po.owner_demand_terms(template)
+    assert declared["window_gib"] == {STAGE_TIER: 2}
+    assert declared["batch_ref_schema"] == \
+        pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
+    # Declaration only: it acquires nothing for the reservation holder.
+    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
+        po.reservation_holder(instance)) == {}
     assert po.admit_funded_window(
         queue, instance, template,
         need_gib_per_tier={"prismabuild-stage:other": 1})["refusal"] == \
@@ -540,7 +648,8 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     assert ledger.holder_tokens(batch_ns) == {}
 
 
-def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
+def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
+                                                   broker_endpoint) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -549,7 +658,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     stage.mkdir()
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
-    bound = _bind(queue, template)
+    bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
     out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
@@ -640,11 +749,11 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     assert ram_receipt["refusal"] == "ram_epoch_absent"
 
     # Rollover: retire window 0, window 1 bytes stay intact and readable.
-    ret0 = po.retire_batch(queue, batch0, stage_root=str(stage),
+    ret0 = po.retire_batch(queue, instance, template, batch0["batch_id"],
+                           stage_root=str(stage),
                            residency_root=str(out_base))
     assert ret0["ok"] is True
     assert ret0["receipt"]["tokens_released"] == 1
-    po.mark_batch_retired(queue.root, instance, "batch-0000")
     for entry in rm.compose(
             rm.read_fragments(out_base, batch1["batch_namespace"]))["entries"].values():
         assert Path(str(entry["stage_path"])).read_bytes()
@@ -659,11 +768,11 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     assert early["refusal"] == "active-batches-retain"
 
     # Retire window 1, then the owner-active retain names the owner.
-    ret1 = po.retire_batch(queue, batch1, stage_root=str(stage),
+    ret1 = po.retire_batch(queue, instance, template, batch1["batch_id"],
+                           stage_root=str(stage),
                            residency_root=str(out_base))
     assert ret1["ok"] is True
     assert ret1["receipt"]["tokens_released"] == 1
-    po.mark_batch_retired(queue.root, instance, "batch-0001")
     held = po.safe_release_instance(queue, instance, template)
     assert held["ok"] is False
     assert held["refusal"] == "owner-active-retain"
@@ -684,6 +793,8 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
 
 
 def test_owner_superseded_retain(tmp_path: Path) -> None:
+    if rlc is None:
+        pytest.skip(PIN_DEPENDENCY)
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -698,12 +809,15 @@ def test_owner_superseded_retain(tmp_path: Path) -> None:
     claimed2 = _publish_claim(queue, OWNER)
     control2 = _file_broker_control(queue, OWNER)
     assert control2["nonce"] != bound["control"]["nonce"]
-    retained = po.safe_release_instance(queue, instance, template)
+    retained = po.safe_release_instance(queue, instance, template,
+                                        lease_sdk=rlc)
     assert retained["ok"] is False
     assert retained["refusal"] == "owner-superseded-retain"
 
 
 def test_funding_mover_live_retain(tmp_path: Path) -> None:
+    if rlc is None:
+        pytest.skip(PIN_DEPENDENCY)
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -740,9 +854,12 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
     live = queue.claim(owner="mover-worker")
     assert live is not None and live["action_key"] == mover
-    retained = po.safe_release_instance(queue, instance, template)
+    retained = po.safe_release_instance(queue, instance, template,
+                                        lease_sdk=rlc)
     assert retained["ok"] is False
-    assert retained["refusal"] == "funding-mover-live-retain"
+    assert retained["refusal"] == "funding-intent-reconcile-retain"
+    # The remainder stands: nothing was reclaimed under the live mover.
+    assert queue.tier_ledger(STAGE_TIER).holder_tokens(ns) == {STAGE_BARE: 1}
 
 
 def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
@@ -920,10 +1037,10 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
     rlc.clear_retiring(str(rlc.leases_root(queue, str(out_base))),
                        consumer_action_key=batch["batch_namespace"],
                        mover_action_key=MOVER0)
-    ret = po.retire_batch(queue, batch, stage_root=str(stage),
+    ret = po.retire_batch(queue, instance, template, batch["batch_id"],
+                          stage_root=str(stage),
                           residency_root=str(out_base))
     assert ret["ok"] is True
-    po.mark_batch_retired(queue.root, instance, "batch-0000")
 
 
 def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
@@ -1044,14 +1161,14 @@ def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
         "start_bytes": 0, "end_bytes": 14336}
 
 
-def test_pin_census_taint_retains(tmp_path: Path) -> None:
+def test_pin_census_taint_retains(tmp_path: Path, broker_endpoint) -> None:
     if rlc is None:
         pytest.skip(PIN_DEPENDENCY)
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
     queue = _queue(tmp_path)
-    bound = _bind(queue, template)
+    bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
     out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
@@ -1063,6 +1180,8 @@ def test_pin_census_taint_retains(tmp_path: Path) -> None:
     tainted = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
     assert tainted["ok"] is False
     assert tainted["refusal"] == "unknown-retain: pin-census-tainted"
+    proof = rlc.read_scope_attestation(queue, OWNER, bound["nonce"])
+    assert isinstance(proof, dict) and proof["scope_empty"] is True
     (junk_dir / "junk.json").unlink()
     clean = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
     assert clean == {"ok": True, "released": 0, "lease_proof": "sdk-census-clean"}

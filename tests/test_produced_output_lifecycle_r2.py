@@ -118,42 +118,75 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
             "env": env}
 
 
-def _producer_request(tmp_path: Path, owner: str, template: dict) -> Path:
-    """File a sealed request binding the produced declaration (scaffolding).
+def _producer_request(tmp_path: Path, template: dict, *,
+                      declare: bool = True,
+                      tag: str = "producer") -> tuple[Path, str]:
+    """Seal and file the PRODUCER's own request; return (cas_root, key).
 
-    The params carry the produced declaration validated against the
-    request's own inputs plus an ordinary command with no movement
-    range flags -- exactly what egress attribution verifies. Every
-    admission/egress decision stays real.
+    Built with the production sealing APIs only -- CAS input ingestion,
+    ``po.build_declaration``, ``pb.seal_action`` and
+    ``publish_action_request`` -- so the owner IS the content-addressed
+    action key, exactly as in production. The params carry the produced
+    declaration validated against the request's own inputs plus an
+    ordinary command with no movement range flags, which is what egress
+    attribution verifies. Every admission/egress decision stays real.
+
+    ``declare=False`` files an equally valid sealed request that carries
+    NO produced-output declaration: the legacy/handwritten row whose
+    shape-valid claim ref alone proves nothing at egress. The request is
+    never hand-written or mutated after sealing -- ``validate_action``
+    binds the key to the canonical body, so a partial or edited file
+    refuses as unreadable long before the seam under test.
     """
 
-    checked = po.validate_template(template)
-    raw_template = json.dumps(
-        checked, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-    decl_input = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
-                  "sha256": hashlib.sha256(raw_template).hexdigest(),
-                  "bytes": len(raw_template)}
-    declaration = {
-        "schema": pb.PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
-        "template_id": str(checked["template_id"]),
-        "template_sha256": po.template_sha256(checked),
-        "input": dict(decl_input),
-    }
+    checkout = tmp_path / f"checkout-{tag}"
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "run.sh").write_text(f"# produced-output r2 {tag}\n")
     casdir = tmp_path / "cas"
-    (casdir / "requests" / owner[:2]).mkdir(parents=True, exist_ok=True)
-    (casdir / "requests" / owner[:2] / f"{owner}.json").write_text(
-        json.dumps({"params": {"command": ["sh", "run.sh"],
-                               pb.PRODUCED_OUTPUT_TEMPLATE_PARAM: declaration},
-                    "inputs": [decl_input]}))
-    return casdir
+    cas = pb.PrismaBuildCAS(casdir)
+    params: dict = {"cwd": ".", "command": ["/bin/sh", "run.sh"]}
+    inputs: list = []
+    if declare:
+        envelope = tmp_path / f"produced-template-{tag}.json"
+        envelope.write_text(json.dumps(po.validate_template(template),
+                                       sort_keys=True))
+        template_input, _ = cas.ingest_input(
+            envelope, input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID)
+        inputs.append(template_input)
+        params[pb.PRODUCED_OUTPUT_TEMPLATE_PARAM] = po.build_declaration(
+            template, template_input)
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": f"tests/produced-output-r2-{tag}",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/bin/sh", "run.sh"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": inputs,
+        "code_closure": pb.build_code_closure(checkout, ["run.sh"]),
+        "params": params,
+        "environment": {"variables": {"PATH": "/usr/bin:/bin"},
+                        "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas.publish_action_request(action)
+    return casdir, str(action["action_key"])
 
 
-def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict,
-               owner: str):
-    """Bind through the real admission path with a verifiable sealed request."""
+def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict, *,
+               declare: bool = True):
+    """Bind through the real admission path with a verifiable sealed request.
+
+    The owner key is the sealed request's own content address, so callers
+    read it back off the returned mapping rather than choosing it.
+    """
 
     terms = po.owner_demand_terms(template)
-    casdir = _producer_request(tmp_path, owner, template)
+    casdir, owner = _producer_request(
+        tmp_path, template, declare=declare,
+        tag="declared" if declare else "undeclared")
     queue.publish(action_key=owner, cas_root=str(casdir),
                   worker_script="/w.py", checkout_root="/co",
                   resources={"cpu": 1, "mem_gb": 1, **terms},
@@ -169,7 +202,7 @@ def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict,
                                 claim_snapshot=claimed, env=env)
     po.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
-            "env": env}
+            "env": env, "owner": owner, "cas_root": casdir}
 
 
 def _write(path: Path, payload: bytes) -> None:
@@ -295,8 +328,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     origin.mkdir(parents=True)
     template = _template(str(origin))
     queue = _queue(tmp_path)
-    owner = "b" * 64
-    bound = _bind_live(queue, tmp_path, template, owner)
+    bound = _bind_live(queue, tmp_path, template)
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
     stage = tmp_path / "stage"
@@ -416,9 +448,8 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
     origin.mkdir(parents=True)
     template = _template(str(origin))
     queue = _queue(tmp_path)
-    owner = "b" * 64
-    bound = _bind_live(queue, tmp_path, template, owner)
-    instance = bound["instance"]
+    bound = _bind_live(queue, tmp_path, template)
+    instance, owner = bound["instance"], bound["owner"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
     batch, stage, out_base = _commit_staged(
         queue, tmp_path, template, instance, owner, "sub")
@@ -450,18 +481,15 @@ def test_declaration_less_request_taints_egress(tmp_path: Path) -> None:
     origin.mkdir(parents=True)
     template = _template(str(origin))
     queue = _queue(tmp_path)
-    owner = "c" * 64
-    bound = _bind_live(queue, tmp_path, template, owner)
-    instance = bound["instance"]
+    # The sealed request carries NO declaration (legacy/handwritten row):
+    # a shape-valid claim ref alone proves nothing. The request is sealed
+    # like any other -- it cannot be hand-written or edited after the
+    # fact, because the action key binds its canonical body.
+    bound = _bind_live(queue, tmp_path, template, declare=False)
+    instance, owner = bound["instance"], bound["owner"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
     batch, stage, out_base = _commit_staged(
         queue, tmp_path, template, instance, owner, "nodecl")
-    # The sealed request loses its declaration (legacy/handwritten row):
-    # a shape-valid claim ref alone proves nothing.
-    casdir = tmp_path / "cas"
-    req_path = casdir / "requests" / owner[:2] / f"{owner}.json"
-    req_path.write_text(json.dumps({"params": {"command": ["sh", "run.sh"]},
-                                    "inputs": []}))
     refused = po.retire_batch(queue, instance, template, "nodecl",
                               stage_root=str(stage),
                               residency_root=str(out_base))
@@ -477,9 +505,8 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     origin.mkdir(parents=True)
     template = _template(str(origin))
     queue = _queue(tmp_path)
-    owner = "d" * 64
-    bound = _bind_live(queue, tmp_path, template, owner)
-    instance = bound["instance"]
+    bound = _bind_live(queue, tmp_path, template)
+    instance, owner = bound["instance"], bound["owner"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
 
     def _fresh(tag: str, mover: str):
@@ -635,13 +662,13 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
     thread.start()
     try:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
-        owner = "f" * 64
         # Admission through the real publish path with a verifiable
         # sealed request (ordinary command, no movement range): the
         # egress claimed-copy attribution verifies this live hold as a
         # producer reservation instead of tainting it as a mover copy.
+        # The owner key is the sealed request's own content address.
         terms = po.owner_demand_terms(template)
-        casdir = _producer_request(tmp_path, owner, template)
+        casdir, owner = _producer_request(tmp_path, template, tag="full")
         queue.publish(action_key=owner, cas_root=str(casdir),
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **terms},
