@@ -66,11 +66,18 @@ def _row(key: str, resources: dict[str, int], queue: pool.PoolQueue) -> dict[str
 
 
 def _corpus(tmp_path: Path, tag: str) -> tuple[Path, dict[str, bytes]]:
-    """Two 1 MiB source files with distinct bytes, under one mount."""
+    """Two 1 MiB source files with distinct bytes, under one mount.
+
+    Payload names carry the tag: several of these fixtures share one stage
+    root, and the accepted shared-publication contract (#752) refuses a
+    second mover whose bytes diverge at a name the first one published --
+    distinct names keep these windows independent, which is what the
+    fixtures mean to exercise.
+    """
     mount = tmp_path / f"mnt-{tag}"
     payloads = {
-        "p0.bin": hashlib.sha256(f"{tag}-p0".encode()).digest() * (SPAN // 32),
-        "p1.bin": hashlib.sha256(f"{tag}-p1".encode()).digest() * (SPAN // 32),
+        f"{tag}-p0.bin": hashlib.sha256(f"{tag}-p0".encode()).digest() * (SPAN // 32),
+        f"{tag}-p1.bin": hashlib.sha256(f"{tag}-p1".encode()).digest() * (SPAN // 32),
     }
     for name, payload in payloads.items():
         path = mount / name
@@ -212,7 +219,10 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
     queue.finish(mover, status="executed")
     assert queue.item_path(pool.DONE, mover).exists()
     assert int(queue.tier_ledger(TIER).holder_tokens(mover).get("stage_gib", 0)) == 1
-    staged = tmp_path / "stage" / f"p{start // SPAN}.bin"
+    entries = sorted(json.loads(manifest_path.read_text())["entries"],
+                     key=lambda entry: entry["path"])
+    staged_name = Path(str(entries[start // SPAN]["path"])).name
+    staged = tmp_path / "stage" / staged_name
     assert staged.read_bytes() == expect, f"staged bytes differ for {mover[:12]}"
 
 
@@ -286,7 +296,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
 
     # The admitted window runs to durable completion with real bytes.
     _land(queue, tmp_path, ctx[ptag]["manifest_path"], ctx[ptag]["digest"],
-          p0, P, 0, SPAN, ctx[ptag]["payloads"]["p0.bin"], owner="w-pp")
+          p0, P, 0, SPAN, ctx[ptag]["payloads"][f"{ptag}-p0.bin"], owner="w-pp")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
         record = queue.read_funding(p1, TIER)
@@ -304,8 +314,8 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     assert receipt["complete"] is True
     queue.record_move(p1, receipt)
     queue.finish(p1, status="executed")
-    assert (tmp_path / "stage" / "p1.bin").read_bytes() == \
-        ctx[ptag]["payloads"]["p1.bin"]
+    assert (tmp_path / "stage" / f"{ptag}-p1.bin").read_bytes() == \
+        ctx[ptag]["payloads"][f"{ptag}-p1.bin"]
     assert tier_loop.compose_map(queue, P) is not None
     _claim_exact(queue, P, owner="w-pp")
     queue.finish(P, status="executed")
@@ -313,7 +323,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     # The stalled window is admitted into the freed room and completes.
     stage_release.evict(queue, p0, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
-    assert not (tmp_path / "stage" / "p0.bin").exists()
+    assert not (tmp_path / "stage" / f"{ptag}-p0.bin").exists()
     admitted = False
     for _ in range(4):
         events = tier_loop.residency_window(queue, tiers=tiers)
@@ -323,7 +333,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     assert admitted, "stalled window never admitted after egress"
     assert Q not in _gated(tier_loop.residency_window(queue, tiers=tiers))
     _land(queue, tmp_path, ctx[qtag]["manifest_path"], ctx[qtag]["digest"],
-          q0, Q, 0, SPAN, ctx[qtag]["payloads"]["p0.bin"], owner="w-pp")
+          q0, Q, 0, SPAN, ctx[qtag]["payloads"][f"{qtag}-p0.bin"], owner="w-pp")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
         record = queue.read_funding(q1, TIER)
@@ -347,17 +357,15 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
                         stage_root=str(tmp_path / "stage"))
     stage_release.evict(queue, q1, consumer_action_key=Q,
                         stage_root=str(tmp_path / "stage"))
-    # Composed with the accepted #742 shared-egress semantics: the two
-    # corpora are byte-identical, so p1's staged entry is shared with Q's
-    # mover and its egress DECHARGES (marker dead, never free credit)
-    # instead of releasing.  Exact conservation: three minted markers are
-    # two free tokens plus one dead marker, nothing held, nothing phantom.
+    # Per-consumer payload names (#752 shared-publication contract), so no
+    # staged entry is shared across windows: every egress releases plainly.
+    # Exact conservation: three minted markers, three free, nothing held,
+    # nothing decharged, nothing phantom.
     minted = queue.tier_ledger(TIER)
-    assert minted.available().get("stage_gib") == 2
-    assert minted.capacity().get("stage_gib") == 2
+    assert minted.available().get("stage_gib") == 3
+    assert minted.capacity().get("stage_gib") == 3
     assert minted.held().get("stage_gib", 0) == 0
-    assert (minted.minted_dir / "dead"
-            / "stage_gib-0000").exists()
+    assert not (minted.minted_dir / "dead").exists()
 
 
 def test_parallel_fit_runs_both(tmp_path: Path) -> None:
@@ -379,7 +387,7 @@ def test_parallel_fit_runs_both(tmp_path: Path) -> None:
             (ctx["bb"]["movers"][1], CONSUMER_B, "bb", 1)):
         _land(queue, tmp_path, ctx[tag]["manifest_path"], ctx[tag]["digest"],
               mover, consumer, ordinal * SPAN, (ordinal + 1) * SPAN,
-              ctx[tag]["payloads"][f"p{ordinal}.bin"], owner="w-pp")
+              ctx[tag]["payloads"][f"{tag}-p{ordinal}.bin"], owner="w-pp")
     for consumer in (CONSUMER_A, CONSUMER_B):
         assert tier_loop.compose_map(queue, consumer) is not None
         _claim_exact(queue, consumer, owner="w-pp")
@@ -404,7 +412,7 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
     P = first_consumer
     p0, p1 = ctx[ptag]["movers"]
     _land(queue, tmp_path, ctx[ptag]["manifest_path"], ctx[ptag]["digest"],
-          p0, P, 0, SPAN, ctx[ptag]["payloads"]["p0.bin"], owner="w-fence")
+          p0, P, 0, SPAN, ctx[ptag]["payloads"][f"{ptag}-p0.bin"], owner="w-fence")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
         record = queue.read_funding(p1, TIER)
@@ -460,7 +468,7 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
 
     tier_loop.residency_window(queue, tiers=tiers)
     _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
-          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["aa-p0.bin"],
           owner="w-cancel")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
@@ -495,7 +503,7 @@ def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
 
     tier_loop.residency_window(queue, tiers=tiers)
     _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
-          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["aa-p0.bin"],
           owner="w-pin")
     p1 = ctx["aa"]["movers"][1]
     for _ in range(3):
@@ -597,7 +605,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
 
     tier_loop.residency_window(queue, tiers=tiers)
     _land(queue, tmp_path, ctx["manifest_path"], ctx["digest"], ctx["m0"],
-          CONSUMER_A, 0, SPAN, ctx["payloads"]["p0.bin"], owner="w-ram")
+          CONSUMER_A, 0, SPAN, ctx["payloads"]["ram-p0.bin"], owner="w-ram")
     events = tier_loop.ram_residency_window(queue, tiers=tiers)
     assert queue.item_path(pool.READY, ctx["r0"]).exists(), events
 
@@ -609,8 +617,8 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     assert int(receipt["bytes_staged"]) == SPAN
     queue.record_move(ctx["r0"], receipt)
     queue.finish(ctx["r0"], status="executed")
-    assert (tmp_path / "ram" / "p0.bin").read_bytes() == \
-        ctx["payloads"]["p0.bin"]
+    assert (tmp_path / "ram" / "ram-p0.bin").read_bytes() == \
+        ctx["payloads"]["ram-p0.bin"]
     assert int(ram_ledger.holder_tokens(ctx["r0"]).get("ram_gib", 0)) == 1
 
     # A second promotion does not fit beside the pinned one: typed stall.
@@ -667,7 +675,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     assert n0_receipt["complete"] is True
     queue.record_move(n0, n0_receipt)
     queue.finish(n0, status="executed")
-    assert (tmp_path / "stage" / "p0.bin").read_bytes() == payloads_b["p0.bin"]
+    assert (tmp_path / "stage" / "ramb-p0.bin").read_bytes() == payloads_b["ramb-p0.bin"]
 
     ram_events = tier_loop.ram_residency_window(queue, tiers=tiers)
     stalled = {str(e["consumer"]): e for e in ram_events
@@ -929,7 +937,7 @@ def test_competing_claim_race_stays_exact(tmp_path: Path) -> None:
 
     tier_loop.residency_window(queue, tiers=tiers)
     _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
-          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          p0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["aa-p0.bin"],
           owner="w-race")
     stealer = _hexkey("race-stealer")
     span2 = 2 * SPAN
@@ -1017,7 +1025,7 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
         "reserved", "transferring")
 
     _land(queue, tmp_path, ctx[wtag]["manifest_path"], ctx[wtag]["digest"],
-          w0, winner, 0, SPAN, ctx[wtag]["payloads"]["p0.bin"],
+          w0, winner, 0, SPAN, ctx[wtag]["payloads"][f"{wtag}-p0.bin"],
           owner="w-cycle")
     tier_loop.cycle(queue, host="testbox", source_pool="testpool",
                     receipts=receipts, discover=discover)
@@ -1091,7 +1099,7 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
 
     # One window runs with real bytes; the other's advance stays exact.
     _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
-          a0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          a0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["aa-p0.bin"],
           owner="w-tight")
     for _ in range(6):
         tier_loop.residency_window(queue, tiers=tiers)
