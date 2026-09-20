@@ -602,6 +602,71 @@ def validate_instance(value: object) -> dict[str, object]:
     }
 
 
+def _require_bound_contract(
+    template: Mapping[str, object], instance: Mapping[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The single admitted-template boundary every mutation reuses.
+
+    `admit_instance` established it: an instance is bound to exactly one
+    sealed template, and no mutation may run a substituted larger
+    `durable_maxima` (or any other template) under an admitted owner's
+    name. Raises `ProducedOutputError("template-mismatch: ...")`; callers
+    returning refusal dicts translate it to `{"ok": False, "refusal":
+    "template-mismatch"}`.
+    """
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    if (checked_instance["template_sha256"]
+            != template_sha256(checked_template)):
+        raise ProducedOutputError(
+            "template-mismatch: instance bound to another template")
+    return checked_template, checked_instance
+
+
+def _require_live_owner(queue, checked_instance: Mapping[str, object]
+                        ) -> dict[str, object] | None:
+    """Refuse new writes from a stale or absent owner, or None to proceed.
+
+    The live CLAIMED row for the owner key must name the instance's exact
+    broker attempt (nonce + scope); a live row for another attempt means
+    this instance is superseded (a retry owns the key now), and no live
+    row means the owner is not running. Either way no new durable bytes
+    may be authorized. A corrupt or unreadable live row is unknown state
+    that retains rather than authorizing. Cleanup paths (abort, retire,
+    release, reclaim) never call this: freeing headroom must work after
+    the owner is gone.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    owner = str(checked_instance["owner_action_key"])
+    attempt = checked_instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    try:
+        live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+    except Exception as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    if live is None:
+        return {"ok": False, "refusal": "owner-not-running"}
+    if not isinstance(live, Mapping):
+        return {"ok": False, "refusal": "unknown-retain: claim-shape"}
+    control = live.get("resource_scope")
+    live_nonce = live_scope = ""
+    if isinstance(control, Mapping):
+        candidate = control.get("nonce")
+        if isinstance(candidate, str) and candidate:
+            live_nonce = candidate
+        for field in ("scope_id", "scope_unit", "unit"):
+            unit = control.get(field)
+            if isinstance(unit, str) and unit:
+                live_scope = unit
+                break
+    if (live_nonce == attempt["nonce"] and live_scope == attempt["scope_id"]):
+        return None
+    return {"ok": False, "refusal": "stale-superseded-owner"}
+
+
 def instance_namespace(instance: Mapping[str, object]) -> str:
     """Material/ledger namespace for the instance (NOT the owner key)."""
 
@@ -887,8 +952,9 @@ def _outstanding_sums(queue_root: str | Path, instance: Mapping[str, object],
     sums = _class_sums(commitments["batches"])
     directory = _prewrites_dir(queue_root, checked)
     try:
-        names = sorted(p.name for p in directory.iterdir()
-                       if p.is_file() and p.name.endswith(".prewrite.json"))
+        with os.scandir(directory) as iterator:
+            names = sorted(entry.name for entry in iterator
+                           if entry.name.endswith(".prewrite.json"))
     except FileNotFoundError:
         return sums
     except OSError as exc:
@@ -897,7 +963,8 @@ def _outstanding_sums(queue_root: str | Path, instance: Mapping[str, object],
         if name == f"{exclude_batch_id}.prewrite.json":
             continue
         record = _read_prewrite(directory / name)
-        assert record is not None
+        if record is None:
+            continue
         class_bytes = record.get("class_bytes")
         if not isinstance(class_bytes, Mapping):
             raise ProducedOutputError("unknown-retain: bad prewrite record")
@@ -1019,14 +1086,22 @@ def _write_commitments(path: Path, record: Mapping[str, object]) -> None:
 
 
 def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
-    """Committed (non-retired) class bytes; malformed records fail closed."""
+    """Committed class bytes still charged against durable-origin quota.
+
+    Stage retirement (`retired`, set after a complete SSD/RAM egress) frees
+    the tier working window, never the durable HDD payload/checkpoint/temp
+    bytes: those stay charged until `reclaim_origin` proves every origin
+    path absent. Only batches with `origin_reclaimed` set stop counting.
+    Malformed records fail closed; records predating the flag (no key)
+    count as unreclaimed.
+    """
 
     sums = {"payload": 0, "checkpoint": 0, "temp": 0}
     for batch_id, record in batches.items():
         if not isinstance(record, Mapping):
             raise ProducedOutputError(
                 f"unknown-retain: bad committed batch {batch_id!r}")
-        if record.get("retired"):
+        if record.get("origin_reclaimed"):
             continue
         for cls in sums:
             sums[cls] += _check_class_bytes(
@@ -1051,9 +1126,10 @@ def admit_instance(queue, instance: Mapping[str, object],
     (pending on the liveness primitive). Returns {"ok": True, ...}.
     """
 
-    checked_template = validate_template(template)
-    checked_instance = validate_instance(instance)
-    if checked_instance["template_sha256"] != template_sha256(checked_template):
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         path = _commitments_path(queue.root, checked_instance)
@@ -1159,8 +1235,11 @@ def require_prewrite(queue, instance: Mapping[str, object],
     zeros, never missing keys).
     """
 
-    checked_template = validate_template(template)
-    checked_instance = validate_instance(instance)
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
     if tier not in checked_template["permitted_tiers"]:
         return {"ok": False, "refusal": "tier-not-permitted"}
@@ -1183,6 +1262,9 @@ def require_prewrite(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
     planned_paths.sort()
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        gated = _require_live_owner(queue, checked_instance)
+        if gated is not None:
+            return gated
         try:
             sums = _outstanding_sums(queue.root, checked_instance, batch_id)
         except ProducedOutputError as exc:
@@ -1243,8 +1325,11 @@ def abort_prewrite(queue, instance: Mapping[str, object],
     commit). Returns {"ok": True, "aborted": ...}.
     """
 
-    checked_template = validate_template(template)
-    checked_instance = validate_instance(instance)
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         try:
@@ -1294,8 +1379,11 @@ def commit_batch(queue, instance: Mapping[str, object],
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod
 
-    checked_template = validate_template(template)
-    checked_instance = validate_instance(instance)
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
     mover = _hex64(mover_key, where="batch mover_key")
     if tier not in checked_template["permitted_tiers"]:
@@ -1339,6 +1427,9 @@ def commit_batch(queue, instance: Mapping[str, object],
                         "batch_namespace": batch_ns,
                         "manifest_digest": manifest_digest}
             return {"ok": False, "refusal": "batch-id-in-use"}
+        gated = _require_live_owner(queue, checked_instance)
+        if gated is not None:
+            return gated
         try:
             prewrite = _read_prewrite(
                 _prewrites_dir(queue.root, checked_instance)
@@ -1458,6 +1549,7 @@ def commit_batch(queue, instance: Mapping[str, object],
             "mover_key": mover,
             "class_bytes": class_bytes,
             "retired": False,
+            "origin_reclaimed": False,
         }
         _write_commitments(_commitments_path(queue.root, checked_instance),
                            {"batches": batches})
@@ -1498,45 +1590,229 @@ def build_stage_manifest(batch: Mapping[str, object],
     }
 
 
-def retire_batch(queue, batch: Mapping[str, object], *, stage_root: str,
-                 residency_root: str | Path) -> dict[str, object]:
-    """Evict one batch's staged files, then mark it retired. Charge retained
-    on any incomplete/tainted result; retirement is recorded only after a
-    complete egress."""
+def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
+                               batch_id: str, receipt: Mapping[str, object],
+                               staged_paths: list[str]) -> None:
+    """File stage retirement under the caller's ownership lock.
 
-    from prismabuild import pool as pool_mod
-    import stage_release
+    Proof-checked, never a bare flag: the receipt must be a complete
+    egress for this exact batch (mover + namespace match, no errors),
+    and the batch must still be unretired. Records the staged paths the
+    egress vouched so later census attribution can name them.
+    """
 
-    if not isinstance(batch, Mapping):
-        return {"ok": False, "refusal": "bad-batch"}
-    consumer = str(batch.get("batch_namespace") or "")
-    mover = str(batch.get("mover_key") or "")
-    if len(consumer) != 64 or len(mover) != 64:
-        return {"ok": False, "refusal": "bad-batch-namespace"}
-    receipt = stage_release.evict(
-        queue, mover, consumer_action_key=consumer,
-        stage_root=str(stage_root), residency_root=str(residency_root))
-    if not receipt.get("complete"):
-        return {"ok": False, "refusal": "egress-incomplete", "receipt": receipt}
-    return {"ok": True, "receipt": receipt}
-
-
-def mark_batch_retired(queue_root: str | Path, instance: Mapping[str, object],
-                       batch_id: str) -> None:
-    """Record retirement after a complete egress (under the prefix lock)."""
-
-    checked = validate_instance(instance)
-    path = _commitments_path(queue_root, checked)
-    record = _read_commitments(path)
-    batches = record["batches"]
+    path = _commitments_path(queue.root, checked_instance)
+    try:
+        commitments = _read_commitments(path)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    batches = commitments["batches"]
     assert isinstance(batches, dict)
     entry = batches.get(batch_id)
     if not isinstance(entry, Mapping):
         raise ProducedOutputError("unknown batch_id for this instance")
+    if entry.get("retired"):
+        return
+    if entry.get("owner_action_key") != checked_instance["owner_action_key"]:
+        raise ProducedOutputError("retire owner must equal the instance owner")
+    if dict(entry.get("owner_attempt", {})) != dict(
+            checked_instance["owner_attempt"]):
+        raise ProducedOutputError("retire attempt must equal the instance attempt")
+    if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
+        raise ProducedOutputError("retire needs a complete egress receipt")
+    if receipt.get("errors"):
+        raise ProducedOutputError("retire needs an error-free egress receipt")
+    if (str(receipt.get("action_key") or "") != str(entry.get("mover_key") or "")
+            or str(receipt.get("consumer_action_key") or "")
+            != str(entry.get("batch_namespace") or "")):
+        raise ProducedOutputError("retire receipt names another batch")
     entry = dict(entry)
     entry["retired"] = True
+    entry["staged_paths"] = sorted(set(staged_paths))
     batches[batch_id] = entry
     _write_commitments(path, {"batches": batches})
+
+
+def retire_batch(queue, instance: Mapping[str, object],
+                 template: Mapping[str, object], batch_id: str, *,
+                 stage_root: str, residency_root: str | Path
+                 ) -> dict[str, object]:
+    """Evict one batch's staged files, then retire its stage window.
+
+    Retirement is tied to the actual egress: the batch record is loaded
+    from commitments (exact batch/manifest/attempt, never a caller
+    dict), the staged paths are captured from the live fragments before
+    the delete, and `retired` is filed under the output-prefix ownership
+    lock only for a complete error-free receipt naming this mover and
+    namespace. Durable-origin quota is NOT freed here -- origin files
+    still exist; see `reclaim_origin`. Charge (durable) and window
+    (tier) accounting stay distinct at every step.
+    """
+
+    import stage_release
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    _name(batch_id, where="batch_id")
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "refusal": "unknown-batch"}
+        if entry.get("retired"):
+            return {"ok": True, "batch_id": batch_id, "duplicate": True}
+        consumer = str(entry.get("batch_namespace") or "")
+        mover = str(entry.get("mover_key") or "")
+        if len(consumer) != 64 or len(mover) != 64:
+            return {"ok": False, "refusal": "bad-batch-namespace"}
+        if entry.get("owner_action_key") != checked_instance["owner_action_key"]:
+            return {"ok": False, "refusal": "retire-owner-mismatch"}
+        # Capture the staged paths the egress is about to vouch while the
+        # fragments still exist; after the delete only this record names
+        # them for later live-path attribution.
+        staged_paths: list[str] = []
+        try:
+            from prismabuild import residency_map as map_mod
+
+            out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+            fragments = map_mod.read_fragments(out_base, consumer)
+            if fragments:
+                composed = map_mod.compose(fragments)
+                entries = composed.get("entries")
+                if isinstance(entries, Mapping):
+                    for record in entries.values():
+                        if isinstance(record, Mapping) and record.get("stage_path"):
+                            staged_paths.append(os.path.normpath(
+                                str(record["stage_path"])))
+        except Exception:
+            staged_paths = []
+        receipt = stage_release.evict(
+            queue, mover, consumer_action_key=consumer,
+            stage_root=str(stage_root), residency_root=str(residency_root))
+        if not receipt.get("complete"):
+            return {"ok": False, "refusal": "egress-incomplete",
+                    "receipt": receipt}
+        try:
+            _mark_batch_retired_locked(
+                queue, checked_instance, batch_id, receipt, staged_paths)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return {"ok": True, "batch_id": batch_id, "receipt": receipt,
+            "staged_paths": sorted(set(staged_paths))}
+
+
+def mark_batch_retired(queue, instance: Mapping[str, object],
+                       template: Mapping[str, object], batch_id: str, *,
+                       receipt: Mapping[str, object]) -> dict[str, object]:
+    """Record stage retirement for a caller-run egress receipt.
+
+    Same proof as `retire_batch`'s internal filing, for callers that drove
+    `stage_release.evict` themselves: bound contract, ownership lock, exact
+    batch/manifest/attempt match, complete error-free receipt naming this
+    mover and namespace. Returns a refusal dict instead of raising, so a
+    bare call without proof refuses rather than retiring an active batch.
+    """
+
+    try:
+        _require_bound_contract(template, instance)
+        checked_instance = validate_instance(instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    _name(batch_id, where="batch_id")
+    if not isinstance(receipt, Mapping):
+        return {"ok": False, "refusal": "retire-needs-receipt"}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        try:
+            _mark_batch_retired_locked(
+                queue, checked_instance, batch_id, receipt, [])
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return {"ok": True, "batch_id": batch_id}
+
+
+def reclaim_origin(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object], *,
+                   batch_id: str) -> dict[str, object]:
+    """Free durable-origin quota after proving every origin path absent.
+
+    Stage retirement frees the tier window only. Each committed batch keeps
+    charging its payload/checkpoint/temp classes until this call stats
+    every sealed entry path and finds all of them absent (producer-side
+    disposal; this lane never unlinks origin files). A present file
+    refuses `origin-present-retain` keeping the charge; an unstatable
+    path retains unknown. Exactly-once: already-reclaimed returns
+    `{"ok": True, "reclaimed": False}`.
+    """
+
+    try:
+        _require_bound_contract(template, instance)
+        checked_instance = validate_instance(instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    _name(batch_id, where="batch_id")
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "refusal": "unknown-batch"}
+        if entry.get("origin_reclaimed"):
+            return {"ok": True, "batch_id": batch_id, "reclaimed": False}
+        # Origin paths come from the filed immutable batch record (exact
+        # sealed descriptors), never from caller arguments.
+        batch_file = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                      / instance_namespace(checked_instance)
+                      / f"{batch_id}.json")
+        try:
+            with open(batch_file, "rb") as handle:
+                filed = json.loads(handle.read(4 * 1024 * 1024 + 1).decode())
+        except FileNotFoundError:
+            return {"ok": False, "refusal": "unknown-retain: batch-record-missing"}
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if not isinstance(filed, Mapping):
+            return {"ok": False, "refusal": "unknown-retain: batch-record-missing"}
+        if (str(filed.get("manifest_digest") or "")
+                != str(entry.get("manifest_digest") or "")):
+            return {"ok": False, "refusal": "unknown-retain: batch-record-mismatch"}
+        for desc_path in sorted(str(e.get("path") or "") for e in
+                                (filed.get("entries") or [])
+                                if isinstance(e, Mapping)):
+            if not desc_path:
+                return {"ok": False, "refusal": "unknown-retain: bad-entry"}
+            try:
+                os.lstat(desc_path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            return {"ok": False, "refusal": "origin-present-retain",
+                    "path": desc_path}
+        entry = dict(entry)
+        entry["origin_reclaimed"] = True
+        batches[batch_id] = entry
+        try:
+            _write_commitments(_commitments_path(queue.root, checked_instance),
+                               {"batches": batches})
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return {"ok": True, "batch_id": batch_id, "reclaimed": True}
 
 
 def _require_coherent_lease_sdk(lease_sdk: object):
@@ -1574,21 +1850,124 @@ def _require_coherent_lease_sdk(lease_sdk: object):
     return lease_sdk, None
 
 
-def _lease_pin_files(lease_sdk: object, queue, consumer: str) -> list[str] | None:
+def _dir_has_entries(path: Path) -> bool:
+    """Whether a directory holds any entry; missing reads as empty.
+
+    A stat/permission failure is unknown state that retains, never silent
+    absence: `Path.is_dir/is_file` answer False on errors, which would
+    prove nothing about the bytes the accounting vouches.
+    """
+
+    try:
+        with os.scandir(path) as iterator:
+            for _ in iterator:
+                return True
+            return False
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError) as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+
+
+def _lease_pin_files(lease_sdk: object, queue, consumer: str,
+                     residency_root: str | Path | None = None
+                     ) -> list[str] | None:
     """Pin file names under one consumer namespace, or None when unreadable."""
 
     try:
-        root = lease_sdk.leases_root(queue)
+        root = lease_sdk.leases_root(queue, residency_root=residency_root)
     except Exception:
         return None
     directory = Path(root) / consumer
     try:
-        return sorted(p.name for p in directory.iterdir()
-                      if p.is_file() and p.name.endswith(".lease.json"))
+        with os.scandir(directory) as iterator:
+            return sorted(entry.name for entry in iterator
+                          if entry.is_file() and entry.name.endswith(".lease.json"))
     except FileNotFoundError:
         return []
     except OSError:
         return None
+
+
+def _live_output_paths(queue, lease_sdk: object,
+                       batches: Mapping[str, object],
+                       residency_root: str | Path
+                       ) -> tuple[list[str], str | None]:
+    """Live pinned paths attributable to these batches, or unknown reason.
+
+    Traces the staged paths each batch vouches -- live fragments while
+    staged, plus `staged_paths` recorded at retire time after the delete
+    -- and intersects the SDK pin census over the output fragment root.
+    Returns `(paths, None)`, or `([], reason)` when attribution is
+    impossible: a tainted/unreadable census, unreadable fragments beside
+    live paths, or live paths beside batch records predating staged-path
+    recording. Never ignores an attributable live path; never blocks on
+    unrelated consumers' pins.
+    """
+
+    from prismabuild import residency_map as map_mod
+
+    wanted: set[str] = set()
+    unrecorded: list[str] = []
+    for batch_id, entry in batches.items():
+        if not isinstance(entry, Mapping):
+            continue
+        recorded = entry.get("staged_paths")
+        if isinstance(recorded, list):
+            for path in recorded:
+                if isinstance(path, str) and path:
+                    wanted.add(os.path.normpath(path))
+            continue
+        ns = entry.get("batch_namespace")
+        if not isinstance(ns, str) or not ns:
+            unrecorded.append(str(batch_id))
+            continue
+        try:
+            fragments = map_mod.read_fragments(str(residency_root), ns)
+        except Exception:
+            unrecorded.append(str(batch_id))
+            continue
+        if not fragments:
+            # No staged bytes vouched: nothing pinnable -- unless this
+            # record retired before staged paths were recorded, in which
+            # case its paths are unknowable and live paths can't be
+            # ruled out.
+            if entry.get("retired") and "staged_paths" not in entry:
+                unrecorded.append(str(batch_id))
+            continue
+        try:
+            composed = map_mod.compose(fragments)
+        except Exception:
+            unrecorded.append(str(batch_id))
+            continue
+        entries = composed.get("entries")
+        if not isinstance(entries, Mapping):
+            unrecorded.append(str(batch_id))
+            continue
+        for record in entries.values():
+            if isinstance(record, Mapping) and record.get("stage_path"):
+                wanted.add(os.path.normpath(str(record["stage_path"])))
+    try:
+        census = lease_sdk.live_for(queue, None, residency_root=str(residency_root))
+    except Exception as exc:
+        return [], f"unknown-retain: {exc}"
+    owners: Mapping[str, object] = {}
+    tainted: list[object] = []
+    if (isinstance(census, tuple) and len(census) == 2
+            and isinstance(census[0], Mapping)):
+        owners, tainted = census[0], list(census[1] or [])
+    elif isinstance(census, Mapping):
+        owners = census
+    else:
+        return [], "unknown-retain: lease-census-shape"
+    if tainted:
+        return [], "unknown-retain: pin-census-tainted"
+    live = sorted({os.path.normpath(str(path)) for path in owners} & wanted)
+    if live:
+        return live, None
+    if unrecorded and owners:
+        return [], "unknown-retain: unattributable-live-paths"
+    return [], None
 
 
 def safe_release_instance(queue, instance: Mapping[str, object],
@@ -1600,20 +1979,27 @@ def safe_release_instance(queue, instance: Mapping[str, object],
     reclaims remainders after a fresh census under the prefix lock. EVERY
     check is exact:
 
-    - instance + commitments readable, else unknown-retain;
+    - instance + bound template readable and matching, else refusal;
     - coherent accepted SDK required (same package the fleet imports; a
       missing, foreign, or unreadable SDK retains -- never
       `sdk-absent-structural`);
     - every committed batch retired AND its mover holder empty AND its
-      fragments gone, else active-batches/movers-retain;
+      fragments gone, else active-batches/movers-retain (directory stats
+      that fail read as unknown, never as empty);
+    - funding-intent-only movers ALWAYS retain with
+      `funding-intent-reconcile-retain`: a mover that never published may
+      still have copied partial bytes, and metadata absence never proves
+      physical absence. The funding/reconciliation lane owns these intents;
+      this path never releases them;
     - funding-intent-only movers ALWAYS retain with
       `funding-intent-reconcile-retain`: a mover that never published may
       still have copied partial bytes, and metadata absence never proves
       physical absence. The funding/reconciliation lane owns these intents;
       this path never releases them;
     - live pins: pin files under the owner and every batch namespace
-      retain; the SDK `live_for` census must additionally be untainted
-      (unknown census retains);
+      retain; live census paths attributable to this instance's recorded
+      staged paths retain by name; a tainted or unattributable census
+      retains as unknown (unrelated consumers' pins never block);
     - owner containment: a live claim in any form retains (same attempt =
       owner-active, other attempt = owner-superseded); a corrupt or
       unreadable live claim retains as unknown and never falls through to
@@ -1631,10 +2017,11 @@ def safe_release_instance(queue, instance: Mapping[str, object],
 
     from prismabuild import pool as pool_mod
 
-    checked_template = validate_template(template)
     try:
-        checked = validate_instance(instance)
+        checked_template, checked = _require_bound_contract(template, instance)
     except ProducedOutputError as exc:
+        if "template-mismatch" in str(exc):
+            return {"ok": False, "refusal": "template-mismatch"}
         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     sdk, sdk_refusal = _require_coherent_lease_sdk(lease_sdk)
     if sdk is None:
@@ -1668,22 +2055,23 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             ns = str(entry.get("batch_namespace") or "")
             if ns:
-                frag_dir = out_base / ns
                 try:
-                    if frag_dir.is_dir() and any(frag_dir.iterdir()):
+                    if _dir_has_entries(out_base / ns):
                         return {"ok": False, "refusal": "active-movers-retain",
                                 "batch_id": batch_id}
-                except OSError as exc:
-                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+                except ProducedOutputError as exc:
+                    return {"ok": False, "refusal": str(exc)}
         # Funding-intent-only movers: physical disposition is unknown and
         # metadata absence never proves physical absence, so every such
         # intent retains for the funding/reconciliation lane with a
         # specific recoverable refusal. No mover state (absent, withdrawn,
-        # failed, or done) authorizes release here.
+        # failed, or done) authorizes release here. Directory enumeration
+        # names files by suffix without stat-gating: a stat failure must
+        # surface at the intent read, never silently drop an intent.
         try:
-            intent_names = sorted(
-                p.name for p in _funding_dir(queue.root, checked).iterdir()
-                if p.is_file() and p.name.endswith(".funding.json"))
+            with os.scandir(_funding_dir(queue.root, checked)) as iterator:
+                intent_names = sorted(entry.name for entry in iterator
+                                      if entry.name.endswith(".funding.json"))
         except FileNotFoundError:
             intent_names = []
         except OSError as exc:
@@ -1703,9 +2091,12 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                     "refusal": "funding-intent-reconcile-retain",
                     "batch_id": batch_id}
         # Live pins: structural per-namespace scan (owner + every batch
-        # namespace) around the SDK census. Either scan finding pins
-        # retains; an unreadable scan or a tainted census retains as
-        # unknown. Other consumers' pins never block this instance.
+        # namespace, under the output fragment root where produced pins
+        # live) around the SDK census over the same root. Either scan
+        # finding pins retains; an unreadable scan retains as unknown.
+        # Census paths attributable to this instance's recorded staged
+        # paths retain by name; unattributable live paths retain as
+        # unknown; unrelated consumers' pins never block this instance.
         owner = str(checked["owner_action_key"])
         attempt = checked["owner_attempt"]
         assert isinstance(attempt, dict)
@@ -1716,32 +2107,25 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         for consumer in namespaces:
             if not consumer:
                 continue
-            pins = _lease_pin_files(sdk, queue, consumer)
+            pins = _lease_pin_files(sdk, queue, consumer,
+                                    residency_root=str(out_base))
             if pins is None:
                 return {"ok": False, "refusal": "unknown-retain: pin-scan"}
             if pins:
                 return {"ok": False, "refusal": "live-refs-retain",
                         "pins": pins[:8]}
-        try:
-            census = sdk.live_for(queue, None)
-        except Exception as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        owners: Mapping[str, object] = {}
-        tainted: list[object] = []
-        if (isinstance(census, tuple) and len(census) == 2
-                and isinstance(census[0], Mapping)):
-            owners, tainted = census[0], list(census[1] or [])
-        elif isinstance(census, Mapping):
-            owners = census
-        else:
-            return {"ok": False,
-                    "refusal": "unknown-retain: lease-census-shape"}
-        if tainted:
-            return {"ok": False, "refusal": "unknown-retain: pin-census-tainted"}
+        live_paths, census_refusal = _live_output_paths(
+            queue, sdk, batches, str(out_base))
+        if census_refusal is not None:
+            return {"ok": False, "refusal": census_refusal}
+        if live_paths:
+            return {"ok": False, "refusal": "live-refs-retain",
+                    "paths": live_paths[:8]}
         for consumer in namespaces:
             if not consumer:
                 continue
-            pins = _lease_pin_files(sdk, queue, consumer)
+            pins = _lease_pin_files(sdk, queue, consumer,
+                                    residency_root=str(out_base))
             if pins is None:
                 return {"ok": False, "refusal": "unknown-retain: pin-scan"}
             if pins:
@@ -2140,6 +2524,7 @@ __all__ = [
     "build_stage_manifest",
     "retire_batch",
     "mark_batch_retired",
+    "reclaim_origin",
     "safe_release_instance",
     "output_scope_tick",
     "due_mover_rows",
