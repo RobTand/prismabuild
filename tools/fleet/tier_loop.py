@@ -1167,15 +1167,29 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         residency_map.write_fragment(residency_root, residency_map.reissue(
             source, consumer_action_key=consumer_action_key,
             mover_action_key=new_key))
-        expected = sum(before.values())
-        moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
-        if moved != expected:
-            # The reservation is split across the two keys and the sum is
-            # unchanged, so nothing is over-admitted; the old key is still
-            # resident, so the next cycle asks again and finishes the move.
-            return {**outcome, "reason": "partial_transfer",
-                    "tokens_moved": moved, "tokens_expected": expected}
-        source_path.unlink(missing_ok=True)
+        with queue.stage_ownership_lock(str(source["stage_root"]),
+                                        blocking=False) as owned:
+            if not owned:
+                # An egress is mid-scan on this stage root; its snapshot
+                # predates this fragment, so proceeding could interleave the
+                # transfer between its scan and its unlink.  Declining costs
+                # a copy, the same price as a busy transition lock.
+                try:
+                    residency_map.fragment_path(
+                        residency_root, consumer_action_key,
+                        new_key).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return {**outcome, "reason": "ownership_busy"}
+            expected = sum(before.values())
+            moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
+            if moved != expected:
+                # The reservation is split across the two keys and the sum is
+                # unchanged, so nothing is over-admitted; the old key is still
+                # resident, so the next cycle asks again and finishes the move.
+                return {**outcome, "reason": "partial_transfer",
+                        "tokens_moved": moved, "tokens_expected": expected}
+            source_path.unlink(missing_ok=True)
         entries = dict(source["entries"])                # type: ignore[arg-type]
         # The successor's own phase boundaries, which the descriptor match
         # already proved equal to the range this copy made resident.  Taken
