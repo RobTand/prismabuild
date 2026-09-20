@@ -33,6 +33,121 @@ GIB = 1024 ** 3
 #: the controller reads one published sample field and never a producer module.
 MEMORY_ONLY_TELEMETRY = 'memory_only'
 
+#: Narrow first-job exception for an idle GB10 held at its SW power cap.
+#: A GB10 at 4 W idle reports ``sw_power_cap Active`` (mask 0x4) with no
+#: thermal/HW flag, while ``gpu_idle`` (mask 0x1) is the distinct "nothing
+#: running" reason per the NVML clocks-event-reasons reference and the Sep-20
+#: Sparklina captures (mask 0x4 ⇔ sw_power_cap, mask 0x0 ⇔ neither).  The
+#: exception admits one first generation job under a hardware-enforced SW cap
+#: without loosening any resource budget; sharing/measurement stay closed.
+SW_CAP_IDLE_CLOCK_FRACTION = 0.10
+SW_CAP_IDLE_POWER_FRACTION = 0.65
+SW_CAP_IDLE_DEVICE_NAME = 'NVIDIA GB10'
+SW_CAP_IDLE_BIT = 0x4
+SW_CAP_GPU_IDLE_BIT = 0x1
+#: Every limiter that counts toward ``gpu_capacity.limited`` except the SW cap
+#: itself.  All must read False for the exception; ``gpu_idle`` is not a
+#: limiter and may read either way (recorded, not gated).
+SW_CAP_OTHER_LIMITERS = ('hw_slowdown', 'hw_thermal_slowdown',
+                         'hw_power_brake_slowdown', 'sw_thermal_slowdown',
+                         'sync_boost')
+
+
+def sw_cap_idle_first_job(sample, device, reference, *, holders, measurement,
+                          pressure):
+    """Whether an idle SW-capped GB10 may admit its first generation job.
+
+    Returns ``(eligible, diagnosis)``.  ``diagnosis`` always carries the
+    threshold and the observations the decision was made on, so both the
+    admit and the refuse paths record them.  Any missing clock, missing
+    limiter breakdown, unknown mask bit, measurement request, holder,
+    broker job, foreign process, pressure, or non-GB10/non-SoC telemetry
+    denies the exception (returns False) and the caller keeps the existing
+    ``host_or_device_congested`` refusal.
+    """
+    diagnosis = {
+        'clock_threshold_fraction': SW_CAP_IDLE_CLOCK_FRACTION,
+        'power_gate_fraction': SW_CAP_IDLE_POWER_FRACTION,
+        'device_name': device.get('uuid') and device.get('name'),
+        'memory_domain': device.get('memory_domain'),
+        'power_reference_scope': device.get('power_reference_scope'),
+        'power_w': device.get('power_w'),
+        'power_reference_w': reference,
+        'sm_clock_mhz': device.get('sm_clock_mhz'),
+        'max_sm_clock_mhz': device.get('max_sm_clock_mhz'),
+        'throttle_reasons': device.get('throttle_reasons'),
+        'throttle_active_mask': device.get('throttle_active_mask'),
+        'limited': device.get('limited'),
+        'holders': len(holders),
+        'broker_jobs': len(sample.get('jobs') or []),
+        'foreign_processes': list(sample.get('foreign_processes') or []),
+        'measurement': bool(measurement),
+        'pressure': bool(pressure),
+    }
+
+    def deny(reason):
+        diagnosis['exception_reason'] = reason
+        return False, diagnosis
+
+    if device.get('name') != SW_CAP_IDLE_DEVICE_NAME:
+        return deny('not_gb10')
+    if device.get('memory_domain') != 'shared_system':
+        return deny('not_shared_system')
+    if device.get('power_reference_scope') != 'soc_tdp':
+        return deny('not_soc_tdp')
+    if measurement:
+        return deny('measurement_never_excepted')
+    if holders:
+        return deny('holders_present_no_sharing_exception')
+    if list(sample.get('jobs') or []):
+        return deny('broker_jobs_present')
+    if list(sample.get('foreign_processes') or []):
+        return deny('foreign_processes_present')
+    if pressure:
+        return deny('host_pressure')
+    if device.get('limited') is not True:
+        return deny('not_limited')
+    power = device.get('power_w')
+    if not _number(power) or not _number(reference) or not reference:
+        return deny('power_or_reference_unknown')
+    diagnosis['power_ratio'] = power / reference
+    if power > SW_CAP_IDLE_POWER_FRACTION * reference:
+        return deny('power_above_idle_gate')
+    sm = device.get('sm_clock_mhz')
+    max_sm = device.get('max_sm_clock_mhz')
+    if not _number(sm) or not _number(max_sm) or not max_sm:
+        return deny('clock_unknown')
+    diagnosis['clock_ratio'] = sm / max_sm
+    if sm > SW_CAP_IDLE_CLOCK_FRACTION * max_sm:
+        return deny('clock_above_idle_threshold')
+    reasons = device.get('throttle_reasons')
+    if not isinstance(reasons, dict):
+        return deny('throttle_reasons_missing')
+    if reasons.get('sw_power_cap') is not True:
+        return deny('sw_power_cap_not_active')
+    for key in SW_CAP_OTHER_LIMITERS:
+        if reasons.get(key) is not False:
+            return deny(f'other_limiter_not_false:{key}')
+    if not isinstance(reasons.get('gpu_idle'), bool):
+        return deny('gpu_idle_unknown')
+    for key, value in reasons.items():
+        if key in ('gpu_idle', 'sw_power_cap'):
+            continue
+        if value is True:
+            return deny(f'unexpected_limiter_active:{key}')
+    mask = device.get('throttle_active_mask')
+    if not isinstance(mask, int) or isinstance(mask, bool):
+        return deny('mask_unknown')
+    diagnosis['mask'] = mask
+    if not mask & SW_CAP_IDLE_BIT:
+        return deny('sw_cap_bit_not_set')
+    if mask & ~(SW_CAP_IDLE_BIT | SW_CAP_GPU_IDLE_BIT):
+        return deny('unknown_mask_bits')
+    if bool(mask & SW_CAP_GPU_IDLE_BIT) != bool(reasons.get('gpu_idle')):
+        return deny('mask_idle_bit_mismatches_reason')
+    diagnosis['exception_reason'] = 'sw_cap_idle_first_job'
+    return True, diagnosis
+
 
 def memory_budget_bytes(value):
     """Convert GiB to kernel-representable positive bytes without float overflow."""
@@ -270,6 +385,7 @@ class Controller:
         state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
         low = False
         feedback_allowed = False
+        sw_cap_exception = None
         members = sorted(f"{holder.name}:{meta.get('admitted_unix')}" for holder, meta in holders)
         if valid:
             reserve = max(2 * GIB, .02 * sample['host_total_bytes'])
@@ -277,8 +393,14 @@ class Controller:
                         or sample['memory_pressure_full'] >= .1
                         or sample['cpu_pressure_some'] >= 10.
                         or sample['host_available_bytes'] < reserve + demand.get('mem_gb', 0) * GIB)
-            # Idle clock gating (0x4) is normal. Thermal, power and external
-            # slowdown are congestion even if the sampled power has fallen.
+            # ``gpu_idle`` (clocks dropping because nothing runs) is normal.
+            # Software power cap, thermal, power-brake, HW slowdown, SW thermal
+            # and sync-boost slowdown are congestion even if the sampled power
+            # has fallen.  Observed Sep-20 on Sparklina: mask 0x4 tracks
+            # ``sw_power_cap Active`` with ``gpu_idle Not Active`` at 4.3 W idle,
+            # per https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlClocksEventReasons.html
+            # (GpuIdle = nothing running; SwPowerCap = clocks optimized not to
+            # exceed power limits).
             limited = device.get('limited')
             if memory_only:
                 # Without a power series there is no observable plateau, so
@@ -297,11 +419,25 @@ class Controller:
                 state.update(sample_id=sample['sample_id'], sampled_unix=sample['sampled_unix'],
                              low_samples=min(3, state.get('low_samples', 0) + 1) if low and continuous else int(low))
             self._write_state(state)
+            if congested and not memory_only:
+                eligible, sw_cap_exception = sw_cap_idle_first_job(
+                    sample, device, reference, holders=holders,
+                    measurement=measurement, pressure=pressure)
+                if eligible:
+                    # First generation job only: the SW cap is a clock policy
+                    # at idle power, not saturation evidence.  ``low`` stays
+                    # False so measurement still refuses and sharing probes
+                    # still need genuinely free samples; budgets, pressure,
+                    # foreign and thermal/HW gates above are unchanged.
+                    congested = False
+                elif sw_cap_exception is None:
+                    sw_cap_exception = {'exception_reason': 'not_evaluated'}
             if congested:
                 return refuse("host_or_device_congested", pressure=pressure,
                               foreign_processes=sample['foreign_processes'],
                               power_w=device.get('power_w'), power_reference_w=reference,
-                              limited=limited)
+                              limited=limited,
+                              sw_cap_idle_exception=sw_cap_exception)
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):
@@ -341,14 +477,16 @@ class Controller:
                         or record['sampled_unix'] < meta['admitted_unix']
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
                     return refuse("holder_telemetry_unavailable", holder=holder.name)
-        self.last_decision = {"reason": "admitted", "sample": sample}
+        self.last_decision = {"reason": "admitted", "sample": sample,
+                                "sw_cap_idle_exception": sw_cap_exception}
         return {'declared_gpu': int(demand['gpu']), 'exclusive': exclusive,
                 'action_key': str(item['action_key']), 'members_before': members,
                 'measurement': measurement, 'shape': shape, 'admitted_unix': now,
                 'probe': bool(holders), 'sample_id': sample.get('sample_id'),
                 'sampled_unix': sample.get('sampled_unix'),
                 'gpu_memory_budget_bytes': budget, 'device_uuid': device.get('uuid'),
-                'memory_domain': device.get('memory_domain', 'unknown')}
+                'memory_domain': device.get('memory_domain', 'unknown'),
+                'sw_cap_idle_exception': sw_cap_exception}
 
     def reserve_probe(self, metadata):
         """Spend sample before claiming work; a crash can lose credit, never reuse it."""

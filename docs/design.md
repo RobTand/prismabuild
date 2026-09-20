@@ -2863,11 +2863,19 @@ or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
 It is not a thermal control and nothing here measures temperature or
-throughput. The GPU side reads power against the device's own envelope, which
-is what `adaptive_gpu` already admits on, because `gpu_utilization` reports a
-resident kernel rather than working SMs. The CPU side reads `load1` per
-preferred core. Both come from the offer's `observed_detail`
-(`gpu_power_fraction`, `gpu_power_sampled_unix`, `observed_unix`, `load1`) and
+throughput. The GPU side reads drawn power against the device's own envelope,
+because `gpu_utilization` reports a resident kernel rather than working SMs.
+Two fields leave `box_capacity.observe`: `gpu_power_measured_fraction` is the
+raw sampled draw over that envelope, while the legacy `gpu_power_fraction` is
+the congestion proxy the fleet already published (`max(raw, 1.0 if limited)`,
+the same reading `adaptive_gpu` calls congested). Placement prefers the
+measured fraction and falls back to the legacy proxy for old offers, so an
+idle SW-capped GB10 (~0.03 measured, 1.0 proxy, Sep-20 Sparklina flap) does
+not defer CPU work. The limiter itself travels as `gpu_limited` with
+`gpu_throttle_mask` / `gpu_throttle_reasons` for diagnosis. The CPU side reads
+`load1` per preferred core. All come from the offer's `observed_detail`
+(`gpu_power_measured_fraction`, `gpu_power_fraction`, `gpu_limited`,
+`gpu_power_sampled_unix`, `observed_unix`, `load1`) and
 both must be fresher than `GPU_SAMPLE_MAX_AGE_S`. The two thresholds --- when a
 box counts as busy, and how much better an alternative must look --- are
 `PoolQueue.CROSS_RESOURCE_BUSY` and `PoolQueue.CROSS_RESOURCE_MARGIN`. They are
@@ -3179,6 +3187,23 @@ it does not certify hardware saturation or useful throughput. GB10's 140 W SoC
 design envelope is explicitly a reference, not an NVML GPU power limit, and
 GPU utilization percentage does not drive admission. Performance claims require
 useful work, elapsed time, energy and the relevant host observations.
+
+Idle SW-cap first-job exception (narrow, Sep-20): a GB10 (`NVIDIA GB10`,
+`shared_system`, `soc_tdp`) at idle power (≤0.65×reference) and idle clocks
+(≤10% of valid max SM clock, e.g. 208/3003) whose `limited` is explained only
+by `sw_power_cap` (all other limiters incl. `sync_boost` false, mask only
+idle/SW-cap bits, mask consistent with reasons) may admit one first
+generation job when holders, broker jobs and foreign processes are all zero,
+evidence is fresh/complete/attributed, and existing memory/CPU-pressure gates
+pass. `mask 0x4` is the SW cap, never idle (`gpu_idle` is `0x1`); the two are
+not interchanged. The exception grants no `low` credit (so sharing probes
+still need genuinely free samples), never applies to `measurement=True`, and
+never applies with holders present. Missing clocks, missing limiter
+breakdown, or unknown mask bits deny the exception and keep the existing
+`host_or_device_congested` refusal. Thermal, power-brake, HW/SW-thermal,
+foreign, pressure, attribution and budget gates are unchanged. The admitted
+metadata records `sw_cap_idle_exception` with the threshold and observations;
+refusals record the exception diagnosis alongside the congested reason.
 
 New GPU submissions seal `params.gpu_exclusive` as an explicit boolean.
 Measurements and exclusive work never overlap another GPU holder. Legacy

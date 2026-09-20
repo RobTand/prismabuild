@@ -252,3 +252,92 @@ def test_nonfinite_numeric_fields_fail_closed():
     sample = gpu_sample()
     sample["memory_pressure_some"] = math.inf
     assert bc.physical_gpu_count(sample) == 0
+
+
+def _sparklina_idle_sample(*, limited, power_w=4.32):
+    """Idle GB10 at 208 MHz: ~3% of the 140 W SoC envelope, limiter flaps."""
+    sample = gpu_sample()
+    sample["devices"][0].update(
+        power_w=power_w,
+        power_limit_w=None,
+        power_reference_w=140.0,
+        power_reference_scope="soc_tdp",
+        limited=limited,
+        throttle_active_mask=4 if limited else 0,
+        throttle_reasons={
+            "gpu_idle": False,
+            "hw_power_brake_slowdown": False,
+            "hw_slowdown": False,
+            "hw_thermal_slowdown": False,
+            "sw_power_cap": limited,
+            "sw_thermal_slowdown": False,
+            "sync_boost": False,
+        },
+    )
+    return sample
+
+
+def test_limited_idle_reports_proxy_one_but_raw_measured_fraction():
+    idle_free = _sparklina_idle_sample(limited=False)
+    idle_capped = _sparklina_idle_sample(limited=True)
+    seen_free = bc.observe(DECLARED, {}, gpu_sample=idle_free, mem_gb=100, load1=1)
+    seen_capped = bc.observe(DECLARED, {}, gpu_sample=idle_capped, mem_gb=100, load1=1)
+
+    raw = 4.32 / 140.0
+    assert seen_free.detail["gpu_power_fraction"] == pytest.approx(raw)
+    assert seen_free.detail["gpu_power_measured_fraction"] == pytest.approx(raw)
+    assert seen_free.detail["gpu_limited"] is False
+    # The congestion proxy reads at the envelope while the measured draw
+    # stays idle; never read the proxy as saturation.
+    assert seen_capped.detail["gpu_power_fraction"] == 1.0
+    assert seen_capped.detail["gpu_power_measured_fraction"] == pytest.approx(raw)
+    assert seen_capped.detail["gpu_limited"] is True
+    assert seen_capped.detail["gpu_power_sampled_unix"] == idle_capped["sampled_unix"]
+
+
+def test_legacy_proxy_is_preserved_for_existing_consumers():
+    sample = gpu_sample()
+    sample["devices"][0].update(
+        power_w=105.0,
+        power_limit_w=140.0,
+        power_reference_w=140.0,
+        power_reference_scope="gpu_power_limit",
+        limited=False,
+    )
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=3)
+    assert seen.detail["gpu_power_fraction"] == pytest.approx(0.75)
+    assert seen.detail["gpu_power_measured_fraction"] == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize('flags,expected', [
+    ([True, False], True),
+    ([True, None], True),
+    ([False, False], False),
+    ([False, None], None),
+    ([None, None], None),
+])
+def test_gpu_limited_aggregation_is_fail_closed_on_unknown(flags, expected):
+    """Mixed known/unknown limiter flags must not read as clean."""
+    sample = gpu_sample(devices=2)
+    for device, flag in zip(sample["devices"], flags):
+        device.update(
+            power_w=10.0,
+            power_limit_w=140.0,
+            power_reference_w=140.0,
+            power_reference_scope="gpu_power_limit",
+            limited=flag,
+        )
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=1)
+    assert seen.detail["gpu_limited"] is expected
+
+
+def test_unknown_power_withholds_both_fractions():
+    sample = gpu_sample()
+    sample["devices"][0].update(
+        power_w=float("nan"),
+        power_reference_w=140.0,
+        power_reference_scope="soc_tdp",
+    )
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=3)
+    assert "gpu_power_fraction" not in seen.detail
+    assert "gpu_power_measured_fraction" not in seen.detail
