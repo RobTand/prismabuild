@@ -36,6 +36,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -221,6 +222,73 @@ def test_the_lock_path_is_stable_across_published_generations(
         "each serve")
 
 
+def _role_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A fake mount with two generations, a fake ``/proc``, a pgrep stand-in.
+
+    ``offered`` maps a script name to the pids the fake ``pgrep`` reports for
+    it, so a test can make a role appear and exit by moving one list.
+    """
+
+    mirror = tmp_path / "fleet"
+    store = mirror / "runtime-generations"
+    for name in ("gen-old", "gen-live"):
+        generation = store / name
+        (generation / "tools").mkdir(parents=True)
+        for script in (STORAGE, TIERS, "worker_loop.py"):
+            (generation / "tools" / script).write_text("# a loop\n")
+        (generation / "RUNTIME_VERSION.json").write_text(
+            json.dumps({"commit": name, "generation": name}))
+    (mirror / "repo").symlink_to(store / "gen-live")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    monkeypatch.setattr(supervise, "MIRROR", mirror)
+    monkeypatch.setattr(supervise, "PROC", proc)
+    monkeypatch.setattr(supervise, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(supervise.socket, "gethostname", lambda: HOST)
+    offered: dict[str, list[int]] = {}
+
+    def fake_run(argv, *_args, **_kwargs):
+        assert argv[0] == "pgrep", argv
+        return subprocess.CompletedProcess(
+            argv, 0, "\n".join(str(pid) for pid in offered.get(argv[-1], [])),
+            "")
+
+    monkeypatch.setattr(supervise.subprocess, "run", fake_run)
+    return mirror, proc, offered
+
+
+def _role_process(proc: Path, pid: int, argv: list[str], *,
+                  mark: str | None = HOST) -> int:
+    """Write the ``/proc`` bytes one candidate role process would have."""
+
+    directory = proc / str(pid)
+    directory.mkdir()
+    (directory / "cmdline").write_bytes(
+        b"".join(part.encode() + b"\0" for part in argv))
+    entries = ["HOME=/home/rob"]
+    if mark is not None:
+        entries.append(f"{supervise.OWNERSHIP_ENV}={mark}")
+    (directory / "environ").write_bytes(
+        b"".join(entry.encode() + b"\0" for entry in entries))
+    (directory / "stat").write_bytes(
+        f"{pid} (prewarm_loop.py) S 1 1 1".encode())
+    return pid
+
+
+def _spawn_recorder(monkeypatch: pytest.MonkeyPatch, pid: int = 4242):
+    """Capture ``Popen`` argv, the way a spawn would have run it."""
+
+    spawned: list[list[str]] = []
+
+    class _Spawned:
+        pass
+
+    _Spawned.pid = pid
+    monkeypatch.setattr(supervise.subprocess, "Popen",
+                        lambda argv, **kwargs: spawned.append(argv) or _Spawned())
+    return spawned
+
+
 def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
 ) -> None:
@@ -228,20 +296,10 @@ def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
     generation's: none of them appears in an ownership census built on this
     supervisor's mark and roots, and the lock is what must stop the race."""
 
-    mirror = tmp_path / "fleet"
-    generation = mirror / "runtime-generations" / "gen-live"
-    (generation / "tools").mkdir(parents=True)
-    for script in (STORAGE, TIERS, "worker_loop.py"):
-        (generation / "tools" / script).write_text("# a loop\n")
-    (generation / "RUNTIME_VERSION.json").write_text(
-        json.dumps({"commit": "a" * 40, "generation": "gen-live"}))
-    (mirror / "repo").symlink_to(generation)
-    monkeypatch.setattr(supervise, "MIRROR", mirror)
-    monkeypatch.setattr(supervise, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(supervise.socket, "gethostname", lambda: HOST)
+    _mirror, _proc, offered = _role_box(tmp_path, monkeypatch)
+    offered[STORAGE] = []
     monkeypatch.setattr(supervise, "declared_roles",
                         lambda host: [("storage", ["--readers", "4"])])
-    monkeypatch.setattr(supervise, "_live_role_loops", lambda *a, **k: [])
     monkeypatch.setattr(supervise, "_published_receipt", lambda: {})
 
     lock_root = tmp_path / "role-locks"
@@ -250,13 +308,7 @@ def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    spawned: list[list[str]] = []
-
-    class _Spawned:
-        pid = 4242
-
-    monkeypatch.setattr(supervise.subprocess, "Popen",
-                        lambda argv, **kwargs: spawned.append(argv) or _Spawned())
+    spawned = _spawn_recorder(monkeypatch)
     try:
         assert supervise.ensure_roles(HOST) == []
         assert spawned == [], (
@@ -266,6 +318,44 @@ def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
         assert str(lock) in out, out
     finally:
         os.close(held)
+
+
+def test_a_signalled_predecessor_is_not_called_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old role holds no singleton lock, so its exit is the only proof.
+
+    A pre-#709 generation cannot hold the new lock; SIGTERM to its idle loop
+    is a request, and starting the replacement while it still reads the queue
+    would overlap two readers.  The survivor keeps the role counted until the
+    census says it is gone, and the replacement starts on the next tick.
+    """
+
+    mirror, proc, offered = _role_box(tmp_path, monkeypatch)
+    store = mirror / "runtime-generations"
+    role = _role_process(proc, 4242, [
+        "/usr/bin/python3", str(store / "gen-old" / "tools" / STORAGE),
+        "--readers", "1"])
+    offered[STORAGE] = [role]
+    monkeypatch.setattr(supervise, "declared_roles",
+                        lambda host: [("storage", ["--readers", "4"])])
+    monkeypatch.setattr(supervise, "_published_receipt", lambda: {})
+    monkeypatch.setattr(supervise, "_claim_holders", lambda: frozenset())
+    monkeypatch.setattr(supervise, "_is_idle", lambda pid, *_a: True)
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        supervise.os, "kill",
+        lambda pid, sig: killed.append((pid, int(sig))))
+    spawned = _spawn_recorder(monkeypatch, pid=9001)
+
+    assert supervise.ensure_roles(HOST) == []
+    assert killed == [(role, int(signal.SIGTERM))], killed
+    assert spawned == [], "a replacement served beside its dying predecessor"
+
+    offered[STORAGE] = []              # the predecessor exits
+    assert supervise.ensure_roles(HOST) == [("storage", 9001)]
+    assert spawned and spawned[0][1] == str(
+        (mirror / "repo" / "tools" / STORAGE).resolve()), spawned
 
 
 def test_contention_refuses_even_when_no_holder_can_be_named(
@@ -284,7 +374,9 @@ def test_contention_refuses_even_when_no_holder_can_be_named(
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    monkeypatch.setattr(worker_loop, "_role_lock_holder",
+    # The admission lock's holder rule is the one parse; make it unable to
+    # answer, as an unreadable /proc/locks would.
+    monkeypatch.setattr(worker_loop.adaptive_cpu, "_holder_of",
                         lambda descriptor: None)
     try:
         assert worker_loop.role_singleton_holder(script) == (True, None)

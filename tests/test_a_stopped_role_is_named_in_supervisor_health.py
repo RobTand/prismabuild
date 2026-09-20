@@ -197,6 +197,30 @@ def test_health_lines_report_the_transition_not_every_tick() -> None:
     assert supervise.role_health_lines(HOST, [running], seen) == []
 
 
+def test_a_zombie_or_unreadable_state_never_clears_an_alarm() -> None:
+    """Only a state outside the alarm set is a return to health.
+
+    A ``Z`` role is dead and awaiting reap, not serving, and a state the
+    reader cannot get is unknown: neither may print the "cleared" line that
+    says the role came back.
+    """
+
+    stopped = _stopped_entry()
+    zombie = {**stopped, "state": "Z", "state_name": "zombie",
+              "stopped": False}
+    unreadable = {**stopped, "state": None, "state_name": "unknown",
+                  "stopped": None}
+
+    seen: dict[int, str] = {}
+    assert len(supervise.role_health_lines(HOST, [stopped], seen)) == 1
+    lines = supervise.role_health_lines(HOST, [zombie], seen)
+    assert len(lines) == 1 and "zombie" in lines[0], lines
+    assert "cleared" not in lines[0], lines
+    lines = supervise.role_health_lines(HOST, [unreadable], seen)
+    assert len(lines) == 1 and "unreadable" in lines[0], lines
+    assert "cleared" not in lines[0], lines
+
+
 def test_the_supervisor_tick_writes_a_stopped_role_into_its_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
 ) -> None:
@@ -218,12 +242,16 @@ def test_the_supervisor_tick_writes_a_stopped_role_into_its_log(
     monkeypatch.setattr(supervise, "declared_shape", lambda *a, **k: (1, []))
     monkeypatch.setattr(supervise, "declared_roles",
                         lambda host: [("storage", ["--readers", "4"])])
-    monkeypatch.setattr(supervise, "role_health",
-                        lambda roles, proc_root=None: [_stopped_entry()])
+    monkeypatch.setattr(
+        supervise, "role_health",
+        lambda roles, proc_root=None, census=None: [_stopped_entry()])
     monkeypatch.setattr(supervise, "ensure_roles", lambda *a, **k: [])
+    monkeypatch.setattr(supervise, "_live_role_loops", lambda *a, **k: [])
     monkeypatch.setattr(supervise, "_live_loops", lambda: [])
     monkeypatch.setattr(supervise, "_claim_holders", lambda: frozenset())
     monkeypatch.setattr(supervise, "_ready_backlog", lambda: False)
+    monkeypatch.setattr(supervise, "_spawn",
+                        lambda args, index: 9000 + index)
     monkeypatch.setattr(sys, "argv", ["supervise", "--interval-s", "30"])
 
     class CycleComplete(Exception):

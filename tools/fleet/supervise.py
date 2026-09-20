@@ -139,9 +139,12 @@ PROC_STATE_NAMES = {
 }
 #: The states a SIGSTOPped role is in.
 STOPPED_STATES = frozenset({"T", "t"})
-#: The state names a health line alarms on and clears: the stopped states
-#: above, and an unreadable state.  Everything else is nominal.
-ALARM_STATE_NAMES = frozenset({"stopped", "tracing-stop", "unknown"})
+#: The state names a health line alarms on: the stopped states above, an
+#: unreadable state, and the two dead states.  Only a state outside this set
+#: clears an earlier alarm, so a zombie or an unrecognized letter can never
+#: be reported as a return to health.
+ALARM_STATE_NAMES = frozenset({"stopped", "tracing-stop", "unknown",
+                               "zombie", "dead"})
 
 # Worker loops are queue pollers, not CPU reservations.  Keep a couple ready
 # to claim without a process-start round trip, while the queue's admission
@@ -924,7 +927,8 @@ def _role_process(pid: int, proc_root: Path | None = None,
 
 
 def _stale_role_loops(role_args: list[str], script_name: str,
-                      proc_root: Path | None = None) -> list[dict]:
+                      proc_root: Path | None = None,
+                      pids: list[int] | None = None) -> list[dict]:
     """Live role loops the current declaration no longer names as-is.
 
     Two ways to be stale, and the 2026-09-19 incident was both at once.  A
@@ -939,7 +943,9 @@ def _stale_role_loops(role_args: list[str], script_name: str,
     Each entry carries the evidence the drift record needs: the pid, the
     argv the process is actually running, the script it loaded, and which
     of the two rules fired.  An unreadable argv or script, or an
-    unresolvable live root, keeps the role off this list.
+    unresolvable live root, keeps the role off this list.  ``pids`` may be
+    the caller's already-taken census of this role, so one tick does not
+    re-prove the same processes three times.
     """
 
     try:
@@ -947,7 +953,8 @@ def _stale_role_loops(role_args: list[str], script_name: str,
     except OSError:
         active = None
     stale: list[dict] = []
-    for pid in _live_role_loops(script_name, proc_root):
+    for pid in (_live_role_loops(script_name, proc_root)
+                if pids is None else pids):
         argv, script = _role_process(pid, proc_root)
         reason = None
         if argv is not None and argv != role_args:
@@ -1086,26 +1093,31 @@ def _spawn(args: list[str], index: int) -> int:
 
 
 def _live_role_loops(script_name: str,
-                     proc_root: Path | None = None) -> list[int]:
+                     proc_root: Path | None = None,
+                     roots: list[Path] | None = None) -> list[int]:
     """This box's live children for one role script.
 
     Its own census rather than ``_live_loops`` with an argument, because a
     role loop is not a worker loop in any sense the sizing law cares about:
     it claims nothing, and counting one as a poller would make the box look
     busier than it is.  The three facts proved are the same three
-    ``_is_fleet_loop`` proves.
+    ``_is_fleet_loop`` proves.  ``roots`` may be the proven trees the caller
+    already listed, so one tick's health census and role pass share one
+    generation-store walk instead of re-listing it per role per caller.
     """
 
     proc = subprocess.run(["pgrep", "-f", script_name],
                           capture_output=True, text=True, check=False)
     mine = os.getpid()
-    roots = _proven_roots()
+    if roots is None:
+        roots = _proven_roots()
     return [pid for pid in (int(t) for t in proc.stdout.split())
             if pid != mine and _is_fleet_loop(pid, roots, proc_root, script_name)]
 
 
 def role_health(roles: list[tuple[str, list[str]]] | None = None,
-                proc_root: Path | None = None) -> list[dict]:
+                proc_root: Path | None = None,
+                census: dict[str, list[int]] | None = None) -> list[dict]:
     """Every owned role loop and the scheduler state the kernel reports.
 
     The census is the same proof every restart path makes -- interpreter,
@@ -1113,7 +1125,9 @@ def role_health(roles: list[tuple[str, list[str]]] | None = None,
     ownership mark, re-proven on every tick rather than cached -- so a role
     named here is one this fleet launched, and nothing unrelated or foreign
     is inspected, counted or signalled.  ``roles`` may be the declaration the
-    caller already read; ``None`` reads it here for a direct caller.
+    caller already read; ``None`` reads it here for a direct caller.  ``census``
+    may be the caller's already-taken per-role pid census, so the tick's
+    health evidence and its role pass share one generation-store walk.
 
     A process that exits between the census and the state read carries
     ``state=None``: missing evidence is "unknown", never "stopped".  A zombie
@@ -1126,7 +1140,9 @@ def role_health(roles: list[tuple[str, list[str]]] | None = None,
     health: list[dict] = []
     for role, _role_args in roles:
         script = ROLE_SCRIPTS[role]
-        for pid in _live_role_loops(script, proc_root):
+        pids = (census.get(role) if census is not None
+                else _live_role_loops(script, proc_root))
+        for pid in pids or ():
             state = _proc_state(pid, proc_root)
             health.append({
                 "pid": pid,
@@ -1167,11 +1183,16 @@ def role_health_lines(host: str, health: list[dict],
                 lines.append(
                     f"[{host}] role {entry['role']} pid {pid} state "
                     f"unreadable; it is not reported as stopped or healthy")
-            else:
+            elif name in ("stopped", "tracing-stop"):
                 lines.append(
                     f"[{host}] role {entry['role']} pid {pid} state "
                     f"{entry['state']} ({name}); it is alive but serves "
                     f"nothing until continued")
+            else:
+                lines.append(
+                    f"[{host}] role {entry['role']} pid {pid} state "
+                    f"{entry['state']} ({name}); it is not serving and "
+                    f"awaits reap or exit")
         elif previous in ALARM_STATE_NAMES:
             lines.append(
                 f"[{host}] role {entry['role']} pid {pid} state "
@@ -1257,7 +1278,16 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
     hand-started loop or a stale generation's can hold the lock without
     appearing here.  A held lock is reported and nothing is started over it;
     the child proves the same lock again at startup.  ``declared`` is the
-    declaration the caller already read, so one tick reads it once.
+    declaration the caller already read and ``census`` its already-taken
+    per-role pid census, so one tick reads and proves each role once.
+
+    A signalled role is not gone until the census says so.  SIGTERM is a
+    request -- the process may be finishing a cycle, and an old generation's
+    role, started before this guard existed, holds no singleton lock that
+    would stop a replacement serving beside it -- so a tick that stopped
+    anything re-censuses, and any survivor keeps the role counted as live.
+    The replacement starts on the tick after it is gone: at most one interval
+    later, and never as a second reader.
     """
 
     started: list[tuple[str, int]] = []
@@ -1267,8 +1297,9 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
         if stop_requested():
             break
         script_name = ROLE_SCRIPTS[role]
+        known = census.get(role) if census is not None else None
         stopped: list[int] = []
-        stale = _stale_role_loops(role_args, script_name)
+        stale = _stale_role_loops(role_args, script_name, pids=known)
         if stale:
             stopped = _stop_idle_loops(
                 [entry["pid"] for entry in stale], holders=holders,
@@ -1283,16 +1314,16 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
                       f"stopped for restart on "
                       f"{str(published.get('commit') or '')[:12] or '(unknown)'}",
                       flush=True)
-        # A just-stopped role may not have exited yet; count it as gone the
-        # way the worker top-up does, so the replacement starts on this tick
-        # rather than one supervision interval later.  A process the kernel
-        # reports stopped is the exception: SIGTERM is queued for it, not
-        # delivered, so it has not exited and will not until it is continued.
-        # It still owns the role's singleton lock, so it stays counted as
-        # live -- the health line names it and an operator's stop is not
-        # raced with a replacement that would only refuse (#709).
-        if [pid for pid in _live_role_loops(script_name)
-                if pid not in stopped or _proc_state(pid) in STOPPED_STATES]:
+        # A signalled role has not exited until the kernel's census says so:
+        # the request may still be queued behind a cycle, a stopped process,
+        # or an old generation that holds no singleton lock.  Any survivor
+        # keeps the role counted as live, so a replacement cannot start
+        # beside a predecessor that is still reading the same queue.
+        if stopped or known is None:
+            live = _live_role_loops(script_name)
+        else:
+            live = known
+        if live:
             continue
         if stop_requested():
             break
@@ -1304,7 +1335,7 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
         try:
             held, holder = runtime_gate.role_singleton_holder(script_name)
         except (OSError, RuntimeError) as exc:
-            print(f"[{host}] role {role} singleton lock unreadable: {exc}; "
+            print(f"[{host}] role {role} singleton lock unusable: {exc}; "
                   f"starting nothing", flush=True)
             continue
         if held:
@@ -1546,15 +1577,21 @@ def _run_supervisor(stop_requested) -> int:
         # feedback and scale-down below -- still one NFS rescan per pid, not
         # one per caller.
         holders = _claim_holders()
-        # One declaration read per tick serves both the health evidence and
-        # the role pass, and health is reported before the pass so a stopped
-        # role's line precedes any decision about it.
+        # One declaration read and one proven census per tick serve both the
+        # health evidence and the role pass; health is reported before the
+        # pass so a stopped role's line precedes any decision about it.  A
+        # box that declares no role pays none of this.
         roles = declared_roles(host)
-        for line in role_health_lines(host, role_health(roles),
+        census: dict[str, list[int]] = {}
+        if roles:
+            roots = _proven_roots()
+            census = {role: _live_role_loops(ROLE_SCRIPTS[role], roots=roots)
+                      for role, _role_args in roles}
+        for line in role_health_lines(host, role_health(roles, census=census),
                                       role_health_seen):
             print(line, flush=True)
         for role, pid in ensure_roles(host, stop_requested, holders=holders,
-                                      declared=roles):
+                                      declared=roles, census=census):
             print(f"[{host}] spawned role {role} pid {pid}", flush=True)
         # The file is the authority, so a loop running other arguments is
         # stale in the same sense a loop running other bytes is.  Stop the

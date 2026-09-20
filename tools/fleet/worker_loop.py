@@ -88,6 +88,7 @@ under the generation that claimed it; rolling publishes converge at these
 claim boundaries and are never interrupted mid-action.
 """
 import argparse
+from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
@@ -107,7 +108,8 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import box_capacity, core as pb, cpu_topology, pool  # noqa: E402
+from prismabuild import (adaptive_cpu, box_capacity, core as pb,  # noqa: E402
+                         cpu_topology, pool)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -566,6 +568,15 @@ class RoleLockHeld(RuntimeError):
             f"the {role} role singleton is held by another process on this box")
 
 
+class RoleLockUnavailable(RuntimeError):
+    """This role's singleton lock cannot be trusted on this box.
+
+    An unsafe directory or lock file, or a failure other than contention: the
+    caller must refuse rather than serve without the exclusion, and it must
+    not confuse this with an error out of the work the lock protects.
+    """
+
+
 def role_lock_path(script: str | Path) -> Path:
     """This role's singleton lock, named by the script and not by generation.
 
@@ -601,69 +612,6 @@ def _role_lock_directory() -> Path:
     return directory
 
 
-def _device_and_inode(field: str) -> tuple[int, int, int] | None:
-    """``(major, minor, inode)`` from a ``/proc/locks`` device field, or None.
-
-    Parsed rather than formatted-and-compared: the kernel pads the device as
-    ``%02x:%02x``, and a formatted key that gets the padding wrong is a silent
-    false negative.  The admission lock learned that in #264.
-    """
-
-    parts = field.split(":")
-    if len(parts) != 3:
-        return None
-    try:
-        return (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
-    except ValueError:
-        return None
-
-
-def _role_lock_holder(descriptor: int) -> int | None:
-    """The pid holding the flock on ``descriptor``, or ``None`` if unreadable.
-
-    Best effort and host-local: /proc/locks costs no shared-mount I/O, which
-    matters because this question is only asked after a refusal.  The inode
-    identifies the lock and the device only breaks a tie -- on btrfs ``fstat``
-    reports the subvolume's anonymous device while /proc/locks reports the
-    superblock's, which is the same rule the admission lock learned in #276.
-    Every failure answers ``None``: a diagnostic must never turn a refusal
-    into a crash, and a missing holder is "unknown", never "nobody".
-    """
-
-    try:
-        info = os.fstat(descriptor)
-    except OSError:
-        return None
-    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
-    candidates: list[tuple[tuple[int, int, int], int]] = []
-    try:
-        with open("/proc/locks", encoding="utf-8") as handle:
-            for line in handle:
-                fields = line.split()
-                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF".
-                # A waiter's line begins "<n>: -> FLOCK" and fails the test,
-                # so only the holder is ever named.  -1 is the kernel's "no
-                # owning process" (an OFD lock) and is not a pid.
-                if len(fields) < 6 or fields[1] != "FLOCK":
-                    continue
-                found = _device_and_inode(fields[5])
-                if found is None or found[2] != info.st_ino:
-                    continue
-                owner = int(fields[4])
-                if owner >= 0:
-                    candidates.append((found, owner))
-    except (OSError, ValueError):
-        return None
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        exact = [row for row in candidates if row[0] == wanted]
-        if len(exact) != 1:
-            return None
-        candidates = exact
-    return candidates[0][1]
-
-
 def take_role_singleton(script: str | Path) -> int:
     """Take this role's host-local singleton lock for the life of the caller.
 
@@ -671,29 +619,65 @@ def take_role_singleton(script: str | Path) -> int:
     open file description, so it is released by the final close (the role's
     exit, or the caller's own close) and never by unlinking or an explicit
     unlock.  ``RoleLockHeld`` means another process on this box already serves
-    the role, and the caller refuses rather than race it.  Any other failure
-    -- an unsafe directory, an unexpected errno -- raises too: fail closed,
+    the role; ``RoleLockUnavailable`` means the lock could not be trusted at
+    all.  Either way the caller refuses rather than races: fail closed,
     because the lock is the safety.
+
+    Prefer :func:`role_singleton`, which guarantees the final close on every
+    exit; raw descriptors are for callers that must probe without holding
+    (``role_singleton_holder``).
     """
 
     role = Path(script).stem
-    directory = _role_lock_directory()
-    descriptor = os.open(directory / f"{role}.lock",
-                         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-                         0o600)
+    try:
+        directory = _role_lock_directory()
+        descriptor = os.open(directory / f"{role}.lock",
+                             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, 0o600)
+    except (OSError, RuntimeError) as exc:
+        raise RoleLockUnavailable(
+            f"cannot open the {role} role singleton lock: {exc}") from exc
     try:
         info = os.fstat(descriptor)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1):
-            raise RuntimeError("unsafe PrismaBuild role lock file")
+            raise RoleLockUnavailable("unsafe PrismaBuild role lock file")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RoleLockHeld(role, _role_lock_holder(descriptor)) from None
+            # The holder pid is a diagnostic, and the admission lock's own
+            # holder rule is the one place that parse lives (#264, #276),
+            # including the btrfs inode/device ambiguity; a helper that
+            # cannot answer still leaves this a refusal.
+            raise RoleLockHeld(role, adaptive_cpu._holder_of(descriptor)) \
+                from None
+        except OSError as exc:
+            raise RoleLockUnavailable(
+                f"the {role} role singleton lock could not be taken: {exc}"
+            ) from exc
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
+
+
+@contextmanager
+def role_singleton(script: str | Path):
+    """Hold this role's singleton for the block, or raise ``RoleLockHeld``.
+
+    The descriptor's final close -- the release, and the only release -- is
+    guaranteed on every exit from the block, including a ``return`` or an
+    exception, so a one-shot invocation that takes the lock cannot leak it
+    into a hosting interpreter and a repeated ``main`` call still contends
+    honestly.  Nothing here unlinks the lock file or unlocks a shared
+    description.
+    """
+
+    descriptor = take_role_singleton(script)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def role_singleton_holder(script: str | Path) -> tuple[bool, int | None]:

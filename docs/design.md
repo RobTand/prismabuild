@@ -2472,10 +2472,12 @@ daemon:
 * **`--ensure` ensures the declared role, not a process's existence.** A
   running role whose argv differs from the current `fleet_boxes.json`
   declaration, or whose executable resolves outside the active generation,
-  is stopped when idle and respawned from the active generation on the same
-  tick. The idle rule is every restart path's: SIGTERM only, never a role
-  mid-cycle, so a stale role finishes the service cycle it is inside and
-  cycles on a later tick.
+  is stopped when idle and respawned from the active generation once the
+  census reports it gone (since #709; a SIGTERM request is not an exit, and
+  an old generation's role holds no singleton lock that could keep the
+  replacement from serving beside it). The idle rule is every restart path's:
+  SIGTERM only, never a role mid-cycle, so a stale role finishes the service
+  cycle it is inside and cycles on a later tick.
 * **Every refusal is stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
   `worker_loop.py` (the module the roles already import as `runtime_gate`
@@ -2511,25 +2513,32 @@ stale generation's supervisor or a hand-started loop holds no claim at all.
   directory under the admission lock's discipline, the script name rather
   than a generation so a republished role and a stale one contend on the
   same inode, and the file is never unlinked.  The exclusion lives on the
-  open file description and is released by its final close -- the role's
-  exit -- not by an unlock or an unlink.  A loser exits ``3``; the holder pid
-  is a diagnostic read from ``/proc/locks`` only when a refusal needs
-  decorating, and an unreadable holder is "unknown", never "nobody", and
-  never changes the refusal.  The one-cycle operator form is not exempt: a
-  ``--once`` invocation can mint, announce, warm and publish against the
-  real queue, so it takes the same lock and the same refusal.  An operator
-  cycle beside a running role needs the role stopped first (or another box);
-  the per-tier mint lock still serializes the one-shot runs that do start.
+  open file description and is released by its final close on every exit
+  from the serving block -- a service rotation, a one-shot return, an
+  exception -- never by an unlock or an unlink, so a lock taken by a
+  one-shot invocation cannot leak into a hosting interpreter.  A loser exits
+  ``3``; the holder pid is a diagnostic from the admission lock's own
+  ``/proc/locks`` rule, read only when a refusal needs decorating, and an
+  unreadable holder is "unknown", never "nobody", and never changes the
+  refusal.  The one-cycle operator form is not exempt: a ``--once``
+  invocation can mint, announce, warm and publish against the real queue, so
+  it takes the same lock and the same refusal.  An operator cycle beside a
+  running role needs the role stopped first (or another box); the per-tier
+  mint lock still serializes the one-shot runs that do start.
 * **The supervisor probes the lock before spawning.**  A live role the
   ownership census cannot prove -- a duplicate supervisor's child, a
   hand-started loop, a stale generation's -- can still hold the lock.  The
   probe reports the holder in the supervisor's own log and starts nothing
   that would only refuse; the child proves the same lock again at startup.
   Anything unproven remains unsignalled, exactly as before.
-* **A SIGTERM request is not an exit.**  A stale role the kernel reports
-  stopped stays counted as live: its SIGTERM is queued, not delivered, so it
-  has not exited, it still owns the lock, and a replacement would only
-  refuse.  The health line names it and an operator's stop is not raced.
+* **A SIGTERM request is not an exit.**  A signalled stale role stays
+  counted as live until the ownership census reports it gone -- whether it is
+  stopped with the TERM queued behind ``T``/``t`` or still finishing a cycle,
+  and whether or not it is new enough to hold the singleton lock at all (an
+  old generation's role holds none).  The replacement starts on the next
+  tick, after the predecessor exits: at most one interval later, and never
+  as a second reader beside it.  The health line names a stopped one and an
+  operator's stop is not raced.
 * **A stopped role is named.**  A SIGSTOPped loop answers ``pgrep`` and
   appears present in every census, exactly as a quiet one does, so the
   supervisor reports ``/proc/<pid>/stat``'s scheduler state on each
