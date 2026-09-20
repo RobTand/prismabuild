@@ -47,8 +47,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 TOOL_DIR = Path(__file__).resolve().parent
-if str(TOOL_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOL_DIR))
+sys.path.insert(0, str(TOOL_DIR))
 from runtime_paths import generation_root  # noqa: E402
 
 REPO_ROOT = generation_root(__file__)
@@ -58,10 +57,7 @@ REPO_ROOT = generation_root(__file__)
 #: directory the way worker_loop's publication-lock constant allows.
 RUNTIME_ROOT = REPO_ROOT
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-if str(TOOL_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOL_DIR))
+sys.path.insert(0, str(SRC_ROOT))
 
 import fleet_roster  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
@@ -1829,29 +1825,29 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     pj = sub.add_parser("join", help="qualify then open this host's gate")
     pj.add_argument("--reason", default="", help="why this host joins")
-    pj.add_argument("--host", default=None)
-    pj.add_argument("--queue-root", type=Path, default=None)
-    pj.add_argument("--roster", type=Path, default=None)
-    pj.add_argument("--gate", type=Path, default=None)
-    pj.add_argument("--socket", type=Path, default=None)
+    pj.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    pj.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    pj.add_argument("--roster", type=Path, default=None, help="worker registration file; defaults to this runtime's roster")
+    pj.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    pj.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
     pr = sub.add_parser("resign", help="fence, withdraw owned, prove completion")
     pr.add_argument("--reason", required=True, help="why this host resigns")
-    pr.add_argument("--host", default=None)
-    pr.add_argument("--queue-root", type=Path, default=None)
-    pr.add_argument("--gate", type=Path, default=None)
-    pr.add_argument("--socket", type=Path, default=None)
-    pr.add_argument("--wait-s", type=float, default=120.0)
-    pr.add_argument("--no-withdraw-owned", action="store_true")
+    pr.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    pr.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    pr.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    pr.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
+    pr.add_argument("--wait-s", type=float, default=120.0, help="seconds to await graceful drain before reporting remaining work")
+    pr.add_argument("--no-withdraw-owned", action="store_true", help="wait for owned work to finish without requesting retry-safe handoff")
     pr.add_argument("--residency-root", dest="residency_roots", action="append",
                     default=None, help="extra residency root holding reader "
                     "leases (repeatable); the queue-anchored default is "
                     "always checked")
     ps = sub.add_parser("status", help="gate, roster, offer, broker state")
-    ps.add_argument("--host", default=None)
-    ps.add_argument("--roster", type=Path, default=None)
-    ps.add_argument("--gate", type=Path, default=None)
-    ps.add_argument("--queue-root", type=Path, default=None)
-    ps.add_argument("--socket", type=Path, default=None)
+    ps.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    ps.add_argument("--roster", type=Path, default=None, help="worker registration file; defaults to this runtime's roster")
+    ps.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    ps.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    ps.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
     args = ap.parse_args(argv)
     if args.cmd == "join":
         held = None
