@@ -457,6 +457,7 @@ def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
     owner = _hexkey("rel-owner")
     mover = _hexkey("rel-mover")
     q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst, _, _, _ = _bind(q, template, owner)
     descs = _descriptors(tmp_path, template, inst)
@@ -475,11 +476,12 @@ def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
     assert q.release_output_funding(mover, TIER, generation=gen) is True
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "released"
-    # Re-fund after release refuses (retired generation never re-funds same
-    # mover/batch via this path without rotation; rotation is reserve-only).
-    # Claim the mover unfunded now pays full demand (no credit).
-    got = q.claim(owner="w-rel")
-    assert got is not None, got
+    # Retired credit never falls through to fresh acquisition (R3): the mover
+    # stays READY (required-terminal) instead of paying again from free.
+    # Cleanup retires the row's holdings through the ordinary ledger path.
+    assert q.claim(owner="w-rel") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.release(mover) == 1
 
 
 def test_fault_intent_transfer_claim_recover_via_finish_reaper(
@@ -801,3 +803,185 @@ def test_parent_double_charge_gap_demo(tmp_path: Path) -> None:
     assert ledger.available().get(KIND) == free_before - 1
     assert ledger.release(batch_ns) == 1
     assert ledger.available().get(KIND) == free_before
+
+
+def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
+    """Deleted required intent (filed commit names mover, no intent file)."""
+    owner = _hexkey("abs-owner")
+    mover = _hexkey("abs-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    _publish_mover(q, mover, manifest, total, gib=1)
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    # Delete the required intent file: mover is still required-output via the
+    # filed commit signal. Claim must defer, never pay again from free.
+    q.funding_output_path(mover, TIER).unlink()
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-abs") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND) == free_before
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+
+
+def test_required_corrupt_intent_gets_no_free_credit(tmp_path: Path) -> None:
+    """Corrupt required intent file: claim defers as UNKNOWN, never fresh."""
+    owner = _hexkey("cor2-owner")
+    mover = _hexkey("cor2-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    _publish_mover(q, mover, manifest, total, gib=1)
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    q.funding_output_path(mover, TIER).write_text("{corrupt", encoding="utf-8")
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-cor2") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND) == free_before
+
+
+def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
+    """Consumed output credit never falls through to fresh acquisition."""
+    owner = _hexkey("con-owner")
+    mover = _hexkey("con-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    _publish_mover(q, mover, manifest, total, gib=1)
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    _file_batch(q, inst, template, "b1", descs, mover)
+    got = q.claim(owner="w-con")
+    assert got is not None and got["action_key"] == mover, got
+    q.finish(mover, status="executed")
+    # Republish the same mover key (new publication, same bytes): the old
+    # consumed record exists => required-terminal, never fresh credit.
+    _publish_mover(q, mover, manifest, total, gib=1)
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-con2") is None
+    assert q.item_path(pool.READY, mover).exists()
+    assert ledger.available().get(KIND) == free_before
+
+
+def test_drive_refuses_stale_nonzero_publication(tmp_path: Path) -> None:
+    """Reserved nonzero publication cannot be adopted by a fresh publication."""
+    owner = _hexkey("stale-owner")
+    mover = _hexkey("stale-mover")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    # Stage with an explicit stale nonzero publication (simulates a previously
+    # published reserved credit for another publication of the same key).
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs,
+        mover_published=1234567.0)
+    assert staged.get("ok") is True, staged
+    _publish_mover(q, mover, manifest, total, gib=1)
+    cap = ledger.capacity().get(KIND)
+    out = q.drive_output_funding(mover, TIER)
+    assert out.get("ok") is False, out
+    assert out.get("refusal") == "mover-publication-mismatch", out
+    # Nothing moved on refusal; sum preserved; cover authorizes nothing.
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert (ledger.available().get(KIND, 0)
+            + ledger.holder_tokens(owner).get(KIND, 0)) == cap
+    row = pool._read_json(q.item_path(pool.READY, mover))
+    assert isinstance(row, dict)
+    assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+
+
+def test_unreadable_census_finish_retains(tmp_path: Path) -> None:
+    """Actual unreadable funding dir through finish: retain all, reaper frees."""
+    import os as _os
+    owner = _hexkey("unc-owner")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 2
+    cap = ledger.capacity().get(KIND)
+    funding_dir = q.root / pool.TIER_FUNDING
+    funding_dir.mkdir(parents=True, exist_ok=True)
+    _os.chmod(funding_dir, 0o000)
+    try:
+        q.finish(owner, status="executed")
+        # UNKNOWN census => finish retains ALL held tier tokens (fail closed).
+        assert ledger.holder_tokens(owner).get(KIND, 0) == 2
+        assert (ledger.available().get(KIND, 0)
+                + ledger.holder_tokens(owner).get(KIND, 0) == cap)
+    finally:
+        _os.chmod(funding_dir, 0o755)
+    # Readable again with no intents: census proven empty, ordinary release
+    # frees the unspent grant (no strand); sum preserved throughout.
+    intents, unknown = q.output_census_for_owner(owner)
+    assert unknown is False and intents == []
+    assert ledger.release(owner) == 2
+    assert ledger.available().get(KIND, 0) == cap
+
+
+def test_publishable_helper_rejects_before_exposure(tmp_path: Path) -> None:
+    """Writer-side publication gate rejects missing/contradictory refs."""
+    owner = _hexkey("pub-owner")
+    mover = _hexkey("pub-mover")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    residency = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                 "manifest_sha256": manifest, "manifest_bytes": total,
+                 "range_start_bytes": 0, "range_end_bytes": total}
+    # Missing staged intent => refuse before exposure.
+    out = q.validate_output_mover_publishable(
+        instance=inst, template=template, batch_id="b1", descriptors=descs,
+        mover_key=mover, tier_id=TIER, residency=residency)
+    assert out.get("ok") is False, out
+    assert out.get("refusal") == "output-funding-missing", out
+    # Stage, then publishable.
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
+    out = q.validate_output_mover_publishable(
+        instance=inst, template=template, batch_id="b1", descriptors=descs,
+        mover_key=mover, tier_id=TIER, residency=residency)
+    assert out.get("ok") is True, out
+    # Contradictory residency (wrong manifest) => refuse.
+    bad_residency = dict(residency, manifest_sha256="0" * 64)
+    out = q.validate_output_mover_publishable(
+        instance=inst, template=template, batch_id="b1", descriptors=descs,
+        mover_key=mover, tier_id=TIER, residency=bad_residency)
+    assert out.get("ok") is False, out

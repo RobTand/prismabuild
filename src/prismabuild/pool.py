@@ -2293,6 +2293,15 @@ class ResourceLedger:
         kinds/tokens: only the named set is attempted.  Metadata files are
         never valid names.  Returns moved+already count; short vs
         ``len(set(names))`` is unknown-retain for the caller.
+
+        Coordination (#742): the tier-mint metadata guard flows through
+        ``PoolQueue.tier_ledger`` into ``ResourceLedger``; this primitive
+        performs no mint/retire and preserves one-token-per-index (collision
+        skips without overwrite), so it needs no mint-guard change. After the
+        #742 integration lands, this method MUST reuse the same guard path
+        for any ledger-capacity reads it adds; host ledgers stay unchanged
+        (funding flows call this only on tier ledgers). Do not edit #742 or
+        #746 worktrees from this lane.
         """
 
         if not from_key or not to_key or from_key == to_key:
@@ -5274,7 +5283,13 @@ class PoolQueue:
 
     def read_output_funding(self, mover_action_key: str,
                             tier_id: str) -> dict[str, object] | None:
-        """One output mover's funding record, or None when absent/unparsable."""
+        """One output mover's funding record, or None when absent/unparsable.
+
+        Note: None conflates absent with malformed/unreadable. Claim and
+        census paths MUST use `output_funding_file_state` (absent vs unknown)
+        instead of treating this None as legacy/no-funding; only the cover
+        path (which requires a parsed transferring record) may use this.
+        """
 
         try:
             raw = _read_json(self.funding_output_path(mover_action_key, tier_id))
@@ -5286,6 +5301,41 @@ class PoolQueue:
             return self.validate_output_funding(raw)
         except (PoolContractError, ValueError):
             return None
+
+    def output_funding_file_state(
+            self, mover_action_key: str, tier_id: str
+    ) -> tuple[dict[str, object] | None, str]:
+        """(record|None, file_state) with absent vs unknown split (R3).
+
+        file_state: "absent" (proven ENOENT: no file, never had one or
+        deliberately removed and detectable as required-absent by the claim
+        gate via the filed-batch signal); "ok" (parsed valid record
+        returned); "corrupt" (file exists but unreadable/unparsable/invalid:
+        UNKNOWN, never fresh acquisition, never legacy). Other-owner files
+        are untouched (per mover/tier path by construction).
+        """
+
+        path = self.funding_output_path(mover_action_key, tier_id)
+        try:
+            with open(path, "rb") as handle:
+                raw_bytes = handle.read(1024 * 1024 + 1)
+        except FileNotFoundError:
+            return (None, "absent")
+        except NotADirectoryError:
+            return (None, "absent")
+        except OSError:
+            return (None, "corrupt")
+        if len(raw_bytes) > 1024 * 1024:
+            return (None, "corrupt")
+        try:
+            import json as _json
+            raw = _json.loads(raw_bytes.decode())
+        except (ValueError, UnicodeDecodeError):
+            return (None, "corrupt")
+        try:
+            return (self.validate_output_funding(raw), "ok")
+        except (PoolContractError, ValueError):
+            return (None, "corrupt")
 
     def write_output_funding(self, record: Mapping[str, object], *,
                              expect_generation: str | None = None) -> Path:
@@ -6370,13 +6420,15 @@ class PoolQueue:
                 if record.get("state") not in ("reserved", "transferring"):
                     return {"ok": False, "refusal": "batch-id-in-use",
                             "state": str(record.get("state"))}
-                # Mover publication binding (R2): transfer requires the mover
+                # Mover publication binding (R2/R3): transfer requires the mover
                 # row to exist (never strand onto an unqueued key). A staged
-                # intent filed before publication carries 0.0; rotate it once
-                # (single-file rotation, fresh generation, same tokens) to the
-                # real mover publication before the first rename. A
-                # transferring record with mismatched publication is tampered
-                # (never rotate credit already moved).
+                # intent filed before publication carries the 0.0 unpublished
+                # sentinel; rotate it once (single-file rotation, fresh
+                # generation, same tokens) to the real mover publication
+                # before the first rename. ONLY the 0.0 sentinel may rebind:
+                # a nonzero bound publication that mismatches the live row is
+                # stale (republished key adopting old credit) and refuses;
+                # reserved-or-not, it never adopts (R3 regression).
                 mover_live, mover_refusal = self._output_live_mover(mover)
                 if mover_live is None:
                     return {"ok": False, "refusal": mover_refusal}
@@ -6386,8 +6438,10 @@ class PoolQueue:
                 except (TypeError, ValueError, AttributeError):
                     return {"ok": False, "refusal": "unknown-retain: mover-publication"}
                 if bound_pub != live_pub:
-                    if str(record.get("state")) != "reserved":
-                        return {"ok": False, "refusal": "unknown-retain: mover-publication"}
+                    if not (str(record.get("state")) == "reserved"
+                            and bound_pub == 0.0):
+                        return {"ok": False,
+                                "refusal": "mover-publication-mismatch"}
                     if not (math.isfinite(live_pub) and live_pub > 0):
                         return {"ok": False, "refusal": "unknown-retain: mover-publication"}
                     rotated = dict(record)
@@ -6408,20 +6462,46 @@ class PoolQueue:
                     exp_generation = str(record.get("generation"))
                 if not self._output_owner_authority(record):
                     return {"ok": False, "refusal": "stale-superseded-owner"}
-                # Drive (transfer remainder) accepts precommit-OR-commit: before
-                # commit the durable prewrite proves the batch; after commit the
-                # filed record does. Cover/claim (below) requires filed commit
-                # only, so an unfinished prewrite is never promoted to a
-                # claimable output.
+                # Batch authority (R3): live owner accepts precommit-OR-commit
+                # (transfer remainder before the filed commit exists); terminal
+                # recovery (producer dead) requires the filed commit and never
+                # promotes an unfinished prewrite. Determine liveness from the
+                # live row directly (owner authority above conflates both).
                 try:
-                    batch_ok = bool(self._output_batch_authority(record))
-                except (OSError, PoolContractError, ValueError):
-                    batch_ok = False
-                except Exception:
-                    batch_ok = False
-                if not batch_ok:
+                    _live_row = _read_json(self.item_path(
+                        CLAIMED, str(record.get("owner_action_key"))))
+                except (OSError, PoolContractError):
+                    _live_row = None
+                _live_matches = False
+                if isinstance(_live_row, Mapping):
                     try:
-                        batch_ok = bool(self._output_precommit_authority(record))
+                        _live_matches = (
+                            float(_live_row.get("published_unix"))  # type: ignore[arg-type]
+                            == float(record.get("owner_published_unix"))  # type: ignore[arg-type]
+                            and isinstance(_live_row.get("resource_scope"), Mapping)
+                            and str(_live_row["resource_scope"].get("nonce")) == str(record.get("owner_nonce"))  # type: ignore[index]
+                            and str((_live_row["resource_scope"].get("scope_id")  # type: ignore[index]
+                                     or _live_row["resource_scope"].get("scope_unit")  # type: ignore[index]
+                                     or _live_row["resource_scope"].get("unit"))) == str(record.get("owner_scope_id")))  # type: ignore[index]
+                    except (TypeError, ValueError, KeyError, AttributeError):
+                        _live_matches = False
+                if _live_matches:
+                    try:
+                        batch_ok = bool(self._output_batch_authority(record))
+                    except (OSError, PoolContractError, ValueError):
+                        batch_ok = False
+                    except Exception:
+                        batch_ok = False
+                    if not batch_ok:
+                        try:
+                            batch_ok = bool(self._output_precommit_authority(record))
+                        except (OSError, PoolContractError, ValueError):
+                            batch_ok = False
+                        except Exception:
+                            batch_ok = False
+                else:
+                    try:
+                        batch_ok = bool(self._output_batch_authority(record))
                     except (OSError, PoolContractError, ValueError):
                         batch_ok = False
                     except Exception:
@@ -6556,18 +6636,22 @@ class PoolQueue:
         intents: list[dict] = []
         funding_dir = self.root / TIER_FUNDING
         try:
-            if not funding_dir.exists():
-                return ([], False)
-            if not funding_dir.is_dir():
+            entries = os.scandir(funding_dir)
+        except FileNotFoundError:
+            return ([], False)
+        except NotADirectoryError:
+            return ([], True)
+        except OSError:
+            return ([], True)
+        with entries:
+            try:
+                names = sorted(entry.name for entry in entries
+                               if entry.name.endswith(".output-funding.json"))
+            except OSError:
                 return ([], True)
-        except OSError:
-            return ([], True)
-        try:
-            paths = sorted(funding_dir.glob("*.output-funding.json"))
-        except OSError:
-            return ([], True)
         unknown = False
-        for path in paths:
+        for name in names:
+            path = funding_dir / name
             try:
                 raw = _read_json(path)
             except (OSError, PoolContractError):
@@ -6621,18 +6705,24 @@ class PoolQueue:
 
     def output_keep_names_for_owner(
             self, owner_key: str, tier_id: str) -> tuple[set[str], bool]:
-        """(keep_set, unknown) for owner finish (R2 fail-retain).
+        """(keep_set, unknown) for owner finish (R2 fail-retain + R3 scandir).
 
-        keep_set: intent-named token names still held under owner on this
-        tier. unknown True: census or holdings unreadable/corrupt => caller
-        must retain ALL held tier tokens for this owner (not free any),
-        preserving attribution for reaper retry including partial transfers.
+        Holdings enumerated with explicit `os.scandir` classification: proven
+        ENOENT/NotADirectory (no holder dir) is empty; any other read failure
+        is UNKNOWN (retain all). Census UNKNOWN likewise retains all.
         """
 
         try:
-            ledger = self.tier_ledger(str(tier_id))
-            held = {path.name for path in _glob(
-                ledger.held_dir / str(owner_key), "*-*")}
+            holder_dir = self.tier_ledger(str(tier_id)).held_dir / str(owner_key)
+            try:
+                with os.scandir(holder_dir) as entries:
+                    held = {entry.name for entry in entries}
+            except FileNotFoundError:
+                held = set()
+            except NotADirectoryError:
+                return (set(), True)
+            except OSError:
+                return (set(), True)
         except (OSError, PoolContractError, ValueError):
             return (set(), True)
         intents, unknown = self.output_census_for_owner(str(owner_key))
@@ -6651,6 +6741,152 @@ class PoolQueue:
                 if name in held:
                     keep.add(name)
         return (keep, False)
+
+    def _output_mover_required_via_commit(
+            self, mover_key: str, tier_id: str,
+            residency: Mapping[str, object] | None) -> bool | None:
+        """Required-output signal from filed commits (R3, bounded, no loader).
+
+        True: a filed commitments entry names (mover_key, tier, manifest).
+        False: clean scan with no match (legacy mover, fresh ok). None:
+        UNKNOWN scan (unreadable dir/file/commitments => defer, retain).
+        Reads small commitments JSONs only (capped 1MB, no batch
+        files/descriptors); cover later validates the filed batch strictly
+        via the R4 loader. Other-owner scoping positively established per
+        entry (exact mover/tier/manifest match); anything unreadable is
+        UNKNOWN.
+        """
+
+        if not isinstance(residency, Mapping):
+            return False
+        try:
+            manifest = str(residency.get("manifest_sha256") or "")
+            tier = str(residency.get("tier_id") or "")
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if not manifest or tier != str(tier_id):
+            return False
+        try:
+            from . import produced_output as produced_mod
+            import json as _json
+        except ImportError:
+            return None
+        try:
+            scopes_root = (Path(self.root) / "residency"
+                           / produced_mod.OUTPUT_SCOPES_SUBDIR)
+            try:
+                with os.scandir(scopes_root) as owners:
+                    owner_names = sorted(
+                        entry.name for entry in owners
+                        if entry.is_dir(follow_symlinks=False))
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return None
+        except (OSError, PoolContractError, ValueError):
+            return None
+        for owner_name in owner_names:
+            owner_dir = scopes_root / owner_name
+            try:
+                with os.scandir(owner_dir) as children:
+                    child_names = sorted(
+                        entry.name for entry in children
+                        if entry.is_dir(follow_symlinks=False))
+            except OSError:
+                return None
+            for child_name in child_names:
+                cpath = owner_dir / child_name / "commitments.json"
+                try:
+                    with open(cpath, "rb") as handle:
+                        raw = handle.read(1024 * 1024 + 1)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return None
+                if len(raw) > 1024 * 1024:
+                    return None
+                try:
+                    parsed = _json.loads(raw.decode())
+                except (ValueError, UnicodeDecodeError):
+                    return None
+                if (not isinstance(parsed, Mapping)
+                        or not isinstance(parsed.get("batches"), Mapping)):
+                    return None
+                for entry in parsed["batches"].values():  # type: ignore[union-attr]
+                    if not isinstance(entry, dict):
+                        continue
+                    if (str(entry.get("mover_key")) == str(mover_key)
+                            and str(entry.get("tier")) == str(tier_id)
+                            and str(entry.get("manifest_digest")) == manifest):
+                        return True
+        return False
+
+    def validate_output_mover_publishable(
+            self, *, instance, template, batch_id: str,
+            descriptors: list[Mapping[str, object]],
+            mover_key: str, tier_id: str,
+            residency: Mapping[str, object]) -> dict:
+        """Writer-side publication check (R3, no publish edit).
+
+        744 calls this BEFORE publishing a mover READY row; it rejects a
+        contradictory/missing declared reference before exposure using
+        existing validators only: bound precommit (live owner + prewrite +
+        descriptors + manifest via `describe_output_precommit_for_funding`),
+        staged output intent exists for (mover, tier) naming the same
+        batch/manifest (reserved, any publication incl. 0.0 sentinel), and
+        sealed residency matching the precommit manifest/tier/range.
+        Returns {"ok": True, ...} or typed refusal; never raises for
+        queue-state reasons.
+        """
+
+        try:
+            tier = self._check_tier_id(str(tier_id))
+        except (PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        try:
+            from . import produced_output as produced_mod
+            binding = produced_mod.describe_output_precommit_for_funding(
+                self, instance, template, batch_id, descriptors,
+                tier, str(mover_key))
+        except produced_mod.ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        record = self.read_output_funding(str(mover_key), tier)
+        if record is None:
+            # Distinguish absent file (missing staged intent => refuse) from
+            # corrupt file (unknown => refuse); both refuse publication, with
+            # different reasons for diagnostics.
+            _, file_state = self.output_funding_file_state(
+                str(mover_key), tier)
+            if file_state == "absent":
+                return {"ok": False, "refusal": "output-funding-missing"}
+            return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
+        if str(record.get("state")) not in ("reserved", "transferring"):
+            return {"ok": False, "refusal": "output-funding-not-pending"}
+        if (str(record.get("batch_id")) != str(binding.get("batch_id"))
+                or str(record.get("manifest_digest")) != str(
+                    binding.get("manifest_digest"))):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        if not isinstance(residency, Mapping):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        try:
+            if (str(residency.get("tier_id")) != tier
+                    or str(residency.get("manifest_sha256")) != str(
+                        binding.get("manifest_digest"))
+                    or int(residency.get("range_start_bytes")) != int(  # type: ignore[arg-type]
+                        binding.get("range_start_bytes"))
+                    or int(residency.get("range_end_bytes")) != int(  # type: ignore[arg-type]
+                        binding.get("range_end_bytes"))):
+                return {"ok": False, "refusal": "mover-publication-mismatch"}
+        except (TypeError, ValueError):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        return {"ok": True, "batch_id": str(binding.get("batch_id")),
+                "manifest_digest": str(binding.get("manifest_digest")),
+                "generation": str(record.get("generation")),
+                "state": str(record.get("state"))}
 
     def mover_transition_lock(self, mover_action_key: str, *,
                               blocking: bool = True):
@@ -7005,28 +7241,49 @@ class PoolQueue:
             remainder = {kind: int(need) - int(covered.get(kind, 0))
                          for kind, need in needs.items()}
             if not any(covered.values()):
-                # Output claim gate (R2): a pending output intent for this
-                # mover (reserved = staged but not transferred/committed;
-                # transferring but cover failed = not yet committed, tokens
-                # missing, or stale) must NOT fall back to ordinary fresh
-                # acquisition from free. That fallback is the double-charge
-                # hole (READY claimed before funding, or funded-but-
-                # uncommitted claimed before the immutable batch commit with
-                # crash leaving it exposed). Refuse here (wait for
-                # drive/commit recovery); the mover stays READY for retry.
-                # Writer order (stage intent before READY publication, holding
-                # the mover lock across stage->publish->drive->commit) makes
-                # a READY output mover without an intent impossible in correct
-                # operation; this gate closes the crash prefixes.
+                # Output claim gate (R3): REQUIRED-output rows never fall back
+                # to fresh acquisition from free. Required iff (a) the output
+                # funding file exists in ANY state (reserved/transferring =
+                # pending; consumed/released = terminal credit, never reusable;
+                # corrupt/unreadable = UNKNOWN), OR (b) a filed committed batch
+                # names (mover, tier, manifest) while no valid cover exists
+                # (deleted required intent). Legacy movers (no file + clean
+                # filed-batch scan with no match) proceed V1/normal. Refusals
+                # defer (mover stays READY for drive/commit recovery); an
+                # explicitly valid recovery generation is supplied only via a
+                # successful cover above, never by paying again from free.
                 try:
-                    pending = self.read_output_funding(action_key, tier_id)
+                    _rec, _fstate = self.output_funding_file_state(
+                        action_key, tier_id)
                 except (OSError, PoolContractError, ValueError):
-                    pending = None
-                if (isinstance(pending, dict)
-                        and str(pending.get("state")) in ("reserved",
-                                                          "transferring")):
+                    _rec, _fstate = None, "corrupt"
+                if _fstate == "ok":
+                    _st = str((_rec or {}).get("state"))
                     return {"tier_id": tier_id,
-                            "reason": "output_funding_pending",
+                            "reason": ("output_funding_pending"
+                                       if _st in ("reserved", "transferring")
+                                       else "output_funding_terminal"),
+                            "demand": dict(needs)}
+                if _fstate == "corrupt":
+                    return {"tier_id": tier_id,
+                            "reason": "output_funding_unknown",
+                            "demand": dict(needs)}
+                try:
+                    _sig = self._output_mover_required_via_commit(
+                        action_key, tier_id,
+                        sealed.get("residency") if isinstance(
+                            sealed, Mapping) else None)
+                except (OSError, PoolContractError, ValueError):
+                    _sig = None
+                except Exception:
+                    _sig = None
+                if _sig is True:
+                    return {"tier_id": tier_id,
+                            "reason": "output_funding_required_absent",
+                            "demand": dict(needs)}
+                if _sig is None:
+                    return {"tier_id": tier_id,
+                            "reason": "output_funding_unknown",
                             "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
