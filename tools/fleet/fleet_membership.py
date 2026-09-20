@@ -47,17 +47,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 TOOL_DIR = Path(__file__).resolve().parent
-REPO_ROOT = TOOL_DIR.parents[1]
+sys.path.insert(0, str(TOOL_DIR))
+from runtime_paths import generation_root  # noqa: E402
+
+REPO_ROOT = generation_root(__file__)
 #: Layout root holding RUNTIME_VERSION.json: the published generation in
 #: production (``<root>/RUNTIME_VERSION.json`` beside ``<root>/tools``), the
 #: source checkout in development. Tests may point this at a private
 #: directory the way worker_loop's publication-lock constant allows.
 RUNTIME_ROOT = REPO_ROOT
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-if str(TOOL_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOL_DIR))
+sys.path.insert(0, str(SRC_ROOT))
 
 import fleet_roster  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
@@ -1139,10 +1139,17 @@ def resign(
                         # original attempt's exact terminal (publishing
                         # while the holder is live races its finish,
                         # whose requeue disposition would overwrite it).
+                        # The withdraw carries the plan's snapshot so the
+                        # queue can prove the handoff itself -- live claim
+                        # still that attempt, restart permission with
+                        # remaining budget and lineage -- and persist its
+                        # identity in the immutable decision; a shape-only
+                        # owner string proves nothing and files ordinary.
                         plan = queue.plan_requeue(snap["record"])
                         result = queue.withdraw(
                             action_key,
-                            reason=f"resign {owner}: {reason}", by=owner)
+                            reason=f"resign {owner}: {reason}", by=owner,
+                            membership_handoff=plan["snapshot"])
                         handled[action_key] = {"handoff": "withdrawn",
                                                "snapshot": _snap_id(snap),
                                                "withdraw": result.get("status")}
@@ -1512,8 +1519,12 @@ def resume_owed(
     Scans the authoritative ``withdrawn/`` decisions (top level only —
     retired superseded markers live beneath): rows this lane withdrew
     (membership-shaped ``withdrawn_by``, ``withdrawn_host`` == this host)
-    that carry retry budget and have no same-generation done/failed
-    terminal. A row withdrawn by the current owner is this run's own; a
+    that carry retry budget, a proven handoff identity, and have no
+    same-generation done/failed terminal. Membership-shaped rows WITHOUT
+    the proven ``membership_handoff`` decision identity -- ordinary
+    cancellations in handoff clothing, including pre-carrier historical
+    rows -- are never revived; they are reported as retained so the fence
+    stays. A row withdrawn by the current owner is this run's own; a
     row withdrawn by a past owner is adopted only when that supervision
     is provably gone — same rule the broker enforces for gate takeover.
 
@@ -1582,6 +1593,14 @@ def resume_owed(
                 and attempts >= 0 and type(limit) is int
                 and attempts + 1 < limit):
             continue  # no retry budget: terminal stands, nothing owed
+        if not pool_module.membership_handoff_authorized(record):
+            # Membership-shaped but unproven: an ordinary cancellation in
+            # handoff clothing (including pre-carrier historical rows).
+            # Never revived; retained so JOIN/resign keep the fence.
+            skipped.append(
+                f"{action_key[:12]}: membership withdrawal without handoff "
+                "proof: retained, never revived")
+            continue
         status = lineage_status(queue, snapshot, withdrawn_by)
         if status["terminal"] is not None and status["terminal"][0] in (
                 "done", "failed"):
@@ -1806,29 +1825,29 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     pj = sub.add_parser("join", help="qualify then open this host's gate")
     pj.add_argument("--reason", default="", help="why this host joins")
-    pj.add_argument("--host", default=None)
-    pj.add_argument("--queue-root", type=Path, default=None)
-    pj.add_argument("--roster", type=Path, default=None)
-    pj.add_argument("--gate", type=Path, default=None)
-    pj.add_argument("--socket", type=Path, default=None)
+    pj.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    pj.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    pj.add_argument("--roster", type=Path, default=None, help="worker registration file; defaults to this runtime's roster")
+    pj.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    pj.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
     pr = sub.add_parser("resign", help="fence, withdraw owned, prove completion")
     pr.add_argument("--reason", required=True, help="why this host resigns")
-    pr.add_argument("--host", default=None)
-    pr.add_argument("--queue-root", type=Path, default=None)
-    pr.add_argument("--gate", type=Path, default=None)
-    pr.add_argument("--socket", type=Path, default=None)
-    pr.add_argument("--wait-s", type=float, default=120.0)
-    pr.add_argument("--no-withdraw-owned", action="store_true")
+    pr.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    pr.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    pr.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    pr.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
+    pr.add_argument("--wait-s", type=float, default=120.0, help="seconds to await graceful drain before reporting remaining work")
+    pr.add_argument("--no-withdraw-owned", action="store_true", help="wait for owned work to finish without requesting retry-safe handoff")
     pr.add_argument("--residency-root", dest="residency_roots", action="append",
                     default=None, help="extra residency root holding reader "
                     "leases (repeatable); the queue-anchored default is "
                     "always checked")
     ps = sub.add_parser("status", help="gate, roster, offer, broker state")
-    ps.add_argument("--host", default=None)
-    ps.add_argument("--roster", type=Path, default=None)
-    ps.add_argument("--gate", type=Path, default=None)
-    ps.add_argument("--queue-root", type=Path, default=None)
-    ps.add_argument("--socket", type=Path, default=None)
+    ps.add_argument("--host", default=None, help="local worker hostname; remote hosts are refused")
+    ps.add_argument("--roster", type=Path, default=None, help="worker registration file; defaults to this runtime's roster")
+    ps.add_argument("--gate", type=Path, default=None, help="local broker maintenance-gate mirror")
+    ps.add_argument("--queue-root", type=Path, default=None, help="shared fleet queue root")
+    ps.add_argument("--socket", type=Path, default=None, help="local resource-broker socket")
     args = ap.parse_args(argv)
     if args.cmd == "join":
         held = None

@@ -259,7 +259,7 @@ def _withdrawn_keys(queue: pool.PoolQueue,
 
 
 def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether one live marker is an operator's decision, not admission's.
+    """Whether one live marker is an operator's decision, not a handoff's.
 
     Admission preempts a background holder through the same withdrawal
     ladder, then republishes it immediately with ``supersedes_withdrawal``
@@ -267,13 +267,26 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     same work -- while an operator's decision has no successor and retires
     the window it was made against (#708).  The immutable decision carries
     ``preempted_by`` when admission made it, so the marker record answers.
+
+    A membership handoff answers the same way through its own durable
+    identity: ``pool.withdraw`` persists ``membership_handoff`` only after
+    proving the live claim still is the planned attempt with restart
+    permission, remaining budget and existing lineage.  The window reads
+    that exact decision back here through the one shared carrier check
+    (owner, attempt, budget and generation all typed and all equal to
+    the marker's own), so the plan's later phases keep staging through
+    the settlement interval.  A supervisor-shaped ``withdrawn_by`` with
+    no (or a mismatched) proof is an ordinary cancellation and still
+    retires the window.
     """
 
     try:
         marker = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
     except (OSError, pool.PoolContractError):
         return False      # unreadable: not a decision this cycle acts on
-    return isinstance(marker, Mapping) and not marker.get("preempted_by")
+    if not isinstance(marker, Mapping) or marker.get("preempted_by"):
+        return False
+    return not pool.membership_handoff_authorized(marker)
 
 
 def drop_prior_ram_epochs(
@@ -452,7 +465,8 @@ def release_incomplete_ram_promotions(
                     "bytes_staged": receipt.get("bytes_staged"),
                     "receipt_errors": list(receipt_errors),
                     "entries_deleted": outcome.get("entries_deleted"),
-                    "tokens_released": outcome.get("tokens_released")}
+                    "tokens_released": outcome.get("tokens_released"),
+                    "tokens_decharged": outcome.get("tokens_decharged")}
             if outcome.get("complete") is True and not evict_errors:
                 events.append({"event": "ram-mover-incomplete-released",
                                **base})
@@ -3198,6 +3212,118 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
+def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
+                      writable_tokens: int | None = None,
+                      writable_reader=None,
+                      cap: int | None = None,
+                      extra_tokens: Mapping[str, int] | None = None,
+                      ) -> dict[str, object]:
+    """Mint one tier's supply as writable-plus-landed, atomically (#733).
+
+    The supply is what the dataset may still hold plus what has *landed*;
+    ``landed_and_in_flight`` draws the line (#621/#623).  Exactly one of
+    ``writable_tokens`` (a fixed number, for tests) or ``writable_reader``
+    (a zero-argument callable re-sampling the dataset's writable room,
+    for production) supplies the writable side, with ``writable_tokens``
+    doubling as the fallback when the reader fails mid-cycle (the
+    discovery number; discovery itself offers nothing on unreadable, so
+    the next cycle still converges).  The reader runs INSIDE
+    the same tier mint lock as the landed snapshot and the ensure+retire
+    apply (via :meth:`PoolQueue.mint_tier_capacity_guarded`): a copy
+    landing between discovery and the mint can no longer combine
+    discovery's writable with the newcomer's landed into free, because
+    the writable number is re-read after every pre-lock completion, and
+    completions file under the same lock (see :meth:`PoolQueue.record_move`).
+    ``cap`` bounds the supply (the ram policy window); without it the
+    supply is exactly ``writable + landed``.  ``extra_tokens`` carries the
+    tier's other qualified kinds (fill rates and the like) into the same
+    single apply, so no kind is ever retired to zero mid-cycle.  Returns
+    ``{"landed", "in_flight", "supply", "ledger"}``; the caller stamps its
+    own record fields.
+    """
+
+    if writable_reader is None and writable_tokens is None:
+        raise ValueError(
+            "mint_stage_supply needs writable_tokens xor writable_reader")
+    seen: dict[str, int] = {}
+
+    def wanted(ledger) -> dict[str, int]:
+        landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
+        if writable_reader is not None:
+            try:
+                writable = int(writable_reader())
+            except (OSError, ValueError, TypeError) as exc:
+                if writable_tokens is None:
+                    raise
+                print(json.dumps({
+                    "event": "tier-mint-writable-unreadable",
+                    "unix": time.time(), "tier_id": tier_id,
+                    "fallback_tokens": int(writable_tokens),
+                    "reason": repr(exc)}), flush=True)
+                writable = int(writable_tokens)
+        else:
+            writable = int(writable_tokens)  # type: ignore[arg-type]
+        supply = writable + landed
+        if cap is not None:
+            supply = min(supply, int(cap))
+        seen["landed"] = landed
+        seen["in_flight"] = in_flight
+        seen["supply"] = supply
+        seen["writable"] = writable
+        merged = {str(k): int(v) for k, v in dict(extra_tokens or {}).items()}
+        merged[kind] = supply
+        return merged
+
+    result = queue.mint_tier_capacity_guarded(tier_id, wanted)
+    return {"landed": seen["landed"], "in_flight": seen["in_flight"],
+            "supply": seen["supply"], "writable": seen["writable"],
+            "ledger": result}
+
+
+def _supply_reader_for(record: Mapping[str, object], tier_id: str, *,
+                       fallback_tokens: int):
+    """Re-sample one tier's writable room for the mint critical section.
+
+    The same source and units discovery used: the stage dataset's
+    ``available`` for stage tiers, one ``statvfs`` for ram tiers.  A
+    bounded metadata read (one subprocess / one syscall), never a copy.
+    Returns a zero-argument callable suitable for
+    :func:`mint_stage_supply`'s ``writable_reader``; ``None`` when the
+    record names no samplable source (the mint then uses the discovery
+    number via its fallback path).
+    """
+
+    tier = record.get("tier")
+    if tier == "stage":
+        pool_name = record.get("pool")
+        if not isinstance(pool_name, str) or not pool_name:
+            return None
+
+        def read_stage(pool_name=pool_name):
+            dataset = storage_tiers.stage_dataset(pool_name)
+            if not isinstance(dataset, Mapping):
+                raise OSError(f"stage dataset unreadable for {pool_name}")
+            available = dataset.get("available_bytes")
+            if (isinstance(available, bool)
+                    or not isinstance(available, int)):
+                raise OSError(f"stage available unreadable for {pool_name}")
+            return max(0, available) // storage_tiers.GIB
+
+        return read_stage
+    if tier == "ram":
+        mountpoint = record.get("mountpoint")
+        if not isinstance(mountpoint, str) or not mountpoint:
+            return None
+
+        def read_ram(mountpoint=mountpoint):
+            sampled = os.statvfs(mountpoint)
+            return (max(0, int(sampled.f_bavail))
+                    * max(0, int(sampled.f_frsize))) // storage_tiers.GIB
+
+        return read_ram
+    return None
+
+
 def _same_host_chunk(
         tiers: Mapping[str, Mapping[str, object]], host: str) -> int | None:
     """The effective promotion chunk the ram tier on this host announces.
@@ -3282,6 +3408,16 @@ def cycle(
     for tier_id, record in sorted(tiers.items()):
         tokens = storage_tiers.tier_tokens(record)
         kind = storage_tiers.capacity_kind_of(tier_id)
+        # The supply mint happens ONCE below, after every admission and
+        # policy check, with the landed snapshot in the same critical
+        # section (#733).  These sites only stash the qualified writable
+        # number (and cap); minting here would publish capacity before the
+        # tier is qualified, mint a {kind}-only supply that temporarily
+        # retires every other kind to zero, and let a later final mint
+        # re-apply a stale pre-egress count after the lock is released.
+        supply_writable: int | None = None
+        supply_cap: int | None = None
+        supply_basis = ""
         if (record.get("tier") == "stage" and kind in tokens
                 and record.get("capacity_source") == storage_tiers.WRITABLE_CAPACITY_SOURCE):
             # ``capacity_bytes`` is what ZFS will still let a writer write,
@@ -3291,13 +3427,8 @@ def cycle(
             # counted a claimed mover's unlanded bytes as free and admitted ten
             # windows against one (#623).  The supply is what is writable plus
             # what has *landed*; ``landed_and_in_flight`` draws the line.
-            landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
-            record["writable_gib"] = tokens[kind]
-            record["held_gib"] = landed + in_flight
-            record["landed_gib"] = landed
-            record["in_flight_gib"] = in_flight
-            record["capacity_basis"] = "zfs available + landed"
-            tokens[kind] = tokens[kind] + landed
+            supply_writable = tokens[kind]
+            supply_basis = "zfs available + landed"
         if record.get("tier") == "stage":
             # The second cache layer's precondition, announced with the tier
             # and refused out loud (#638).  A stage dataset whose
@@ -3341,14 +3472,10 @@ def cycle(
             window = record.get("window_gib")
             if (kind in tokens and isinstance(window, int)
                     and not isinstance(window, bool) and window > 0):
-                landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
-                record["writable_gib"] = tokens[kind]
-                record["held_gib"] = landed + in_flight
-                record["landed_gib"] = landed
-                record["in_flight_gib"] = in_flight
-                record["capacity_basis"] = (
-                    "statvfs f_bavail + landed, capped by the policy window")
-                tokens[kind] = min(tokens[kind] + landed, window)
+                supply_writable = tokens[kind]
+                supply_cap = window
+                supply_basis = ("statvfs f_bavail + landed, capped by the "
+                                "policy window")
             admission = record.get("ram_admission")
             if isinstance(admission, Mapping) and not admission.get("admissible"):
                 print(json.dumps({
@@ -3510,7 +3637,36 @@ def cycle(
                     "stage_root": str(record["mountpoint"]),
                     "stage_root_owner": record["stage_root_owner"],
                 }), flush=True)
-        record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
+        if supply_writable is not None:
+            # The ONE authoritative mint for this tier: after every
+            # admission and policy check above, with a fresh writable
+            # sample, the landed snapshot and the ensure+retire in the same
+            # critical section, over the FULL qualified token dict (a
+            # {kind}-only mint would retire every other kind to zero until
+            # the final call repaired it).  Refuse-and-keep tiers (#631)
+            # still mint: the tokens stay so the held reservations the
+            # refusal protects keep working.  The reader re-samples what
+            # discovery sampled (same source, same units); discovery's
+            # number stays as the fallback and still drives the record and
+            # admission assembly above.
+            reader = _supply_reader_for(record, tier_id,
+                                        fallback_tokens=supply_writable)
+            minted = mint_stage_supply(
+                queue, tier_id=tier_id, kind=kind,
+                writable_tokens=supply_writable, writable_reader=reader,
+                cap=supply_cap,
+                extra_tokens={k: v for k, v in tokens.items()
+                              if k != kind})
+            record["writable_gib"] = minted.get("writable",
+                                                supply_writable)
+            record["held_gib"] = minted["landed"] + minted["in_flight"]
+            record["landed_gib"] = minted["landed"]
+            record["in_flight_gib"] = minted["in_flight"]
+            record["capacity_basis"] = supply_basis
+            tokens[kind] = minted["supply"]
+            record["ledger"] = minted["ledger"]
+        else:
+            record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)
     # Minting first, windowing second, on purpose: the window publishes what
