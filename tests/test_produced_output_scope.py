@@ -1,4 +1,4 @@
-"""R4 bounded fixture: template/instance/batches + coherent pin lifecycle.
+"""R5 bounded fixture: template/instance/batches + coherent pin lifecycle.
 
 Drives REAL primitives only -- queue publish/claim/finish (+validate),
 tier ledger (+transfer), stage_move.move, residency_map compose/lookup,
@@ -59,7 +59,7 @@ def _template(output_prefix: str, **overrides) -> dict:
     body = {
         "schema": po.TEMPLATE_SCHEMA_V1,
         "version": 1,
-        "template_id": "r4-fixture-v1",
+        "template_id": "r5-fixture-v1",
         "output_prefix": output_prefix,
         "slots": {
             "boundary-0": {"class": "payload"},
@@ -138,9 +138,9 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": control["nonce"],
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
+    po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_template(queue.root, template)
     po.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env}
@@ -218,7 +218,7 @@ def _file_sidecars(queue: pool.PoolQueue, batch: dict, out_base: Path):
     return generation, sorted(entries)
 
 
-def test_binding_both_halves_and_refusals(tmp_path: Path) -> None:
+def test_binding_both_halves_declared_and_refusals(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -228,6 +228,11 @@ def test_binding_both_halves_and_refusals(tmp_path: Path) -> None:
     assert instance["attempt_source"] == "broker-launch"
     assert instance["owner_attempt"]["nonce"] == bound["control"]["nonce"]
     claimed = bound["claimed"]
+    # Undeclared template binds nothing, even with a real claim+control.
+    other_template = _template(str(origin), template_id="undeclared-v1")
+    with pytest.raises(po.ProducedOutputError, match="undeclared-template"):
+        po.bind_instance(queue, other_template, owner_action_key=OWNER,
+                         claim_snapshot=claimed, env=bound["env"])
     with pytest.raises(po.ProducedOutputError, match="no-launch-context"):
         po.bind_instance(queue, template, owner_action_key=OWNER,
                          claim_snapshot=claimed, env={})
@@ -255,12 +260,9 @@ def test_binding_both_halves_and_refusals(tmp_path: Path) -> None:
                          claim_snapshot=claimed, env=bound["env"])
 
 
-def test_pin_identity_positive_and_mismatch() -> None:
+def test_pin_identity_surface() -> None:
     if rlc is None:
         pytest.skip(PIN_DEPENDENCY)
-    assert rlc is not None
-    # Real identity path is exercised with live queue state in
-    # test_pin_lifecycle_owner_split; here the module surface is pinned.
     assert rlc.READER_LEASE_TAG == "reader-lease-v1"
     for name in ("write_material", "covers_for_keys", "acquire",
                  "open_pinned", "release", "injected_context",
@@ -268,7 +270,7 @@ def test_pin_identity_positive_and_mismatch() -> None:
         assert callable(getattr(rlc, name)), name
 
 
-def test_candidate_injected_context_positive_and_mismatch(tmp_path: Path) -> None:
+def test_injected_context_positive_and_mismatch(tmp_path: Path) -> None:
     if rlc is None:
         pytest.skip(PIN_DEPENDENCY)
     origin = tmp_path / "pool-origin" / "outputs"
@@ -301,11 +303,8 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     ok = po.admit_instance(queue, instance, template)
     assert ok["ok"] is True
     assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
-    # Binding metadata holds no ledger tokens anywhere.
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
         po.reservation_holder(instance)) == {}
-    # The general window gate validates for real, then refuses the exact
-    # pending liveness dependency (production fail-closed, not a stub).
     pending = po.admit_funded_window(queue, instance, template,
                                      need_gib_per_tier={STAGE_TIER: 1})
     assert pending["refusal"] == "funding-primitive-pending"
@@ -327,13 +326,10 @@ def test_owner_demand_derivation_and_publish_rule(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    # Pure derivation: window-sized tier terms beside (not mixed with)
-    # durable class budget and host decode memory.
     assert po.owner_demand_terms(template) == {f"stage_gib@{STAGE_TIER}": 2}
     queue = _queue(tmp_path)
     # Today's publish rule refuses tier demand without an attributing
     # residency block (#595) — the exact rule the hook proposal extends.
-    # This refusal is why owner demand needs the routed pool hunk.
     with pytest.raises(pool.PoolContractError, match="residency block"):
         queue.publish(action_key="d" * 64, cas_root="/cas",
                       worker_script="/w.py", checkout_root="/co",
@@ -349,10 +345,13 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
     bound = _bind(queue, template)
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
+    files = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
+             str(origin / "scratch-0.pt")]
     pre = po.require_prewrite(queue, instance, template,
                               batch_id="batch-0000", tier=STAGE_TIER,
                               class_bytes={"payload": 12288, "checkpoint": 0,
-                                           "temp": 2048})
+                                           "temp": 2048},
+                              paths=files)
     assert pre["ok"] is True
     a, b, c = b"A" * 4096, b"B" * 8192, b"C" * 2048
     descs = [
@@ -371,7 +370,7 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(batch_ns) == {}
 
 
-def test_prewrite_counts_outstanding_and_abort_frees(tmp_path: Path) -> None:
+def test_prewrite_counts_outstanding_abort_proves_absence(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -379,40 +378,53 @@ def test_prewrite_counts_outstanding_and_abort_frees(tmp_path: Path) -> None:
     bound = _bind(queue, template)
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
+    fa = [str(origin / "a.pt")]
+    fb = [str(origin / "b.pt")]
     # Two outstanding 768 KiB reservations under a 1 MiB cap: the second
-    # refuses while the first is outstanding (the R4 defect, fixed).
+    # refuses while the first is outstanding.
     first = po.require_prewrite(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
-        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0})
+        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
+        paths=fa)
     assert first["ok"] is True
     second = po.require_prewrite(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
-        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0})
+        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
+        paths=fb)
     assert second["ok"] is False
     assert second["refusal"] == "prewrite-exceeds-payload-maxima"
-    # Idempotent retry of the same reservation passes (excluded once).
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
-        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0})["ok"] is True
-    # Attested abort frees the headroom; the full cap is writable again.
+        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
+        paths=fa)["ok"] is True
+    # Abort with a present file refuses: uncommitted is not unwritten.
+    _write(origin / "a.pt", b"A" * 64)
+    refused_abort = po.abort_prewrite(queue, instance, template, batch_id="batch-a")
+    assert refused_abort["ok"] is False
+    assert refused_abort["refusal"] == "abort-files-present-retain"
+    # Safe disposal is the producer's job; absence unblocks the abort.
+    (origin / "a.pt").unlink()
     assert po.abort_prewrite(queue, instance, template,
                              batch_id="batch-a") == {
         "ok": True, "batch_id": "batch-a", "aborted": True}
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
-        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0})["ok"] is True
+        class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
+        paths=fb)["ok"] is True
     assert po.abort_prewrite(queue, instance, template,
                              batch_id="missing") == {
         "ok": True, "batch_id": "missing", "aborted": False}
     # Checkpoint over maxima refuses before any write; zeros stay valid.
     refused = po.require_prewrite(
         queue, instance, template, batch_id="big-ckpt", tier=STAGE_TIER,
-        class_bytes={"payload": 0, "checkpoint": (1 << 20) + 1, "temp": 0})
+        class_bytes={"payload": 0, "checkpoint": (1 << 20) + 1, "temp": 0},
+        paths=[str(origin / "ckpt.pt")])
     assert refused["ok"] is False
     assert "checkpoint" in str(refused["refusal"])
     zeros = po.require_prewrite(
         queue, instance, template, batch_id="zeros", tier=STAGE_TIER,
-        class_bytes={"payload": 64, "checkpoint": 0, "temp": 0})
+        class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
+        paths=[str(origin / "z.pt")])
     assert zeros["ok"] is True
     # Commit with no prewrite record refuses.
     a = b"A" * 64
@@ -441,7 +453,8 @@ def test_prewrite_counts_outstanding_and_abort_frees(tmp_path: Path) -> None:
              "PRISMABUILD_ACTION_SCOPE": control2["scope_id"]})
     assert po.require_prewrite(
         queue, other, template, batch_id="x", tier=STAGE_TIER,
-        class_bytes={"payload": 1, "checkpoint": 0, "temp": 0}) == {
+        class_bytes={"payload": 1, "checkpoint": 0, "temp": 0},
+        paths=[str(origin / "x.pt")]) == {
             "ok": False, "refusal": "prewrite-not-admitted"}
 
 
@@ -456,28 +469,27 @@ def test_concurrent_prewrites_admit_exactly_one(tmp_path: Path) -> None:
     results: dict[str, bool] = {}
     barrier = threading.Barrier(2)
 
-    def attempt(batch_id: str) -> None:
+    def attempt(suffix: str) -> None:
         barrier.wait(timeout=30)
         outcome = po.require_prewrite(
-            queue, instance, template, batch_id=batch_id, tier=STAGE_TIER,
-            class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0})
-        results[batch_id] = bool(outcome["ok"])
+            queue, instance, template, batch_id=f"race-{suffix}",
+            tier=STAGE_TIER,
+            class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
+            paths=[str(origin / f"race-{suffix}.pt")])
+        results[suffix] = bool(outcome["ok"])
 
-    threads = [threading.Thread(target=attempt, args=(f"race-{i}",))
+    threads = [threading.Thread(target=attempt, args=(str(i),))
                for i in range(2)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=60)
-    # Deterministic outcome multiset under either arrival order: the 1 MiB
-    # cap admits exactly one 768 KiB reservation.
     assert sorted(results.values()) == [False, True]
 
 
 def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
-    # Wide durable envelope with a 2 GiB window for a 1.5 GiB batch.
     template = _template(str(origin), durable_maxima={
         "payload_max_bytes": 4 * GIB,
         "checkpoint_max_bytes": 1 << 20,
@@ -488,11 +500,11 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
     payload_bytes = 3 * GIB // 2
+    sparse = origin / "boundary-0.pt"
     assert po.require_prewrite(
         queue, instance, template, batch_id="big", tier=STAGE_TIER,
-        class_bytes={"payload": payload_bytes, "checkpoint": 0,
-                     "temp": 0})["ok"] is True
-    sparse = origin / "boundary-0.pt"
+        class_bytes={"payload": payload_bytes, "checkpoint": 0, "temp": 0},
+        paths=[str(sparse)])["ok"] is True
     with open(sparse, "wb") as handle:
         handle.truncate(payload_bytes)
     desc = po.validate_descriptor({
@@ -506,15 +518,15 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     # Crash injection between acquire and transfer: exact tokens under the
     # batch holder, one share moved with the same rename primitive, intent
     # filed exactly as commit would file it (white-box crash instant;
-    # every state transition below runs through the real APIs).
+    # every transition below it runs through the real APIs).
     mover = "a" * 64
-    batch_ns = po.batch_namespace(
-        instance, "big", po.output_manifest_sha256([desc]))
+    manifest = po.output_manifest_sha256([desc])
+    batch_ns = po.batch_namespace(instance, "big", manifest)
     ledger = queue.tier_ledger(STAGE_TIER)
     assert ledger.acquire(batch_ns, {STAGE_BARE: 2}) is True
     po._write_funding(po._funding_dir(queue.root, instance) / "big.funding.json", {
         "batch_id": "big", "tier": STAGE_TIER, "mover_key": mover,
-        "batch_gib": 2, "manifest_digest": po.output_manifest_sha256([desc])})
+        "batch_gib": 2, "manifest_digest": manifest})
     held = ledger.held_dir
     names = sorted(p.name for p in (held / batch_ns).iterdir())
     assert len(names) == 2
@@ -543,10 +555,13 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     assert po.admit_instance(queue, instance, template)["ok"] is True
 
     # Window 0: boundary-0 + cotangent genA + scratch temp.
+    files0 = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
+              str(origin / "scratch-0.pt")]
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0000",
         tier=STAGE_TIER,
-        class_bytes={"payload": 12288, "checkpoint": 0, "temp": 2048})["ok"] is True
+        class_bytes={"payload": 12288, "checkpoint": 0, "temp": 2048},
+        paths=files0)["ok"] is True
     gen_a = po.mint_generation()
     descs0 = [
         _desc(origin, template, "boundary-0", "payload", "boundary-0.pt", b"A" * 4096, instance),
@@ -560,10 +575,13 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     _stage_batch(queue, batch0, origin, stage, out_base, tmp_path)
 
     # Window 1: boundary-1 + cotangent genB (rollover, same slot new bytes) + checkpoint.
+    files1 = [str(origin / "boundary-1.pt"), str(origin / "cotangent-0.pt"),
+              str(origin / "checkpoint-0.pt")]
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0001",
         tier=STAGE_TIER,
-        class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0})["ok"] is True
+        class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0},
+        paths=files1)["ok"] is True
     gen_b = po.mint_generation()
     assert gen_b != gen_a
     descs1 = [
@@ -653,16 +671,39 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path) -> None:
     # released each mover exactly once — receipts + empty ledger are proof).
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    first = po.safe_release_instance(queue, instance, template)
+    sdk = rlc if HAS_PIN else None
+    first = po.safe_release_instance(queue, instance, template, lease_sdk=sdk)
     assert first["ok"] is True and first["released"] == 0
-    second = po.safe_release_instance(queue, instance, template)
+    assert first["lease_proof"] == ("sdk-census-clean" if HAS_PIN
+                                    else "sdk-absent-structural")
+    second = po.safe_release_instance(queue, instance, template, lease_sdk=sdk)
     assert second["ok"] is True and second["released"] == 0
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {}
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
         po.reservation_holder(instance)) == {}
 
 
-def test_due_rows_publishable_and_failed_mover_recovery(tmp_path: Path) -> None:
+def test_owner_superseded_retain(tmp_path: Path) -> None:
+    origin = tmp_path / "pool-origin" / "outputs"
+    origin.mkdir(parents=True)
+    template = _template(str(origin))
+    queue = _queue(tmp_path)
+    bound = _bind(queue, template)
+    instance, claimed = bound["instance"], bound["claimed"]
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    # Owner finishes, then the SAME key is resubmitted and claimed: the old
+    # terminal never frees scope bound to the old attempt.
+    queue.finish(OWNER, status="executed", detail={"status": "executed"},
+                 claim_snapshot=claimed)
+    claimed2 = _publish_claim(queue, OWNER)
+    control2 = _file_broker_control(queue, OWNER)
+    assert control2["nonce"] != bound["control"]["nonce"]
+    retained = po.safe_release_instance(queue, instance, template)
+    assert retained["ok"] is False
+    assert retained["refusal"] == "owner-superseded-retain"
+
+
+def test_funding_mover_live_retain(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -670,9 +711,53 @@ def test_due_rows_publishable_and_failed_mover_recovery(tmp_path: Path) -> None:
     bound = _bind(queue, template)
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
+    payload = b"A" * 4096
+    paths = [str(origin / "boundary-0.pt")]
+    assert po.require_prewrite(
+        queue, instance, template, batch_id="batch-w", tier=STAGE_TIER,
+        class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
+        paths=paths)["ok"] is True
+    # Crash-prefix funding with a LIVE mover: tokens acquired under the
+    # batch holder, one share moved, intent filed; the mover row is live
+    # (claimed) so the remainder must not be reclaimed blindly.
+    ns = po.batch_namespace(
+        instance, "batch-w",
+        po.output_manifest_sha256([{
+            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+            "artifact_class": "payload", "path": paths[0],
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "producer_generation": "0" * 32,
+            "owner_action_key": OWNER,
+            "owner_attempt": dict(instance["owner_attempt"])}]))
+    ledger = queue.tier_ledger(STAGE_TIER)
+    assert ledger.acquire(ns, {STAGE_BARE: 1}) is True
+    mover = "a" * 64
+    po._write_funding(po._funding_dir(queue.root, instance) / "batch-w.funding.json", {
+        "batch_id": "batch-w", "tier": STAGE_TIER, "mover_key": mover,
+        "batch_gib": 1, "manifest_digest": "0" * 64})
+    queue.publish(action_key=mover, cas_root="/cas", worker_script="/w.py",
+                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
+    live = queue.claim(owner="mover-worker")
+    assert live is not None and live["action_key"] == mover
+    retained = po.safe_release_instance(queue, instance, template)
+    assert retained["ok"] is False
+    assert retained["refusal"] == "funding-mover-live-retain"
+
+
+def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
+    origin = tmp_path / "pool-origin" / "outputs"
+    origin.mkdir(parents=True)
+    template = _template(str(origin))
+    queue = _queue(tmp_path)
+    bound = _bind(queue, template)
+    instance = bound["instance"]
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    paths = [str(origin / "boundary-0.pt")]
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0000", tier=STAGE_TIER,
-        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0})["ok"] is True
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=paths)["ok"] is True
     descs = [_desc(origin, template, "boundary-0", "payload", "boundary-0.pt",
                    b"A" * 4096, instance)]
     batch = po.commit_batch(queue, instance, template, descs,
@@ -680,29 +765,27 @@ def test_due_rows_publishable_and_failed_mover_recovery(tmp_path: Path) -> None:
                             mover_key=MOVER0)
     assert batch["ok"] is True
     # Committed but unstaged, mover absent everywhere: one frozen row whose
-    # residency block passes the REAL pool validator.
+    # residency block passes the REAL pool validator. Sealer plumbing
+    # (cas/worker/checkout) is the submitter lane's (pbrun hunk); this lane
+    # owns identity/demand/residency only.
     rows = po.due_mover_rows(queue, instance, template)
     assert [(r["batch_id"], r["reason"]) for r in rows] == [
         ("batch-0000", "needs-publish")]
     assert rows[0]["action_key"] == MOVER0
     assert rows[0]["manifest_digest"] == batch["manifest_digest"]
     pool.PoolQueue.validate_residency(rows[0]["residency"], rows[0]["resources"])
-    # Sealed through the EXISTING publish channel (submitter-plumbed paths);
-    # the row sits READY carrying its attributing block.
-    sealed = po.seal_mover_row(rows[0], cas_root="/cas", worker_script="/w.py",
-                               checkout_root="/co", tags=["dl380g10"],
-                               max_attempts=1)
-    queue.publish(**{k: sealed[k] for k in (
-        "action_key", "cas_root", "worker_script", "checkout_root", "tags",
-        "resources", "residency", "max_attempts", "retry_safe")},
-        recompute=True)
+    # Lifecycle classification through real queue transitions (minimal rows
+    # labeled as state-machine fixtures, not movement jobs — execution proof
+    # stays at the stage_move tool level in the two-window test).
+    queue.publish(action_key=MOVER0, cas_root="/cas", worker_script="/w.py",
+                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1},
+                  max_attempts=1)
     assert pool._read_json(queue.item_path(pool.READY, MOVER0)) is not None
     assert po.due_mover_rows(queue, instance, template) == []
     assert [(e["batch_id"], e["event"]) for e in
             po.recover_batches(queue, instance, template)] == [
         ("batch-0000", "output-mover-live-wait")]
-    # A FAILED mover terminal reports retry (real queue records).
-    mover_claim = queue.claim(owner="mover-worker", tags=["dl380g10"])
+    mover_claim = queue.claim(owner="mover-worker", tags=[])
     assert mover_claim is not None and mover_claim["action_key"] == MOVER0
     queue.finish(MOVER0, status="failed", detail={"status": "failed"},
                  claim_snapshot=mover_claim)
@@ -731,9 +814,12 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
     instance = bound["instance"]
     out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
+    files = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
+             str(origin / "checkpoint-0.pt")]
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0000", tier=STAGE_TIER,
-        class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0})["ok"] is True
+        class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0},
+        paths=files)["ok"] is True
     descs = [
         _desc(origin, template, "boundary-0", "payload", "boundary-0.pt", b"A" * 4096, instance),
         _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b"B" * 8192, instance),
@@ -909,13 +995,14 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
     sparse = origin / "boundary-0.pt"
-    with open(sparse, "wb") as handle:
-        handle.truncate(3 * GIB)
-    assert sparse.lstat().st_size == 3 * GIB
     assert po.require_prewrite(
         queue, instance, template, batch_id="sparse",
         tier=STAGE_TIER,
-        class_bytes={"payload": 3 * GIB, "checkpoint": 0, "temp": 0})["ok"] is True
+        class_bytes={"payload": 3 * GIB, "checkpoint": 0, "temp": 0},
+        paths=[str(sparse)])["ok"] is True
+    with open(sparse, "wb") as handle:
+        handle.truncate(3 * GIB)
+    assert sparse.lstat().st_size == 3 * GIB
     desc = po.validate_descriptor({
         "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(sparse),

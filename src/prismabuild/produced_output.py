@@ -223,10 +223,23 @@ def validate_template(value: object) -> dict[str, object]:
     demands = value.get("working_demands")
     if not isinstance(demands, Mapping) or not demands:
         raise ProducedOutputError("template working_demands must be non-empty")
+    try:
+        from prismabuild import storage_tiers as tiers_mod
+    except ImportError as exc:
+        raise ProducedOutputError(
+            f"template tier-kind check needs storage_tiers: {exc}") from None
     checked_demands: dict[str, dict[str, int]] = {}
     for tier, spec in demands.items():
         if not isinstance(tier, str) or not tier:
             raise ProducedOutputError("template working_demands keys must be tier ids")
+        try:
+            kind = tiers_mod.tier_kind_of(tier)
+        except Exception:
+            kind = None
+        if kind not in ("stage", "ram"):
+            raise ProducedOutputError(
+                f"template tier {tier!r} is not an authorized output kind "
+                f"(stage/ram, never arc/pool)")
         if not isinstance(spec, Mapping) or set(spec) != {"minimum_gib", "window_gib"}:
             raise ProducedOutputError(
                 f"template working_demands[{tier!r}] must carry minimum/window GiB")
@@ -234,6 +247,9 @@ def validate_template(value: object) -> dict[str, object]:
                               where=f"template working_demands[{tier}].minimum_gib")
         window = _positive_int(spec.get("window_gib"),
                                where=f"template working_demands[{tier}].window_gib")
+        if minimum > window:
+            raise ProducedOutputError(
+                f"template working_demands[{tier}] minimum exceeds window")
         checked_demands[str(tier)] = {"minimum_gib": minimum, "window_gib": window}
     tiers = value.get("permitted_tiers")
     if not isinstance(tiers, list) or not tiers:
@@ -352,7 +368,9 @@ def bind_instance(queue, template: Mapping[str, object], *,
     32-hex nonce, broker-formula scope_id). Refusals name the missing half
     (`no-launch-context` / `no-control-context`) or the mismatch
     (`attempt-superseded`); a missing/moved claim refuses
-    (foreign/stale). There is no intent fallback, no derived nonce, and no
+    (foreign/stale). The template must already be declared (byte-identical
+    filed body) — an arbitrary caller template plus a real claim binds
+    nothing. There is no intent fallback, no derived nonce, and no
     live-claim-only binding in production or fixture.
     """
 
@@ -373,6 +391,19 @@ def bind_instance(queue, template: Mapping[str, object], *,
         raise ProducedOutputError(f"stale claim snapshot: {exc}") from None
     if not same:
         raise ProducedOutputError("stale claim snapshot: live claim moved on")
+    # The template must be declared (filed, byte-identical) — an arbitrary
+    # caller template plus a real claim binds nothing. (Attribution of the
+    # declaration to this sealed owning action travels in the owner item
+    # annotation; see the submission hook proposal.)
+    canonical = json.dumps(checked, sort_keys=True,
+                           separators=(",", ":")).encode() + b"\n"
+    try:
+        filed = template_path(queue.root, checked).read_bytes()
+    except OSError as exc:
+        raise ProducedOutputError(
+            f"undeclared-template: {exc}") from None
+    if filed != canonical:
+        raise ProducedOutputError("undeclared-template: filed body differs")
     control = live.get("resource_scope")
     claim_nonce = claim_scope = ""
     if isinstance(control, Mapping):
@@ -677,11 +708,28 @@ def _funding_dir(queue_root: str | Path,
     return instance_dir(queue_root, instance) / "funding"
 
 
+def _check_class_bytes(value: object, *, where: str) -> dict[str, int]:
+    """Exact class-bytes shape: all three classes, type-is-int, non-negative.
+
+    Anything else (missing keys, strings, negatives, bools) is corrupt
+    state: callers retain/refuse, never mint quota from it.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {
+            "payload", "checkpoint", "temp"}:
+        raise ProducedOutputError(f"{where} must name payload/checkpoint/temp")
+    out: dict[str, int] = {}
+    for cls in ("payload", "checkpoint", "temp"):
+        out[cls] = _nonneg_int(value.get(cls), where=f"{where}.{cls}")
+    return out
+
+
 def _read_prewrite(path: Path) -> dict[str, object] | None:
     """One outstanding prewrite record, None when absent.
 
     Raises ProducedOutputError on corrupt/unreadable (unknown state, never
-    an empty reservation).
+    an empty reservation). Class bytes are validated exact here so no
+    caller can mint quota from a malformed record.
     """
 
     try:
@@ -693,7 +741,15 @@ def _read_prewrite(path: Path) -> dict[str, object] | None:
             f"prewrite record unreadable: {exc}") from None
     if not isinstance(raw, Mapping):
         raise ProducedOutputError("prewrite record is corrupt")
-    return dict(raw)
+    record = dict(raw)
+    record["class_bytes"] = _check_class_bytes(
+        record.get("class_bytes"), where="prewrite class_bytes")
+    paths = record.get("paths", [])
+    if not isinstance(paths, list) or any(
+            not isinstance(p, str) or not p for p in paths):
+        raise ProducedOutputError("prewrite paths are corrupt")
+    record["paths"] = list(paths)
+    return record
 
 
 def _outstanding_sums(queue_root: str | Path, instance: Mapping[str, object],
@@ -845,15 +901,19 @@ def _write_commitments(path: Path, record: Mapping[str, object]) -> None:
 
 
 def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
+    """Committed (non-retired) class bytes; malformed records fail closed."""
+
     sums = {"payload": 0, "checkpoint": 0, "temp": 0}
-    for record in batches.values():
-        if not isinstance(record, Mapping) or record.get("retired"):
-            continue
-        class_bytes = record.get("class_bytes")
-        if not isinstance(class_bytes, Mapping):
+    for batch_id, record in batches.items():
+        if not isinstance(record, Mapping):
+            raise ProducedOutputError(
+                f"unknown-retain: bad committed batch {batch_id!r}")
+        if record.get("retired"):
             continue
         for cls in sums:
-            sums[cls] += int(class_bytes.get(cls, 0) or 0)
+            sums[cls] += _check_class_bytes(
+                record.get("class_bytes"),
+                where=f"committed batch {batch_id!r}")[cls]
     return sums
 
 
@@ -951,7 +1011,7 @@ def admit_funded_window(queue, instance: Mapping[str, object],
                     "tier_id": tier}
     delivered = [name for name in ("reserve_fence", "transfer_fence",
                                    "funded_cover")
-                 if callable(getattr(pool_mod, name, None))]
+                 if callable(getattr(pool_mod.PoolQueue, name, None))]
     return {"ok": False, "refusal": "funding-primitive-pending",
             "liveness_draft_present": delivered,
             "dependency": ("liveness funded-claim primitive: funding record "
@@ -963,16 +1023,22 @@ def admit_funded_window(queue, instance: Mapping[str, object],
 
 def require_prewrite(queue, instance: Mapping[str, object],
                      template: Mapping[str, object], *, batch_id: str,
-                     tier: str, class_bytes: Mapping[str, int]) -> dict[str, object]:
+                     tier: str, class_bytes: Mapping[str, int],
+                     paths: list[str]) -> dict[str, object]:
     """File a prewrite budget claim BEFORE any HDD byte is written.
 
     The production writer path must call this (not an optional helper):
-    uncharged temp/checkpoint writes refuse here. Checks the bound admission
-    record (binding metadata, never funding) + durable headroom for the
-    planned class bytes, and files an immutable prewrite record the later
-    commit must present. Physical funding happens only at `commit_batch`
-    (exact ledger acquire) and in the liveness window primitive (pending).
-    Zero-byte classes are valid (explicit zeros, never missing keys).
+    uncharged temp/checkpoint writes refuse here. `paths` names the exact
+    durable-origin files this batch will write (absolute, normalized, under
+    the template prefix, distinct); the commit must present descriptors for
+    exactly this set, and abort requires every one absent. Uncommitted does
+    NOT mean unwritten: files without a batch never enter staged accounting.
+    Checks the bound admission record (binding metadata, never funding) +
+    durable headroom for the planned class bytes, and files an immutable
+    prewrite record the later commit must present. Physical funding happens
+    only at `commit_batch` (exact ledger acquire) and in the liveness
+    window primitive (pending). Zero-byte classes are valid (explicit
+    zeros, never missing keys).
     """
 
     checked_template = validate_template(template)
@@ -987,6 +1053,17 @@ def require_prewrite(queue, instance: Mapping[str, object],
     for cls in ("payload", "checkpoint", "temp"):
         planned[cls] = _nonneg_int(class_bytes.get(cls),
                                    where=f"prewrite class_bytes.{cls}")
+    if not isinstance(paths, list) or not paths:
+        return {"ok": False, "refusal": "prewrite-paths-required"}
+    planned_paths: list[str] = []
+    for path in paths:
+        candidate = _abs_norm(path, where="prewrite paths[]")
+        _resolve_contained(str(checked_template["output_prefix"]), candidate,
+                           where="prewrite paths[]")
+        planned_paths.append(os.path.normpath(candidate))
+    if len(set(planned_paths)) != len(planned_paths):
+        return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
+    planned_paths.sort()
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         try:
             sums = _outstanding_sums(queue.root, checked_instance, batch_id)
@@ -1009,6 +1086,7 @@ def require_prewrite(queue, instance: Mapping[str, object],
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{batch_id}.prewrite.json"
         record = {"batch_id": batch_id, "tier": tier, "class_bytes": planned,
+                  "paths": planned_paths,
                   "owner_action_key": str(checked_instance["owner_action_key"]),
                   "owner_attempt": dict(checked_instance["owner_attempt"])}
         raw = json.dumps(record, sort_keys=True,
@@ -1024,22 +1102,27 @@ def require_prewrite(queue, instance: Mapping[str, object],
             except ProducedOutputError as inner:
                 return {"ok": False, "refusal": f"prewrite-unreadable: {inner}"}
             if (existing is not None and existing.get("tier") == tier
-                    and dict(existing.get("class_bytes", {})) == planned):
+                    and dict(existing.get("class_bytes", {})) == planned
+                    and list(existing.get("paths", [])) == planned_paths):
                 return {"ok": True, "batch_id": batch_id,
-                        "class_bytes": planned, "duplicate": True}
+                        "class_bytes": planned, "paths": planned_paths,
+                        "duplicate": True}
             return {"ok": False, "refusal": f"prewrite-conflict: {exc}"}
-    return {"ok": True, "batch_id": batch_id, "class_bytes": planned}
+    return {"ok": True, "batch_id": batch_id, "class_bytes": planned,
+            "paths": planned_paths}
 
 
 def abort_prewrite(queue, instance: Mapping[str, object],
                    template: Mapping[str, object], *, batch_id: str) -> dict[str, object]:
-    """Attested abort of an outstanding prewrite (producer wrote nothing).
+    """Abort an outstanding prewrite after proving nothing durable remains.
 
-    Allowed only while the batch is uncommitted. Frees the outstanding
-    accounting headroom; no ledger tokens move because prewrites hold none
-    (physical funding happens at commit). HDD files the producer may have
-    written stay the producer's durable-origin problem and never enter
-    staged accounting. Returns {"ok": True, "aborted": ...}.
+    Allowed only while the batch is uncommitted. Uncommitted does NOT mean
+    unwritten, so every planned path must be absent (safe disposal is the
+    producer's job: this lane never deletes durable-origin files): a
+    present file refuses `abort-files-present-retain`, an unstatable one
+    retains unknown. Frees the outstanding accounting headroom; no ledger
+    tokens move because prewrites hold none (physical funding happens at
+    commit). Returns {"ok": True, "aborted": ...}.
     """
 
     checked_template = validate_template(template)
@@ -1055,6 +1138,23 @@ def abort_prewrite(queue, instance: Mapping[str, object],
         assert isinstance(batches, dict)
         if batch_id in batches:
             return {"ok": False, "refusal": "batch-committed"}
+        try:
+            prewrite = _read_prewrite(
+                _prewrites_dir(queue.root, checked_instance)
+                / f"{batch_id}.prewrite.json")
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if prewrite is None:
+            return {"ok": True, "batch_id": batch_id, "aborted": False}
+        for planned in prewrite.get("paths", []):
+            try:
+                os.lstat(str(planned))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            return {"ok": False, "refusal": "abort-files-present-retain",
+                    "path": str(planned)}
         path = _prewrites_dir(queue.root, checked_instance) / f"{batch_id}.prewrite.json"
         try:
             path.unlink()
@@ -1130,9 +1230,18 @@ def commit_batch(queue, instance: Mapping[str, object],
         if prewrite is None:
             return {"ok": False, "refusal": "prewrite-reservation-missing"}
         if (prewrite.get("tier") != tier
-                or dict(prewrite.get("class_bytes", {})) != class_bytes):
+                or dict(prewrite.get("class_bytes", {})) != class_bytes
+                or sorted(str(d["path"]) for d in sealed)
+                != sorted(prewrite.get("paths", []))
+                or prewrite.get("owner_action_key")
+                != checked_instance["owner_action_key"]
+                or dict(prewrite.get("owner_attempt", {})) != dict(
+                    checked_instance["owner_attempt"])):
             return {"ok": False, "refusal": "prewrite-mismatch"}
-        sums = _class_sums(batches)
+        try:
+            sums = _class_sums(batches)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         maxima = checked_instance_maxima(checked_template)
         for cls in sums:
             if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
@@ -1313,17 +1422,33 @@ def mark_batch_retired(queue_root: str | Path, instance: Mapping[str, object],
 
 
 def safe_release_instance(queue, instance: Mapping[str, object],
-                          template: Mapping[str, object]) -> dict[str, object]:
-    """Release leftover batch-holder tokens ONLY when retirement is proven safe.
+                          template: Mapping[str, object],
+                          lease_sdk: object = None) -> dict[str, object]:
+    """Release leftover holder tokens ONLY when retirement is proven safe.
 
     Movers release their exact tokens through egress (`retire_batch`); this
-    reclaims any remainder (e.g. partial-transfer leftovers) after a fresh
-    census under the prefix lock: instance + commitments readable (unknown
-    retains); every batch retired AND its mover holder empty AND its
-    fragments gone (active retains); live-lease refs absent where the SDK is
-    available (live retains, dependency named when not); owner terminal
-    present (owner-active retains). Idempotent: the orderly path releases 0
-    here because egress already released exactly once; leftovers release once.
+    reclaims remainders (partial-transfer leftovers, crash-prefix funding)
+    after a fresh census under the prefix lock. EVERY check is exact:
+
+    - instance + commitments readable, else unknown-retain;
+    - every committed batch retired AND its mover holder empty AND its
+      fragments gone, else active-batches/movers-retain;
+    - funding-intent movers: live (READY/CLAIMED) or DONE-executed (bytes
+      may exist unattributed) retain; only absent/withdrawn release;
+    - live pins: any `*.lease.json` under the owner leases dir retains;
+      with the coherent SDK (`from prismabuild import reader_lease`,
+      passed as `lease_sdk`) a `live_for` census runs too, else the result
+      records `lease_proof: sdk-absent-structural` (never silently passed);
+    - owner containment: a live claim with the SAME nonce/scope retains
+      (owner-active); a live claim with a DIFFERENT attempt retains
+      (owner-superseded — the old terminal never frees a successor's
+      scope); terminal by key alone never overrides a live claim;
+    - every ledger release is attempted individually: the FIRST exception
+      retains (ok False), never ok True after a release failure;
+    - physical files are never deleted here (no unlink of staged bytes).
+
+    Idempotent: the orderly path releases 0 (egress already released
+    exactly once); leftovers release once.
     """
 
     from prismabuild import pool as pool_mod
@@ -1369,28 +1494,93 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                                 "batch_id": batch_id}
                 except OSError as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        # Funding-intent-only movers: physical disposition is unknown, so
+        # only holders provably holding no copy release. A mover that is
+        # live (copying) or DONE-executed (bytes may sit unattributed on
+        # the tier, owned by the lease lane's reconcile) retains; absent
+        # or withdrawn releases. Physical files are never unlinked here.
         try:
-            import reader_lease  # PB730 SDK when deployed; absent on main
-        except ImportError:
-            reader_lease = None  # type: ignore[assignment]
-        if reader_lease is not None:
+            intent_names = sorted(
+                p.name for p in _funding_dir(queue.root, checked).iterdir()
+                if p.is_file() and p.name.endswith(".funding.json"))
+        except OSError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        for name in intent_names:
+            batch_id = name[:-len(".funding.json")]
+            if batch_id in batches:
+                continue
             try:
-                staged: set[str] = set()
-                live = reader_lease.live_for(queue, staged or None,
-                                             residency_root=str(out_base))
-                if live:
-                    return {"ok": False, "refusal": "live-refs-retain",
-                            "pins": sorted(live)[:8]}
+                funding = _read_funding(
+                    _funding_dir(queue.root, checked) / name)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            if funding is None:
+                continue
+            mover = funding.get("mover_key")
+            if not isinstance(mover, str) or not mover:
+                return {"ok": False, "refusal": "unknown-retain: bad-funding"}
+            state = _mover_live_state(queue, mover)
+            if state in ("claimed", "ready"):
+                return {"ok": False, "refusal": "funding-mover-live-retain",
+                        "batch_id": batch_id}
+            if state == "done":
+                return {"ok": False, "refusal": "funding-orphaned-staged-retain",
+                        "batch_id": batch_id}
+            if state == "unknown":
+                return {"ok": False, "refusal": "unknown-retain: mover-state"}
+        # Live pins: pin files under the owner leases dir retain. With the
+        # coherent SDK (`from prismabuild import reader_lease`, passed as
+        # `lease_sdk`) a path census runs too; without it the result
+        # records the structural proof (never silently passed).
+        leases_owner = out_base / "leases" / str(checked["owner_action_key"])
+        try:
+            live_pins = sorted(p.name for p in leases_owner.iterdir()
+                               if p.is_file() and p.name.endswith(".lease.json"))
+        except FileNotFoundError:
+            live_pins = []
+        except OSError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if live_pins:
+            return {"ok": False, "refusal": "live-refs-retain",
+                    "pins": live_pins[:8]}
+        lease_proof = "sdk-absent-structural"
+        if lease_sdk is not None:
+            try:
+                live = lease_sdk.live_for(
+                    queue, None, residency_root=str(out_base))
             except Exception as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            if live:
+                return {"ok": False, "refusal": "live-refs-retain",
+                        "pins": sorted(str(k) for k in live)[:8]}
+            lease_proof = "sdk-census-clean"
         owner = str(checked["owner_action_key"])
+        attempt = checked["owner_attempt"]
+        assert isinstance(attempt, dict)
+        live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        if isinstance(live_claim, Mapping):
+            control = live_claim.get("resource_scope")
+            live_nonce = live_scope = ""
+            if isinstance(control, Mapping):
+                candidate = control.get("nonce")
+                if isinstance(candidate, str) and candidate:
+                    live_nonce = candidate
+                for field in ("scope_id", "scope_unit", "unit"):
+                    unit = control.get(field)
+                    if isinstance(unit, str) and unit:
+                        live_scope = unit
+                        break
+            if (live_nonce == attempt["nonce"]
+                    and live_scope == attempt["scope_id"]):
+                return {"ok": False, "refusal": "owner-active-retain"}
+            # A live claim for another attempt (successor or stranger) is
+            # never freed by this attempt's terminal: exact containment or
+            # nothing.
+            return {"ok": False, "refusal": "owner-superseded-retain"}
         terminal = (pool_mod._read_json(queue.item_path(pool_mod.DONE, owner))
                     or pool_mod._read_json(queue.item_path(pool_mod.FAILED, owner))
                     or pool_mod._read_json(queue.item_path(pool_mod.WITHDRAWN, owner)))
-        live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
         if terminal is None:
-            if live_claim is not None:
-                return {"ok": False, "refusal": "owner-active-retain"}
             return {"ok": False, "refusal": "unknown-retain: no-terminal"}
         released = 0
         holders: set[str] = set()
@@ -1434,12 +1624,13 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             for holder in sorted(holders):
                 try:
                     released += queue.tier_ledger(tier).release(holder)
-                except Exception:
-                    break
-        # Batch/mover holders are empty post-transfer by construction;
-        # leftovers (partial transfers, crash-prefix funding) release here,
-        # once, idempotently.
-        return {"ok": True, "released": released}
+                except Exception as exc:
+                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        # Holders are empty post-transfer by construction; leftovers
+        # (partial transfers, crash-prefix funding) release here, once,
+        # idempotently. Any release failure above already retained with
+        # ok False — this line is unreachable after a release exception.
+        return {"ok": True, "released": released, "lease_proof": lease_proof}
 
 
 def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, object]]:
@@ -1547,11 +1738,11 @@ def due_mover_rows(queue, instance: Mapping[str, object],
     absent mover with no staged fragments needs its first row. Each row
     carries the mover-variant residency block (`pool.validate_residency`
     accepts it: batch manifest digest + 0..total range on the batch tier
-    with demand at/above the range floor) and qualified tier demand, so a
-    submitter seals it through the EXISTING `queue.publish` + claim channel
-    unchanged; `seal_mover_row` merges the sealer-plumbed paths.
-    Publication itself (behind the funding gate) stays with the tier loop.
-    Deterministic order: batch_id ascending.
+    with demand at/above the range floor) and qualified tier demand, so the
+    submitter lane seals it (pbrun movement-graph machinery: real declared
+    inputs/argv/manifest) through the EXISTING `queue.publish` + claim
+    channel unchanged. Publication itself (behind the funding gate) stays
+    with the tier loop. Deterministic order: batch_id ascending.
     """
 
     from prismabuild import pool as pool_mod
@@ -1619,36 +1810,6 @@ def due_mover_rows(queue, instance: Mapping[str, object],
                        else "needs-publish"),
         })
     return rows
-
-
-def seal_mover_row(row: Mapping[str, object], *, cas_root: str | Path,
-                   worker_script: str | Path, checkout_root: str | Path,
-                   tags: object = (), max_attempts: int = 1) -> dict[str, object]:
-    """Merge sealer-plumbed paths into a due row for `queue.publish`.
-
-    Identity/demand/residency come from `due_mover_rows` (this lane);
-    cas/worker/checkout/tags/attempts come from the submitter (pbrun lane
-    in production, the test here). The result is publishable through the
-    existing channel unchanged (`recompute=True` at the call site, as the
-    tier loop publishes movers). Sealer fields are validated for shape
-    only; content trust stays with the sealer.
-    """
-
-    if not isinstance(row, Mapping):
-        raise ProducedOutputError("seal_mover_row needs a due row")
-    for field in ("action_key", "resources", "residency"):
-        if field not in row:
-            raise ProducedOutputError(f"due row lacks {field}")
-    if type(max_attempts) is not int or max_attempts < 1:
-        raise ProducedOutputError("max_attempts must be a positive integer")
-    sealed = dict(row)
-    sealed["cas_root"] = str(cas_root)
-    sealed["worker_script"] = str(worker_script)
-    sealed["checkout_root"] = str(checkout_root)
-    sealed["tags"] = list(tags) if isinstance(tags, (list, tuple)) else [str(tags)]
-    sealed["max_attempts"] = max_attempts
-    sealed["retry_safe"] = True
-    return sealed
 
 
 def recover_batches(queue, instance: Mapping[str, object],
@@ -1804,6 +1965,5 @@ __all__ = [
     "safe_release_instance",
     "output_scope_tick",
     "due_mover_rows",
-    "seal_mover_row",
     "recover_batches",
 ]
