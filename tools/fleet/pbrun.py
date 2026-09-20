@@ -6606,8 +6606,7 @@ def main() -> int:
     staged = None
     if args.residency == "stage":
         # One ownership transaction, under the consumer's existing transition
-        # lock: handoff, seal, consumer publication and lead publication are
-        # indivisible.  A dead consumer's cleanup rereads an old failed or
+        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
         # withdrawn terminal every cycle, and between ``freeze`` and the
         # consumer's own row it would see a filed plan nobody owns and reap
         # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``

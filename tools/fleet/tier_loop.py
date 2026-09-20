@@ -1137,8 +1137,8 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     observes the terminal and checks the consumer from outside that lock, so
     both are re-read inside it, and the plan attribution, every child
     withdrawal and the reap happen there too.  A resubmission of the same key
-    publishes its consumer and its lead under the same lock, so a stale pass
-    cannot reach the new generation's rows; a live or unreadable consumer
+    publishes its consumer under the same lock, and the window publishes the
+    lead under it too, so a stale pass cannot reach the new generation's rows; a live or unreadable consumer
     defers the sweep to the next cycle (#708 review).
     """
 

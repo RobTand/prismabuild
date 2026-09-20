@@ -4316,8 +4316,8 @@ under the consumer's transition lock:
   never read as "the old filing is gone": it either refuses by name while
   live work remains, or adopts the replacement filing that now stands.
 * `pbrun.main` holds the consumer's transition lock across the whole
-  ownership transaction -- handoff, seal, `freeze`, the consumer's own
-  publication and the lead mover's. A dead consumer's cleanup pass rereads an
+  ownership transaction -- handoff, seal, `freeze` and the consumer's own
+  publication. A dead consumer's cleanup pass rereads an
   old failed or withdrawn terminal every cycle; between a bare `freeze` and
   the consumer's row it would see a filed plan nobody owns and reap it.
 * Both automatic window publications (`residency_window` and
@@ -4334,8 +4334,8 @@ under the consumer's transition lock:
   live consumer outside the lock, so both are re-read inside it -- through
   `residency_plan.live_state`, whose uncertain answer defers -- and the plan
   attribution, every child withdrawal and the reap happen there too. Without
-  the lock, a pass that read the old terminal could reach the lead a
-  concurrent resubmission had just published and cancel it; `reap`'s locked
+  the lock, a pass that read the old terminal could reach the lead the
+  window had just published for a fresh resubmission and cancel it; `reap`'s locked
   recheck runs far too late to undo that.
 
 `handoff_safe` reads under the same discipline. It holds the consumer's lock
@@ -4380,7 +4380,8 @@ filing must be reaped before its successor can be sealed, and the planner
 reaps it itself once the handoff is safe.
 
 **A deliberate seal renews the generation it replaces.** A submission
-publishes its consumer and its first lead and nothing else, so the visible
+publishes its consumer and nothing else -- every phase is the window's to
+publish, the first included -- so the visible
 cancellations a reaped predecessor left on its later children outlive both the
 plan and the ownership they were made against: the child keys are content
 hashes, and a same-body resubmission -- same consumer, price, tool and ranges
@@ -4397,10 +4398,10 @@ under `withdrawn/superseded/`. For a later child the boundary is *that child's
 own locked retirement* in this transaction, not the submission and not the
 freeze that follows it: a cancellation filed for the child after its marker is
 moved survives, and the window's next cycle reads it as live -- it refuses to
-publish the child and marks the fresh plan superseded. The first lead is the
-ordinary explicit-submission case: the submission publishes it in the same
-transaction, and `publish`'s own transition lock is its boundary, unchanged by
-this renewal. The renewal never teaches the automatic publisher to ignore a
+publish the child and marks the fresh plan superseded. The first lead is a
+child like any other here: `child_keys` names every phase, so its marker is
+retired under its own transition lock in this same pass, on the same boundary
+and with no special case. The renewal never teaches the automatic publisher to ignore a
 marker: the window's `refuse_withdrawn` publications and its supersession pass
 are unchanged, and only the deliberate submission retires one.
 

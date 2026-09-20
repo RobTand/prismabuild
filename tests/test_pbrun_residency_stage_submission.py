@@ -23,9 +23,9 @@ old window's work is still claimed refuses rather than replacing the old
 plan.
 
 The renewal tests drive the case a same-body reseal creates (#708 review):
-the submission publishes its consumer and its lead and nothing else, so a
-reaped predecessor's cancellations on its later stage and ram children
-outlive it.  A fresh seal must retire those *visible* predecessor markers --
+the submission publishes its consumer and nothing else, so a reaped
+predecessor's cancellations on the stage and ram children the window went on
+to publish outlive it.  A fresh seal must retire those *visible* predecessor markers --
 under the consumer's transition lock and then each child's, only after
 `handoff_safe` proves nothing still names the old window -- while the
 immutable decisions stay, and a cancellation filed after the seal still
@@ -465,8 +465,8 @@ def _reaped_window_with_cancelled_children(
 ) -> tuple[pool.PoolQueue, str, dict[str, object], str, str]:
     """The causal chain a same-body renewal exists for, through the real path.
 
-    A submission publishes its consumer and its lead only; the window
-    publishes phase 1's stage copy as the consumer would advance, and the ram
+    A submission publishes its consumer only; the window publishes the lead
+    and phase 1's stage copy as the consumer would advance, and the ram
     window's promotion has been published for it; an operator cancels both
     later children; the consumer is withdrawn; the dead-consumer pass stops
     the queued lead and archives the plan; and a deliberate resubmission
