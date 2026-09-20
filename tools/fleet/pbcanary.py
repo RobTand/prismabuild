@@ -262,6 +262,12 @@ def submit_leg(
     later, spec-side value win). ``extra_env`` extends the action
     environment; ``manifest`` selects ``--data-manifest``.
 
+    A spec that names ``container_image`` (leg 2's digest-pinned campaign
+    image) has it forwarded as pbrun's ``--container-image``, sealed into
+    the action so only a box whose local Docker positively holds it can
+    claim the leg (#714). An absent or blank field adds no flag, so
+    ordinary legs submit exactly as before.
+
     Any refusal here means nothing executed: callers record it as a
     did-not-test leg entry (exit 2 class).
     """
@@ -288,6 +294,16 @@ def submit_leg(
         submit_argv += ["--demand", ",".join(
             f"{name}={value}" for name, value in sorted(demand.items()))]
     submit_argv += ["--priority", str(priority)]
+    # The image a leg runs inside is operator configuration on the spec
+    # (leg 2's ``container_image``: the digest-pinned campaign image it both
+    # echoes and runs).  The driver declares it to pbrun -- never inferred
+    # from argv and never a host pin -- so a box whose local Docker does not
+    # positively hold it denies the claim instead of spending the attempt and
+    # failing inside the container (#714).  Absent or blank is no flag at
+    # all, leaving every ordinary leg's command line unchanged.
+    container_image = str(spec.get("container_image") or "").strip()
+    if container_image:
+        submit_argv += ["--container-image", container_image]
     submit_argv += extra
     if manifest is not None:
         submit_argv += ["--data-manifest", str(manifest)]
