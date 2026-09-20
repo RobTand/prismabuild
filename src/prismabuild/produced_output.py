@@ -1824,8 +1824,8 @@ def reclaim_origin(queue, instance: Mapping[str, object],
     """
 
     try:
-        _require_bound_contract(template, instance)
-        checked_instance = validate_instance(instance)
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
     except ProducedOutputError as exc:
         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     _name(batch_id, where="batch_id")

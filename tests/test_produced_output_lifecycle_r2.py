@@ -354,9 +354,11 @@ def test_damaged_batch_record_retains_quota(tmp_path: Path) -> None:
                            mover_key=MOVER0)["ok"] is True
     # Corruption simulation (white-box queue-file edit, documented as
     # such): the origin file stays, only the metadata entries are
-    # emptied. Quota must retain, never prove a vacuous absence.
+    # emptied. Quota must retain, never prove a vacuous absence. (The
+    # filed record is read-only; chmod simulates disk-level damage.)
     batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
                   / po.instance_namespace(instance) / "dmg.json")
+    os.chmod(batch_file, 0o644)
     record = json.loads(batch_file.read_text())
     record["entries"] = []
     batch_file.write_text(json.dumps(record, sort_keys=True) + "\n")
