@@ -3,8 +3,8 @@
 Owner: integration-harness lane (this branch). Production code owned by
 reader-lifetime, strict-reader, cost_streaming/844, and tier workers —
 this lane edits none of it without root coordination. New files only:
-this design doc, harness helper, integration test files, PQ seam module,
-and the ACC01..06 acceptance mapping (§6). PR + issue required; root
+this design doc, harness helpers, integration test files,
+the PQ bindings manifest mechanism, and the ACC01..06 acceptance mapping (§6). PR + issue required; root
 final review. Rob asked for an integration test spanning the entire
 functionality that protects future changes.
 
@@ -38,7 +38,7 @@ PB owns placement throughout.
 - **Live-fleet lane (designed, gated):** the same suite via `pbtest`
   with two independent consumer rows on the `gb10` class tag so PB
   places across both Sparks — never manual host sharding. Blocked until
-  the PQ-reader seam (§4) binds real PQ readers: the live lane must read
+  real PQ readers bind via the bindings manifest (§4): the live lane must read
   through actual readers, so direct-RAM opens cannot fake a pass. Until
   then the live lane is an unavailable target, stated not implied.
 
@@ -53,16 +53,20 @@ file lands only with root's candidate-commit API bindings. Until then the
 harness is hermetic: fixtures generated in-test, zero PQ imports. No
 parallel reader implementation is vendored to fill the gap (§4).
 
-## 4. PQ-reader seam (fail-closed, no fake green)
+## 4. PQ-reader bindings (real APIs, manifest-gated qualification)
 
-`tests/fullstack_pq_seam.py` is the single seam between the PB chain and
-PQ's source/render/activation readers. Until root's API bindings land,
-every seam entry raises `FullstackPQUnavailable` naming the missing
-binding; seam tests assert that refusal (fail-closed wiring proof, not
-capability proof). Stable now: fixture payload shapes (sorted keys,
-sha256-named), receipt shapes, and the coverage-input roster format the
-future join consumes. Root reviews the API before any interface-rigid
-test is written against it.
+The staged-only chain cannot be proven without the real PQ source,
+render, and activation readers plus the join — and no stub, fake parser,
+or parallel reader is vendored to pretend otherwise. The bindings arrive
+as `tests/fullstack_pq_bindings.json` carrying root's candidate commit,
+the module + attribute per capability, and the source snapshot and
+artifact dependency the chain runs against. `test_fullstack_qualification.py`
+requires that file: until root provides it the gate FAILS and the suite
+reports not-qualified. No module paths are invented in this lane — every
+import comes from the bindings file. Root reviews the API before any
+interface-rigid test is written against it. The approved follow-on is
+designing the source-snapshot/artifact dependency the bound readers run
+against.
 
 ## 5. GPU path (deferred, bounded)
 
@@ -77,58 +81,52 @@ Design only until the CPU harness is accepted.
 |----|-----------------|--------------|--------|
 | ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` | implement now (PB-side manifest/row shapes) |
 | ACC-02 | lifecycle/race incl. staged-lease races | existing PB suites + `test_fullstack_reader_boundaries.py` (egress-vs-hold, double release) | implement now |
-| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, corrupt map, epoch bump) + PQ seam (pending) | PB boundaries now; PQ legs pending API |
-| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` (journal/resume via real checkpoint grammar where PB-owned; lease-crash pending) | partial now |
-| ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (§2) |
+| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_reader_boundaries.py` (OS-enforced: chmod-000 pool, missing stage+ram, overlay mismatch, epoch bump) + bindings-gated PQ legs | PB boundaries now; PQ legs blocked on bindings |
+| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
+| ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (needs runnable PQ work) |
 | ACC-06 | staged-only campaign output, bytes_from_pool==0 bulk legs | pending strict-reader enforcement + live lane | pending |
 
 ## 7. Negative matrix (each a real boundary, not a mock)
 
 - forbidden pool open reads zero pool bytes: pool fixture chmod-000 after
   staging; staged reads succeed; any pool fallback surfaces as EACCES.
-- live hold beats egress: pinned/held range survives release; file intact.
+- live hold beats egress: blocked on the lease API (single assertion when it lands);
+  today double-egress balances exactly once and cleanup leaves no orphans.
 - invalidated RAM serves only permitted SSD: epoch bump → lookup resolves
   the stage copy, pool untouched (pool chmod-000 as tripwire).
 - both tiers gone → clear fail: lookup unresolvable AND open raises;
   never silent pool bytes.
 - epoch/restart: bumped epoch demands revalidation, never assumption.
-- corrupted map/digest: whole-map refusal with reason.
+- ram copy disagreeing with stage-vouched bytes/digest: overlay refuses;
+  tampered map shapes refuse whole via validate.
 - resources reclaimed exactly once: double release balances the ledger.
-- gapped join refused: `residency_plan.remaining` reports the gap (PB
-  side now); full join refusal waits on the PQ join API (§4).
+- gapped join refused: `residency_plan.remaining` reports the gap and never
+  narrows to fit survivors (PB side now); full join refusal waits on the
+  bindings-gated PQ join (§4).
 
 Failures, gzip/raw-canonical mismatches, required argv, placement tags,
 defaults, and container bindings are caught by real boundary tests
 (producer-row file), not by prose.
 
-## 8. Membership lifecycle rungs (stable primitives now, commands later)
+## 8. Claim/retry primitives (no membership behavior asserted)
 
 Worker JOIN/RESIGN commands, supervision, and qualification belong to the
-membership worker (design pending `worker-expansion-design.md`) — this
-lane edits none of that production. The harness pins the stable
-primitives membership builds on, all real queue/ledger functions on an
-isolated local queue (`tests/test_fullstack_membership.py`):
-
-- qualification before claim: tag conjunction gates both directions, and
-  unknown container-image inventory never counts as capable
-  (presence-positive evidence only).
-- resign as handoff: a resigned worker claims nothing further; owned
-  scopes are contained via finish before tokens return; the next worker
-  claims the requeued work with attempt history preserved.
-- retry-safe takeover: failed retry-safe attempts return to ready with
-  outcomes recorded; unsafe work (`retry_safe=False`) is a publish-time
-  contradiction for retries and ends terminal, never requeued.
-- incarnation safety: a stale second commit onto an owned key leaves
-  existing tokens (short count, fail closed); abandoning unknown handles
-  returns nothing; double release counts once.
-- mixed-capability matrix (classes, not hosts): cpu-only vs gpu+image
-  claimants each take only their class — separate from both-Spark
-  placement qualification, which stays in the live lane (§2).
+membership worker and have not landed — this lane edits none of that
+production and asserts no membership behavior. `test_fullstack_claim_retry_primitives.py`
+pins real queue/ledger mechanics only, on an isolated local queue:
+tag/image conjunction gating before claim (both directions, unknown
+inventory never capable), handoff with containment before token return,
+retry-safe attempt-history preservation, explicit unsafe-retry
+interruption (publish-time contradiction; terminal, never requeued),
+incarnation-collision fail-closed, and charge retention. The
+mixed-capability matrix covers classes, not hosts — separate from
+both-Spark placement qualification, which stays in the live lane (§2).
 
 ## 9. RED/GREEN and delivery
 
-- RED: first PB run of the new files (real failures expected at seam
-  edges and any misused production API); fix harness-only issues.
+- RED: first PB run of the new files (real failures from misused production
+  APIs); fix harness-only issues. The qualification gate stays RED until
+  root provides the bindings manifest.
 - GREEN: full suite green via `pbtest --priority -10 --json` (keys
   filed outside the checkout); negatives that await strict-reader or
   PQ-API land as explicit skips naming the blocker — visible, never

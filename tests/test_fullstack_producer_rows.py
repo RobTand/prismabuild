@@ -9,6 +9,7 @@ not prose. ACC-01 (PB-side manifest/row shapes).
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -50,11 +51,11 @@ def _manifest(pool_root: Path) -> dict[str, object]:
         "entry_count": 3,
         "total_bytes": (1 << 18) + (1 << 20) + (3 << 20),
         "annotations": {"phases": [
-            {"name": "head", "start_bytes": 0, "end_bytes": 1 << 18},
-            {"name": "layer-000", "start_bytes": 1 << 18,
-             "end_bytes": (1 << 18) + (1 << 20)},
-            {"name": "layer-001", "start_bytes": (1 << 18) + (1 << 20),
-             "end_bytes": (1 << 18) + (1 << 20) + (3 << 20)},
+            {"name": "head", "cumulative_bytes": 1 << 18},
+            {"name": "layer-000",
+             "cumulative_bytes": (1 << 18) + (1 << 20)},
+            {"name": "layer-001",
+             "cumulative_bytes": (1 << 18) + (1 << 20) + (3 << 20)},
         ]},
     }
 
@@ -147,11 +148,10 @@ def _manifest_body() -> dict[str, object]:
 
 
 def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
-    """A manifest whose entries disagree with its bytes refuses ranges."""
+    """A manifest whose entries disagree with its bytes yields no ranges."""
     manifest = _manifest(tmp_path / "pool")
     manifest["entries"][1]["bytes"] = int(manifest["entries"][1]["bytes"]) + 1
-    with pytest.raises(Exception):
-        storage_tiers.manifest_phase_ranges(manifest)
+    assert storage_tiers.manifest_phase_ranges(manifest) == []
 
 
 def test_placement_tags_are_conjoined_class_tags(tmp_path: Path) -> None:

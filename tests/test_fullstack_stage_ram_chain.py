@@ -63,10 +63,10 @@ def _pool_fixture(tmp_path: Path) -> tuple[Path, dict[str, object], str]:
         "entry_count": 2,
         "total_bytes": sum(int(e["bytes"]) for e in entries),
         "annotations": {"phases": [
-            {"name": "whole", "start_bytes": 0,
-             "end_bytes": len(files["/pool/model/shard-0.bin"])},
-            {"name": "split", "start_bytes": len(files["/pool/model/shard-0.bin"]),
-             "end_bytes": len(files["/pool/model/shard-0.bin"]) + SPLIT_BYTES},
+            {"name": "whole",
+             "cumulative_bytes": len(files["/pool/model/shard-0.bin"])},
+            {"name": "split",
+             "cumulative_bytes": len(files["/pool/model/shard-0.bin"]) + SPLIT_BYTES},
         ]},
     }
     return mount, manifest, hashlib.sha256(
@@ -159,9 +159,10 @@ def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:
     files = corpus()
     staged_whole = tmp_path / "stage" / "model" / WHOLE
     assert staged_whole.read_bytes() == files["/pool/model/shard-0.bin"]
-    split_objects = list((tmp_path / "stage").rglob("*.pbrange"))
-    assert split_objects, "split range stages its own .pbrange object"
-    staged_split = split_objects[0].read_bytes()
+    split_files = [p for p in (tmp_path / "stage").rglob("*")
+                   if ".pbrange" in str(p) and p.is_file()]
+    assert split_files, "split range stages its own .pbrange object"
+    staged_split = split_files[0].read_bytes()
     assert staged_split == files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]
     fragments = residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)
     assert len(fragments) >= 2

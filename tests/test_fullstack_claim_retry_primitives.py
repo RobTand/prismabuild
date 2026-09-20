@@ -1,15 +1,13 @@
-"""Full-stack membership 1/2 — qualification, resign/handoff, retry takeovers.
+"""Full-stack claim/retry primitives — queue and ledger mechanics.
 
-Worker JOIN/RESIGN commands and supervision belong to the membership
-worker (design pending worker-expansion-design.md) — this lane edits none
-of that production code. These tests pin the stable primitives membership
-builds on, using real queue/ledger functions on an isolated local queue:
-tag/image conjunction gating before claim, resign-as-handoff with
-containment before token return, retry-safe takeover preserving attempt
-history, explicit unsafe-retry interruption, incarnation-collision
-fail-closed, and charge retention on failed containment. No hosts are
-needed; ledgers are names. Both-Spark placement qualification is separate
-(live lane, §design) from the capability matrix below.
+No membership commands are asserted here: worker JOIN/RESIGN supervision
+belongs to the membership worker and has not landed. These tests pin real
+queue/ledger primitives only, using real functions on an isolated local
+queue: tag/image conjunction gating before claim, handoff with containment
+before token return, retry-safe takeover preserving attempt history,
+explicit unsafe-retry interruption, incarnation-collision fail-closed, and
+charge retention. Both-Spark placement qualification is separate
+(live lane design doc).
 """
 from __future__ import annotations
 

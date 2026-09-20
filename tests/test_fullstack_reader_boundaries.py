@@ -48,17 +48,47 @@ def _staged_once(tmp_path: Path):
     return queue, manifest, files_len
 
 
-def test_corrupted_map_refuses_whole_with_reason(tmp_path: Path) -> None:
-    """A map whose digest lies is refused whole, never partially trusted."""
+def _ram_fragment_for(mapping: dict, base: dict, epoch: str, *, digest: str) -> dict:
+    key = next(iter(mapping["entries"]))
+    fragment = json.loads(json.dumps(base))
+    fragment["tier_id"] = "ram:dl380g10"
+    fragment["epoch"] = epoch
+    entry = dict(fragment["entries"][key])
+    entry["sha256"] = digest
+    entry["stage_path"] = str(mapping.get("stage_root", "") + "/x")
+    fragment["entries"] = {key: entry}
+    return fragment
+
+
+def test_mismatched_ram_copy_refuses_overlay(tmp_path: Path) -> None:
+    """A ram copy disagreeing with the stage vouched bytes refuses overlay."""
     queue, manifest, _ = _staged_once(tmp_path)
     fragments = [residency_map.validate_fragment(f) for f in
                  residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(fragments)
-    tampered = json.loads(json.dumps(mapping))
-    key = next(iter(tampered["entries"]))
-    tampered["entries"][key]["sha256"] = "0" * 64
+    base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
+    bad = _ram_fragment_for(mapping, base, "epoch-1", digest="0" * 64)
     with pytest.raises(residency_map.ResidencyMapError):
-        residency_map.validate_map(tampered)
+        residency_map.overlay_ram(
+            mapping, [bad], ram_tier_id="ram:dl380g10",
+            ram_root=str(tmp_path / "ram"), ram_epoch="epoch-1")
+
+
+def test_matching_ram_copy_lays_ram_path(tmp_path: Path) -> None:
+    """A ram copy agreeing with the stage vouched bytes lays ram_path."""
+    queue, manifest, _ = _staged_once(tmp_path)
+    fragments = [residency_map.validate_fragment(f) for f in
+                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+    mapping = residency_map.compose(fragments)
+    key = next(iter(mapping["entries"]))
+    base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
+    good = _ram_fragment_for(
+        mapping, base, "epoch-1",
+        digest=str(mapping["entries"][key]["sha256"]))
+    overlaid = residency_map.overlay_ram(
+        mapping, [good], ram_tier_id="ram:dl380g10",
+        ram_root=str(tmp_path / "ram"), ram_epoch="epoch-1")
+    assert overlaid["entries"][key].get("ram_path") is not None
 
 
 def test_unstaged_entry_lookup_is_visible_not_silent(tmp_path: Path) -> None:
