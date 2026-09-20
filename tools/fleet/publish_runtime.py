@@ -436,7 +436,9 @@ def _publication_manifest() -> dict[str, str]:
     # small documentation tree and root guides together so their relative
     # references resolve within this same sealed generation, without a checkout.
     guides = [CHECKOUT / "README.md", CHECKOUT / "AGENTS.md",
-              *sorted((CHECKOUT / "docs").rglob("*.md"))]
+              CHECKOUT / "worker-expansion-design.md",
+              *sorted((CHECKOUT / "docs").rglob("*.md")),
+              *sorted((CHECKOUT / "docs").rglob("*.json"))]
     for source in guides:
         if source.is_file():
             published[source.relative_to(CHECKOUT).as_posix()] = _sha256(source)
