@@ -1041,6 +1041,92 @@ def batch_namespace(instance: Mapping[str, object], batch_id: str,
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def describe_output_precommit_for_funding(
+        queue, instance: Mapping[str, object],
+        template: Mapping[str, object], batch_id: str,
+        descriptors: list[Mapping[str, object]],
+        tier: str, mover_key: str) -> dict[str, object]:
+    """Read-only validated precommit facts for one batch (base-compatible).
+
+    New shared seam owned by the pool funding lane (read-only; no writer
+    mutation, no edits to commit/prewrite/retire/release).  Uses only
+    base-available helpers (no R3 loader): validates from LIVE/filed
+    precommit records, never from caller-shaped hashes alone:
+
+    * bound template/instance contract (exact template_sha binding);
+    * live owner CLAIMED row still names the instance's exact nonce/scope
+      (via _require_live_owner; stale/superseded/absent raises);
+    * durable prewrite exists for batch_id and matches descriptors exactly
+      (same tier/class_bytes/paths/owner/attempt checks as commit_batch);
+    * every descriptor validates via validate_descriptor against the bound
+      template/instance, with recomputed manifest digest.
+
+    Does NOT require the filed batch (commit comes AFTER funding in the
+    future writer order: prewrite -> publish mover -> fund -> commit).
+    Returns the exact facts the pool output intent binds: owner/template/
+    batch/manifest/total/range(0..total)/tier/mover/namespace/class_bytes.
+    Raises ProducedOutputError on any mismatch.
+    """
+
+    checked_template, checked_instance = _require_bound_contract(
+        template, instance)
+    _name(batch_id, where="batch_id")
+    _hex64(mover_key, where="precommit mover_key")
+    if tier not in checked_template["permitted_tiers"]:
+        raise ProducedOutputError("tier-not-permitted")
+    if not isinstance(descriptors, list) or not descriptors:
+        raise ProducedOutputError("precommit descriptors required")
+    gated = _require_live_owner(queue, checked_instance)
+    if gated is not None:
+        raise ProducedOutputError(str(gated.get("refusal", "owner-not-running")))
+    try:
+        prewrite = _read_prewrite(
+            _prewrites_dir(queue.root, checked_instance)
+            / f"{batch_id}.prewrite.json")
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    if prewrite is None:
+        raise ProducedOutputError("prewrite-reservation-missing")
+    sealed = [validate_descriptor(dict(d), checked_template,
+                                  checked_instance)
+              for d in descriptors]
+    class_bytes: dict[str, int] = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for desc in sealed:
+        class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
+    if (prewrite.get("tier") != tier
+            or dict(prewrite.get("class_bytes", {})) != class_bytes
+            or sorted(str(d["path"]) for d in sealed)
+            != sorted(prewrite.get("paths", []))
+            or prewrite.get("owner_action_key")
+            != checked_instance["owner_action_key"]
+            or dict(prewrite.get("owner_attempt", {})) != dict(
+                checked_instance["owner_attempt"])):
+        raise ProducedOutputError("prewrite-mismatch")
+    manifest = output_manifest_sha256(sealed)
+    total = sum(class_bytes.values())
+    if total <= 0:
+        raise ProducedOutputError("unknown-retain: precommit-total")
+    attempt = checked_instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    namespace = batch_namespace(checked_instance, batch_id, manifest)
+    return {
+        "owner_action_key": str(checked_instance["owner_action_key"]),
+        "owner_nonce": str(attempt["nonce"]),
+        "owner_scope_id": str(attempt["scope_id"]),
+        "template_id": str(checked_template["template_id"]),
+        "template_sha256": template_sha256(checked_template),
+        "batch_id": batch_id,
+        "manifest_digest": manifest,
+        "total_bytes": total,
+        "range_start_bytes": 0,
+        "range_end_bytes": total,
+        "tier": tier,
+        "mover_key": mover_key,
+        "batch_namespace": namespace,
+        "class_bytes": dict(class_bytes),
+    }
+
+
 def _commitments_path(queue_root: str | Path,
                       instance: Mapping[str, object]) -> Path:
     return instance_dir(queue_root, instance) / "commitments.json"

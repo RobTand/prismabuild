@@ -4009,6 +4009,28 @@ window also needs an exact-owner transfer extension; a second acquisition is
 not evidence that the same bytes have been accounted once. Component tests
 establish neither deployed support nor whole-fleet conformance.
 
+#### Prepaid-output funding from the admitted window (candidate, R1)
+
+Funds one precommitted produced-output batch from the producer's existing
+window with an exact token-subset transfer (`ResourceLedger.transfer_tokens`),
+never a second reservation from free. One pool-owned authoritative intent per
+output mover per tier (`*.output-funding.json`, schema
+`prismabuild.tier_funding.output.v1`, same `TIER_FUNDING` dir, same
+`_FUNDING_TRANSITIONS`, same mover lock as the window binding above; V1
+validation unchanged). Future writer order: prewrite -> publish mover (from
+precommit descriptors) -> fund (pool intent) -> transfer -> commit batch
+-> claim mover. Prewrite is budget, filed batch is commit, pool intent is
+the sole funding authority. Creation needs the exact live owner; recovery
+(cover/drive after producer finish) accepts live-OR-terminal owner proof
+and precommit-OR-commit batch proof, never admitting a new batch from an
+old terminal. Owner-outer/mover-inner lock order serializes fund against
+owner finish (`_release_reservation` holds the owner lock and preserves
+still-source-held intent names); release proves mover nonexecution (no
+CLAIMED, no pinned DONE) before retiring credit. See
+`prepaid-output-pool-api-design.md` (R1) and
+`tests/test_prepaid_output_funding.py` (candidate-component scope; parent
+stack root-unaccepted).
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when

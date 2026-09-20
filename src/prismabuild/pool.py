@@ -318,6 +318,25 @@ _FUNDING_BINDING_FIELDS = frozenset({
     "mover_action_key", "range_start_bytes", "range_end_bytes",
     "kind", "tokens", "generation", "published_unix",
 })
+#: Output prepaid-window funding: same ledger, same directory, same state
+#: table and mover lock as the window (V1) binding above, but a distinct
+#: versioned binding type for sealed produced-output batches.  V1 validation
+#: is unchanged; this variant is validated by
+#: :meth:`PoolQueue.validate_output_funding` and covered by
+#: :meth:`PoolQueue.output_funded_cover`.  One authoritative intent per
+#: mover per tier per variant, owned by the pool; the produced-output lane
+#: references its ``generation`` and never mirrors it.
+TIER_FUNDING_OUTPUT_SCHEMA_V1 = "prismabuild.tier_funding.output.v1"
+#: Immutable output binding fields within one generation (``state``/``unix``
+#: advance as in V1).  ``published_unix`` is the sealed mover publication;
+#: ``owner_*`` binds the live producer claim that prepaid the window.
+_FUNDING_OUTPUT_BINDING_FIELDS = frozenset({
+    "schema", "tier_id", "kind", "mover_action_key", "tokens",
+    "generation", "published_unix", "owner_action_key", "owner_nonce",
+    "owner_scope_id", "owner_published_unix", "template_id",
+    "template_sha256", "batch_id", "manifest_digest",
+    "range_start_bytes", "range_end_bytes",
+})
 #: Which plan leg role one funding kind pays for.  A fence funds staged
 #: (or promoted) occupancy; rate kinds and tiers with no movement legs
 #: never carry advance credit, so a record naming any other kind covers
@@ -2246,6 +2265,87 @@ class ResourceLedger:
         except OSError:
             pass
         return moved
+
+    def transfer_tokens(self, from_key: str, to_key: str,
+                        names: Sequence[str]) -> int:
+        """Move an exact token subset between holders, never via free.
+
+        The prepaid-output primitive: fund one sealed batch from the
+        producer's already-reserved window without a second reservation.
+        Per-token renames under ``held/`` (same no-free-interval rule as
+        :meth:`transfer`): at no instant is a token countable as free, so
+        capacity/held/available read the same number before, during and
+        after.  A crash part-way leaves the named set split across the two
+        holders -- sum unchanged, attributable -- and calling again with
+        the same set finishes the move.
+
+        Names are validated before the first rename.  Per name:
+
+        * destination-has + source-missing: already moved (idempotent
+          retry), counts;
+        * source-has + destination-missing: rename, counts on success;
+        * both-have: collision (two tokens one name), left in place,
+          counts nothing, caller fails closed on the short count;
+        * missing-both: unknown provenance, counts nothing and is never
+          silently counted as success.
+
+        Refuses claimant-private endpoints.  Never moves unrelated
+        kinds/tokens: only the named set is attempted.  Metadata files are
+        never valid names.  Returns moved+already count; short vs
+        ``len(set(names))`` is unknown-retain for the caller.
+        """
+
+        if not from_key or not to_key or from_key == to_key:
+            raise PoolContractError(
+                "a token-subset transfer names two distinct holders")
+        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+            raise PoolContractError(
+                "a reservation transfer names two action keys, never a "
+                "claimant-private acquisition")
+        if (not isinstance(names, (list, tuple)) or not names
+                or len(set(str(name) for name in names)) != len(names)):
+            raise PoolContractError(
+                "transfer_tokens needs a non-empty list of distinct token names")
+        checked: list[str] = []
+        for name in names:
+            if (not isinstance(name, str) or not name or "/" in name
+                    or name in (cpu_admission.METADATA,
+                                gpu_admission.METADATA)
+                    or "-" not in name):
+                raise PoolContractError(
+                    f"transfer_tokens refuses token name {name!r}")
+            checked.append(name)
+        source = self.held_dir / str(from_key)
+        destination = self.held_dir / str(to_key)
+        destination.mkdir(parents=True, exist_ok=True)
+        done = 0
+        for name in checked:
+            landing = destination / name
+            origin = source / name
+            if landing.exists():
+                if origin.exists():
+                    # Collision: two tokens share one name.  Renaming over
+                    # would delete capacity with no retire.  Leave both,
+                    # count nothing, caller fails closed.
+                    continue
+                done += 1
+                continue
+            if not origin.is_file() and not origin.is_dir():
+                # Missing from both: unknown, never counted success.
+                continue
+            if origin.is_dir():
+                # Token names are files; a directory here is not capacity.
+                continue
+            try:
+                os.rename(origin, landing)
+            except OSError:
+                continue
+            done += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return done
 
     def abandon_acquire(self, handle: str) -> int:
         """Return a claimant's own private tokens.  Its tokens, nothing else."""
@@ -5053,6 +5153,1225 @@ class PoolQueue:
         except (OSError, PoolContractError, ValueError):
             return 0
 
+    # -- prepaid-output funding records (same ledger/dir/table/lock, new binding)
+    #
+    # Funds one sealed produced-output batch from the producer's existing
+    # prepaid window: exact token-subset transfer, never a second
+    # reservation from free.  V1 (window) validation is untouched; this
+    # variant carries its own schema and closed field set in the same
+    # TIER_FUNDING directory, enforced through the same
+    # _FUNDING_TRANSITIONS table under the same mover transition lock.
+    # One authoritative intent per mover per tier per variant, owned here;
+    # the produced-output lane references its generation and never mirrors
+    # it with a second protocol.
+
+    def funding_output_path(self, mover_action_key: str, tier_id: str) -> Path:
+        """One output mover's funding record on one tier."""
+
+        return (self.root / TIER_FUNDING
+                / f"{mover_action_key}.{tier_id}.output-funding.json")
+
+    @staticmethod
+    def validate_output_funding(value: object) -> dict[str, object]:
+        """Refuse an output funding record that is not exactly one binding.
+
+        Closed field set like V1: unknown fields refuse, and anything that
+        does not validate authorizes nothing (callers read it as no
+        funding, never as zero or proof).
+        """
+
+        if not isinstance(value, Mapping):
+            raise PoolContractError("an output funding record must be an object")
+        unknown = sorted(set(value) - {
+            "schema", "tier_id", "kind", "mover_action_key", "tokens",
+            "generation", "state", "unix", "published_unix",
+            "owner_action_key", "owner_nonce", "owner_scope_id",
+            "owner_published_unix", "template_id", "template_sha256",
+            "batch_id", "manifest_digest",
+            "range_start_bytes", "range_end_bytes",
+        })
+        if unknown:
+            raise PoolContractError(
+                f"unknown output funding fields: {unknown}")
+        if value.get("schema") != TIER_FUNDING_OUTPUT_SCHEMA_V1:
+            raise PoolContractError(
+                f"output funding schema must be {TIER_FUNDING_OUTPUT_SCHEMA_V1!r}")
+        for field in ("tier_id", "kind", "template_id", "batch_id",
+                      "owner_scope_id"):
+            if (not isinstance(value.get(field), str) or not value[field]):
+                raise PoolContractError(
+                    f"output funding {field} must be a non-empty string")
+        for field in ("owner_action_key", "mover_action_key"):
+            key = value.get(field)
+            if (not isinstance(key, str) or len(key) != 64
+                    or any(c not in "0123456789abcdef" for c in key)):
+                raise PoolContractError(
+                    f"output funding {field} must be a 64-character action key")
+        nonce = value.get("owner_nonce")
+        if (not isinstance(nonce, str) or len(nonce) != 32
+                or any(c not in "0123456789abcdef" for c in nonce)):
+            raise PoolContractError(
+                "output funding owner_nonce must be a 32-character nonce")
+        for field in ("template_sha256", "manifest_digest"):
+            digest = value.get(field)
+            if (not isinstance(digest, str) or len(digest) != 64
+                    or any(c not in "0123456789abcdef" for c in digest)):
+                raise PoolContractError(
+                    f"output funding {field} must be a 64-character digest")
+        for field in ("range_start_bytes", "range_end_bytes"):
+            number = value.get(field)
+            if isinstance(number, bool) or not isinstance(number, int):
+                raise PoolContractError(
+                    f"output funding {field} must be a whole number of bytes")
+        try:
+            if int(value["range_end_bytes"]) <= int(value["range_start_bytes"]):  # type: ignore[arg-type]
+                raise PoolContractError(
+                    "output funding range must be non-empty half-open")
+        except (KeyError, TypeError, ValueError):
+            raise PoolContractError(
+                "output funding range must be a whole number of bytes")
+        tokens = value.get("tokens")
+        if (not isinstance(tokens, list) or not tokens
+                or any(not isinstance(name, str) or not name
+                       for name in tokens)):
+            raise PoolContractError(
+                "output funding tokens must be a non-empty list of token names")
+        if len(set(tokens)) != len(tokens):
+            raise PoolContractError("output funding tokens must not repeat a name")
+        kind = str(value.get("kind"))
+        for name in tokens:
+            assert isinstance(name, str)
+            if not name.startswith(kind + "-"):
+                raise PoolContractError(
+                    "output funding tokens must all carry the bound kind prefix")
+        generation = value.get("generation")
+        if (not isinstance(generation, str) or len(generation) != 32
+                or any(c not in "0123456789abcdef" for c in generation)):
+            raise PoolContractError(
+                "output funding generation must be a 32-character nonce")
+        if value.get("state") not in TIER_FUNDING_STATES:
+            raise PoolContractError(
+                f"output funding state must be one of {sorted(TIER_FUNDING_STATES)}")
+        for field in ("published_unix", "owner_published_unix"):
+            published = value.get(field)
+            if (isinstance(published, bool) or not isinstance(published, (int, float))
+                    or float(published) < 0):
+                raise PoolContractError(
+                    f"output funding {field} must be a non-negative timestamp")
+        return dict(value)
+
+    def read_output_funding(self, mover_action_key: str,
+                            tier_id: str) -> dict[str, object] | None:
+        """One output mover's funding record, or None when absent/unparsable."""
+
+        try:
+            raw = _read_json(self.funding_output_path(mover_action_key, tier_id))
+        except (OSError, PoolContractError):
+            return None
+        if raw is None:
+            return None
+        try:
+            return self.validate_output_funding(raw)
+        except (PoolContractError, ValueError):
+            return None
+
+    def write_output_funding(self, record: Mapping[str, object], *,
+                             expect_generation: str | None = None) -> Path:
+        """File one output generation's binding, atomically.
+
+        Same CAS + binding-immutability + table rules as V1, under the
+        mover's transition lock (non-blocking; refuse when a claim holds
+        it).  See _write_output_funding_locked for the body.
+        """
+
+        checked = self.validate_output_funding(record)
+        mover = str(checked["mover_action_key"])
+        with self.mover_transition_lock(mover, blocking=False) as acquired:
+            if not acquired:
+                raise PoolContractError(
+                    "output funding writer lost the transition race")
+            return self._write_output_funding_locked(
+                checked, expect_generation=expect_generation)
+
+    def _write_output_funding_locked(
+            self, record: Mapping[str, object], *,
+            expect_generation: str | None = None) -> Path:
+        """File one output generation; caller holds the mover lock."""
+
+        checked = self.validate_output_funding(record)
+        path = self.funding_output_path(str(checked["mover_action_key"]),
+                                        str(checked["tier_id"]))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = _read_json(path)
+        except (OSError, PoolContractError):
+            raise PoolContractError("output funding record unreadable for CAS")
+        if raw is None:
+            if expect_generation is not None:
+                raise PoolContractError(
+                    "output funding record vanished underneath this write")
+            if checked.get("state") != "reserved":
+                raise PoolContractError(
+                    "output funding records are born reserved")
+        else:
+            try:
+                current = self.validate_output_funding(raw)
+            except (PoolContractError, ValueError):
+                raise PoolContractError(
+                    "output funding record unreadable for CAS")
+            if (expect_generation is None
+                    or str(current.get("generation")) != str(expect_generation)
+                    or str(checked.get("generation")) != str(
+                        current.get("generation"))):
+                raise PoolContractError(
+                    "output funding generation rotated underneath this write")
+            for field in _FUNDING_OUTPUT_BINDING_FIELDS:
+                if current.get(field) != checked.get(field):
+                    raise PoolContractError(
+                        f"output funding {field} is immutable within one generation")
+            if (str(checked.get("state")) != str(current.get("state"))
+                    and str(checked.get("state")) not in _FUNDING_TRANSITIONS.get(
+                        str(current.get("state")), frozenset())):
+                raise PoolContractError(
+                    "output funding state step "
+                    f"{current.get('state')!r}->{checked.get('state')!r} "
+                    "is not a legal advance")
+        _write_json_atomic(path, checked)
+        return path
+
+    def _rotate_output_funding_locked(
+            self, record: Mapping[str, object], *,
+            expect_generation: str | None) -> Path:
+        """Replace one output generation with a fresh reserved one."""
+
+        checked = self.validate_output_funding(record)
+        if checked.get("state") != "reserved":
+            raise PoolContractError(
+                "rotated output funding generations are born reserved")
+        path = self.funding_output_path(str(checked["mover_action_key"]),
+                                        str(checked["tier_id"]))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = _read_json(path)
+        except (OSError, PoolContractError):
+            raise PoolContractError("output funding record unreadable for CAS")
+        if raw is None:
+            if expect_generation is not None:
+                raise PoolContractError(
+                    "output funding record vanished underneath this write")
+        else:
+            try:
+                current = self.validate_output_funding(raw)
+            except (PoolContractError, ValueError):
+                raise PoolContractError(
+                    "output funding record unreadable for CAS")
+            if (expect_generation is None
+                    or str(current.get("generation")) != str(expect_generation)):
+                raise PoolContractError(
+                    "output funding generation rotated underneath this write")
+            if str(checked.get("generation")) == str(current.get("generation")):
+                raise PoolContractError(
+                    "rotation must mint a fresh generation")
+        _write_json_atomic(path, checked)
+        return path
+
+    def advance_output_funding_state(
+            self, mover_action_key: str, tier_id: str, *,
+            expect: str, advance_to: str,
+            generation: str | None = None) -> bool:
+        """Move an output funding record one legal step, or refuse False."""
+
+        with self.mover_transition_lock(str(mover_action_key),
+                                        blocking=False) as acquired:
+            if not acquired:
+                return False
+            return self._advance_output_funding_state_locked(
+                mover_action_key, tier_id, expect=expect,
+                advance_to=advance_to, generation=generation)
+
+    def _advance_output_funding_state_locked(
+            self, mover_action_key: str, tier_id: str, *,
+            expect: str, advance_to: str,
+            generation: str | None = None) -> bool:
+        """Move an output record one step; caller holds the mover lock."""
+
+        current = self.read_output_funding(mover_action_key, tier_id)
+        if current is None or current.get("state") != expect:
+            return False
+        if (generation is not None
+                and str(current.get("generation")) != str(generation)):
+            return False
+        if expect == advance_to:
+            return True
+        if advance_to not in _FUNDING_TRANSITIONS.get(str(expect), frozenset()):
+            return False
+        updated = dict(current)
+        updated["state"] = advance_to
+        updated["unix"] = time.time()
+        try:
+            self.write_output_funding(
+                updated,
+                expect_generation=(str(current.get("generation"))
+                                   if isinstance(current.get("generation"),
+                                                str) else None))
+        except (OSError, PoolContractError, ValueError):
+            return False
+        return True
+
+    def _output_live_owner(self, owner_key: str) -> tuple[dict | None, str | None]:
+        """Live owner CLAIMED row + its published_unix, or (None, refusal)."""
+
+        try:
+            live = _read_json(self.item_path(CLAIMED, owner_key))
+        except (OSError, PoolContractError):
+            return None, "unknown-retain: owner-claim-unreadable"
+        if live is None:
+            return None, "owner-not-running"
+        if not isinstance(live, Mapping):
+            return None, "unknown-retain: owner-claim-shape"
+        try:
+            published = float(live.get("published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None, "unknown-retain: owner-claim-publication"
+        control = live.get("resource_scope")
+        nonce = scope = ""
+        if isinstance(control, Mapping):
+            candidate = control.get("nonce")
+            if isinstance(candidate, str) and candidate:
+                nonce = candidate
+            for field in ("scope_id", "scope_unit", "unit"):
+                unit = control.get(field)
+                if isinstance(unit, str) and unit:
+                    scope = unit
+                    break
+        if not nonce or not scope:
+            return None, "unknown-retain: owner-claim-control"
+        return {"row": live, "nonce": nonce, "scope": scope,
+                "published_unix": published}, None
+
+    def _output_live_mover(self, mover_key: str) -> tuple[dict | None, str | None]:
+        """Sealed mover READY/CLAIMED row, or (None, refusal)."""
+
+        for state in (READY, CLAIMED):
+            try:
+                row = _read_json(self.item_path(state, mover_key))
+            except (OSError, PoolContractError):
+                return None, "unknown-retain: mover-row-unreadable"
+            if isinstance(row, Mapping):
+                return {"row": row, "state": state}, None
+        return None, "mover-not-published"
+
+    def _output_owner_authority(self, record: Mapping[str, object]) -> bool:
+        """Live-owner OR terminal-proof authority for one output intent (R1).
+
+        Creation needs the exact live owner (fund path enforces it).  Recovery
+        (cover/drive after producer finish, including finish-before-mover-claim
+        and crash-with-partial-transfer) accepts EITHER:
+
+        * live CLAIMED row still naming the bound nonce/scope/publication
+          (owner still running same attempt), OR
+        * no live CLAIMED row, but a terminal DONE/FAILED row for the same
+          key naming the same published_unix + nonce/scope (owner finished
+          the same attempt; credit belongs to copy/egress lifetime, not to
+          the producer's remaining lifetime).
+
+        Distinguishes completion from stale/tampered/unknown: a live row for
+        another attempt (retry owns the key now) refuses without consulting
+        the terminal (stale-superseded, never resurrected); a terminal with
+        mismatched publication/nonce/scope refuses; missing/unreadable
+        terminal refuses unknown (retain, never free).  Never admits a NEW
+        batch from an old terminal: fund still requires live owner, so this
+        helper is recovery-only (cover/drive), never creation.
+        """
+
+        try:
+            owner_key = str(record.get("owner_action_key"))
+            exp_nonce = str(record.get("owner_nonce"))
+            exp_scope = str(record.get("owner_scope_id"))
+            exp_published = float(record.get("owner_published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError, KeyError):
+            return False
+        try:
+            live = _read_json(self.item_path(CLAIMED, owner_key))
+        except (OSError, PoolContractError):
+            return False
+        if isinstance(live, Mapping):
+            try:
+                live_published = float(live.get("published_unix"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return False
+            control = live.get("resource_scope")
+            live_nonce = live_scope = ""
+            if isinstance(control, Mapping):
+                candidate = control.get("nonce")
+                if isinstance(candidate, str) and candidate:
+                    live_nonce = candidate
+                for field in ("scope_id", "scope_unit", "unit"):
+                    unit = control.get(field)
+                    if isinstance(unit, str) and unit:
+                        live_scope = unit
+                        break
+            if (live_published == exp_published and live_nonce == exp_nonce
+                    and live_scope == exp_scope):
+                return True
+            # Live row for another attempt: stale-superseded, never fall
+            # through to an old terminal to resurrect it.
+            return False
+        if live is not None:
+            return False
+        # No live claim: consult the terminal for the same attempt.
+        for state in (DONE, FAILED):
+            try:
+                terminal = _read_json(self.item_path(state, owner_key))
+            except (OSError, PoolContractError):
+                return False
+            if not isinstance(terminal, Mapping):
+                continue
+            try:
+                term_published = float(terminal.get("published_unix"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if term_published != exp_published:
+                continue
+            control = terminal.get("resource_scope")
+            term_nonce = term_scope = ""
+            if isinstance(control, Mapping):
+                candidate = control.get("nonce")
+                if isinstance(candidate, str) and candidate:
+                    term_nonce = candidate
+                for field in ("scope_id", "scope_unit", "unit"):
+                    unit = control.get(field)
+                    if isinstance(unit, str) and unit:
+                        term_scope = unit
+                        break
+            if term_nonce == exp_nonce and term_scope == exp_scope:
+                return True
+        return False
+
+    def _output_batch_authority(self, record: Mapping[str, object]) -> bool:
+        """Precommit-OR-commit batch authority for one output intent (R1).
+
+        Future writer order: prewrite (budget) -> publish mover -> fund
+        (intent) -> commit (filed batch).  Cover/drive therefore accept
+        EITHER:
+
+        * filed commit exists (commitments entry + batch file) binding the
+          same batch_id/manifest/mover/tier/owner/template (strongest;
+          descriptors re-validated + manifest recomputed with base helpers,
+          no R3 loader), OR
+        * no filed commit yet, but the durable prewrite still exists with
+          matching tier/owner/attempt and class_bytes total == intent range
+          (precommit phase; manifest was validated at fund time).
+
+        Neither existing is unknown (never credit).  A filed batch with
+        mismatched manifest/mover/tier, or a prewrite with mismatched
+        tier/owner/total, refuses (tampered/stale).  No second funding
+        record: prewrite is budget, filed batch is commit, pool intent is
+        the sole funding authority.
+        """
+
+        try:
+            from . import produced_output as produced_mod
+            import json as _json
+        except ImportError:
+            return False
+        try:
+            owner_key = str(record.get("owner_action_key"))
+            template_sha = str(record.get("template_sha256"))
+            batch_id = str(record.get("batch_id"))
+            manifest = str(record.get("manifest_digest"))
+            mover_key = str(record.get("mover_action_key"))
+            tier_id = str(record.get("tier_id"))
+            bound_range = (int(record.get("range_start_bytes")),  # type: ignore[arg-type]
+                           int(record.get("range_end_bytes")))  # type: ignore[arg-type]
+        except (TypeError, ValueError, KeyError):
+            return False
+        if bound_range[0] != 0 or bound_range[1] <= 0:
+            return False
+        total = bound_range[1] - bound_range[0]
+        # Locate candidate instance(s) by scanning filed scopes (base helper,
+        # no R3 loader, no prefix needed).
+        try:
+            scopes_root = (Path(self.root) / "residency"
+                           / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key)
+            candidates: list[Path] = []
+            try:
+                for child in sorted(scopes_root.iterdir()):
+                    if child.is_dir():
+                        candidate = child / "instance.json"
+                        if candidate.is_file():
+                            candidates.append(candidate)
+            except OSError:
+                return False
+        except (OSError, PoolContractError, ValueError):
+            return False
+        for path in candidates:
+            try:
+                instance = produced_mod.validate_instance(
+                    _json.loads(path.read_text()))
+            except (OSError, ValueError):
+                continue
+            if (str(instance.get("owner_action_key")) != owner_key
+                    or str(instance.get("template_sha256")) != template_sha):
+                continue
+            attempt = instance.get("owner_attempt")
+            if not isinstance(attempt, dict):
+                continue
+            if (str(attempt.get("nonce")) != str(record.get("owner_nonce"))
+                    or str(attempt.get("scope_id")) != str(
+                        record.get("owner_scope_id"))):
+                continue
+            # Filed commit first (strongest after commit).
+            try:
+                commitments = produced_mod._read_commitments(
+                    produced_mod._commitments_path(self.root, instance))
+            except produced_mod.ProducedOutputError:
+                commitments = None
+            if isinstance(commitments, dict):
+                batches = commitments.get("batches")
+                if isinstance(batches, dict):
+                    entry = batches.get(batch_id)
+                    if isinstance(entry, dict):
+                        if (str(entry.get("manifest_digest")) == manifest
+                                and str(entry.get("mover_key")) == mover_key
+                                and str(entry.get("tier")) == tier_id):
+                            # Verify the batch file itself (base helpers).
+                            try:
+                                ns = produced_mod.instance_namespace(instance)
+                                bpath = (Path(self.root) / "residency"
+                                         / produced_mod.OUTPUT_BATCHES_SUBDIR
+                                         / ns / f"{batch_id}.json")
+                                filed = _json.loads(bpath.read_text())
+                            except (OSError, ValueError):
+                                return False
+                            if not isinstance(filed, Mapping):
+                                return False
+                            if (str(filed.get("manifest_digest")) != manifest
+                                    or str(filed.get("mover_key")) != mover_key
+                                    or str(filed.get("tier")) != tier_id
+                                    or int(filed.get("total_bytes", -1)) != total):
+                                return False
+                            # Re-validate descriptors + manifest when present.
+                            entries = filed.get("entries")
+                            if isinstance(entries, list) and entries:
+                                try:
+                                    # Need template body: find filed template
+                                    # with matching sha (any id).
+                                    templates_root = (
+                                        Path(self.root) / "residency"
+                                        / produced_mod.OUTPUT_TEMPLATES_SUBDIR)
+                                    checked_template = None
+                                    try:
+                                        for tpath in sorted(
+                                                templates_root.iterdir()):
+                                            if not tpath.is_file():
+                                                continue
+                                            try:
+                                                body = produced_mod.validate_template(
+                                                    _json.loads(
+                                                        tpath.read_text()))
+                                            except produced_mod.ProducedOutputError:
+                                                continue
+                                            if (produced_mod.template_sha256(
+                                                    body) == template_sha):
+                                                checked_template = body
+                                                break
+                                    except OSError:
+                                        return False
+                                    if checked_template is None:
+                                        return False
+                                    sealed = [
+                                        produced_mod.validate_descriptor(
+                                            dict(e), checked_template,
+                                            instance)
+                                        for e in entries]
+                                    if (produced_mod.output_manifest_sha256(
+                                            sealed) != manifest):
+                                        return False
+                                except produced_mod.ProducedOutputError:
+                                    return False
+                                except (OSError, ValueError):
+                                    return False
+                            return True
+            # No filed commit for this instance: check durable prewrite
+            # (precommit phase).  Prewrite carries no manifest; match on
+            # tier/owner/attempt + class_bytes total == intent total.
+            try:
+                prewrite_path = (produced_mod._prewrites_dir(
+                    self.root, instance) / f"{batch_id}.prewrite.json")
+                prewrite = produced_mod._read_prewrite(prewrite_path)
+            except produced_mod.ProducedOutputError:
+                continue
+            if prewrite is None:
+                continue
+            if str(prewrite.get("tier")) != tier_id:
+                continue
+            if (str(prewrite.get("owner_action_key")) != owner_key
+                    or dict(prewrite.get("owner_attempt", {})) != dict(
+                        {"nonce": str(record.get("owner_nonce")),
+                         "scope_id": str(record.get("owner_scope_id"))})):
+                # Prewrite owner_attempt uses same nonce/scope as instance;
+                # compare against instance attempt (stronger than record
+                # echo) plus record binding already checked above.
+                try:
+                    if (dict(prewrite.get("owner_attempt", {})) != dict(
+                            instance.get("owner_attempt", {}))):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            try:
+                classes = dict(prewrite.get("class_bytes", {}))
+                pre_total = (int(classes.get("payload", 0))
+                             + int(classes.get("checkpoint", 0))
+                             + int(classes.get("temp", 0)))
+            except (TypeError, ValueError):
+                continue
+            if pre_total == total:
+                return True
+        return False
+
+    def fund_output_batch(self, *, tier_id: str, owner_key: str,
+                          mover_key: str, instance, template,
+                          batch_id: str,
+                          descriptors: list[Mapping[str, object]],
+                          token_names: Sequence[str] | None = None) -> dict:
+        """Fund one precommitted batch from the owner's existing window (R1).
+
+        Future writer order (744 wires; this lane does not edit commit):
+        prewrite (durable budget) -> publish mover (from precommit
+        descriptors) -> fund (this intent, authoritative) -> transfer ->
+        commit batch (filed batch references funding generation) -> claim
+        mover.  No second authoritative funding record: the pool intent is
+        authoritative; prewrite is budget; filed batch is commit.
+
+        Exact subset transfer, never a second reservation from free.
+        Validates authority from LIVE precommit records via
+        ``produced_output.describe_output_precommit_for_funding`` (bound
+        template/live owner/prewrite/descriptors/manifest; filed batch NOT
+        required) plus live mover publication; caller hashes prove nothing.
+
+        Lock order (R1 fix): owner transition lock outer, mover inner,
+        both non-blocking; ``funding-race-deferred`` on contention.  This
+        serializes token selection/intent publication against the owner
+        finish/reaper transition (which holds the owner lock around its
+        tier release; see ``_release_reservation``).  Listing intents is
+        not a lock; this is.
+        """
+
+        try:
+            tier = self._check_tier_id(str(tier_id))
+        except (PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        for label, key in (("owner", owner_key), ("mover", mover_key)):
+            if (not isinstance(key, str) or len(key) != 64
+                    or any(c not in "0123456789abcdef" for c in key)):
+                return {"ok": False, "refusal": f"bad-{label}-key"}
+        if not isinstance(batch_id, str) or not batch_id or "/" in batch_id:
+            return {"ok": False, "refusal": "bad-batch-id"}
+        if not isinstance(descriptors, list) or not descriptors:
+            return {"ok": False, "refusal": "bad-descriptors"}
+        try:
+            from . import produced_output as produced_mod
+            binding = produced_mod.describe_output_precommit_for_funding(
+                self, instance, template, batch_id, descriptors,
+                tier, str(mover_key))
+        except produced_mod.ProducedOutputError as exc:
+            text = str(exc)
+            if "template-mismatch" in text:
+                return {"ok": False, "refusal": "template-mismatch"}
+            if "stale" in text or "superseded" in text:
+                return {"ok": False, "refusal": "stale-superseded-owner"}
+            if "owner-not-running" in text:
+                return {"ok": False, "refusal": "owner-not-running"}
+            if "prewrite-reservation-missing" in text:
+                return {"ok": False, "refusal": "prewrite-reservation-missing"}
+            if "prewrite-mismatch" in text:
+                return {"ok": False, "refusal": "prewrite-mismatch"}
+            if text.startswith("unknown-retain"):
+                return {"ok": False, "refusal": text}
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if str(binding.get("owner_action_key")) != str(owner_key):
+            return {"ok": False, "refusal": "owner-mismatch"}
+        try:
+            kind = storage_tiers.capacity_kind_of(tier)
+        except (ValueError, PoolContractError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        try:
+            total = int(binding["total_bytes"])
+            batch_gib = storage_tiers.stage_tokens_for_bytes(total)
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        try:
+            from . import produced_output as produced_mod2
+            checked_template = produced_mod2.validate_template(template)
+            window = int(checked_template["working_demands"][tier]["window_gib"])
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if batch_gib > window:
+            return {"ok": False, "refusal": "batch-exceeds-window",
+                    "batch_gib": batch_gib, "window_gib": window}
+        # Live reads before locking (selection is pre-lock; intent filing
+        # + transfer are under owner->mover locks below).
+        owner_live, refusal = self._output_live_owner(str(owner_key))
+        if owner_live is None:
+            return {"ok": False, "refusal": refusal}
+        if (str(owner_live["nonce"]) != str(binding.get("owner_nonce"))
+                or str(owner_live["scope"]) != str(binding.get("owner_scope_id"))):
+            return {"ok": False, "refusal": "stale-superseded-owner"}
+        mover_live, refusal = self._output_live_mover(str(mover_key))
+        if mover_live is None:
+            return {"ok": False, "refusal": refusal}
+        mover_row = mover_live["row"]
+        assert isinstance(mover_row, dict)
+        try:
+            mover_published = float(mover_row.get("published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return {"ok": False, "refusal": "unknown-retain: mover-publication"}
+        residency = mover_row.get("residency")
+        if not isinstance(residency, Mapping):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        if (str(residency.get("tier_id")) != tier
+                or str(residency.get("manifest_sha256")) != str(
+                    binding.get("manifest_digest"))):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        try:
+            mover_range = (int(residency.get("range_start_bytes")),  # type: ignore[arg-type]
+                           int(residency.get("range_end_bytes")))  # type: ignore[arg-type]
+            bound_range = (int(binding.get("range_start_bytes")),
+                           int(binding.get("range_end_bytes")))
+        except (TypeError, ValueError):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        if mover_range != bound_range:
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        try:
+            ledger = self.tier_ledger(tier)
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        try:
+            held_names = sorted(path.name for path in _glob(
+                ledger.held_dir / str(owner_key), "*-*")
+                if path.name.startswith(kind + "-"))
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if token_names is not None:
+            try:
+                selected = sorted(str(name) for name in token_names)
+            except (TypeError, ValueError):
+                return {"ok": False, "refusal": "bad-token-names"}
+            if len(set(selected)) != len(selected) or not selected:
+                return {"ok": False, "refusal": "bad-token-names"}
+            if len(selected) != batch_gib:
+                return {"ok": False, "refusal": "token-names-unknown"}
+            for name in selected:
+                if not name.startswith(kind + "-"):
+                    return {"ok": False, "refusal": "token-names-unknown"}
+                if name not in held_names:
+                    return {"ok": False, "refusal": "token-names-unknown"}
+        else:
+            if len(held_names) < batch_gib:
+                return {"ok": False, "refusal": "tier-reservation-unavailable",
+                        "available": ledger.available()}
+            selected = held_names[:batch_gib]
+        # Owner outer, mover inner (R1): serializes against owner finish.
+        with self._transition_locked(str(owner_key),
+                                     blocking=False) as owner_acquired:
+            if not owner_acquired:
+                return {"ok": False, "refusal": "funding-race-deferred"}
+            with self.mover_transition_lock(str(mover_key),
+                                            blocking=False) as mover_acquired:
+                if not mover_acquired:
+                    return {"ok": False, "refusal": "funding-race-deferred"}
+                return self._fund_output_batch_locked(
+                    tier=tier, kind=kind, owner_key=str(owner_key),
+                    mover_key=str(mover_key), binding=binding,
+                    batch_gib=batch_gib, selected=selected,
+                    owner_published=float(owner_live["published_unix"]),
+                    mover_published=float(mover_published))
+
+    def _fund_output_batch_locked(self, *, tier: str, kind: str,
+                                  owner_key: str, mover_key: str,
+                                  binding: Mapping[str, object],
+                                  batch_gib: int, selected: list[str],
+                                  owner_published: float,
+                                  mover_published: float) -> dict:
+        """Fund body; caller holds owner outer + mover inner (R1 order)."""
+
+        # Re-read live rows under the lock: a republish between selection
+        # and filing must not fund stale credit.
+        owner_live, refusal = self._output_live_owner(owner_key)
+        if owner_live is None:
+            return {"ok": False, "refusal": refusal}
+        if (str(owner_live["nonce"]) != str(binding.get("owner_nonce"))
+                or str(owner_live["scope"]) != str(binding.get("owner_scope_id"))
+                or float(owner_live["published_unix"]) != float(owner_published)):
+            return {"ok": False, "refusal": "stale-superseded-owner"}
+        mover_live, refusal = self._output_live_mover(mover_key)
+        if mover_live is None:
+            return {"ok": False, "refusal": refusal}
+        try:
+            live_mover_published = float(mover_live["row"].get("published_unix"))  # type: ignore[union-attr,arg-type]
+        except (TypeError, ValueError, AttributeError):
+            return {"ok": False, "refusal": "unknown-retain: mover-publication"}
+        if live_mover_published != float(mover_published):
+            return {"ok": False, "refusal": "mover-publication-mismatch"}
+        try:
+            ledger = self.tier_ledger(tier)
+            held_now = {path.name for path in _glob(
+                ledger.held_dir / owner_key, "*-*")}
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        # Existing record for this mover: idempotent re-drive, never a
+        # second authoritative intent.
+        current = self.read_output_funding(mover_key, tier)
+        if current is not None:
+            if (str(current.get("batch_id")) != str(binding.get("batch_id"))
+                    or str(current.get("manifest_digest")) != str(
+                        binding.get("manifest_digest"))
+                    or str(current.get("owner_action_key")) != owner_key
+                    or str(current.get("template_sha256")) != str(
+                        binding.get("template_sha256"))):
+                return {"ok": False, "refusal": "batch-id-in-use"}
+            if current.get("state") in ("consumed", "released"):
+                # Spent or retired: a funded batch never re-funds.  If the
+                # mover still holds the full set under the same publication
+                # this is a duplicate fund call after claim; report it as
+                # duplicate rather than funding again.
+                if current.get("state") == "consumed":
+                    return {"ok": True, "generation": str(current.get("generation")),
+                            "tokens": list(current.get("tokens") or []),
+                            "moved": int(batch_gib), "duplicate": True}
+                return {"ok": False, "refusal": "batch-id-in-use"}
+            # Live reserved/transferring for the same batch: reuse its
+            # generation + token set (never rotate under a verifying
+            # claim); a caller-selected subset differing from the filed
+            # set refuses rather than forking the intent.
+            filed_tokens = current.get("tokens")
+            if (not isinstance(filed_tokens, list) or not filed_tokens
+                    or sorted(str(n) for n in filed_tokens) != sorted(selected)):
+                # Allow retry with no explicit token_names (selected from
+                # current holdings) to re-drive the filed set even when the
+                # owner's other tokens moved: the filed set is authoritative.
+                selected = sorted(str(n) for n in filed_tokens) \
+                    if isinstance(filed_tokens, list) else selected
+            generation = str(current.get("generation"))
+        else:
+            generation = uuid.uuid4().hex
+            record = {
+                "schema": TIER_FUNDING_OUTPUT_SCHEMA_V1,
+                "tier_id": tier, "kind": kind,
+                "mover_action_key": mover_key, "tokens": sorted(selected),
+                "generation": generation, "state": "reserved",
+                "unix": time.time(), "published_unix": float(mover_published),
+                "owner_action_key": owner_key,
+                "owner_nonce": str(binding.get("owner_nonce")),
+                "owner_scope_id": str(binding.get("owner_scope_id")),
+                "owner_published_unix": float(owner_published),
+                "template_id": str(binding.get("template_id")),
+                "template_sha256": str(binding.get("template_sha256")),
+                "batch_id": str(binding.get("batch_id")),
+                "manifest_digest": str(binding.get("manifest_digest")),
+                "range_start_bytes": int(binding.get("range_start_bytes")),
+                "range_end_bytes": int(binding.get("range_end_bytes")),
+            }
+            try:
+                self._write_output_funding_locked(record, expect_generation=None)
+            except (OSError, PoolContractError, ValueError) as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            current = self.read_output_funding(mover_key, tier)
+            if current is None:
+                return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
+            generation = str(current.get("generation"))
+        # Transfer the exact filed set (re-drive safe: already-moved counts).
+        filed = self.read_output_funding(mover_key, tier)
+        if filed is None:
+            return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
+        names = [str(n) for n in filed.get("tokens", [])]  # type: ignore[union-attr]
+        try:
+            moved = int(ledger.transfer_tokens(owner_key, mover_key, names))
+        except (OSError, PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if moved < len(names):
+            return {"ok": False, "refusal": "transfer-short",
+                    "moved": moved, "expected": len(names),
+                    "generation": generation}
+        if not self._advance_output_funding_state_locked(
+                mover_key, tier, expect="reserved",
+                advance_to="transferring", generation=generation):
+            # Already transferring with same generation is success (retry
+            # after crash between transfer and advance).
+            check = self.read_output_funding(mover_key, tier)
+            if (check is not None and check.get("state") == "transferring"
+                    and str(check.get("generation")) == generation):
+                return {"ok": True, "generation": generation,
+                        "tokens": names, "moved": moved}
+            return {"ok": False, "refusal": "funding-race-deferred",
+                    "generation": generation}
+        return {"ok": True, "generation": generation,
+                "tokens": names, "moved": moved}
+
+    def output_funded_cover(self, tier_id: str, item: Mapping[str, object],
+                            kind: str, need: int) -> tuple[int, str | None]:
+        """What this output mover's funding record covers, with generation (R1).
+
+        Additive to V1 (claim tries V1 first; this only runs when V1
+        covers 0).  Strict or nothing against the sealed mover row itself
+        plus recovery-safe authority: output record in ``transferring``
+        naming this tier/mover/kind, mover ``published_unix`` equal to the
+        sealed row, sealed residency naming the bound manifest over exactly
+        the bound range, owner authority via live-owner OR terminal-proof
+        (``_output_owner_authority``: live same attempt, else terminal same
+        attempt after finish; live-mismatched never falls through), batch
+        authority via precommit-OR-commit (``_output_batch_authority``:
+        filed commit with same manifest/mover/tier, else durable prewrite
+        with same total), and every bound token still held under this key
+        with this kind's prefix.  Consumed never covers.  Never raises for
+        queue-state reasons; unknown is ``(0, None)``.
+        """
+
+        if need <= 0 or not isinstance(item, Mapping):
+            return (0, None)
+        key = item.get("action_key")
+        if not isinstance(key, str):
+            return (0, None)
+        record = self.read_output_funding(key, str(tier_id))
+        if record is None or record.get("state") != "transferring":
+            return (0, None)
+        if (str(record.get("tier_id")) != str(tier_id)
+                or str(record.get("mover_action_key")) != key
+                or str(record.get("kind")) != str(kind)):
+            return (0, None)
+        try:
+            row_published = float(item.get("published_unix"))  # type: ignore[arg-type]
+            bound_published = float(record.get("published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return (0, None)
+        if row_published != bound_published:
+            return (0, None)
+        residency = item.get("residency")
+        if not isinstance(residency, Mapping):
+            return (0, None)
+        if (str(residency.get("tier_id")) != str(record.get("tier_id"))
+                or str(residency.get("manifest_sha256")) != str(
+                    record.get("manifest_digest"))):
+            return (0, None)
+        try:
+            row_range = (int(residency.get("range_start_bytes")),  # type: ignore[arg-type]
+                         int(residency.get("range_end_bytes")))  # type: ignore[arg-type]
+            bound_range = (int(record.get("range_start_bytes")),  # type: ignore[arg-type]
+                           int(record.get("range_end_bytes")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return (0, None)
+        if row_range != bound_range:
+            return (0, None)
+        # Owner authority: live same attempt OR terminal same attempt (R1).
+        # Finish-before-mover-claim recovers via the terminal; a live row
+        # for another attempt never falls through to an old terminal.
+        try:
+            if not self._output_owner_authority(record):
+                return (0, None)
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        except Exception:
+            return (0, None)
+        # Batch authority: filed commit OR durable prewrite (R1).
+        try:
+            if not self._output_batch_authority(record):
+                return (0, None)
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        except Exception:
+            return (0, None)
+        tokens = record.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            return (0, None)
+        try:
+            held_names = {path.name for path in _glob(
+                self.tier_ledger(str(tier_id)).held_dir / key, "*-*")}
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        if any(not isinstance(name, str)
+               or not name.startswith(str(kind) + "-")
+               or name not in held_names for name in tokens):
+            return (0, None)
+        generation = record.get("generation")
+        if not isinstance(generation, str):
+            return (0, None)
+        return (min(int(len(tokens)), int(need)), generation)
+
+    def _output_batch_file_binds(self, produced_mod, owner_key: str,
+                                 template_sha: str, batch_id: str,
+                                 manifest: str, bound_range: tuple[int, int],
+                                 mover_key: str, tier_id: str) -> bool:
+        """Does a filed immutable batch file still bind this output funding?"""
+
+        try:
+            scopes_root = (Path(self.root) / "residency"
+                           / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key)
+            candidates: list[Path] = []
+            try:
+                for child in sorted(scopes_root.iterdir()):
+                    if child.is_dir():
+                        candidate = child / "instance.json"
+                        if candidate.is_file():
+                            candidates.append(candidate)
+                    elif child.suffix == ".json" and child.name != "commitments.json":
+                        candidates.append(child)
+            except OSError:
+                return False
+            for path in candidates:
+                try:
+                    instance = produced_mod.validate_instance(
+                        __import__("json").loads(path.read_text()))
+                except (OSError, ValueError):
+                    continue
+                if (str(instance.get("owner_action_key")) != owner_key
+                        or str(instance.get("template_sha256")) != template_sha):
+                    continue
+                try:
+                    commitments_path = produced_mod._commitments_path(
+                        self.root, instance)
+                    import json as _json
+                    commitments = produced_mod._read_commitments(
+                        commitments_path)
+                except produced_mod.ProducedOutputError:
+                    continue
+                batches = commitments.get("batches")
+                if not isinstance(batches, dict):
+                    continue
+                entry = batches.get(batch_id)
+                if not isinstance(entry, dict):
+                    continue
+                if (str(entry.get("manifest_digest")) != manifest
+                        or str(entry.get("mover_key")) != mover_key
+                        or str(entry.get("tier")) != tier_id):
+                    continue
+                # Strongest: load the immutable batch record (re-validated
+                # descriptors + recomputed manifest).  Needs the template
+                # body; read the filed template by sha from the templates
+                # dir (any template_id with matching sha binds).
+                try:
+                    templates_root = (Path(self.root) / "residency"
+                                      / produced_mod.OUTPUT_TEMPLATES_SUBDIR)
+                    checked_template = None
+                    try:
+                        for tpath in sorted(templates_root.iterdir()):
+                            if not tpath.is_file():
+                                continue
+                            try:
+                                body = produced_mod.validate_template(
+                                    _json.loads(tpath.read_text()))
+                            except produced_mod.ProducedOutputError:
+                                continue
+                            if produced_mod.template_sha256(body) == template_sha:
+                                checked_template = body
+                                break
+                    except OSError:
+                        return False
+                    if checked_template is None:
+                        return False
+                    filed, sealed = produced_mod._load_batch_record(
+                        self.root, instance, checked_template, entry, batch_id)
+                except produced_mod.ProducedOutputError:
+                    return False
+                total = int(filed.get("total_bytes", -1))
+                if (total != bound_range[1] - bound_range[0]
+                        or bound_range[0] != 0):
+                    return False
+                if str(filed.get("manifest_digest")) != manifest:
+                    return False
+                return True
+            return False
+        except Exception:
+            return False
+
+    def drive_output_funding(self, mover_action_key: str,
+                             tier_id: str) -> dict:
+        """Re-drive an output intent to completion (R1, idempotent).
+
+        Reads the filed intent (never infers one), re-validates recovery
+        authority (owner live-OR-terminal via ``_output_owner_authority``,
+        batch precommit-OR-commit via ``_output_batch_authority``), moves
+        the remainder owner->mover, ensures ``transferring``.  Holds owner
+        outer + mover inner (same order as fund; non-blocking, defer on
+        contention) so a concurrent owner finish serializes instead of
+        freeing source-held names mid-transfer.  Works after producer
+        finish via terminal proof (finish-before-mover-claim,
+        crash-with-partial-transfer).  Short transfer preserves split;
+        stale authority refuses without moving.
+        """
+
+        try:
+            tier = self._check_tier_id(str(tier_id))
+        except (PoolContractError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        mover = str(mover_action_key)
+        # Read owner without locks to learn which owner lock to take.
+        probe = self.read_output_funding(mover, tier)
+        if probe is None:
+            return {"ok": False, "refusal": "unknown-batch"}
+        if probe.get("state") not in ("reserved", "transferring"):
+            return {"ok": False, "refusal": "batch-id-in-use",
+                    "state": str(probe.get("state"))}
+        try:
+            owner_key = str(probe.get("owner_action_key"))
+            exp_generation = str(probe.get("generation"))
+        except (TypeError, ValueError, KeyError):
+            return {"ok": False, "refusal": "unknown-retain: funding-binding"}
+        with self._transition_locked(owner_key, blocking=False) as owner_acquired:
+            if not owner_acquired:
+                return {"ok": False, "refusal": "funding-race-deferred"}
+            with self.mover_transition_lock(mover, blocking=False) as mover_acquired:
+                if not mover_acquired:
+                    return {"ok": False, "refusal": "funding-race-deferred"}
+                record = self.read_output_funding(mover, tier)
+                if record is None:
+                    return {"ok": False, "refusal": "unknown-batch"}
+                if str(record.get("generation")) != exp_generation:
+                    return {"ok": False, "refusal": "funding-race-deferred"}
+                if record.get("state") not in ("reserved", "transferring"):
+                    return {"ok": False, "refusal": "batch-id-in-use",
+                            "state": str(record.get("state"))}
+                if not self._output_owner_authority(record):
+                    return {"ok": False, "refusal": "stale-superseded-owner"}
+                if not self._output_batch_authority(record):
+                    return {"ok": False, "refusal": "unknown-retain: batch-authority"}
+                names = [str(n) for n in record.get("tokens", [])]  # type: ignore[union-attr]
+                if not names:
+                    return {"ok": False, "refusal": "unknown-retain: funding-tokens"}
+                try:
+                    ledger = self.tier_ledger(tier)
+                    moved = int(ledger.transfer_tokens(owner_key, mover, names))
+                except (OSError, PoolContractError, ValueError) as exc:
+                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+                if moved < len(names):
+                    return {"ok": False, "refusal": "transfer-short",
+                            "moved": moved, "expected": len(names),
+                            "generation": str(record.get("generation"))}
+                if record.get("state") == "reserved":
+                    if not self._advance_output_funding_state_locked(
+                            mover, tier, expect="reserved",
+                            advance_to="transferring",
+                            generation=str(record.get("generation"))):
+                        check = self.read_output_funding(mover, tier)
+                        if not (isinstance(check, dict)
+                                and check.get("state") == "transferring"
+                                and str(check.get("generation")) == str(
+                                    record.get("generation"))):
+                            return {"ok": False, "refusal": "funding-race-deferred"}
+                return {"ok": True, "generation": str(record.get("generation")),
+                        "tokens": names, "moved": moved}
+
+    def release_output_funding(self, mover_action_key: str, tier_id: str, *,
+                               generation: str | None = None) -> bool:
+        """Retire an output intent only when mover nonexecution is proven (R1).
+
+        Holds the mover lock throughout.  Refuses (retain, never free) when
+        nonexecution is not proven, reusing V1's claim-durability and
+        copy-lifetime checks:
+
+        * mover CLAIMED row exists (durable claim may hold the fence while
+          the consumed marker failed) -> refuse;
+        * mover DONE exists with executed status and ``residency_pin_holds``
+          (landed bytes still charged to the mover; only the egress may
+          return them) -> refuse;
+        * otherwise (no CLAIMED, no pinned DONE) advances
+          reserved|transferring -> released.  Tokens stay where they are;
+          ordinary owner/mover release then frees them (no strand).
+
+        Caller request + state alone are insufficient; this proves the mover
+        never took the fence before retiring its credit.
+        """
+
+        mover = str(mover_action_key)
+        with self.mover_transition_lock(mover, blocking=False) as acquired:
+            if not acquired:
+                return False
+            current = self.read_output_funding(mover, str(tier_id))
+            if current is None:
+                return False
+            if (generation is not None
+                    and str(current.get("generation")) != str(generation)):
+                return False
+            state = str(current.get("state"))
+            if state == "released":
+                return True
+            if state not in ("reserved", "transferring"):
+                return False
+            # Nonexecution proof: no durable CLAIMED row for this mover.
+            try:
+                claimed = _read_json(self.item_path(CLAIMED, mover))
+            except (OSError, PoolContractError):
+                return False
+            if isinstance(claimed, Mapping):
+                return False
+            # Copy-lifetime proof: a DONE mover that staged what it declared
+            # keeps its tier tokens; retiring its credit here would leave
+            # occupancy nothing can attribute.
+            try:
+                done = _read_json(self.item_path(DONE, mover))
+            except (OSError, PoolContractError):
+                return False
+            if isinstance(done, Mapping):
+                try:
+                    if self.residency_pin_holds(done, mover):
+                        return False
+                except (OSError, PoolContractError, ValueError):
+                    return False
+            return self._advance_output_funding_state_locked(
+                mover, str(tier_id), expect=state, advance_to="released",
+                generation=str(current.get("generation")))
+
+    def output_intents_sourcing_from(self, owner_key: str) -> list[dict]:
+        """Outstanding output intents whose source window is this owner."""
+
+        intents: list[dict] = []
+        try:
+            funding_dir = self.root / TIER_FUNDING
+            paths = sorted(funding_dir.glob("*.output-funding.json"))
+        except OSError:
+            return intents
+        for path in paths:
+            try:
+                raw = _read_json(path)
+            except (OSError, PoolContractError):
+                continue
+            if raw is None:
+                continue
+            try:
+                record = self.validate_output_funding(raw)
+            except (PoolContractError, ValueError):
+                continue
+            if (str(record.get("owner_action_key")) == str(owner_key)
+                    and str(record.get("state")) in ("reserved", "transferring")):
+                intents.append(record)
+        return intents
+
+    def output_keep_names_for_owner(self, owner_key: str,
+                                    tier_id: str) -> set[str]:
+        """Token names an owner finish must not free (still-source-held intent)."""
+
+        keep: set[str] = set()
+        try:
+            ledger = self.tier_ledger(str(tier_id))
+            held = {path.name for path in _glob(
+                ledger.held_dir / str(owner_key), "*-*")}
+        except (OSError, PoolContractError, ValueError):
+            return keep
+        for record in self.output_intents_sourcing_from(str(owner_key)):
+            if str(record.get("tier_id")) != str(tier_id):
+                continue
+            tokens = record.get("tokens")
+            if not isinstance(tokens, list):
+                continue
+            for name in tokens:
+                if isinstance(name, str) and name in held:
+                    keep.add(name)
+        return keep
+
     def mover_transition_lock(self, mover_action_key: str, *,
                               blocking: bool = True):
         """Exclude two parties from deciding one staged range's ownership.
@@ -5215,7 +6534,39 @@ class PoolQueue:
             # drawn by nobody, and a finished mover holding it refuses the next
             # one against a supply that is idle (#636).
             return released + self.release_tier_rate_reservations(action_key)
-        return released + self.release_tier_reservations(action_key)
+        # Prepaid-output protection (R1): an owner finish/reaper must not free
+        # an outstanding output intent's still-source-held tokens between
+        # partial transfers, yet a cancelled producer must not strand its
+        # unspent grant.  Hold the owner transition lock (blocking; nested
+        # re-entry safe, reapers already hold it) around the tier release so
+        # fund's owner-outer/mover-inner critical section serializes: either
+        # fund filed first (keep-set preserves its named source-held tokens,
+        # unspent grant still freed) or finish freed first (fund sees
+        # insufficient holdings and refuses, never filing).  Listing intents
+        # is not a lock; this is.  Lock order owner-outer/mover-inner is
+        # consistent everywhere (fund takes owner then mover; finish here
+        # takes owner only, never mover while holding owner).
+        with self._transition_locked(str(action_key), blocking=True):
+            tier_released = 0
+            for tier_id in self.tier_ids():
+                try:
+                    ledger = self.tier_ledger(tier_id)
+                except (OSError, PoolContractError):
+                    continue
+                try:
+                    keep = self.output_keep_names_for_owner(
+                        str(action_key), tier_id)
+                except (OSError, PoolContractError, ValueError):
+                    keep = set()
+                try:
+                    if keep:
+                        tier_released += ledger.release_except(
+                            str(action_key), keep)
+                    else:
+                        tier_released += ledger.release(str(action_key))
+                except (OSError, PoolContractError, ValueError):
+                    continue
+            return released + tier_released
 
     def mint_tier_capacity(self, tier_id: str, tokens: Mapping[str, int]) -> dict[str, object]:
         """Make a tier's ledger say what discovery measured, up or down.
@@ -5320,6 +6671,7 @@ class PoolQueue:
                         "capacity_total": total, "demand": dict(needs)}
             covered: dict[str, int] = {}
             generation: str | None = None
+            variant: str | None = None
             if isinstance(sealed, Mapping):
                 for kind, need in needs.items():
                     try:
@@ -5330,6 +6682,21 @@ class PoolQueue:
                     if count:
                         covered[kind] = count
                         generation = covered_generation
+                        variant = "window"
+                # Output variant is additive and never weakens V1: only when
+                # V1 covers nothing for this tier, try the prepaid-output
+                # binding (same strictness, different scope proof).
+                if not any(covered.values()):
+                    for kind, need in needs.items():
+                        try:
+                            count, covered_generation = self.output_funded_cover(
+                                tier_id, sealed, kind, int(need))
+                        except (OSError, PoolContractError, ValueError):
+                            continue
+                        if count:
+                            covered[kind] = count
+                            generation = covered_generation
+                            variant = "output"
             if any(covered.values()):
                 # Bind the verified token names now, under this key's
                 # transition lock: the rollback below must tell the fence it
@@ -5337,8 +6704,11 @@ class PoolQueue:
                 # could be a rotated generation's.  Anything off -- moved
                 # state, rotated generation, unnamed tokens -- fails closed
                 # to no cover, and the claim pays its full demand.
-                proof = self.read_funding(action_key, tier_id)
                 names: list[str] = []
+                if variant == "output":
+                    proof = self.read_output_funding(action_key, tier_id)
+                else:
+                    proof = self.read_funding(action_key, tier_id)
                 if (proof is not None and proof.get("state") == "transferring"
                         and isinstance(proof.get("generation"), str)
                         and str(proof.get("generation")) == generation
@@ -5350,7 +6720,8 @@ class PoolQueue:
                 else:
                     funded[tier_id] = {"kinds": dict(covered),
                                        "generation": generation,
-                                       "tokens": names}
+                                       "tokens": names,
+                                       "variant": variant or "window"}
             remainder = {kind: int(need) - int(covered.get(kind, 0))
                          for kind, need in needs.items()}
             handle = ledger.begin_acquire(action_key, remainder)
@@ -8158,6 +9529,8 @@ class PoolQueue:
                                  if isinstance(entry, dict) else None)
                         bound_names = (entry.get("tokens")
                                        if isinstance(entry, dict) else None)
+                        variant = (str(entry.get("variant") or "window")
+                                   if isinstance(entry, dict) else "window")
                         needs = tier_demand.get(funded_tier, {})
                         ok = (isinstance(kinds, dict) and bool(kinds)
                               and isinstance(bound_names, list)
@@ -8165,9 +9538,14 @@ class PoolQueue:
                         if ok:
                             for kind_name, count in kinds.items():
                                 try:
-                                    covered, live_generation = self.funded_cover(
-                                        funded_tier, moved, str(kind_name),
-                                        int(needs.get(kind_name, 0)))
+                                    if variant == "output":
+                                        covered, live_generation = self.output_funded_cover(
+                                            funded_tier, moved, str(kind_name),
+                                            int(needs.get(kind_name, 0)))
+                                    else:
+                                        covered, live_generation = self.funded_cover(
+                                            funded_tier, moved, str(kind_name),
+                                            int(needs.get(kind_name, 0)))
                                 except (OSError, PoolContractError, ValueError):
                                     ok = False
                                     break
@@ -8181,7 +9559,10 @@ class PoolQueue:
                             # must be exactly what is still held -- a rotated
                             # generation's names fail closed here, never as a
                             # half-kept fence.
-                            live = self.read_funding(key, funded_tier)
+                            if variant == "output":
+                                live = self.read_output_funding(key, funded_tier)
+                            else:
+                                live = self.read_funding(key, funded_tier)
                             live_names = (live.get("tokens")
                                           if isinstance(live, dict) else None)
                             if (not isinstance(live, dict)
@@ -8219,6 +9600,7 @@ class PoolQueue:
                             "kinds": dict(entry.get("kinds") or {}),
                             "tokens": [str(name) for name in
                                        (entry.get("tokens") or [])],
+                            "variant": str(entry.get("variant") or "window"),
                         }
                         for funded_tier, entry in sorted(tier_funded.items())
                         if isinstance(entry, dict)
@@ -8297,15 +9679,29 @@ class PoolQueue:
                     for funded_tier, entry in tier_funded.items():
                         pinned = (entry.get("generation")
                                   if isinstance(entry, dict) else None)
+                        variant = (str(entry.get("variant") or "window")
+                                   if isinstance(entry, dict) else "window")
                         # Locked spelling: the claim holds this key's
                         # transition lock from its tier acquire through here.
-                        if self._advance_funding_state_locked(
+                        if variant == "output":
+                            marked = self._advance_output_funding_state_locked(
                                 key, funded_tier, expect="transferring",
                                 advance_to="consumed",
                                 generation=pinned if isinstance(
-                                    pinned, str) else None):
-                            continue
-                        current = self.read_funding(key, funded_tier)
+                                    pinned, str) else None)
+                            if marked:
+                                continue
+                            current = self.read_output_funding(
+                                key, funded_tier)
+                        else:
+                            marked = self._advance_funding_state_locked(
+                                key, funded_tier, expect="transferring",
+                                advance_to="consumed",
+                                generation=pinned if isinstance(
+                                    pinned, str) else None)
+                            if marked:
+                                continue
+                            current = self.read_funding(key, funded_tier)
                         if (current is not None
                                 and current.get("state") == "consumed"
                                 and (pinned is None or current.get(
