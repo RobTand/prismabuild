@@ -504,15 +504,15 @@
    },
    "id": "INV-01",
    "implementation": {
-    "commit": "PB:ca0f5555",
-    "path": "src/prismabuild/pool.py tier reservation + single release helper",
-    "state": "yes"
+    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8",
+    "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
+    "state": "partial"
    },
    "owner": "PB:pool-claim",
    "text": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence.",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "unknown",
@@ -665,14 +665,14 @@
    "id": "INV-07",
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-    "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard",
+    "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard; PR742/e534da78 shared capacity retirement/reissue and cache-tier mutation exclusion now component-qualified; shared publication incarnation repair remains pending.",
     "state": "partial"
    },
    "owner": "PB:tier-loop",
    "target_enforcement": "separate egress-ownership lane acceptance",
    "text": "Serialize copy/publish/lease/release; last reader incl. pending handoff blocks eviction; retiring charge ordering per SM-02 (delete-only absent, logical owner release distinct from physical state).",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. PR742 adds real claim/mint exclusion, shared-file decharge, atomic dead-token recovery and visible census-error coverage; root integrated78-pass gate. This does not qualify the separately pending overlapping-publisher repair.",
     "state": "partial"
    },
    "workload_proof": {
