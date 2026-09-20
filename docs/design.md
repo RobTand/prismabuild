@@ -699,10 +699,15 @@ the exact launch key and nonce, never the broker token) plus
 resolves from its own sealed path). `run_local_action` forwards exactly
 these three from the launcher environment through the residency
 environment contract, so strict readers bind pins to the live claim and
-import sealed helpers. Sealed conflicts on any identity name refuse;
-partial, wrong-action, wrong-nonce, or non-executing-generation helper
-values refuse; absence forwards nothing (legacy behavior for uncontained
-and pre-reader actions). The broker token and socket never cross. These
+import sealed helpers. Sealed conflicts on any identity name refuse, as
+does a partial bundle (no producer ever emits half of one). A complete
+but unbound tuple -- malformed nonce, scope that is not this action's
+broker slice, helper that is not this executing generation -- is dropped
+to legacy rather than fed: post-deploy harnesses and nested local runs
+must never feed an outer nonce into an unrelated synthetic action, and
+the strict reader still fails closed at use because no live claim binds
+it. Absence forwards nothing (legacy behavior for uncontained and
+pre-reader actions). The broker token and socket never cross. These
 values are runtime authority bound to the attempt, not sealed request
 input, so forwarding them cannot change an action key.
 
