@@ -1,1492 +1,1492 @@
 {
-  "contract": "docs/staged_read_contract_2026-09-20.md",
-  "ledger_schema": "pb.staged_read_requirements.v3",
-  "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation.",
-  "requirements": [
-    {
-      "acceptance_assertion": "Manual review: each lifecycle-affecting change names its PB decision point; no PQ-side placement knob lands.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SC-01",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py claim/admission paths",
-        "state": "yes"
-      },
-      "owner": "PB:pool-claim",
-      "text": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Manual review: diff contains no second mover/cache/scheduler path; PB moves, PQ declares.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SC-02",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py tier/mover paths; tools/fleet/stage_move.py; PQ dispatch submitters (referenced)",
-        "state": "yes"
-      },
-      "owner": "PB:tier-loop",
-      "text": "PB moves/publishes/retires bytes; PQ declares work/readsets/progress. No parallel dispatcher/cache/scheduler.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "manual-review:unknown axes stay unknown-worded per change"
-      ],
-      "acceptance_assertion": "Manual review: every unknown axis below stays unknown-worded; no prose claim of deployment.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SC-03",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:docs-process",
-      "target_enforcement": "ledger plus AGENTS hook reviewed per change",
-      "text": "Contract is target plus ledger; unknown axes are owed work, never claims.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Manual review: sealed action bytes hash to action_key on a sample submission.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-01",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py action_key plumbing",
-        "state": "yes"
-      },
-      "owner": "PB:pool-claim",
-      "text": "Action identity is content hash of sealed action.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "PB720 repro 0f54fe\u2026 attempt record carries distinct nonce/scope with immutable request.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-02",
-      "implementation": {
-        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
-        "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
-        "state": "yes"
-      },
-      "owner": "PB:pool-claim",
-      "text": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
-      "validation": {
-        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Manual review: pbrun-sealed manifest bytes hash to the bound wire digest on a sample row.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-03",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "tools/pbrun.py seal path; CAS/request index",
-        "state": "yes"
-      },
-      "owner": "PB:submission",
-      "text": "Manifest wire identity is SHA-256 over sealed file bytes.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-01"
-      ],
-      "acceptance_assertion": "PQ Tampered-bytes and valid-writer-output fixtures refuse/parse per compat rule (planned).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-04",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ prismaquant/cost_stage_checkpoint.py:canonical_json_sha256 (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:producer",
-      "planned_acceptance": [
-        "PQ tests/test_quantum_launch_contract_838.py"
-      ],
-      "target_enforcement": "PQ-side tamper/equivalence fixtures plus execution proof",
-      "text": "Manifest canonical identity is schema-specific, never a universal PB rule. The PQ receipt path uses exactly cost_stage_checkpoint.canonical_json_sha256 with producer compat (ensure_ascii=False, allow_nan=False); PB schemas retain their own canonical function, never cross-repo importing PQ. Raw-bytes-vs-seal comparisons forbidden; both identities only where both uses exist.",
-      "validation": {
-        "detail": "referenced, not run in this lane",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "manual-review:gate records separate provenance/certification/integrity/location"
-      ],
-      "acceptance_assertion": "Manual review: release-gate records separate the four facts; no promotion path re-issues certification.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-05",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:release-gates",
-      "target_enforcement": "release-gate record audit separating the four facts",
-      "text": "Provenance (source identity), certification (dev_uncertified|certified), integrity (binding/digest/epoch checks that ran), and location (tier/epoch where bytes sit) are four independent facts. Promotion updates integrity/location only and MUST NEVER turn dev_uncertified into certified or reissue certification; certification comes solely from application release gates.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Manual review: each fact names an existing carrier (receipt/fragment/envelope); new carriers flagged target.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-06",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "tools/fleet/stage_move.py receipts; map fragments (carriers exist)",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "wire new carriers only where existing metadata cannot hold a fact",
-      "text": "Content/change-detection evidence carried by existing metadata; new every-payload wire fields are target-only.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Real-reader chain test observes the serving-tier record at open, before payload trust (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-07",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "reader open path serving-tier record (new) + SM-03 lease",
-      "text": "Serving tier/epoch/lease recorded at open time, before payload trust.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Manual review: behavior deltas cite (runtime_commit, generation_id), never source merge alone.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-08",
-      "implementation": {
-        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
-        "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
-        "state": "yes"
-      },
-      "owner": "PB:fleet-runtime",
-      "text": "Behavior attributed per (runtime_commit, generation_id).",
-      "validation": {
-        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "PB720 repro record shows ack/exit/receipt distinct; application validity separately gated (partial, PB side only).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ID-09",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
-        "state": "partial"
-      },
-      "owner": "PB:queue",
-      "target_enforcement": "application-side validity gate on campaign outputs",
-      "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
-      "validation": {
-        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Overlapping source ranges co-owned across phases read correctly; no tile-without-overlap assumed (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "RNG-01",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ manifest entries carry offsets (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "co-ownership reads observed on overlapping ranges",
-      "text": "Source-file offsets may overlap and be co-owned across phases/consumers.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Republished same-epoch/path/length bytes refuse the old lease (ABA negative); prefetch/mmap lifetime pinned (planned ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "RNG-02",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "src/prismabuild/reader_lease.py material sidecars (reader_material.v1, per-publish uuid generation, portable ino/size/mtime/ctime identity, never st_dev); acquire/open_pinned enforce generation+identity with ABA refusal; fragment schema v1 unchanged",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "ABA-negative plus prefetch/mmap lifetime tests",
-      "text": "Staged-object identity (tier, epoch, name, length, materialization generation, content identity); same epoch/path/length MUST NOT ABA-rebind new bytes. Lease pins the physical object; acquisition/open validates bound identity and pins lifetime including async prefetch/mmap with no stat/open race.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Repeated ranges replay explicitly per plan order; logical-phase coverage proven once (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "RNG-03",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ read-plan phases with repeats (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "repeat-explicit replay observed per plan order",
-      "text": "Logical cursor with explicit repeats; coverage proven once per logical phase.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Plan seal test: exact span/gather coverage valid AND uncovered span refused before any open (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "RNG-04",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:planner",
-      "target_enforcement": "plan seal declares gather sets; uncovered spans refuse before opens",
-      "text": "No full-tensor-one-mapping assumption; unsupported gather coverage refused.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Lifecycle/race suite: atomic claim rename, withdrawal only by policy with containment plus attempt terminal first (planned ACC-02).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SM-01",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
-        "state": "partial"
-      },
-      "owner": "PB:pool-claim",
-      "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
-      "text": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Retiring-mark, charge-to-delete, exactly-once release, and epoch-invalidation paths covered incl. deletion-failure retention (planned ACC-02).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SM-02",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
-        "state": "partial"
-      },
-      "owner": "PB:tier-loop",
-      "target_enforcement": "retiring-mark, delete-only absent, epoch revalidation paths",
-      "text": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02",
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Lease acquire/use/release incl. bounded wait-or-fail on unpublished ranges (planned ACC-02/ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SM-03",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "src/prismabuild/reader_lease.py acquire (covers+expected, claimed-first snapshot order under ownership lock, typed refusals, file_pin=False proof mode) / open_pinned (descriptor fence + ID-07) / release (exact ref) / register_inherited_ref; no lease-intent files; bounded wait lives in claim path, not acquire",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "lease issue/hold/release paths (new) mapped onto pins/fragments",
-      "text": "Reader lease acquisition/use/release; abstract mapping onto pins/fragments where present, gaps named.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Manual review: claim fits box+tier ledgers simultaneously; one release helper concludes both.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-01",
-      "implementation": {
-        "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8",
-        "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
-        "state": "partial"
-      },
-      "owner": "PB:pool-claim",
-      "text": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
-      "validation": {
-        "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Lead-executed/same-manifest/pinned admission plus not_resident-vs-terminal denial split observed (partial: denial_top evidence only).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-02",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py PoolQueue.residency_verdict",
-        "state": "yes"
-      },
-      "owner": "PB:pool-claim",
-      "text": "Claim requires executed+same-manifest+pinned leads; adoption counts; no-byte cache_hit does not.",
-      "validation": {
-        "detail": "residency_lead_not_resident vs residency_lead_terminal observed in tmp/cache-takeover-20260920/pbmcp-starvation-20260920T043112Z.json denial_top (read in-lane, not a test verdict)",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Negative: bulk open from HDD fails before payload bytes on all three reader kinds (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-03",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:readers",
-      "target_enforcement": "PQ residency_shard_reader.py open path + joint entrypoint staged-only flags",
-      "text": "Bulk-input reads open only RAM or explicitly-allowed SSD staged objects; HDD bulk opens forbidden.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Serving-tier record present at open in the real-reader chain; counters alone never authorize (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-04",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:readers",
-      "target_enforcement": "reader open path serving-tier record (ID-07)",
-      "text": "Serving tier recorded at open before payload trust; counters observe, never authorize.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "RAM served first where valid; SSD only for plan-permitted ranges (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-05",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "pbrun --residency-ram auto leg exists; preference rule missing",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "lease acquisition preference rule in tier issuance",
-      "text": "Lease acquisition prefers valid RAM then explicitly-allowed SSD.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Stale/corrupt/missing reads refuse or wait boundedly with reason; no HDD fallback (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-06",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ prismaquant/residency_map.py whole-map refusal (yes); pool-fallback on miss (gap) (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:readers",
-      "planned_acceptance": [
-        "PQ tests/test_prismabuild_residency_map.py"
-      ],
-      "target_enforcement": "fallback removal plus bounded wait-or-fail paths",
-      "text": "Stale/corrupt/missing never falls back to HDD; bounded wait or clear fail.",
-      "validation": {
-        "detail": "referenced, not run in this lane",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Simultaneous-egress exactly-once; last-reader blocks eviction; retiring charge ordering (planned ACC-02).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-07",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard; PR742/e534da78 shared capacity retirement/reissue and cache-tier mutation exclusion now component-qualified; shared publication incarnation repair remains pending.",
-        "state": "partial"
-      },
-      "owner": "PB:tier-loop",
-      "target_enforcement": "separate egress-ownership lane acceptance",
-      "text": "Serialize copy/publish/lease/release; last reader incl. pending handoff blocks eviction; retiring charge ordering per SM-02 (delete-only absent, logical owner release distinct from physical state).",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. PR742 adds real claim/mint exclusion, shared-file decharge, atomic dead-token recovery and visible census-error coverage; root integrated78-pass gate. This does not qualify the separately pending overlapping-publisher repair.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "New nonces per attempt; single adoption; adoption re-verifies without recompute (planned ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-08",
-      "implementation": {
-        "commit": "PB:ca0f5555 + PQ:95dbb24a",
-        "path": "src/prismabuild/pool.py attempt nonces; PQ checkpoint journal re-verify grammar (referenced, not re-read)",
-        "state": "partial"
-      },
-      "owner": "PB:queue",
-      "target_enforcement": "PQ journal re-verify execution proof",
-      "text": "Retries never double-count; adoption verifies identity/trust without recompute.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Counters cumulative; replay idempotent; published units never retracted (planned ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-09",
-      "implementation": {
-        "commit": "PB:ca0f5555 + PQ:95dbb24a",
-        "path": "PB progress channel helper; PQ checkpoint journals (referenced, not re-read)",
-        "state": "partial"
-      },
-      "owner": "PB:queue",
-      "target_enforcement": "PQ journal execution proof",
-      "text": "Durable units monotonic and once; replays idempotent.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Gapped join exits advisory; consumer refuses gapped payloads (PQ suites, referenced).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-10",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ joint_quanta_join.py gapped-join semantics (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:join",
-      "planned_acceptance": [
-        "PQ join suites"
-      ],
-      "target_enforcement": "PQ join-suite execution proof",
-      "text": "Failed/gapped outputs never publish campaign success; consumers refuse gapped payloads.",
-      "validation": {
-        "detail": "referenced, not run in this lane",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Class-tag conjunction admits; host-pair tags admitting neither box refused at dispatch (planned ACC-02).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-11",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py tag-conjunction claim (conjunction support does not itself prove bad-pair dispatch refusal)",
-        "state": "partial"
-      },
-      "owner": "PB:pool-claim",
-      "target_enforcement": "bad-pair dispatch-refusal proof",
-      "text": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Adopted evidence never upgraded without re-verification; promotion never re-issues certification (planned ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "INV-12",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:checkpoints",
-      "target_enforcement": "adoption-path trust cap on integrity/location evidence",
-      "text": "Adoption caps integrity/location evidence at what re-verification established, never upgrades either without it, and promotion never re-issues certification.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Readiness vs tier-enforcement audited as separate observations (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "TIER-01",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "lease acquisition preference + PQ reader open gating",
-      "text": "RAM preferred, explicit SSD allowed, no HDD bulk opens; readiness and tier-enforcement audited separately.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "get_slice and payload-materializing calls gated as data readers; only bounded header/index/control exempt (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "TIER-02",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:readers",
-      "target_enforcement": "PQ reader call classification: bounded header/index/control vs payload",
-      "text": "Metadata allowance is bounded header/index/control bytes; get_slice and any payload-materializing call are data readers.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Boundary/activation bulk present in read set or unsupported-workset refused (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "TIER-03",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:planner",
-      "target_enforcement": "plan read-set/dependency validation with unsupported-workset refusal",
-      "text": "Boundary/activation bulk in read set and dependency graph or unsupported-workset; unstaged boundary reads are explicit gap; dynamic artifacts planned after durable receipt.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Pool-byte legacy runs carry sealed user authority naming ranges+reason; payloads uncertified (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "TIER-04",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:submission",
-      "target_enforcement": "legacy authorized run observed with uncertified records",
-      "text": "No waiver checkbox; legacy pool reads need explicit scoped user authorization on the sealed request; resulting payloads carry uncertified integrity/location records with no staged tier claim.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Eviction consults lease state, never the progress counter alone (planned ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "PRG-01",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "src/prismabuild/reader_lease.py release drops exactly its ref, never consults progress; tools/fleet/stage_release.py eviction consults pin state (live_for) behind every delete decision",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "lease-state query backing eviction decisions (new)",
-      "text": "Releasable safe frontier established separately from durable compute progress.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Lookahead fit proven pre-admission or unsupported-workset refused (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "PRG-02",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:planner",
-      "target_enforcement": "plan seal lookahead-fit proof",
-      "text": "Exact read plan with repeats; lookahead fit proven pre-admission or unsupported-workset refused.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Typed waits observed: fit-lack waits with owner, oversize refuses, mid-phase stall terminates with reason.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "PRG-03",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py residency_verdict pending paths; mover retry/timeout policy",
-        "state": "partial"
-      },
-      "owner": "PB:pool-claim",
-      "target_enforcement": "mid-phase grace and stall-terminal semantics observed",
-      "text": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Inequality proved over competing consumers or deterministic next-step policy demonstrated (planned ACC-02).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "PRG-04",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
-      "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Oversize total with fitting windows admits; no whole-set RAM demand (planned ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "PRG-05",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:planner",
-      "target_enforcement": "oversize-total fitting-window admission observed",
-      "text": "No whole-working-set RAM requirement; windows are the unit of fit.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-05",
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Advancement or named bounded failure under stated premises; NFS limitation honored (planned ACC-05/ACC-06).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "LIVE-01",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "fairness/finite-IO premises plus ACC-05/ACC-06 live proof",
-      "text": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "manual-review:PQ producer audit for whole-model hash/open interception"
-      ],
-      "acceptance_assertion": "Manual review plus proposed intercept check: giant-payload hash/open calls refused in dev; valid memos reuse zero new bytes.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "DEV-01",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "dev-mode intercept refusing giant-payload hash/open calls; valid-memo reuse performs zero new payload bytes",
-      "text": "Dev disables giant resealing and per-unit source walks.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "manual-review:reuse-vs-lineage decision audit on changed evidence"
-      ],
-      "acceptance_assertion": "Manual review plus proposed checks: missing/mutated/dev-crosshost cases show zero hidden whole-model hashing; certified control unchanged.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "DEV-02",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "missing/mutated/dev-crosshost cases refuse reuse or open explicit new lineage with zero hidden whole-model hashing; certified control path untouched",
-      "text": "Missing/changed evidence refuses reuse or opens explicit new lineage; never hidden whole-model hashing nor stamp-and-trust.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Binding checks and integrity-on-copy run in dev mode (referenced suite, planned re-run).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "DEV-03",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "seal paths; digest-on-copy in movers",
-        "state": "yes"
-      },
-      "owner": "PB:submission",
-      "planned_acceptance": [
-        "PQ tests/test_dev_mode_provenance_gates.py"
-      ],
-      "text": "Small binding checks and integrity-on-copy always on, distinct from expensive sealing.",
-      "validation": {
-        "detail": "referenced, not run in this lane",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "Dev results stamped dev_uncertified with tree digest; certified gate demands end-artifact evidence (referenced suite, planned re-run).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "DEV-04",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ dispatcher/spec env stamping (referenced, not re-read in this lane)",
-        "state": "yes"
-      },
-      "owner": "PQ:release-gates",
-      "planned_acceptance": [
-        "PQ tests/test_dev_mode_provenance_gates.py"
-      ],
-      "text": "Dev results carry dev_uncertified plus tree digest; certified gate demands end-artifact evidence.",
-      "validation": {
-        "detail": "referenced, not run in this lane",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [],
-      "acceptance_assertion": "Cross-host identity proven or same-host-incomplete posture retained (PQ PR844 under review).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "DEV-05",
-      "implementation": {
-        "commit": "PQ:95dbb24a",
-        "path": "PQ PR844 implemented under review (referenced, not re-read in this lane)",
-        "state": "partial"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "PQ PR844 proof or same-host-incomplete posture retained",
-      "text": "Cross-host source identity; until proven, same-host re-verification stated as incomplete.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02",
-        "ACC-04"
-      ],
-      "acceptance_assertion": "No live-lease eviction across prefetch/two-consumer/eviction/epoch cases (planned ACC-02/ACC-04).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SAFE-01",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "tools/fleet/stage_release.py delete blocked by ANY current ref (pins join the ownership snapshot under one lock); tools/fleet/ram_promote.py cover proof + digest-verified copy; malformed pins/marks taint fail-closed",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "live-lease eviction coverage across prefetch/two-consumer/epoch",
-      "text": "No eviction of a live lease.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Zero forbidden opens across source/render/activation readers (planned ACC-03).",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "SAFE-02",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:readers",
-      "target_enforcement": "PQ reader forbidden-tier refusal before payload bytes",
-      "text": "No bulk-input read from a forbidden tier.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance_assertion": "PB720 repro shows terminal record plus receipt on exit 0 for PB records; wrapper/shard counts alone complete nothing (PB side only).",
-      "deployment": {
-        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0",
-        "state": "partial"
-      },
-      "id": "SAFE-03",
-      "implementation": {
-        "commit": "PB:ca0f5555",
-        "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
-        "state": "yes"
-      },
-      "owner": "PB:queue",
-      "text": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
-      "validation": {
-        "detail": "single admitted CPU repro attests PB-side rule only",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-01"
-      ],
-      "acceptance_assertion": "Valid gzip member parses; tampered bytes/content refuse; mis-rooted records refuse.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-01",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:producer",
-      "target_enforcement": "new: PQ parser-fixture suite incl. gzip/path/serialization negatives",
-      "text": "Schema plus real-producer parser fixtures incl. gzip/path/serialization variants.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-02"
-      ],
-      "acceptance_assertion": "Rename atomic; simultaneous egress exactly-once; handoff abandonment frees both ledgers; epoch invalidates; withdrawal needs policy plus containment.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-02",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "new: PB lifecycle/race suite incl. staged-lease races",
-      "text": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-03"
-      ],
-      "acceptance_assertion": "Real tier plus real reader (default flags): bytes equal AND tier staged AND zero forbidden opens, with forbidden-open negatives for source/render/activation.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-03",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:readers",
-      "target_enforcement": "new: real-tier plus real-reader chain with forbidden-open negatives",
-      "text": "Real-PB-storage plus real-reader chain for source/render/activation with negative forbidden-open assertions; no manual-RAM fixtures.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-04"
-      ],
-      "acceptance_assertion": "Kill during copy/lease/use: single adoption, no double-count, re-verified bytes, attempt identity and terminal reason preserved.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-04",
-      "implementation": {
-        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
-        "path": "tests/test_reader_lease_lifetime.py: fork inheritance (parent release cannot unpin child), certified containment (terminal+attestation, superseded-attempt refusal), ABA republish re-verify, retry-token idempotency",
-        "state": "partial"
-      },
-      "owner": "PB:tiers",
-      "target_enforcement": "new: lease-crash restart/retry suite",
-      "text": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
-      "validation": {
-        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-05"
-      ],
-      "acceptance_assertion": "Independent results on each Spark concurrently with runnable work; PB owns placement; one-idle-GPU placement fails.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-05",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:pool-claim",
-      "target_enforcement": "new: both-Spark concurrent-results campaign probe",
-      "text": "Both-Spark concurrent independent results; PB owns placement.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "ACC-06"
-      ],
-      "acceptance_assertion": "Staged-only campaign output with bytes_from_pool==0 on bulk legs plus application gates green.",
-      "deployment": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "id": "ACC-06",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PQ:planner",
-      "target_enforcement": "new: staged-only campaign output gate (bytes_from_pool==0 bulk legs)",
-      "text": "Real staged-only campaign output with bytes_from_pool==0 on bulk legs plus application gates.",
-      "validation": {
-        "detail": "unknown",
-        "state": "unknown"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    },
-    {
-      "acceptance": [
-        "manual-review:\u00a710 applied per step with stated bounds"
-      ],
-      "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
-      "deployment": {
-        "detail": "contains no proof of current deployment",
-        "state": "unknown"
-      },
-      "historical_context": "PB720 final shards 263957bf71ea\u2026/a62a13a366ca\u2026/0b5d2fa45ed8\u2026 done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
-      "id": "VER-01",
-      "implementation": {
-        "commit": null,
-        "path": null,
-        "state": "no"
-      },
-      "owner": "PB:docs-process",
-      "target_enforcement": "contract \u00a710 checklist step plus acceptance-record template",
-      "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
-      "validation": {
-        "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof",
-        "state": "partial"
-      },
-      "workload_proof": {
-        "detail": "unknown",
-        "state": "unknown"
-      }
-    }
-  ]
+ "contract": "docs/staged_read_contract_2026-09-20.md",
+ "ledger_schema": "pb.staged_read_requirements.v3",
+ "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation.",
+ "requirements": [
+  {
+   "acceptance_assertion": "Manual review: each lifecycle-affecting change names its PB decision point; no PQ-side placement knob lands.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SC-01",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py claim/admission paths",
+    "state": "yes"
+   },
+   "owner": "PB:pool-claim",
+   "text": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Manual review: diff contains no second mover/cache/scheduler path; PB moves, PQ declares.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SC-02",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py tier/mover paths; tools/fleet/stage_move.py; PQ dispatch submitters (referenced)",
+    "state": "yes"
+   },
+   "owner": "PB:tier-loop",
+   "text": "PB moves/publishes/retires bytes; PQ declares work/readsets/progress. No parallel dispatcher/cache/scheduler.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:unknown axes stay unknown-worded per change"
+   ],
+   "acceptance_assertion": "Manual review: every unknown axis below stays unknown-worded; no prose claim of deployment.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SC-03",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:docs-process",
+   "target_enforcement": "ledger plus AGENTS hook reviewed per change",
+   "text": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Manual review: sealed action bytes hash to action_key on a sample submission.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-01",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py action_key plumbing",
+    "state": "yes"
+   },
+   "owner": "PB:pool-claim",
+   "text": "Action identity is content hash of sealed action.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "PB720 repro 0f54fe\u2026 attempt record carries distinct nonce/scope with immutable request.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-02",
+   "implementation": {
+    "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+    "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+    "state": "yes"
+   },
+   "owner": "PB:pool-claim",
+   "text": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+   "validation": {
+    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Manual review: pbrun-sealed manifest bytes hash to the bound wire digest on a sample row.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-03",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "tools/pbrun.py seal path; CAS/request index",
+    "state": "yes"
+   },
+   "owner": "PB:submission",
+   "text": "Manifest wire identity is SHA-256 over sealed file bytes.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-01"
+   ],
+   "acceptance_assertion": "PQ Tampered-bytes and valid-writer-output fixtures refuse/parse per compat rule (planned).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-04",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ prismaquant/cost_stage_checkpoint.py:canonical_json_sha256 (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:producer",
+   "planned_acceptance": [
+    "PQ tests/test_quantum_launch_contract_838.py"
+   ],
+   "target_enforcement": "PQ-side tamper/equivalence fixtures plus execution proof",
+   "text": "Manifest canonical identity is schema-specific, never a universal PB rule. The PQ receipt path uses exactly cost_stage_checkpoint.canonical_json_sha256 with producer compat (ensure_ascii=False, allow_nan=False); PB schemas retain their own canonical function, never cross-repo importing PQ. Raw-bytes-vs-seal comparisons forbidden; both identities only where both uses exist.",
+   "validation": {
+    "detail": "referenced, not run in this lane",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:gate records separate provenance/certification/integrity/location"
+   ],
+   "acceptance_assertion": "Manual review: release-gate records separate the four facts; no promotion path re-issues certification.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-05",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:release-gates",
+   "target_enforcement": "release-gate record audit separating the four facts",
+   "text": "Provenance (source identity), certification (dev_uncertified|certified), integrity (binding/digest/epoch checks that ran), and location (tier/epoch where bytes sit) are four independent facts. Promotion updates integrity/location only and MUST NEVER turn dev_uncertified into certified or reissue certification; certification comes solely from application release gates.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Manual review: each fact names an existing carrier (receipt/fragment/envelope); new carriers flagged target.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-06",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "tools/fleet/stage_move.py receipts; map fragments (carriers exist)",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "wire new carriers only where existing metadata cannot hold a fact",
+   "text": "Content/change-detection evidence carried by existing metadata; new every-payload wire fields are target-only.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Real-reader chain test observes the serving-tier record at open, before payload trust (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-07",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "reader open path serving-tier record (new) + SM-03 lease",
+   "text": "Serving tier/epoch/lease recorded at open time, before payload trust.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Manual review: behavior deltas cite (runtime_commit, generation_id), never source merge alone.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-08",
+   "implementation": {
+    "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+    "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+    "state": "yes"
+   },
+   "owner": "PB:fleet-runtime",
+   "text": "Behavior attributed per (runtime_commit, generation_id).",
+   "validation": {
+    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "PB720 repro record shows ack/exit/receipt distinct; application validity separately gated (partial, PB side only).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ID-09",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+    "state": "partial"
+   },
+   "owner": "PB:queue",
+   "target_enforcement": "application-side validity gate on campaign outputs",
+   "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+   "validation": {
+    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Overlapping source ranges co-owned across phases read correctly; no tile-without-overlap assumed (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "RNG-01",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ manifest entries carry offsets (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "co-ownership reads observed on overlapping ranges",
+   "text": "Source-file offsets may overlap and be co-owned across phases/consumers.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Republished same-epoch/path/length bytes refuse the old lease (ABA negative); prefetch/mmap lifetime pinned (planned ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "RNG-02",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "src/prismabuild/reader_lease.py material sidecars (reader_material.v1, per-publish uuid generation, portable ino/size/mtime/ctime identity, never st_dev); acquire/open_pinned enforce generation+identity with ABA refusal; fragment schema v1 unchanged",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "ABA-negative plus prefetch/mmap lifetime tests",
+   "text": "Staged-object identity (tier, epoch, name, length, materialization generation, content identity); same epoch/path/length MUST NOT ABA-rebind new bytes. Lease pins the physical object; acquisition/open validates bound identity and pins lifetime including async prefetch/mmap with no stat/open race.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Repeated ranges replay explicitly per plan order; logical-phase coverage proven once (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "RNG-03",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ read-plan phases with repeats (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "repeat-explicit replay observed per plan order",
+   "text": "Logical cursor with explicit repeats; coverage proven once per logical phase.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Plan seal test: exact span/gather coverage valid AND uncovered span refused before any open (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "RNG-04",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:planner",
+   "target_enforcement": "plan seal declares gather sets; uncovered spans refuse before opens",
+   "text": "No full-tensor-one-mapping assumption; unsupported gather coverage refused.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Lifecycle/race suite: atomic claim rename, withdrawal only by policy with containment plus attempt terminal first (planned ACC-02).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SM-01",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
+    "state": "partial"
+   },
+   "owner": "PB:pool-claim",
+   "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
+   "text": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Retiring-mark, charge-to-delete, exactly-once release, and epoch-invalidation paths covered incl. deletion-failure retention (planned ACC-02).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SM-02",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
+    "state": "partial"
+   },
+   "owner": "PB:tier-loop",
+   "target_enforcement": "retiring-mark, delete-only absent, epoch revalidation paths",
+   "text": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02",
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Lease acquire/use/release incl. bounded wait-or-fail on unpublished ranges (planned ACC-02/ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SM-03",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "src/prismabuild/reader_lease.py acquire (covers+expected, claimed-first snapshot order under ownership lock, typed refusals, file_pin=False proof mode) / open_pinned (descriptor fence + ID-07) / release (exact ref) / register_inherited_ref; no lease-intent files; bounded wait lives in claim path, not acquire",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "lease issue/hold/release paths (new) mapped onto pins/fragments",
+   "text": "Reader lease acquisition/use/release; abstract mapping onto pins/fragments where present, gaps named.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Manual review: claim fits box+tier ledgers simultaneously; one release helper concludes both.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-01",
+   "implementation": {
+    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8",
+    "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
+    "state": "partial"
+   },
+   "owner": "PB:pool-claim",
+   "text": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+   "validation": {
+    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Lead-executed/same-manifest/pinned admission plus not_resident-vs-terminal denial split observed (partial: denial_top evidence only).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-02",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py PoolQueue.residency_verdict",
+    "state": "yes"
+   },
+   "owner": "PB:pool-claim",
+   "text": "Claim requires executed+same-manifest+pinned leads; adoption counts; no-byte cache_hit does not.",
+   "validation": {
+    "detail": "residency_lead_not_resident vs residency_lead_terminal observed in tmp/cache-takeover-20260920/pbmcp-starvation-20260920T043112Z.json denial_top (read in-lane, not a test verdict)",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Negative: bulk open from HDD fails before payload bytes on all three reader kinds (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-03",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:readers",
+   "target_enforcement": "PQ residency_shard_reader.py open path + joint entrypoint staged-only flags",
+   "text": "Bulk-input reads open only RAM or explicitly-allowed SSD staged objects; HDD bulk opens forbidden.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Serving-tier record present at open in the real-reader chain; counters alone never authorize (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-04",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:readers",
+   "target_enforcement": "reader open path serving-tier record (ID-07)",
+   "text": "Serving tier recorded at open before payload trust; counters observe, never authorize.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "RAM served first where valid; SSD only for plan-permitted ranges (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-05",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "pbrun --residency-ram auto leg exists; preference rule missing",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "lease acquisition preference rule in tier issuance",
+   "text": "Lease acquisition prefers valid RAM then explicitly-allowed SSD.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Stale/corrupt/missing reads refuse or wait boundedly with reason; no HDD fallback (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-06",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ prismaquant/residency_map.py whole-map refusal (yes); pool-fallback on miss (gap) (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:readers",
+   "planned_acceptance": [
+    "PQ tests/test_prismabuild_residency_map.py"
+   ],
+   "target_enforcement": "fallback removal plus bounded wait-or-fail paths",
+   "text": "Stale/corrupt/missing never falls back to HDD; bounded wait or clear fail.",
+   "validation": {
+    "detail": "referenced, not run in this lane",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Simultaneous-egress exactly-once; last-reader blocks eviction; retiring charge ordering (planned ACC-02).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-07",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard; PR742/e534da78 shared capacity retirement/reissue and cache-tier mutation exclusion now component-qualified; shared publication incarnation repair remains pending.",
+    "state": "partial"
+   },
+   "owner": "PB:tier-loop",
+   "target_enforcement": "separate egress-ownership lane acceptance",
+   "text": "Serialize copy/publish/lease/release; last reader incl. pending handoff blocks eviction; retiring charge ordering per SM-02 (delete-only absent, logical owner release distinct from physical state).",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. PR742 adds real claim/mint exclusion, shared-file decharge, atomic dead-token recovery and visible census-error coverage; root integrated78-pass gate. This does not qualify the separately pending overlapping-publisher repair.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "New nonces per attempt; single adoption; adoption re-verifies without recompute (planned ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-08",
+   "implementation": {
+    "commit": "PB:ca0f5555 + PQ:95dbb24a",
+    "path": "src/prismabuild/pool.py attempt nonces; PQ checkpoint journal re-verify grammar (referenced, not re-read)",
+    "state": "partial"
+   },
+   "owner": "PB:queue",
+   "target_enforcement": "PQ journal re-verify execution proof",
+   "text": "Retries never double-count; adoption verifies identity/trust without recompute.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Counters cumulative; replay idempotent; published units never retracted (planned ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-09",
+   "implementation": {
+    "commit": "PB:ca0f5555 + PQ:95dbb24a",
+    "path": "PB progress channel helper; PQ checkpoint journals (referenced, not re-read)",
+    "state": "partial"
+   },
+   "owner": "PB:queue",
+   "target_enforcement": "PQ journal execution proof",
+   "text": "Durable units monotonic and once; replays idempotent.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Gapped join exits advisory; consumer refuses gapped payloads (PQ suites, referenced).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-10",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ joint_quanta_join.py gapped-join semantics (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:join",
+   "planned_acceptance": [
+    "PQ join suites"
+   ],
+   "target_enforcement": "PQ join-suite execution proof",
+   "text": "Failed/gapped outputs never publish campaign success; consumers refuse gapped payloads.",
+   "validation": {
+    "detail": "referenced, not run in this lane",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Class-tag conjunction admits; host-pair tags admitting neither box refused at dispatch (planned ACC-02).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-11",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py tag-conjunction claim (conjunction support does not itself prove bad-pair dispatch refusal)",
+    "state": "partial"
+   },
+   "owner": "PB:pool-claim",
+   "target_enforcement": "bad-pair dispatch-refusal proof",
+   "text": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Adopted evidence never upgraded without re-verification; promotion never re-issues certification (planned ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "INV-12",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:checkpoints",
+   "target_enforcement": "adoption-path trust cap on integrity/location evidence",
+   "text": "Adoption caps integrity/location evidence at what re-verification established, never upgrades either without it, and promotion never re-issues certification.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Readiness vs tier-enforcement audited as separate observations (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "TIER-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "lease acquisition preference + PQ reader open gating",
+   "text": "RAM preferred, explicit SSD allowed, no HDD bulk opens; readiness and tier-enforcement audited separately.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "get_slice and payload-materializing calls gated as data readers; only bounded header/index/control exempt (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "TIER-02",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:readers",
+   "target_enforcement": "PQ reader call classification: bounded header/index/control vs payload",
+   "text": "Metadata allowance is bounded header/index/control bytes; get_slice and any payload-materializing call are data readers.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Boundary/activation bulk present in read set or unsupported-workset refused (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "TIER-03",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:planner",
+   "target_enforcement": "plan read-set/dependency validation with unsupported-workset refusal",
+   "text": "Boundary/activation bulk in read set and dependency graph or unsupported-workset; unstaged boundary reads are explicit gap; dynamic artifacts planned after durable receipt.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Pool-byte legacy runs carry sealed user authority naming ranges+reason; payloads uncertified (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "TIER-04",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:submission",
+   "target_enforcement": "legacy authorized run observed with uncertified records",
+   "text": "No waiver checkbox; legacy pool reads need explicit scoped user authorization on the sealed request; resulting payloads carry uncertified integrity/location records with no staged tier claim.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Eviction consults lease state, never the progress counter alone (planned ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "PRG-01",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "src/prismabuild/reader_lease.py release drops exactly its ref, never consults progress; tools/fleet/stage_release.py eviction consults pin state (live_for) behind every delete decision",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "lease-state query backing eviction decisions (new)",
+   "text": "Releasable safe frontier established separately from durable compute progress.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Lookahead fit proven pre-admission or unsupported-workset refused (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "PRG-02",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:planner",
+   "target_enforcement": "plan seal lookahead-fit proof",
+   "text": "Exact read plan with repeats; lookahead fit proven pre-admission or unsupported-workset refused.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Typed waits observed: fit-lack waits with owner, oversize refuses, mid-phase stall terminates with reason.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "PRG-03",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py residency_verdict pending paths; mover retry/timeout policy",
+    "state": "partial"
+   },
+   "owner": "PB:pool-claim",
+   "target_enforcement": "mid-phase grace and stall-terminal semantics observed",
+   "text": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Inequality proved over competing consumers or deterministic next-step policy demonstrated (planned ACC-02).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "PRG-04",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
+   "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Oversize total with fitting windows admits; no whole-set RAM demand (planned ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "PRG-05",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:planner",
+   "target_enforcement": "oversize-total fitting-window admission observed",
+   "text": "No whole-working-set RAM requirement; windows are the unit of fit.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-05",
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Advancement or named bounded failure under stated premises; NFS limitation honored (planned ACC-05/ACC-06).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "LIVE-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "fairness/finite-IO premises plus ACC-05/ACC-06 live proof",
+   "text": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:PQ producer audit for whole-model hash/open interception"
+   ],
+   "acceptance_assertion": "Manual review plus proposed intercept check: giant-payload hash/open calls refused in dev; valid memos reuse zero new bytes.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "DEV-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "dev-mode intercept refusing giant-payload hash/open calls; valid-memo reuse performs zero new payload bytes",
+   "text": "Dev disables giant resealing and per-unit source walks.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:reuse-vs-lineage decision audit on changed evidence"
+   ],
+   "acceptance_assertion": "Manual review plus proposed checks: missing/mutated/dev-crosshost cases show zero hidden whole-model hashing; certified control unchanged.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "DEV-02",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "missing/mutated/dev-crosshost cases refuse reuse or open explicit new lineage with zero hidden whole-model hashing; certified control path untouched",
+   "text": "Missing/changed evidence refuses reuse or opens explicit new lineage; never hidden whole-model hashing nor stamp-and-trust.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Binding checks and integrity-on-copy run in dev mode (referenced suite, planned re-run).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "DEV-03",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "seal paths; digest-on-copy in movers",
+    "state": "yes"
+   },
+   "owner": "PB:submission",
+   "planned_acceptance": [
+    "PQ tests/test_dev_mode_provenance_gates.py"
+   ],
+   "text": "Small binding checks and integrity-on-copy always on, distinct from expensive sealing.",
+   "validation": {
+    "detail": "referenced, not run in this lane",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "Dev results stamped dev_uncertified with tree digest; certified gate demands end-artifact evidence (referenced suite, planned re-run).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "DEV-04",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ dispatcher/spec env stamping (referenced, not re-read in this lane)",
+    "state": "yes"
+   },
+   "owner": "PQ:release-gates",
+   "planned_acceptance": [
+    "PQ tests/test_dev_mode_provenance_gates.py"
+   ],
+   "text": "Dev results carry dev_uncertified plus tree digest; certified gate demands end-artifact evidence.",
+   "validation": {
+    "detail": "referenced, not run in this lane",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [],
+   "acceptance_assertion": "Cross-host identity proven or same-host-incomplete posture retained (PQ PR844 under review).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "DEV-05",
+   "implementation": {
+    "commit": "PQ:95dbb24a",
+    "path": "PQ PR844 implemented under review (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "PQ PR844 proof or same-host-incomplete posture retained",
+   "text": "Cross-host source identity; until proven, same-host re-verification stated as incomplete.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02",
+    "ACC-04"
+   ],
+   "acceptance_assertion": "No live-lease eviction across prefetch/two-consumer/eviction/epoch cases (planned ACC-02/ACC-04).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SAFE-01",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "tools/fleet/stage_release.py delete blocked by ANY current ref (pins join the ownership snapshot under one lock); tools/fleet/ram_promote.py cover proof + digest-verified copy; malformed pins/marks taint fail-closed",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "live-lease eviction coverage across prefetch/two-consumer/epoch",
+   "text": "No eviction of a live lease.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Zero forbidden opens across source/render/activation readers (planned ACC-03).",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "SAFE-02",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:readers",
+   "target_enforcement": "PQ reader forbidden-tier refusal before payload bytes",
+   "text": "No bulk-input read from a forbidden tier.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance_assertion": "PB720 repro shows terminal record plus receipt on exit 0 for PB records; wrapper/shard counts alone complete nothing (PB side only).",
+   "deployment": {
+    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0",
+    "state": "partial"
+   },
+   "id": "SAFE-03",
+   "implementation": {
+    "commit": "PB:ca0f5555",
+    "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
+    "state": "yes"
+   },
+   "owner": "PB:queue",
+   "text": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
+   "validation": {
+    "detail": "single admitted CPU repro attests PB-side rule only",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-01"
+   ],
+   "acceptance_assertion": "Valid gzip member parses; tampered bytes/content refuse; mis-rooted records refuse.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:producer",
+   "target_enforcement": "new: PQ parser-fixture suite incl. gzip/path/serialization negatives",
+   "text": "Schema plus real-producer parser fixtures incl. gzip/path/serialization variants.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02"
+   ],
+   "acceptance_assertion": "Rename atomic; simultaneous egress exactly-once; handoff abandonment frees both ledgers; epoch invalidates; withdrawal needs policy plus containment.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-02",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "new: PB lifecycle/race suite incl. staged-lease races",
+   "text": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-03"
+   ],
+   "acceptance_assertion": "Real tier plus real reader (default flags): bytes equal AND tier staged AND zero forbidden opens, with forbidden-open negatives for source/render/activation.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-03",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:readers",
+   "target_enforcement": "new: real-tier plus real-reader chain with forbidden-open negatives",
+   "text": "Real-PB-storage plus real-reader chain for source/render/activation with negative forbidden-open assertions; no manual-RAM fixtures.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04"
+   ],
+   "acceptance_assertion": "Kill during copy/lease/use: single adoption, no double-count, re-verified bytes, attempt identity and terminal reason preserved.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-04",
+   "implementation": {
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "path": "tests/test_reader_lease_lifetime.py: fork inheritance (parent release cannot unpin child), certified containment (terminal+attestation, superseded-attempt refusal), ABA republish re-verify, retry-token idempotency",
+    "state": "partial"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "new: lease-crash restart/retry suite",
+   "text": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
+   "validation": {
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-05"
+   ],
+   "acceptance_assertion": "Independent results on each Spark concurrently with runnable work; PB owns placement; one-idle-GPU placement fails.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-05",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:pool-claim",
+   "target_enforcement": "new: both-Spark concurrent-results campaign probe",
+   "text": "Both-Spark concurrent independent results; PB owns placement.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-06"
+   ],
+   "acceptance_assertion": "Staged-only campaign output with bytes_from_pool==0 on bulk legs plus application gates green.",
+   "deployment": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "id": "ACC-06",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PQ:planner",
+   "target_enforcement": "new: staged-only campaign output gate (bytes_from_pool==0 bulk legs)",
+   "text": "Real staged-only campaign output with bytes_from_pool==0 on bulk legs plus application gates.",
+   "validation": {
+    "detail": "unknown",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:\u00a710 applied per step with stated bounds"
+   ],
+   "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
+   "deployment": {
+    "detail": "contains no proof of current deployment",
+    "state": "unknown"
+   },
+   "historical_context": "PB720 final shards 263957bf71ea\u2026/a62a13a366ca\u2026/0b5d2fa45ed8\u2026 done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
+   "id": "VER-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:docs-process",
+   "target_enforcement": "contract \u00a710 checklist step plus acceptance-record template",
+   "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+   "validation": {
+    "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  }
+ ]
 }
