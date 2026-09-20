@@ -153,13 +153,318 @@ def cpu_seconds(*, usage=resource.getrusage) -> float:
     return total
 
 
+#: Bounded rechecks for an occupied-but-unowned staged name before
+#: healing it as orphan/crash residue. A concurrent publisher's
+#: fragment may still land; every recheck is one lock hold with the
+#: waits outside it, all stop-aware.
+_UNOWNED_RECHECKS = 3
+_UNOWNED_RECHECK_S = 1.0
+
+#: Residency subdirectories that never hold consumer fragments.
+_NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
+
+
+class _StagedPublisher:
+    """Linearize staged-path publication under the stage ownership lock.
+
+    Overlapping consumers stage one content-addressed name for the same
+    bytes; an unconditional rename per copy mints a fresh inode/mtime
+    and invalidates every other consumer's published material identity
+    (and any live cover proof or pin fenced on it). The payload copy
+    into the private owner-keyed temp stays outside every lock; this
+    gate runs immediately before destination publication, under the
+    existing stage-ownership exclusion (the same lock egress holds
+    across snapshot-to-release), and decides metadata-only:
+
+    * absent destination: this copy publishes (concurrent absentees
+      serialize here, so exactly one first publication wins);
+    * present with an adoption proof -- some consumer's fragment entry
+      naming this path with equal bytes, a material sidecar digest
+      equal to the declared digest (own-consumer proof only when the
+      manifest declares none), and a live stat equal to the sidecar's
+      file identity: adopt the published incarnation, discard the temp.
+      Unchanged bytes keep every live pin valid, so no pin census is
+      needed on this path;
+    * present without proof: pin census on the path for the refusal
+      detail; live-pinned, fragment-owned-but-unproven, or unreadable
+      proof state all refuse without replacing. Unknown ownership
+      rechecks boundedly (a concurrent fragment may land) and only
+      then heals as orphan/crash residue.
+
+    Never replaces an occupied path except into proven absence
+    (first publication) or proven-unowned residue after rechecks.
+    Returns ``(written, digest, identity)`` like a copy; raises
+    ``OSError`` on refuse/stop, which the worker files as an entry
+    error exactly like a digest mismatch.
+    """
+
+    def __init__(self, *, queue, stage_root, residency_root,
+                 consumer_action_key: str, mover_action_key: str,
+                 manifest_sha256: str) -> None:
+        self.queue = queue
+        self.stage_root = Path(stage_root)
+        self.residency_root = Path(residency_root)
+        self.consumer = consumer_action_key
+        self.mover = mover_action_key
+        self.manifest_sha256 = manifest_sha256
+
+    def try_adopt(self, entry: dict[str, object], destination: Path,
+                ) -> tuple[int, str, dict[str, int]] | None:
+        """Adopt an already-published incarnation without copying, if proven.
+
+        Metadata-only, under one ownership-lock hold: the same proof the
+        publish gate requires. Returns ``(want, digest, file_id)`` or
+        ``None`` to proceed with the copy. Never refuses here: a present
+        file without proof yet may gain its fragment before the final
+        gate, and the final gate owns all refuse/heal decisions.
+        """
+
+        want = int(entry["bytes"])
+        declared = entry.get("sha256")
+        norm = os.path.normpath(str(destination))
+        try:
+            present = os.lstat(destination)
+        except OSError:
+            return None
+        if not statmod.S_ISREG(present.st_mode):
+            return None
+        with self.queue.stage_ownership_lock(str(self.stage_root)):
+            proof, _, unknown = self._proof_search(norm, want, declared)
+            if unknown is not None or proof is None:
+                return None
+            return want, proof[0], proof[1]
+
+    def publish(self, entry: dict[str, object], destination: Path,
+                temp_path: Path, computed: str,
+                stop: threading.Event | None = None
+                ) -> tuple[int, str, dict[str, int] | None]:
+        """Decide one entry's publication; copy already verified in temp."""
+
+        want = int(entry["bytes"])
+        declared = entry.get("sha256")
+        for attempt in range(_UNOWNED_RECHECKS + 1):
+            with self.queue.stage_ownership_lock(str(self.stage_root)):
+                verdict = self._decide(
+                    entry, destination, want, declared,
+                    heal=attempt >= _UNOWNED_RECHECKS)
+                if verdict[0] == "replace":
+                    os.replace(temp_path, destination)
+                    return want, computed, self._identity(destination)
+                if verdict[0] == "adopt":
+                    temp_path.unlink(missing_ok=True)
+                    return want, verdict[1], verdict[2]
+                if verdict[0] == "refuse":
+                    temp_path.unlink(missing_ok=True)
+                    raise OSError(verdict[1])
+            if stop is not None and stop.is_set():
+                temp_path.unlink(missing_ok=True)
+                raise OSError(f"stopping before {destination} publishes")
+            time.sleep(_UNOWNED_RECHECK_S)
+        temp_path.unlink(missing_ok=True)
+        raise OSError(f"staged publication of {destination} never settled")
+
+    @staticmethod
+    def _identity(path: Path) -> dict[str, int] | None:
+        try:
+            info = os.stat(path)
+            return {"ino": info.st_ino, "size": info.st_size,
+                    "mtime_ns": info.st_mtime_ns,
+                    "ctime_ns": int(getattr(info, "st_ctime_ns", 0))}
+        except OSError:
+            return None
+
+    def _decide(self, entry: dict[str, object], destination: Path,
+                want: int, declared: object, heal: bool,
+                ) -> tuple:
+        norm = os.path.normpath(str(destination))
+        try:
+            present = os.lstat(destination)
+        except FileNotFoundError:
+            return ("replace",)
+        except OSError as exc:
+            return ("refuse",
+                    f"staged destination unstatable, not replacing "
+                    f"{destination}: {exc}")
+        if not statmod.S_ISREG(present.st_mode):
+            return ("refuse",
+                    f"staged destination is not a regular file, not "
+                    f"replacing: {destination}")
+        proof, owned, unknown = self._proof_search(norm, want, declared)
+        if proof is not None:
+            return ("adopt", proof[0], proof[1])
+        if unknown is not None:
+            return ("refuse",
+                    f"staged publication proof unreadable for "
+                    f"{destination}: {unknown}; not replacing")
+        pins = self._live_pins(norm)
+        if pins is None:
+            return ("refuse",
+                    f"staged pin census unreadable for {destination}; "
+                    f"not replacing")
+        if pins:
+            return ("refuse",
+                    f"shared staged name is live-pinned by "
+                    f"{pins}, not replacing: {destination}")
+        if owned:
+            return ("refuse",
+                    f"shared staged name is published elsewhere, not "
+                    f"replacing: {destination}")
+        if heal:
+            return ("replace",)
+        return ("retry",)
+
+    def _live_pins(self, norm: str) -> list[str] | None:
+        """Pin ids live on one staged path, or None when unknowable."""
+
+        try:
+            owners, tainted = reader_lease.live_for(
+                self.queue, {norm}, residency_root=self.residency_root)
+        except Exception:
+            return None
+        if tainted:
+            return None
+        return sorted(owners.get(norm, []))[:5]
+
+    def _proof_search(self, norm: str, want: int, declared: object,
+                      ) -> tuple[tuple[str, dict[str, int]] | None, bool,
+                                 str | None]:
+        """An adoptable publication of these bytes, if one is proven.
+
+        Returns ``(proof, owned, unknown)``: ``proof`` is
+        ``(record_digest, file_id)`` when some consumer's fragment entry
+        names this path with equal bytes, a sidecar digest equal to the
+        declared digest (own-consumer proof only for digest-less
+        manifests, which pin no content across consumers), and a live
+        stat equal to the sidecar's file identity. ``owned`` says some
+        fragment names the path without proving it; ``unknown`` names
+        unreadable proof state. No payload is hashed here: the sidecar
+        digest is the copy-time content proof, and stat stability is
+        the change detection.
+        """
+
+        try:
+            children = sorted(
+                e.name for e in os.scandir(self.residency_root)
+                if e.is_dir() and not e.name.startswith(".")
+                and e.name not in _NON_FRAGMENT_DIRS)
+        except FileNotFoundError:
+            return None, False, None
+        except OSError as exc:
+            return None, False, f"{self.residency_root}: {exc}"
+        owned = False
+        unknown: str | None = None
+        for child in children:
+            cdir = self.residency_root / child
+            try:
+                names = sorted(
+                    e.name for e in os.scandir(cdir)
+                    if e.is_file() and e.name.endswith(".json")
+                    and not e.name.endswith(".retiring.json")
+                    and not e.name.endswith(".tmp"))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                unknown = f"{child}: {exc}"
+                continue
+            for name in names:
+                candidate = self._proof_candidate(
+                    cdir / name, child, norm, want, declared)
+                if candidate == "tainted":
+                    unknown = f"{child}/{name}: unreadable"
+                elif candidate == "owned":
+                    owned = True
+                elif candidate is not None:
+                    return candidate, True, None
+        return None, owned, unknown
+
+    def _proof_candidate(self, fragment_path: Path, consumer: str,
+                         norm: str, want: int, declared: object,
+                         ) -> tuple[str, dict[str, int]] | str | None:
+        """One fragment file's verdict: proof, "owned", "tainted" or None."""
+
+        try:
+            with open(fragment_path) as stream:
+                fragment = json.load(stream)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return "tainted"
+        if (not isinstance(fragment, dict)
+                or fragment.get("schema")
+                != residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1):
+            return None
+        matched = False
+        for record in (fragment.get("entries") or {}).values():
+            if (isinstance(record, dict)
+                    and os.path.normpath(str(record.get("stage_path") or ""))
+                    == norm):
+                matched = True
+                break
+        if not matched:
+            return None
+        mover = str(fragment.get("mover_action_key") or "")
+        if not mover:
+            return "owned"
+        sidecar = reader_lease.read_material(
+            self.residency_root, consumer, mover)
+        if sidecar is None:
+            # Published vouch without a date: unprovable either way.
+            return "owned"
+        if isinstance(sidecar, Exception):
+            return "tainted"
+        digest: str | None = None
+        for mention in (sidecar.get("entries") or {}).values():
+            if (not isinstance(mention, dict)
+                    or os.path.normpath(
+                        str(mention.get("stage_path") or "")) != norm):
+                continue
+            try:
+                if int(mention.get("bytes")) != want:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            digest = mention.get("sha256")
+            if not isinstance(digest, str) or not digest:
+                continue
+            break
+        else:
+            return "owned"
+        if isinstance(declared, str) and declared:
+            if digest != declared:
+                return "owned"
+            record_digest: str = declared
+        elif consumer == self.consumer:
+            # Digest-less manifests pin no content across consumers:
+            # only this consumer's own verified copy is adoptable, and
+            # its recorded digest rides along for the new sidecar.
+            record_digest = digest
+        else:
+            return "owned"
+        file_id = reader_lease.stat_identity(norm)
+        published = None
+        for mention in (sidecar.get("entries") or {}).values():
+            if (isinstance(mention, dict)
+                    and os.path.normpath(
+                        str(mention.get("stage_path") or "")) == norm
+                    and isinstance(mention.get("file_id"), dict)):
+                published = mention["file_id"]
+                break
+        if (not isinstance(published, dict) or file_id is None
+                or file_id != {key: published.get(key)
+                               for key in ("ino", "size", "mtime_ns",
+                                           "ctime_ns")}):
+            return "owned"
+        return record_digest, file_id
+
+
 class _Copier:
     """One range, copied in read order by a bounded set of workers."""
 
     def __init__(self, *, mounts: prewarm_loop.MountMap, pacer, stage_root: Path,
                  mount_prefix: str, block: int, workers: int,
                  owner: str = "",
-                 source_stage_root: Path | str | None = None) -> None:
+                 source_stage_root: Path | str | None = None,
+                 publisher: _StagedPublisher | None = None) -> None:
         self.mounts = mounts
         self.pacer = pacer
         self.stage_root = stage_root
@@ -167,6 +472,7 @@ class _Copier:
         self.block = block
         self.workers = max(1, workers)
         self.owner = str(owner or "")
+        self.publisher = publisher
         #: Read the copy's bytes from an already-staged tree instead of the
         #: pool: a promotion's source is the stage, where split ranges live
         #: under their staged names from byte zero rather than under the
@@ -212,81 +518,11 @@ class _Copier:
         return destination.with_name(
             f".{destination.name}.{self.owner[:16]}.partial")
 
-    def _adopt_identical(self, destination: Path, want: int,
-                         declared: str) -> dict[str, int] | None:
-        """Adopt staged bytes already holding the declared content, if so.
-
-        Overlapping consumers stage one content-addressed name for the
-        same bytes; replacing it per copy mints a fresh inode/mtime/ctime
-        and invalidates every other consumer's published material identity
-        (and any live cover proof or pin fenced on it). When the
-        destination already holds exactly the declared bytes, adopt it:
-        return its fresh stat identity with no rename and no new bytes.
-
-        Same size with a different digest is a genuine conflict -- two
-        contents claiming one staged name -- and refuses instead of
-        invalidating whoever the bytes belong to. A missing, irregular,
-        or differently-sized destination, an unreadable one, or a file
-        replaced mid-verify takes the ordinary copy path (``None``).
-        Payload reads stay outside every lock; the pre/post lstat pair
-        bounds the verify window, and a replace inside it merely falls
-        back to copying verified-fresh bytes.
-        """
-
-        try:
-            before = os.lstat(destination)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            return None
-        if not statmod.S_ISREG(before.st_mode):
-            return None
-        if before.st_size != want:
-            # Same staged name, different length: either another owner's
-            # bytes or ownerless garbage. Both refuse: replacing would
-            # invalidate whoever the bytes belong to, and an unnamed
-            # conflict needs an owner (egress/reconcile), not a blind
-            # overwrite. (.pbrange names embed their size, so only a
-            # whole-file name shared across contents can arrive here.)
-            raise OSError(
-                f"staged destination holds different bytes than manifest "
-                f"digest {declared[:12]}: {destination}; refusing to "
-                f"invalidate its owner")
-        fd = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            digest = hashlib.sha256()
-            while True:
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    break
-                digest.update(chunk)
-            fresh = os.fstat(fd)
-        finally:
-            os.close(fd)
-        try:
-            after = os.lstat(destination)
-        except OSError:
-            return None
-        if ((after.st_ino, after.st_mtime_ns, after.st_ctime_ns,
-             after.st_size)
-                != (before.st_ino, before.st_mtime_ns, before.st_ctime_ns,
-                    before.st_size)
-                or (fresh.st_dev, fresh.st_ino)
-                != (after.st_dev, after.st_ino)):
-            return None
-        if digest.hexdigest() != declared:
-            raise OSError(
-                f"staged destination holds different bytes than manifest "
-                f"digest {declared[:12]}: {destination}; refusing to "
-                f"invalidate its owner")
-        return {"ino": after.st_ino, "size": after.st_size,
-                "mtime_ns": after.st_mtime_ns,
-                "ctime_ns": int(getattr(after, "st_ctime_ns", 0))}
-
     def _copy_one(self, entry: dict[str, object], destination: Path,
                   admission, stop: threading.Event,
                   source: Path | str | None = None,
-                  source_offset: int | None = None) -> tuple[int, str]:
+                  source_offset: int | None = None
+                  ) -> tuple[int, str, dict[str, int] | None]:
         """Read this entry's bytes, write them, hash them; return size and digest.
 
         The temporary lives beside the final name so the publish is a rename
@@ -297,26 +533,34 @@ class _Copier:
         plus the entry's own offset) for copies whose source is an already-
         staged tree, where split ranges live under their staged names from
         byte zero.  Omitted, the pool behavior is byte-identical.
+
+        With a ``publisher`` (both production movers pass one), an
+        already-published incarnation is adopted without copying, and the
+        final rename goes through the publication gate under the stage
+        ownership exclusion; without one (unit-constructed copiers on
+        isolated scratch) the legacy direct rename runs.
         """
 
+        want = int(entry["bytes"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._temporary(destination)
+        if self.publisher is not None and want > 0:
+            try:
+                adopted = self.publisher.try_adopt(entry, destination)
+            except OSError:
+                adopted = None
+            if adopted is not None:
+                # Adopting skips the copy, but a crashed predecessor's
+                # owner-keyed temp for this destination must still go:
+                # it is never the published bytes.
+                temporary.unlink(missing_ok=True)
+                return adopted
         if source is None:
             source = self.mounts.local(str(entry["path"]))
             source_offset = int(entry["offset"])
         source = str(source)
         offset = int(source_offset
                      if source_offset is not None else entry["offset"])
-        want = int(entry["bytes"])
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        declared = entry.get("sha256")
-        if want > 0 and isinstance(declared, str) and declared:
-            # Converge overlapping identical copies onto the published
-            # incarnation instead of replacing it per mover: the replace
-            # is what invalidates other consumers' material identity and
-            # live cover proofs on the same staged name.
-            adopted = self._adopt_identical(destination, want, declared)
-            if adopted is not None:
-                return want, declared, adopted
-        temporary = self._temporary(destination)
         digest = hashlib.sha256()
         written = 0
         # O_NOFOLLOW at the leaf and a regular-file check, for the reason the
@@ -373,6 +617,9 @@ class _Copier:
             temporary.unlink(missing_ok=True)
             raise OSError(f"digest mismatch on {source}: manifest says "
                           f"{declared[:12]}, the copy is {computed[:12]}")
+        if self.publisher is not None:
+            return self.publisher.publish(entry, destination, temporary,
+                                          computed, stop)
         os.replace(temporary, destination)
         try:
             info = os.stat(destination)
@@ -727,12 +974,19 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     if not getattr(args, "unpaced", False):
         prewarm_loop.require_storage_pacing(pacer)
     mounts = prewarm_loop.MountMap(args.mount or [])
+    queue = pool.PoolQueue(Path(args.pool_root))
+    residency_root = Path(args.residency_root)
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
-        owner=str(args.action_key))
+        owner=str(args.action_key),
+        publisher=_StagedPublisher(
+            queue=queue, stage_root=Path(args.stage_root),
+            residency_root=residency_root,
+            consumer_action_key=str(args.consumer_action_key),
+            mover_action_key=str(args.action_key),
+            manifest_sha256=str(args.manifest_sha256)))
 
-    residency_root = Path(args.residency_root)
     manifest_sha256 = args.manifest_sha256
 
     last_published = [0.0]

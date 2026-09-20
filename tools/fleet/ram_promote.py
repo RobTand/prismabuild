@@ -59,8 +59,8 @@ from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from stage_move import (  # noqa: E402
-    _Copier, _delta, cpu_seconds, load_manifest, own_action_key,
-    proc_io, stage_relative, whole_file_paths,
+    _Copier, _StagedPublisher, _delta, cpu_seconds, load_manifest,
+    own_action_key, proc_io, stage_relative, whole_file_paths,
 )
 
 
@@ -222,7 +222,13 @@ def promote(args, *, stop=None) -> dict[str, object]:
         owner=str(args.action_key),
         # The source is the stage, not the pool: split ranges are read from
         # the staged names the stage mover wrote, from byte zero.
-        source_stage_root=source)
+        source_stage_root=source,
+        publisher=_StagedPublisher(
+            queue=queue, stage_root=Path(args.ram_root),
+            residency_root=residence,
+            consumer_action_key=str(args.consumer_action_key),
+            mover_action_key=str(args.action_key),
+            manifest_sha256=str(args.manifest_sha256)))
 
     before = proc_io()
     cpu_before = cpu_seconds()

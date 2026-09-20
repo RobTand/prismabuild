@@ -9,9 +9,11 @@ attempts -- same bytes, new inode.
 Proved here on real `stage_move.move` + `reader_lease.acquire` +
 `ram_promote.promote` at tiny sizes: a second overlapping copy of
 identical bytes must preserve the published incarnation (no replace),
-a live pin/copy handoff must survive it, concurrent copies stay
-correct, and crash-partial temps still recover. A genuinely different
-content under a shared name refuses instead of invalidating.
+a live pin/copy handoff must survive it, simultaneous first
+publications converge, concurrent copies stay correct, and
+crash-partial temps still recover. A genuinely different content
+under a shared name, a digest-less cross-consumer overlap, or
+unreadable proof state refuses instead of invalidating.
 """
 from __future__ import annotations
 
@@ -37,8 +39,10 @@ STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
 CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
-MOVER_A = "c" * 64
-MOVER_B = "d" * 64
+CONSUMER_C = "c" * 64
+MOVER_A = "1" * 64
+MOVER_B = "2" * 64
+MOVER_C = "3" * 64
 RAM_MOVER = "e" * 64
 SIZE = 16 * 1024
 
@@ -53,12 +57,14 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     return queue
 
 
-def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
+def _manifest(tmp_path: Path, *, name: str = "manifest.json",
+              digest: str | None = None) -> tuple[Path, str, dict]:
     origin = tmp_path / "origin"
     origin.mkdir(parents=True, exist_ok=True)
     payload = _payload()
     (origin / "calib.bin").write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
+    if digest is None:
+        digest = hashlib.sha256(payload).hexdigest()
     body = {
         "schema": "prismaquant.prismabuild.data_manifest.v1",
         "produced_by": {"tool": "ram-shared-source-fixture"},
@@ -69,14 +75,14 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
         "total_bytes": SIZE,
         "annotations": {},
     }
-    path = tmp_path / "manifest.json"
+    path = tmp_path / name
     path.write_text(json.dumps(body))
     manifest_sha = hashlib.sha256(path.read_bytes()).hexdigest()
     return path, manifest_sha, body
 
 
-def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
-           manifest_sha: str, consumer: str, mover: str) -> dict:
+def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
+               manifest_sha: str, consumer: str, mover: str) -> dict:
     stage = tmp_path / "stage"
     args = stage_move.build_parser().parse_args([
         "--pool-root", str(queue.root),
@@ -95,7 +101,13 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--max-readers", "2",
         "--unpaced",
     ])
-    receipt = stage_move.move(args)
+    return stage_move.move(args)
+
+
+def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
+           manifest_sha: str, consumer: str, mover: str) -> dict:
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         consumer, mover)
     assert receipt["complete"] is True, receipt
     return receipt
 
@@ -107,6 +119,16 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     entries = composed["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
     return Path(str(next(iter(entries.values()))["stage_path"]))
+
+
+def _sidecar_identity(queue: pool.PoolQueue, consumer: str,
+                      mover: str) -> dict:
+    sidecar = reader_lease.read_material(
+        queue.root / pool.RESIDENCY, consumer, mover)
+    assert isinstance(sidecar, dict)
+    entries = sidecar["entries"]
+    assert isinstance(entries, dict) and len(entries) == 1
+    return dict(next(iter(entries.values()))["file_id"])
 
 
 def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
@@ -220,6 +242,44 @@ def test_live_pin_survives_overlapping_copy(tmp_path: Path) -> None:
         consumer_action_key=CONSUMER_A) is True
 
 
+def test_simultaneous_first_publication_converges(tmp_path: Path) -> None:
+    """Two movers observing initial absence serialize at publication.
+
+    Pre-fix both copied concurrently and replaced each other; the loser
+    invalidated the winner's sidecar. Post-fix the final gate adopts:
+    both receipts complete and both sidecars name one incarnation.
+    """
+
+    queue = _queue(tmp_path)
+    manifest, manifest_sha, body = _manifest(tmp_path)
+    outcomes: dict[str, object] = {}
+    barrier = threading.Barrier(2)
+
+    def _run(which: str, consumer: str, mover: str) -> None:
+        barrier.wait(timeout=60)
+        try:
+            outcomes[which] = _run_stage(
+                queue, tmp_path, manifest, manifest_sha, consumer, mover)
+        except BaseException as exc:  # noqa: BLE001
+            outcomes[which] = exc
+
+    threads = [threading.Thread(target=_run, args=("a", CONSUMER_A, MOVER_A)),
+               threading.Thread(target=_run, args=("b", CONSUMER_B, MOVER_B))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    for which, outcome in outcomes.items():
+        assert not isinstance(outcome, BaseException), (which, outcome)
+        assert outcome["complete"] is True, (which, outcome)
+    staged_a = _staged_path(queue, CONSUMER_A)
+    staged_b = _staged_path(queue, CONSUMER_B)
+    assert str(staged_a) == str(staged_b)
+    assert staged_a.read_bytes() == _payload()
+    assert _sidecar_identity(queue, CONSUMER_A, MOVER_A) == (
+        _sidecar_identity(queue, CONSUMER_B, MOVER_B))
+
+
 def test_concurrent_overlapping_copies_stay_correct(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     manifest, manifest_sha, body = _manifest(tmp_path)
@@ -255,7 +315,8 @@ def test_crash_partial_temp_recovered(tmp_path: Path) -> None:
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
     # A crashed predecessor's owner-keyed temp with garbage must not
-    # leak into the publish; the copy truncates and verifies.
+    # leak into the publish; adoption discards it, and a fresh copy
+    # would truncate and verify.
     temp = staged.with_name(f".{staged.name}.{MOVER_B[:16]}.partial")
     temp.write_bytes(b"garbage-prefix")
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_B, MOVER_B)
@@ -269,17 +330,85 @@ def test_different_bytes_under_shared_name_refuse(tmp_path: Path) -> None:
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
     # White-box foreign write (documented as such): same size, different
-    # bytes under the shared staged name. The next copy must refuse
-    # rather than silently invalidate whoever the bytes belong to; the
-    # conflicting claim needs an owner (egress/reconcile), not a blind
-    # overwrite. Healing that file is explicitly out of scope here.
+    # bytes under the shared staged name. The next copy refuses with an
+    # entry error rather than silently invalidating whoever the bytes
+    # belong to; the conflicting claim needs an owner
+    # (egress/reconcile), not a blind overwrite.
     foreign = bytes([255 - (i % 251) for i in range(SIZE)])
     assert foreign != _payload()
     staged.write_bytes(foreign)
     before = os.stat(staged)
-    with pytest.raises(OSError, match="different bytes"):
-        _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_B, MOVER_B)
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         CONSUMER_B, MOVER_B)
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_staged"] == 0, receipt
+    assert any("not replacing" in str(err) or "different bytes" in str(err)
+               for err in receipt["errors"]), receipt
     after = os.stat(staged)
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
                                                  before.st_mtime_ns)
     assert staged.read_bytes() == foreign
+
+
+def test_null_digest_overlap_refuses_cross_consumer(tmp_path: Path) -> None:
+    """Digest-less manifests pin no content across consumers.
+
+    Capability boundary, stated not invented: the first null-digest
+    publication lands, but a second consumer's null-digest overlap
+    refuses (named, no replace) because no content proof spans the
+    consumers. Same-consumer reruns still converge through their own
+    proof.
+    """
+
+    queue = _queue(tmp_path)
+    manifest, manifest_sha, body = _manifest(
+        tmp_path, name="manifest-null.json", digest=None)
+    # Manifest entries carry an explicit null digest.
+    raw = json.loads(manifest.read_text())
+    assert raw["entries"][0]["sha256"] is None
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
+    staged = _staged_path(queue, CONSUMER_A)
+    before = os.stat(staged)
+
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         CONSUMER_B, MOVER_B)
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_staged"] == 0, receipt
+    after = os.stat(staged)
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
+                                                 before.st_mtime_ns)
+    assert staged.read_bytes() == _payload()
+
+    # Same consumer reruns against its own proof: converges.
+    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_C)
+
+
+def test_unreadable_proof_state_refuses(tmp_path: Path) -> None:
+    """Tainted proof state fails closed without replacing.
+
+    A corrupt fragment file makes ownership unknowable; the gate
+    refuses with a named error and keeps the published bytes.
+    """
+
+    queue = _queue(tmp_path)
+    manifest, manifest_sha, body = _manifest(tmp_path)
+    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
+    staged = _staged_path(queue, CONSUMER_A)
+    before = os.stat(staged)
+
+    residency = queue.root / pool.RESIDENCY
+    tainted = residency / CONSUMER_C / f"{MOVER_C}.json"
+    tainted.parent.mkdir(parents=True, exist_ok=True)
+    tainted.write_text("{not-json")
+
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         CONSUMER_B, MOVER_B)
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_staged"] == 0, receipt
+    assert any("unreadable" in str(err) for err in receipt["errors"]), receipt
+    after = os.stat(staged)
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
+                                                 before.st_mtime_ns)
+    assert staged.read_bytes() == _payload()
