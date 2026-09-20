@@ -350,14 +350,16 @@ def test_different_bytes_under_shared_name_refuse(tmp_path: Path) -> None:
     assert staged.read_bytes() == foreign
 
 
-def test_null_digest_overlap_refuses_cross_consumer(tmp_path: Path) -> None:
-    """Digest-less manifests pin no content across consumers.
+def test_null_digest_overlap_converges(tmp_path: Path) -> None:
+    """Digest-less dev manifests share one staged incarnation.
 
-    Capability boundary, stated not invented: the first null-digest
-    publication lands, but a second consumer's null-digest overlap
-    refuses (named, no replace) because no content proof spans the
-    consumers. Same-consumer reruns still converge through their own
-    proof.
+    Both-Spark sharing is the requirement, so a second consumer's
+    null-digest overlap must converge -- never replace the live
+    incarnation.  The origin fast path adopts without copying where the
+    published file still carries this source's identity; otherwise the
+    necessary private copy's digest is compared against the stored
+    material proof, without rehashing the existing file.  A source that
+    actually changed refuses instead of invalidating.
     """
 
     queue = _queue(tmp_path)
@@ -374,15 +376,127 @@ def test_null_digest_overlap_refuses_cross_consumer(tmp_path: Path) -> None:
 
     receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
                          CONSUMER_B, MOVER_B)
+    assert receipt["complete"] is True, receipt
+    after = os.stat(staged)
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
+    assert staged.read_bytes() == _payload()
+    live = reader_lease.stat_identity(str(staged))
+    assert live == _sidecar_identity(queue, CONSUMER_A, MOVER_A)
+    assert live == _sidecar_identity(queue, CONSUMER_B, MOVER_B)
+
+
+def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
+    """A publisher slower than the old 3 s wait still converges.
+
+    The first publication's bytes land but its fragment is delayed past
+    the old bounded-recheck interval; the second mover must wait out the
+    grace and adopt -- never convert the timeout into permission to
+    replace the live incarnation.
+    """
+
+    import time
+
+    queue = _queue(tmp_path)
+    manifest, manifest_sha, body = _manifest(tmp_path)
+    digest = str(body["entries"][0]["sha256"])
+    source = str(body["entries"][0]["path"])
+
+    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
+    staged = _staged_path(queue, CONSUMER_A)
+    before = os.stat(staged)
+    key = residency_map.residency_map_key(source, 0)
+
+    # Hold back the proof: the bytes stay, the vouch goes away, and a
+    # background thread re-files it after 4 s -- past the old interval.
+    residency = queue.root / pool.RESIDENCY
+    saved_entries = dict(
+        residency_map.compose(
+            residency_map.read_fragments(residency, CONSUMER_A))["entries"])
+    assert len(saved_entries) == 1
+    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
+     .unlink(missing_ok=True))
+    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
+     .unlink(missing_ok=True))
+
+    def _refile() -> None:
+        time.sleep(4.0)
+        file_id = reader_lease.stat_identity(str(staged))
+        assert file_id is not None
+        residency_map.write_fragment(residency, {
+            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+            "consumer_action_key": CONSUMER_A,
+            "mover_action_key": MOVER_A,
+            "tier_id": STAGE_TIER,
+            "stage_root": str(tmp_path / "stage"),
+            "manifest_sha256": manifest_sha,
+            "entries": saved_entries,
+        })
+        reader_lease.write_material(
+            residency, consumer_action_key=CONSUMER_A,
+            mover_action_key=MOVER_A, tier_id=STAGE_TIER,
+            stage_root=str(tmp_path / "stage"),
+            manifest_sha256=manifest_sha,
+            generation=reader_lease.mint_generation(),
+            entries={key: {
+                "stage_path": str(staged), "bytes": SIZE,
+                "sha256": digest, "file_id": file_id}})
+
+    thread = threading.Thread(target=_refile, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    try:
+        receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                             CONSUMER_B, MOVER_B)
+    finally:
+        thread.join(timeout=60)
+    elapsed = time.monotonic() - started
+    assert receipt["complete"] is True, receipt
+    # The wait outlasted the old interval; the incarnation survived it.
+    assert elapsed >= 3.0, elapsed
+    after = os.stat(staged)
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
+    assert _sidecar_identity(queue, CONSUMER_B, MOVER_B) == (
+        _sidecar_identity(queue, CONSUMER_A, MOVER_A))
+
+
+def test_inflight_copy_defers_without_replacing(tmp_path: Path,
+                                                monkeypatch) -> None:
+    """An in-flight publisher past a short grace still never loses bytes.
+
+    A sibling copy temporary with no proof yet means a publisher may be
+    alive; even after the (test-shortened) grace expires, the gate
+    defers to the stall policy's retry instead of replacing the
+    unattributed live incarnation.
+    """
+
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0)
+    queue = _queue(tmp_path)
+    manifest, manifest_sha, body = _manifest(tmp_path)
+
+    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
+    staged = _staged_path(queue, CONSUMER_A)
+    before = os.stat(staged)
+    residency = queue.root / pool.RESIDENCY
+    # Unpublish the bytes without touching them, then fake an in-flight
+    # sibling copy that never finishes.
+    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
+     .unlink(missing_ok=True))
+    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
+     .unlink(missing_ok=True))
+    sibling = staged.with_name(f".{staged.name}.{'f' * 16}.partial")
+    sibling.write_bytes(b"partial-prefix")
+
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         CONSUMER_B, MOVER_B)
     assert receipt["complete"] is False, receipt
     assert receipt["entries_staged"] == 0, receipt
+    assert any("deferring" in str(err) for err in receipt["errors"]), receipt
     after = os.stat(staged)
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
                                                  before.st_mtime_ns)
     assert staged.read_bytes() == _payload()
-
-    # Same consumer reruns against its own proof: converges.
-    _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_C)
 
 
 def test_unreadable_proof_state_refuses(tmp_path: Path) -> None:

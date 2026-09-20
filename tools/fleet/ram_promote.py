@@ -228,7 +228,8 @@ def promote(args, *, stop=None) -> dict[str, object]:
             residency_root=residence,
             consumer_action_key=str(args.consumer_action_key),
             mover_action_key=str(args.action_key),
-            manifest_sha256=str(args.manifest_sha256)))
+            manifest_sha256=str(args.manifest_sha256),
+            tier_id=str(args.tier_id), cas_root=str(args.cas_root)))
 
     before = proc_io()
     cpu_before = cpu_seconds()
