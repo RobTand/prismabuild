@@ -1374,6 +1374,19 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         if any(str(old_material.get(field) or "") != str(source.get(field) or "")
                for field in ("tier_id", "manifest_sha256", "epoch")):
             return {**outcome, "reason": "donor_material_mismatch"}
+        # Per entry, the same comparison the reader makes: the sidecar dates
+        # the fragment's vouching, so same path, same length, same digest or
+        # the two are about different bytes.
+        for key, vouched in named.items():
+            mention = dated.get(key)
+            if (not isinstance(vouched, Mapping) or not isinstance(mention, Mapping)
+                    or str(vouched.get("stage_path") or "")
+                    != str(mention.get("stage_path") or "")
+                    or vouched.get("bytes") != mention.get("bytes")
+                    or str(vouched.get("sha256") or "")
+                    != str(mention.get("sha256") or "")):
+                return {**outcome, "reason": "donor_material_mismatch",
+                        "entry": str(key)}
         with queue.stage_ownership_lock(str(source["stage_root"]),
                                         blocking=False) as owned:
             if not owned:

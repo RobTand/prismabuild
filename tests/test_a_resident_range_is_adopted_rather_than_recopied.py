@@ -825,3 +825,42 @@ def test_a_donor_whose_material_names_another_object_is_declined(
     assert queue.tier_ledger(TIER).holder_tokens(donor) == {
         "stage_gib": PHASE_GIB}
     assert all(path.exists() for path in files)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("stage_path", "/somewhere/else.bin"),
+    ("bytes", 64),
+    ("sha256", "c" * 64),
+])
+def test_a_sidecar_entry_that_dates_other_bytes_is_declined(
+    queue, stage, field: str, value: object,
+) -> None:
+    """Per entry, the sidecar must date the bytes the fragment vouches.
+
+    A live ``file_id`` can be valid for a file that is not the one the
+    fragment names, so key coverage and material-level agreement still leave
+    the entries free to describe different bytes.  ``covers_for_keys``
+    compares path, length and digest per entry and taints the cover when they
+    disagree; adoption declines the donor for the same reason.
+    """
+
+    donor = _hexkey("firstmover0")
+    _stage_range(queue, mover=donor, consumer=FIRST, stage=stage)
+    _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
+
+    sidecar = reader_lease.material_path(
+        queue.residency_fragment_root(), FIRST, donor)
+    body = json.loads(sidecar.read_text())
+    entry = sorted(body["entries"])[0]
+    body["entries"][entry][field] = value
+    sidecar.write_text(json.dumps(body))
+
+    events = tier_loop.adopt_resident_ranges(
+        queue, tiers={TIER: _tier_record(stage)})
+
+    assert events and not any(event.get("adopted") for event in events), (
+        f"a sidecar whose {field} names other bytes was adopted")
+    assert {str(event.get("reason")) for event in events} == {
+        "donor_material_mismatch"}
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_GIB}
