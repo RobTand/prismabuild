@@ -7691,6 +7691,91 @@ class PoolQueue:
                 spoken.add(name)
         return (spoken, False)
 
+    def _output_outstanding_window_tokens(
+            self, owner_key: str, tier_id: str, kind: str
+    ) -> tuple[int, bool]:
+        """Window tokens this owner has live OUTSIDE its own holdings.
+
+        R7 lifecycle accounting for the bounded refill: reserved/transferring
+        names no longer held by the owner (already transferred toward their
+        movers) plus, for every ``consumed`` record, the tokens its mover
+        STILL holds -- a claimed-but-unretired batch's fence and staged bytes
+        are live spending of the same aggregate window, right up to the
+        retirement/egress that releases them. ``released`` records are proven
+        retired and count nothing; any unreadable/corrupt funding file that
+        may belong to this owner returns ``(count, True)`` so the caller
+        retains. Owner-held reserved names are deliberately NOT counted
+        here: the caller already counts them as holdings.
+        """
+
+        try:
+            ledger = self.tier_ledger(str(tier_id))
+            held_names = {path.name for path in _glob(
+                ledger.held_dir / str(owner_key), "*-*")}
+        except (OSError, PoolContractError, ValueError):
+            return (0, True)
+        spoken, unknown = self.output_census_for_owner(str(owner_key))
+        if unknown:
+            return (0, True)
+        outstanding = 0
+        for record in spoken:
+            if str(record.get("tier_id")) != str(tier_id):
+                continue
+            tokens = record.get("tokens")
+            if not isinstance(tokens, list):
+                return (0, True)
+            for name in tokens:
+                if (not isinstance(name, str) or not name.startswith(
+                        str(kind) + "-")):
+                    return (0, True)
+                if name not in held_names:
+                    outstanding += 1
+        # Consumed-but-unretired: the mover's live holdings are the batch's
+        # remaining share of the window until retirement releases them.
+        funding_dir = self.root / TIER_FUNDING
+        try:
+            names = sorted(entry.name for entry in os.scandir(funding_dir)
+                           if entry.name.endswith(".output-funding.json"))
+        except FileNotFoundError:
+            names = []
+        except OSError:
+            return (outstanding, True)
+        for name in names:
+            path = funding_dir / name
+            # The file name is f"{mover}.{tier}.output-funding.json"; parse
+            # the mover from the stem rather than guessing keys.
+            try:
+                stem = path.name[: -len(".output-funding.json")]
+                mover, _, tier_part = stem.rpartition(".")
+                if tier_part != str(tier_id):
+                    continue
+                record, file_state = self.output_funding_file_state(
+                    mover, str(tier_id))
+            except (OSError, PoolContractError, ValueError):
+                return (outstanding, True)
+            if file_state == "corrupt":
+                return (outstanding, True)
+            if record is None:
+                continue
+            if str(record.get("owner_action_key")) != str(owner_key):
+                continue
+            state = str(record.get("state"))
+            if state == "released":
+                continue  # proven retired; counts nothing
+            if state == "consumed":
+                tokens = record.get("tokens")
+                if not isinstance(tokens, list):
+                    return (outstanding, True)
+                try:
+                    mover_held = int(ledger.holder_tokens(
+                        str(record.get("mover_action_key"))).get(kind, 0))
+                except (OSError, PoolContractError, ValueError):
+                    return (outstanding, True)
+                live = min(len(tokens), mover_held)
+                if live > 0:
+                    outstanding += live
+        return (outstanding, False)
+
     def output_intents_sourcing_from(self, owner_key: str) -> list[dict]:
         """Outstanding output intents whose source window is this owner.
 

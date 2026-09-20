@@ -1128,30 +1128,59 @@ def refill_window(queue, instance: Mapping[str, object],
     gated = _require_live_owner(queue, checked_instance)
     if gated is not None:
         return gated
-    spoken, census_unknown = queue._output_spoken_token_names(owner, tier)
+    # Aggregate window accounting: owner-held names PLUS everything this
+    # owner has live elsewhere -- transferred names and the fences of
+    # claimed-but-unretired (consumed) batches, right up to the retirement
+    # that releases them. Fail-retain on any unprovable record.
+    outstanding, census_unknown = (
+        queue._output_outstanding_window_tokens(owner, tier, kind))
     if census_unknown:
         return {"ok": False, "refusal": "unknown-retain: funding-census"}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         ledger = queue.tier_ledger(tier)
         held = ledger.holder_tokens(owner).get(kind, 0)
-        room = window - held - len(spoken)
+        room = window - held - outstanding
         if room <= 0:
             return {"ok": True, "tier": tier, "acquired": 0, "held": held,
-                    "outstanding": len(spoken), "window_gib": window}
+                    "outstanding": outstanding, "window_gib": window}
         available = ledger.available().get(kind, 0)
         take = min(room, available)
         if take <= 0:
             return {"ok": False, "refusal": "tier-reservation-unavailable",
                     "available": ledger.available(), "window_gib": window,
-                    "held": held, "outstanding": len(spoken)}
+                    "held": held, "outstanding": outstanding}
         if not ledger.acquire(owner, {kind: take}):
             return {"ok": False, "refusal": "tier-reservation-unavailable",
                     "available": ledger.available(), "window_gib": window,
-                    "held": held, "outstanding": len(spoken)}
+                    "held": held, "outstanding": outstanding}
         held = ledger.holder_tokens(owner).get(kind, 0)
     return {"ok": True, "tier": tier, "acquired": take, "held": held,
-            "outstanding": len(spoken), "window_gib": window,
+            "outstanding": outstanding, "window_gib": window,
             "kind": kind}
+
+
+def _planned_omitted_absent(prewrite: Mapping[str, object],
+                            sealed: list[dict[str, object]]) -> bool:
+    """Every planned path the descriptors omit is proven absent.
+
+    The conservative prewrite admitted a planned superset; the paths the
+    commit's descriptors do NOT cover must be gone by commit time (a
+    written temporary left behind would otherwise lose its charge with the
+    prewrite consumed). Absence is lstat-only: no payload read, no hash.
+    Present or unreadable retains (False); proven absent passes.
+    """
+
+    actual = {str(d["path"]) for d in sealed}
+    for planned in prewrite.get("paths", []):
+        text = str(planned)
+        if text in actual:
+            continue
+        try:
+            os.lstat(text)
+        except FileNotFoundError:
+            continue
+        return False
+    return True
 
 
 def _actual_within_ceiling(prewrite: Mapping[str, object],
@@ -1244,6 +1273,10 @@ def describe_output_precommit_for_funding(
             or dict(prewrite.get("owner_attempt", {})) != dict(
                 checked_instance["owner_attempt"])):
         raise ProducedOutputError("prewrite-mismatch")
+    if not _planned_omitted_absent(prewrite, sealed):
+        # A planned-but-omitted path still EXISTS (or is unstatable): the
+        # prewrite's charge for it must not vanish with the commit.
+        raise ProducedOutputError("planned-path-present-retain")
     manifest = output_manifest_sha256(sealed)
     total = sum(class_bytes.values())
     if total <= 0:
@@ -1750,6 +1783,8 @@ def commit_batch(queue, instance: Mapping[str, object],
                 or dict(prewrite.get("owner_attempt", {})) != dict(
                     checked_instance["owner_attempt"])):
             return {"ok": False, "refusal": "prewrite-mismatch"}
+        if not _planned_omitted_absent(prewrite, sealed):
+            return {"ok": False, "refusal": "planned-path-present-retain"}
         try:
             sums = _class_sums(batches)
         except ProducedOutputError as exc:
@@ -2208,6 +2243,13 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         queue.publish(
             action_key=mover, cas_root=str(cas.root),
             worker_script=worker_script, tags=[host] if host else (),
+            # Ordinary semantics carried from the parent: an agent's
+            # validation priority stays with the row, and the effective
+            # sealed mover retry policy (bounded attempts, retry-safe
+            # copy) rides the row beside the worker/snapshot/tag context.
+            priority=int(producer_row.get("priority") or 0),
+            max_attempts=int(mover_retry_policy["max_attempts"]),
+            retry_safe=bool(mover_retry_policy.get("retry_safe", True)),
             **addressing,
             resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
             residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
