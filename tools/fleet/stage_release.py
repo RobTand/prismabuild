@@ -77,6 +77,7 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 import prewarm_loop  # noqa: E402
+from stage_move import stage_relative, whole_file_paths  # noqa: E402
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
 #: question cannot be answered here".  Linux reports ``ENODATA``; the name
@@ -246,6 +247,239 @@ def _prune_empty(directory: Path, stop: Path) -> None:
         directory = directory.parent
 
 
+#: How many co-owners one egress receipt names before it counts the rest.
+SHARED_WITH_LIMIT = 5
+
+
+def _fragment_owners(root: Path, wanted: set[str], *,
+                     except_consumer: str = "",
+                     except_mover: str = "") -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
+    """Which of ``wanted`` paths are still vouched for, and by whom, in one walk.
+
+    A single scan of every consumer directory -- never per entry -- intersecting
+    validated ``stage_path`` strings against ``wanted`` before storing.  No
+    metadata walk per foreign entry: the fragment validator already guarantees
+    absolute, normalized paths, so string intersection is exact and only
+    matches are stored.  The egress keeps its own resolve-based containment
+    fence before any unlink.  A fragment that cannot be read or validated
+    taints the scan: its paths are unknowable, so nothing may be treated as
+    unowned on this pass.  Fail closed, the way an unreadable own fragment
+    keeps its tokens.
+    """
+
+    owners: dict[str, set[tuple[str, str]]] = {}
+    tainted: list[str] = []
+    try:
+        consumers = sorted(entry.name for entry in os.scandir(root)
+                           if entry.is_dir())
+    except OSError as exc:
+        return owners, [f"{root}: {exc}"]
+    for consumer in consumers:
+        directory = root / consumer
+        try:
+            names = sorted(entry.name for entry in os.scandir(directory)
+                           if entry.is_file() and entry.name.endswith(".json"))
+        except OSError as exc:
+            tainted.append(f"{consumer}: {exc}")
+            continue
+        for name in names:
+            if consumer == except_consumer and name == f"{except_mover}.json":
+                continue
+            try:
+                with open(directory / name) as stream:
+                    fragment = residency_map.validate_fragment(json.load(stream))
+            except (OSError, ValueError) as exc:
+                tainted.append(f"{consumer}/{name}: {exc}")
+                continue
+            mover = str(fragment["mover_action_key"])
+            for entry in dict(fragment["entries"]).values():
+                if not isinstance(entry, Mapping):
+                    continue
+                path = entry.get("stage_path")
+                # Validated absolute and normalized, so this comparison is
+                # exact with no metadata touch.
+                if isinstance(path, str) and path in wanted:
+                    owners.setdefault(path, set()).add((consumer, mover))
+    return owners, tainted
+
+
+_manifest_layout_cache: dict[tuple[str, str], tuple[str, list[dict[str, object]]]] = {}
+
+
+def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[str, object]]] | None:
+    """One manifest's mount prefix and entries by content digest, or ``None``.
+
+    Manifests are immutable under their digest.  Only successful loads are
+    cached (bounded); a transient miss is re-read next pass rather than
+    remembered indefinitely, so a short CAS outage cannot pin every later
+    egress into skipping.
+    """
+
+    key = (cas_root, digest)
+    hit = _manifest_layout_cache.get(key)
+    if hit is not None:
+        return hit
+    try:
+        blob = pb.PrismaBuildCAS(Path(cas_root)).blob_path(digest)
+        manifest = pb.load_data_manifest(blob)
+    except (OSError, ValueError, pb.PrismaBuildError):
+        return None
+    if not isinstance(manifest, Mapping):
+        return None
+    entries = prewarm_loop.manifest_read_entries(manifest)
+    if not isinstance(entries, list):
+        return None
+    prefix = manifest.get("mount_prefix")
+    if not isinstance(prefix, str) or not prefix.startswith("/"):
+        return None
+    layout = (prefix, [dict(entry) for entry in entries])
+    if len(_manifest_layout_cache) >= 4:
+        _manifest_layout_cache.clear()
+    _manifest_layout_cache[key] = layout
+    return layout
+
+
+def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
+                   cas_root: str | Path | None = None) -> tuple[set[str], list[str]]:
+    """Staged paths a claimed copy may be writing, by sealed range.
+
+    A copy in flight has no fragment yet, so fragments alone cannot attribute
+    it -- but its claim already exists, and the claim's sealed request names
+    its manifest and its read-order range.  Resolving those through the same
+    ``stage_relative`` computation both movers use attributes exactly the
+    files the copy can rename into place.  Non-movement claims (no range
+    flags) are skipped, never tainting: a consumer is not a copy.  Anything
+    unreadable taints the pass, the same fail-closed rule as fragments.
+
+    The CAS root comes from each sealed claim record's own ``cas_root`` where
+    present (an explicit override wins for tests); the queue-sibling default
+    applies only when no record names one.
+    """
+
+    paths: set[str] = set()
+    tainted: list[str] = []
+    try:
+        keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
+                      else path.name
+                      for path in pool._scan(queue.dir(pool.CLAIMED)))
+    except OSError as exc:
+        return paths, [f"claimed: {exc}"]
+    records: list[tuple[str, dict[str, object]]] = []
+    for key in keys:
+        try:
+            item = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        except (OSError, pool.PoolContractError) as exc:
+            tainted.append(f"{key[:12]}: {exc}")
+            continue
+        if item is None:
+            continue    # finished between the scan and the read: its
+                        # fragment, if it published one, still vouches for it
+        if not isinstance(item, dict):
+            tainted.append(f"{key[:12]}: unreadable claim record")
+            continue
+        records.append((key, item))
+    default_cas = (str(cas_root) if cas_root is not None
+                   else str(queue.root.parent / "cas"))
+    for key, item in records:
+        # No first-record inheritance: each claim resolves its own CAS root --
+        # the explicit override wins, else the record's own root, else the
+        # queue-sibling default.  A rootless claim among rooted claims reads
+        # the default, never another record's root.
+        if cas_root is not None:
+            own_cas = str(cas_root)
+        else:
+            root = item.get("cas_root")
+            own_cas = (str(root) if isinstance(root, str) and root
+                       else default_cas)
+        resources = item.get("resources")
+        if not isinstance(resources, Mapping):
+            # Absent or malformed: a claim without a demand shape cannot
+            # establish non-mover.  Every published row seals ``resources``,
+            # and no queue transition writes a claim without one, so there is
+            # no safe behavior but taint.  (The old code threw mid-scan on
+            # ``None`` and skipped the unknown silently.)
+            tainted.append(f"{key[:12]}: malformed resources")
+            continue
+        demand = resources
+        kinds = {str(kind).split("@", 1)[1] for kind in demand
+                 if "@" in str(kind)}
+        if tier_id not in kinds:
+            continue    # not a movement node on this tier; a consumer is
+                        # not a copy
+        try:
+            request = pool._read_json(
+                Path(own_cas) / "requests" / key[:2] / f"{key}.json")
+        except (OSError, pool.PoolContractError) as exc:
+            tainted.append(f"{key[:12]}: {exc}")
+            continue
+        if not isinstance(request, Mapping):
+            tainted.append(f"{key[:12]}: unreadable sealed request")
+            continue
+        params = request.get("params")
+        command = params.get("command") if isinstance(params, Mapping) else None
+        if not isinstance(command, list):
+            # Identified as a mover by its tier demand, but seals no argv:
+            # corrupt, not a consumer -- consumers never reach this branch.
+            tainted.append(f"{key[:12]}: mover seals no command")
+            continue
+        try:
+            start = command[command.index("--range-start-bytes") + 1]
+            end = command[command.index("--range-end-bytes") + 1]
+            # Sealed argv bounds are digit strings by schema: no bool, float,
+            # or whitespace-tolerant coercion may accept a malformed bound.
+            for bound in (start, end):
+                if (isinstance(bound, bool) or not isinstance(bound, str)
+                        or not bound.isdigit()):
+                    raise ValueError(
+                        "range bounds must be nonnegative integer strings")
+            start, end = int(start), int(end)
+            if end < start:
+                raise ValueError("range end precedes start")
+        except (ValueError, IndexError, TypeError):
+            # An identified mover whose exact range cannot be determined must
+            # not silently read as unowned.
+            tainted.append(f"{key[:12]}: mover seals an invalid range")
+            continue
+        digest = None
+        # The manifest rides on the sealed request's top-level inputs (verified
+        # against a live fixture), never under params.
+        inputs = request.get("inputs")
+        if isinstance(inputs, list):
+            for entry in inputs:
+                if (isinstance(entry, Mapping)
+                        and entry.get("id") == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                    digest = entry.get("sha256")
+        if not isinstance(digest, str) or not digest:
+            tainted.append(f"{key[:12]}: sealed request names no data manifest")
+            continue
+        layout = _cached_manifest_layout(own_cas, digest)
+        if layout is None:
+            tainted.append(f"{key[:12]}: manifest {digest[:12]} unreadable")
+            continue
+        mount_prefix, entries = layout
+        whole = whole_file_paths(entries)
+        try:
+            window = prewarm_loop.entries_between(entries, start, end)
+        except (ValueError, TypeError) as exc:
+            # A window that cannot be cut is an undeterminable range: taint,
+            # never unowned.
+            tainted.append(f"{key[:12]}: range not cuttable: {exc}")
+            continue
+        for entry in window:
+            path, offset = str(entry["path"]), int(entry["offset"])
+            try:
+                relative = stage_relative(
+                    path, offset, int(entry["bytes"]),
+                    mount_prefix=mount_prefix,
+                    whole_file=path in whole)
+            except ValueError:
+                continue
+            # Compared against fragment ``stage_path`` values, which join the
+            # stage root with this same relative name.
+            paths.add(relative)
+    return paths, tainted
+
+
 def evict(queue: pool.PoolQueue, mover_action_key: str, *,
           consumer_action_key: str, stage_root: str,
           residency_root: str | Path | None = None,
@@ -280,7 +514,20 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                   consumer_action_key: str, stage_root: str,
                   residency_root: str | Path | None = None,
                   reason: str = "egress") -> dict[str, object]:
-    """:func:`evict`'s body, with the mover's transition lock already held."""
+    """:func:`evict`'s body, with the mover's transition lock already held.
+
+    One staged file can have two owners: forward and reverse passes stage the
+    same source extent through different movers onto one content-addressed
+    name, and two read phases of one v2 plan do the same inside one consumer.
+    Deleting on one owner's egress while another owner's fragment still
+    vouches for the file leaves a hole behind a live map, so a path another
+    live fragment -- or a claimed copy with no fragment yet -- still names is
+    kept, its tokens still released, and its own fragment still dropped.  The
+    last owner to leave deletes the file.  The whole check-and-act runs under
+    the stage root's ownership lock (taken here, inside the transition lock --
+    adoption takes them in the same order), so two concurrent egresses order
+    instead of both concluding "unshared".
+    """
 
     refusal = stage_root_refusal(queue, stage_root)
     if refusal is not None:
@@ -297,10 +544,14 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     fragment_path = residency_map.fragment_path(
         root, consumer_action_key, mover_action_key)
     entries: dict[str, object] = {}
+    tier_id: str | None = None
     errors: list[str] = []
     try:
         with open(fragment_path) as stream:
-            entries = dict(residency_map.validate_fragment(json.load(stream))["entries"])
+            checked = residency_map.validate_fragment(json.load(stream))
+            entries = dict(checked["entries"])
+            tier_value = checked.get("tier_id")
+            tier_id = str(tier_value) if isinstance(tier_value, str) else None
     except FileNotFoundError:
         # No fragment at all.  Either the mover never published one -- in which
         # case it staged nothing -- or an earlier egress already removed it.
@@ -314,12 +565,65 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         # that is occupied, so the tokens stay and the next sweep retries.
         errors.append(f"{fragment_path.name}: {exc}")
     stage = Path(stage_root)
-    deleted = missing = 0
+    with queue.stage_ownership_lock(str(stage)):
+        return _evict_owned(queue, mover_action_key,
+                            consumer_action_key=consumer_action_key,
+                            stage=stage, tier_id=tier_id, root=root,
+                            fragment_path=fragment_path, entries=entries,
+                            errors=errors, reason=reason)
+
+
+def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
+                 consumer_action_key: str, stage: Path, tier_id: str | None,
+                 root: Path, fragment_path: Path,
+                 entries: dict[str, object], errors: list[str],
+                 reason: str) -> dict[str, object]:
+    """Unlink what is exclusively this mover's, under the ownership lock."""
+
+    deleted = missing = shared = 0
     bytes_deleted = 0
+    shared_with: list[str] = []
+    if entries and tier_id is not None:
+        # Snapshot order is the argument: claimed movers first, then fragment
+        # dirs.  A claim exists before its copy starts (the start gate), and a
+        # fragment exists before its claim is gone (publication precedes the
+        # terminal marking), so one view in this order covers a publisher in
+        # either transition; fragments-first could miss a publisher that
+        # publishes its fragment and releases its claim between the two reads
+        # entirely.  One walk of the fragment dirs, intersected against this
+        # mover's own entry paths -- never per entry times all fragments, and
+        # no metadata walk: wanted paths are normalized once here, foreign
+        # entries compare as validated strings.
+        wanted = {os.path.normpath(str(entry.get("stage_path", "")))
+                  for entry in entries.values()
+                  if isinstance(entry, Mapping)}
+        claimed, claimed_taint = _claimed_paths(queue, tier_id)
+        owners, fragment_taint = _fragment_owners(
+            root, wanted,
+            except_consumer=consumer_action_key,
+            except_mover=mover_action_key)
+        tainted = fragment_taint + claimed_taint
+        if tainted:
+            # Ownership is uncertain: behave like the unreadable-fragment
+            # case -- nothing is unlinked, no tokens come back, the receipt
+            # says so and the next sweep retries.
+            errors.extend(f"ownership uncertain: {item}" for item in tainted)
+            owners, claimed = {}, set()
+            blind = True
+        else:
+            blind = False
+    else:
+        owners, claimed = {}, set()
+        blind = False
     for key, entry in entries.items():
+        if blind:
+            continue
+        # The sharing check compares validated strings (exact, no metadata);
+        # the resolve below stays as the containment fence before any unlink.
         path = Path(str(entry["stage_path"]))
         try:
-            if stage.resolve() not in path.resolve().parents:
+            resolved = str(path.resolve())
+            if stage.resolve() not in Path(resolved).parents:
                 # A fragment naming a path outside the stage is not a thing to
                 # act on: the writer validated it, so this is corruption or
                 # someone else's file.
@@ -327,6 +631,17 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                 continue
         except OSError as exc:
             errors.append(f"{key}: {exc}")
+            continue
+        co_owners = sorted(owners.get(os.path.normpath(str(path)), set()))
+        if co_owners or _relative_under(stage, resolved) in claimed:
+            # Another live fragment vouches for these bytes, or a claimed
+            # copy is about to land them: keep the file, drop only this
+            # mover's own vouching below.  The last owner to leave deletes.
+            shared += 1
+            shared_with.extend(
+                f"{consumer[:12]}/{mover[:12]}" for consumer, mover in co_owners)
+            if _relative_under(stage, resolved) in claimed:
+                shared_with.append("in-flight-copy")
             continue
         try:
             os.unlink(path)
@@ -351,16 +666,30 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         "reason": reason,
         "entries_deleted": deleted,
         "entries_already_gone": missing,
+        "entries_shared": shared,
+        "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
         "bytes_deleted": bytes_deleted,
         "tokens_released": released,
         # Errors mean the stage still holds bytes, so the tokens stay held:
         # releasing them would let the ledger admit a mover onto capacity that
         # is not there.  The receipt says so and the next sweep retries.
+        # A shared skip is not an error: the bytes live on under another
+        # owner while this mover's own tokens come back and its own vouching
+        # is dropped.
         "complete": not errors,
         "errors": errors,
         "host": socket.gethostname(),
         "unix": time.time(),
     }
+
+
+def _relative_under(stage: Path, resolved: str) -> str | None:
+    """This stage root's relative name for a resolved path, or ``None``."""
+
+    try:
+        return str(Path(resolved).relative_to(stage.resolve()))
+    except (OSError, ValueError):
+        return None
 
 
 def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:

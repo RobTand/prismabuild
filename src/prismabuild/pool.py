@@ -4224,6 +4224,42 @@ class PoolQueue:
         return posix_lock.held(self.root / "tier-mint-locks" / f"{name}.lock",
                                blocking=blocking)
 
+    def stage_ownership_lock(self, stage_root, *, blocking: bool = True):
+        """Serialize the owners of one stage root's files, never other roots.
+
+        The lock covers the check-and-act pairs that decide a shared staged
+        file's fate: an egress's scan-then-unlink-then-drop-fragment-then-
+        release, an adoption's reissue-then-transfer-then-drop, and a mover's
+        start gate before its first rename.  Per stage root (stage and ram
+        roots are different paths) so tiers do not contend; the lock file
+        lives beside the queue.  Lock order is transition-then-ownership
+        everywhere: ``evict`` already holds the mover transition lock when it
+        takes this one, and adoption takes this one only after acquiring the
+        transition lock non-blocking (declining instead on contention, which
+        costs a copy and never correctness).  Nothing takes them in the other
+        order, and a mover's start gate holds nothing else, so no cycle.
+        """
+
+        root = str(Path(stage_root).absolute())
+        name = hashlib.sha256(f"stage-ownership:{root}".encode()).hexdigest()
+        return posix_lock.held(self.root / "stage-ownership-locks" / f"{name}.lock",
+                               blocking=blocking)
+
+    def ownership_start_gate(self, stage_root) -> None:
+        """Order this copy's first rename against an in-progress egress snapshot.
+
+        The claim already exists, so an egress that snapshots after this point
+        attributes the copy through the claim; one that snapshotted before
+        waits out here until its delete completes.  Acquired and released --
+        nothing is held during the copy itself, so movers keep their full
+        concurrency and this costs one lock round trip per mover, not per
+        entry.  Both movers call it; the egress holds the same lock throughout
+        its snapshot-to-release.
+        """
+
+        with self.stage_ownership_lock(str(stage_root)):
+            pass
+
     def tier_ids(self) -> list[str]:
         """Every tier that has a ledger, whether or not it holds anything.
 

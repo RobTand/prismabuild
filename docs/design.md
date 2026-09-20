@@ -3625,6 +3625,28 @@ second tier leg on `storage_tiers.residency_demand`, occupancy
 classification, release at egress — transfers intact, aimed at the right
 actor: one occupancy leg per movement node.
 
+**Shared staged paths and who may delete them.** A staged name is a pure function
+of the manifest entry (`stage_relative`: whole files keep their relative name,
+split ranges land at `<rel>.pbrange/<offset>-<size>`), with no mover namespace --
+so forward and reverse passes, or two read phases of one v2 plan, stage the same
+source extent onto one file, and a promotion reads it back from that same staged
+name at offset zero (never the manifest's pool path at the manifest offset). An
+egress deletes only what is exclusively its mover's: under the stage root's
+ownership lock (held across scan-to-release, inside the mover transition lock;
+adoption takes them in the same order, declining on contention), it intersects one
+fragment walk against its own paths as validated strings plus the sealed ranges of
+claimed movers -- claims first, then fragments, because a claim exists before its
+copy starts (each mover passes a start gate before its first rename, holding
+nothing during the copy) and a fragment exists before its claim is gone. Shared
+paths are kept with `entries_shared`/`shared_with` on the receipt while the
+mover's own tokens come back and its own fragment is dropped; the last owner to
+leave deletes the file. Anything unreadable fails the pass closed with the reason
+on the receipt. Limits, stated: the ownership scan parses every consumer's
+fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
+live corpus -- JSON parsing, linear in corpus size, no global map by design); a
+worker killed between rename and fragment publication still leaves the pre-existing
+`#620`/reconcile window, unchanged.
+
 **The window, the sweep, and the egress order.** Promotion scheduling is
 the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
