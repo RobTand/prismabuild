@@ -1289,8 +1289,9 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
        against a live stat of its staged path -- the same comparison the
        strict reader will make.  A donor whose sidecar names a superseded
        incarnation (or bytes that are gone) publishes nothing: no successor,
-       no material, no transfer (#755).  Legacy ranges without a sidecar
-       adopt without one, exactly as before.
+       no material, no transfer (#755).  A donor with no sidecar, or one
+       dating only some of the files its fragment names, is declined for the
+       same reason: what it would hand on is a range the reader cannot prove.
     2. **The successor vouches for the same files under its own name.**  Two
        fragments then name one range, which every reader already tolerates:
        ``compose`` is per consumer, and the reconciliation unions them.
@@ -1345,12 +1346,34 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             return {**outcome, "reason": "range_not_named", "error": repr(exc)}
         # Same bytes, same generation: the successor dates its vouching with
         # the publish it took over, never a new one (a new generation is for
-        # new bytes).  Legacy ranges without a sidecar adopt without one.
+        # new bytes).
         old_material = reader_lease.read_material(
             residency_root, old_consumer, old_key)
         if isinstance(old_material, Exception):
             return {**outcome, "reason": "range_not_named",
                     "error": repr(old_material)}
+        # The dated material is the only proof that survives into the
+        # successor, so a donor that cannot supply it is declined rather than
+        # adopted: the reader takes material as proof, and a successor vouched
+        # by a fragment alone is a range it refuses.  The next candidate for
+        # the descriptor is tried; if none qualifies, the copy runs.
+        named = source.get("entries")
+        if not isinstance(old_material, dict):
+            return {**outcome, "reason": "donor_undated"}
+        dated = old_material.get("entries")
+        if (not isinstance(dated, dict) or not isinstance(named, dict)
+                or not named or not set(named) <= set(dated)):
+            # Entries the sidecar does not date are unproven, and the reader
+            # needs every one of them.
+            return {**outcome, "reason": "donor_material_partial"}
+        # Covering the same keys is not describing the same object: a
+        # sidecar can pass live ``file_id`` validation against a different
+        # valid file.  ``reader_lease.covers_for_keys`` requires tier,
+        # manifest and epoch of the material itself to match before it will
+        # take a cover, and adoption qualifies its donor the same way.
+        if any(str(old_material.get(field) or "") != str(source.get(field) or "")
+               for field in ("tier_id", "manifest_sha256", "epoch")):
+            return {**outcome, "reason": "donor_material_mismatch"}
         with queue.stage_ownership_lock(str(source["stage_root"]),
                                         blocking=False) as owned:
             if not owned:
@@ -1561,7 +1584,9 @@ def adopt_resident_ranges(
                                   None)
                         break
                     reason = str(event.get("reason") or "")
-                    if reason in ("donor_file_changed", "donor_file_missing"):
+                    if reason in ("donor_file_changed", "donor_file_missing",
+                                  "donor_undated", "donor_material_partial",
+                                  "donor_material_mismatch"):
                         # The donor's dated material no longer describes the
                         # incarnation on the stage, and it stays that way
                         # until somebody republishes: not this cycle, not a

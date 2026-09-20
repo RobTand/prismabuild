@@ -34,7 +34,9 @@ supersedes the fresh plan.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import socket
@@ -45,8 +47,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
-from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import (  # noqa: E402
+    pool, reader_lease, residency_map, residency_plan, storage_tiers,
+)
 import pbrun  # noqa: E402
+import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 
@@ -131,6 +136,20 @@ def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object
     return prepared
 
 
+def _submit_staged(tmp_path: Path,
+                   monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """A submission plus the cycle that publishes its lead.
+
+    The submitter publishes the consumer alone, so a test about what happens
+    to a *queued* first phase has to let the loop publish it first -- the same
+    cycle the fleet runs, not a hand-written row.
+    """
+
+    prepared = _submit(tmp_path, monkeypatch)
+    _tier_cycle(prepared["queue"], tmp_path / "stage")
+    return prepared
+
+
 def _price_receipt(queue: pool.PoolQueue, key: str, *, delivered_mb_s: int) -> None:
     """One mover receipt that prices the next window's fill demand.
 
@@ -169,10 +188,16 @@ def _published(events: list[dict[str, object]]) -> list[str]:
             if event.get("event") == "mover-published"]
 
 
-def test_the_submission_publishes_the_consumer_and_only_its_first_mover(
+def test_the_submission_publishes_the_consumer_and_no_mover_at_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
 ) -> None:
-    """The consumer waits on phase 0's mover, and nothing else is in ``ready``."""
+    """The consumer waits on phase 0's mover, and publishes no mover itself.
+
+    The lead used to be published here, and that single row was what blinded
+    the coordinator: adoption must skip a leg whose row already exists, so the
+    lead alone could never be taken over from a range already on the tier
+    (#598 review).  One publisher now, and it is the loop.
+    """
 
     submitted = _submit(tmp_path, monkeypatch)
     queue = submitted["queue"]
@@ -196,11 +221,12 @@ def test_the_submission_publishes_the_consumer_and_only_its_first_mover(
         submitted["manifest_raw"]).hexdigest()
     assert block["manifest_bytes"] == len(submitted["manifest_raw"])
 
-    assert pool._read_json(queue.item_path(pool.READY, lead)) is not None
+    assert not queue.item_path(pool.READY, lead).exists(), (
+        "the lead is the loop's to adopt or publish, like every other phase")
     assert not queue.item_path(pool.READY, second).exists(), (
         "the second phase publishes as accepted progress advances, not here")
     assert {path.stem for path in queue.dir(pool.READY).glob("*.json")} == {
-        consumer_key, lead}
+        consumer_key}, "the submission publishes the consumer and nothing else"
 
 
 def test_the_frozen_plan_rows_are_the_ones_sealed(
@@ -208,7 +234,7 @@ def test_the_frozen_plan_rows_are_the_ones_sealed(
 ) -> None:
     """Every sealed body reached the CAS, and the published rows match the plan."""
 
-    submitted = _submit(tmp_path, monkeypatch)
+    submitted = _submit_staged(tmp_path, monkeypatch)
     queue = submitted["queue"]
     consumer_key = _detach_key(capsys)
 
@@ -267,6 +293,9 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     _price_receipt(queue, STALE_RECEIPT, delivered_mb_s=259)
     assert pbrun.main() == 0
     consumer_key = _detach_key(capsys)
+    # The lead is the loop's to publish now, and this test
+    # withdraws it: let the cycle that owns it queue it first.
+    _tier_cycle(queue, tmp_path / "stage")
 
     stale = residency_plan.read(queue, consumer_key)
     assert stale is not None
@@ -281,6 +310,11 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     queue.withdraw(stale_lead, reason="stale price", by="operator")
     assert residency_plan.read(queue, consumer_key) is not None
     assert residency_plan.superseded(queue, stale) is not None
+
+    # "Withdraw the consumer and let the tiers loop reap the old window, then
+    # resubmit" -- the refusal's own instruction.  The loop publishes this
+    # window now, so it is also the thing that takes it back.
+    _tier_cycle(queue, tmp_path / "stage")
 
     # The tier announces what the pool currently offers.
     _announce_tier(queue, fill=65, mountpoint=tmp_path / "stage")
@@ -304,7 +338,9 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     assert archived
 
     # Key, sealed body and argv agree about the price the row was published
-    # with -- the property #710 refused to break by rewriting in place.
+    # with -- the property #710 refused to break by rewriting in place.  The
+    # loop publishes the row now, so the cycle comes before it is read.
+    _tier_cycle(queue, tmp_path / "stage")
     ledger_row = pool._read_json(
         queue.item_path(pool.READY, str(mover["action_key"])))
     assert ledger_row is not None
@@ -324,7 +360,7 @@ def test_a_resubmission_refuses_while_the_old_windows_work_is_claimed(
 ) -> None:
     """A live claim is never replaced: refuse, and leave the old plan filed."""
 
-    submitted = _submit(tmp_path, monkeypatch)
+    submitted = _submit_staged(tmp_path, monkeypatch)
     queue = submitted["queue"]
     consumer_key = _detach_key(capsys)
     stale = residency_plan.read(queue, consumer_key)
@@ -378,7 +414,7 @@ def test_an_admission_preemption_keeps_the_frozen_plan_binding(
 ) -> None:
     """Admission's own cancellation requeues its holder; the plan is not dead."""
 
-    submitted = _submit(tmp_path, monkeypatch)
+    submitted = _submit_staged(tmp_path, monkeypatch)
     queue = submitted["queue"]
     consumer_key = _detach_key(capsys)
     stale = residency_plan.read(queue, consumer_key)
@@ -579,3 +615,271 @@ def test_a_resubmission_refuses_an_unreadable_child_cancellation(
     assert residency_plan.read(queue, consumer_key) is None, (
         "no fresh plan may be sealed over a cancellation nobody can read")
     assert not queue.item_path(pool.READY, consumer_key).exists()
+
+
+# ------------------------------------- the lead the coordinator never saw
+
+def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
+                    consumer: str, manifest_sha256: str,
+                    start: int = 0, end: int = PHASE_BYTES,
+                    files: int = 2,
+                    material: int | None = 2) -> list[Path]:
+    """Drive the tier into the state a finished mover of this range leaves.
+
+    Tokens held, files on the device, a fragment naming them, a dated sidecar
+    over those files and a receipt saying the copy completed -- what
+    ``adoptable_ranges`` indexes and what ``adopt`` validates, filed the way
+    ``stage_move`` files it.  ``consumer`` is a *finished* consumer: it holds
+    no queue row, which is what makes the range one a successor may take over
+    rather than one in use.
+
+    ``material`` is how many of the fragment's entries the sidecar dates: all
+    of them by default, fewer for a partial vouch, ``None`` for a legacy range
+    with no sidecar at all.
+    """
+
+    # What the loop's own cycle would have done for this tier: capacity minted
+    # so a token can be held, and the stage root registered (#628).
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    stage.mkdir(parents=True, exist_ok=True)
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+
+    entries: dict[str, object] = {}
+    written: list[Path] = []
+    for index in range(files):
+        path = stage / "donor" / f"part-{index}.bin"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 32)
+        written.append(path)
+        entries[residency_map.residency_map_key(
+            f"/mnt/shared/part-{index}", 0)] = {
+                "stage_path": str(path), "bytes": 32, "offset": 0,
+                "sha256": "a" * 64}
+    assert queue.tier_ledger(TIER).acquire(
+        mover, {"stage_gib": (end - start) // GIB})
+    residency_map.write_fragment(queue.residency_fragment_root(), {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": manifest_sha256, "entries": entries})
+    if material is not None:
+        reader_lease.write_material(
+            queue.residency_fragment_root(), consumer_action_key=consumer,
+            mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
+            manifest_sha256=manifest_sha256, generation="a" * 32,
+            entries={key: {**dict(mention),
+                           "file_id": reader_lease.stat_identity(
+                               str(mention["stage_path"]))}
+                     for key, mention in list(entries.items())[:material]})
+    queue.record_move(mover, {
+        "consumer_action_key": consumer, "tier_id": TIER,
+        "stage_root": str(stage), "manifest_sha256": manifest_sha256,
+        "range_start_bytes": start, "range_end_bytes": end,
+        "range_bytes": end - start, "bytes_staged": end - start,
+        "entries_declared": files, "entries_staged": files,
+        "complete": True, "seconds": 1.0, "unix": 1000.0})
+    return written
+
+
+def _digest(prepared: dict[str, object]) -> str:
+    return hashlib.sha256(prepared["manifest_raw"]).hexdigest()
+
+
+def _tier_cycle(queue: pool.PoolQueue, stage: Path) -> None:
+    """One whole tier cycle, the way the loop on the storage box runs it.
+
+    Since #598 review this is also what publishes a submission's lead, so a
+    test that needs a staged first phase runs a cycle rather than expecting
+    the submitter to have queued one.
+    """
+
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    stage.mkdir(parents=True, exist_ok=True)
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    # The loop narrates its cycle on stdout; ``_detach_key`` reads stdout for
+    # the submission's one JSON line, so the narration is kept out of it.
+    with contextlib.redirect_stdout(io.StringIO()):
+        tier_loop.cycle(queue, host="sparky", source_pool="storage_pool",
+                        receipts=tier_loop.ReceiptCache(),
+                        discover=lambda **_kwargs: {
+                            TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+                                   "tier_id": TIER, "host": "sparky",
+                                   "tier": "stage", "mountpoint": str(stage),
+                                   "capacity_bytes": 8 * GIB}})
+
+
+def test_a_cold_lead_is_published_by_the_loop_on_its_next_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """Nothing resident: the copy still happens, one cycle later.
+
+    The accepted cost of having a single publisher.  A cold submission must
+    still reach a staged lead by itself -- through the loop that already
+    publishes every other phase -- or moving the publication would strand it.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    (tmp_path / "stage").mkdir(exist_ok=True)
+    stage_release.register_stage_root(
+        queue, tier_id=TIER, stage_root=tmp_path / "stage")
+
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    plan = residency_plan.read(queue, consumer_key)
+    assert plan is not None
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+    assert not queue.item_path(pool.READY, lead).exists(), "precondition"
+
+    _tier_cycle(queue, tmp_path / "stage")
+
+    assert queue.item_path(pool.READY, lead).exists(), (
+        "a cold lead nobody can adopt must be published by the loop")
+
+
+def test_a_warm_lead_is_adopted_by_the_loop_and_never_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """The win: an identical range already on the tier is taken over.
+
+    The case the fleet hit -- a finished mover's range, complete, unreserved
+    and descriptor-identical, sitting on the stage while a successor copied
+    the same bytes again.  No copy is queued, no byte moves, and the lead
+    holds the range under its own name.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    donor = "d" * 64
+    _resident_donor(queue, stage=tmp_path / "stage", mover=donor,
+                    consumer="f" * 64, manifest_sha256=_digest(prepared))
+
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    plan = residency_plan.read(queue, consumer_key)
+    assert plan is not None
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+
+    _tier_cycle(queue, tmp_path / "stage")
+
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.holder_tokens(lead) == {"stage_gib": PHASE_BYTES // GIB}
+    assert ledger.holder_tokens(donor) == {}, (
+        "the donor still holds tokens for bytes the lead now owns")
+    receipt = queue.move_record(lead)
+    assert isinstance(receipt, dict)
+    assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == donor
+    assert receipt["bytes_copied"] == 0, "adoption copies no byte"
+    assert not queue.item_path(pool.READY, lead).exists(), (
+        "an adopted range was queued for copying as well")
+    assert not queue.item_path(pool.CLAIMED, lead).exists()
+
+
+def test_an_eager_worker_finds_no_lead_to_claim_before_the_loop_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """A worker that claims the instant the submission returns copies nothing.
+
+    The window the old ordering left open: the lead was in ``ready`` before
+    any cycle could look, so an eager worker could claim and start copying a
+    range that was already on the tier.  With nothing published there is
+    nothing to claim, and the range is adopted instead.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    donor = "d" * 64
+    _resident_donor(queue, stage=tmp_path / "stage", mover=donor,
+                    consumer="f" * 64, manifest_sha256=_digest(prepared))
+
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    plan = residency_plan.read(queue, consumer_key)
+    assert plan is not None
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+
+    # The eager worker, before any tier cycle: nothing of this plan is
+    # claimable, so no copy of a resident range can start.
+    claimable = {path.stem for path in queue.dir(pool.READY).glob("*.json")}
+    assert lead not in claimable
+    assert claimable == {consumer_key}
+
+    _tier_cycle(queue, tmp_path / "stage")
+    assert queue.move_record(lead)[pool.MOVE_ADOPTED_FROM_FIELD] == donor
+
+
+@pytest.mark.parametrize("material, shape", [
+    (None, "a legacy range with no sidecar at all"),
+    (1, "a sidecar that dates only some of the range's files"),
+])
+def test_a_donor_the_reader_could_not_use_is_declined_and_the_copy_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+    material: int | None, shape: str,
+) -> None:
+    """Undated and partial donors are refused by adoption itself.
+
+    ``adopt`` used to validate a donor's dated material only when there was
+    any, and to carry it forward on the same condition -- so a donor with no
+    sidecar adopted unvalidated and vouched its successor with a fragment
+    alone: a range the strict reader cannot prove.  Handing a consumer that is
+    worse than copying the bytes again, so it is declined, and the ordinary
+    copy is published instead.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    donor = "d" * 64
+    _resident_donor(queue, stage=tmp_path / "stage", mover=donor,
+                    consumer="f" * 64, manifest_sha256=_digest(prepared),
+                    material=material)
+
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    plan = residency_plan.read(queue, consumer_key)
+    assert plan is not None
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+
+    _tier_cycle(queue, tmp_path / "stage")
+
+    assert queue.move_record(lead) is None, (
+        f"{shape} was adopted: the reader could not prove that range")
+    assert queue.item_path(pool.READY, lead).exists(), (
+        f"{shape} must fall back to the ordinary copy, not strand the lead")
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_BYTES // GIB}, "a declined donor lost its tokens"
+
+
+def test_a_valid_donor_is_still_taken_when_an_unusable_one_sorts_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """Declining one candidate must not cost the range a usable one.
+
+    Candidates are tried in sorted key order, so an undated donor can be
+    reached first.  Refusing it has to fall through to the next candidate for
+    the same descriptor rather than end the attempt -- otherwise a single
+    legacy range on the tier would suppress every adoption behind it.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    unusable, usable = "1" * 64, "2" * 64      # "1" sorts before "2"
+    _resident_donor(queue, stage=tmp_path / "stage", mover=unusable,
+                    consumer="e" * 64, manifest_sha256=_digest(prepared),
+                    material=None)
+    _resident_donor(queue, stage=tmp_path / "stage", mover=usable,
+                    consumer="f" * 64, manifest_sha256=_digest(prepared))
+
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+    plan = residency_plan.read(queue, consumer_key)
+    assert plan is not None
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+
+    _tier_cycle(queue, tmp_path / "stage")
+
+    receipt = queue.move_record(lead)
+    assert isinstance(receipt, dict), (
+        "the undated donor suppressed the usable one behind it")
+    assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == usable
+    assert not queue.item_path(pool.READY, lead).exists()

@@ -4145,9 +4145,18 @@ establish neither deployed support nor whole-fleet conformance.
 
 A campaign stage reads several times the size of the stage, so "admitted when
 every lead is executed" cannot hold for the whole read set. The consumer depends
-on its **first phase only**; the `tiers` loop publishes later phases as the
-consumer's accepted progress advances and egress rows for the phases it has read
-past. Staging for phase k+N overlaps compute on phase k, and the stage never
+on its **first phase only**; the `tiers` loop publishes every phase -- the first
+included -- as the consumer's accepted progress advances, and egress rows for the
+phases it has read past.
+
+The submitter publishes the consumer row and no mover. It used to publish the
+first phase itself, and that one row was enough to hide a range the fleet already
+had: the loop adopts before it publishes, but its adoption pass must skip any leg
+whose row already exists, because a `ready` or `claimed` key may be a copy in
+flight. The first phase was therefore the only one that could never be taken
+over. With a single publisher there is also no interleaving between two of them
+to arbitrate. The cost is that a cold first phase waits for the next cycle rather
+than being queued at submission. Staging for phase k+N overlaps compute on phase k, and the stage never
 overfills.
 
 Membership is frozen before anything is published and publication is what is

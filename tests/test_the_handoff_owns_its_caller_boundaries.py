@@ -314,7 +314,9 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     withdrawal = queue.withdraw(key, reason="stale price", by="operator")
     assert withdrawal["residency_plan_superseded"] is True
     assert residency_plan.superseded(queue, plan) is not None
-    queue.item_path(pool.READY, lead).unlink()
+    # The submitter publishes no mover, so the lead row this stands in for
+    # concluding may simply not exist yet.
+    queue.item_path(pool.READY, lead).unlink(missing_ok=True)
 
     entered = threading.Event()
     attempted = threading.Event()
@@ -350,7 +352,8 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     assert residency_plan.read(queue, key) is not None, (
         "the freshly frozen plan was archived before its consumer row existed")
     assert queue.item_path(pool.READY, key).exists()
-    assert queue.item_path(pool.READY, lead).exists()
+    assert not queue.item_path(pool.READY, lead).exists(), (
+        "the submitter publishes no mover; the lead is the loop's to publish")
 
 
 def test_the_window_does_not_publish_a_child_after_the_parent_was_withdrawn(
