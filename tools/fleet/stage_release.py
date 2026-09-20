@@ -350,16 +350,19 @@ def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[
     return layout
 
 
-def _is_produced_owner_hold(item: Mapping) -> bool:
+def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
     """Whether a tier-demand claim is a verified producer reservation.
 
-    A produced-output producer holds its declared working-window tier
-    demand while live: the queue item carries the validated `produced_output`
-    ref (schema + template id + digest) projected by `PoolQueue.publish`
-    from the sealed template, and its sealed command is ordinary work,
-    never a movement range. Such a hold stages nothing itself, so the
-    claimed-copy attribution skips it; without the ref (or with a
-    malformed one) the row stays unknown and taints as before.
+    Shape alone is not verification: the mutable queue projection could
+    name any template id and digest. The sealed request carries the
+    authoritative declaration (`params.produced_output_template`,
+    validated here through the existing core seam against the request's
+    own inputs), and it must equal the item's projected ref exactly --
+    same template id and digest. A substituted claim ref, or a request
+    whose declaration disagrees or is absent, is not a verified hold
+    and stays on the taint path. Callers additionally require the
+    sealed command to carry no movement range flags (mover/non-mover
+    classification unchanged); no separate receipt protocol exists.
     """
 
     ref = item.get("produced_output")
@@ -371,12 +374,21 @@ def _is_produced_owner_hold(item: Mapping) -> bool:
         return False
     if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
         return False
-    template_id = ref.get("template_id")
-    digest = ref.get("template_sha256")
-    return (isinstance(template_id, str) and bool(template_id)
-            and "/" not in template_id
-            and isinstance(digest, str) and len(digest) == 64
-            and all(c in "0123456789abcdef" for c in digest))
+    params = request.get("params")
+    if not isinstance(params, Mapping):
+        return False
+    declaration = params.get(pb.PRODUCED_OUTPUT_TEMPLATE_PARAM)
+    if not isinstance(declaration, Mapping):
+        return False
+    inputs = request.get("inputs")
+    if not isinstance(inputs, list):
+        return False
+    try:
+        checked = pb.validate_produced_output_declaration(declaration, inputs)
+    except (pb.ActionContractError, ValueError, TypeError):
+        return False
+    return (checked.get("template_id") == ref.get("template_id")
+            and checked.get("template_sha256") == ref.get("template_sha256"))
 
 
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
@@ -464,13 +476,13 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
             continue
         if "--range-start-bytes" not in command:
             # A verified produced-output producer reservation, not a copy:
-            # it holds the declared working-window tier demand under the
-            # pool's admission (item `produced_output` ref) while its own
-            # command seals no movement range. Skipped exactly here --
-            # unknown rows (no ref, malformed ref, or a range that cannot
-            # be determined) still taint below, and an active copy's
-            # protection is untouched.
-            if _is_produced_owner_hold(item):
+            # the item's projected ref must equal the sealed request's
+            # own validated declaration (template id + digest bound to
+            # its inputs). A substituted ref, or a request whose
+            # declaration disagrees or is absent, stays unknown and
+            # taints below. Unknown rows are never skipped, and an
+            # active copy's protection is untouched.
+            if _produced_hold_verified(item, request):
                 continue
             tainted.append(f"{key[:12]}: mover seals no range")
             continue

@@ -1600,6 +1600,14 @@ def build_stage_manifest(batch: Mapping[str, object],
     }
 
 
+def _strict_int(value: object, *, where: str) -> int:
+    # Exact JSON integers only: bools, strings, floats, and objects are
+    # corrupt counts, never zero. `int()` would coerce them all.
+    if type(value) is not int:
+        raise ProducedOutputError(f"{where} must be an integer")
+    return int(value)
+
+
 def _load_batch_record(queue_root: str | Path,
                        checked_instance: Mapping[str, object],
                        checked_template: Mapping[str, object],
@@ -1608,14 +1616,16 @@ def _load_batch_record(queue_root: str | Path,
     """Load and fully validate one immutable batch record.
 
     The single loader for retire/reclaim (and any future reader): bounded
-    intake, exact schema/id/instance binding, non-empty entries whose
-    per-class sizes and total match the record, and -- strongest --
-    every entry re-validated as a descriptor against the bound template
-    and instance with the canonical manifest digest recomputed over them
-    matching the seal. A missing, unreadable, or damaged record (entries
-    removed, replaced, or unbound) raises `ProducedOutputError`: unknown
-    or tampered state retains quota and refuses retirement, never
-    filters away to a vacuous proof.
+    intake, exact schema/id/instance binding, strict integer shapes (bools
+    are not counts), a non-empty entry list whose per-class sizes and
+    total match the record, and -- strongest -- every entry re-validated
+    as a descriptor against the bound template and instance (mapping
+    shape enforced by the descriptor validator itself, never `dict()`
+    coercion) with the canonical manifest digest recomputed over them
+    matching the seal. A missing, unreadable, or damaged record
+    (entries removed, replaced, unbound, or non-mapping) raises
+    `ProducedOutputError`: unknown or tampered state retains quota and
+    refuses retirement, never filters away to a vacuous proof.
     """
 
     attempt = checked_instance["owner_attempt"]
@@ -1642,6 +1652,10 @@ def _load_batch_record(queue_root: str | Path,
         raise ProducedOutputError("unknown-retain: batch-record-missing")
     if filed.get("schema") != BATCH_SCHEMA_V1:
         raise ProducedOutputError("unknown-retain: batch-record-schema")
+    filed_attempt = filed.get("owner_attempt")
+    if (not isinstance(filed_attempt, Mapping)
+            or set(filed_attempt) != {"nonce", "scope_id"}):
+        raise ProducedOutputError("unknown-retain: batch-record-attempt")
     if (str(filed.get("batch_id") or "") != batch_id
             or str(filed.get("template_id") or "")
             != str(checked_template["template_id"])
@@ -1649,7 +1663,9 @@ def _load_batch_record(queue_root: str | Path,
             != str(checked_instance["template_sha256"])
             or str(filed.get("owner_action_key") or "")
             != str(checked_instance["owner_action_key"])
-            or dict(filed.get("owner_attempt") or {}) != dict(attempt)
+            or str(filed_attempt.get("nonce") or "") != str(attempt["nonce"])
+            or str(filed_attempt.get("scope_id") or "")
+            != str(attempt["scope_id"])
             or str(filed.get("manifest_digest") or "")
             != str(commitments_entry.get("manifest_digest") or "")):
         raise ProducedOutputError(
@@ -1657,19 +1673,25 @@ def _load_batch_record(queue_root: str | Path,
     entries = filed.get("entries")
     if not isinstance(entries, list) or not entries:
         raise ProducedOutputError("unknown-retain: batch-record-no-entries")
-    sealed = [validate_descriptor(dict(entry), checked_template,
+    sealed = [validate_descriptor(entry, checked_template,
                                   checked_instance)
               for entry in entries]
-    if int(filed.get("entry_count", -1)) != len(sealed):
+    if _strict_int(filed.get("entry_count"),
+                   where="batch record entry_count") != len(sealed):
         raise ProducedOutputError("unknown-retain: batch-record-count")
     classes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         classes[str(desc["artifact_class"])] += int(desc["bytes"])
+    stored_classes = commitments_entry.get("class_bytes")
+    if not isinstance(stored_classes, Mapping):
+        raise ProducedOutputError("unknown-retain: batch-record-classes")
     for cls in classes:
-        if int(classes[cls]) != int(
-                dict(commitments_entry.get("class_bytes", {})).get(cls, -1)):
+        if int(classes[cls]) != _strict_int(
+                stored_classes.get(cls),
+                where=f"committed batch {batch_id!r}.{cls}"):
             raise ProducedOutputError("unknown-retain: batch-record-classes")
-    if sum(classes.values()) != int(filed.get("total_bytes", -1)):
+    if sum(classes.values()) != _strict_int(
+            filed.get("total_bytes"), where="batch record total_bytes"):
         raise ProducedOutputError("unknown-retain: batch-record-total")
     if output_manifest_sha256(sealed) != str(filed.get("manifest_digest")):
         raise ProducedOutputError("unknown-retain: batch-record-manifest")
@@ -1731,14 +1753,18 @@ def retire_batch(queue, instance: Mapping[str, object],
                  ) -> dict[str, object]:
     """Evict one batch's staged files, then retire its stage window.
 
-    Retirement is tied to the actual egress: the batch record is loaded
-    from commitments (exact batch/manifest/attempt, never a caller
-    dict), the staged paths are captured from the live fragments before
-    the delete, and `retired` is filed under the output-prefix ownership
-    lock only for a complete error-free receipt naming this mover and
-    namespace. Durable-origin quota is NOT freed here -- origin files
-    still exist; see `reclaim_origin`. Charge (durable) and window
-    (tier) accounting stay distinct at every step.
+    Provenance is validated BEFORE anything destructive: the immutable
+    batch record loads through the single loader (schema/binding/
+    entries/manifest), the mutable commitments entry must agree with it
+    on mover, tier, and the canonically derived namespace, and the
+    egress target (mover/namespace) comes from that validated result --
+    never from unchecked entry fields. Then the staged paths are
+    captured from the live fragments before the delete, and `retired`
+    is filed under the output-prefix ownership lock only for a complete
+    error-free receipt naming this mover and namespace. Durable-origin
+    quota is NOT freed here -- origin files still exist; see
+    `reclaim_origin`. Charge (durable) and window (tier) accounting
+    stay distinct at every step.
     """
 
     import stage_release
@@ -1764,10 +1790,35 @@ def retire_batch(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": "unknown-batch"}
         if entry.get("retired"):
             return {"ok": True, "batch_id": batch_id, "duplicate": True}
-        consumer = str(entry.get("batch_namespace") or "")
-        mover = str(entry.get("mover_key") or "")
-        if len(consumer) != 64 or len(mover) != 64:
-            return {"ok": False, "refusal": "bad-batch-namespace"}
+        # Provenance BEFORE any destructive call: the immutable record
+        # validates (schema/binding/entries/manifest), and the mutable
+        # commitments entry must agree with it on mover, tier, and the
+        # canonically derived namespace. A changed mover/tier in
+        # commitments never selects the egress target. Bad or foreign
+        # metadata refuses before fragments are read, files deleted, or
+        # tier ownership released.
+        try:
+            filed, _sealed = _load_batch_record(
+                queue.root, checked_instance, checked_template,
+                entry, batch_id)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        mover = str(filed.get("mover_key") or "")
+        tier = str(filed.get("tier") or "")
+        try:
+            canonical_ns = batch_namespace(
+                checked_instance, batch_id,
+                str(filed.get("manifest_digest") or ""))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        if (len(mover) != 64
+                or str(entry.get("mover_key") or "") != mover
+                or str(entry.get("tier") or "") != tier
+                or tier not in checked_template["permitted_tiers"]
+                or str(entry.get("batch_namespace") or "") != canonical_ns
+                or str(filed.get("batch_namespace") or "") != canonical_ns):
+            return {"ok": False, "refusal": "unknown-retain: batch-target-mismatch"}
+        consumer = canonical_ns
         # Capture the staged paths the egress is about to vouch while the
         # fragments still exist; after the delete only this record names
         # them for later live-path attribution. A fragment read that
@@ -2234,11 +2285,27 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         holders: set[str] = set()
         for batch_id, entry in batches.items():
             assert isinstance(entry, Mapping)
-            ns = str(entry.get("batch_namespace") or "")
-            if ns:
-                holders.add(ns)
-            mover = str(entry.get("mover_key") or "")
-            if mover:
+            # Holder identity comes from the validated immutable record
+            # plus the canonically derived namespace -- never from mutable
+            # commitments fields alone. A changed mover/namespace in
+            # commitments releases nothing here.
+            try:
+                filed, _sealed = _load_batch_record(
+                    queue.root, checked, checked_template, entry, batch_id)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": str(exc)}
+            try:
+                canonical_ns = batch_namespace(
+                    checked, batch_id, str(filed.get("manifest_digest") or ""))
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            if (str(entry.get("batch_namespace") or "") != canonical_ns
+                    or str(filed.get("batch_namespace") or "") != canonical_ns):
+                return {"ok": False,
+                        "refusal": "unknown-retain: batch-target-mismatch"}
+            holders.add(canonical_ns)
+            mover = str(filed.get("mover_key") or "")
+            if len(mover) == 64:
                 holders.add(mover)
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
