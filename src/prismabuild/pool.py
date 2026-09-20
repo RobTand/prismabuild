@@ -5087,6 +5087,10 @@ class PoolQueue:
             shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
             **({"gpu_memory_max_bytes": control["gpu_memory_max_bytes"]}
                if control.get("gpu_memory_max_bytes") is not None else {}),
+            # The validated control value, not the module default: identical
+            # in production (the check above enforces it) and the only way
+            # a recovered scope reaches its own broker anywhere else.
+            socket_path=Path(control["socket_path"]),
         )
         scope.unit, scope.token = unit, control["token"]
         scope.cgroup_path = Path(control["cgroup_path"])
@@ -5270,22 +5274,28 @@ class PoolQueue:
     @_serialized_key
     def _persist_reader_scope_proof(self, record: Mapping[str, object],
                                       nonce: str, scope_id: str,
-                                      released: object) -> bool:
-        """File the broker's stopped-and-empty verdict for reader containment.
+                                      export: object) -> bool:
+        """File the broker's export verdict for reader containment.
 
-        Called with the broker release verdict in hand (pool resource-scope
-        cleanup owns this hunk, not the membership retry branch).
-        ``scope_empty`` is True ONLY for a complete authoritative proof:
-        stopped evidence present, plus released-without-tombstone or
-        retired-with-settlement.  A retired tombstone without settlement,
-        an absence/reboot reduced response, or anything unparseable files
-        ``scope_empty False`` (retain) or nothing at all.  Never
-        manufactures true from a helper's return alone.  Host is the
-        PB-qualified claim holder (fleet alias, never the local
-        hostname); worker and incarnation are the claim's full
-        ``claimed_by`` holder identity (repository convention), matching
-        what SDK refs record.  Best-effort: returns whether a proof file
-        was filed; the caller never fails a cleanup over it.
+        Called with the token-gated ``export_stopped`` verdict in hand
+        (pool resource-scope cleanup owns this hunk, not the membership
+        retry branch) -- never the release reply, which carries no proof
+        on first success.  ``scope_empty`` is True ONLY for a complete
+        authoritative proof under
+        :func:`reader_lease.export_verdict_proves_empty`: the verdict's
+        own scope id names this scope, stopped time is positive finite,
+        empty is exactly True, tickets_pending is exactly False (missing
+        is unknown, never proof of none), and release/retirement are
+        exact booleans proving a clean release or a settled retirement.
+        Anything else files False (retain) or nothing at all, storing
+        the verdict's raw fields so readers re-validate rather than
+        trusting the flag.  Never manufactures true from a helper's
+        return alone.  Host is the PB-qualified claim holder (fleet
+        alias, never the local hostname); worker and incarnation are the
+        claim's full ``claimed_by`` holder identity (repository
+        convention), matching what SDK refs record.  Best-effort:
+        returns whether a proof file was filed; the caller never fails a
+        cleanup over it.
         """
 
         from prismabuild import reader_lease
@@ -5293,16 +5303,9 @@ class PoolQueue:
         action_key = str(record.get("action_key") or "")
         if len(action_key) != 64 or not nonce or not scope_id:
             return False
-        verdict = released if isinstance(released, Mapping) else {}
-        stopped = verdict.get("stopped_unix")
-        retired = bool(verdict.get("retired"))
-        settled = bool(verdict.get("settled"))
-        released_ok = bool(verdict.get("released"))
-        # Complete proof: stopped evidence, and either a clean release or
-        # a settled retirement.  Tombstones without settlement, absence
-        # responses, and verdicts without stopped evidence stay unproven.
-        proven = (bool(stopped) and (
-            (released_ok and not retired) or (retired and settled)))
+        verdict = export if isinstance(export, Mapping) else {}
+        proven, _reason = reader_lease.export_verdict_proves_empty(
+            verdict, scope_id=scope_id)
         try:
             host = self.resolve_claim_holder(action_key, record)
         except (AttributeError, OSError, ValueError):
@@ -5317,10 +5320,12 @@ class PoolQueue:
             "worker": worker if isinstance(worker, str) else "",
             "incarnation": worker if isinstance(worker, str) else "",
             "scope_empty": bool(proven),
-            "released": released_ok,
-            "retired": retired,
-            "settled": settled,
-            "stopped_unix": stopped,
+            "released": verdict.get("released"),
+            "retired": verdict.get("retired"),
+            "settled": verdict.get("settled"),
+            "empty": verdict.get("empty"),
+            "tickets_pending": verdict.get("tickets_pending"),
+            "stopped_unix": verdict.get("stopped_unix"),
             "termination_evidence": (
                 dict(verdict["termination_evidence"])
                 if isinstance(verdict.get("termination_evidence"), Mapping)
@@ -5342,14 +5347,31 @@ class PoolQueue:
 
     def _recover_reader_scope_proof(self, record: Mapping[str, object],
                                       prior: Mapping[str, object]) -> None:
-        """Republish a missing proof from the prior's broker verdict.
+        """Republish proof from broker export evidence for the exact attempt.
 
         The ``prior.complete`` shortcut returns without touching the
-        broker, so a proof lost to a shared-mount blip would stay lost
-        forever.  Recovery replays publication from the prior cleanup's
-        stored release verdict for this exact attempt -- authoritative
-        broker evidence, no tokens anywhere.  An already-filed valid
-        proof is left alone; best-effort throughout.
+        broker, so a proof lost to a shared-mount blip while the CLAIMED
+        row still stands would stay lost until the row goes away.
+        Recovery republishes in two tiers, preferring no broker contact:
+
+        1. A validated-complete stored export -- the prior cleanup
+           persisted the token-gated verdict beside the release reply --
+           republishes with no broker RPC at all.  The repeat cleanup
+           stays effect-idempotent: no re-stop, no re-release, no new
+           nonce.
+        2. Otherwise a fresh token-gated export through the scope
+           reconstructed from this claim row (same as any cleanup),
+           covering a settlement that completed after the prior ran.
+
+        Never a replay of a possibly stale prior beyond its validated
+        export, and never anything involving capability tokens outside
+        the broker RPC itself.  An already-filed validated-complete
+        proof (exact attempt, exact export booleans, positive finite
+        stop -- not any dict reading ``scope_empty`` True) is left
+        alone; best-effort throughout: export failure retains silently.
+        Once ``finish`` files the terminal, this path has no row left
+        to run from, and the egress tick's terminal-export replay owns
+        recovery instead.
         """
 
         from prismabuild import reader_lease
@@ -5362,15 +5384,39 @@ class PoolQueue:
         if len(action_key) != 64 or not nonce or not unit:
             return
         try:
-            existing = reader_lease.read_scope_attestation(
-                self, action_key, nonce)
+            ok, _proof = reader_lease.attestation_proves_empty(
+                self, action_key, nonce, str(unit))
         except Exception:                                        # noqa: BLE001
-            existing = None
-        if isinstance(existing, Mapping):
+            ok = False
+        if ok:
+            return
+        stored = prior.get("export")
+        if isinstance(stored, Mapping):
+            try:
+                valid, _reason = reader_lease.export_verdict_proves_empty(
+                    stored, scope_id=str(unit))
+            except Exception:                                    # noqa: BLE001
+                valid = False
+            if valid:
+                try:
+                    self._persist_reader_scope_proof(
+                        record, nonce, str(unit), stored)
+                except Exception:                                # noqa: BLE001
+                    pass
+                return
+        try:
+            scope = self._scope_from_record(record)
+        except Exception:                                        # noqa: BLE001
+            return
+        if scope.nonce != nonce:
+            return
+        try:
+            export = scope.export_stopped_verdict()
+        except Exception:                                        # noqa: BLE001
             return
         try:
             self._persist_reader_scope_proof(
-                record, nonce, str(unit), prior.get("released"))
+                record, nonce, str(unit), export)
         except Exception:                                        # noqa: BLE001
             pass
 
@@ -5473,16 +5519,20 @@ class PoolQueue:
                 except Exception as exc:                             # noqa: BLE001
                     settle_error = f"{type(exc).__name__}: {exc}"
             released = scope.release()
-            # The broker just proved this scope stopped and empty (its
-            # release refuses otherwise): persist that verdict as the
-            # reader-containment attestation for this attempt, so a staged
-            # range its readers pinned can be reclaimed automatically once
-            # the terminal record lands.  Best-effort and contained: proof
-            # persistence must never fail a cleanup that already proved
-            # emptiness -- a missing file retains, exactly as before.
+            # The release reply is NOT the proof (the first successful
+            # release carries no released flag, and ticket retirement
+            # carries no stopped/settled fields): read the token-gated
+            # export verdict through the same scope and persist THAT.
+            # Best-effort and contained: proof persistence must never fail
+            # a cleanup that already proved emptiness -- a missing file
+            # retains, exactly as before.
+            try:
+                export = scope.export_stopped_verdict()
+            except Exception:
+                export = None
             try:
                 self._persist_reader_scope_proof(
-                    record, scope.nonce, scope.unit, released)
+                    record, scope.nonce, scope.unit, export)
             except Exception as exc:                             # noqa: BLE001
                 telemetry = dict(telemetry) if isinstance(telemetry, Mapping) else {}
                 telemetry.setdefault(
@@ -5494,7 +5544,8 @@ class PoolQueue:
                 # copy stays as the attempt's last observation.
                 scope.authority_path.unlink(missing_ok=True)
             cleanup = {"complete": True, "released": released, "telemetry": telemetry,
-                       "checked_unix": _now(), "nonce": scope.nonce}
+                       "checked_unix": _now(), "nonce": scope.nonce,
+                       "export": export}
             if settle_error is not None:
                 cleanup["settle_error"] = settle_error
             key = str(record["action_key"])

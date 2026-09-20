@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import threading
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -438,12 +440,13 @@ def test_malformed_retiring_fails_closed_then_recovers(fleet) -> None:
 
 def _attest(queue, nonce="n1", scope_empty=True, host="test-host",
             worker="w1"):
-    """Fabricate the membership lane's broker attestation (their writer).
+    """Helper: fabricate a complete typed broker attestation (test input).
 
-    The file is the membership worker's input to file from a token-gated
-    broker status verdict; tests fabricate it the way they fabricate
-    terminal records.  Verification additionally requires terminal broker
-    telemetry, so this file alone proves nothing.
+    Helper only: the file is the pool writer's input shape, fabricated
+    the way terminal records are fabricated.  Carries the full typed
+    export booleans (empty True, tickets_pending False) a real writer
+    files; verification additionally requires terminal broker telemetry,
+    so this file alone proves nothing.
     """
 
     path = reader_lease.attestation_path(queue, CONSUMER, nonce)
@@ -453,7 +456,8 @@ def _attest(queue, nonce="n1", scope_empty=True, host="test-host",
         "action_key": CONSUMER, "nonce": nonce, "scope_id": "s1",
         "host": host, "worker": worker, "incarnation": "i1",
         "scope_empty": scope_empty, "released": True, "retired": False,
-        "settled": False, "stopped_unix": 1789870000.0,
+        "settled": False, "empty": True, "tickets_pending": False,
+        "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
 
 def test_containment_needs_terminal_and_attestation(fleet) -> None:
@@ -1010,6 +1014,117 @@ def _broker_token_call(authority, req, record, op):
                             {**req, "op": op, "token": record["token"]})
 
 
+class _KernelBackend:
+    """Controlled kernel seam for connected tests: real Authority op
+    logic, fake cgroup path strings (no kernel touch)."""
+
+    def __init__(self):
+        self.groups = {}
+
+    def create(self, scope, budget):
+        self.groups[scope] = {"populated": False}
+        return {"cgroup_path": f"/sys/fs/cgroup/prismabuild.slice/{scope}"}
+
+    def stop(self, scope):
+        self.groups[scope]["populated"] = False
+
+    def empty(self, scope):
+        return scope not in self.groups or not self.groups[scope]["populated"]
+
+    def exists(self, scope):
+        return scope in self.groups
+
+    def release(self, scope):
+        if self.groups[scope]["populated"]:
+            raise ValueError("scope still populated")
+        self.groups.pop(scope)
+
+
+class _ConnectedBroker:
+    """A real Authority behind a real Unix socket (context manager).
+
+    Production RPC framing, production op logic, controlled kernel seam.
+    No stubbed proof booleans anywhere: every verdict below comes out of
+    ``Authority.handle``.
+    """
+
+    def __init__(self, tmp_path):
+        import resource_broker
+
+        self.module = resource_broker
+        self.backend = _KernelBackend()
+        self.authority = resource_broker.Authority(
+            tmp_path / "broker-state", os.getuid(), self.backend,
+            max_memory_bytes=1024 ** 3)
+        self.endpoint = tmp_path / "broker.sock"
+        self.server = resource_broker.Server(
+            str(self.endpoint), resource_broker.Handler)
+        self.server.authority = self.authority
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.01}, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.server.shutdown()
+        finally:
+            self.thread.join(timeout=10)
+            self.server.server_close()
+        return False
+
+
+def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
+                     source="/mnt/shared/cx.bin", name="cx.bin", size=2048):
+    """Publish, create a real scope, file the real claim, acquire a ref.
+
+    Returns ``(unit, host, worker, staged, acquired)``.  The CLAIMED row
+    carries the broker-minted control record; the host is the real local
+    hostname everywhere (claim, holder, telemetry) via real derivation,
+    never handwritten to match.
+    """
+
+    from prismabuild import resource_scope
+
+    staged = stage / "model" / name
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x67" * size)
+    _publish(root, stage, CONSUMER, MOVER, source, staged, size)
+    host = socket.gethostname()
+    worker = f"{host}:4242:9d001122"
+    scope = resource_scope.ResourceScope(
+        CONSUMER, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
+        socket_path=broker.endpoint)
+    control = scope.create()
+    assert control["scope_id"] == scope.unit
+    unit = scope.unit
+    claimed = queue.dir(pool.CLAIMED)
+    claimed.mkdir(parents=True, exist_ok=True)
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
+        "action_key": CONSUMER, "claimed_by": worker,
+        "claimed_host": host, "published_unix": 1789880000.0,
+        # A sealed demand shape without this tier: production claims
+        # always seal resources, and a consumer is not a copy (the
+        # egress taints a claim that cannot establish non-mover).
+        "resources": {"cpu": 1, "mem_gb": 1},
+        "resource_scope": control}))
+    key = residency_map.residency_map_key(source, 0)
+    acquired = reader_lease.acquire(
+        queue, consumer_action_key=CONSUMER,
+        attempt={"nonce": nonce, "scope_id": unit}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": size},
+        holder={"host": host, "worker": worker, "pid": 4242},
+        acquire_token=token,
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        expected={key: {"bytes": size, "sha256": "b" * 64}},
+        residency_root=root)
+    assert acquired["ok"], acquired
+    return unit, host, worker, staged, acquired
+
+
 def test_broker_export_verdict_needs_stop_and_token(tmp_path) -> None:
     """The export op extends broker authority: token-gated, read-only."""
 
@@ -1054,8 +1169,13 @@ def test_broker_export_reports_tickets_and_live_scope(tmp_path) -> None:
 
 def test_ordinary_completion_reclaims_after_broker_containment(fleet,
                                                               tmp_path) -> None:
-    """End to end: real broker lifecycle -> membership attestation ->
-    terminal telemetry -> exact-ref release -> egress delete."""
+    """Helper: end to end with membership-shaped inputs (fabricated file).
+
+    Helper only: the attestation file below is fabricated in the pool
+    writer's shape from a real broker verdict above (labeled as such);
+    the connected tests below drive the real writer through real
+    cleanup/finish instead.  Every proof field comes out of the real
+    broker verdict; verification additionally needs terminal telemetry."""
 
     queue, stage = fleet
     staged = stage / "model" / "j.safetensors"
@@ -1099,6 +1219,8 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
         "released": bool(verdict.get("released")),
         "retired": bool(verdict.get("retired")),
         "settled": bool(verdict.get("settled")),
+        "empty": bool(verdict.get("empty")),
+        "tickets_pending": bool(verdict.get("tickets_pending")),
         "stopped_unix": verdict.get("stopped_unix"),
         "unix": 1789880000.0}) + "\n")
 
@@ -1161,7 +1283,7 @@ def test_release_refs_keeps_worker_correspondence(fleet) -> None:
 
 
 def test_export_after_release_keeps_full_proof(tmp_path) -> None:
-    """Repeated export after release keeps retired/empty/evidence detail."""
+    """Helper: repeated export after release keeps retired/empty/evidence."""
 
     authority = _broker(tmp_path / "broker-state")
     req, record = _broker_create(authority)
@@ -1173,6 +1295,35 @@ def test_export_after_release_keeps_full_proof(tmp_path) -> None:
     assert second["released"] is True
     assert second["empty"] is True
     assert first == second
+
+
+def test_first_release_reply_carries_no_released_flag(tmp_path) -> None:
+    """Helper: the R8 protocol shape on the real Authority, both paths.
+
+    The first successful ``release`` with no container tickets returns
+    ``{ok, scope_id, **stop details}`` -- no ``released`` flag -- and a
+    ticket retirement returns only ``{ok, scope_id, retired}``.  Only
+    ``export_stopped`` carries the full proof.  Real op logic,
+    controlled kernel seam.
+    """
+
+    authority = _broker(tmp_path / "broker-state")
+    req, record = _broker_create(authority)
+    _broker_token_call(authority, req, record, "stop")
+    first = _broker_token_call(authority, req, record, "release")
+    assert first["ok"] is True
+    assert first["scope_id"] == record["scope_id"]
+    assert "released" not in first
+    assert "retired" not in first
+    assert "settled" not in first
+
+    ticketed = _broker(tmp_path / "broker-state-2")
+    treq, trecord = _broker_create(ticketed)
+    _broker_token_call(ticketed, treq, trecord, "stop")
+    ticketed.records[trecord["scope_id"]]["container_tickets"] = ["t-1"]
+    retired = _broker_token_call(ticketed, treq, trecord, "release")
+    assert retired == {"ok": True, "scope_id": trecord["scope_id"],
+                       "retired": True}
 
 
 def test_egress_auto_reclaims_contained_pins(fleet) -> None:
@@ -1573,6 +1724,8 @@ def test_owner_and_material_namespace_stay_split(fleet) -> None:
 
 def _attest_for(queue, action, nonce, scope_empty=True, host="test-host",
                 worker="w1"):
+    """Helper: fabricated complete typed attestation for another action."""
+
     path = reader_lease.attestation_path(queue, action, nonce)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
@@ -1580,7 +1733,8 @@ def _attest_for(queue, action, nonce, scope_empty=True, host="test-host",
         "action_key": action, "nonce": nonce, "scope_id": "s1",
         "host": host, "worker": worker, "incarnation": "i1",
         "scope_empty": scope_empty, "released": True, "retired": False,
-        "settled": False, "stopped_unix": 1789870000.0,
+        "settled": False, "empty": True, "tickets_pending": False,
+        "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
 
 
@@ -1679,7 +1833,7 @@ def test_cover_lookup_caches_valid_reuses_valid_only(fleet) -> None:
 
 
 def test_cleanup_persists_broker_proof_exactly(fleet) -> None:
-    """The pool cleanup hook files the broker verdict with exact IDs."""
+    """Helper: the pool cleanup hook files the broker verdict, exact IDs."""
 
     from types import SimpleNamespace
 
@@ -1687,11 +1841,12 @@ def test_cleanup_persists_broker_proof_exactly(fleet) -> None:
     record = {"action_key": CONSUMER, "claimed_by": "worker-7",
         "resources": {"cpu": 1, "mem_gb": 1},
               "claimed_host": "sparky"}
-    released = {"released": True, "retired": False,
-                "stopped_unix": 1789870000.0,
-                "termination_evidence": {"stop": "done"}}
+    export = {"scope_id": "unit-9", "released": True, "retired": False,
+              "settled": False, "empty": True, "tickets_pending": False,
+              "stopped_unix": 1789870000.0,
+              "termination_evidence": {"stop": "done"}}
     queue._persist_reader_scope_proof(
-        record, "n" * 32, "unit-9", dict(released))
+        record, "n" * 32, "unit-9", dict(export))
     attestation = reader_lease.read_scope_attestation(queue, CONSUMER,
                                                       "n" * 32)
     assert isinstance(attestation, dict)
@@ -1913,7 +2068,8 @@ def test_foreign_owner_certificate_never_releases(fleet) -> None:
     assert acquired["ok"]
     target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
               "ref_id": acquired["ref_id"]}
-    # Valid proof, but for ANOTHER action reusing the same attempt strings.
+    # Helper: valid proof, but for ANOTHER action reusing the same
+    # attempt strings.
     foreign = reader_lease.attestation_path(queue, FOREIGN, "n1")
     foreign.parent.mkdir(parents=True, exist_ok=True)
     foreign.write_text(json.dumps({
@@ -1921,7 +2077,8 @@ def test_foreign_owner_certificate_never_releases(fleet) -> None:
         "action_key": FOREIGN, "nonce": "n1", "scope_id": "s1",
         "host": "test-host", "worker": "w1", "incarnation": "w1",
         "scope_empty": True, "released": True, "retired": False,
-        "settled": False, "stopped_unix": 1789870000.0,
+        "settled": False, "empty": True, "tickets_pending": False,
+        "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
     failed = queue.dir(pool.FAILED)
     failed.mkdir(parents=True, exist_ok=True)
@@ -1959,7 +2116,8 @@ def test_tombstone_without_settlement_retains(fleet) -> None:
         "action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
         "host": "test-host", "worker": "w1", "incarnation": "w1",
         "scope_empty": True, "released": False, "retired": True,
-        "settled": False, "stopped_unix": 1789870000.0,
+        "settled": False, "empty": True, "tickets_pending": False,
+        "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
     done_dir = queue.dir(pool.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
@@ -1976,15 +2134,99 @@ def test_tombstone_without_settlement_retains(fleet) -> None:
     assert staged.exists()
 
 
+def test_missing_tickets_pending_is_unknown_never_proof(fleet) -> None:
+    """A scope_empty True file without tickets_pending retains (unknown)."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "ut.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x69" * 1024)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/ut.bin",
+             staged, 1024, "b" * 64)
+    acquired = _acquire(queue, MOVER, "unknown-tickets-token")
+    assert acquired["ok"]
+    target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
+              "ref_id": acquired["ref_id"]}
+    # Helper: scope_empty True with the ticket field absent -- unknown
+    # absence, never proof of none.
+    path = reader_lease.attestation_path(queue, CONSUMER, "n1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+        "action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+        "host": "test-host", "worker": "w1", "incarnation": "w1",
+        "scope_empty": True, "released": True, "retired": False,
+        "settled": False, "empty": True,
+        "stopped_unix": 1789870000.0,
+        "unix": 1789880000.0}) + "\n")
+    done_dir = queue.dir(pool.DONE)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "executed",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    cert = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
+            "host": "test-host"}
+    refused = reader_lease.release_refs(queue, [target], dict(cert))
+    assert refused["ok"] is False
+    assert refused["reason"] == "tickets-unknown-retain"
+    assert staged.exists()
+
+
+def test_export_verdict_validation_is_typed(fleet) -> None:
+    """Helper: the export validator refuses untyped/incomplete verdicts."""
+
+    queue, _stage = fleet
+    scope = "unit-9"
+    clean = {"scope_id": scope, "released": True, "retired": False,
+             "settled": False, "empty": True, "tickets_pending": False,
+             "stopped_unix": 1789870000.0}
+    assert reader_lease.export_verdict_proves_empty(
+        dict(clean), scope_id=scope) == (True, "proven")
+    cases = [
+        ({"scope_id": "other", **{k: v for k, v in clean.items()
+                                  if k != "scope_id"}},
+         "export-scope-mismatch-retain"),
+        ({k: v for k, v in clean.items() if k != "tickets_pending"},
+         "export-tickets-unknown-retain"),
+        ({**clean, "tickets_pending": True}, "export-tickets-pending-retain"),
+        ({k: v for k, v in clean.items() if k != "empty"},
+         "export-not-empty-retain"),
+        ({**clean, "empty": False}, "export-not-empty-retain"),
+        ({k: v for k, v in clean.items() if k != "stopped_unix"},
+         "export-unstopped-retain"),
+        ({**clean, "stopped_unix": 0}, "export-unstopped-retain"),
+        ({**clean, "stopped_unix": float("nan")}, "export-unstopped-retain"),
+        ({**clean, "stopped_unix": float("inf")}, "export-unstopped-retain"),
+        ({**clean, "stopped_unix": "1789870000.0"},
+         "export-unstopped-retain"),
+        ({**clean, "stopped_unix": True}, "export-unstopped-retain"),
+        ({**clean, "released": 1}, "export-verdict-untyped-retain"),
+        ({**clean, "released": False}, "export-proof-incomplete-retain"),
+        ("not-a-verdict", "export-unreadable-retain"),
+        (None, "export-unreadable-retain"),
+    ]
+    for verdict, reason in cases:
+        assert reader_lease.export_verdict_proves_empty(
+            verdict, scope_id=scope) == (False, reason), verdict
+    # The attestation shortcut validates too: scope_empty True alone,
+    # without the exact export booleans, proves nothing.
+    ok, _att = reader_lease.attestation_proves_empty(
+        queue, CONSUMER, "n1", "s1")
+    assert ok is False
+
+
 def test_writer_maps_verdicts_to_empty_honestly(fleet) -> None:
-    """_persist files True only for stopped+released or settled-retired."""
+    """Helper: _persist files True only for fully typed broker exports."""
 
     queue, stage = fleet
     record = {"action_key": CONSUMER, "claimed_by": "sparklina:99:abc12345",
         "resources": {"cpu": 1, "mem_gb": 1},
               "claimed_host": "sparklina"}
-    base = {"action_key": CONSUMER}
-    clean = {"released": True, "retired": False, "settled": False,
+    clean = {"scope_id": "unit-1", "released": True, "retired": False,
+             "settled": False, "empty": True, "tickets_pending": False,
              "stopped_unix": 1789870000.0,
              "termination_evidence": {"stop": "done"}}
     assert queue._persist_reader_scope_proof(
@@ -1995,118 +2237,320 @@ def test_writer_maps_verdicts_to_empty_honestly(fleet) -> None:
     assert attestation["host"] == "sparklina"
     assert attestation["worker"] == "sparklina:99:abc12345"
     assert attestation["incarnation"] == "sparklina:99:abc12345"
-    tombstone = {"released": False, "retired": True, "settled": False,
+    assert attestation["empty"] is True
+    assert attestation["tickets_pending"] is False
+    assert attestation["termination_evidence"] == {"stop": "done"}
+    # A verdict for another scope files False: identity pairing first.
+    assert queue._persist_reader_scope_proof(
+        record, "n" * 32, "unit-9", dict(clean)) is True
+    assert reader_lease.read_scope_attestation(
+        queue, CONSUMER, "n" * 32)["scope_empty"] is False
+    tombstone = {"scope_id": "unit-1", "released": False, "retired": True,
+                 "settled": False, "empty": True, "tickets_pending": False,
                  "stopped_unix": 1789870000.0}
     assert queue._persist_reader_scope_proof(
         record, "m" * 32, "unit-1", dict(tombstone)) is True
     tomb = reader_lease.read_scope_attestation(queue, CONSUMER, "m" * 32)
     assert tomb["scope_empty"] is False
-    settled = {"released": False, "retired": True, "settled": True,
+    settled = {"scope_id": "unit-1", "released": False, "retired": True,
+               "settled": True, "empty": True, "tickets_pending": False,
                "stopped_unix": 1789870000.0}
     assert queue._persist_reader_scope_proof(
         record, "k" * 32, "unit-1", dict(settled)) is True
     assert reader_lease.read_scope_attestation(
         queue, CONSUMER, "k" * 32)["scope_empty"] is True
+    # Missing tickets_pending is unknown absence, never proof of none.
+    no_tickets = {"scope_id": "unit-1", "released": True, "retired": False,
+                  "settled": False, "empty": True,
+                  "stopped_unix": 1789870000.0}
+    assert queue._persist_reader_scope_proof(
+        record, "t" * 32, "unit-1", dict(no_tickets)) is True
+    assert reader_lease.read_scope_attestation(
+        queue, CONSUMER, "t" * 32)["scope_empty"] is False
     reboot = {"released": True}
     assert queue._persist_reader_scope_proof(
         record, "j" * 32, "unit-1", dict(reboot)) is True
     assert reader_lease.read_scope_attestation(
         queue, CONSUMER, "j" * 32)["scope_empty"] is False
-    _ = base
 
 
-def test_shortcut_recovery_republishes_missing_proof(fleet) -> None:
-    """A blipped proof publication heals on the next cleanup shortcut."""
+def test_shortcut_recovery_republishes_missing_proof(
+        fleet, tmp_path, monkeypatch) -> None:
+    """A blipped proof heals on the next production cleanup shortcut.
 
-    queue, stage = fleet
-    claimed = queue.dir(pool.CLAIMED)
-    claimed.mkdir(parents=True, exist_ok=True)
-    nonce = "n" * 32
-    record = {
-        "action_key": CONSUMER,
-        "claimed_by": "sparky:1802421:8f3c0946",
-        "resources": {"cpu": 1, "mem_gb": 1},
-        "claimed_host": "sparky",
-        "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
-                           "scope_id": "unit-7"},
-        "resource_scope_cleanup": {
-            "complete": True, "nonce": nonce,
-            "released": {"released": True, "retired": False,
-                         "settled": False, "stopped_unix": 1789870000.0,
-                         "termination_evidence": {"stop": "done"}}},
-    }
-    (claimed / f"{CONSUMER}.json").write_text(json.dumps(record))
-    assert reader_lease.read_scope_attestation(queue, CONSUMER, nonce) is None
-    outcome = queue.cleanup_action_containers(record)
-    assert outcome["complete"] is True
-    attestation = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
-    assert isinstance(attestation, dict)
-    assert attestation["scope_empty"] is True
-    assert attestation["scope_id"] == "unit-7"
+    Real socket broker, real broker-minted control, production
+    ``cleanup_action_containers`` only (never the private recovery):
+    the first cleanup files the proof, the file is lost, and the second
+    cleanup's shortcut republishes from a fresh token-gated export for
+    the exact attempt.  The first release reply carries no ``released``
+    flag -- the R8 protocol shape -- while the export does.
+    """
 
-
-def test_connected_sdk_ref_reclaims_through_egress(fleet) -> None:
-    """REAL SDK ref: injected ctx -> acquire_for -> live -> writer +
-    terminal -> egress auto-reclaim, no manual release, sparklina alias."""
+    from prismabuild import resource_scope
 
     queue, stage = fleet
-    staged = stage / "model" / "cx.bin"
-    staged.parent.mkdir(parents=True)
-    staged.write_bytes(b"\x67" * 2048)
     root = queue.root / pool.RESIDENCY
-    key = residency_map.residency_map_key("/mnt/shared/cx.bin", 0)
-    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/cx.bin",
-             staged, 2048, "b" * 64)
-    nonce = "n" * 32
-    claimed = queue.dir(pool.CLAIMED)
-    claimed.mkdir(parents=True, exist_ok=True)
-    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
-        "action_key": CONSUMER,
-        "claimed_by": "sparklina:4242:9d001122",
-        "resources": {"cpu": 1, "mem_gb": 1},
-        "claimed_host": "sparklina",
-        "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
-                           "scope_id": "unit-3"}}))
-    env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
-           "PRISMABUILD_RESIDENCY_MAP": str(root / f"{CONSUMER}.map.json"),
-           "PRISMABUILD_ACTION_NONCE": nonce,
-           "PRISMABUILD_ACTION_SCOPE": "unit-3"}
-    injected = reader_lease.injected_context(queue, env=env)
-    assert injected["ok"], injected
-    ctx = injected["ctx"]
-    assert ctx["host"] == "sparklina"
-    assert ctx["worker"] == "sparklina:4242:9d001122"
-    assert ctx["incarnation"] == "sparklina:4242:9d001122"
-    acquired = reader_lease.acquire_for(
-        ctx, tier_id=TIER, epoch="",
-        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
-        expected={key: {"bytes": 2048, "sha256": "b" * 64}},
-        span={"start_bytes": 0, "end_bytes": 2048},
-        acquire_token="connected-token", residency_root=root)
-    assert acquired["ok"], acquired
-    pin = reader_lease._read_pin(
-        root / "leases" / CONSUMER / f"{acquired['pin_id']}.lease.json")
-    assert pin["refs"][acquired["ref_id"]]["holder"]["host"] == "sparklina"  # type: ignore[index]
-    assert pin["refs"][acquired["ref_id"]]["holder"][  # type: ignore[index]
-        "incarnation"] == "sparklina:4242:9d001122"
-    # Ordinary finish persists broker proof through the pool hook path
-    # (writer called the way cleanup calls it, same IDs).
-    assert queue._persist_reader_scope_proof(
-        json.loads((claimed / f"{CONSUMER}.json").read_text()),
-        nonce, "unit-3",
-        {"released": True, "retired": False, "settled": False,
-         "stopped_unix": 1789870000.0,
-         "termination_evidence": {"stop": "done"}}) is True
-    done_dir = queue.dir(pool.DONE)
-    done_dir.mkdir(parents=True, exist_ok=True)
-    (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
-        {"action_key": CONSUMER, "status": "executed",
-         "resource_telemetry": {
-             "action_key": CONSUMER, "nonce": nonce, "scope_unit": "unit-3",
-             "host": "sparklina"}}))
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
-                                  stage_root=str(stage))
-    assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
-    assert not staged.exists()
-    assert receipt["complete"] is True
-    assert receipt["entries_deleted"] == 1
+    nonce = "b" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "shortcut-token")
+        record = json.loads(
+            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text())
+        first = queue.cleanup_action_containers(record)
+        assert first["complete"] is True
+        assert "released" not in first["resource_scope"]["released"]
+        assert first["resource_scope"]["export"]["released"] is True
+        assert first["resource_scope"]["export"]["scope_id"] == unit
+        attestation = reader_lease.read_scope_attestation(
+            queue, CONSUMER, nonce)
+        assert isinstance(attestation, dict)
+        assert attestation["scope_empty"] is True
+        assert attestation["scope_id"] == unit
+        # The shared mount loses the file; the next production cleanup
+        # heals it through the shortcut, not through a manual call.
+        reader_lease.attestation_path(queue, CONSUMER, nonce).unlink()
+        assert reader_lease.read_scope_attestation(
+            queue, CONSUMER, nonce) is None
+        second = queue.cleanup_action_containers(record)
+        assert second["complete"] is True
+        healed = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(healed, dict)
+        assert healed["scope_empty"] is True
+        assert healed["scope_id"] == unit
+        assert healed["host"] == host
+        assert healed["worker"] == worker
+
+
+def test_connected_sdk_ref_reclaims_through_egress(
+        fleet, tmp_path, monkeypatch) -> None:
+    """REAL connected finish: socket broker -> cleanup -> DONE -> egress.
+
+    No handcrafted proof anywhere: the scope is created through the real
+    RPC, the claim carries the broker-minted control, the SDK ref is
+    acquired under the real attempt, and ``queue.finish`` drives the
+    production terminate/release/export/persist path.  Asserts the first
+    release reply, the saved proof, and the terminal are the actual
+    production values; ordinary completion auto-reclaims exactly once.
+    The host everywhere is the real local hostname via real derivation
+    (claim holder, SDK holder, sample telemetry), never handwritten.
+    """
+
+    from prismabuild import resource_scope
+
+    queue, stage = fleet
+    root = queue.root / pool.RESIDENCY
+    nonce = "b" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "connected-token")
+        terminal = queue.finish(CONSUMER, status="executed", detail={})
+        assert terminal == queue.item_path(pool.DONE, CONSUMER)
+        done = json.loads(terminal.read_text())
+        cleanup = done["resource_scope_cleanup"]
+        first = cleanup["released"]
+        assert first["ok"] is True
+        assert first["scope_id"] == unit
+        assert "released" not in first
+        export = cleanup["export"]
+        assert export["scope_id"] == unit
+        assert export["released"] is True
+        assert export["empty"] is True
+        assert export["tickets_pending"] is False
+        telemetry = cleanup["telemetry"]
+        assert telemetry["action_key"] == CONSUMER
+        assert telemetry["nonce"] == nonce
+        assert telemetry["scope_unit"] == unit
+        assert telemetry["host"] == host
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is True
+        assert proof["scope_id"] == unit
+        assert proof["host"] == host
+        assert proof["worker"] == worker
+        assert proof["incarnation"] == worker
+        assert proof["empty"] is True
+        assert proof["tickets_pending"] is False
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
+        assert not staged.exists()
+        assert receipt["complete"] is True
+        assert receipt["entries_deleted"] == 1
+        again = stage_release.evict(queue, MOVER,
+                                    consumer_action_key=CONSUMER,
+                                    stage_root=str(stage))
+        assert again["auto_reclaimed"] == []
+
+
+def test_finish_write_failure_heals_on_egress_tick(
+        fleet, tmp_path, monkeypatch) -> None:
+    """A proof lost after finish heals on the normal egress tick.
+
+    The attestation write fails exactly once during the real finish (a
+    shared-mount blip: unwritable directory, or one injected OSError as
+    root), so DONE publishes with the broker export but no proof file.
+    No private recovery is called: the next ordinary
+    ``stage_release.evict`` -- the deployed reconciliation tick --
+    replays the terminal's validated export and reclaims.  Missing
+    publication before the tick retains.
+    """
+
+    from prismabuild import resource_scope
+
+    queue, stage = fleet
+    root = queue.root / pool.RESIDENCY
+    nonce = "c" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "blip-token",
+            source="/mnt/shared/bl.bin", name="bl.bin", size=1024)
+        attest_dir = reader_lease.attestation_path(
+            queue, CONSUMER, nonce).parent
+        attest_dir.mkdir(parents=True, exist_ok=True)
+        if os.geteuid() == 0:
+            calls = {"n": 0}
+            real = queue._persist_reader_scope_proof
+
+            def flaky(record, nonce_, scope_id, export):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise OSError("simulated shared-mount blip")
+                return real(record, nonce_, scope_id, export)
+
+            monkeypatch.setattr(
+                queue, "_persist_reader_scope_proof", flaky)
+            terminal = queue.finish(CONSUMER, status="executed", detail={})
+        else:
+            os.chmod(attest_dir, 0o555)
+            try:
+                terminal = queue.finish(
+                    CONSUMER, status="executed", detail={})
+            finally:
+                os.chmod(attest_dir, 0o755)
+        assert terminal == queue.item_path(pool.DONE, CONSUMER)
+        assert reader_lease.read_scope_attestation(
+            queue, CONSUMER, nonce) is None
+        done = json.loads(terminal.read_text())
+        assert done["resource_scope_cleanup"]["export"]["released"] is True
+        assert "proof_persistence_error" in (
+            done["resource_scope_cleanup"]["telemetry"])
+        assert staged.exists()
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
+        assert not staged.exists()
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is True
+        assert proof["scope_id"] == unit
+        assert proof["host"] == host
+
+
+def test_unsettled_ticket_retains_then_settles_through_cleanup(
+        fleet, tmp_path, monkeypatch) -> None:
+    """Empty-but-unsettled retains; settlement releases, production only.
+
+    A container ticket left unresolved at cleanup retires the scope
+    without settlement: the pool files scope_empty False and the egress
+    retains.  After the holder settles through the real broker settle
+    op, the next production cleanup (shortcut recovery reading a fresh
+    export) republishes True and the egress reclaims.  No invented
+    proof at any step; an incomplete export never replays.
+    """
+
+    from prismabuild import resource_scope
+
+    queue, stage = fleet
+    root = queue.root / pool.RESIDENCY
+    nonce = "d" * 32
+    with _ConnectedBroker(tmp_path) as broker:
+        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
+        unit, host, worker, staged, acquired = _connected_setup(
+            queue, stage, root, tmp_path, broker, nonce, "ticket-token",
+            source="/mnt/shared/tk.bin", name="tk.bin", size=1024)
+        record = json.loads(
+            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text())
+        control = record["resource_scope"]
+        # A late container lands with an unresolved ticket (broker state).
+        broker.authority.records[unit]["container_tickets"] = ["ticket-1"]
+        first = queue.cleanup_action_containers(record)
+        assert first["complete"] is True
+        assert first["resource_scope"]["released"]["retired"] is True
+        proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof, dict)
+        assert proof["scope_empty"] is False
+        assert proof["retired"] is True
+        assert proof["settled"] is False
+        kept = stage_release.evict(queue, MOVER,
+                                   consumer_action_key=CONSUMER,
+                                   stage_root=str(stage))
+        assert staged.exists()
+        assert kept["auto_reclaimed"] == []
+        assert kept["auto_retained"] == {
+            acquired["ref_id"]: "scope-not-empty-retain"}
+        # The holder settles through the real broker authority; the next
+        # production cleanup reads a fresh export and republishes True.
+        evidence = {"schema": broker.module.SETTLEMENT_SCHEMA,
+                    "marker_absent": True, "owner_container_ids": [],
+                    "scope_container_ids": [], "checked_unix": 1789870000.0}
+        settled = broker.authority.handle(
+            os.getuid(), os.getpid(),
+            {"op": "settle", "action_key": CONSUMER, "nonce": nonce,
+             "token": control["token"], "evidence": evidence})
+        assert settled["settled"] is True
+        second = queue.cleanup_action_containers(record)
+        assert second["complete"] is True
+        proof2 = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
+        assert isinstance(proof2, dict)
+        assert proof2["scope_empty"] is True
+        assert proof2["settled"] is True
+        assert proof2["retired"] is True
+        # Ordinary finish files the terminal; the egress reclaims.
+        terminal = queue.finish(CONSUMER, status="executed", detail={})
+        assert terminal == queue.item_path(pool.DONE, CONSUMER)
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
+        assert not staged.exists()
+
+
+def test_unknown_scan_never_reports_released(fleet) -> None:
+    """An unreadable census is unknown absence: retain/refuse, not released."""
+
+    if os.geteuid() == 0:
+        pytest.skip("permission-gated census needs a non-root reader")
+    queue, stage = fleet
+    staged = stage / "model" / "uc.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x68" * 1024)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/uc.bin",
+             staged, 1024, "b" * 64)
+    acquired = _acquire(queue, MOVER, "unknown-token")
+    assert acquired["ok"]
+    leases = reader_lease.leases_root(queue)
+    os.chmod(leases, 0o000)
+    try:
+        # Full scan unreadable: no released report.
+        assert reader_lease.release(
+            queue, acquired["pin_id"], acquired["ref_id"]) is False
+        owners, tainted = reader_lease.live_for(
+            queue, {os.path.normpath(str(staged))})
+        assert owners == {} and len(tainted) == 1
+        # The egress fails closed on the same census.
+        receipt = stage_release.evict(queue, MOVER,
+                                      consumer_action_key=CONSUMER,
+                                      stage_root=str(stage))
+        assert staged.exists()
+        assert receipt["complete"] is False
+    finally:
+        os.chmod(leases, 0o755)
+    assert reader_lease.release(
+        queue, acquired["pin_id"], acquired["ref_id"],
+        consumer_action_key=CONSUMER) is True

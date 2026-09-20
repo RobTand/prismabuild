@@ -61,6 +61,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -627,13 +628,18 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None
     try:
         consumers = sorted(entry.name for entry in os.scandir(root)
                            if entry.is_dir())
-    except OSError:
-        return owners, []
+    except FileNotFoundError:
+        return owners, []  # no pins ever filed: genuinely empty
+    except OSError as exc:
+        # Unknown absence: taint, never a clean empty census.
+        return owners, [f"{root}: {exc}"]
     for consumer in consumers:
         directory = root / consumer
         try:
             names = sorted(entry.name for entry in os.scandir(directory)
                            if entry.is_file() and entry.name.endswith(".json"))
+        except FileNotFoundError:
+            continue  # drained between scan and read: genuinely gone
         except OSError as exc:
             tainted.append(f"{consumer}: {exc}")
             continue
@@ -741,11 +747,12 @@ def attestation_path(queue, action_key: str, nonce: str) -> Path:
 def read_scope_attestation(queue, action_key: str, nonce: str):
     """A broker attestation, or ``None`` (absent), or the error (taint).
 
-    Read side of a cross-lane contract: the writer is the membership
-    lane, filing from a token-gated broker ``status`` verdict after it
-    proves the scope stopped and empty.  This module never writes one;
-    verification additionally requires terminal broker telemetry, so a
-    forged file alone proves nothing.
+    Read side of a cross-lane contract: the writer is the pool
+    resource-scope cleanup, filing from a token-gated broker
+    ``export_stopped`` verdict after it proves the scope stopped and
+    empty.  This module never writes one; verification additionally
+    requires terminal broker telemetry, so a forged file alone proves
+    nothing.
     """
 
     try:
@@ -761,13 +768,182 @@ def read_scope_attestation(queue, action_key: str, nonce: str):
     return payload
 
 
+def export_verdict_proves_empty(export: object, *, scope_id: str
+                                ) -> tuple[bool, str]:
+    """Whether a broker ``export_stopped`` verdict proves this scope empty.
+
+    Typed and exact, never inferred: ``scope_id`` must name this scope,
+    ``stopped_unix`` must be a positive finite time, ``empty`` must be
+    exactly True, and ``tickets_pending`` must be exactly False -- a
+    missing field is unknown absence, never proof of none.  Release and
+    retirement must be exact booleans proving a clean release or a
+    settled retirement.  Returns ``(True, "proven")`` or ``(False,
+    reason)``; never raises on malformed input.  The verdict carries no
+    action or attempt identity beyond the scope id; the caller binds the
+    attempt (attestation path, terminal telemetry) before asking.
+    """
+
+    if not isinstance(export, Mapping):
+        return False, "export-unreadable-retain"
+    if not scope_id or export.get("scope_id") != scope_id:
+        return False, "export-scope-mismatch-retain"
+    stopped = export.get("stopped_unix")
+    if (type(stopped) not in (int, float)
+            or not math.isfinite(stopped) or not stopped > 0):
+        return False, "export-unstopped-retain"
+    if export.get("empty") is not True:
+        return False, "export-not-empty-retain"
+    tickets = export.get("tickets_pending")
+    if tickets is True:
+        return False, "export-tickets-pending-retain"
+    if tickets is not False:
+        return False, "export-tickets-unknown-retain"
+    released = export.get("released")
+    retired = export.get("retired")
+    settled = export.get("settled")
+    if (type(released) is not bool or type(retired) is not bool
+            or type(settled) is not bool):
+        return False, "export-verdict-untyped-retain"
+    if not ((released and not retired) or (retired and settled)):
+        return False, "export-proof-incomplete-retain"
+    return True, "proven"
+
+
+def attestation_proves_empty(queue, action_key: str, nonce: str,
+                             scope_id: str) -> tuple[bool, object]:
+    """Whether the filed attestation is validated-complete, exact attempt.
+
+    A shortcut on ``scope_empty is True`` alone would bless any file that
+    says so.  This re-validates the exact attempt binding (action, nonce,
+    scope), the exact export booleans (empty True, tickets False, typed
+    release/retirement), a positive finite stop time, and a named
+    host/worker pair.  Returns ``(True, attestation)`` or ``(False,
+    reason)``.
+    """
+
+    attestation = read_scope_attestation(queue, action_key, nonce)
+    if attestation is None:
+        return False, "no-broker-attestation-retain"
+    if isinstance(attestation, Exception):
+        return False, f"broker-attestation-unreadable-retain: {attestation}"
+    if not isinstance(attestation, Mapping):
+        return False, "broker-attestation-unreadable-retain"
+    if attestation.get("scope_empty") is not True:
+        return False, "scope-not-empty-retain"
+    if (str(attestation.get("action_key") or "") != action_key
+            or str(attestation.get("nonce") or "") != nonce
+            or str(attestation.get("scope_id") or "") != scope_id):
+        return False, "attestation-id-mismatch-retain"
+    host = attestation.get("host")
+    worker = attestation.get("worker")
+    if not (isinstance(host, str) and host
+            and isinstance(worker, str) and worker):
+        return False, "attestation-host-worker-missing-retain"
+    stopped = attestation.get("stopped_unix")
+    if (type(stopped) not in (int, float)
+            or not math.isfinite(stopped) or not stopped > 0):
+        return False, "proof-incomplete-retain"
+    if attestation.get("empty") is not True:
+        return False, "proof-incomplete-retain"
+    tickets = attestation.get("tickets_pending")
+    if tickets is True:
+        return False, "tickets-pending-retain"
+    if tickets is not False:
+        return False, "tickets-unknown-retain"
+    released = attestation.get("released")
+    retired = attestation.get("retired")
+    settled = attestation.get("settled")
+    if (type(released) is not bool or type(retired) is not bool
+            or type(settled) is not bool):
+        return False, "proof-incomplete-retain"
+    if retired and not settled:
+        return False, "tombstone-unsettled-retain"
+    if not ((released and not retired) or (retired and settled)):
+        return False, "proof-incomplete-retain"
+    return True, attestation
+
+
+def _replay_attestation_from_terminal(queue, action_key: str, nonce: str,
+                                      scope_id: str) -> tuple[bool, str]:
+    """Refile a lost attestation from the terminal's stored broker export.
+
+    The pool cleanup persists the token-gated ``export_stopped`` verdict
+    in the terminal record beside the release reply, so a proof lost to a
+    shared-mount blip after ``finish`` -- no CLAIMED row left for the
+    cleanup shortcut to retry from -- heals on the deployed egress tick:
+    read the terminal's export for this exact attempt, validate it exactly
+    as the writer would, and refile through the pool writer.  Never copies
+    a verdict, never contacts the broker.  An incomplete export (tickets
+    pending, empty False, unstopped) refuses: a later settlement
+    reconciles only through the owner worker/broker authority path, never
+    through this replay.  Withdrawal markers carry no export and never
+    replay.  Returns ``(True, reason)`` when a proof was filed, ``(False,
+    reason)`` otherwise; never raises.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        existing = read_scope_attestation(queue, action_key, nonce)
+    except Exception as exc:                                    # noqa: BLE001
+        return False, f"broker-attestation-unreadable-retain: {exc}"
+    if isinstance(existing, Mapping):
+        # The writer already spoke -- even scope_empty False is its verdict
+        # from this terminal's export.  No replay, no overwrite.
+        return False, "attestation-present-no-replay"
+    if isinstance(existing, Exception):
+        return False, f"broker-attestation-unreadable-retain: {existing}"
+    for state in (pool_mod.DONE, pool_mod.FAILED):
+        try:
+            record = pool_mod._read_json(queue.item_path(state, action_key))
+        except (OSError, pool_mod.PoolContractError) as exc:
+            return False, f"terminal record unreadable: {state}"
+        if not isinstance(record, Mapping):
+            continue
+        telemetry = _terminal_broker_telemetry(record)
+        if telemetry is None:
+            continue
+        if (str(telemetry.get("action_key") or "") != action_key
+                or str(telemetry.get("nonce") or "") != nonce):
+            continue
+        unit = telemetry.get("scope_unit")
+        if not isinstance(unit, str) or not unit:
+            unit = telemetry.get("scope_id")
+        if unit != scope_id:
+            continue
+        cleanup = record.get("resource_scope_cleanup")
+        export = (cleanup.get("export")
+                  if isinstance(cleanup, Mapping) else None)
+        ok, reason = export_verdict_proves_empty(export, scope_id=scope_id)
+        if not ok:
+            return False, reason
+        try:
+            resolved = queue.resolve_claim_holder(action_key, record)
+        except (AttributeError, OSError, ValueError):
+            resolved = None
+        host = telemetry.get("host")
+        if (isinstance(host, str) and host and isinstance(resolved, str)
+                and resolved and host != resolved):
+            return False, "terminal-host-mismatch-retain"
+        try:
+            filed = queue._persist_reader_scope_proof(
+                record, nonce, scope_id, export)
+        except Exception as exc:                                # noqa: BLE001
+            return False, f"attestation-replay-failed-retain: {exc}"
+        if not filed:
+            return False, "attestation-replay-refused-retain"
+        return True, f"replayed-terminal-{state}"
+    return False, "no-terminal-export-retain"
+
+
 def _terminal_attempt_ids(record: Mapping[str, object]) -> list[tuple[str, str]]:
     """Attempt (nonce, scope) identities a terminal record carries, if any.
 
-    Reads the real shapes PB writes: ``resource_scope.nonce`` on claims,
-    and the broker-produced ``resource_telemetry`` (``{action_key, nonce,
-    scope_unit, host}``) on terminal outcomes, top-level or under
-    ``detail``.  Anything else is not attempt evidence.
+    Reads the real shapes PB writes: ``resource_scope`` control on claims
+    and terminals, ``resource_scope_cleanup.telemetry`` filed by cleanup
+    (broker sample: ``{action_key, nonce, host, scope_unit}``), and the
+    worker-outcome ``resource_telemetry`` top-level or under ``detail``.
+    Anything else is not attempt evidence.
     """
 
     out: list[tuple[str, str]] = []
@@ -778,7 +954,12 @@ def _terminal_attempt_ids(record: Mapping[str, object]) -> list[tuple[str, str]]
 
     scope = record.get("resource_scope")
     if isinstance(scope, Mapping):
-        _take(scope.get("nonce"), scope.get("unit"))
+        _take(scope.get("nonce"), scope.get("scope_id") or scope.get("unit"))
+    cleanup = record.get("resource_scope_cleanup")
+    if isinstance(cleanup, Mapping):
+        telemetry = cleanup.get("telemetry")
+        if isinstance(telemetry, Mapping):
+            _take(telemetry.get("nonce"), telemetry.get("scope_unit"))
     for carrier in (record.get("resource_telemetry"),
                     record.get("detail", {}).get("resource_telemetry")
                     if isinstance(record.get("detail"), Mapping) else None):
@@ -791,13 +972,27 @@ def _terminal_attempt_ids(record: Mapping[str, object]) -> list[tuple[str, str]]
 
 def _terminal_broker_telemetry(record: Mapping[str, object]
                                ) -> Mapping[str, object] | None:
-    """The broker-produced telemetry on a terminal record, if it parses."""
+    """The broker-produced telemetry on a terminal record, if it parses.
 
+    Prefers the cleanup sample (filed beside the release verdict), then
+    the worker-outcome telemetry shapes (which carry the action key),
+    then the claim control (nonce/scope only, no action key).  Callers
+    matching on action identity need a carrier that carries it.
+    """
+
+    cleanup = record.get("resource_scope_cleanup")
+    if isinstance(cleanup, Mapping):
+        telemetry = cleanup.get("telemetry")
+        if isinstance(telemetry, Mapping) and telemetry.get("nonce"):
+            return telemetry
     for carrier in (record.get("resource_telemetry"),
                     record.get("detail", {}).get("resource_telemetry")
                     if isinstance(record.get("detail"), Mapping) else None):
         if isinstance(carrier, Mapping) and carrier.get("nonce"):
             return carrier
+    scope = record.get("resource_scope")
+    if isinstance(scope, Mapping) and scope.get("nonce"):
+        return scope
     return None
 
 
@@ -839,7 +1034,9 @@ def _history_attempt_terminal(queue, action_key: str, nonce: str,
             if (str(telemetry.get("nonce") or "") != nonce
                     or str(telemetry.get("action_key") or "") != action_key):
                 continue
-            if scope_id and str(telemetry.get("scope_unit") or "") != scope_id:
+            unit = str(telemetry.get("scope_unit") or ""
+                       ) or str(telemetry.get("scope_id") or "")
+            if scope_id and unit != scope_id:
                 continue
             disposition = str(outcome.get("disposition") or "")
             status = str(outcome.get("status") or "")
@@ -909,45 +1106,79 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
     # pool cleanup wrote from the broker verdict): a clean release, or a
     # settled retirement.  Tombstones without settlement, absence
     # responses, and verdicts without stopped evidence never qualify,
-    # however scope_empty reads.
-    if not attestation.get("stopped_unix"):
+    # however scope_empty reads.  Every boolean is exact: a missing
+    # tickets_pending is unknown, never proof of none.
+    stopped = attestation.get("stopped_unix")
+    if (type(stopped) not in (int, float)
+            or not math.isfinite(stopped) or not stopped > 0):
         return False, "proof-incomplete-retain"
-    retired = attestation.get("retired") is True
-    settled = attestation.get("settled") is True
-    released = attestation.get("released") is True
+    retired = attestation.get("retired")
+    settled = attestation.get("settled")
+    released = attestation.get("released")
+    if (type(released) is not bool or type(retired) is not bool
+            or type(settled) is not bool):
+        return False, "proof-incomplete-retain"
     if retired and not settled:
         return False, "tombstone-unsettled-retain"
+    tickets = attestation.get("tickets_pending")
+    if tickets is True:
+        return False, "tickets-pending-retain"
+    if tickets is not False:
+        return False, "tickets-unknown-retain"
+    if attestation.get("empty") is not True:
+        return False, "proof-incomplete-retain"
     if not ((released and not retired) or (retired and settled)):
         return False, "proof-incomplete-retain"
 
-    def telemetry_names(telemetry: Mapping[str, object]) -> bool:
-        return (str(telemetry.get("action_key") or "") == action_key
-                and str(telemetry.get("nonce") or "") == nonce
-                and str(telemetry.get("scope_unit") or "") == scope_id
-                and str(telemetry.get("host") or "")
-                == str(attestation.get("host") or ""))
+    def telemetry_names(telemetry: Mapping[str, object]) -> bool | None:
+        """Whether broker telemetry names this exact attempt.
 
-    terminal_state = None
+        Returns True (names it), False (names another attempt), or None
+        (unanswerable shape).  Sample shapes carry ``scope_unit`` + host;
+        control shapes carry ``scope_id`` without host (host stays bound
+        by the attestation and holder checks downstream).  A carrier
+        without an action key is matched on nonce + scope within this
+        action-bound record; one naming another action never matches.
+        """
+
+        key = telemetry.get("action_key")
+        if isinstance(key, str) and key and key != action_key:
+            return False
+        if str(telemetry.get("nonce") or "") != nonce:
+            return False
+        scope = telemetry.get("scope_unit")
+        if not isinstance(scope, str) or not scope:
+            scope = telemetry.get("scope_id")
+        if not isinstance(scope, str) or scope != scope_id:
+            return False
+        host = telemetry.get("host")
+        if isinstance(host, str) and host:
+            return host == str(attestation.get("host") or "")
+        return True
+
+    terminal_states: dict[str, object] = {}
     names_this_attempt: bool | None = None
     for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
         try:
             record = pool_mod._read_json(queue.item_path(state, action_key))
         except (OSError, pool_mod.PoolContractError):
             return False, f"terminal record unreadable: {state}"
-        if record is None:
+        if record is None or not isinstance(record, Mapping):
             continue
-        terminal_state = state
-        telemetry = (_terminal_broker_telemetry(record)
-                     if isinstance(record, Mapping) else None)
-        if telemetry is not None:
-            names_this_attempt = telemetry_names(telemetry)
-        break
-    if names_this_attempt is True:
-        host = str(attestation.get("host") or "")
-        return True, f"contained-terminal-{terminal_state}:{host}"
+        terminal_states[state] = record
+        telemetry = _terminal_broker_telemetry(record)
+        if telemetry is None:
+            # A bare marker (withdrawal with no attempt telemetry)
+            # proves nothing about this attempt on its own.
+            continue
+        verdict = telemetry_names(telemetry)
+        if verdict is True:
+            host = str(attestation.get("host") or "")
+            return True, f"contained-terminal-{state}:{host}"
+        names_this_attempt = False
     if names_this_attempt is False:
-        # The terminal record belongs to another attempt: consult the exact
-        # older history rather than retaining forever on a supersede.
+        # Terminal records name only other attempts: consult the exact
+        # older history rather than retaining forever on a supersede...
         historic, _where = _history_attempt_terminal(
             queue, action_key, nonce, scope_id)
         if historic is True:
@@ -955,6 +1186,15 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
             return True, f"contained-history:{host}"
         if historic is False:
             return False, "superseded-attempt-retain"
+        # ...and the other terminal states (a failed record for this
+        # attempt survives beside a done record for its successor).
+        for state, record in terminal_states.items():
+            if not isinstance(record, Mapping):
+                continue
+            telemetry = _terminal_broker_telemetry(record)
+            if telemetry is not None and telemetry_names(telemetry) is True:
+                host = str(attestation.get("host") or "")
+                return True, f"contained-terminal-{state}:{host}"
         return False, "no-terminal-evidence-retain"
     historic, _where = _history_attempt_terminal(queue, action_key, nonce,
                                                 scope_id)
@@ -996,9 +1236,14 @@ def release_refs(queue, refs: list[dict[str, str]],
         pin_id = str(ref.get("pin_id") or "")
         ref_id = str(ref.get("ref_id") or "")
         first = None
-        for candidate in _pin_candidates(
-                queue, pin_id, consumer_action_key=consumer or None,
-                residency_root=residency_root):
+        candidates, complete = _pin_candidates(
+            queue, pin_id, consumer_action_key=consumer or None,
+            residency_root=residency_root)
+        if not complete:
+            # Unknown absence: retain, never force-release unknown pins.
+            skipped.append(f"{ref_id}: pin census unreadable")
+            continue
+        for candidate in candidates:
             first = _read_pin(candidate)
             if first is not None:
                 path = candidate
@@ -1100,8 +1345,8 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
     try:
         owners = sorted(entry.name for entry in os.scandir(root)
                         if entry.is_dir())
-    except OSError:
-        return {"released": [], "retained": {}}
+    except OSError as exc:
+        return {"released": [], "retained": {"<pin-census>": f"{exc}"}}
     released: list[str] = []
     retained: dict[str, str] = {}
     for owner_dir in owners:
@@ -1110,7 +1355,8 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
             names = sorted(entry.name for entry in os.scandir(directory)
                            if entry.is_file()
                            and entry.name.endswith(".lease.json"))
-        except OSError:
+        except OSError as exc:
+            retained[f"<pin-census:{owner_dir}>"] = f"{exc}"
             continue
         for name in names:
             path = directory / name
@@ -1142,6 +1388,17 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
                     for ref_id in ref_ids:
                         retained[ref_id] = "attempt unbound"
                     continue
+                # The deployed tick heals a lost proof itself: when the
+                # attestation never landed (shared-mount blip after finish)
+                # but the terminal carries the validated broker export,
+                # refile from that export before judging.  No broker
+                # contact, no operator retry; an incomplete export retains.
+                ok, _proof = attestation_proves_empty(
+                    queue, pin_owner, nonce, scope_id)
+                if not ok:
+                    _replayed, _replay_reason = (
+                        _replay_attestation_from_terminal(
+                            queue, pin_owner, nonce, scope_id))
                 first = refs_map[ref_ids[0]]
                 holder = first.get("holder") if isinstance(first, dict) else None
                 certificate: dict[str, object] = {
@@ -1890,14 +2147,17 @@ def release(queue, pin_id: str, ref_id: str, *,
     the only thing ever dropped.
     """
 
-    candidates = _pin_candidates(
+    candidates, complete = _pin_candidates(
         queue, pin_id, consumer_action_key=consumer_action_key,
         residency_root=residency_root)
     if (consumer_action_key is not None
             and not any(path.exists() for path in candidates)):
-        candidates = _pin_candidates(
+        candidates, complete = _pin_candidates(
             queue, pin_id, consumer_action_key=None,
             residency_root=residency_root)
+    if not complete:
+        # Unknown absence: retain, never report released.
+        return False
     for path in candidates:
         first = _read_pin(path)
         if first is None:
@@ -1935,16 +2195,24 @@ def release(queue, pin_id: str, ref_id: str, *,
 
 def _pin_candidates(queue, pin_id: str, *,
                     consumer_action_key: str | None = None,
-                    residency_root=None) -> list[Path]:
+                    residency_root=None) -> tuple[list[Path], bool]:
+    """Candidate pin files plus whether the census is complete.
+
+    An unreadable directory is UNKNOWN absence, never proven no-ref:
+    callers must retain/refuse on ``complete False``, never report
+    released.  The exact-consumer path is always complete (one file).
+    """
+
     root = leases_root(queue, residency_root)
     if consumer_action_key is not None:
-        return [root / consumer_action_key / f"{pin_id}.lease.json"]
+        return [root / consumer_action_key / f"{pin_id}.lease.json"], True
     try:
         consumers = sorted(entry.name for entry in os.scandir(root)
                            if entry.is_dir())
     except OSError:
-        return []
-    return [root / consumer / f"{pin_id}.lease.json" for consumer in consumers]
+        return [], False
+    return ([root / consumer / f"{pin_id}.lease.json"
+             for consumer in consumers], True)
 
 
 def _read_pin(path: Path):
@@ -1993,14 +2261,17 @@ def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
     Returns ``{"ok": True, "ref_id": ...}`` or ``{"ok": False, ...}``.
     """
 
-    candidates = _pin_candidates(
+    candidates, complete = _pin_candidates(
         queue, pin_id, consumer_action_key=consumer_action_key,
         residency_root=residency_root)
     if (consumer_action_key is not None
             and not any(path.exists() for path in candidates)):
-        candidates = _pin_candidates(
+        candidates, complete = _pin_candidates(
             queue, pin_id, consumer_action_key=None,
             residency_root=residency_root)
+    if not complete:
+        return {"ok": False,
+                "refusal": "ownership-uncertain: pin census unreadable"}
     for path in candidates:
         first = _read_pin(path)
         if first is None:
@@ -2305,8 +2576,10 @@ __all__ = [
     "ReaderLeaseError",
     "acquire",
     "attestation_path",
+    "attestation_proves_empty",
     "clear_retiring",
     "containment_certificate_ok",
+    "export_verdict_proves_empty",
     "leases_root",
     "live_for",
     "material_path",

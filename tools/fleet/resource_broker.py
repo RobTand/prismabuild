@@ -552,7 +552,7 @@ class Authority:
                             'empty':bool(empty),'released':True,
                             'retired':bool(record.get('retired_unix')),
                             'settled':bool(record.get('settled_unix')),
-                            'tickets_pending':bool(record.get('container_tickets')) and not empty,
+                            'tickets_pending':bool(record.get('container_tickets')) and not bool(record.get('settled_unix')),
                             **self._stop_details(record)}
                 if not record.get('stopped_unix'):
                     raise ValueError('scope not stopped')
@@ -562,7 +562,7 @@ class Authority:
                         'empty':bool(empty),'released':False,
                         'retired':bool(record.get('retired_unix')),
                         'settled':bool(record.get('settled_unix')),
-                        'tickets_pending':bool(record.get('container_tickets')) and not empty,
+                        'tickets_pending':bool(record.get('container_tickets')) and not bool(record.get('settled_unix')),
                         **self._stop_details(record)}
             if record.get('released_unix'):
                 # Recovery after a worker crash may repeat cleanup. Retain

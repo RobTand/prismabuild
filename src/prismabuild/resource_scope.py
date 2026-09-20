@@ -618,3 +618,14 @@ class ResourceScope:
     def release(self) -> dict:
         """Release only after the broker proves the aggregate job scope empty."""
         return self._request('release')
+
+    def export_stopped_verdict(self) -> dict:
+        """Read-only broker verdict for containment export (token-gated).
+
+        Called after ``release`` with the same attempt token: reports
+        stopped/empty/released/retired/settled plus ticket disposition
+        without mutating authority.  The pool cleanup persists this
+        verdict (never the release reply) as the reader-containment
+        attestation for the attempt.
+        """
+        return self._request('export_stopped')
