@@ -72,6 +72,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -250,6 +251,15 @@ def _prune_empty(directory: Path, stop: Path) -> None:
 #: How many co-owners one egress receipt names before it counts the rest.
 SHARED_WITH_LIMIT = 5
 
+#: Residency namespaces that are never consumer fragment directories.  Pins,
+#: retiring marks (``leases/``) and publish-time sidecars (``material/``)
+#: live beside the fragments in dedicated subdirectories; every fragment
+#: enumerator skips them, proved by
+#: ``test_legacy_enumerators_ignore_lease_namespaces`` -- a sidecar parsed
+#: as a fragment would taint every egress fail-closed on a healthy tier.
+RESERVED_RESIDENCY_SUBDIRS = frozenset(
+    {reader_lease.LEASES_SUBDIR, reader_lease.MATERIAL_SUBDIR})
+
 
 def _fragment_owners(root: Path, wanted: set[str], *,
                      except_consumer: str = "",
@@ -271,7 +281,8 @@ def _fragment_owners(root: Path, wanted: set[str], *,
     tainted: list[str] = []
     try:
         consumers = sorted(entry.name for entry in os.scandir(root)
-                           if entry.is_dir())
+                           if entry.is_dir()
+                           and entry.name not in RESERVED_RESIDENCY_SUBDIRS)
     except OSError as exc:
         return owners, [f"{root}: {exc}"]
     for consumer in consumers:
@@ -573,6 +584,135 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                             errors=errors, reason=reason)
 
 
+def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
+                          cas_root: str | Path | None = None
+                          ) -> tuple[set[str], list[str]]:
+    """Stage paths a live RAM promotion may be reading, by sealed source leg.
+
+    The promotion copies stage -> ram, so the stage egress must treat the
+    promotion's *source* window the way it treats a stage mover's
+    destination: a pending copy handoff that blocks eviction until its ram
+    fragment lands.  Only ram-tier mover claims are read (a stage mover's
+    destinations are `_claimed_paths`' job); the sealed `--source-stage-root`
+    decides which stage this attribution joins, resolved before comparing.
+    Anything unreadable taints the pass, the same fail-closed rule as
+    fragments and destination claims.
+    """
+
+    try:
+        stage_real = os.path.realpath(stage)
+    except OSError as exc:
+        return set(), [f"promotion-source: {exc}"]
+    paths: set[str] = set()
+    tainted: list[str] = []
+    try:
+        keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
+                      else path.name
+                      for path in pool._scan(queue.dir(pool.CLAIMED)))
+    except OSError as exc:
+        return paths, [f"claimed: {exc}"]
+    records: list[tuple[str, dict[str, object]]] = []
+    for key in keys:
+        try:
+            item = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        except (OSError, pool.PoolContractError) as exc:
+            tainted.append(f"{key[:12]}: {exc}")
+            continue
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            tainted.append(f"{key[:12]}: unreadable claim record")
+            continue
+        records.append((key, item))
+    default_cas = (str(cas_root) if cas_root is not None
+                   else str(queue.root.parent / "cas"))
+    for key, item in records:
+        if cas_root is not None:
+            own_cas = str(cas_root)
+        else:
+            root = item.get("cas_root")
+            own_cas = (str(root) if isinstance(root, str) and root
+                       else default_cas)
+        resources = item.get("resources")
+        if not isinstance(resources, Mapping):
+            tainted.append(f"{key[:12]}: malformed resources")
+            continue
+        kinds = {str(kind).split("@", 1)[1] for kind in resources
+                 if "@" in str(kind)}
+        if not any(kind.startswith(storage_tiers.RAM_TIER_PREFIX)
+                   for kind in kinds):
+            continue    # not a promotion; stage destinations are elsewhere
+        try:
+            request = pool._read_json(
+                Path(own_cas) / "requests" / key[:2] / f"{key}.json")
+        except (OSError, pool.PoolContractError) as exc:
+            tainted.append(f"{key[:12]}: {exc}")
+            continue
+        if not isinstance(request, Mapping):
+            tainted.append(f"{key[:12]}: unreadable sealed request")
+            continue
+        params = request.get("params")
+        command = params.get("command") if isinstance(params, Mapping) else None
+        if not isinstance(command, list):
+            tainted.append(f"{key[:12]}: promotion seals no command")
+            continue
+        try:
+            source_root = command[command.index("--source-stage-root") + 1]
+            start = command[command.index("--range-start-bytes") + 1]
+            end = command[command.index("--range-end-bytes") + 1]
+            if (not isinstance(source_root, str) or not source_root):
+                raise ValueError("source stage root must be a path")
+            for bound in (start, end):
+                if (isinstance(bound, bool) or not isinstance(bound, str)
+                        or not bound.isdigit()):
+                    raise ValueError(
+                        "range bounds must be nonnegative integer strings")
+            start, end = int(start), int(end)
+            if end < start:
+                raise ValueError("range end precedes start")
+        except (ValueError, IndexError, TypeError):
+            tainted.append(f"{key[:12]}: promotion seals an invalid source range")
+            continue
+        try:
+            if os.path.realpath(source_root) != stage_real:
+                continue    # another stage's source leg, not this egress
+        except OSError as exc:
+            tainted.append(f"{key[:12]}: {exc}")
+            continue
+        digest = None
+        inputs = request.get("inputs")
+        if isinstance(inputs, list):
+            for entry in inputs:
+                if (isinstance(entry, Mapping)
+                        and entry.get("id") == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                    digest = entry.get("sha256")
+        if not isinstance(digest, str) or not digest:
+            tainted.append(f"{key[:12]}: sealed request names no data manifest")
+            continue
+        layout = _cached_manifest_layout(own_cas, digest)
+        if layout is None:
+            tainted.append(f"{key[:12]}: manifest {digest[:12]} unreadable")
+            continue
+        mount_prefix, entries = layout
+        whole = whole_file_paths(entries)
+        try:
+            window = prewarm_loop.entries_between(entries, start, end)
+        except (ValueError, TypeError) as exc:
+            tainted.append(f"{key[:12]}: range not cuttable: {exc}")
+            continue
+        for entry in window:
+            path, offset = str(entry["path"]), int(entry["offset"])
+            try:
+                relative = stage_relative(
+                    path, offset, int(entry["bytes"]),
+                    mount_prefix=mount_prefix,
+                    whole_file=path in whole)
+            except ValueError:
+                continue
+            paths.add(os.path.normpath(os.path.join(stage_real, relative)))
+    return paths, tainted
+
+
 def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  consumer_action_key: str, stage: Path, tier_id: str | None,
                  root: Path, fragment_path: Path,
@@ -580,20 +720,23 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  reason: str) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock."""
 
-    deleted = missing = shared = 0
+    deleted = missing = shared = deferred = 0
     bytes_deleted = 0
     shared_with: list[str] = []
+    live_pins: list[str] = []
+    auto_reclaimed: list[str] = []
+    auto_retained: dict[str, str] = {}
+    retiring_written = False
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
-        # dirs.  A claim exists before its copy starts (the start gate), and a
-        # fragment exists before its claim is gone (publication precedes the
-        # terminal marking), so one view in this order covers a publisher in
-        # either transition; fragments-first could miss a publisher that
-        # publishes its fragment and releases its claim between the two reads
-        # entirely.  One walk of the fragment dirs, intersected against this
-        # mover's own entry paths -- never per entry times all fragments, and
-        # no metadata walk: wanted paths are normalized once here, foreign
-        # entries compare as validated strings.
+        # dirs, then pins.  A claim exists before its copy starts (the start
+        # gate), a fragment exists before its claim is gone (publication
+        # precedes the terminal marking), and a pin is filed under the
+        # ownership lock before its first read -- so one view in this order
+        # covers a publisher, a reader, or a promotion in either transition.
+        # Pins join the same snapshot (same lock) rather than a second
+        # unlocked check: delete is blocked by ANY current ref, and the
+        # check-and-act is one atomic unit with the unlink below.
         wanted = {os.path.normpath(str(entry.get("stage_path", "")))
                   for entry in entries.values()
                   if isinstance(entry, Mapping)}
@@ -602,18 +745,66 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             root, wanted,
             except_consumer=consumer_action_key,
             except_mover=mover_action_key)
-        tainted = fragment_taint + claimed_taint
+        pins, pin_taint = reader_lease.live_for(
+            queue, wanted, residency_root=root)
+        source_paths, source_taint = _claimed_source_paths(queue, stage)
+        tainted = fragment_taint + claimed_taint + pin_taint + source_taint
         if tainted:
             # Ownership is uncertain: behave like the unreadable-fragment
             # case -- nothing is unlinked, no tokens come back, the receipt
             # says so and the next sweep retries.
             errors.extend(f"ownership uncertain: {item}" for item in tainted)
             owners, claimed = {}, set()
+            pins, source_paths = {}, set()
             blind = True
         else:
             blind = False
+        own_generation: str | None = None
+        if not blind:
+            # Automatic reclamation first: refs whose attempts are
+            # provably contained (terminal broker telemetry plus
+            # broker-persisted proof) retire here, so ordinary
+            # completion, crash/withdrawal cleanup and old-attempt drains
+            # free their pins without an operator.  Whatever stays is a
+            # genuinely live reader, and only that defers.
+            if pins:
+                reclaimed = reader_lease.auto_reclaim(
+                    queue, residency_root=root)
+                auto_reclaimed.extend(reclaimed["released"])
+                for ref_id, reason in reclaimed["retained"].items():
+                    auto_retained.setdefault(ref_id, reason)
+                if reclaimed["released"]:
+                    pins, pin_taint_again = reader_lease.live_for(
+                        queue, wanted, residency_root=root)
+                    if pin_taint_again:
+                        errors.extend(
+                            f"ownership uncertain: {item}"
+                            for item in pin_taint_again)
+                        owners, claimed = {}, set()
+                        pins, source_paths = {}, set()
+                        blind = True
+            # The retiring mark this deferral may file binds the material
+            # generation, never the path: without a sidecar the generation
+            # is unknowable, so a pinned legacy range taints instead of
+            # filing a mark that could wedge the path's future generations.
+            # Skipped when the reclaim re-read already went blind: the
+            # pass is fail-closed and needs no further evidence.
+            if not blind:
+                material = reader_lease.read_material(
+                    root, consumer_action_key, mover_action_key)
+                if isinstance(material, dict):
+                    own_generation = str(material.get("generation") or "")
+                elif material is not None:
+                    errors.append(
+                        f"ownership uncertain: material unreadable for "
+                        f"{mover_action_key[:12]}")
+                    owners, claimed = {}, set()
+                    pins, source_paths = {}, set()
+                    blind = True
     else:
         owners, claimed = {}, set()
+        pins, source_paths = {}, set()
+        own_generation = None
         blind = False
     for key, entry in entries.items():
         if blind:
@@ -632,7 +823,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         except OSError as exc:
             errors.append(f"{key}: {exc}")
             continue
-        co_owners = sorted(owners.get(os.path.normpath(str(path)), set()))
+        norm = os.path.normpath(str(path))
+        co_owners = sorted(owners.get(norm, set()))
         if co_owners or _relative_under(stage, resolved) in claimed:
             # Another live fragment vouches for these bytes, or a claimed
             # copy is about to land them: keep the file, drop only this
@@ -642,6 +834,25 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 f"{consumer[:12]}/{mover[:12]}" for consumer, mover in co_owners)
             if _relative_under(stage, resolved) in claimed:
                 shared_with.append("in-flight-copy")
+            continue
+        if os.path.normpath(resolved) in source_paths:
+            # A live promotion is reading this source leg into RAM: the file
+            # stays, this mover's own vouching goes, exactly like a shared
+            # skip.  The promotion's ram fragment vouches once it lands.
+            shared += 1
+            shared_with.append("promotion-handoff")
+            continue
+        pinned = pins.get(norm, [])
+        if pinned:
+            # A live reader holds these bytes (open FD, prefetch, mmap, or a
+            # promotion source pin): defer, mark retiring for this material
+            # generation, keep the file, the fragment and the charge.  The
+            # next sweep deletes after the last release.
+            if not own_generation:
+                errors.append(f"{key}: pinned but material unqualifiable")
+                continue
+            deferred += 1
+            live_pins.extend(pinned)
             continue
         try:
             os.unlink(path)
@@ -655,9 +866,32 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         bytes_deleted += int(entry["bytes"])
         _prune_empty(path.parent, stage)
 
-    released = 0 if errors else queue.release_tier_reservations(mover_action_key)
-    if not errors:
+    if deferred and not errors and own_generation:
+        reader_lease.write_retiring(
+            reader_lease.leases_root(queue, root),
+            consumer_action_key=consumer_action_key,
+            mover_action_key=mover_action_key, generation=own_generation)
+        retiring_written = True
+    # Retiring retains the charge until the actual delete with the last live
+    # ref already absent; release-before-reclaim stays forbidden.  A shared
+    # skip is not an error: the bytes live on under another accounted owner
+    # (same lock, so the last owner cannot disappear between the check and
+    # the act) while this mover's own tokens come back and its own vouching
+    # is dropped.  Ledger release is idempotent: no double-free.
+    released = (0 if (errors or deferred)
+                else queue.release_tier_reservations(mover_action_key))
+    if not errors and not deferred:
         fragment_path.unlink(missing_ok=True)
+        reader_lease.clear_retiring(
+            reader_lease.leases_root(queue, root),
+            consumer_action_key=consumer_action_key,
+            mover_action_key=mover_action_key)
+        try:
+            reader_lease.material_path(
+                root, consumer_action_key,
+                mover_action_key).unlink(missing_ok=True)
+        except OSError:
+            pass
     return {
         "schema": pool.POOL_EGRESS_SCHEMA_V1,
         "action_key": mover_action_key,
@@ -668,15 +902,18 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "entries_already_gone": missing,
         "entries_shared": shared,
         "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
+        "entries_deferred": deferred,
+        "live_pins": sorted(set(live_pins)),
+        "auto_reclaimed": sorted(set(auto_reclaimed)),
+        "auto_retained": dict(sorted(auto_retained.items())),
+        "retiring": retiring_written,
         "bytes_deleted": bytes_deleted,
         "tokens_released": released,
-        # Errors mean the stage still holds bytes, so the tokens stay held:
-        # releasing them would let the ledger admit a mover onto capacity that
-        # is not there.  The receipt says so and the next sweep retries.
-        # A shared skip is not an error: the bytes live on under another
-        # owner while this mover's own tokens come back and its own vouching
-        # is dropped.
-        "complete": not errors,
+        # Errors -- or a deferral -- mean the stage still holds bytes, so
+        # the tokens stay held: releasing them would let the ledger admit a
+        # mover onto capacity that is not there.  The receipt says so and
+        # the next sweep retries.
+        "complete": not errors and not deferred,
         "errors": errors,
         "host": socket.gethostname(),
         "unix": time.time(),
@@ -877,7 +1114,9 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str],
                 else queue.root / pool.RESIDENCY)
     out: set[str] = set()
     try:
-        consumers = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
+        consumers = sorted(entry.name for entry in os.scandir(root)
+                           if entry.is_dir()
+                           and entry.name not in RESERVED_RESIDENCY_SUBDIRS)
     except OSError:
         return out
     for consumer in consumers:
@@ -885,7 +1124,7 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str],
             if str(fragment.get("mover_action_key") or "") not in wanted:
                 continue
             for entry in dict(fragment["entries"]).values():
-                out.add(str(entry["stage_path"]))
+                out.add(os.path.normpath(str(entry["stage_path"])))
     return out
 
 
@@ -950,68 +1189,83 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         receipt["complete"] = False
         receipt["errors"] = [refusal]
         return receipt
-    in_flight = movers_in_flight(queue, tier_id=tier_id)
-    if in_flight:
-        receipt["skipped"] = "movers_in_flight"
-        receipt["movers_in_flight"] = sorted(in_flight)
-        return receipt
-    try:
-        stage_resolved = stage.resolve(strict=True)
-    except OSError as exc:
-        receipt["skipped"] = f"stage_root_unreadable: {exc}"
-        receipt["complete"] = False
-        return receipt
-    attributed = attributed_stage_paths(queue, wanted=wanted,
-                                        residency_root=residency_root)
-    deleted = bytes_deleted = partials = unowned_left = 0
-    errors: list[str] = []
-    for base, _directories, names in os.walk(stage):
-        for name in sorted(names):
-            path = Path(base) / name
-            if name == STAGE_ROOT_MARKER and Path(base) == stage:
-                # The root's own ownership marker: unmarked by the prewarm
-                # stage and named by no fragment, so without this line the
-                # sweep would delete the fact that lets it sweep.
-                continue
-            if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
-                # The ram root's epoch marker, same rule one tier over
-                # (#640): unmarked, unnamed, and the one file that dates
-                # every ram range this queue admits.  Deleting it would mint
-                # a new epoch and drop every resident range the tmpfs still
-                # holds.
-                continue
-            try:
-                if path.is_symlink() or not path.is_file():
+    # The same ownership guard as the egress, held across query and
+    # delete: a publisher, a reader pin, or a promotion handoff that
+    # lands after this snapshot waits out there (start gate) or is seen
+    # here; nothing unlinks between the check and the act.
+    with queue.stage_ownership_lock(str(stage)):
+        in_flight = movers_in_flight(queue, tier_id=tier_id)
+        if in_flight:
+            receipt["skipped"] = "movers_in_flight"
+            receipt["movers_in_flight"] = sorted(in_flight)
+            return receipt
+        try:
+            stage_resolved = stage.resolve(strict=True)
+        except OSError as exc:
+            receipt["skipped"] = f"stage_root_unreadable: {exc}"
+            receipt["complete"] = False
+            return receipt
+        attributed = attributed_stage_paths(queue, wanted=wanted,
+                                            residency_root=residency_root)
+        pin_owners, pin_taint = reader_lease.live_for(
+            queue, None, residency_root=residency_root)
+        if pin_taint:
+            receipt["complete"] = False
+            receipt["errors"] = [
+                f"ownership uncertain: {item}" for item in pin_taint]
+            return receipt
+        # A live pin is attribution: unattributed bytes nobody accounts for
+        # go, pinned bytes never do.
+        attributed |= set(pin_owners)
+        deleted = bytes_deleted = partials = unowned_left = 0
+        errors: list[str] = []
+        for base, _directories, names in os.walk(stage):
+            for name in sorted(names):
+                path = Path(base) / name
+                if name == STAGE_ROOT_MARKER and Path(base) == stage:
+                    # The root's own ownership marker: unmarked by the prewarm
+                    # stage and named by no fragment, so without this line the
+                    # sweep would delete the fact that lets it sweep.
                     continue
-                if stage_resolved not in path.resolve().parents:
+                if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
+                    # The ram root's epoch marker, same rule one tier over
+                    # (#640): unmarked, unnamed, and the one file that dates
+                    # every ram range this queue admits.  Deleting it would mint
+                    # a new epoch and drop every resident range the tmpfs still
+                    # holds.
                     continue
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-                continue
-            if str(path) in attributed:
-                continue
-            partial = _is_mover_partial(name)
-            if not partial:
-                if prewarm_loop._STAGE_TEMPORARY.search(name):
-                    # The prewarm loop reaps its own, once per process, and a
-                    # live one belongs to a copy in flight.
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    if stage_resolved not in path.resolve().parents:
+                        continue
+                except OSError as exc:
+                    errors.append(f"{path.name}: {exc}")
                     continue
-                marked = _marked_by_the_prewarm_stage(path)
-                if marked is None or marked:
-                    unowned_left += 1
+                if os.path.normpath(str(path)) in attributed:
                     continue
-            try:
-                size = path.stat().st_size
-                os.unlink(path)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-                continue
-            deleted += 1
-            bytes_deleted += int(size)
-            partials += 1 if partial else 0
-            _prune_empty(path.parent, stage)
+                partial = _is_mover_partial(name)
+                if not partial:
+                    if prewarm_loop._STAGE_TEMPORARY.search(name):
+                        # The prewarm loop reaps its own, once per process, and a
+                        # live one belongs to a copy in flight.
+                        continue
+                    marked = _marked_by_the_prewarm_stage(path)
+                    if marked is None or marked:
+                        unowned_left += 1
+                        continue
+                try:
+                    size = path.stat().st_size
+                    os.unlink(path)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    errors.append(f"{path.name}: {exc}")
+                    continue
+                deleted += 1
+                bytes_deleted += int(size)
+                partials += 1 if partial else 0
+                _prune_empty(path.parent, stage)
     receipt["entries_deleted"] = deleted
     receipt["bytes_deleted"] = bytes_deleted
     receipt["partials_deleted"] = partials

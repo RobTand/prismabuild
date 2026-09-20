@@ -260,8 +260,11 @@ def test_completed_scope_cleanup_is_idempotent_and_never_releases_new_nonce(scop
     assert queue.cleanup_action_containers(item)['complete']
     calls.clear()
     assert queue.cleanup_action_containers(item)['complete']
-    assert calls == []
+    # Recovery may re-read the read-only export verdict, but must never
+    # re-stop, re-release, or mint authority for a new nonce.
+    assert all(call == 'export_stopped' for call in calls)
     item['resource_scope']['nonce'] = 'e' * 32
+    calls.clear()
     assert not queue.cleanup_action_containers(item)['complete']
     assert calls == []
 
