@@ -1027,7 +1027,7 @@
    "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
    "validation": {
     "state": "partial",
-    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate."
+    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate."
    },
    "workload_proof": {
     "detail": "unknown",
