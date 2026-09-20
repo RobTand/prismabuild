@@ -1519,8 +1519,12 @@ def resume_owed(
     Scans the authoritative ``withdrawn/`` decisions (top level only —
     retired superseded markers live beneath): rows this lane withdrew
     (membership-shaped ``withdrawn_by``, ``withdrawn_host`` == this host)
-    that carry retry budget and have no same-generation done/failed
-    terminal. A row withdrawn by the current owner is this run's own; a
+    that carry retry budget, a proven handoff identity, and have no
+    same-generation done/failed terminal. Membership-shaped rows WITHOUT
+    the proven ``membership_handoff`` decision identity -- ordinary
+    cancellations in handoff clothing, including pre-carrier historical
+    rows -- are never revived; they are reported as retained so the fence
+    stays. A row withdrawn by the current owner is this run's own; a
     row withdrawn by a past owner is adopted only when that supervision
     is provably gone — same rule the broker enforces for gate takeover.
 
@@ -1589,6 +1593,14 @@ def resume_owed(
                 and attempts >= 0 and type(limit) is int
                 and attempts + 1 < limit):
             continue  # no retry budget: terminal stands, nothing owed
+        if not pool_module.membership_handoff_authorized(record):
+            # Membership-shaped but unproven: an ordinary cancellation in
+            # handoff clothing (including pre-carrier historical rows).
+            # Never revived; retained so JOIN/resign keep the fence.
+            skipped.append(
+                f"{action_key[:12]}: membership withdrawal without handoff "
+                "proof: retained, never revived")
+            continue
         status = lineage_status(queue, snapshot, withdrawn_by)
         if status["terminal"] is not None and status["terminal"][0] in (
                 "done", "failed"):

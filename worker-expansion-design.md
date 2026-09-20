@@ -820,3 +820,42 @@ persists exact, stale/foreign/covered/exhausted refuse with the live
 claim standing), the updated R12 two-phase window suite through the
 carrier, an ordinary `fm.resign` drain of a staged consumer end to
 end, and the withdraw/window-adjacent plus 726/funding focused shards.
+
+## R14 addendum (2026-09-20): live authorization and shared carrier readers
+
+> R14 CORRECTION to R12/R13 (preserved above as dated history): owner
+> shape alone classified nothing after R13 either -- R13 still
+> validated the caller's snapshot instead of the live record, and the
+> prefix/owed readers still discovered handoffs by shape. What follows
+> is the accepted contract.
+
+Root review: `withdraw` validated `_preemption_eligible(snap), NOT the
+live record, while `_same_claim` compares only four claim fields --
+so a snapshot copied from the claim with flipped retry permission,
+inflated budget, another key, or another scope could stop a live job
+it did not describe. And the prefix/owed readers still treated any
+supervisor-shaped `withdrawn_by` as a resign decision, so an ordinary
+shape-only cancellation could be revived by the automatic resumer.
+
+- The handoff snapshot is authorized from LIVE fields under the key
+  lock: snapshot action key equals the requested key, `_same_claim`
+  against the live claim, generation uncovered, retry/budget bindings
+  equal to live, scope/nonce identical when either side holds a scope
+  (pre-launch/no-scope handoffs proceed on queue identity), restart
+  permission with remaining budget and lineage re-checked on the live
+  record, and the membership caller kind as one required condition.
+  The durable proof is derived from live fields only. Stale, replaced,
+  covered, exhausted and foreign rows refuse before anything files,
+  except a cover by an already-proven same-generation decision, which
+  is adopted rather than stacked.
+- One shared check, `pool.membership_handoff_authorized`, reads the
+  durable decision at the withdrawal classifier, the prefix chain, the
+  owed census (membership-shaped rows without proof are reported
+  retained, never revived -- pre-carrier history included), and the
+  tier-loop window. Malformed carriers (untyped counters, non-finite
+  generations, drifted bindings) never authorize.
+- Proven RED on 36b30d14dc (forged snapshot stamped without refusal;
+  ordinary shape-only cancellation returned as owed) and GREEN after:
+  carrier contract, updated window/staged suites, an ordinary
+  `fm.resign` drain, the full lane (incl. genuine A->B->C on the finite
+  budget), and the withdraw/window-adjacent plus 726/funding shards.

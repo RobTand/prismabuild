@@ -11,6 +11,7 @@ files an ordinary cancellation and still retires the window.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import sys
@@ -224,3 +225,115 @@ def test_handoff_proof_refuses_before_withdrawal(
     marker = json.loads(
         queue.item_path(pool.WITHDRAWN, covered_key).read_text())
     assert "membership_handoff" not in marker
+
+
+def test_forged_snapshot_bindings_refuse(
+    queue: pool.PoolQueue, monkeypatch,
+) -> None:
+    """A snapshot copied from the live claim but with flipped retry
+    permission, inflated budget, another action's key, or another
+    attempt's scope authorizes nothing: authorization is derived from
+    live fields, and the live job is never stopped by a forgery."""
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = _owner(host)
+
+    flip_key = _hexkey("r13flip")
+    _publish(queue, flip_key, retry_safe=False, max_attempts=1)
+    flip_live = queue.claim(tags=["x86"], owner=f"{host}:1:flip",
+                            capacity={"cpu": 4, "mem_gb": 16})
+    assert flip_live is not None
+    assert flip_live["retry_safe"] is False
+    forged_safe = dict(flip_live, retry_safe=True, max_attempts=3)
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(flip_key, reason="t", by=owner,
+                       membership_handoff=forged_safe)
+    assert not queue.item_path(pool.WITHDRAWN, flip_key).exists()
+    assert queue.item_path(pool.CLAIMED, flip_key).exists()
+
+    inflate_key = _hexkey("r13inflate")
+    _publish(queue, inflate_key, max_attempts=1)
+    inflate_live = queue.claim(tags=["x86"], owner=f"{host}:1:inflate",
+                               capacity={"cpu": 4, "mem_gb": 16})
+    assert inflate_live is not None
+    forged_budget = dict(inflate_live, max_attempts=3)
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(inflate_key, reason="t", by=owner,
+                       membership_handoff=forged_budget)
+    assert not queue.item_path(pool.WITHDRAWN, inflate_key).exists()
+
+    key_key = _hexkey("r13key")
+    _publish(queue, key_key)
+    key_live = _claim(queue, host)
+    wrong_key = dict(key_live, action_key=_hexkey("r13wrong"))
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(key_key, reason="t", by=owner,
+                       membership_handoff=wrong_key)
+    assert not queue.item_path(pool.WITHDRAWN, key_key).exists()
+
+    scope_key = _hexkey("r13scope")
+    _publish(queue, scope_key)
+    scope_live = _claim(queue, host)
+    nonce = "ab" * 16
+    unit = ("prismabuild-job"
+            + hashlib.sha256(
+                (scope_key + nonce).encode()).hexdigest()[:32] + ".slice")
+    scoped = dict(scope_live, resource_scope={
+        "action_key": scope_key, "scope_id": unit, "nonce": nonce,
+        "token": "cd" * 32, "memory_max_bytes": 1 << 30,
+        "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
+        "socket_path": "/run/prismabuild/resources.sock"})
+    queue.item_path(pool.CLAIMED, scope_key).write_text(json.dumps(scoped))
+    scopeless = {k: v for k, v in scoped.items() if k != "resource_scope"}
+    with pytest.raises(pool.PoolContractError):
+        queue.withdraw(scope_key, reason="t", by=owner,
+                       membership_handoff=scopeless)
+    assert not queue.item_path(pool.WITHDRAWN, scope_key).exists()
+    assert json.loads(
+        queue.item_path(pool.CLAIMED, scope_key).read_text()) == scoped
+
+
+def test_malformed_carrier_never_authorizes() -> None:
+    """The shared validator refuses every malformed shape: non-decisions,
+    missing/mismatched proof, untyped counters, and non-finite
+    generations -- against the authoritative marker fields."""
+    host = socket.gethostname()
+    owner = f"{host}:supervisor-9:8"
+    good = {"action_key": "a" * 64, "status": "withdrawn",
+            "attempts": 1, "max_attempts": 4, "published_unix": 100.5,
+            "withdrawn_by": owner,
+            "membership_handoff": {"owner": owner, "attempts": 1,
+                                   "max_attempts": 4,
+                                   "published_unix": 100.5}}
+    assert pool.membership_handoff_authorized(good) is True
+    assert pool.membership_handoff_authorized(None) is False
+    assert pool.membership_handoff_authorized("withdrawn") is False
+    no_proof = dict(good)
+    del no_proof["membership_handoff"]
+    assert pool.membership_handoff_authorized(no_proof) is False
+    foreign_owner = dict(good, withdrawn_by="operator:test")
+    assert pool.membership_handoff_authorized(foreign_owner) is False
+    unshaped_owner = dict(
+        good, withdrawn_by="operator:test",
+        membership_handoff=dict(good["membership_handoff"],
+                                owner="operator:test"))
+    assert pool.membership_handoff_authorized(unshaped_owner) is False
+    bool_counter = dict(
+        good, attempts=True,
+        membership_handoff=dict(good["membership_handoff"], attempts=True))
+    assert pool.membership_handoff_authorized(bool_counter) is False
+    str_budget = dict(
+        good, max_attempts="4",
+        membership_handoff=dict(good["membership_handoff"],
+                                max_attempts="4"))
+    assert pool.membership_handoff_authorized(str_budget) is False
+    for bad_gen in (float("nan"), float("inf"), "100.5", True, None):
+        bad = dict(
+            good, published_unix=bad_gen,
+            membership_handoff=dict(good["membership_handoff"],
+                                    published_unix=bad_gen))
+        assert pool.membership_handoff_authorized(bad) is False, bad_gen
+    drifted = dict(
+        good, membership_handoff=dict(good["membership_handoff"],
+                                      published_unix=101.5))
+    assert pool.membership_handoff_authorized(drifted) is False

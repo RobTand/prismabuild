@@ -640,9 +640,14 @@ def test_resign_resumes_withdrawn_row_after_crash(
     host = socket.gethostname()
     old_owner = f"{host}:supervisor-4194304:1"
     snapshot = _publish_claim(queue, key, max_attempts=3)
-    # Run 1 (crashed): withdrew, then died before terminal/publish.
+    _sealed_shape(monkeypatch)
+    # Run 1 (crashed): planned, withdrew with the proven carrier, then
+    # died before terminal/publish. Run 2 must adopt the proven marker,
+    # not stack a second decision.
+    crashed_plan = queue.plan_requeue(dict(snapshot))
     queue.withdraw(key, reason=f"resign {old_owner}: crash",
-                   by=old_owner)
+                   by=old_owner,
+                   membership_handoff=crashed_plan["snapshot"])
     auth, _ = authority
     gate = Path(auth.maintenance_path)
     _incarnation(monkeypatch)  # new incarnation, same box
@@ -999,7 +1004,9 @@ def test_join_refuses_unsettled_handoff_drain(
     _sealed_shape(monkeypatch)
     _incarnation(monkeypatch)
     snapshot = _publish_claim(queue, key, max_attempts=3)
-    queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner)
+    crashed_plan = queue.plan_requeue(dict(snapshot))
+    queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner,
+                   membership_handoff=crashed_plan["snapshot"])
     auth, _ = authority
     gate = Path(auth.maintenance_path)
     auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
@@ -1126,19 +1133,21 @@ def test_lineage_exact_requires_full_fields(queue: pool.PoolQueue, monkeypatch) 
     """Same owner and same decision timestamp never suffice: altered
     attempts, budget, or parent generation must refuse exact.
 
-    Goes through the real handoff (publish/claim/withdraw/finish/publish)
-    so the exact READY row carries the pool's own prefix chain; then
-    mutates one field at a time in the READY occupant and proves
-    ``lineage_status`` refuses each (foreign, never exact). Reuses the
-    queue's ``_preemption_prefix_valid`` chain owner — no duplicate
-    validator.
+    Goes through the real proven handoff (publish/claim/plan/withdraw
+    with carrier/finish/publish) so the exact READY row carries the
+    pool's own prefix chain over a proven decision; then mutates one
+    field at a time in the READY occupant and proves ``lineage_status``
+    refuses each (foreign, never exact). Reuses the queue's
+    ``_preemption_prefix_valid`` chain owner — no duplicate validator.
     """
     _sealed_shape(monkeypatch)
     key = "3" * 64
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
     snapshot = _publish_claim(queue, key, max_attempts=4)
-    queue.withdraw(key, reason=f"resign {owner}: t", by=owner)
+    pre = queue.plan_requeue(dict(snapshot))
+    queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
+                   membership_handoff=pre["snapshot"])
     queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
     live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
     snap = {"action_key": key, "published_unix": live["published_unix"],
@@ -1208,7 +1217,9 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     snap = real_queue.claim(tags=["x86"], owner=f"{host}:1:q1",
                             capacity={"cpu": 4})
     assert snap is not None
-    real_queue.withdraw(key, reason=f"resign {owner}: drain poll", by=owner)
+    drain_plan = real_queue.plan_requeue(dict(snap))
+    real_queue.withdraw(key, reason=f"resign {owner}: drain poll", by=owner,
+                        membership_handoff=drain_plan["snapshot"])
     real_queue.finish(key, status="failed", detail={}, claim_snapshot=snap)
     assert real_queue.item_path(pool.WITHDRAWN, key).exists()
     assert not real_queue.item_path(pool.READY, key).exists()
@@ -1383,11 +1394,14 @@ def test_lineage_treats_unreadable_ready_as_unknown(
     """An unreadable ready slot is unknown, never absent: nothing plans a
     publication over it — the reconciler retains and JOIN keeps the fence."""
     _incarnation(monkeypatch)
+    _sealed_shape(monkeypatch)
     key = "6" * 64
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
     snapshot = _publish_claim(queue, key, max_attempts=3)
-    queue.withdraw(key, reason=f"resign {owner}: t", by=owner)
+    pre = queue.plan_requeue(dict(snapshot))
+    queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
+                   membership_handoff=pre["snapshot"])
     queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
     live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
     snap = {"action_key": key, "published_unix": live["published_unix"],
@@ -1615,3 +1629,40 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
     assert ready["residency"] == block
     assert int(ready["attempts"]) == 1
     assert residency_plan.superseded(queue, plan) is None
+
+
+def test_shape_only_cancellation_is_never_revived(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """An ordinary supervisor-shaped cancellation is not owed: the real
+    resume_owed reports it retained (never revived), and JOIN keeps the
+    fence on unknown rather than adopting or opening."""
+    key = "7" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-4194304:1"
+    _sealed_shape(monkeypatch)
+    _incarnation(monkeypatch)
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    queue.withdraw(key, reason="ordinary cancel", by=old_owner)
+    queue.finish(key, status="failed",
+                 detail={"termination_reason": "cancelled"},
+                 claim_snapshot=snapshot)
+    owed, skipped = fm.resume_owed(queue, host, f"{host}:supervisor-9:8")
+    assert owed == []
+    assert any("without handoff proof" in entry for entry in skipped), skipped
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
+                   "owner": old_owner})
+    queue.ensure_layout()
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    monkeypatch.setattr(fm, "_mount_identity", lambda path: {
+        "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
+        "mountpoint": "/mnt/shared"})
+    out = fm.join(host, reason="too early", roster_path=roster,
+                  queue_root=queue.root, gate=gate,
+                  runtime_root=_busy_runtime(tmp_path),
+                  broker_call=_broker_call(authority))
+    assert out["status"] == "refused", out
+    assert out["phase"] == "unsettled-unknown", out
+    assert json.loads(gate.read_text())["draining"] is True

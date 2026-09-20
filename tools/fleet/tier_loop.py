@@ -271,11 +271,12 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     identity: ``pool.withdraw`` persists ``membership_handoff`` only after
     proving the live claim still is the planned attempt with restart
     permission, remaining budget and existing lineage.  The window reads
-    that exact decision back here -- owner, attempt, budget and generation
-    all typed and all equal to the marker's own -- so the plan's later
-    phases keep staging through the settlement interval.  A
-    supervisor-shaped ``withdrawn_by`` with no (or a mismatched) proof is
-    an ordinary cancellation and still retires the window.
+    that exact decision back here through the one shared carrier check
+    (owner, attempt, budget and generation all typed and all equal to
+    the marker's own), so the plan's later phases keep staging through
+    the settlement interval.  A supervisor-shaped ``withdrawn_by`` with
+    no (or a mismatched) proof is an ordinary cancellation and still
+    retires the window.
     """
 
     try:
@@ -284,21 +285,7 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
         return False      # unreadable: not a decision this cycle acts on
     if not isinstance(marker, Mapping) or marker.get("preempted_by"):
         return False
-    handoff = marker.get("membership_handoff")
-    if not isinstance(handoff, Mapping):
-        return True
-    if (handoff.get("owner") != marker.get("withdrawn_by")
-            or not isinstance(marker.get("withdrawn_by"), str)):
-        return True
-    if (type(handoff.get("attempts")) is not int
-            or handoff.get("attempts") != marker.get("attempts")):
-        return True
-    if (type(handoff.get("max_attempts")) is not int
-            or handoff.get("max_attempts") != marker.get("max_attempts")):
-        return True
-    if handoff.get("published_unix") != marker.get("published_unix"):
-        return True
-    return False
+    return not pool.membership_handoff_authorized(marker)
 
 
 def drop_prior_ram_epochs(
