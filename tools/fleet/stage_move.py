@@ -166,6 +166,95 @@ _PUBLISH_POLL_S = 0.25
 #: Residency subdirectories that never hold consumer fragments.
 _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 
+#: Byte ceiling for one publisher's lookup reuse (#761), and the conservative
+#: retained sizes it is measured in.  A count of anything -- references,
+#: records, paths -- bounds only the thing it counts, so this is bytes, every
+#: retained row is priced, and each price is charged ONCE at insert from the
+#: actual object: the real string lengths, the real mention count, the real
+#: per-record overhead.  Nothing is free, including a malformed or empty
+#: record, because a row that costs nothing is a row that can be added
+#: without limit.
+#:
+#: Each constant is an over-estimate of CPython's real cost on a 64-bit
+#: build, so the figure :meth:`_index_bytes` reports is never under the
+#: truth.  ``_STR_CHAR_BYTES`` is the UCS-4 width, which is what a
+#: non-Latin-1 path actually costs and four times what an ASCII one does:
+#: erring high is the point, and it means a long or unicode path is charged
+#: what it is rather than a flat guess.
+#:
+#: This prices the RETAINED index only.  The transient cost of decoding one
+#: 22 MB fragment is a peak that is freed before the next lookup; it belongs
+#: to the process's peak RSS, not here, and the two are reported separately.
+#:
+#: On the live forest measured for #761 -- 118 fragments, thirteen of them
+#: naming ~36k paths of about 100 ASCII characters, sidecars totalling 27 KB
+#: -- this prices the index near 40 MB against a measured peak RSS delta of
+#: 52 MB.  192 MiB is well clear of both and under a fifth of the mover's
+#: existing 1 GiB envelope.  Past the ceiling a record is not retained: that
+#: file answers uncached, which costs what it cost before this existed and
+#: is never a different answer.  Because every charge is exact and travels
+#: with its entry, a refusal is never permanent -- it lifts as soon as the
+#: index has room.
+_INDEX_BUDGET_BYTES = 192 << 20
+_STR_HEADER_BYTES = 64
+_STR_CHAR_BYTES = 4
+_DICT_SLOT_BYTES = 104
+_SET_SLOT_BYTES = 32
+_RECORD_OVERHEAD_BYTES = 512
+_MENTION_OVERHEAD_BYTES = 512
+_IDENTITY_FIELD_BYTES = 152
+
+
+def _string_bytes(value: object) -> int:
+    """Conservative retained size of one string: header plus UCS-4 width."""
+
+    return _STR_HEADER_BYTES + _STR_CHAR_BYTES * len(str(value))
+
+
+def _interned_bytes(path: str) -> int:
+    """What holding one path in the shared interned table costs."""
+
+    return _string_bytes(path) + _DICT_SLOT_BYTES
+
+
+def _mention_bytes(mention: tuple) -> int:
+    """What one retained sidecar mention costs: tuple, digest, identity."""
+
+    _size, digest, identity = mention
+    total = _MENTION_OVERHEAD_BYTES
+    if isinstance(digest, str):
+        total += _string_bytes(digest)
+    if isinstance(identity, dict):
+        total += len(identity) * _IDENTITY_FIELD_BYTES
+    return total
+
+
+def _metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
+    """Change evidence for one publication metadata file.
+
+    Device and inode catch a replacement, size and mtime catch a rewrite,
+    ctime catches a permission or ownership change that leaves mtime alone.
+    The same kind of stat fence every strict reader already uses; nothing
+    here invents an identity of its own.
+    """
+
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            int(getattr(info, "st_ctime_ns", 0)))
+
+
+def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
+    """One metadata file's bytes, with the version those bytes were read at.
+
+    ``fstat`` of the open descriptor rather than a second ``stat`` of the
+    name: the version returned names the exact bytes returned, so a
+    concurrent replace between a directory scan and this read can never file
+    fresh bytes under a stale version, or a stale parse under a fresh one.
+    """
+
+    with open(path, "rb") as stream:
+        version = _metadata_version(os.fstat(stream.fileno()))
+        return version, stream.read()
+
 
 def _origin_id_of(path_str: str) -> str | None:
     """``st_size:st_mtime_ns:st_ino`` of a copy source, or ``None``.
@@ -257,6 +346,28 @@ class _StagedPublisher:
         self.manifest_sha256 = manifest_sha256
         self.tier_id = tier_id
         self.cas_root = cas_root
+        # Invocation-local reuse of parsed publication metadata (#761).
+        # ``_proof_search`` runs once per destination -- tens of thousands
+        # per mover -- and again on every publish poll, and before this it
+        # re-opened and re-parsed every consumer fragment on each run (118
+        # files, 334.6 MB, on the live root when this was measured) plus
+        # every relevant sidecar.  Each file is now parsed once per version;
+        # the directory scans and the per-file stat that see additions,
+        # changes and removals still run before every decision, so nothing
+        # decides on evidence that moved.  Process-local, nothing persisted,
+        # dropped with the publisher.  Its own lock because the stage
+        # ownership lock is a POSIX file lock, which does not exclude two
+        # threads of one process from each other.
+        self._lookup_lock = threading.Lock()
+        # Each entry is ``(version, record, charge)``: the charge is measured
+        # from the real object at insert and travels with it, so dropping an
+        # entry cannot forget to discount it and no row is ever free.
+        self._fragments: dict[str, tuple[tuple, object, int]] = {}
+        self._materials: dict[tuple[str, str], tuple[tuple, object, int]] = {}
+        self._interned: dict[str, str] = {}
+        self._interned_cost = 0
+        self._fragment_cost = 0
+        self._material_cost = 0
 
     def try_adopt(self, entry: dict[str, object], destination: Path,
                   source_id: str | None = None,
@@ -488,6 +599,265 @@ class _StagedPublisher:
                 out.append(name)
         return sorted(out)[:5]
 
+    def _index_bytes(self) -> int:
+        """What the reuse index currently costs, in retained bytes.
+
+        Every retained structure is in here -- the shared interned table,
+        the fragment records and the sidecar records -- each charged once
+        from the object it holds.  This is the retained cost, not the peak:
+        a 22 MB fragment's decode buffer is freed before the next lookup and
+        belongs to the process's peak RSS instead.
+        """
+
+        return self._interned_cost + self._fragment_cost + self._material_cost
+
+    def _forget_fragment(self, key: str) -> None:
+        """Drop one fragment entry and discount exactly what it was charged."""
+
+        previous = self._fragments.pop(key, None)
+        if previous is not None:
+            self._fragment_cost -= previous[2]
+
+    def _forget_material(self, key: tuple[str, str]) -> None:
+        """Drop one sidecar entry and discount exactly what it was charged."""
+
+        previous = self._materials.pop(key, None)
+        if previous is not None:
+            self._material_cost -= previous[2]
+
+    def _intern(self, path: str) -> str:
+        """One shared copy of a staged path, charged the first time it lands."""
+
+        existing = self._interned.get(path)
+        if existing is not None:
+            return existing
+        self._interned[path] = path
+        self._interned_cost += _interned_bytes(path)
+        return path
+
+    def _reclaim(self) -> None:
+        """Give back what the index holds for metadata that is no longer there.
+
+        Two kinds of residue, both of which would otherwise sit in the index
+        for the life of the publisher.  A file that *disappears* from the
+        forest is never visited again -- the per-lookup drop paths only run
+        on a file the directory scan still lists -- so its entry is dropped
+        here, by the one authority that can say it is gone: a stat.  And a
+        dropped or replaced record leaves its paths interned but
+        unreferenced, so the interned table is rebuilt from what records
+        still name, and its charge recomputed from scratch rather than
+        adjusted -- the one accounting that cannot drift.
+
+        Run only when the ceiling is actually in the way, never on the hot
+        path: one stat per retained entry, and the retained set is bounded
+        by the forest.
+        """
+
+        for key in [k for k in self._fragments if not os.path.exists(k)]:
+            self._forget_fragment(key)
+        for key in [k for k in self._materials
+                    if not reader_lease.material_path(
+                        self.residency_root, k[0], k[1]).exists()]:
+            self._forget_material(key)
+        live: set[str] = set()
+        for _version, record, _charge in self._fragments.values():
+            if isinstance(record, tuple):
+                live.update(record[1])
+        for _version, record, _charge in self._materials.values():
+            if isinstance(record, dict):
+                live.update(record)
+        self._interned = {}
+        self._interned_cost = 0
+        for path in live:
+            self._intern(path)
+
+    def _room_for(self, cost: int) -> bool:
+        """Whether the index can hold ``cost`` more bytes, reclaiming first.
+
+        ``cost`` is an upper bound that assumes every path it names is new
+        to the interned table, so a yes here is never optimistic.  A refusal
+        only ever follows a reclaim, so it means the index is genuinely that
+        full -- never that its accounting drifted.
+        """
+
+        if self._index_bytes() + cost <= _INDEX_BUDGET_BYTES:
+            return True
+        self._reclaim()
+        return self._index_bytes() + cost <= _INDEX_BUDGET_BYTES
+
+    def _keep_fragment(self, key: str, version: tuple, record: object,
+                       charge: int) -> None:
+        """Retain one fragment entry, replacing and re-pricing any previous."""
+
+        self._forget_fragment(key)
+        self._fragments[key] = (version, record, charge)
+        self._fragment_cost += charge
+
+    def _remember_verdict(self, key: str, version: tuple,
+                          record: object) -> None:
+        """Retain a corrupt-or-foreign file's verdict, if there is room.
+
+        A row that names no path still costs its key, its version tuple and
+        its dict slot.  Pricing it at zero is how an index with a budget
+        grows without limit: a directory of empty or malformed files would
+        be admitted without end.  So it is charged and checked like any
+        other, and refused like any other when the ceiling is reached.
+        """
+
+        self._forget_fragment(key)
+        charge = _RECORD_OVERHEAD_BYTES + _string_bytes(key)
+        if not self._room_for(charge):
+            return
+        self._fragments[key] = (version, record, charge)
+        self._fragment_cost += charge
+
+    def _fragment_record(self, path: Path) -> object:
+        """One fragment file's reusable record, parsed once per version.
+
+        ``None`` for a file that is gone or is not a residency fragment,
+        ``"tainted"`` for one that cannot be read or parsed, otherwise
+        ``(mover_action_key, frozenset of the normalized staged paths its
+        entries name)`` -- everything :meth:`_proof_candidate` asks of a
+        fragment and nothing else, so a 22 MB fragment is retained as a set
+        of interned strings rather than as its parsed document.
+
+        A ``ValueError`` verdict caches against the version that produced
+        it: corrupt content cannot heal without the file changing.  An
+        ``OSError`` never caches -- a permission or transport failure is
+        transient, and the pre-fix code re-attempted it on every lookup, so
+        unreadable stays freshly unreadable rather than becoming a held
+        verdict.  The stat happens on every lookup, so an added, changed or
+        removed file is seen before any decision uses it.
+        """
+
+        key = str(path)
+        try:
+            current = _metadata_version(os.stat(path))
+        except FileNotFoundError:
+            self._forget_fragment(key)
+            return None
+        except OSError:
+            self._forget_fragment(key)
+            return "tainted"
+        cached = self._fragments.get(key)
+        if cached is not None and cached[0] == current:
+            return cached[1]
+        try:
+            version, raw = _read_metadata(path)
+        except FileNotFoundError:
+            self._forget_fragment(key)
+            return None
+        except OSError:
+            self._forget_fragment(key)
+            return "tainted"
+        try:
+            fragment = json.loads(raw)
+        except ValueError:
+            self._remember_verdict(key, version, "tainted")
+            return "tainted"
+        if (not isinstance(fragment, dict)
+                or fragment.get("schema")
+                != residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1):
+            self._remember_verdict(key, version, None)
+            return None
+        names: set[str] = set()
+        for entry in (fragment.get("entries") or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            staged = entry.get("stage_path")
+            if not staged:
+                # ``normpath("")`` is ``"."``, which never equals an absolute
+                # destination -- the pre-fix loop skipped these the same way.
+                continue
+            names.add(os.path.normpath(str(staged)))
+        mover = str(fragment.get("mover_action_key") or "")
+        # Priced from the real objects before anything is interned, so a
+        # record that will not be kept leaves nothing behind.  The interned
+        # share is priced as if every path were new, which it may be after a
+        # reclaim, so the estimate is never optimistic.
+        self._forget_fragment(key)
+        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(key)
+                  + _string_bytes(mover)
+                  + len(names) * _SET_SLOT_BYTES)
+        interning = sum(_interned_bytes(name) for name in names)
+        if not self._room_for(charge + interning):
+            return mover, frozenset(names)
+        record = (mover, frozenset(self._intern(name) for name in names))
+        # Anchored on the version the read saw, not the version the stat saw:
+        # the content held is the content those bytes carried.
+        self._keep_fragment(key, version, record, charge)
+        return record
+
+    def _material_record(self, consumer: str, mover: str) -> object:
+        """One sidecar's reusable record, validated once per version.
+
+        ``None`` (absent -- an undated vouch), ``"tainted"`` (unreadable or
+        invalid), or ``{normalized staged path: the mentions that path
+        carries, in sidecar order}``, each mention a ``(bytes, sha256,
+        file_id)`` triple.  Ordered and complete per path because the digest
+        search and the identity search may legitimately land on different
+        mentions of one path, exactly as they could before.
+
+        ``reader_lease.validate_material`` still runs, so the strictness a
+        sidecar is held to is unchanged; only the repeated read is removed.
+        As with fragments, an ``OSError`` never caches.
+        """
+
+        cache_key = (consumer, mover)
+        path = reader_lease.material_path(self.residency_root, consumer, mover)
+        try:
+            current = _metadata_version(os.stat(path))
+        except FileNotFoundError:
+            self._forget_material(cache_key)
+            return None
+        except OSError:
+            self._forget_material(cache_key)
+            return "tainted"
+        cached = self._materials.get(cache_key)
+        if cached is not None and cached[0] == current:
+            return cached[1]
+        try:
+            version, raw = _read_metadata(path)
+        except FileNotFoundError:
+            self._forget_material(cache_key)
+            return None
+        except OSError:
+            self._forget_material(cache_key)
+            return "tainted"
+        try:
+            body = reader_lease.validate_material(json.loads(raw))
+        except ValueError:
+            self._forget_material(cache_key)
+            charge = _RECORD_OVERHEAD_BYTES + _string_bytes(consumer) \
+                + _string_bytes(mover)
+            if self._room_for(charge):
+                self._materials[cache_key] = (version, "tainted", charge)
+                self._material_cost += charge
+            return "tainted"
+        mentions: dict[str, tuple] = {}
+        for mention in (body.get("entries") or {}).values():
+            normalized = os.path.normpath(str(mention["stage_path"]))
+            mentions[normalized] = mentions.get(normalized, ()) + ((
+                mention.get("bytes"), mention.get("sha256"),
+                mention.get("file_id")),)
+        # Sidecar mentions are the heaviest thing the index holds -- a digest
+        # string and an identity dict each -- so each one is charged what it
+        # actually retains rather than a flat figure.
+        self._forget_material(cache_key)
+        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
+                  + _string_bytes(mover)
+                  + len(mentions) * _DICT_SLOT_BYTES
+                  + sum(_mention_bytes(one)
+                        for carried in mentions.values() for one in carried))
+        interning = sum(_interned_bytes(path) for path in mentions)
+        if not self._room_for(charge + interning):
+            return mentions
+        mentions = {self._intern(path): carried
+                    for path, carried in mentions.items()}
+        self._materials[cache_key] = (version, mentions, charge)
+        self._material_cost += charge
+        return mentions
+
     @staticmethod
     def _published_source_id(norm: str) -> str | None:
         """The origin identity a published file still carries, if any."""
@@ -607,50 +977,44 @@ class _StagedPublisher:
         digest mismatch on the current incarnation, is divergence.  Only
         a record that dates the current incarnation may prove these
         bytes.
+
+        The fragment and the sidecar are read through the publisher's
+        invocation-local reuse (#761), so an unchanged file is parsed once
+        per version rather than once per destination.  What is decided is
+        unchanged -- same order, same verdicts, same fail-closed answers --
+        and the live destination stat below is still taken fresh on every
+        call.
         """
 
-        try:
-            with open(fragment_path) as stream:
-                fragment = json.load(stream)
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError):
-            return "tainted"
-        if (not isinstance(fragment, dict)
-                or fragment.get("schema")
-                != residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1):
-            return None
-        matched = False
-        for record in (fragment.get("entries") or {}).values():
-            if (isinstance(record, dict)
-                    and os.path.normpath(str(record.get("stage_path") or ""))
-                    == norm):
-                matched = True
-                break
-        if not matched:
-            return None
-        mover = str(fragment.get("mover_action_key") or "")
-        if not mover:
-            return "owned"
-        sidecar = reader_lease.read_material(
-            self.residency_root, consumer, mover)
+        with self._lookup_lock:
+            fragment = self._fragment_record(fragment_path)
+            if fragment is None:
+                return None
+            if fragment == "tainted":
+                return "tainted"
+            mover, staged_paths = fragment
+            if norm not in staged_paths:
+                return None
+            if not mover:
+                return "owned"
+            sidecar = self._material_record(consumer, mover)
         if sidecar is None:
             # Published vouch without a date: unprovable either way.
             return "owned"
-        if isinstance(sidecar, Exception):
+        if sidecar == "tainted":
             return "tainted"
+        # Every mention this sidecar makes of the path, in sidecar order:
+        # the digest search and the identity search below may legitimately
+        # settle on different mentions, exactly as they could before.
+        mentions = sidecar.get(norm, ())
         digest: str | None = None
-        for mention in (sidecar.get("entries") or {}).values():
-            if (not isinstance(mention, dict)
-                    or os.path.normpath(
-                        str(mention.get("stage_path") or "")) != norm):
-                continue
+        for size, recorded, _identity in mentions:
             try:
-                if int(mention.get("bytes")) != want:
+                if int(size) != want:
                     continue
             except (TypeError, ValueError):
                 continue
-            digest = mention.get("sha256")
+            digest = recorded
             if not isinstance(digest, str) or not digest:
                 continue
             break
@@ -658,12 +1022,9 @@ class _StagedPublisher:
             return "owned"
         file_id = reader_lease.stat_identity(norm)
         published = None
-        for mention in (sidecar.get("entries") or {}).values():
-            if (isinstance(mention, dict)
-                    and os.path.normpath(
-                        str(mention.get("stage_path") or "")) == norm
-                    and isinstance(mention.get("file_id"), dict)):
-                published = mention["file_id"]
+        for _size, _recorded, identity in mentions:
+            if isinstance(identity, dict):
+                published = identity
                 break
         if file_id is None or not isinstance(published, dict):
             # Identity unreadable: the record can neither prove these bytes
