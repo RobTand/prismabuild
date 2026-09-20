@@ -3351,6 +3351,30 @@ second mint with the first. One tier's lock never blocks another's. Since
 far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
+Since #733 R6 the same per-tier mint lock is the cache-tier mutation
+exclusion, attached by the explicit `PoolQueue.tier_ledger` factory (host
+ledgers carry none): every token rename through a tier ledger -- claim
+begin (non-blocking, declining as `tier_reservation_unavailable`),
+commit/abandon/transfer/release (blocking, completing under the lock),
+mint grow/shrink, egress decharge, stale-handle sweep, and the grant
+`acquire` in fence reservation -- serializes against the dead-name
+reclaim headroom scan, so a held/private token renamed to free between
+the free listing and the holder listing cannot be missed by both and
+reissued as unbacked credit. Lock order is always parent (key
+transition, then stage ownership) into the mint leaf; the mint holder
+never acquires a parent lock, and nothing is held over payload I/O.
+The grow/reclaim census on a tier ledger is error-visible: an
+unreadable directory aborts the mint/reissue with everything retained
+for the next cycle, so capacity is never minted from a partial view;
+host ledgers keep their legacy scans.
+Mixed-version operation is NOT qualified -- a worker or storage role
+without the guard admits outside the exclusion -- so deploying the
+guarded generation requires a quiescent queue and reader state with no
+new tier-admitted workloads until worker AND storage roles converge
+(root reviews the actual publication). No bounded-overshoot exception:
+above-wanted credit from an unguarded interleaving is unbacked at every
+prefix even when a later retire would trim it.
+
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
 rate differ by whatever the ARC answered. One live receipt on dl380g10 records
