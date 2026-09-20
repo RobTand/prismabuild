@@ -357,7 +357,29 @@ def _driver_pbrun_argv(
     return captured["argv"]
 
 
-def _sealed_pbrun_demand(
+def _submit_leg_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: dict,
+) -> list:
+    """Submit one spec through the driver; return the pbrun argv it built."""
+
+    captured: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = '{"action_key": "key-1"}'
+        stderr = ""
+
+    def fake_run(argv, *, timeout_s):
+        captured["argv"] = list(argv)
+        return _Done()
+
+    monkeypatch.setattr(pbcanary, "run_process", fake_run)
+    pbcanary.submit_leg(
+        {"pbrun": tmp_path / "pbrun.py"}, spec, tmp_path, "run-1", -7, None)
+    return captured["argv"]
+
+
+def _sealed_pbrun_params(
     pbrun_argv: list, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> dict:
     """Decode one driver command line through pbrun's real parser and defaults.
@@ -394,7 +416,13 @@ def _sealed_pbrun_demand(
     monkeypatch.setattr(sys, "argv", ["pbrun.py", *pbrun_argv[2:]])
     with pytest.raises(_PbrunSealed):
         pbrun.main()
-    return sealed[0]["params"]["demand"]
+    return sealed[0]["params"]
+
+
+def _sealed_pbrun_demand(
+    pbrun_argv: list, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    return _sealed_pbrun_params(pbrun_argv, tmp_path, monkeypatch)["demand"]
 
 
 def test_submit_leg_demand_survives_the_real_pbrun_parser(
@@ -425,3 +453,54 @@ def test_submit_leg_empty_demand_keeps_the_pbrun_defaults(
     assert "--demand" not in argv
     assert _sealed_pbrun_demand(argv, tmp_path, monkeypatch) == {
         "cpu": 1, "mem_gb": 4}
+
+
+# --- the leg's pinned image becomes a sealed claim requirement (#714) --------
+
+def test_submit_leg_declares_a_present_container_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spec carrying ``container_image`` is submitted with the flag.
+
+    Leg 2's spec has always named the digest-pinned campaign image for its
+    metadata and its ``docker run``; the driver never forwarded it, so the
+    action was admitted on tags alone and a box without the image could
+    claim it and fail inside the payload -- #714 replayed by the canary
+    itself.
+    """
+
+    spec = {"name": "leg-2", "argv": ["true"], "demand": {"gpu": 1},
+            "container_image": PINNED_IMAGE}
+    argv = _submit_leg_argv(tmp_path, monkeypatch, spec)
+    assert argv.count("--container-image") == 1
+    assert argv[argv.index("--container-image") + 1] == PINNED_IMAGE
+    # An option of pbrun's, before the command separator.
+    assert argv.index("--container-image") < argv.index("--")
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_submit_leg_omits_the_flag_when_there_is_no_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value,
+) -> None:
+    """Ordinary legs keep their command line: no empty declaration."""
+
+    spec = {"name": "leg-1", "argv": ["true"], "demand": {}}
+    if value is not None:
+        spec["container_image"] = value
+    argv = _submit_leg_argv(tmp_path, monkeypatch, spec)
+    assert "--container-image" not in argv
+
+
+def test_submit_leg_container_image_reaches_the_sealed_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end through pbrun's real parser: the image is a sealed
+    ``params.container_images`` requirement, which is what makes a box
+    without the image deny the claim instead of spending the attempt.
+    """
+
+    spec = {"name": "leg-2", "argv": ["true"], "demand": {"gpu": 1},
+            "container_image": PINNED_IMAGE}
+    argv = _submit_leg_argv(tmp_path, monkeypatch, spec)
+    params = _sealed_pbrun_params(argv, tmp_path, monkeypatch)
+    assert params["container_images"] == [PINNED_IMAGE]
