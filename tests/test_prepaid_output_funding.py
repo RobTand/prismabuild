@@ -1649,6 +1649,8 @@ def test_filed_request_corrupt_after_funding_never_claims(
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     request_path = (chain["cas"].root / "requests" / mover[:2]
                     / f"{mover}.json")
+    # The CAS publishes requests read-only; corrupt the bytes in place.
+    os.chmod(request_path, 0o644)
     request_path.write_bytes(b"{not-json")
     _exhaust_free(ledger, chain["squatter"])
     free0 = ledger.available().get(KIND, 0)

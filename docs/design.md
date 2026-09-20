@@ -4152,7 +4152,14 @@ history. At claim, `_begin_tier_acquire` reads the CAS-filed request ONCE per
 action (cas_root from the listing row): requiredness = immutable ref OR sealed
 projection key OR any funding-file state; the READY projection must agree
 with the immutable ref, and output cover must bind back to it; unknown READY
-or request evidence defers, never fresh (key ABSENCE alone is legacy).
+or request evidence defers, never fresh (key ABSENCE alone is legacy). A
+successful cover rests on that same immutable agreement rather than replacing
+it: unknown request evidence, a filed request that declares no reference, a
+contradictory projection, or a record that fails the immutable binding all
+drop the cover (defer, never fresh); the funding-record binding is the
+shared identity fields, since `batch_namespace` is projection-only (the
+record's closed schema carries no such field). The renamed claim re-checks
+the same agreement.
 Transfer uses the accepted tier mutation guard (`_guarded_mutation`,
 blocking; host ledgers no-op). Writer (744) MUST include the reference for
 every output mover via `build_produced_output_batch_ref` (omission yields
