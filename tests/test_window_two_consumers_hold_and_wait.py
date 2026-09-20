@@ -141,7 +141,17 @@ def _fragment(queue: pool.PoolQueue, consumer: str, mover: str, *,
             "offset": 0, "sha256": "a" * 64}}})
 
 
-def test_two_consumers_reach_hold_and_wait(tmp_path: Path) -> None:
+def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
+    """Corrected policy (#745): the wedge cannot form; both windows complete.
+
+    The hazard this fixture used to reproduce -- two currents landing in
+    room one advance needed -- is unreachable through the gated window: the
+    first cycle admits exactly one consumer and gates the other
+    ``joint-fit-stall`` with no mover published for it, so no joint hold
+    can form.  The admitted window completes, its egress frees the room,
+    and the gated window is admitted and completes, all through the same
+    production transitions the hazard proof used.
+    """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
@@ -168,74 +178,74 @@ def test_two_consumers_reach_hold_and_wait(tmp_path: Path) -> None:
     m0a, m1a = _mover_key(plan_a, 0), _mover_key(plan_a, 1)
     m0b, m1b = _mover_key(plan_b, 0), _mover_key(plan_b, 1)
 
-    # The coordinator stages windows, not admits them: four movers queued.
+    # Corrected policy (#745): the coordinator admits one window, not both.
+    # The gate covers each newcomer's current-plus-protected-next minimum,
+    # so the second current cannot land in the room the first advance was
+    # promised.  The winner is queue-scan order; the test reads it off the
+    # events rather than hard-coding it.
     events = tier_loop.residency_window(queue, tiers=tiers)
-    assert {e["action_key"] for e in events
-            if e.get("event") == "mover-published"} == {m0a, m1a, m0b, m1b}
+    published = {e["action_key"] for e in events
+                 if e.get("event") == "mover-published"}
+    assert published == {m0a, m1a} or published == {m0b, m1b}
+    first_consumer = CONSUMER_A if m0a in published else CONSUMER_B
+    gated = [e for e in events if e.get("event") == "window-gated"]
+    assert len(gated) == 1
+    gated_consumer = CONSUMER_B if first_consumer == CONSUMER_A else CONSUMER_A
+    assert gated[0]["consumer"] == gated_consumer
+    assert gated[0]["reason"] == "joint-fit-stall"
+    assert gated[0]["permanent"] is False
+    # The wedge interleaving is unreachable through the policy: the gated
+    # consumer has no published mover, so no joint hold can form.
+    loser_m0 = m0b if first_consumer == CONSUMER_A else m0a
+    assert not queue.item_path(pool.READY, loser_m0).exists()
+    P, Q = first_consumer, gated_consumer
+    p0, p1 = (m0a, m1a) if P == CONSUMER_A else (m0b, m1b)
+    q0, q1 = (m0b, m1b) if P == CONSUMER_A else (m0a, m1a)
 
-    # Reachable claim order: one current window per consumer lands first.
-    got = queue.claim(tags=["dl380g10"], owner="w-hw",
-                      ready=_ordered_ready(queue, m0a, m0b, m1a, m1b,
-                                           CONSUMER_A, CONSUMER_B))
-    assert got is not None and got["action_key"] == m0a
-    got = queue.claim(tags=["dl380g10"], owner="w-hw",
-                      ready=_ordered_ready(queue, m0b, m0a, m1a, m1b,
-                                           CONSUMER_A, CONSUMER_B))
-    assert got is not None and got["action_key"] == m0b
-    # m1A/m1B need 2 GiB against 1 free; both consumers still lead-wait.
-    assert queue.claim(tags=["dl380g10"], owner="w-hw") is None
-
-    # Both copies land complete; finish keeps each 2 GiB pin.
-    for mover, consumer, name in ((m0a, CONSUMER_A, "/pool/a0.bin"),
-                                  (m0b, CONSUMER_B, "/pool/b0.bin")):
+    # The admitted window runs to completion; the room it frees admits Q.
+    for mover, name in ((p0, "/pool/p0.bin"), (p1, "/pool/p1.bin")):
+        got = queue.claim(tags=["dl380g10"], owner="w-hw",
+                          ready=_ordered_ready(queue, mover))
+        assert got is not None and got["action_key"] == mover
         queue.record_move(mover, {
-            "consumer_action_key": consumer, "tier_id": TIER,
+            "consumer_action_key": P, "tier_id": TIER,
             "stage_root": str(stage), "complete": True,
             "bytes_staged": PHASE_GIB * GIB})
-        _fragment(queue, consumer, mover, path=name, stage=stage)
+        _fragment(queue, P, mover, path=name, stage=stage)
         queue.finish(mover, status="executed")
-        assert queue.item_path(pool.DONE, mover).exists()
-        assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
-    assert tier_loop.compose_map(queue, CONSUMER_A) is not None
-    assert tier_loop.compose_map(queue, CONSUMER_B) is not None
-
-    # Positive control: both consumers are admittable on their staged leads.
+    assert tier_loop.compose_map(queue, P) is not None
     got = queue.claim(tags=["dl380g10"], owner="w-hw",
-                      ready=_ordered_ready(queue, CONSUMER_A, CONSUMER_B,
-                                           m1a, m1b))
-    assert got is not None and got["action_key"] == CONSUMER_A
+                      ready=_ordered_ready(queue, P))
+    assert got is not None and got["action_key"] == P
+    queue.finish(P, status="executed")
+    for mover in (p0, p1):
+        stage_release.evict(queue, mover, consumer_action_key=P,
+                            stage_root=str(stage))
+
+    admitted = False
+    for _ in range(4):
+        events = tier_loop.residency_window(queue, tiers=tiers)
+        if q0 in {e["action_key"] for e in events
+                  if e.get("event") == "mover-published"}:
+            admitted = True
+            break
+    assert admitted, "gated window never admitted after egress"
+    for mover, name in ((q0, "/pool/q0.bin"), (q1, "/pool/q1.bin")):
+        got = queue.claim(tags=["dl380g10"], owner="w-hw",
+                          ready=_ordered_ready(queue, mover))
+        assert got is not None and got["action_key"] == mover
+        queue.record_move(mover, {
+            "consumer_action_key": Q, "tier_id": TIER,
+            "stage_root": str(stage), "complete": True,
+            "bytes_staged": PHASE_GIB * GIB})
+        _fragment(queue, Q, mover, path=name, stage=stage)
+        queue.finish(mover, status="executed")
+    assert tier_loop.compose_map(queue, Q) is not None
     got = queue.claim(tags=["dl380g10"], owner="w-hw",
-                      ready=_ordered_ready(queue, CONSUMER_B, CONSUMER_A,
-                                           m1a, m1b))
-    assert got is not None and got["action_key"] == CONSUMER_B
-
-    # --- the stuck state: every gate answers through production code ---
-    events = tier_loop.residency_window(queue, tiers=tiers)
-    kinds = {str(e.get("event")) for e in events}
-    assert "mover-published" not in kinds
-    assert "egress-published" not in kinds
-    stalled = {str(e.get("consumer")) for e in events
-               if e.get("event") == "window-stalled"}
-    assert stalled == {CONSUMER_A, CONSUMER_B}
-
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.available().get("stage_gib") == 1
-    assert ledger.begin_acquire("probe-hw-next", {"stage_gib": 2}) is None
-    assert queue.item_path(pool.READY, m1a).exists()
-    assert queue.item_path(pool.READY, m1b).exists()
-
-    pressure = tier_loop.window_pressure(queue, tiers=tiers)
-    assert pressure.get(TIER) == 2
-    assert stage_release.sweep(
-        queue, stage_roots={TIER: str(stage)}, pressure=pressure) == []
-
-    for consumer, lead in ((CONSUMER_A, m1a), (CONSUMER_B, m1b)):
-        verdict = queue.residency_verdict({
-            "action_key": consumer,
-            "residency": {"schema": pool.RESIDENCY_SCHEMA_V1,
-                          "tier_id": TIER, "manifest_sha256": MANIFEST,
-                          "manifest_bytes": 1 << 30, "leads": [lead]}})
-        assert verdict["state"] == "lead_not_resident"
-        assert ledger.holder_tokens(lead) == {}
-        assert queue.move_record(lead) is None
+                      ready=_ordered_ready(queue, Q))
+    assert got is not None and got["action_key"] == Q
+    queue.finish(Q, status="executed")
+    for mover in (q0, q1):
+        stage_release.evict(queue, mover, consumer_action_key=Q,
+                            stage_root=str(stage))
+    assert queue.tier_ledger(TIER).available().get("stage_gib") == CAPACITY_GIB

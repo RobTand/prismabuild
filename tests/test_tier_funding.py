@@ -251,10 +251,15 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
     finally:
         plan_path.write_bytes(original)
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
-    # Torn record authorizes nothing and wedges nothing.
+    # Torn record authorizes nothing and is not absence (R4): the fence
+    # defers beside it -- never replaced, never freed -- and fencing
+    # recovers only through true absence.
     queue.funding_path(mover, TIER).write_text("{torn", encoding="utf-8")
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
-    # A coordinator re-fence repairs the torn binding with a new generation.
+    assert queue.reserve_fence(TIER, grant, _fields(
+        queue, plan, mover, row, kind="stage_gib"), 2) is False
+    assert queue.funding_path(mover, TIER).read_text(encoding="utf-8") == "{torn"
+    queue.funding_path(mover, TIER).unlink()
     assert queue.reserve_fence(TIER, grant, _fields(
         queue, plan, mover, row, kind="stage_gib"), 2) is True
     repaired = queue.read_funding(mover, TIER)
@@ -374,8 +379,14 @@ def test_physical_tokens_never_count_as_credit(tmp_path: Path) -> None:
     queue.finish(mover, status="executed")
 
 
-def test_malformed_funding_is_inert_and_replaceable(tmp_path: Path) -> None:
-    """Unknown fields / wrong shapes authorize nothing; fencing recovers."""
+def test_malformed_funding_is_inert_and_retained_until_absent(
+        tmp_path: Path) -> None:
+    """Unknown fields / wrong shapes authorize nothing; fencing defers (R4).
+
+    A malformed record is present, unreadable-as-a-binding evidence: it may
+    still stand for held tokens, so nothing replaces or fences beside it.
+    Recovery is through true absence alone.
+    """
     queue = _queue(tmp_path, stage_gib=6)
     mover, consumer = _hexkey("mal-mover"), _hexkey("mal-consumer")
     plan = _plan(queue, consumer, mover, tag="mal")
@@ -388,8 +399,12 @@ def test_malformed_funding_is_inert_and_replaceable(tmp_path: Path) -> None:
     assert queue.read_funding(mover, TIER) is None
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-mal")
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row, kind="stage_gib"), 2) is True
+    fields = _fields(queue, plan, mover, row, kind="stage_gib")
+    assert queue.reserve_fence(TIER, grant, fields, 2) is False
+    assert json.loads(path.read_text(encoding="utf-8"))["extra"] is True
+    assert queue.read_funding(mover, TIER) is None  # still unproved, retained
+    path.unlink()
+    assert queue.reserve_fence(TIER, grant, fields, 2) is True
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "reserved"
 

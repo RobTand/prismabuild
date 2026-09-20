@@ -1709,8 +1709,40 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     return {"publish": publish, "evict": evict, "stall": stall}
 
 
+def _advance_entry(leg: Mapping[str, object]) -> dict[str, object]:
+    """One leg in the shape the fence binder reads (plan-quoted, not row-quoted)."""
+
+    return {
+        "phase": str(leg["phase"]),
+        "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
+        "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
+        "stage_gib": int(leg["stage_gib"]),
+        "chunk_index": leg["chunk_index"],
+        "start_bytes": int(leg["start_bytes"]),
+        "end_bytes": int(leg["end_bytes"]),
+    }
+
+
+def _advance_prior(legs: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Every earlier leg listed for the safe-retire check replenish requires."""
+
+    return [{
+        "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
+        "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
+        "stage_gib": int(leg["stage_gib"]),
+    } for leg in legs]
+
+
+def _entry_list(legs: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Entry shape for a leg list, shared by waiting and queued answers."""
+
+    return [_advance_entry(leg) for leg in legs]
+
+
 def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
                   published: Sequence[str] = (),
+                  rowed: Sequence[str] = (),
+                  staged: Sequence[str] = (),
                   mover_role: str = "mover_row") -> dict[str, object]:
     """The minimum simultaneous current-plus-next needs of one window leg.
 
@@ -1722,6 +1754,16 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     submitter sealed without (``mover_role`` absent) contributes nothing.
     Raises :class:`ResidencyPlanError` for an unknown mover role, like
     :func:`window`.
+
+    ``rowed`` names the movers with a queued ready row; ``staged`` the ones
+    holding tokens for landed bytes; ``queued`` returns those ahead legs in
+    read order, with ``queued_prior`` the full-ordered legs before the first
+    of them.  ``fence_target`` names the one advance the fence protects --
+    exactly the leg after the frontier (the earliest unstaged ahead leg),
+    which pays from free under the gate's count -- with ``fence_prior``
+    the legs before it: one fence per window, and the phase the blind
+    pre-publish take and the post-publish bind agree on.  The gate reads
+    ``waiting``/``prior`` exactly as before.
     """
 
     if mover_role not in _MOVEMENT_ROLES:
@@ -1731,19 +1773,52 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     ahead = remaining(plan, accepted_phase)
     ahead_names = [str(phase["name"]) for phase in ahead]
     done = set(published)
-    waiting = [leg for leg in _legs(plan, mover_role=mover_role)
+    rowed_set = set(rowed)
+    staged_set = set(staged)
+    full = _legs(plan, mover_role=mover_role)
+    waiting = [leg for leg in full
                if leg["phase"] in ahead_names
                and str(leg["mover_row"]["action_key"]) not in done]  # type: ignore[index]
+    queued = [leg for leg in full
+              if leg["phase"] in ahead_names
+              and str(leg["mover_row"]["action_key"]) in rowed_set]  # type: ignore[index]
+    # Frontier-first fencing: one fence per window per pass.  The frontier
+    # (the earliest unstaged ahead leg) pays from free under the gate's
+    # count; exactly the leg after it is the advance the fence protects.
+    # Blind (unpublished advance) and bind (published advance) target the
+    # same phase, so the pre-publish take and the post-publish bind agree;
+    # legs before the target excluding the frontier are staged by
+    # construction, so the retired check over ``fence_prior`` is a sanity
+    # rail rather than a discovery.
+    frontier_index: int | None = None
+    for index, leg in enumerate(full):
+        if (leg["phase"] in ahead_names
+                and str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                not in staged_set):
+            frontier_index = index
+            break
+    fence_target: dict[str, object] | None = None
+    fence_prior: list[dict[str, object]] = []
+    if frontier_index is not None and frontier_index + 1 < len(full):
+        candidate = full[frontier_index + 1]
+        if candidate["phase"] in ahead_names:
+            fence_target = _advance_entry(candidate)
+            fence_prior = _advance_prior(full[:frontier_index])
     if not waiting:
         return {"current_min_gib": 0, "next_min_gib": None, "final": True,
                 "reading_phase": ahead_names[0] if ahead_names else None,
                 "next_phase": None, "next_mover_action_key": None,
                 "next_chunk_index": None, "waiting": [], "prior": [],
+                "queued": _entry_list(queued), "queued_prior": [],
+                "fence_target": fence_target, "fence_prior": fence_prior,
                 "lead_mover_action_key": None}
     first, rest = waiting[0], waiting[1:]
-    full = _legs(plan, mover_role=mover_role)
     order = [str(leg["mover_row"]["action_key"]) for leg in full]  # type: ignore[index]
     prior = full[:order.index(str(first["mover_row"]["action_key"]))]  # type: ignore[index]
+    queued_prior: list[dict[str, object]] = []
+    if queued:
+        queued_prior = full[:order.index(
+            str(queued[0]["mover_row"]["action_key"]))]  # type: ignore[index]
     out: dict[str, object] = {
         "current_min_gib": int(first["stage_gib"]),
         "next_min_gib": int(rest[0]["stage_gib"]) if rest else None,
@@ -1755,23 +1830,14 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
         "next_chunk_index": rest[0]["chunk_index"] if rest else None,
         "lead_mover_action_key": (str(full[0]["mover_row"]["action_key"])  # type: ignore[index]
                                   if full else None),
-        # The advance itself: the first waiting leg is what the fence
+        # The advance itself: the first queued leg is what the fence
         # protects (its claim), with every earlier leg listed for the
-        # safe-retire check replenish requires.
-        "waiting": [{
-            "phase": str(leg["phase"]),
-            "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
-            "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
-            "stage_gib": int(leg["stage_gib"]),
-            "chunk_index": leg["chunk_index"],
-            "start_bytes": int(leg["start_bytes"]),
-            "end_bytes": int(leg["end_bytes"]),
-        } for leg in waiting],
-        "prior": [{
-            "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
-            "egress_action_key": str(leg["egress_row"]["action_key"]),  # type: ignore[index]
-            "stage_gib": int(leg["stage_gib"]),
-        } for leg in prior],
+        # safe-retire check replenish requires.  ``waiting`` stays the
+        # unpublished future the gate decides on.
+        "waiting": _entry_list(waiting),
+        "prior": _advance_prior(prior),
+        "queued": _entry_list(queued),
+        "queued_prior": _advance_prior(queued_prior),
     }
     return out
 

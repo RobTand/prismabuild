@@ -1018,16 +1018,16 @@
    },
    "id": "PRG-04",
    "implementation": {
-    "commit": null,
-    "path": null,
-    "state": "no"
+    "state": "partial",
+    "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420",
+    "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked."
    },
    "owner": "PB:tiers",
    "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
    "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "state": "partial",
+    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate."
    },
    "workload_proof": {
     "detail": "unknown",

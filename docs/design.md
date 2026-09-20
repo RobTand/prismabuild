@@ -4129,6 +4129,27 @@ claim, even when the mover still holds the full token count: those tokens may
 already represent physical bytes. Normal pin/egress rules govern those bytes.
 The present single-residency schema permits at most one funded tier per mover.
 
+Recovery reads at the authoritative mutation points distinguish *missing*
+from *unreadable, corrupt, or empty* (`PoolQueue.read_funding_evidence`):
+`read_funding` still collapses both to `None` for reads that decide nothing,
+but reserve, settle and the protect pass defer on unknown — a present record,
+terminal proof, or holder census that cannot be read is unproved authority,
+never absence, so nothing is unlinked, closed, cancelled or fenced beside it
+(each deferral names its reason). Holder censuses that gate a mutation read
+error-visible (`_glob_visible`, #742 semantics); `Path.glob` hides `EACCES`
+as an empty listing, which would silently strand a held fence while its
+record closes. The split stale-rehome retry verifies exact post-transfer
+ownership across mover+grant — the mover empty and every bound name under the
+grant — before closing `transferring -> released` or taking any deficit,
+because `ResourceLedger.transfer` suppresses individual rename failures and
+its returned count cannot witness previously moved names; a short or failed
+rename retains the record and the partial split for the next cycle, and the
+same retry converges once the fault clears. These are the recovery rules for
+the existing seams, proven by targeted component tests only; the claim
+path's `funded_cover` still answers `(0, None)` on unreadable records
+(fail-closed for cover), and no whole-fleet conformance or deployed-support
+claim is made.
+
 This is the claim primitive, not the complete progress policy. Joint window
 funding, fairness and two-consumer liveness remain unqualified until the tier
 loop uses it. Funding generated outputs from a producer's already admitted

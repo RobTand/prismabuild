@@ -26,6 +26,13 @@ consumers.  Admission serializes via retry (one mover wins
 queue-scan order with no fairness, no starvation bound, and no
 permanent-oversize-vs-transient-wait typing at the window layer (that typing
 exists only per-mover at claim time).
+
+Update (#745, window progress policy on the accepted funded-claim
+primitive): the coordinator now gates newcomers on current-plus-protected-
+next minimum admission.  The publish-both test below asserts the corrected
+policy -- exactly one window admitted, the other gated ``joint-fit-stall``
+transient -- while the remaining tests stay as the audit record of the
+hazard it closes.
 """
 from __future__ import annotations
 
@@ -121,7 +128,19 @@ def test_two_windows_each_fit_alone_but_jointly_exceed_free(tmp_path) -> None:
     assert joint > 5  # each fits the 5 GiB snapshot alone; together they do not
 
 
-def test_residency_window_publishes_two_consumers_from_one_snapshot(tmp_path) -> None:
+def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> None:
+    """Corrected policy: the gate admits one newcomer; the other waits typed.
+
+    Same setup that used to publish both consumers' movers against one free
+    snapshot (the PRG-04 hazard: a publish reserves nothing).  The window
+    gate now covers each newcomer's current-plus-protected-next minimum
+    against the joint footprint, so exactly one consumer's movers publish
+    and the other is gated ``joint-fit-stall`` (transient, never permanent):
+    a second current may not land in the room the first advance was
+    promised.  The winner is queue-scan order, so the test reads it off the
+    events rather than hard-coding it.  Publishing still reserves nothing --
+    ``free`` is unchanged -- which is exactly why the gate must decide.
+    """
     queue = _queue(tmp_path, capacity_gib=5)
     plan_a = _plan(queue, CONSUMER_A, seed="moverA")
     plan_b = _plan(queue, CONSUMER_B, seed="moverB")
@@ -135,11 +154,14 @@ def test_residency_window_publishes_two_consumers_from_one_snapshot(tmp_path) ->
     published = [(e["consumer"], e["phase"]) for e in events
                  if e.get("event") == "mover-published"]
     consumers = {c for c, _p in published}
-    # Both live consumers are served from the same ledger snapshot: a publish
-    # reserves nothing, so the second decision cannot see the first.
-    assert CONSUMER_A in consumers and CONSUMER_B in consumers
-    # Jointly the published movers exceed the 5 GiB the snapshot offered: the
-    # ledger still reports the same free for both, admission sorts it out later.
+    assert len(consumers) == 1
+    gated = [e for e in events if e.get("event") == "window-gated"]
+    assert len(gated) == 1
+    (winner,) = consumers
+    assert gated[0]["consumer"] != winner
+    assert gated[0]["reason"] == "joint-fit-stall"
+    assert gated[0]["permanent"] is False
+    # The publish itself still reserves nothing; the gate did the deciding.
     kinds = queue.tier_ledger(TIER).available()
     assert kinds.get("stage_gib", 0) == 5
 
