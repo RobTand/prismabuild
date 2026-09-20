@@ -2072,8 +2072,23 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             # landed for cancel purposes.
             target_fence_live = False
             if mover_holds:
-                fence_record = queue.read_funding(mover, tier_id)
-                if (isinstance(fence_record, dict)
+                fence_status, fence_record, fence_reason = (
+                    queue.read_funding_evidence(mover, tier_id))
+                if fence_status == "unknown":
+                    # The mover's holdings may be a live bound fence whose
+                    # record cannot be read; reading them as landed bytes
+                    # would cancel real reservation authority on a guess.
+                    # Defer with the record named.
+                    unknown_consumers.add((key, tier_id))
+                    events.append({"event": "advance-deferred-unknown-evidence",
+                                   "consumer": key, "tier_id": tier_id,
+                                   "leg": mover_role,
+                                   "error": fence_reason
+                                   or "funding record unreadable"})
+                    if added_extra:
+                        running_extra -= added_extra
+                    continue
+                if (fence_status == "record"
                         and fence_record.get("state") in (
                             "reserved", "transferring")):
                     target_fence_live = True
@@ -2089,8 +2104,24 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     running_extra -= added_extra
                 continue
             if held_grant > 0:
-                record = queue.read_funding(mover, tier_id)
-                if record is None:
+                record_status, record, record_reason = (
+                    queue.read_funding_evidence(mover, tier_id))
+                if record_status == "unknown":
+                    # Unknown is not absent: a present-but-unreadable
+                    # record may still bind the grant-held tokens, and
+                    # binding beside it would double-fence.  Defer with
+                    # the reason named; the reserve path defers the same
+                    # way on its own strict read.
+                    unknown_consumers.add((key, tier_id))
+                    events.append({"event": "advance-deferred-unknown-evidence",
+                                   "consumer": key, "tier_id": tier_id,
+                                   "leg": mover_role,
+                                   "error": record_reason
+                                   or "funding record unreadable"})
+                    if added_extra:
+                        running_extra -= added_extra
+                    continue
+                if record_status == "absent":
                     # Tokens held with no binding (a crash between acquire
                     # and write): bind the names now rather than fence twice.
                     # A failed bind proves nothing -- deny, do not publish.
@@ -2108,7 +2139,23 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         if added_extra:
                             running_extra -= added_extra
                         continue
-                    record = queue.read_funding(mover, tier_id)
+                    _reread_status, record, _reread_reason = (
+                        queue.read_funding_evidence(mover, tier_id))
+                    if _reread_status != "record":
+                        # The bind claims success but its record cannot be
+                        # read back: deny publication and retain both the
+                        # fence and the record for the next cycle rather
+                        # than cancel on a guess.
+                        gated[(key, tier_id)] = {
+                            "reason": window_credit.REASON_STALL,
+                            "permanent": False, "need_gib": cur,
+                            "tier_id": tier_id,
+                            "output_note":
+                                window_credit.OUTPUT_UNENFORCED_NOTE,
+                        }
+                        if added_extra:
+                            running_extra -= added_extra
+                        continue
                 # Coordinator-side binding check: the fence belongs to this
                 # live plan and consumer.  A replaced plan (same mover keys
                 # under a new digest) or a foreign consumer never inherits
@@ -2483,8 +2530,18 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
         with queue._transition_locked(mover, blocking=False) as acquired:
             if not acquired:
                 return events
-            record = queue.read_funding(mover, str(tier_id))
-            if record is None:
+            status, record, funding_reason = queue.read_funding_evidence(
+                mover, str(tier_id))
+            if status == "unknown":
+                # A present-but-unreadable record may still bind held
+                # tokens: name it and retain, never settle beside it.
+                events.append({"event": "advance-deferred-unknown-evidence",
+                               "consumer": consumer, "tier_id": str(tier_id),
+                               "leg": str(mover_role),
+                               "error": funding_reason
+                               or "funding record unreadable"})
+                return events
+            if status == "absent":
                 return events
             state = str(record.get("state"))
             if state in ("consumed", "released"):
@@ -2513,6 +2570,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
             if state == "transferring":
                 bound_to_attempt = False
                 proof_unknown: Exception | None = None
+                proof_reason: str | None = None
                 for _state in (pool.DONE, pool.FAILED):
                     try:
                         ended = pool._read_json(queue.item_path(_state, mover))
@@ -2522,6 +2580,22 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         try:
                             if queue.item_path(_state, mover).exists():
                                 proof_unknown = exc
+                                break
+                        except (OSError, pool.PoolContractError) as exc2:
+                            proof_unknown = exc2
+                            break
+                        continue
+                    if ended is None:
+                        # ``_read_json`` answers ``None`` for ENOENT and
+                        # for a present-but-empty file.  Only ENOENT is
+                        # absence: a zero-byte proof is present and
+                        # unproved -- it may be this attempt's own torn
+                        # binding, so it defers like any unreadable one.
+                        try:
+                            if queue.item_path(_state, mover).exists():
+                                proof_reason = (
+                                    f"terminal proof present but empty: "
+                                    f"{queue.item_path(_state, mover)}")
                                 break
                         except (OSError, pool.PoolContractError) as exc2:
                             proof_unknown = exc2
@@ -2539,8 +2613,11 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         proof_names = {
                             str(name) for name in
                             tier_proof.get("tokens") or []}
-                    except (TypeError, ValueError):
-                        continue
+                    except (TypeError, ValueError) as exc:
+                        # A malformed present proof is unknown evidence,
+                        # not positive absence of the binding.
+                        proof_unknown = exc
+                        break
                     if (str(tier_proof.get("generation")) == bound_generation
                             and proof_names == bound_names
                             and proof_names):
@@ -2548,17 +2625,24 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         break
                 if bound_to_attempt:
                     return events
-                if proof_unknown is not None:
+                if proof_unknown is not None or proof_reason is not None:
                     events.append({"event": "advance-deferred-unknown-evidence",
                                    "consumer": consumer,
                                    "tier_id": str(tier_id),
                                    "leg": str(mover_role),
-                                   "error": f"terminal proof unreadable: {proof_unknown!r}"})
+                                   "error": (
+                                       f"terminal proof unreadable: "
+                                       f"{proof_unknown!r}"
+                                       if proof_unknown is not None
+                                       else proof_reason)})
                     return events
             try:
-                mover_names = {
-                    path.name for path in pool._glob(
-                        ledger.held_dir / mover, "*-*")}
+                # Error-visible census (the accepted #742 semantics):
+                # ``Path.glob`` hides an ``EACCES`` holder directory as an
+                # empty listing, which would silently strand a held fence
+                # while the record closes.  True absence (no holder
+                # directory) reads empty; unreadable defers below.
+                mover_names = pool.held_names_visible(ledger, mover)
             except (OSError, pool.PoolContractError, ValueError) as exc:
                 events.append({"event": "advance-deferred-unknown-evidence",
                                "consumer": consumer, "tier_id": str(tier_id),
@@ -2737,9 +2821,19 @@ def _settle_protected(queue: pool.PoolQueue,
             scan_ledger = queue.tier_ledger(scan_tier)
         except (OSError, pool.PoolContractError, ValueError):
             continue
-        scan_record = queue.read_funding(mover_name, scan_tier)
-        if scan_record is None or scan_record.get("state") in (
-                "consumed", "released"):
+        scan_status, scan_record, scan_reason = queue.read_funding_evidence(
+            mover_name, scan_tier)
+        if scan_status == "unknown":
+            # Unreadable record: nothing may settle against it.  Name it
+            # and keep the scan moving; the fence and record both retain.
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "consumer": None, "tier_id": str(scan_tier),
+                           "leg": "mover_row",
+                           "error": scan_reason
+                           or "funding record unreadable"})
+            continue
+        if (scan_status == "absent"
+                or scan_record.get("state") in ("consumed", "released")):
             continue
         scan_leg: str | None = None
         for (_key, _tier), _entry in sorted(protected.items()):
