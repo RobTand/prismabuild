@@ -4290,6 +4290,16 @@ anything unanswerable retains the charge. Capability tag `reader-lease-v1`
 is advertised only once qualified and deployed. Capacity liveness (who may
 hold how much against whom) stays a named next policy step.
 
+Automatic ref recovery binds the owning action's exact nonce, scope, worker
+incarnation and terminal record, separately from the material's namespace.
+Cleanup obtains the broker's token-gated stopped-scope export; a release
+reply alone is not containment proof. If that export is incomplete and exact
+attempt refs remain, `finish_pending` retains the claim and reservations.
+The existing worker reaper retries normal cleanup after settlement; egress
+can then reclaim orphan refs. A lost attestation file can be reconstructed
+from a validated complete export stored in the terminal. Unknown scope or
+pin state retains ownership, and an old attempt cannot release a successor.
+
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
 A consumer that fails with movers published leaves them running for nobody.
