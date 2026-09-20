@@ -290,3 +290,42 @@ def test_tainted_fragment_fails_closed_and_retains_charge(tmp_path: Path) -> Non
     assert receipt["errors"] != []
     assert staged.is_file()  # nothing unlinked
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER) != {}
+
+
+def test_owner_namespace_separation_never_borrows_terminal(tmp_path: Path) -> None:
+    """OWNER (producer+attempt) vs NAMESPACE (material/readset) stay distinct."""
+
+    origin, _ = _origin_files(tmp_path)
+    scope = _scope(str(origin))
+    namespace = po.output_consumer_key(scope)
+    assert namespace != PRODUCER
+    assert len(namespace) == 64
+    # Reservation holder is the namespace (accounting), scope file is under
+    # the owner (filing); terminal/containment proofs name the owner only.
+    assert po.reservation_key(scope) == namespace
+    queue = _queue(tmp_path)
+    path = po.declare_scope(queue.root, scope)
+    assert PRODUCER in str(path)
+    assert namespace not in str(path)
+    assert po.READER_HELPER_ROOT_ENV == "PRISMABUILD_READER_HELPER_ROOT"
+
+
+def test_canonical_expected_distinguishes_equal_sized_files(tmp_path: Path) -> None:
+    """PB730 collision: same span/start/end/movers must not alias two objects."""
+
+    origin, files = _origin_files(tmp_path)
+    scope = _scope(str(origin))
+    descriptors = _descriptors((origin, files), scope)
+
+    # Two 4096 B objects at offset 0 under one cover share every field the
+    # current pin_id names (consumer/tier/epoch/start/end/movers/generations);
+    # their canonical expected sets must differ by key + digest.
+    twin_a = {"0:/src/alpha.pt": {"bytes": 4096, "sha256": "a" * 64}}
+    twin_b = {"0:/src/beta.pt": {"bytes": 4096, "sha256": "b" * 64}}
+    assert po.canonical_expected_id(twin_a) != po.canonical_expected_id(twin_b)
+    full = {f"0:/src/f{i}.pt": {"bytes": 4096, "sha256": f"{i:064x}"}
+            for i in range(2)}
+    assert po.canonical_expected_id(full) != po.canonical_expected_id(twin_a)
+    total = sum(d["bytes"] for d in descriptors)
+    assert po.label_span_for_manifest(total) == {
+        "start_bytes": 0, "end_bytes": total}

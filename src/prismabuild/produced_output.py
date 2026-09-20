@@ -19,8 +19,38 @@ Ownership:
   * PB owns copy/adopt + material generation + lease + retirement (this
     scope + existing movers/residency/ledgers + reader_lease lane).
 
+  OWNER vs NAMESPACE (root direction, binding here):
+  * OWNER = (producer_action_key, attempt{nonce, scope_id}): the running
+    admitted GPU action/attempt. Holder binding, ref attempts, and the
+    containment/terminal proof (`containment_certificate_ok`) name the
+    OWNER only. Retry mints a new OWNER attempt; old refs never transfer.
+  * NAMESPACE = output_consumer_key(scope): the material/readset namespace
+    (fragment dir, composed map, pin directory, ledger reservation holder).
+    It is derived, has NO terminal record, and must NEVER be confused with
+    the OWNER key nor borrow another action's terminal proof. A containment
+    certificate naming the NAMESPACE is invalid by construction.
+  * Writer digests are reused, never recomputed: descriptors bind the exact
+    owner's streaming receipt (`SerializedEntryDigest` on write,
+    `hashlib.sha256(payload)` on in-memory checkpoint pickle), never a
+    hash-after-write reread of the HDD payload. `_file_sha256` rereads in
+    cost_streaming are loader-side (source shards/metadata), not produced
+    outputs.
+
 Status: PROTOTYPE for root review. Shared production wiring waits for root
 approval of the concrete API. No capability is advertised by this file.
+
+Root SDK heads-up (tracked, not owned here):
+  * PB730 `pin_id_for` excludes expected keys: two equal-sized source files
+    under one cover at offset 0 collide. PB owner is correcting to a
+    canonical object set + generation identity; this module already seals
+    that set (`canonical_expected_id`) for the manifest and requires the
+    corrected pin to include it (§4 table, §13 design addendum). No edit to
+    `reader_lease.py` from this lane.
+  * Sealed helper root is `PRISMABUILD_READER_HELPER_ROOT`
+    (immutable generation root; PQ verifies `__file__` under it).
+  * Span = label-source manifest coordinates, not physical staged offset
+    (always 0 under content-addressed names) nor the logical window cursor
+    (`accepted_phase`). See `label_span_for_manifest`.
 """
 
 from __future__ import annotations
@@ -49,6 +79,12 @@ PRODUCED_OUTPUT_MANIFEST_SCHEMA_V1 = (
 #: dynamic output fragments with external input fragments.
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
 OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
+
+#: Sealed immutable generation helper root (root-selected, Q2). PQ resolves
+#: the published runtime helper by this environment value, never by a mutable
+#: `/repo` checkout, and verifies the imported `reader_lease.__file__` lives
+#: under it. Spelled once here so PB + PQ cannot drift.
+READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 
 _HEX = frozenset("0123456789abcdef")
 
@@ -210,12 +246,15 @@ def total_reservation_bytes(scope: Mapping[str, object]) -> int:
 def output_consumer_key(scope: Mapping[str, object]) -> str:
     """The material/readset namespace for this scope, distinct from the owner.
 
-    The lease owner is the running (producer_action_key, attempt). The
-    composed output map lives under this derived 64-hex namespace so dynamic
-    output fragments are never mixed into the external input map and
-    compose() keeps its one-manifest-identity assumption. The namespace must
-    never be confused with the owner action key and must never borrow
-    another action's terminal proof.
+    The lease OWNER is the running (producer_action_key, attempt). The
+    composed output map, pin directory, and ledger reservation holder live
+    under this derived 64-hex NAMESPACE so dynamic output fragments are never
+    mixed into the external input map and compose() keeps its
+    one-manifest-identity assumption. The namespace has no terminal record:
+    containment/terminal proofs name the OWNER key + attempt only. A
+    certificate naming this namespace is invalid and must refuse
+    (`*-retain`). The namespace must never be confused with the owner action
+    key and must never borrow another action's terminal proof.
     """
 
     checked = validate_scope(scope)
@@ -298,6 +337,54 @@ def output_manifest_sha256(descriptors: list[Mapping[str, object]]) -> str:
         [dict(d) for d in descriptors], sort_keys=True,
         separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def canonical_expected_id(
+    expected: Mapping[str, Mapping[str, object]],
+) -> str:
+    """Canonical object-set identity for a pin window (PB730 collision fix).
+
+    `reader_lease.pin_id_for` on the pending lane names
+    (consumer|tier|epoch|start|end|movers|generations) but NOT the expected
+    keys: two equal-sized source files under one cover at offset 0 with equal
+    size collide to one pin_id. The corrected pin must include this canonical
+    set (sorted `key:bytes:sha256-or-null`, `|`-joined, sha256 hex). PB owner
+    is fixing `pin_id_for` now; this helper seals the set PB-side so the
+    manifest, the `expected` argument, and the future pin agree on one
+    spelling. No edit to `reader_lease.py` from this lane.
+    """
+
+    parts = []
+    for key in sorted(expected):
+        spec = expected[key]
+        if not isinstance(spec, Mapping):
+            raise ProducedOutputError("expected specs must be objects")
+        size = spec.get("bytes")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ProducedOutputError("expected bytes must be positive")
+        digest = spec.get("sha256")
+        if digest is not None and not (
+                isinstance(digest, str) and len(digest) == 64
+                and all(c in _HEX for c in digest)):
+            raise ProducedOutputError("expected sha256 must be hex or null")
+        parts.append(f"{key}:{size}:{digest}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def label_span_for_manifest(total_bytes: int) -> dict[str, int]:
+    """Label-source span for a whole-scope window (Q3).
+
+    Span = label-source manifest coordinates `[0, total)`: the window the pin
+    names. It is NOT the physical staged offset (always 0 under
+    content-addressed staged names) and NOT the logical window cursor
+    (`accepted_phase` progress). Per-entry spans are the entry's
+    declared-file coordinates `[offset, offset+bytes)`. Callers pass this
+    `span` to `reader_lease.acquire`; coverage is proven by `expected`, never
+    by span arithmetic.
+    """
+
+    total = _positive_int(total_bytes, where="label span total_bytes")
+    return {"start_bytes": 0, "end_bytes": total}
 
 
 def scope_file_path(queue_root: str | Path, scope: Mapping[str, object]) -> Path:
@@ -441,6 +528,7 @@ __all__ = [
     "PRODUCED_OUTPUT_MANIFEST_SCHEMA_V1",
     "OUTPUT_SCOPES_SUBDIR",
     "OUTPUT_FRAGMENTS_SUBDIR",
+    "READER_HELPER_ROOT_ENV",
     "ProducedOutputError",
     "mint_generation",
     "validate_scope",
@@ -448,6 +536,8 @@ __all__ = [
     "output_consumer_key",
     "validate_descriptor",
     "output_manifest_sha256",
+    "canonical_expected_id",
+    "label_span_for_manifest",
     "scope_file_path",
     "declare_scope",
     "output_fragment_root",
