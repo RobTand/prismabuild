@@ -3890,6 +3890,14 @@ under the consumer's transition lock:
   `mover-publish-deferred-stale-window` (or its ram spelling) event. Egress
   publication stays outside this boundary: freeing bytes the consumer has
   read past is cleanup, not a new child.
+* `tier_loop.withdraw_dead_consumer_movers` sweeps one terminal per
+  consumer-lock transaction. Its scan observes the terminal and checks for a
+  live consumer outside the lock, so both are re-read inside it -- through
+  `residency_plan.live_state`, whose uncertain answer defers -- and the plan
+  attribution, every child withdrawal and the reap happen there too. Without
+  the lock, a pass that read the old terminal could reach the lead a
+  concurrent resubmission had just published and cancel it; `reap`'s locked
+  recheck runs far too late to undo that.
 
 `handoff_safe` reads under the same discipline. It holds the consumer's lock
 across the whole scan and each child's transition lock across that child's

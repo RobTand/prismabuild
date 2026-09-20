@@ -965,6 +965,14 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     withdrew was already marked superseded at withdrawal, so its body stays
     readable while its claimed children conclude and no publication can come
     from it in the meantime.
+
+    The sweep of one terminal is one consumer-lock transaction.  The scan
+    observes the terminal and checks the consumer from outside that lock, so
+    both are re-read inside it, and the plan attribution, every child
+    withdrawal and the reap happen there too.  A resubmission of the same key
+    publishes its consumer and its lead under the same lock, so a stale pass
+    cannot reach the new generation's rows; a live or unreadable consumer
+    defers the sweep to the next cycle (#708 review).
     """
 
     events: list[dict[str, object]] = []
@@ -978,63 +986,90 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
             key = name[:-len(".json")] if name.endswith(".json") else name
             if len(key) != 64:
                 continue
-            item = pool._read_json(path)
-            if not isinstance(item, dict):
-                continue
-            if (queue.item_path(pool.READY, key).exists()
-                    or queue.item_path(pool.CLAIMED, key).exists()):
-                # Resubmitted under the same key: a new generation, live work.
-                continue
-            plan, incarnation = residency_plan.read_filed(queue, key)
-            if plan is None:
-                continue      # not a staged consumer, or an unreadable plan
-            if (state == pool.DONE
-                    and residency_plan.superseded(queue, plan) is None):
-                # A finished consumer that was never superseded keeps its
-                # frozen plan: a retry republishes the same children.
-                continue
-            failed = False
-            for mover_key in residency_plan.mover_keys(plan):
-                receipt = queue.move_record(mover_key)
-                if (isinstance(receipt, Mapping)
-                        and receipt.get("complete") is True):
-                    continue  # a resident range: adoption's, not withdrawal's
-                if queue.item_path(pool.READY, mover_key).exists():
-                    origin = pool.READY
-                elif queue.item_path(pool.CLAIMED, mover_key).exists():
-                    origin = pool.CLAIMED
-                else:
-                    continue  # finished or never published: nothing to stop
-                try:
-                    outcome = queue.withdraw(
-                        mover_key, reason=f"consumer-{state}", by="tier-loop")
-                except (pool.PoolContractError, OSError) as exc:
-                    events.append({
-                        "event": "dead-consumer-mover-withdraw-failed",
-                        "consumer": key, "mover": mover_key, "state": origin,
-                        "withdrawn": False, "error": repr(exc)})
-                    failed = True
-                    continue
-                done = outcome.get("status") in ("withdrawn", "already_withdrawn")
-                if not done:
-                    failed = True
-                events.append({
-                    "event": "dead-consumer-mover-withdrawn",
-                    "consumer": key, "mover": mover_key, "state": origin,
-                    "withdrawn": bool(done), "status": outcome.get("status")})
-            if failed:
-                continue      # the plan is how the next cycle retries
-            reaped = residency_plan.reap(
-                queue, key, reason=f"consumer-{state}",
-                plan=plan, filing=incarnation)
-            if reaped is not None:
-                events.append({
-                    "event": "residency-plan-reaped", "consumer": key,
-                    "tier_id": str(plan["tier_id"]),
-                    "reason": f"consumer-{state}",
-                    "phases": len(reaped.get("phases") or []),
-                    "movers": len(residency_plan.mover_keys(reaped))})
+            _sweep_dead_consumer(queue, key=key, state=state, path=path,
+                                 events=events)
     return events
+
+
+def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
+                         path: Path, events: list[dict[str, object]]) -> None:
+    """One terminal record's sweep, inside the consumer's transition lock.
+
+    The terminal and the no-live-parent observation are made outside the
+    lock by the directory scan, so both are re-read here before anything acts
+    on them.  A resubmission publishes the same consumer key, and its lead,
+    under this same transition lock: holding it across the re-read, the plan
+    attribution, every child withdrawal and the reap means a stale pass
+    either runs wholly before the new generation exists or observes its live
+    rows here and leaves them alone.  Without it, a pass that read the old
+    terminal can withdraw the NEW generation's lead, and ``reap``'s locked
+    recheck is far too late to undo a cancellation (#708 review).
+
+    The lock order is the one every writer keeps, parent before child:
+    ``queue.withdraw`` and ``reap`` take the mover keys' own locks while this
+    consumer's is held, and nothing here waits on a child a parent does not
+    already hold.
+    """
+
+    with queue._transition_locked(key):
+        item = pool._read_json(path)
+        if not isinstance(item, dict):
+            return
+        live, _why = residency_plan.live_state(queue, key)
+        if live is not None or _why:
+            # Resubmitted under the same key: a new generation, live work.
+            # A queue that cannot be read is uncertainty, not absence, and
+            # defers the sweep exactly as it defers a handoff.
+            return
+        plan, incarnation = residency_plan.read_filed(queue, key)
+        if plan is None:
+            return      # not a staged consumer, or an unreadable plan
+        if (state == pool.DONE
+                and residency_plan.superseded(queue, plan) is None):
+            # A finished consumer that was never superseded keeps its
+            # frozen plan: a retry republishes the same children.
+            return
+        failed = False
+        for mover_key in residency_plan.mover_keys(plan):
+            receipt = queue.move_record(mover_key)
+            if (isinstance(receipt, Mapping)
+                    and receipt.get("complete") is True):
+                continue  # a resident range: adoption's, not withdrawal's
+            if queue.item_path(pool.READY, mover_key).exists():
+                origin = pool.READY
+            elif queue.item_path(pool.CLAIMED, mover_key).exists():
+                origin = pool.CLAIMED
+            else:
+                continue  # finished or never published: nothing to stop
+            try:
+                outcome = queue.withdraw(
+                    mover_key, reason=f"consumer-{state}", by="tier-loop")
+            except (pool.PoolContractError, OSError) as exc:
+                events.append({
+                    "event": "dead-consumer-mover-withdraw-failed",
+                    "consumer": key, "mover": mover_key, "state": origin,
+                    "withdrawn": False, "error": repr(exc)})
+                failed = True
+                continue
+            done = outcome.get("status") in ("withdrawn", "already_withdrawn")
+            if not done:
+                failed = True
+            events.append({
+                "event": "dead-consumer-mover-withdrawn",
+                "consumer": key, "mover": mover_key, "state": origin,
+                "withdrawn": bool(done), "status": outcome.get("status")})
+        if failed:
+            return      # the plan is how the next cycle retries
+        reaped = residency_plan.reap(
+            queue, key, reason=f"consumer-{state}",
+            plan=plan, filing=incarnation)
+        if reaped is not None:
+            events.append({
+                "event": "residency-plan-reaped", "consumer": key,
+                "tier_id": str(plan["tier_id"]),
+                "reason": f"consumer-{state}",
+                "phases": len(reaped.get("phases") or []),
+                "movers": len(residency_plan.mover_keys(reaped))})
 
 
 def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,

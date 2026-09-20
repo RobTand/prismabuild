@@ -997,7 +997,7 @@ def child_keys(plan: Mapping[str, object]) -> list[str]:
 _LIVE_STATE_LABELS = {_pool.CLAIMED: "claimed", _pool.READY: "queued"}
 
 
-def _item_state(queue, action_key: str) -> tuple[str | None, str]:
+def live_state(queue, action_key: str) -> tuple[str | None, str]:
     """Where one key is queued right now: ``CLAIMED``, ``READY``, or nothing.
 
     The caller holds the key's transition lock, so a claim cannot be in
@@ -1006,7 +1006,8 @@ def _item_state(queue, action_key: str) -> tuple[str | None, str]:
     missing, and a reader that turned an I/O error into "empty" would infer a
     safety nobody proved -- so an absent pair is confirmed by listing the two
     directories before it is believed.  ``(None, why)`` is that uncertainty,
-    and every caller must defer on it.
+    and every caller must defer on it: ``handoff_safe`` refuses on it, and the
+    dead-consumer sweep skips the key for this cycle.
     """
 
     for state in (_pool.CLAIMED, _pool.READY):
@@ -1057,7 +1058,7 @@ def handoff_safe(queue, consumer_action_key: str,
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
     with queue._transition_locked(key):
-        state, why = _item_state(queue, key)
+        state, why = live_state(queue, key)
         if why:
             return False, f"the consumer: {why}"
         if state is not None:
@@ -1065,7 +1066,7 @@ def handoff_safe(queue, consumer_action_key: str,
         for child in child_keys(plan):
             try:
                 with queue._transition_locked(child):
-                    state, why = _item_state(queue, child)
+                    state, why = live_state(queue, child)
             except OSError as exc:                            # pragma: no cover
                 return False, f"its row {child[:12]} could not be locked: {exc}"
             if why:
