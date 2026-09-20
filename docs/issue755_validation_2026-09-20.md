@@ -140,24 +140,54 @@ branch does not touch those blocks.
 
 ## Live retry handoff (root)
 
-After merge + publish + role convergence on a new runtime generation, the
-existing live state contains: consumer `5a12fdad...` holding tokens under
-`7b420c95...` with its **stale** material (inode 92690), B
-(`7378ecc3...`/`43e21bbc...`) still holding tokens with the **valid current
-material** (inode 143497), and the current file intact on both hosts.
+After merge + publish + role convergence on a new runtime generation.
 
-- A **retry under a new consumer key** of manifest
+**Live donor census (read-only, 2026-09-20, post-fix review).** The stage
+file is still `ino 143497 / size 1296 / mtime_ns 1789905858950807132 /
+ctime_ns 1789905858951807153`. Nine held fragments name
+`/stage/prewarm/pq-live-reader-20260920/calib-8x16.safetensors`; their
+materials against that stat:
+
+| mover | consumer | state | material vs live |
+|---|---|---|---|
+| `7378ecc39a19` | `43e21bbc1b3d` | done, held | **CURRENT** (ino 143497) |
+| `7b420c953d1a` | `5a12fdadcffd` | **failed**, held | stale (ino 92690) |
+| `227426b8578a` | `552c5bd6b93f` | failed, held | stale (ino 143407) |
+| `ebce561f1a03` | `2c3534901da9` | failed, held | stale (ino 92691) |
+| `2db88a9ee2c0` | `67076f7ef328` | done, held | stale (ino 143404) |
+| `45b01a067c7a` | `01c3e3110281` | done, held | stale (ino 143405) |
+| `6168d1fca577` | `8aff19ff7203` | done, held | stale (ino 143406) |
+| `b6cd41b5e79d` | `36f795f71e51` | done, held | stale (ino 143408) |
+| `4ef35de63adf` | `2ec358c9e0cd` | done, held | stale (ino 143496) |
+
+The wedged consumer `5a12fdad…` has since gone terminal through the
+existing stall policy (`failed`), and `ready` is empty — nothing live
+names any of these ranges.
+
+- **A surviving current donor exists**: `7378ecc3…` (consumer `43e21bbc…`,
+  terminal, unreserved, still holding tokens, material dating the live
+  inode). A new consumer key retrying manifest
   `48a88eb75cf57598a24b7fba2c809105a88f6e824238ab9d5c649ccbbc0e8b98`,
-  range 0–1296, tier `prismabuild-stage:dl380g10`, should now adopt from B
-  (`adopted_from 7378ecc3...`), publish material dating inode 143497, and
-  pass the strict pinned read (`file-identity-changed` gone).
-- If the consumer is retried under the same key instead, its mover's
-  zero-copy path now adopts the current incarnation (stale records no
-  longer poison `_proof_search`) and republishes fresh dated material under
-  its own key.
+  range 0–1296, tier `prismabuild-stage:dl380g10`, therefore heals **by
+  adoption through the fixed path alone**: the eight stale candidates
+  decline `donor_file_changed` and fall through, `7378ecc3…` is adopted,
+  the successor's material dates inode 143497, and the strict pinned read
+  passes (`file-identity-changed` gone). No cleanup is required for this
+  shape.
+- **Had no current donor survived**, the supported existing path is:
+  the stalled consumer goes terminal through the action stall policy
+  (already the mechanism that failed `5a12fdad…`), its and the other
+  stale holders' egress/orphan sweep releases the tokens and deletes the
+  unshared name once no holder or live pin remains, and the resubmitted
+  consumer's mover republishes the name as a first publication
+  (`absent → copying → published`) with fresh dated material — stale-donor
+  refusal alone would not heal that shape, and nothing in this branch
+  claims it would.
+- A same-key retry of the failed consumer is no longer the live shape
+  (`5a12fdad…` is terminal); resubmission under a new key is.
 - No manual claim/pin/receipt edits or shared-cache deletions were made or
   are needed; cleanup, if any, belongs to the existing sweep/egress
-  mechanisms once the wedged consumer goes terminal.
+  mechanisms.
 
 Commands (coordinator-side, read-only except PB submission):
 
