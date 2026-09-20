@@ -1139,10 +1139,17 @@ def resign(
                         # original attempt's exact terminal (publishing
                         # while the holder is live races its finish,
                         # whose requeue disposition would overwrite it).
+                        # The withdraw carries the plan's snapshot so the
+                        # queue can prove the handoff itself -- live claim
+                        # still that attempt, restart permission with
+                        # remaining budget and lineage -- and persist its
+                        # identity in the immutable decision; a shape-only
+                        # owner string proves nothing and files ordinary.
                         plan = queue.plan_requeue(snap["record"])
                         result = queue.withdraw(
                             action_key,
-                            reason=f"resign {owner}: {reason}", by=owner)
+                            reason=f"resign {owner}: {reason}", by=owner,
+                            membership_handoff=plan["snapshot"])
                         handled[action_key] = {"handoff": "withdrawn",
                                                "snapshot": _snap_id(snap),
                                                "withdraw": result.get("status")}

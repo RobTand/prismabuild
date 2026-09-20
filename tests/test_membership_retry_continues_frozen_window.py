@@ -166,10 +166,13 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     assert snap_a is not None and snap_a["action_key"] == CONSUMER
 
     # The ordinary resign sequence, with a real window tick inside the
-    # interval while the withdrawal is still visible before requeue.
+    # interval while the withdrawal is still visible before requeue. The
+    # withdraw carries the handoff plan so the queue can prove (not
+    # assume) the handoff and persist its identity in the decision.
     requeue = queue.plan_requeue(dict(snap_a))
     withdrawn = queue.withdraw(CONSUMER, reason=f"resign {owner}: test",
-                               by=owner)
+                               by=owner,
+                               membership_handoff=requeue["snapshot"])
     assert withdrawn["residency_plan_superseded"] is False
     interval = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert residency_plan.superseded(queue, plan) is None
@@ -235,7 +238,8 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
                          capacity={"cpu": 4, "mem_gb": 16})
     assert snap_m is not None and snap_m["action_key"] == MOVER0
     requeue = queue.plan_requeue(dict(snap_m))
-    queue.withdraw(MOVER0, reason=f"resign {owner}: test", by=owner)
+    queue.withdraw(MOVER0, reason=f"resign {owner}: test", by=owner,
+                   membership_handoff=requeue["snapshot"])
     interval = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert residency_plan.superseded(queue, plan) is None
     assert not [e for e in interval

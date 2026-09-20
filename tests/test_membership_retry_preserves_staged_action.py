@@ -120,9 +120,11 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path) -> dict[str, object]:
 
 def _resign_handoff(queue: pool.PoolQueue, key: str, snap: dict,
                     owner: str) -> tuple[dict, dict]:
-    """The ordinary resign sequence through the real queue transitions."""
+    """The ordinary resign sequence through the real queue transitions,
+    carrying the handoff plan the withdraw proof requires."""
     plan = queue.plan_requeue(dict(snap))
-    withdrawn = queue.withdraw(key, reason=f"resign {owner}: test", by=owner)
+    withdrawn = queue.withdraw(key, reason=f"resign {owner}: test", by=owner,
+                               membership_handoff=plan["snapshot"])
     queue.finish(key, status="failed",
                  detail={"termination_reason": "resign-test"},
                  claim_snapshot=snap)

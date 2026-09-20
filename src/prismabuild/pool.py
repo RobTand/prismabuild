@@ -10028,6 +10028,7 @@ class PoolQueue:
         by: str = "",
         preempted_by: str | None = None,
         expected_claim: Mapping[str, object] | None = None,
+        membership_handoff: Mapping[str, object] | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
@@ -10041,6 +10042,18 @@ class PoolQueue:
         ``expected_claim`` confines an admission withdrawal to the exact
         attempt it selected. A successor changes nothing and returns
         ``claim_changed``; ordinary operator withdrawals omit this guard.
+
+        ``membership_handoff`` carries the exact claimed snapshot a
+        membership resigner built its requeue plan from.  It is proven
+        here -- live claim still that attempt, generation uncovered,
+        restart permission with remaining budget and existing lineage --
+        and only then persisted as the decision's explicit
+        ``membership_handoff`` identity, which is what preserves the
+        sealed plan and what the tier-loop window classification reads.
+        A supervisor-shaped ``by`` with no (or a failing) proof files an
+        ordinary cancellation: the owner's shape alone authorizes
+        nothing, and stale, replaced, covered, exhausted or foreign rows
+        refuse BEFORE anything is stopped or filed.
 
         The immutable generation decision survives a new publication retiring
         the visible withdrawn record. Claimed records, leases and reservations
@@ -10069,6 +10082,49 @@ class PoolQueue:
                     "state": CLAIMED if record is not None else None,
                     "released": 0, "signalled": None}
         origin: str | None = CLAIMED if record is not None else None
+        handoff_proof: dict[str, object] | None = None
+        if membership_handoff is not None:
+            # A membership handoff is proven against the live claim, never
+            # assumed from the owner's shape: the caller passes the exact
+            # claimed snapshot its requeue plan was built from, and this
+            # call re-verifies the live claim still is that attempt
+            # (`_same_claim`, the guard admission passes as
+            # `expected_claim`), that no withdrawal already covers its
+            # generation, and that restart permission, remaining attempt
+            # budget and existing lineage still hold
+            # (`_preemption_eligible`).  Stale reads, replaced claims,
+            # covered generations, exhausted budgets and foreign rows all
+            # refuse BEFORE anything is stopped or filed, so a failed
+            # proof can neither strand work nor retire a plan.  Runs under
+            # this method's key lock, so the proof still holds at filing.
+            if not isinstance(membership_handoff, Mapping):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} is not a claimed record")
+            snap = dict(membership_handoff)
+            if record is None or not _same_claim(record, snap):
+                raise PoolContractError(
+                    f"membership handoff claim changed for {key[:12]}: "
+                    "the live claim is not the planned attempt")
+            if self.withdrawal_covers(record, action_key=key) is not None:
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} is already covered "
+                    "by a withdrawal decision")
+            if not self._preemption_eligible(snap):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} carries no restart "
+                    "permission, remaining budget, or lineage")
+            published = snap.get("published_unix")
+            if (type(published) not in (int, float)
+                    or isinstance(published, bool)
+                    or not math.isfinite(float(published))):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} names no generation")
+            handoff_proof = {
+                "owner": str(by),
+                "attempts": snap.get("attempts"),
+                "max_attempts": snap.get("max_attempts"),
+                "published_unix": published,
+            }
         if record is not None and self.withdrawal_covers(record, action_key=key) is not None:
             waiting = _read_json(ready_path)
             if waiting is not None and self.withdrawal_covers(waiting, action_key=key) is None:
@@ -10172,6 +10228,12 @@ class PoolQueue:
             )
             if preempted_by is not None:
                 filed["preempted_by"] = str(preempted_by)
+            if handoff_proof is not None:
+                # Explicit durable handoff identity: persisted only after
+                # the proof above, read back by the tier-loop window
+                # classification.  An ordinary cancellation -- however
+                # shaped its `by` string -- never carries this.
+                filed["membership_handoff"] = handoff_proof
             filed = self._persist_withdrawal_decision(filed)
             _write_json_atomic(withdrawn_path, filed)
         else:
@@ -10206,13 +10268,15 @@ class PoolQueue:
                     stop_pending["stop_error"] = f"{type(exc).__name__}: {exc}"
 
         # The plan that minted a withdrawn *consumer* is marked superseded as
-        # it goes -- unless the withdrawal is a membership handoff.  A
-        # membership supervisor owner (`{host}:supervisor-{pid}:{starttime}`,
-        # the exact shape `_membership_withdrawal_owner` checks) withdraws
-        # only retry-owed rows whose work continues under a new generation
-        # that revives this exact decision: retiring the filing here would
-        # strand the successor's later phases, while an operator's decision
-        # has no successor and retires the window it was made against.  A
+        # it goes -- unless the withdrawal carries a proven membership
+        # handoff.  The proof (live claim match, uncovered generation,
+        # restart permission with remaining budget and lineage, all
+        # re-verified above) means the same work continues under a new
+        # generation that revives this exact decision: retiring the filing
+        # here would strand the successor's later phases.  An operator's
+        # decision has no successor and retires the window it was made
+        # against -- including a supervisor-shaped `by` with no (or a
+        # failed) handoff proof, which files an ordinary cancellation.  A
         # mover's key names no plan -- the plan lives under the consumer's
         # key -- so this is a no-op for one, and a mover's plan is marked
         # by the window that would otherwise republish it (#708).
@@ -10220,7 +10284,7 @@ class PoolQueue:
         # the same breath, and marking the plan would pause the window it just
         # put back.
         plan_superseded = False
-        if preempted_by is None and not _membership_withdrawal_owner(by):
+        if preempted_by is None and handoff_proof is None:
             plan_superseded = self.mark_residency_plan_superseded(
                 key, reason=reason or "withdrawn")
 

@@ -26,9 +26,13 @@ sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import adaptive_cpu  # noqa: E402
+from prismabuild import residency_map  # noqa: E402
+from prismabuild import residency_plan  # noqa: E402
+from prismabuild import storage_tiers  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import worker_loop  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
+import tier_loop  # noqa: E402
 
 
 class Backend:
@@ -1494,3 +1498,120 @@ def test_unreadable_claimed_census_retains_resignation(
 
         monkeypatch.setattr(os, "scandir", denied_scandir)
         inspect_and_resign()
+
+
+def test_resign_staged_consumer_drains_through_handoff_carrier(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """The ordinary membership drain path threads the handoff carrier: a
+    staged consumer resigns with its proven plan, the frozen window
+    survives the drain, and the successor carries the leads block."""
+    import threading
+
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = _incarnation(monkeypatch)
+    tier = "prismabuild-stage:dl380g10"
+    manifest = "ab" * 32
+    gib = 1 << 30
+    consumer, mover = "d4" * 32, "d5" * 32
+    queue.mint_tier_capacity(tier, {"stage_gib": 8})
+    plan = residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=tier,
+        stage_root="/stage/prewarm", manifest_sha256=manifest,
+        manifest_bytes=2 * gib, phases=[{
+            "name": "phase-0000", "start_bytes": 0, "end_bytes": 2 * gib,
+            "stage_gib": 2,
+            "mover_row": {
+                "action_key": mover,
+                "cas_root": str(queue.root / "cas"),
+                "checkout_root": str(queue.root / "co"),
+                "worker_script": str(queue.root / "worker.py"),
+                "tags": ["dl380g10"],
+                "resources": {f"stage_gib@{tier}": 2, "mem_gb": 1},
+                "retry_safe": True, "max_attempts": 3,
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
+                    "manifest_sha256": manifest, "manifest_bytes": 2 * gib,
+                    "range_start_bytes": 0, "range_end_bytes": 2 * gib}},
+            "egress_row": {
+                "action_key": "d6" * 32,
+                "cas_root": str(queue.root / "cas"),
+                "checkout_root": str(queue.root / "co"),
+                "worker_script": str(queue.root / "worker.py"),
+                "tags": ["dl380g10"], "resources": {"mem_gb": 1}}}])
+    residency_plan.freeze(queue, plan)
+    block = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
+             "manifest_sha256": manifest, "manifest_bytes": 2 * gib,
+             "leads": residency_plan.leads_for(plan)}
+    queue.publish(action_key=consumer, cas_root=queue.root / "cas",
+                  checkout_root=queue.root / "co",
+                  worker_script=queue.root / "worker.py",
+                  resources={"cpu": 1, "mem_gb": 1},
+                  max_attempts=3, retry_safe=True, tags=["x86"],
+                  residency=block)
+    events = tier_loop.residency_window(
+        queue, tiers={tier: {"tier_id": tier, "tier": "stage",
+                             "mountpoint": str(tmp_path / "stage")}})
+    assert mover in [e["action_key"] for e in events
+                     if e["event"] == "mover-published"]
+    snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:sm",
+                         capacity={"cpu": 4, "mem_gb": 16})
+    assert snap_m is not None and snap_m["action_key"] == mover
+    queue.record_move(mover, {
+        "tier_id": tier, "manifest_sha256": manifest,
+        "range_start_bytes": 0, "range_end_bytes": 2 * gib,
+        "bytes_staged": 2 * gib, "complete": True, "errors": []})
+    residency_map.write_fragment(queue.residency_fragment_root(), {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": tier, "stage_root": str(tmp_path / "stage"),
+        "manifest_sha256": manifest,
+        "entries": {residency_map.residency_map_key("/pool/a.bin", 0): {
+            "stage_path": str(tmp_path / "stage" / "a.bin"),
+            "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
+    queue.finish(mover, status="executed", detail={}, claim_snapshot=snap_m)
+    assert tier_loop.compose_map(queue, consumer) == queue.residency_map_path(
+        consumer)
+    snap = queue.claim(tags=["x86"], owner=f"{host}:1:sc",
+                       capacity={"cpu": 4, "mem_gb": 16})
+    assert snap is not None and snap["action_key"] == consumer
+
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    errors: list = []
+    finished = threading.Event()
+
+    def holder_concludes():
+        try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if queue.item_path(pool.WITHDRAWN, consumer).exists():
+                    break
+                time.sleep(0.2)
+            queue.finish(consumer, status="failed",
+                         detail={"termination_reason": "resign-test"},
+                         claim_snapshot=snap)
+            finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    finisher = threading.Thread(target=holder_concludes, daemon=True)
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(worker_loop, "PARKED_ROOT",
+                           gate.parent / "rollout" / "parked"):
+        finisher.start()
+        try:
+            out = fm.resign(host, reason="staged drain",
+                            queue_root=queue.root, gate=gate,
+                            broker_call=_broker_call(authority),
+                            live=[], wait_s=40.0)
+        finally:
+            finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert finished.is_set()
+    assert out["status"] == "resigned", (out.get("reason"), out.get("phase"))
+    ready = json.loads(queue.item_path(pool.READY, consumer).read_text())
+    assert ready["residency"] == block
+    assert int(ready["attempts"]) == 1
+    assert residency_plan.superseded(queue, plan) is None
