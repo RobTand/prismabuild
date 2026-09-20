@@ -4169,6 +4169,24 @@ the consumer has not staged. A phase the run-ahead bound has declined is not
 the tier needing tokens, and reporting it as pressure would evict a resident
 range to make room nobody is going to use — a stall no eviction can relieve.
 
+**A feasible newcomer's admission is also pressure (#orphan-pressure).** The
+next-phase term alone answers "one phase", while the joint-fit gate admits a
+newcomer on *current plus protected next* against held and queued bytes. A
+window that fits only after orphan reclamation therefore deadlocked beside
+reclaimable bytes: the sweep relieved one phase, the gate kept refusing on
+cur+next, and nothing re-pressured (2026-09-20, attributable pristine-main
+failure `44b15d345804`). `window_pressure` now probes each true newcomer —
+nothing published, landed or accepted — through `gate_newcomer` itself, with
+over-estimated obligations (full queued demand; every progressing window's
+protected next) so the relief it asks for always covers what the real gate
+will check; the relief is stated as the free the sweep must reach
+(`free + shortfall`) and is bounded to the tier's orphans. A window that
+cannot fit even after every orphan returns — permanently oversize, or blocked
+by live readers — asks for no relief and evicts nothing, and the sweep still
+takes only orphans, never a live reader's bytes. The real gate re-checks
+everything before publishing; the probe only decides whether the room is
+worth reclaiming.
+
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on
 every cycle. That is PrismaQuant's, tracked at `RobTand/prismaquant#741`; this
