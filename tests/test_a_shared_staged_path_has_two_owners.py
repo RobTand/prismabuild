@@ -231,7 +231,9 @@ def test_dual_egress_deletes_exactly_once(tmp_path: Path) -> None:
 
 
 def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
-                              manifest: dict, start: int, end: int) -> None:
+                              manifest: dict, start: int, end: int,
+                              command: list | None = None,
+                              resources: dict | str | None = None) -> None:
     """A claimed mover row plus its sealed CAS request and manifest blob."""
 
     blob = json.dumps(manifest).encode("utf-8")
@@ -242,9 +244,10 @@ def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
     request = {
         "action_key": key,
         "params": {
-            "command": ["python3", "stage_move.py",
-                        "--range-start-bytes", str(start),
-                        "--range-end-bytes", str(end)],
+            "command": (["python3", "stage_move.py",
+                         "--range-start-bytes", str(start),
+                         "--range-end-bytes", str(end)]
+                        if command is None else command),
         },
         "inputs": [{"id": "pbcampaign.data-manifest",
                     "sha256": digest, "bytes": len(blob)}],
@@ -259,7 +262,8 @@ def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
         # The sealed claim names its own CAS root, the way publication_row
         # seals it; the egress reads it off the record, never assumes it.
         "cas_root": str(cas),
-        "resources": {"cpu": 2, "mem_gb": 1, f"stage_gib@{TIER}": 1},
+        "resources": ({"cpu": 2, "mem_gb": 1, f"stage_gib@{TIER}": 1}
+                      if resources is None else resources),
     }))
 
 
@@ -480,3 +484,72 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     assert outcome[0]["complete"] is True
     assert outcome[0]["entries_shared"] == 1
     assert outcome[0]["entries_deleted"] == 0
+
+
+def test_each_claim_resolves_its_own_cas_root(fleet) -> None:
+    """The CAS root rides on each sealed claim, never one global choice.
+
+    Two in-flight copies sealed against two different CAS roots must both
+    attribute; a first-record-wins implementation would miss the second
+    manifest and taint the pass instead.
+    """
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    manifest = _one_entry_manifest()
+    cas1 = queue.root.parent / "cas-one"
+    cas2 = queue.root.parent / "cas-two"
+    _write_claimed_copy_shape(queue, cas1, MOVER_B, manifest, 0, 4096)
+    mover_c = "3" * 64
+    _write_claimed_copy_shape(queue, cas2, mover_c, manifest, 0, 4096)
+
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is True
+    assert receipt["entries_shared"] == 1
+    assert receipt["entries_deleted"] == 0
+
+
+def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
+    """Corrupt boundaries taint; they never throw and never silently skip.
+
+    A claimed record whose demand is not a mapping, and an identified mover
+    (tier demand present) whose range flags are missing or unparsable, must
+    each fail this egress pass with the reason on the receipt -- while the
+    staged bytes stay exactly where they are.
+    """
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    cas = queue.root.parent / "cas"
+    manifest = _one_entry_manifest()
+    _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096,
+                              resources="not-a-mapping")
+    mover_c = "3" * 64
+    _write_claimed_copy_shape(queue, cas, mover_c, manifest, 0, 4096,
+                              command=["python3", "stage_move.py"])
+    mover_d = "4" * 64
+    _write_claimed_copy_shape(queue, cas, mover_d, manifest, 0, 4096,
+                              command="not-a-list")
+
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is False
+    assert receipt["entries_deleted"] == 0
+    assert any("malformed resources" in error for error in receipt["errors"])
+    assert any("invalid range" in error for error in receipt["errors"])
+    assert any("no command" in error for error in receipt["errors"])

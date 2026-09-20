@@ -387,14 +387,25 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
         if cas_root is None:
             cas_root = queue.root.parent / "cas"
     for key, item in records:
-        demand = item.get("resources")
-        kinds = {str(kind).split("@", 1)[1] for kind in demand
-                 if isinstance(demand, Mapping) and "@" in str(kind)}
-        if tier_id not in kinds:
+        if "resources" in item and not isinstance(item["resources"], Mapping):
+            # A malformed demand shape cannot be tier-filtered: fail closed
+            # rather than throwing mid-scan or silently skipping a mover.
+            tainted.append(f"{key[:12]}: malformed resources")
             continue
+        demand = item.get("resources") or {}
+        kinds = {str(kind).split("@", 1)[1] for kind in demand
+                 if "@" in str(kind)}
+        if tier_id not in kinds:
+            continue    # not a movement node on this tier; a consumer is
+                        # not a copy
+        # Each claim names its own CAS root; the override (tests) or the
+        # queue-sibling default applies only when the record names none.
+        root = item.get("cas_root")
+        own_cas = (str(root) if isinstance(root, str) and root
+                   else str(cas_root))
         try:
             request = pool._read_json(
-                Path(cas_root) / "requests" / key[:2] / f"{key}.json")
+                Path(own_cas) / "requests" / key[:2] / f"{key}.json")
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -404,12 +415,22 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
         params = request.get("params")
         command = params.get("command") if isinstance(params, Mapping) else None
         if not isinstance(command, list):
-            continue    # not a movement node; a consumer is not a copy
+            # Identified as a mover by its tier demand, but seals no argv:
+            # corrupt, not a consumer -- consumers never reach this branch.
+            tainted.append(f"{key[:12]}: mover seals no command")
+            continue
         try:
-            start = int(command[command.index("--range-start-bytes") + 1])
-            end = int(command[command.index("--range-end-bytes") + 1])
-        except (ValueError, IndexError):
-            continue    # not a movement node; a consumer is not a copy
+            start = command[command.index("--range-start-bytes") + 1]
+            end = command[command.index("--range-end-bytes") + 1]
+            if (isinstance(start, bool) or isinstance(end, bool)
+                    or int(start) < 0 or int(end) < 0):
+                raise ValueError("range bounds must be nonnegative integers")
+            start, end = int(start), int(end)
+        except (ValueError, IndexError, TypeError):
+            # An identified mover whose flags are invalid must not silently
+            # read as unowned.
+            tainted.append(f"{key[:12]}: mover seals an invalid range")
+            continue
         digest = None
         # The manifest rides on the sealed request's top-level inputs (verified
         # against a live fixture), never under params.
@@ -422,7 +443,7 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
         if not isinstance(digest, str) or not digest:
             tainted.append(f"{key[:12]}: sealed request names no data manifest")
             continue
-        layout = _cached_manifest_layout(str(cas_root), digest)
+        layout = _cached_manifest_layout(own_cas, digest)
         if layout is None:
             tainted.append(f"{key[:12]}: manifest {digest[:12]} unreadable")
             continue
