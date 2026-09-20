@@ -109,7 +109,7 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 
 from __future__ import annotations
 
-from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
 from contextlib import contextmanager, nullcontext, suppress
 import errno
@@ -162,6 +162,68 @@ POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
+
+
+def _membership_withdrawal_owner(value: object) -> bool:
+    """Whether ``value`` names a membership supervisor drain owner.
+
+    The fleet_membership owner kind is exactly
+    ``{host}:supervisor-{pid}:{starttime}`` with a positive pid. This is a
+    shape check only; liveness, host binding, and epoch continuity are
+    enforced by the broker mutex and the membership caller, never here.
+    Shape alone authorizes nothing: only ``membership_handoff_authorized``
+    reads a proven handoff.
+    """
+
+    if not isinstance(value, str):
+        return False
+    _host, _, rest = value.partition(":")
+    kind, _, starttime = rest.partition(":")
+    label, _, pid_text = kind.partition("-")
+    if not _host or label != "supervisor" or not starttime:
+        return False
+    try:
+        return int(pid_text) > 0
+    except (ValueError, TypeError):
+        return False
+
+
+def membership_handoff_authorized(decision: object) -> bool:
+    """Whether a filed withdrawal decision carries a proven handoff.
+
+    The one precise carrier check shared by the withdrawal classifier,
+    the owed/requeue lineage and the tier-loop window: the decision must
+    carry a ``membership_handoff`` mapping whose owner is the membership
+    caller kind and equals the decision's own ``withdrawn_by``, and whose
+    attempt, budget and generation are typed and equal to the decision's
+    own -- including a finite numeric generation. Shape-only,
+    malformed and tampered decisions all answer False: they file
+    ordinary cancellations and never authorize retry or staging.
+    """
+
+    if not isinstance(decision, Mapping):
+        return False
+    proof = decision.get("membership_handoff")
+    if not isinstance(proof, Mapping):
+        return False
+    owner = proof.get("owner")
+    if (not isinstance(owner, str) or not owner
+            or not _membership_withdrawal_owner(owner)):
+        return False
+    if owner != decision.get("withdrawn_by"):
+        return False
+    if (type(proof.get("attempts")) is not int
+            or proof.get("attempts") != decision.get("attempts")):
+        return False
+    if (type(proof.get("max_attempts")) is not int
+            or proof.get("max_attempts") != decision.get("max_attempts")):
+        return False
+    published = proof.get("published_unix")
+    if (type(published) not in (int, float)
+            or isinstance(published, bool)
+            or not math.isfinite(float(published))):
+        return False
+    return published == decision.get("published_unix")
 POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
 #: What one movement node says it staged, and what the pool delivered while
 #: it did.  Read by the ``tiers`` role for the fill measurement, so it carries
@@ -3578,6 +3640,7 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
+        handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
@@ -3716,13 +3779,22 @@ class PoolQueue:
         # kept -- moved to ``superseded/``, not deleted -- and the new item
         # carries what it revived.
         if preempted_claim is not None:
-            # Only the admission handoff may carry an interrupted attempt into
-            # a new generation. An intervening publication or operator decision
-            # wins; never overwrite it with the earlier selection snapshot.
+            # Only a handoff that can name the cancellation it revives may
+            # carry an interrupted attempt into a new generation: the
+            # admission path via the withdrawal's ``preempted_by``, or a
+            # resign driver via ``handoff_by`` exactly equal to the
+            # withdrawal's ``withdrawn_by``. An intervening publication or
+            # operator decision wins; never overwrite it with the earlier
+            # selection snapshot.
             decision = self.withdrawal_covers(preempted_claim, action_key=action_key)
+            handoff = decision.get("preempted_by") if decision is not None else None
+            if (handoff is None and handoff_by is not None
+                    and decision is not None
+                    and decision.get("withdrawn_by") == handoff_by):
+                handoff = handoff_by
             visible = _read_json(self.item_path(WITHDRAWN, action_key))
             live = _read_json(self.item_path(CLAIMED, action_key))
-            if (decision is None or not decision.get("preempted_by")
+            if (decision is None or not handoff
                     or visible is None
                     or visible.get("published_unix") != preempted_claim.get("published_unix")
                     or self.item_path(READY, action_key).exists()
@@ -3782,6 +3854,12 @@ class PoolQueue:
                 # the marker is retired, and the visible cost of #364 has to be
                 # on it rather than one dereference away.
                 item["preempted_by"] = str(superseded["preempted_by"])
+            elif (handoff_by is not None
+                    and superseded.get("withdrawn_by") == handoff_by):
+                # The resign-handoff analogue: derived from the resign
+                # withdrawal this successor revives, so a reader can tell a
+                # resign requeue from an admission preemption.
+                item["resigned_by"] = str(handoff_by)
         if preempted_claim is not None:
             # Reuse the ordinary bounded attempt counter. Earlier interrupted
             # launches belong to the linked immutable withdrawal generations,
@@ -7235,7 +7313,15 @@ class PoolQueue:
         adaptive_cpu: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
+        """Take one ready item, atomically.  ``None`` when nothing matches.
+
+        ``admission_open`` is an optional caller-owned fence (a worker resign
+        drain): ``_claim`` re-checks it under the per-key transition lock
+        immediately before the intent write, so a fence that closed after the
+        poll check is still observed. ``None`` preserves current behavior.
+        """
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
@@ -7285,7 +7371,8 @@ class PoolQueue:
                                    capacity=capacity, cpu_tiers=tiers,
                                    controller=controller,
                                    gpu_controller=gpu_controller, ready=ready,
-                                   observed_images=observed_images)
+                                   observed_images=observed_images,
+                                   admission_open=admission_open)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -7303,7 +7390,8 @@ class PoolQueue:
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers,
-                           ready=ready, observed_images=observed_images)
+                           ready=ready, observed_images=observed_images,
+                           admission_open=admission_open)
 
     @staticmethod
     def _admission_lock(controller: cpu_admission.Controller | None):
@@ -7422,7 +7510,21 @@ class PoolQueue:
             if len(decisions) != 1:
                 return False
             parent = decisions[0][1]
-            if (not parent.get("preempted_by")
+            # Either the admission handoff (preempted_by) or the proven
+            # membership handoff: the decision carries the explicit
+            # `membership_handoff` identity `pool.withdraw` persists only
+            # after proving the live claim, budget and lineage, read back
+            # here through the one shared carrier check.  The two linkages
+            # are disjoint by construction — admission decisions never
+            # carry resigned proof, resign decisions never preempted_by —
+            # and a supervisor-shaped `withdrawn_by` with no (or a broken)
+            # proof is an ordinary cancellation, never a revival.  This
+            # admits chained resign requeues (B resigning what A requeued)
+            # without admitting anything the old rule refused.
+            preempted = bool(parent.get("preempted_by"))
+            resigned = (not preempted
+                        and membership_handoff_authorized(parent))
+            if ((not preempted and not resigned)
                     or parent.get("attempts") != consumed - 1
                     or parent.get("max_attempts") != limit
                     or parent.get("retry_safe") is not True
@@ -7448,6 +7550,17 @@ class PoolQueue:
         same work again. The admission-only handoff charges the interrupted
         launch to the existing attempt budget and links its immutable
         generation-scoped withdrawal. It never refunds a previous attempt.
+
+        The projection carries every ``publish``-supported binding the
+        record holds -- addressing, budget, container fields, and the
+        staged-action bindings (``residency``, ``recompute``) -- so a
+        retry re-enters the same gates the original passed instead of
+        slipping past them or refusing after the work was stopped.  A
+        binding ``publish`` would refuse (including a corrupt residency
+        block) returns ``None`` rather than being silently erased; a
+        future publish-supported binding (e.g. the stacked
+        produced-output template) needs a coordinated extension here,
+        never a quiet drop -- coordinate with root once it is admitted.
         """
 
         addressing: dict[str, object] = {}
@@ -7474,7 +7587,51 @@ class PoolQueue:
                       "container_images"):
             if record.get(field) is not None:
                 arguments[field] = record[field]
+        residency = record.get("residency")
+        if residency is not None:
+            # The sealed staged binding: a consumer's leads, a mover's
+            # range/tier/manifest.  Carried by value; ``publish``
+            # re-validates the same sealed arithmetic against the same
+            # demand, so a retry cannot bypass lead readiness and a
+            # tier-demanded mover is not refused after being stopped.
+            if not isinstance(residency, Mapping):
+                return None
+            arguments["residency"] = dict(residency)
+        if record.get("recompute") is True:
+            # A movement node stays a movement node: without this the
+            # retry's key could be answered by an old CAS receipt for
+            # bytes that need restaging.
+            arguments["recompute"] = True
         return arguments
+
+    def plan_requeue(self, record: Mapping[str, object]) -> dict[str, object]:
+        """Build the successor publication for a withdrawn owned claim.
+
+        Pure constructor: no withdraw, no publish, no side effects. A claim
+        that cannot be re-published (or carries no retry budget) raises
+        instead of losing the work — the caller leaves it running. The
+        successor may only be published after the original attempt's exact
+        terminal is filed: publishing while the holder is still live races
+        the holder's own finish, whose requeue disposition would overwrite
+        this successor. See ``publish(..., handoff_by=...)`` for the linkage
+        the eventual publication must prove.
+        """
+
+        if not isinstance(record, Mapping):
+            raise PoolContractError("requeue needs the claimed record")
+        key = record.get("action_key")
+        if not isinstance(key, str) or len(key) != 64:
+            raise PoolContractError("requeue needs a 64-character action key")
+        snapshot = dict(record)
+        arguments = self._requeue_arguments(snapshot, action_key=key)
+        if arguments is None:
+            raise PoolContractError(
+                f"{key[:12]} cannot be re-published from its claim")
+        if not self._preemption_eligible(snapshot):
+            raise PoolContractError(
+                f"{key[:12]} carries no retry budget for a requeue")
+        arguments.pop("preempted_claim", None)
+        return {"arguments": arguments, "snapshot": snapshot}
 
     def _preempt_background_holder(
         self,
@@ -7803,6 +7960,7 @@ class PoolQueue:
         gpu_controller: gpu_admission.Controller | None = None,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -8288,6 +8446,28 @@ class PoolQueue:
                             })
                             continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
+                    # Resign fence, re-checked under this key's transition
+                    # exclusion. This narrows the poll-check to rename race
+                    # but does NOT lock the broker's gate: a drain can still
+                    # begin after this check. A claim that wins then cannot
+                    # execute — broker scope ``create`` refuses under its
+                    # mutex and the loop's cleanup path releases it — and the
+                    # resign proof (repeated census, bracketed park acks,
+                    # empty scopes) accounts for it before SUCCESS. ``None``
+                    # preserves current behavior for fenceless callers. The
+                    # unwind mirrors the tier-shortage path above it.
+                    if admission_open is not None and not admission_open():
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller,
+                                                   gpu_probe)
+                        self.record_denial(item, "resign_fenced", {
+                            "action_key": key,
+                        })
+                        continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
                     dst = self.item_path(CLAIMED, key)
@@ -11410,6 +11590,7 @@ class PoolQueue:
         by: str = "",
         preempted_by: str | None = None,
         expected_claim: Mapping[str, object] | None = None,
+        membership_handoff: Mapping[str, object] | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
@@ -11423,6 +11604,18 @@ class PoolQueue:
         ``expected_claim`` confines an admission withdrawal to the exact
         attempt it selected. A successor changes nothing and returns
         ``claim_changed``; ordinary operator withdrawals omit this guard.
+
+        ``membership_handoff`` carries the exact claimed snapshot a
+        membership resigner built its requeue plan from.  It is proven
+        here -- live claim still that attempt, generation uncovered,
+        restart permission with remaining budget and existing lineage --
+        and only then persisted as the decision's explicit
+        ``membership_handoff`` identity, which is what preserves the
+        sealed plan and what the tier-loop window classification reads.
+        A supervisor-shaped ``by`` with no (or a failing) proof files an
+        ordinary cancellation: the owner's shape alone authorizes
+        nothing, and stale, replaced, covered, exhausted or foreign rows
+        refuse BEFORE anything is stopped or filed.
 
         The immutable generation decision survives a new publication retiring
         the visible withdrawn record. Claimed records, leases and reservations
@@ -11451,7 +11644,139 @@ class PoolQueue:
                     "state": CLAIMED if record is not None else None,
                     "released": 0, "signalled": None}
         origin: str | None = CLAIMED if record is not None else None
-        if record is not None and self.withdrawal_covers(record, action_key=key) is not None:
+        handoff_proof: dict[str, object] | None = None
+        if membership_handoff is not None:
+            # A membership handoff is authorized from the LIVE record,
+            # never from the caller's snapshot alone: the caller passes
+            # the exact claimed snapshot its requeue plan was built from,
+            # and this call re-verifies identity, bindings and permission
+            # against the live claim under this method's key lock.  The
+            # membership caller kind is one required condition, never
+            # sufficient alone.  A snapshot copied from the same claim
+            # but with flipped retry permission, inflated budget, another
+            # action's key, or another attempt's scope cannot authorize
+            # stopping a live job it does not describe: the durable proof
+            # below is derived from authoritative live fields only.
+            # Stale reads, replaced claims, covered generations,
+            # exhausted budgets and foreign rows all refuse BEFORE
+            # anything is stopped or filed.
+            if not isinstance(membership_handoff, Mapping):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} is not a claimed record")
+            if not _membership_withdrawal_owner(by):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} needs the membership "
+                    "caller kind")
+            snap = dict(membership_handoff)
+            if (not isinstance(snap.get("action_key"), str)
+                    or snap["action_key"] != key):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} names another action")
+            if record is None or not _same_claim(record, snap):
+                raise PoolContractError(
+                    f"membership handoff claim changed for {key[:12]}: "
+                    "the live claim is not the planned attempt")
+            if self.withdrawal_covers(record, action_key=key) is not None:
+                if (isinstance(existing, dict)
+                        and existing.get("published_unix")
+                        == record.get("published_unix")
+                        and membership_handoff_authorized(existing)):
+                    # Covered by a proven handoff for this same generation:
+                    # a crashed predecessor already filed this decision, so
+                    # adopt it instead of stacking another one.  No new
+                    # stamp is filed; the mark gate below reads the
+                    # adopted proof, and the live marker keeps working.
+                    handoff_proof = dict(
+                        existing["membership_handoff"])  # type: ignore[index]
+                else:
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} is already "
+                        "covered by an ordinary withdrawal decision")
+            for binding in ("retry_safe", "max_attempts"):
+                if snap.get(binding) != record.get(binding):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} differs from "
+                        f"the live claim on {binding}")
+            live_control = record.get("resource_scope")
+            snap_control = snap.get("resource_scope")
+            if live_control is not None or snap_control is not None:
+                # Exact broker scope identity when the attempt holds one:
+                # the live block is validated through the existing
+                # recovery-identity derivation (no second hand-written
+                # unit convention), and the snapshot must name the same
+                # scope.  A malformed block on either side, or an
+                # absent-on-one-side mismatch, refuses: malformed is
+                # never read as "no scope".
+                try:
+                    self._scope_from_record(record)
+                except PoolContractError as exc:
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} has an invalid "
+                        f"live scope identity: {exc}") from exc
+                if not isinstance(snap_control, Mapping):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} misses the live "
+                        "attempt's scope identity")
+                live_pair = (live_control.get("scope_id"),
+                             live_control.get("nonce"))
+                snap_pair = (snap_control.get("scope_id"),
+                             snap_control.get("nonce"))
+                if live_pair != snap_pair:
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} mismatches the "
+                        "live attempt's scope identity")
+            live_intent = record.get("resource_scope_intent")
+            snap_intent = snap.get("resource_scope_intent")
+            if live_intent is not None or snap_intent is not None:
+                # The broker prelaunch identity carrier: intent-only rows
+                # (created but not yet scope-bound) match on action and
+                # nonce exactly, and an intent beside a control must name
+                # its nonce.  Malformed blocks and stale nonces refuse.
+                for side in (live_intent, snap_intent):
+                    if (not isinstance(side, Mapping)
+                            or side.get("action_key") != key
+                            or not isinstance(side.get("nonce"), str)
+                            or not side.get("nonce")):
+                        raise PoolContractError(
+                            f"membership handoff for {key[:12]} has an "
+                            "invalid scope-intent identity")
+                if live_intent.get("nonce") != snap_intent.get("nonce"):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} carries a stale "
+                        "scope-intent nonce")
+                if (isinstance(live_control, Mapping)
+                        and live_intent.get("nonce")
+                        != live_control.get("nonce")):
+                    raise PoolContractError(
+                        f"membership handoff for {key[:12]} disagrees "
+                        "between scope intent and scope")
+            live = dict(record)
+            if not self._preemption_eligible(live):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} carries no restart "
+                    "permission, remaining budget, or lineage on the live "
+                    "attempt")
+            published = live.get("published_unix")
+            if (type(published) not in (int, float)
+                    or isinstance(published, bool)
+                    or not math.isfinite(float(published))):
+                raise PoolContractError(
+                    f"membership handoff for {key[:12]} names no generation")
+            handoff_proof = {
+                "owner": str(by),
+                "attempts": live.get("attempts"),
+                "max_attempts": live.get("max_attempts"),
+                "published_unix": published,
+            }
+        if (handoff_proof is None and record is not None
+                and self.withdrawal_covers(record, action_key=key) is not None):
+            # Ordinary operator cancel semantics: a repeated request may
+            # target a newer submission queued behind an original attempt
+            # that is still stopping.  A proven membership handoff never
+            # retargets: the request stays bound to its exact authorized
+            # claimed generation through all mutations and signalling, so
+            # an old claim's authorization can never cancel the new READY
+            # generation waiting behind it.
             waiting = _read_json(ready_path)
             if waiting is not None and self.withdrawal_covers(waiting, action_key=key) is None:
                 # A repeated operator request can cancel a later submission
@@ -11554,6 +11879,12 @@ class PoolQueue:
             )
             if preempted_by is not None:
                 filed["preempted_by"] = str(preempted_by)
+            if handoff_proof is not None:
+                # Explicit durable handoff identity: persisted only after
+                # the proof above, read back by the tier-loop window
+                # classification.  An ordinary cancellation -- however
+                # shaped its `by` string -- never carries this.
+                filed["membership_handoff"] = handoff_proof
             filed = self._persist_withdrawal_decision(filed)
             _write_json_atomic(withdrawn_path, filed)
         else:
@@ -11588,14 +11919,23 @@ class PoolQueue:
                     stop_pending["stop_error"] = f"{type(exc).__name__}: {exc}"
 
         # The plan that minted a withdrawn *consumer* is marked superseded as
-        # it goes.  A mover's key names no plan -- the plan lives under the
-        # consumer's key -- so this is a no-op for one, and a mover's plan is
-        # marked by the window that would otherwise republish it (#708).
+        # it goes -- unless the withdrawal carries a proven membership
+        # handoff.  The proof (live claim match, uncovered generation,
+        # restart permission with remaining budget and lineage, all
+        # re-verified above) means the same work continues under a new
+        # generation that revives this exact decision: retiring the filing
+        # here would strand the successor's later phases.  An operator's
+        # decision has no successor and retires the window it was made
+        # against -- including a supervisor-shaped `by` with no (or a
+        # failed) handoff proof, which files an ordinary cancellation.  A
+        # mover's key names no plan -- the plan lives under the consumer's
+        # key -- so this is a no-op for one, and a mover's plan is marked
+        # by the window that would otherwise republish it (#708).
         # Admission's own preemption is excluded: it requeues its holder in
         # the same breath, and marking the plan would pause the window it just
         # put back.
         plan_superseded = False
-        if preempted_by is None:
+        if preempted_by is None and handoff_proof is None:
             plan_superseded = self.mark_residency_plan_superseded(
                 key, reason=reason or "withdrawn")
 
@@ -12254,6 +12594,7 @@ class PoolQueue:
         containment: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -12269,13 +12610,17 @@ class PoolQueue:
         ``observed_images`` is the claiming box's bounded local container
         inventory, passed through to the claim check for items that declare
         one; absent means unknown, and unknown refuses (#714).
+
+        ``admission_open`` is an optional caller-owned fence re-checked under
+        the per-key transition lock just before the claim rename.
         """
 
         if self._sweep_due():
             self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
-                          ready=ready, observed_images=observed_images)
+                          ready=ready, observed_images=observed_images,
+                          admission_open=admission_open)
         if item is None:
             return None
         key = str(item["action_key"])
