@@ -676,6 +676,14 @@ def refs_for_holder(queue, host: str, *, residency_root=None
     The membership worker's RESIGN path calls this to learn what must drain.
     Never a reaper trigger on its own; PIDs named here are diagnostics, not
     proof of anything across hosts.
+
+    Only proven absence returns empty: a missing leases namespace (never
+    created) or a namespace whose pins all parse with no ref for this
+    host.  An unreadable root or owner directory, or an unparseable pin,
+    raises (OSError / ValueError) instead of reading as drained -- the
+    membership gate catches both into unknown-retain.  No ref for another
+    host, and no ref at all, is ever inferred from a file this function
+    could not read.
     """
 
     root = leases_root(queue, residency_root)
@@ -683,21 +691,21 @@ def refs_for_holder(queue, host: str, *, residency_root=None
     try:
         consumers = sorted(entry.name for entry in os.scandir(root)
                            if entry.is_dir())
-    except OSError:
-        return out
+    except FileNotFoundError:
+        return out  # no leases namespace ever created: genuinely drained
     for consumer in consumers:
         directory = root / consumer
         try:
             names = sorted(entry.name for entry in os.scandir(directory)
                            if entry.is_file() and entry.name.endswith(".lease.json"))
-        except OSError:
-            continue
+        except FileNotFoundError:
+            continue  # drained between scan and read: genuinely gone
         for name in names:
             try:
                 with open(directory / name) as stream:
                     pin = validate_pin(json.load(stream))
-            except (OSError, ValueError):
-                continue
+            except FileNotFoundError:
+                continue  # unlinked between scan and read: genuinely gone
             refs = pin["refs"]
             assert isinstance(refs, dict)
             for ref_id, ref in refs.items():
