@@ -74,7 +74,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _publish_claim(queue: pool.PoolQueue, owner: str = OWNER) -> dict:
     queue.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
-                  resources={"cpu": 1, "mem_gb": 1})
+                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
     claimed = queue.claim()
     assert claimed is not None and claimed["action_key"] == owner
     return claimed
@@ -156,7 +156,7 @@ def test_binding_refuses_foreign_and_stale(tmp_path: Path) -> None:
     # Foreign: snapshot names another action.
     other = "b" * 64
     queue.publish(action_key=other, cas_root="/cas", worker_script="/w.py",
-                  resources={"cpu": 1, "mem_gb": 1})
+                  checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
     with pytest.raises(po.ProducedOutputError):
         po.bind_instance(queue, _TEMPLATE_CACHE, owner_action_key=other,
                          claim_snapshot=claimed)
