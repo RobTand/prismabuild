@@ -134,6 +134,11 @@ LIVE_DEFAULTS = (
     # it was the thing being diagnosed.
     ("mount_latency", "DEFAULT_MOUNT", "fleet"),
     ("publish_runtime", "MIRROR", "fleet/repo"),
+    # Crew-A canary driver (issue #688): both defaults name the live fleet
+    # store, so a test importing pbcanary without repointing would submit
+    # through or read the fleet's own roots.
+    ("pbcanary", "DEFAULT_PUBLISHED_ROOT", "fleet/repo"),
+    ("pbcanary", "DEFAULT_FLEET_ROOT", "fleet"),
     ("qualify_rollout", "QUALIFICATION_ROOT", "qualification"),
     ("seal_and_publish", "SH", "fleet"),
     ("pbtest", "SHARED", "mount"),

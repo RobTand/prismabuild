@@ -74,6 +74,15 @@ def fleet(tmp_path, monkeypatch):
     (roster / "upgrade_client.py").write_bytes(
         (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
     )
+    # Phase-2 default-ON canary: a publish -- even a dry run -- refuses
+    # without the driver at checkout/tools/fleet/pbcanary.py. The private
+    # checkout ships the same bounded green-driver seam test_publish_runtime
+    # uses (exact run_canary shape, immediate 0): the gate stays on and the
+    # refusal path keeps its own coverage there, while these history tests
+    # never invoke the fleet.
+    (roster / "pbcanary.py").write_text(
+        "def run_canary(*, generation):\n    return 0\n"
+    )
     return mirror.parent
 
 

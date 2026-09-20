@@ -229,6 +229,14 @@ def _checkout(path: Path) -> Path:
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text("GENERATION = 'x'\n")
     (package / "pool.py").write_text("GENERATION = 'x'\n")
+    # Phase-2 default-ON canary: publication refuses without the driver, so
+    # the tiny checkout ships the same bounded green-driver seam
+    # test_publish_runtime uses (exact run_canary shape, immediate 0). The
+    # gate stays on -- nothing here passes --no-canary -- and the
+    # driver-absent refusal keeps its own coverage there.
+    driver = path / "tools" / "fleet" / "pbcanary.py"
+    driver.parent.mkdir(parents=True, exist_ok=True)
+    driver.write_text("def run_canary(*, generation):\n    return 0\n")
     return path
 
 
