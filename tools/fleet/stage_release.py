@@ -378,31 +378,34 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
             tainted.append(f"{key[:12]}: unreadable claim record")
             continue
         records.append((key, item))
-    if cas_root is None:
-        for _, item in records:
-            root = item.get("cas_root")
-            if isinstance(root, str) and root:
-                cas_root = root
-                break
-        if cas_root is None:
-            cas_root = queue.root.parent / "cas"
+    default_cas = (str(cas_root) if cas_root is not None
+                   else str(queue.root.parent / "cas"))
     for key, item in records:
-        if "resources" in item and not isinstance(item["resources"], Mapping):
-            # A malformed demand shape cannot be tier-filtered: fail closed
-            # rather than throwing mid-scan or silently skipping a mover.
+        # No first-record inheritance: each claim resolves its own CAS root --
+        # the explicit override wins, else the record's own root, else the
+        # queue-sibling default.  A rootless claim among rooted claims reads
+        # the default, never another record's root.
+        if cas_root is not None:
+            own_cas = str(cas_root)
+        else:
+            root = item.get("cas_root")
+            own_cas = (str(root) if isinstance(root, str) and root
+                       else default_cas)
+        resources = item.get("resources")
+        if not isinstance(resources, Mapping):
+            # Absent or malformed: a claim without a demand shape cannot
+            # establish non-mover.  Every published row seals ``resources``,
+            # and no queue transition writes a claim without one, so there is
+            # no safe behavior but taint.  (The old code threw mid-scan on
+            # ``None`` and skipped the unknown silently.)
             tainted.append(f"{key[:12]}: malformed resources")
             continue
-        demand = item.get("resources") or {}
+        demand = resources
         kinds = {str(kind).split("@", 1)[1] for kind in demand
                  if "@" in str(kind)}
         if tier_id not in kinds:
             continue    # not a movement node on this tier; a consumer is
                         # not a copy
-        # Each claim names its own CAS root; the override (tests) or the
-        # queue-sibling default applies only when the record names none.
-        root = item.get("cas_root")
-        own_cas = (str(root) if isinstance(root, str) and root
-                   else str(cas_root))
         try:
             request = pool._read_json(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
@@ -422,13 +425,19 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
         try:
             start = command[command.index("--range-start-bytes") + 1]
             end = command[command.index("--range-end-bytes") + 1]
-            if (isinstance(start, bool) or isinstance(end, bool)
-                    or int(start) < 0 or int(end) < 0):
-                raise ValueError("range bounds must be nonnegative integers")
+            # Sealed argv bounds are digit strings by schema: no bool, float,
+            # or whitespace-tolerant coercion may accept a malformed bound.
+            for bound in (start, end):
+                if (isinstance(bound, bool) or not isinstance(bound, str)
+                        or not bound.isdigit()):
+                    raise ValueError(
+                        "range bounds must be nonnegative integer strings")
             start, end = int(start), int(end)
+            if end < start:
+                raise ValueError("range end precedes start")
         except (ValueError, IndexError, TypeError):
-            # An identified mover whose flags are invalid must not silently
-            # read as unowned.
+            # An identified mover whose exact range cannot be determined must
+            # not silently read as unowned.
             tainted.append(f"{key[:12]}: mover seals an invalid range")
             continue
         digest = None
@@ -451,7 +460,10 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
         whole = whole_file_paths(entries)
         try:
             window = prewarm_loop.entries_between(entries, start, end)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
+            # A window that cannot be cut is an undeterminable range: taint,
+            # never unowned.
+            tainted.append(f"{key[:12]}: range not cuttable: {exc}")
             continue
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])

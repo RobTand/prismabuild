@@ -233,7 +233,8 @@ def test_dual_egress_deletes_exactly_once(tmp_path: Path) -> None:
 def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
                               manifest: dict, start: int, end: int,
                               command: list | None = None,
-                              resources: dict | str | None = None) -> None:
+                              resources: dict | str | None = None,
+                              rootless: bool = False) -> None:
     """A claimed mover row plus its sealed CAS request and manifest blob."""
 
     blob = json.dumps(manifest).encode("utf-8")
@@ -257,14 +258,16 @@ def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
     (shard / f"{key}.json").write_text(json.dumps(request))
     claimed = queue.dir(pool.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
-    (claimed / f"{key}.json").write_text(json.dumps({
+    record: dict[str, object] = {
         "action_key": key,
-        # The sealed claim names its own CAS root, the way publication_row
-        # seals it; the egress reads it off the record, never assumes it.
-        "cas_root": str(cas),
         "resources": ({"cpu": 2, "mem_gb": 1, f"stage_gib@{TIER}": 1}
                       if resources is None else resources),
-    }))
+    }
+    if not rootless:
+        # The sealed claim names its own CAS root, the way publication_row
+        # seals it; the egress reads it off the record, never assumes it.
+        record["cas_root"] = str(cas)
+    (claimed / f"{key}.json").write_text(json.dumps(record))
 
 
 def _one_entry_manifest() -> dict[str, object]:
@@ -543,6 +546,10 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     mover_d = "4" * 64
     _write_claimed_copy_shape(queue, cas, mover_d, manifest, 0, 4096,
                               command="not-a-list")
+    # The mover's own tokens are held: a tainted pass must retain bytes AND
+    # tokens, releasing nothing it cannot account for.
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert queue.tier_ledger(TIER).acquire(MOVER_A, {"stage_gib": 2}) is True
 
     receipt = stage_release.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
@@ -550,6 +557,151 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     assert shared.exists()
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0
+    assert queue.tier_ledger(TIER).holder_tokens(MOVER_A) == {"stage_gib": 2}
     assert any("malformed resources" in error for error in receipt["errors"])
     assert any("invalid range" in error for error in receipt["errors"])
     assert any("no command" in error for error in receipt["errors"])
+
+
+def test_a_rootless_claim_reads_the_default_not_a_sibling_root(fleet) -> None:
+    """No first-record inheritance: a rootless claim reads the default CAS."""
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    manifest = _one_entry_manifest()
+    rooted_cas = queue.root.parent / "cas-rooted"
+    _write_claimed_copy_shape(queue, rooted_cas, MOVER_B, manifest, 0, 4096)
+    default_cas = queue.root.parent / "cas"
+    mover_c = "3" * 64
+    _write_claimed_copy_shape(queue, default_cas, mover_c, manifest, 0, 4096,
+                              rootless=True)
+
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is True
+    assert receipt["entries_shared"] == 1
+    assert receipt["entries_deleted"] == 0
+
+
+def test_an_explicit_override_beats_a_conflicting_record_root(fleet) -> None:
+    """The override param wins over whatever the record names."""
+
+    import hashlib
+    import json as json_module
+
+    queue, stage = fleet
+    manifest_p = _one_entry_manifest()
+    manifest_q = {**_one_entry_manifest(),
+                  "entries": [{"path": "/mnt/shared/model/other.bin",
+                               "offset": 0, "bytes": 4096, "sha256": None}],
+                  "total_bytes": 4096}
+    record_cas = queue.root.parent / "cas-record"
+    _write_claimed_copy_shape(queue, record_cas, MOVER_B, manifest_p, 0, 4096)
+    # The override names a live CAS whose manifest covers a different path;
+    # resolving through the record root would attribute the other file.
+    override_cas = queue.root.parent / "cas-override"
+    blob = json_module.dumps(manifest_q).encode("utf-8")
+    digest = hashlib.sha256(blob).hexdigest()
+    shard = override_cas / "blobs" / digest[:2]
+    shard.mkdir(parents=True, exist_ok=True)
+    (shard / digest).write_bytes(blob)
+    request = {
+        "action_key": MOVER_B,
+        "params": {"command": ["python3", "stage_move.py",
+                               "--range-start-bytes", "0",
+                               "--range-end-bytes", "4096"]},
+        "inputs": [{"id": "pbcampaign.data-manifest",
+                    "sha256": digest, "bytes": len(blob)}],
+    }
+    shard = override_cas / "requests" / MOVER_B[:2]
+    shard.mkdir(parents=True, exist_ok=True)
+    (shard / f"{MOVER_B}.json").write_text(json_module.dumps(request))
+
+    paths, tainted = stage_release._claimed_paths(queue, TIER, override_cas)
+    assert tainted == []
+    assert paths == {"model/other.bin"}
+
+
+def test_an_inverted_range_is_undeterminable_not_unowned(fleet) -> None:
+    """end < start taints: the mover's exact range cannot be determined."""
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    cas = queue.root.parent / "cas"
+    manifest = _one_entry_manifest()
+    _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 4096, 0)
+
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is False
+    assert receipt["entries_deleted"] == 0
+    assert any("invalid range" in error for error in receipt["errors"])
+
+
+def test_a_claim_missing_resources_cannot_establish_non_mover(fleet) -> None:
+    """A demand-less claim taints: no transition writes one, so no safe skip."""
+
+    import json as json_module
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    cas = queue.root.parent / "cas"
+    manifest = _one_entry_manifest()
+    _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096)
+    record_path = queue.dir(pool.CLAIMED) / f"{MOVER_B}.json"
+    record = json_module.loads(record_path.read_text())
+    del record["resources"]
+    record_path.write_text(json_module.dumps(record))
+
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is False
+    assert any("malformed resources" in error for error in receipt["errors"])
+
+
+def test_an_uncuttable_window_taints(fleet, monkeypatch) -> None:
+    """entries_between failures are undeterminable ranges, never unowned."""
+
+    queue, stage = fleet
+    shared = stage / "model" / "layer.safetensors"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"\0" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _fragment(root, stage, CONSUMER_A, MOVER_A,
+              "/mnt/shared/model/layer.safetensors", shared, 4096)
+    cas = queue.root.parent / "cas"
+    manifest = _one_entry_manifest()
+    _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096)
+
+    def boom(*args, **kwargs):
+        raise ValueError("cut refused")
+
+    monkeypatch.setattr(prewarm_loop, "entries_between", boom)
+    receipt = stage_release.evict(queue, MOVER_A,
+                                  consumer_action_key=CONSUMER_A,
+                                  stage_root=str(stage))
+    assert shared.exists()
+    assert receipt["complete"] is False
+    assert receipt["entries_deleted"] == 0
+    assert any("not cuttable" in error for error in receipt["errors"])
