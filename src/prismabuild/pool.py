@@ -286,6 +286,19 @@ RESERVATIONS = "reservations"
 #: stage that a consumer on a Spark reads, and both reserve against the
 #: same ledger.
 TIER_RESERVATIONS = "tier-reservations"
+#: Where one mover's advance-credit funding record lives (window progress
+#: protection): bound to exact tier/mover/range/generation, read by the claim
+#: path only to cover pre-positioned fence tokens, never to invent capacity.
+TIER_FUNDING = "tier-funding"
+TIER_FUNDING_SCHEMA_V1 = "prismabuild.tier_funding.v1"
+#: The funding state machine.  ``reserved`` (fence held under the grant) ->
+#: ``transferring`` (fence moved under the mover, awaiting its claim) ->
+#: ``consumed`` (the claim counted it); any live state -> ``released``.
+#: Terminal states never advance.  Only ``transferring`` authorizes a
+#: subtraction, and only for the named tokens still held under the mover.
+TIER_FUNDING_STATES = frozenset({
+    "reserved", "transferring", "consumed", "released",
+})
 #: Where a tier loop files what it discovered about one tier, for readers.
 TIERS = "tiers"
 #: The residency block an item may carry (#583): what a movement node moves,
@@ -4354,6 +4367,474 @@ class PoolQueue:
 
         return self.tier_ledger(tier_id).transfer(str(from_key), str(to_key))
 
+    # -- advance-credit funding records (window progress protection) --------
+
+    def funding_path(self, mover_action_key: str, tier_id: str) -> Path:
+        """One mover's funding record on one tier (newest generation wins)."""
+
+        return (self.root / TIER_FUNDING
+                / f"{mover_action_key}.{tier_id}.funding.json")
+
+    @staticmethod
+    def validate_funding(value: object) -> dict[str, object]:
+        """Refuse a funding record that is not exactly one binding.
+
+        Unknown fields refuse: a writer meaning more than the reader checks
+        is the quiet half of a disagreement about whose bytes are funded.
+        Anything here that does not validate authorizes nothing -- callers
+        treat an unreadable record as no funding, never as zero or as proof.
+        """
+
+        if not isinstance(value, Mapping):
+            raise PoolContractError("a tier funding record must be an object")
+        unknown = sorted(set(value) - {
+            "schema", "tier_id", "consumer_action_key", "plan_sha256",
+            "mover_action_key", "range_start_bytes", "range_end_bytes",
+            "kind", "tokens", "generation", "state", "unix",
+            "published_unix",
+        })
+        if unknown:
+            raise PoolContractError(
+                f"unknown tier funding fields: {unknown}")
+        if value.get("schema") != TIER_FUNDING_SCHEMA_V1:
+            raise PoolContractError(
+                f"funding schema must be {TIER_FUNDING_SCHEMA_V1!r}")
+        for field in ("tier_id", "kind"):
+            if (not isinstance(value.get(field), str) or not value[field]):
+                raise PoolContractError(
+                    f"funding {field} must be a non-empty string")
+        for field in ("consumer_action_key", "mover_action_key"):
+            key = value.get(field)
+            if (not isinstance(key, str) or len(key) != 64
+                    or any(c not in "0123456789abcdef" for c in key)):
+                raise PoolContractError(
+                    f"funding {field} must be a 64-character action key")
+        digest = value.get("plan_sha256")
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)):
+            raise PoolContractError(
+                "funding plan_sha256 must be a 64-character digest")
+        for field in ("range_start_bytes", "range_end_bytes"):
+            number = value.get(field)
+            if isinstance(number, bool) or not isinstance(number, int):
+                raise PoolContractError(
+                    f"funding {field} must be a whole number of bytes")
+        tokens = value.get("tokens")
+        if (not isinstance(tokens, list) or not tokens
+                or any(not isinstance(name, str) or not name
+                       for name in tokens)):
+            raise PoolContractError(
+                "funding tokens must be a non-empty list of token names")
+        if len(set(tokens)) != len(tokens):
+            raise PoolContractError("funding tokens must not repeat a name")
+        generation = value.get("generation")
+        if (not isinstance(generation, str) or len(generation) != 32
+                or any(c not in "0123456789abcdef" for c in generation)):
+            raise PoolContractError(
+                "funding generation must be a 32-character nonce")
+        if value.get("state") not in TIER_FUNDING_STATES:
+            raise PoolContractError(
+                f"funding state must be one of {sorted(TIER_FUNDING_STATES)}")
+        published = value.get("published_unix")
+        if (isinstance(published, bool) or not isinstance(published, (int, float))
+                or float(published) < 0):
+            raise PoolContractError(
+                "funding published_unix must be a non-negative timestamp")
+        return dict(value)
+
+    def read_funding(self, mover_action_key: str,
+                     tier_id: str) -> dict[str, object] | None:
+        """A mover's funding record, or ``None`` when absent or unparsable.
+
+        Malformed records authorize nothing and wedge nothing: every consumer
+        of this answer treats ``None`` as "no funding", which claims the full
+        sealed demand and lets the coordinator re-fence next cycle.
+        """
+
+        try:
+            raw = _read_json(self.funding_path(mover_action_key, tier_id))
+        except (OSError, PoolContractError):
+            return None
+        if raw is None:
+            return None
+        try:
+            return self.validate_funding(raw)
+        except (PoolContractError, ValueError):
+            return None
+
+    def write_funding(self, record: Mapping[str, object], *,
+                      expect_generation: str | None = None) -> Path:
+        """File one generation's binding, atomically (coordinator calls this).
+
+        The binding (tier, consumer, plan, mover, range, kind, tokens,
+        generation) is immutable per generation: a fresh reservation mints a
+        fresh generation rather than editing one.  Only ``state`` advances,
+        through :meth:`advance_funding_state`.
+
+        The write is compare-and-swap on generation: ``expect_generation``
+        names the record this write replaces (``None`` when creating).  A
+        mismatch refuses instead of overwriting, so a verifying claim's
+        generation pin can never be pulled out from under it -- not even by
+        a replenish racing it, which simply retries next cycle.
+
+        Caller holds the mover's transition lock: :meth:`reserve_fence` and
+        :meth:`advance_funding_state` both acquire it (non-blocking) around
+        their read-modify-write, and the claim path holds it from its tier
+        acquire through its consumed-marking.  The CAS is the second lock,
+        not the first: it turns a lost race into a refusal even where two
+        writers met.
+        """
+
+        checked = self.validate_funding(record)
+        path = self.funding_path(str(checked["mover_action_key"]),
+                                 str(checked["tier_id"]))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = _read_json(path)
+        except (OSError, PoolContractError):
+            raise PoolContractError("funding record unreadable for CAS")
+        if raw is None:
+            if expect_generation is not None:
+                raise PoolContractError(
+                    "funding record vanished underneath this write")
+        else:
+            try:
+                current = self.validate_funding(raw)
+            except (PoolContractError, ValueError):
+                raise PoolContractError(
+                    "funding record unreadable for CAS")
+            if (expect_generation is None
+                    or str(current.get("generation")) != str(expect_generation)):
+                raise PoolContractError(
+                    "funding generation rotated underneath this write")
+        _write_json_atomic(path, checked)
+        return path
+
+    def advance_funding_state(self, mover_action_key: str, tier_id: str, *,
+                              expect: str, advance_to: str,
+                              generation: str | None = None) -> bool:
+        """Move a funding record one legal step, or refuse with ``False``.
+
+        Serialized on the mover's transition lock (non-blocking: whoever
+        holds it -- a claim from its tier acquire through its
+        consumed-marking, or the coordinator's settle -- decides; the other
+        defers).  Same-thread nesting re-acquires safely, so the claim path
+        (which holds the lock throughout) may call either spelling.  See
+        :meth:`_advance_funding_state_locked` for the body.
+        """
+
+        with self.mover_transition_lock(str(mover_action_key),
+                                        blocking=False) as acquired:
+            if not acquired:
+                return False
+            return self._advance_funding_state_locked(
+                mover_action_key, tier_id, expect=expect,
+                advance_to=advance_to, generation=generation)
+
+    def _advance_funding_state_locked(self, mover_action_key: str, tier_id: str, *,
+                                      expect: str, advance_to: str,
+                                      generation: str | None = None) -> bool:
+        """Move a funding record one legal step, or refuse with ``False``.
+
+        Caller holds the mover's transition lock (see
+        :meth:`advance_funding_state`).
+
+        Legal steps only run forward (``reserved`` -> ``transferring`` ->
+        ``consumed``; any live state -> ``released``; ``reserved`` may be
+        rewritten by a fresh reservation, which mints a new generation
+        instead).  When ``generation`` is given it must match the filed
+        record: the compare-and-swap covers identity and state together, so
+        a rotated binding can never be advanced by a holder of the old one.
+        """
+
+        current = self.read_funding(mover_action_key, tier_id)
+        if current is None or current.get("state") != expect:
+            return False
+        if (generation is not None
+                and str(current.get("generation")) != str(generation)):
+            return False
+        if expect == advance_to:
+            return True
+        legal = ({expect} == {"reserved"}
+                 and advance_to in ("transferring", "released"))
+        legal = legal or ({expect} == {"transferring"}
+                          and advance_to in ("consumed", "released"))
+        if not legal:
+            return False
+        updated = dict(current)
+        updated["state"] = advance_to
+        updated["unix"] = time.time()
+        try:
+            self.write_funding(
+                updated,
+                expect_generation=(str(current.get("generation"))
+                                   if isinstance(current.get("generation"),
+                                                str) else None))
+        except (OSError, PoolContractError, ValueError):
+            return False
+        return True
+
+    def funded_cover(self, tier_id: str, item: Mapping[str, object],
+                     kind: str, need: int) -> tuple[int, str | None]:
+        """What this claim's funding record covers, with its generation.
+
+        Strict or nothing, against the sealed row itself: the record must
+        parse, sit in ``transferring``, name this tier/mover/kind, carry the
+        row's own ``published_unix`` (a republished content-hash key never
+        inherits an older generation's credit), repeat the row's sealed
+        residency range, bind the live frozen consumer/plan (the record's
+        ``consumer_action_key`` still files a plan whose digest is still the
+        record's ``plan_sha256`` -- a replaced plan never inherits credit,
+        and the claim path is the only reader that can enforce this on the
+        row it is about to run), and name token files that are all still
+        held under this key right now with this kind's prefix.  Stale
+        physical holdings -- a landed range's complete receipt, a previous
+        attempt's leftovers, another generation's fence, a superseded plan's
+        credit -- never match, so an old copy always pays its full demand.
+        Never raises for queue-state reasons; unknown is ``(0, None)``.
+        """
+
+        if need <= 0 or not isinstance(item, Mapping):
+            return (0, None)
+        key = item.get("action_key")
+        if not isinstance(key, str):
+            return (0, None)
+        record = self.read_funding(key, tier_id)
+        if record is None or record.get("state") != "transferring":
+            return (0, None)
+        if (str(record.get("tier_id")) != str(tier_id)
+                or str(record.get("mover_action_key")) != key
+                or str(record.get("kind")) != str(kind)):
+            return (0, None)
+        try:
+            row_published = float(item.get("published_unix"))  # type: ignore[arg-type]
+            bound_published = float(record.get("published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return (0, None)
+        if row_published != bound_published:
+            return (0, None)
+        residency = item.get("residency")
+        if not isinstance(residency, Mapping):
+            return (0, None)
+        for field in ("tier_id", "range_start_bytes", "range_end_bytes"):
+            if str(residency.get(field)) != str(record.get(field)):
+                return (0, None)
+        # Sealed consumer/plan: the credit belongs to one frozen window.
+        # The mover row carries no consumer field, so the record's binding
+        # is checked against the live frozen plan itself.  Anything else --
+        # no plan, an unreadable plan, a replaced decomposition under a new
+        # digest -- authorizes nothing, and the coordinator re-fences next
+        # cycle if the live window still wants this mover.
+        try:
+            from . import residency_plan as _residency_plan
+            consumer_key = record.get("consumer_action_key")
+            live_plan = (_residency_plan.read(
+                self, str(consumer_key))
+                if isinstance(consumer_key, str) else None)
+            live_digest = (_residency_plan.plan_sha256(live_plan)
+                           if live_plan is not None else None)
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        except Exception:
+            return (0, None)
+        if (not isinstance(live_digest, str)
+                or str(record.get("plan_sha256")) != live_digest):
+            return (0, None)
+        tokens = record.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            return (0, None)
+        try:
+            held_names = {path.name for path in _glob(
+                self.tier_ledger(tier_id).held_dir / key, "*-*")}
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        if any(not isinstance(name, str)
+               or not name.startswith(str(kind) + "-")
+               or name not in held_names for name in tokens):
+            return (0, None)
+        generation = record.get("generation")
+        if not isinstance(generation, str):
+            return (0, None)
+        return (min(int(len(tokens)), int(need)), generation)
+
+    def reserve_fence(self, tier_id: str, grant: str, fields: Mapping[str, object],
+                      demand_gib: int) -> bool:
+        """Hold one next-need under the grant key and bind it, idempotently.
+
+        Serialized on the mover's transition lock (non-blocking: a claim
+        holding it makes this defer rather than queue behind execution).
+        See :meth:`_reserve_fence_locked` for the body.
+        """
+
+        mover = str(fields["mover_action_key"])
+        with self.mover_transition_lock(mover, blocking=False) as acquired:
+            if not acquired:
+                return False
+            return self._reserve_fence_locked(tier_id, grant, fields, demand_gib)
+
+    def _reserve_fence_locked(self, tier_id: str, grant: str,
+                              fields: Mapping[str, object],
+                              demand_gib: int) -> bool:
+        """Hold one next-need under the grant key and bind it, idempotently.
+
+        Caller holds the mover's transition lock (see :meth:`reserve_fence`):
+        the generation this call reads, writes, or replaces is never pulled
+        out from under a verifying claim, because a claim holds the same
+        lock from its tier acquire through its consumed-marking.
+
+        If the grant already holds enough, only the record is ensured (a
+        crash between ``acquire`` and ``write_funding`` repairs itself here
+        by binding the already-held names).  A live ``reserved`` binding
+        whose names still match what is held is likewise kept, never
+        rotated -- rotating under a verifying claim would break its
+        generation pin.  Otherwise takes the deficit from free and files a
+        fresh ``reserved`` generation.  A fence already handed off (record
+        ``transferring`` with its tokens verified under the mover, or
+        ``consumed``) is left alone: re-reserving beside it would double-fence
+        one advance.  ``fields`` must carry the mover row's ``published_unix``
+        alongside the plan binding.  Returns whether the fence is now held
+        and bound.  Never raises for queue-state reasons; unknown is
+        ``False`` (the caller defers).
+        """
+
+        mover = str(fields["mover_action_key"])
+        current = self.read_funding(mover, str(tier_id))
+        current_generation = (str(current.get("generation"))
+                              if isinstance(current, dict)
+                              and isinstance(current.get("generation"), str)
+                              else None)
+        if current is not None and current.get("state") == "consumed":
+            try:
+                ledger = self.tier_ledger(tier_id)
+                kind = str(fields["kind"])
+                mover_holds = int(ledger.holder_tokens(mover).get(kind, 0))
+            except (OSError, PoolContractError, ValueError, KeyError, TypeError):
+                return False
+            try:
+                demand_holds = int(demand_gib) <= mover_holds
+            except (TypeError, ValueError):
+                return False
+            if demand_holds:
+                return True
+            # Spent and released (finished, republished under a new
+            # publication): fall through and fence afresh with a new
+            # generation rather than wedge on a terminal record.
+        if current is not None and current.get("state") == "transferring":
+            try:
+                ledger_names = {path.name for path in _glob(
+                    self.tier_ledger(str(tier_id)).held_dir / mover, "*-*")}
+            except (OSError, PoolContractError, ValueError):
+                return False
+            bound = current.get("tokens")
+            if (isinstance(bound, list) and bound
+                    and all(str(name) in ledger_names for name in bound)):
+                return True
+            # Bound tokens gone (released by an owner path): fall through and
+            # fence afresh with a new generation rather than report held.
+        if (current is not None and current.get("state") == "reserved"
+                and isinstance(current.get("tokens"), list)):
+            try:
+                grant_names = {path.name for path in _glob(
+                    self.tier_ledger(str(tier_id)).held_dir / grant, "*-*")}
+            except (OSError, PoolContractError, ValueError):
+                return False
+            try:
+                fields_published = float(fields["published_unix"])  # type: ignore[arg-type]
+                record_published = float(current.get("published_unix"))  # type: ignore[arg-type]
+                published_same = record_published == fields_published
+            except (KeyError, TypeError, ValueError):
+                published_same = False
+            if (set(str(name) for name in current["tokens"]) == grant_names  # type: ignore[index]
+                    and str(current.get("consumer_action_key")) == str(
+                        fields["consumer_action_key"])
+                    and str(current.get("plan_sha256")) == str(
+                        fields["plan_sha256"])
+                    and str(current.get("mover_action_key")) == str(
+                        fields["mover_action_key"])
+                    and str(current.get("kind")) == str(fields["kind"])
+                    and str(current.get("range_start_bytes")) == str(
+                        fields["range_start_bytes"])
+                    and str(current.get("range_end_bytes")) == str(
+                        fields["range_end_bytes"])
+                    and published_same):
+                return True
+            # Stale binding (republished mover, replaced plan, new range):
+            # fall through and fence afresh with a new generation rather
+            # than keep a binding the claim path would refuse.
+
+        try:
+            ledger = self.tier_ledger(tier_id)
+            kind = str(fields["kind"])
+            have = int(ledger.holder_tokens(grant).get(kind, 0))
+        except (OSError, PoolContractError, ValueError, KeyError, TypeError):
+            return False
+        deficit = int(demand_gib) - have
+        if deficit > 0:
+            try:
+                if not ledger.acquire(grant, {kind: int(deficit)}):
+                    # ``acquire`` is all-or-nothing: a ``False`` leaves
+                    # nothing half-held, so there is nothing to unwind.
+                    return False
+            except (OSError, PoolContractError, ValueError):
+                return False
+        try:
+            names = sorted(path.name for path in _glob(
+                ledger.held_dir / grant, "*-*"))
+        except (OSError, PoolContractError, ValueError):
+            return False
+        generation = uuid.uuid4().hex
+        try:
+            published_unix = float(fields["published_unix"])  # type: ignore[arg-type]
+        except (KeyError, TypeError, ValueError):
+            return False
+        record = {"schema": TIER_FUNDING_SCHEMA_V1, "tier_id": str(tier_id),
+                  "consumer_action_key": str(fields["consumer_action_key"]),
+                  "plan_sha256": str(fields["plan_sha256"]),
+                  "mover_action_key": str(fields["mover_action_key"]),
+                  "range_start_bytes": int(fields["range_start_bytes"]),
+                  "range_end_bytes": int(fields["range_end_bytes"]),
+                  "kind": kind, "tokens": names, "generation": generation,
+                  "state": "reserved", "unix": time.time(),
+                  "published_unix": published_unix}
+        # Compare-and-swap on generation: a live binding is replaced only
+        # against the generation this cycle read, so a verifying claim's pin
+        # is never pulled out from under it -- a lost race simply defers to
+        # next cycle.  A torn file (present but unparsable, so
+        # ``read_funding`` answered ``None``) carries no live binding: remove
+        # it first rather than wedge on an unreadable CAS base.
+        try:
+            if current is None:
+                with suppress(OSError, PoolContractError, ValueError):
+                    if self.funding_path(mover, str(tier_id)).exists():
+                        self.funding_path(mover, str(tier_id)).unlink()
+                self.write_funding(record)
+            else:
+                self.write_funding(record, expect_generation=current_generation)
+        except (OSError, PoolContractError, ValueError):
+            return False
+        return True
+
+    def transfer_fence(self, tier_id: str, grant: str, mover: str) -> int:
+        """Move a reserved fence onto its mover without a free interval.
+
+        Per-token renames under ``held/``: at no instant is a token countable
+        as free, so unrelated claims cannot take it mid-move, and a crash
+        part-way leaves the sum split across the two holders -- recoverable by
+        calling this again (it moves the remainder) or by the record-state
+        rules.  The caller holds the mover's transition lock and advances the
+        record itself; this moves only tokens.  Refuses (with ``0``) unless
+        the mover already has a queue row: fusing onto a key that will never
+        run strands the fence under a plan member the sweep spares.
+        """
+
+        try:
+            if not (self.item_path(READY, mover).exists()
+                    or self.item_path(CLAIMED, mover).exists()):
+                return 0
+            return int(self.transfer_tier_reservation(tier_id, grant, mover))
+        except (OSError, PoolContractError, ValueError):
+            return 0
+
     def mover_transition_lock(self, mover_action_key: str, *,
                               blocking: bool = True):
         """Exclude two parties from deciding one staged range's ownership.
@@ -4577,7 +5058,7 @@ class PoolQueue:
 
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
-        handles: dict[str, str],
+        handles: dict[str, str], funded: dict[str, dict[str, int]],
     ) -> dict[str, object] | None:
         """Take every tier's tokens, or say which tier stopped it.
 
@@ -4590,8 +5071,24 @@ class PoolQueue:
         records: a tier with no ledger at all, a tier whose whole capacity is
         below the demand (which no waiting will fix), or one that is merely
         busy.
+
+        ``funded`` is filled per tier with what this claim's funding record
+        covers (``{tier_id: {kind: count}}``): pre-positioned fence tokens the
+        coordinator transferred under this key, verified by name against what
+        is actually held.  The ``begin_acquire`` below takes only the
+        remainder from free, so a funded claim never double-holds.  Anything
+        else the key holds -- a landed range's tokens, a previous attempt's
+        leftovers -- is physical occupancy and is never subtracted here: only
+        a strict funding record in ``transferring`` authorizes a subtraction.
         """
 
+        # The sealed row funds at most once: its publication (including its
+        # generation) is read once here and shared by every tier below, so a
+        # republish between tiers cannot fund half a claim on stale credit.
+        try:
+            sealed = _read_json(self.item_path(READY, action_key))
+        except (OSError, PoolContractError):
+            sealed = None
         for tier_id, needs in sorted(tier_demand.items()):
             ledger = self.tier_ledger(tier_id)
             if not ledger.base.is_dir():
@@ -4600,7 +5097,24 @@ class PoolQueue:
             if any(total.get(kind, 0) < need for kind, need in needs.items()):
                 return {"tier_id": tier_id, "reason": "never_fits_tier_capacity",
                         "capacity_total": total, "demand": dict(needs)}
-            handle = ledger.begin_acquire(action_key, needs)
+            covered: dict[str, int] = {}
+            generation: str | None = None
+            if isinstance(sealed, Mapping):
+                for kind, need in needs.items():
+                    try:
+                        count, covered_generation = self.funded_cover(
+                            tier_id, sealed, kind, int(need))
+                    except (OSError, PoolContractError, ValueError):
+                        continue
+                    if count:
+                        covered[kind] = count
+                        generation = covered_generation
+            if any(covered.values()):
+                funded[tier_id] = {"kinds": dict(covered),
+                                   "generation": generation}
+            remainder = {kind: int(need) - int(covered.get(kind, 0))
+                         for kind, need in needs.items()}
+            handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
                 return {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
                         "token_shortage": ledger.last_token_shortage,
@@ -6614,6 +7128,7 @@ class PoolQueue:
                     reservation_demand["gpu"] = 1
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
+                tier_funded: dict[str, dict[str, int]] = {}
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
@@ -6774,7 +7289,8 @@ class PoolQueue:
                         # tier is cluster-scoped, and withholding this box for
                         # a shortage every box shares would idle it for nothing
                         # (Rob, #583: the box does other work meanwhile).
-                        shortage = self._begin_tier_acquire(key, tier_demand, tier_handles)
+                        shortage = self._begin_tier_acquire(
+                            key, tier_demand, tier_handles, tier_funded)
                         if shortage is not None:
                             self._abandon_tier_acquire(tier_handles)
                             tier_handles.clear()
@@ -6854,7 +7370,15 @@ class PoolQueue:
                     # release path returns.
                     tier_filed = self._commit_tier_acquire(key, tier_handles)
                     tier_wanted = sum(sum(needs.values()) for needs in tier_demand.values())
-                    incomplete = tier_filed < tier_wanted
+                    tier_funded_total = sum(
+                        sum(entry["kinds"].values())
+                        for entry in tier_funded.values()
+                        if isinstance(entry, dict)
+                        and isinstance(entry.get("kinds"), dict))
+                    # Funded credit counts exactly once: the fence the
+                    # coordinator transferred under this key now belongs to
+                    # this claim, and only the remainder came from free.
+                    incomplete = tier_filed + tier_funded_total < tier_wanted
                     filed = 0
                     if ledger is not None and handle is not None:
                         # Won the rename, so the reservation stops belonging to this
@@ -6880,13 +7404,25 @@ class PoolQueue:
                         # still byte-identical to the ready record, because the
                         # rewrite below has not happened yet, so putting it back
                         # restores the item exactly as it was.
+                        #
+                        # A funded claim unwinds differently: its fence stays
+                        # fused under this key (the record is untouched, same
+                        # generation), so the entitlement survives the failure
+                        # and the next attempt re-verifies the same binding
+                        # instead of re-taking it from free.  Only the unfused
+                        # remainder -- the handles and the host take -- goes
+                        # back.  Physical occupancy keeps the pre-existing
+                        # release semantics everywhere else, unchanged here.
                         if ledger is not None and handle is not None:
                             ledger.abandon_acquire(handle)
                             ledger.release(key)
                             self._return_borrow(controller, borrow)
                             self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                         self._abandon_tier_acquire(tier_handles)
-                        self.release_tier_reservations(key)
+                        if not tier_funded:
+                            self.release_tier_reservations(key)
+                        # else: fused fence stays (see above); the host take
+                        # is already back via the host-ledger release above.
                         # Link rather than rename.  ``publish`` writes ``ready``
                         # unconditionally, so a re-submission of this key can
                         # already be sitting there, and a rename would replace that
@@ -7008,6 +7544,70 @@ class PoolQueue:
                     }
                 if residency["state"] != "not_requested":
                     claimed["residency_verdict"] = residency
+                if tier_funded:
+                    # Re-verify each funding against the renamed record before
+                    # persisting: the claim holds this key's transition lock,
+                    # so no coordinator transfer/cancel interleaves, but the
+                    # check still runs against ``moved`` (post-rename bytes)
+                    # with the generation this attempt verified at begin.
+                    # Nothing is marked here: marking tier1 then failing
+                    # tier2 -- or failing persistence itself -- must leave a
+                    # recoverable entitlement (both records still
+                    # ``transferring`` for the next attempt to re-verify),
+                    # never consumed-but-no-executable-claim stranded credit.
+                    # The fused fence stays (tier releases skipped below),
+                    # the row goes back byte-identical, and the next attempt
+                    # re-verifies the same binding: preserved, never freed
+                    # into a stealer window, never double-spent.
+                    funding_verified = True
+                    for funded_tier, entry in tier_funded.items():
+                        pinned = (entry.get("generation")
+                                  if isinstance(entry, dict) else None)
+                        kinds = (entry.get("kinds")
+                                 if isinstance(entry, dict) else None)
+                        needs = tier_demand.get(funded_tier, {})
+                        ok = isinstance(kinds, dict) and bool(kinds)
+                        if ok:
+                            for kind_name, count in kinds.items():
+                                try:
+                                    covered, live_generation = self.funded_cover(
+                                        funded_tier, moved, str(kind_name),
+                                        int(needs.get(kind_name, 0)))
+                                except (OSError, PoolContractError, ValueError):
+                                    ok = False
+                                    break
+                                if (not covered
+                                        or int(covered) < int(count)
+                                        or live_generation != pinned):
+                                    ok = False
+                                    break
+                        if not ok:
+                            funding_verified = False
+                            break
+                    if not funding_verified:
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            ledger.release(key)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self._abandon_tier_acquire(tier_handles)
+                        # tier releases skipped: fused fence stays (see above)
+                        try:
+                            os.link(dst, src)
+                        except OSError:
+                            pass
+                        else:
+                            dst.unlink(missing_ok=True)
+                            self.item_path(INTENT, key).unlink(missing_ok=True)
+                        self.record_denial(item, "committed_reservation_incomplete", {
+                            "filed_tokens": filed,
+                            "expected_tokens": sum(reservation_demand.values()),
+                            "tier_filed_tokens": tier_filed,
+                            "tier_expected_tokens": tier_wanted,
+                            "adaptive_cpu": adaptive is not None,
+                            "adaptive_gpu": adaptive_gpu is not None,
+                        })
+                        continue
                 # Read here, where the claim record is being written anyway,
                 # so the receipt costs no extra write and cannot race: after
                 # this point the prewarm loop has already skipped this key,
@@ -7032,6 +7632,36 @@ class PoolQueue:
                     container_owner=(str(claimed["container_owner"])
                                      if claimed.get("container_owner") else None),
                 )
+                if tier_funded:
+                    # Fuse each funding shut only after the claim is durable:
+                    # persistence above is the point of no return, so a
+                    # persistence failure still leaves every record
+                    # ``transferring`` for the next attempt (recoverable
+                    # entitlement, never stranded consumed credit).  The claim
+                    # holds this key's transition lock throughout, so no
+                    # coordinator transfer/cancel interleaves between the
+                    # pre-persistence verification and these marks; a mark
+                    # that still fails (I/O, not concurrency) leaves a
+                    # ``transferring`` record under an already-executable
+                    # claim, which the mover-terminal settle closes on finish
+                    # rather than stranding a second subtraction.
+                    for funded_tier, entry in tier_funded.items():
+                        pinned = (entry.get("generation")
+                                  if isinstance(entry, dict) else None)
+                        # Locked spelling: the claim holds this key's
+                        # transition lock from its tier acquire through here.
+                        if self._advance_funding_state_locked(
+                                key, funded_tier, expect="transferring",
+                                advance_to="consumed",
+                                generation=pinned if isinstance(
+                                    pinned, str) else None):
+                            continue
+                        current = self.read_funding(key, funded_tier)
+                        if (current is not None
+                                and current.get("state") == "consumed"
+                                and (pinned is None or current.get(
+                                    "generation") == pinned)):
+                            continue
                 self.passes_path(key).unlink(missing_ok=True)
                 return claimed
         return None
