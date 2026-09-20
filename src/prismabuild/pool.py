@@ -7001,37 +7001,46 @@ class PoolQueue:
                 if path.name.startswith(kind + "-"))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        # Same disjointness rule as stage_output_intent (R7 liveness): this
-        # branch files a FRESH intent (no staged record exists for this
-        # mover/tier), so every outstanding intent of this owner is another
-        # intent; never select a spoken name.
-        spoken, spoken_unknown = self._output_spoken_token_names(
-            str(owner_key), tier)
-        if spoken_unknown:
-            return {"ok": False, "refusal": "unknown-retain: funding-census"}
-        unspoken_names = [name for name in held_names
-                          if name not in spoken]
-        if token_names is not None:
-            try:
-                selected = sorted(str(name) for name in token_names)
-            except (TypeError, ValueError):
-                return {"ok": False, "refusal": "bad-token-names"}
-            if len(set(selected)) != len(selected) or not selected:
-                return {"ok": False, "refusal": "bad-token-names"}
-            if len(selected) != batch_gib:
-                return {"ok": False, "refusal": "token-names-unknown"}
-            for name in selected:
-                if not name.startswith(kind + "-"):
-                    return {"ok": False, "refusal": "token-names-unknown"}
-                if name not in held_names:
-                    return {"ok": False, "refusal": "token-names-unknown"}
-                if name in spoken:
-                    return {"ok": False, "refusal": "token-names-spoken"}
+        # Same disjointness rule as stage_output_intent (R7 liveness): a
+        # name already promised to one of this owner's outstanding intents
+        # is spoken for. This block only selects for a FRESH intent: when
+        # a record already exists for this mover/tier, its own filed set
+        # is authoritative (and is itself spoken, by itself), so selection
+        # is skipped and the in-lock reconciliation drives the filed set.
+        if self.read_output_funding(str(mover_key), tier) is not None:
+            selected = []
         else:
-            if len(unspoken_names) < batch_gib:
-                return {"ok": False, "refusal": "tier-reservation-unavailable",
-                        "available": ledger.available()}
-            selected = unspoken_names[:batch_gib]
+            spoken, spoken_unknown = self._output_spoken_token_names(
+                str(owner_key), tier)
+            if spoken_unknown:
+                return {"ok": False,
+                        "refusal": "unknown-retain: funding-census"}
+            unspoken_names = [name for name in held_names
+                              if name not in spoken]
+            if token_names is not None:
+                try:
+                    selected = sorted(str(name) for name in token_names)
+                except (TypeError, ValueError):
+                    return {"ok": False, "refusal": "bad-token-names"}
+                if len(set(selected)) != len(selected) or not selected:
+                    return {"ok": False, "refusal": "bad-token-names"}
+                if len(selected) != batch_gib:
+                    return {"ok": False, "refusal": "token-names-unknown"}
+                for name in selected:
+                    if not name.startswith(kind + "-"):
+                        return {"ok": False,
+                                "refusal": "token-names-unknown"}
+                    if name not in held_names:
+                        return {"ok": False,
+                                "refusal": "token-names-unknown"}
+                    if name in spoken:
+                        return {"ok": False, "refusal": "token-names-spoken"}
+            else:
+                if len(unspoken_names) < batch_gib:
+                    return {"ok": False,
+                            "refusal": "tier-reservation-unavailable",
+                            "available": ledger.available()}
+                selected = unspoken_names[:batch_gib]
         # Owner outer, mover inner (R1): serializes against owner finish.
         with self._transition_locked(str(owner_key),
                                      blocking=False) as owner_acquired:
