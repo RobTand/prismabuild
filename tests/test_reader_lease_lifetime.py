@@ -1566,3 +1566,146 @@ def _attest_for(queue, action, nonce, scope_empty=True, host="test-host",
         "action_key": action, "nonce": nonce, "scope_id": "s1",
         "host": host, "worker": worker, "incarnation": "i1",
         "scope_empty": scope_empty, "unix": 1789880000.0}) + "\n")
+
+
+def test_pin_identity_is_canonical_over_paths(fleet) -> None:
+    """Delimiter characters in paths cannot merge or split pin identity."""
+
+    first = reader_lease.pin_id_for(
+        consumer_action_key=CONSUMER, tier_id=TIER, epoch="", stage_root="/s",
+        start=0, end=8, movers=[MOVER], generations={MOVER: "0" * 32},
+        keys={"0:/a|b,c=d": {"bytes": 8, "sha256": "b" * 64,
+                             "generation": "0" * 32}})
+    second = reader_lease.pin_id_for(
+        consumer_action_key=CONSUMER, tier_id=TIER, epoch="", stage_root="/s",
+        start=0, end=8, movers=[MOVER], generations={MOVER: "0" * 32},
+        keys={"0:/a|b,c=d": {"bytes": 8, "sha256": "b" * 64,
+                             "generation": "0" * 32}})
+    other = reader_lease.pin_id_for(
+        consumer_action_key=CONSUMER, tier_id=TIER, epoch="", stage_root="/s",
+        start=0, end=8, movers=[MOVER], generations={MOVER: "0" * 32},
+        keys={"0:/a": {"bytes": 8, "sha256": "b" * 64,
+                       "generation": "0" * 32}})
+    assert first == second
+    assert first != other
+    body = reader_lease._canonical_pin_body(
+        consumer_action_key=CONSUMER, tier_id=TIER, epoch="",
+        stage_root="/s", start=0, end=8, movers=[MOVER],
+        generations={MOVER: "0" * 32},
+        keys={"0:/a|b,c=d": {"bytes": 8, "sha256": "b" * 64,
+                             "generation": "0" * 32}})
+    import json as _json
+    assert _json.loads(body)["objects"] == [
+        {"key": "0:/a|b,c=d", "bytes": 8, "sha256": "b" * 64,
+         "generation": "0" * 32}]
+
+
+def test_contradictory_covers_refuse(fleet) -> None:
+    """Two movers vouching one key with different bytes is no cover."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "cc.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x61" * 512)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/cc.bin", 0)
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/cc.bin",
+             staged, 512, "b" * 64)
+    other = stage / "model" / "cc2.bin"
+    other.write_bytes(b"\x62" * 1024)
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": "a" * 64,
+        "entries": {key: {"stage_path": str(other), "bytes": 1024,
+                          "sha256": "c" * 64, "offset": 0}}})
+    identity = reader_lease.stat_identity(str(other))
+    assert identity is not None
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+        generation=reader_lease.mint_generation(),
+        entries={key: {"stage_path": str(other), "bytes": 1024,
+                       "sha256": "c" * 64, "file_id": identity}})
+    refused = reader_lease.covers_for_keys(
+        root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
+        epoch="")
+    assert refused == {
+        "ok": False, "refusal": "ownership-uncertain: contradictory covers"}
+
+
+def test_cover_lookup_caches_valid_reuses_valid_only(fleet) -> None:
+    """Generation-keyed cache: repeats reuse, new material is seen, misses stick never."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "v2.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x63" * 256)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/v2.bin", 0)
+    context: dict = {}
+    assert reader_lease.covers_for_keys(
+        root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
+        epoch="", context=context) == {"ok": False, "refusal": "unpublished"}
+    assert context == {}, "absence must never populate the cache"
+    _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/v2.bin",
+             staged, 256, "b" * 64)
+    first = reader_lease.covers_for_keys(
+        root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
+        epoch="", context=context)
+    assert first["ok"], first
+    assert any(entry.startswith("cover:") for entry in context)
+    second = reader_lease.covers_for_keys(
+        root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
+        epoch="", context=context)
+    assert second == first
+
+
+def test_cleanup_persists_broker_proof_exactly(fleet) -> None:
+    """The pool cleanup hook files the broker verdict with exact IDs."""
+
+    from types import SimpleNamespace
+
+    queue, stage = fleet
+    scope = SimpleNamespace(nonce="n" * 32, unit="unit-9")
+    released = {"released": True, "retired": False,
+                "termination_evidence": {"stop": "done"}}
+    queue._persist_reader_scope_proof(
+        {"action_key": CONSUMER, "claimed_by": "worker-7"}, scope, released)
+    attestation = reader_lease.read_scope_attestation(queue, CONSUMER,
+                                                      "n" * 32)
+    assert isinstance(attestation, dict)
+    assert attestation["action_key"] == CONSUMER
+    assert attestation["scope_id"] == "unit-9"
+    assert attestation["scope_empty"] is True
+    assert attestation["worker"] == "worker-7"
+    assert attestation["released"] is True
+    assert attestation["termination_evidence"] == {"stop": "done"}
+
+
+def test_withdrawn_with_telemetry_reclaims_automatically(fleet) -> None:
+    """Withdraw terminal WITH broker telemetry frees via the egress itself."""
+
+    queue, stage = fleet
+    staged = stage / "model" / "aw.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x64" * 4096)
+    root = queue.root / pool.RESIDENCY
+    _publish(root, stage, CONSUMER, MOVER,
+             "/mnt/shared/model/aw.bin", staged, 4096)
+    acquired = _acquire(queue, MOVER, "auto-withdraw-token")
+    assert acquired["ok"]
+    _attest(queue, scope_empty=True)
+    withdrawn = queue.dir(pool.WITHDRAWN)
+    withdrawn.mkdir(parents=True, exist_ok=True)
+    (withdrawn / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "status": "withdrawn",
+         "resource_telemetry": {
+             "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
+             "host": "test-host"}}))
+    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+                                  stage_root=str(stage))
+    assert receipt["auto_reclaimed"] == [acquired["ref_id"]]
+    assert not staged.exists()
+    assert receipt["entries_deleted"] == 1

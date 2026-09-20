@@ -302,6 +302,37 @@ def leases_root(queue, residency_root=None) -> Path:
     return Path(queue.root) / "residency" / LEASES_SUBDIR
 
 
+def _canonical_pin_body(*, consumer_action_key: str, tier_id: str,
+                        epoch: str, stage_root: str, start: int, end: int,
+                        movers: list[str], generations: Mapping[str, str],
+                        keys: Mapping[str, Mapping[str, object]]) -> str:
+    """Canonical structured encoding of a pin's identity (JSON, not grammar).
+
+    Paths, digests and generations travel as JSON strings inside a fixed
+    structure, so no delimiter character occurring in a path can merge or
+    split fields the way a private ``|/,/=`` grammar risks.  The digest
+    of this exact byte string names the pin file.
+    """
+
+    return json.dumps({
+        "consumer": consumer_action_key,
+        "tier": tier_id,
+        "epoch": epoch,
+        "stage_root": stage_root,
+        "range": [start, end],
+        "movers": sorted(movers),
+        "generations": {mover: generations[mover]
+                        for mover in sorted(movers)},
+        "objects": sorted(
+            ({"key": key,
+              "bytes": keys[key].get("bytes"),
+              "sha256": keys[key].get("sha256"),
+              "generation": keys[key].get("generation")}
+             for key in keys),
+            key=lambda item: str(item["key"])),
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
 def pin_id_for(*, consumer_action_key: str, tier_id: str, epoch: str,
                stage_root: str, start: int, end: int, movers: list[str],
                generations: Mapping[str, str],
@@ -311,19 +342,18 @@ def pin_id_for(*, consumer_action_key: str, tier_id: str, epoch: str,
     The requested object keyset joins the name: two equal-sized distinct
     files under one mover (both offset 0 in source coordinates) must never
     share a pin, or the second acquire would append a ref to entries that
-    do not name its bytes.  Canonical form per key is
-    ``key|bytes|sha256|generation``; physical identity (inode/mtime) is
-    enforced at open, not hashed here.  One file per keyset, many refs.
+    do not name its bytes.  Canonical form per key is the structured
+    ``{key, bytes, sha256, generation}`` object above; physical identity
+    (inode/mtime) is enforced at open, not hashed here.  One file per
+    keyset, many refs.
     """
 
-    window = "|".join((consumer_action_key, tier_id, epoch, stage_root,
-                       str(start), str(end), ",".join(sorted(movers))))
-    gens = ",".join(f"{mover}={generations[mover]}" for mover in sorted(movers))
-    objects = ",".join(
-        f"{key}={keys[key].get('bytes')}:{keys[key].get('sha256')}:"
-        f"{keys[key].get('generation')}" for key in sorted(keys))
-    body = "|".join((window, gens, objects))
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(
+        _canonical_pin_body(
+            consumer_action_key=consumer_action_key, tier_id=tier_id,
+            epoch=epoch, stage_root=stage_root, start=start, end=end,
+            movers=movers, generations=generations,
+            keys=keys).encode("utf-8")).hexdigest()[:32]
 
 
 def _entry_identity(entries: list[Mapping[str, object]]) -> list[tuple[str, ...]]:
@@ -1117,6 +1147,42 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
 # Window cover lookup (PQ-facing helper): what to acquire, without inventing
 # --------------------------------------------------------------------------
 
+def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
+                       context: dict | None):
+    """Validated (material, fragment) for one mover, generation-cached.
+
+    The cache holds VALIDATED documents keyed by the sidecar's immutable
+    generation: a repeat lookup with the same generation reuses them
+    without re-reading the fragment, while a republish (new generation)
+    misses and re-reads.  Absence and malformation are NEVER cached, so
+    newly published material is always seen.  Selection only: acquire
+    revalidates under the ownership lock before anything pins.
+    """
+
+    material = read_material(root, consumer_action_key, mover)
+    if not isinstance(material, dict):
+        return None, None
+    generation = str(material.get("generation") or "")
+    if not generation:
+        return None, None
+    if context is not None:
+        hit = context.get(f"cover:{consumer_action_key}:{mover}")
+        if (isinstance(hit, dict) and hit.get("generation") == generation):
+            return hit.get("material"), hit.get("fragment")
+    try:
+        from prismabuild import residency_map as map_mod
+        with open(map_mod.fragment_path(
+                root, consumer_action_key, mover)) as stream:
+            fragment = map_mod.validate_fragment(json.load(stream))
+    except (OSError, ValueError):
+        return None, None
+    if context is not None:
+        context[f"cover:{consumer_action_key}:{mover}"] = {
+            "generation": generation, "material": material,
+            "fragment": fragment}
+    return material, fragment
+
+
 def covers_for_keys(root: str | Path, consumer_action_key: str,
                     keys: list[str], *, tier_id: str,
                     manifest_sha256: str, epoch: str,
@@ -1136,13 +1202,20 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
     Freshness is re-validated under the ownership lock inside
     :func:`acquire`; this lookup is selection, not admission.
 
+    Minimal and nonconflicting: each requested key is attributed to
+    exactly one mover; two movers vouching one key with different bytes
+    or digests refuse as contradictory proofs, and a selected mover
+    whose material or fragment is malformed fails the pass
+    (ownership-uncertain) instead of being silently skipped into an
+    ``unpublished`` that invites fallback.  The sealed caller's
+    expected length/digest stays authoritative downstream: acquire
+    proves it against this selection and refuses any gap.
+
     Returns ``{"ok": True, "covers":
     [{mover_action_key, manifest_sha256}], "manifest_sha256": ...,
     "expected": {key: {bytes, sha256}}}`` or ``{"ok": False,
     "refusal": ...}``.
     """
-
-    from prismabuild import residency_map as map_mod
 
     base = Path(root)
     if context is None:
@@ -1154,14 +1227,16 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
     except OSError:
         return {"ok": False, "refusal": "unpublished"}
     wanted = set(keys)
-    covers: list[dict[str, str]] = []
-    expected: dict[str, dict[str, object]] = {}
+    # Per-key candidates: mover -> (bytes, digest, generation).
+    candidates: dict[str, list[tuple[str, object, object, str]]] = {}
+    selected: dict[str, dict[str, object]] = {}
     for name in names:
         mover = name[:-len(".json")]
         if len(mover) != 64 or any(c not in _HEX for c in mover):
             continue
-        material = read_material(base, consumer_action_key, mover)
-        if not isinstance(material, dict):
+        material, fragment = _cached_cover_docs(
+            base, consumer_action_key, mover, context)
+        if material is None or fragment is None:
             continue
         if str(material.get("tier_id") or "") != tier_id:
             continue
@@ -1182,12 +1257,6 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
                         "refusal": "ownership-uncertain: staged epoch set"}
             if str(material.get("epoch") or "") != str(epoch or ""):
                 continue
-        try:
-            with open(map_mod.fragment_path(
-                    base, consumer_action_key, mover)) as stream:
-                fragment = map_mod.validate_fragment(json.load(stream))
-        except (OSError, ValueError):
-            continue
         if (str(fragment.get("tier_id") or "") != tier_id
                 or str(fragment.get("manifest_sha256") or "")
                 != manifest_sha256
@@ -1196,29 +1265,61 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
         material_entries = material.get("entries")
         if not isinstance(material_entries, dict):
             continue
-        contributed = False
+        fragment_entries = fragment.get("entries")
+        if not isinstance(fragment_entries, dict):
+            continue
         for key, mention in material_entries.items():
             if str(key) not in wanted or not isinstance(mention, dict):
                 continue
-            expected[str(key)] = {
-                "bytes": mention.get("bytes"),
-                "sha256": mention.get("sha256"),
-            }
-            contributed = True
-        if contributed:
-            covers.append({
-                "mover_action_key": mover,
-                "manifest_sha256": manifest_sha256,
-            })
-    if not covers:
+            vouched = fragment_entries.get(str(key))
+            # The sidecar dates the fragment's vouching: same path,
+            # length, digest, or this cover is about different bytes.
+            if (not isinstance(vouched, Mapping)
+                    or str(vouched.get("stage_path") or "")
+                    != str(mention.get("stage_path") or "")
+                    or vouched.get("bytes") != mention.get("bytes")
+                    or str(vouched.get("sha256") or "")
+                    != str(mention.get("sha256") or "")):
+                selected[str(key)] = {"tainted": True,
+                                      "reason": "sidecar/fragment disagree"}
+                continue
+            candidates.setdefault(str(key), []).append((
+                mover, mention.get("bytes"), mention.get("sha256"),
+                str(material.get("generation"))))
+            selected.setdefault(str(key), dict(mention))
+    if not any(candidates.values()):
+        # Nothing published for this readset at all: absence, not a gap.
         return {"ok": False, "refusal": "unpublished"}
-    missing = [key for key in keys if key not in expected]
-    if missing:
-        return {"ok": False, "refusal": "source-coverage-gap"}
+    covers: list[dict[str, str]] = []
+    expected: dict[str, dict[str, object]] = {}
+    seen_movers: set[str] = set()
+    for key in keys:
+        if key in selected and selected[key].get("tainted"):
+            # A selected cover disagreeing with its fragment is a
+            # contradiction in the chosen proof, not an absence.
+            return {"ok": False,
+                    "refusal": "ownership-uncertain: sidecar/fragment disagree"}
+        options = candidates.get(key, [])
+        if not options:
+            return {"ok": False, "refusal": "source-coverage-gap"}
+        first = options[0]
+        for other in options[1:]:
+            if other[1] != first[1] or other[2] != first[2]:
+                # Two movers vouch one key with different bytes: picking
+                # either would make the pin a guess.
+                return {"ok": False,
+                        "refusal": "ownership-uncertain: contradictory covers"}
+        mover = first[0]
+        expected[key] = {"bytes": first[1], "sha256": first[2]}
+        if mover not in seen_movers:
+            seen_movers.add(mover)
+            covers.append({"mover_action_key": mover,
+                           "manifest_sha256": manifest_sha256})
     return {"ok": True,
             "covers": covers,
             "manifest_sha256": manifest_sha256,
             "expected": expected}
+
 
 
 def resolve_window_covers(queue, *, consumer_action_key: str,
