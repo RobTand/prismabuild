@@ -137,11 +137,10 @@ def _publish_claim(queue: pool.PoolQueue, key: str, **kw) -> dict:
 def test_busy_resign_requires_terminal_and_empty_scope(
     queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
 ) -> None:
-    """A claimed attempt with no terminal and a live scope is not resigned.
-
-    A holder thread concludes the withdrawn attempt through the real
-    ``finish`` path; resign must wait for that terminal (and empty scopes)
-    before reporting success.
+    """A claimed uninterruptible attempt is retained, never cancelled: no
+    withdrawal lands, and resign completes only on its natural terminal
+    with empty scopes. Also proves handled-but-unclaimed attempts stay in
+    the proof census (the terminal below lands after the claim file moves).
     """
     import threading
 
@@ -155,17 +154,16 @@ def test_busy_resign_requires_terminal_and_empty_scope(
     host = socket.gethostname()
 
     errors: list = []
+    finished = threading.Event()
 
     def holder_concludes():
         try:
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, key).exists():
-                    break
-                time.sleep(0.2)
-            queue.finish(key, status="failed",
-                         detail={"termination_reason": "resign-withdrawn"},
+            time.sleep(3.0)
+            assert queue.item_path(pool.CLAIMED, key).exists()
+            assert not queue.item_path(pool.WITHDRAWN, key).exists()
+            queue.finish(key, status="executed", detail={},
                          claim_snapshot=snapshot)
+            finished.set()
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -179,11 +177,13 @@ def test_busy_resign_requires_terminal_and_empty_scope(
                         live=[], wait_s=45.0)
         finisher.join(timeout=10.0)
     assert not errors, errors
+    assert finished.is_set()
     terminals = fm.terminal_of(queue, snapshot) is not None
     assert terminals and out["status"] == "resigned", (
         f"status={out.get('status')} reason={out.get('reason')} "
-        f"terminal={terminals} withdrawn={out.get('withdrawn')}"
+        f"terminal={terminals}"
     )
+    assert not queue.item_path(pool.WITHDRAWN, key).exists()
 
 
 def test_withdrawn_retry_safe_row_requeues_with_preserved_budget(
@@ -480,3 +480,328 @@ def test_resign_drained_when_no_leases_namespace(
     """An absent leases namespace is provably drained without the module."""
     drained, state, _ = fm.reader_refs_gate(queue, socket.gethostname(), None)
     assert drained is True and state == "drained-absent"
+
+
+def _busy_roster(tmp_path: Path, host: str, args: list) -> Path:
+    roster = tmp_path / "fleet_boxes.json"
+    roster.write_text(json.dumps({"boxes": {host: {"loops": 1, "args": args}}}))
+    return roster
+
+
+def _busy_queue(monkeypatch, tmp_path: Path) -> Path:
+    from prismabuild import pool as _pool
+
+    root = tmp_path / "q"
+    _pool.PoolQueue(root).ensure_layout()
+    monkeypatch.setattr(fm, "_mount_identity", lambda path: {
+        "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
+        "mountpoint": "/mnt/shared"})
+    return root
+
+
+def _busy_runtime(tmp_path: Path) -> Path:
+    root = tmp_path / "runtime"
+    root.mkdir(exist_ok=True)
+    (root / "RUNTIME_VERSION.json").write_text(json.dumps({"commit": "a" * 40}))
+    return root
+
+
+def _healthy_broker():
+    def fake(payload: dict) -> dict:
+        if payload["op"] == "maintenance_status":
+            return {"ok": True, "draining": True, "health": True,
+                    "active_scopes": 0, "active_scope_ids": []}
+        raise AssertionError(payload)
+
+    return fake
+
+
+def test_qualified_busy_worker_joins_and_admission_decides(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """JOIN validates; admission decides. A box under external memory
+    pressure still qualifies, with the pressure recorded in its observed
+    offer — and that same observed figure is what refuses oversized work
+    at placement while admitting fitting work."""
+    host = socket.gethostname()
+    _incarnation(monkeypatch)
+    roster = _busy_roster(tmp_path, host, ["--class", "x86", "--mem-gb", "96"])
+    root = _busy_queue(monkeypatch, tmp_path)
+    checks = fm.qualify_host(host, queue_root=root, roster_path=roster,
+                             broker_call=_healthy_broker(),
+                             runtime_root=_busy_runtime(tmp_path),
+                             held={}, mem_gb=10)
+    assert checks["ok"] is True, checks
+    assert checks["checks"]["offer"]["capacity"]["mem_gb"] == 2
+    # External pressure shows up as foreign in the offer vocabulary (the
+    # announce record's own `foreign` field) — recorded, not a join refusal.
+    assert checks["checks"]["offer"]["foreign"] == {"mem_gb": 94}
+    from prismabuild import pool as _pool
+
+    q = _pool.PoolQueue(root)
+    observed = dict(checks["checks"]["offer"]["capacity"], cpu=4)
+    q.announce(host=host, tags=["x86", host], has_gpu=False,
+               capacity=observed, runtime_commit="c" * 40)
+    big = "b" * 64
+    q.publish(action_key=big, cas_root=q.root / "cas",
+              checkout_root=q.root / "co", worker_script=q.root / "worker.py",
+              resources={"mem_gb": 8}, max_attempts=1, retry_safe=True,
+              tags=["x86"])
+    small = "c" * 64
+    q.publish(action_key=small, cas_root=q.root / "cas",
+              checkout_root=q.root / "co", worker_script=q.root / "worker.py",
+              resources={"mem_gb": 2}, max_attempts=1, retry_safe=True,
+              tags=["x86"])
+    items = {i["action_key"]: i for i in q.ready_items()}
+    assert q.placeable(items[big]) is False
+    assert q.placeable(items[small]) is True
+
+
+def test_gpu_foreign_load_defers_not_silently_admits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """GPU declared with a trusted snapshot naming a foreign holder: the box
+    still qualifies, its observed GPU capacity is zero with an explicit
+    deferral note, and a GPU demand is not placeable on that offer."""
+    host = socket.gethostname()
+    _incarnation(monkeypatch)
+    roster = _busy_roster(tmp_path, host,
+                          ["--class", "x86", "--gpu", "--mem-gb", "16"])
+    root = _busy_queue(monkeypatch, tmp_path)
+    now = time.time()
+    sample = {
+        "schema": "prismabuild.gpu_capacity.v1",
+        "complete": True, "attributed": True, "sampled_unix": now,
+        "devices": [{"uuid": "GPU-testholds", "memory_domain": "shared_system"}],
+        "foreign_processes": [{"pid": 4242}],
+        "jobs": [],
+        "host_total_bytes": 128 * 1024**3,
+        "host_available_bytes": 64 * 1024**3,
+        "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
+        "cpu_pressure_some": 0.0, "cpu_pressure_full": 0.0,
+    }
+    checks = fm.qualify_host(host, queue_root=root, roster_path=roster,
+                             broker_call=_healthy_broker(),
+                             runtime_root=_busy_runtime(tmp_path),
+                             gpu_sample=sample, now=now)
+    assert checks["ok"] is True, checks
+    offer = checks["checks"]["offer"]
+    assert offer["capacity"]["gpu"] == 0
+    assert offer["detail"]["gpu_capacity_trusted"] is True
+    assert offer["detail"]["foreign_gpu_processes"] == 1
+    assert "deferred-to-per-action-admission" in offer["gpu_admission"]
+    from prismabuild import pool as _pool
+
+    q = _pool.PoolQueue(root)
+    q.announce(host=host, tags=["x86", host], has_gpu=True,
+               capacity={"cpu": 4, "mem_gb": 16, "gpu": 0},
+               runtime_commit="c" * 40)
+    key = "d" * 64
+    q.publish(action_key=key, cas_root=q.root / "cas",
+              checkout_root=q.root / "co", worker_script=q.root / "worker.py",
+              resources={"gpu": 1}, needs_gpu=True, max_attempts=1,
+              retry_safe=True, tags=["x86"])
+    assert q.placeable(q.ready_items()[0]) is False
+
+
+def test_terminal_rejects_malformed_and_stale_counters(
+    queue: pool.PoolQueue,
+) -> None:
+    """Exact-attempt proof is fail-closed: the counter must be typed and
+    exactly one more than the snapshot's; anything else never matches."""
+    key = "f" * 64
+    snapshot = _publish_claim(queue, key, max_attempts=1, retry_safe=False)
+    base = {"action_key": key, "published_unix": snapshot["published_unix"],
+            "claimed_by": snapshot["claimed_by"],
+            "claimed_unix": snapshot["claimed_unix"]}
+
+    def check(record, expect):
+        path = queue.item_path(pool.DONE, key)
+        path.write_text(json.dumps(record))
+        try:
+            assert (fm.terminal_of(queue, snapshot) is not None) == expect, record
+        finally:
+            path.unlink(missing_ok=True)
+
+    check({**base, "attempts": snapshot["attempts"]}, False)  # current, not advanced
+    check({**base, "attempts": snapshot["attempts"] + 2}, False)  # skips ahead
+    check({k: v for k, v in {**base, "attempts": 1}.items()
+           if k != "attempts"}, False)  # counter-less archive shape
+    check({k: v for k, v in {**base, "attempts": 1}.items()
+           if k != "claimed_by"}, False)  # identity incomplete
+    check({**base, "attempts": True}, False)  # bool is not a counter
+    check({**base, "attempts": snapshot["attempts"] + 1}, True)  # exact transition
+
+
+
+
+def test_resign_resumes_withdrawn_row_after_crash(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """Crash between withdraw and publish loses nothing: a new supervisor
+    incarnation adopts the authoritative withdrawn intent (old owner
+    provably gone), waits for the exact terminal, publishes exactly one
+    linked successor, and reports resigned."""
+    import threading
+
+    key = "r" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-111:222"
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    # Run 1 (crashed): withdrew, then died before terminal/publish.
+    queue.withdraw(key, reason=f"resign {old_owner}: crash",
+                   by=old_owner)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    _incarnation(monkeypatch)  # new incarnation, same box
+    _sealed_shape(monkeypatch)
+    errors: list = []
+    finished = threading.Event()
+
+    def holder_concludes():
+        try:
+            queue.finish(key, status="failed",
+                         detail={"termination_reason": "resign-withdrawn"},
+                         claim_snapshot=snapshot)
+            finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    finisher = threading.Thread(target=holder_concludes, daemon=True)
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        finisher.start()
+        try:
+            out = fm.resign(host, reason="resume after crash",
+                            queue_root=queue.root, gate=gate,
+                            broker_call=_broker_call(authority),
+                            live=[], wait_s=40.0)
+        finally:
+            finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert finished.is_set()
+    assert out["status"] == "resigned", out
+    ready = queue.ready_items()
+    requeued = [item for item in ready if item.get("action_key") == key]
+    assert len(requeued) == 1
+    assert int(requeued[0].get("attempts", -1)) == 1
+    assert int(requeued[0].get("attempt_history_missing_before", -1)) == 1
+    assert requeued[0].get("resigned_by") == old_owner
+    assert requeued[0]["supersedes_withdrawal"]["withdrawn_by"] == old_owner
+
+
+def test_resign_preserves_newer_unrelated_publication(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """An operator resubmission landing mid-resign is preserved byte-identical:
+    no adoption without exact lineage, no overwrite, fence retained."""
+    import threading
+
+    key = "s" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-111:222"
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    _incarnation(monkeypatch)
+    _sealed_shape(monkeypatch)
+    published: list = []
+    errors: list = []
+    refused: list = []
+
+    def operator_and_holder():
+        try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if queue.item_path(pool.WITHDRAWN, key).exists():
+                    break
+                time.sleep(0.2)
+            # Operator resubmits the same work while resign is waiting.
+            queue.publish(action_key=key, cas_root=queue.root / "cas",
+                          checkout_root=queue.root / "co",
+                          worker_script=queue.root / "worker.py",
+                          resources={"cpu": 1}, max_attempts=1, retry_safe=True,
+                          tags=["x86"])
+            published.append(json.loads(
+                queue.item_path(pool.READY, key).read_text()))
+            # Holder concludes the withdrawn attempt afterwards: against the
+            # newer publication its finish must be refused (or entombed),
+            # never overwrite the foreign row.
+            try:
+                queue.finish(key, status="failed",
+                             detail={"termination_reason": "resign-withdrawn"},
+                             claim_snapshot=snapshot)
+            except pool.PoolContractError as exc:
+                refused.append(exc)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    worker = threading.Thread(target=operator_and_holder, daemon=True)
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        worker.start()
+        try:
+            out = fm.resign(host, reason="preserve foreign row",
+                            queue_root=queue.root, gate=gate,
+                            broker_call=_broker_call(authority),
+                            live=[], wait_s=25.0)
+        finally:
+            worker.join(timeout=10.0)
+    assert not errors, errors
+    assert published, "operator publication never landed"
+    assert out["status"] == "resigning", out
+    live = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert live == published[0], "resign must not touch the foreign row"
+
+
+def test_resign_second_run_publishes_no_duplicate(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """A resign rerun after a completed handoff adopts the exact successor
+    instead of publishing a second one."""
+    import threading
+
+    key = "t" * 64
+    _incarnation(monkeypatch)
+    _sealed_shape(monkeypatch)
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    host = socket.gethostname()
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    errors: list = []
+
+    def holder_concludes():
+        try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if queue.item_path(pool.WITHDRAWN, key).exists():
+                    break
+                time.sleep(0.2)
+            queue.finish(key, status="failed",
+                         detail={"termination_reason": "resign-withdrawn"},
+                         claim_snapshot=snapshot)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def run_resign():
+        return fm.resign(host, reason="handoff",
+                         queue_root=queue.root, gate=gate,
+                         broker_call=_broker_call(authority),
+                         live=[], wait_s=40.0)
+
+    finisher = threading.Thread(target=holder_concludes, daemon=True)
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        finisher.start()
+        try:
+            first = run_resign()
+        finally:
+            finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert first["status"] == "resigned", first
+    before = json.loads(queue.item_path(pool.READY, key).read_text())
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        second = run_resign()
+    assert second["status"] == "resigned", second
+    after = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert after == before, "rerun must not publish a duplicate successor"
+    assert len([i for i in queue.ready_items()
+                if i.get("action_key") == key]) == 1

@@ -18,10 +18,12 @@ the two authorities that already exist rather than adding a scheduler:
 Resign order: ``maintenance_begin`` under the broker mutex (the
 linearization point: new scope ``create`` is refused from there, and new
 claims are refused at the rename by the ``admission_open`` fence) → census
-owned claims → withdraw/requeue while loops are still busy → repeated
-rounds of census + withdraw + terminal wait until the owned set is
-provably empty, broker ``active_scopes`` is empty, and exact-loop park acks
-for this epoch are complete → ``resigned`` with evidence. ``resigned`` is
+owned claims → withdraw only retry-owed rows (uninterruptible work is
+retained and drained to its natural terminal; resign never cancels) →
+repeated rounds of census + handoff + exact-terminal wait until the owned
+set plus handled-but-unclaimed attempts are provably concluded, broker
+``active_scopes`` is empty, reader refs are drained, and exact-loop park
+acks bracket a stable census → ``resigned`` with evidence. ``resigned`` is
 never returned after only a withdraw request.
 
 Epoch compare-and-set is enforced inside the broker mutex
@@ -487,22 +489,49 @@ def terminal_of(
     except (OSError, ValueError):
         return None
     if (isinstance(withdrawn, dict)
-            and withdrawn.get("published_unix") == snapshot.get("published_unix")):
+            and isinstance(withdrawn.get("published_unix"), (int, float))
+            and not isinstance(withdrawn.get("published_unix"), bool)
+            and withdrawn.get("published_unix") == snapshot.get("published_unix")
+            and isinstance(snapshot.get("claimed_by"), str)
+            and snapshot.get("claimed_by")
+            and withdrawn.get("claimed_by") == snapshot.get("claimed_by")
+            and isinstance(snapshot.get("claimed_unix"), (int, float))
+            and not isinstance(snapshot.get("claimed_unix"), bool)
+            and withdrawn.get("claimed_unix") == snapshot.get("claimed_unix")):
         return ("withdrawn", withdrawn)
     return None
 
 
 def _terminal_matches(record: dict[str, Any], snapshot: dict[str, Any]) -> bool:
-    if record.get("published_unix") != snapshot.get("published_unix"):
+    """Whether this terminal record concludes exactly the snapshotted attempt.
+
+    Fail-closed exact proof: every identity field must be fully typed on
+    both sides (bools are never valid numbers here), and the terminal must
+    carry the actual transition counter — exactly one more than the
+    snapshot's. A terminal with a missing, malformed, or non-advanced
+    counter (stale generation, current-attempt number, or a counter-less
+    archive record) never matches, however many other fields agree.
+    """
+    published = snapshot.get("published_unix")
+    if (not isinstance(published, (int, float))
+            or isinstance(published, bool)):
         return False
-    if (record.get("claimed_by") != snapshot.get("claimed_by")
-            or record.get("claimed_unix") != snapshot.get("claimed_unix")):
+    if record.get("published_unix") != published:
         return False
-    attempts = record.get("attempts")
+    claimed_by = snapshot.get("claimed_by")
+    if (not isinstance(claimed_by, str) or not claimed_by
+            or record.get("claimed_by") != claimed_by):
+        return False
+    claimed_unix = snapshot.get("claimed_unix")
+    if (not isinstance(claimed_unix, (int, float))
+            or isinstance(claimed_unix, bool)
+            or record.get("claimed_unix") != claimed_unix):
+        return False
     prior = snapshot.get("attempts")
-    if isinstance(attempts, int) and isinstance(prior, int):
-        return attempts in (prior, prior + 1)
-    return True
+    attempts = record.get("attempts")
+    if type(prior) is not int or type(attempts) is not int:
+        return False
+    return attempts == prior + 1
 
 
 def _pending_requeue(snapshot: dict[str, Any]) -> bool:
@@ -686,8 +715,24 @@ def qualify_host(
     socket_path: Path | None = None,
     broker_call: Callable[[dict], dict] | None = None,
     runtime_root: Path | None = None,
+    held: Any = None,
+    gpu_sample: Any = None,
+    mem_gb: Any = None,
+    load1: Any = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
-    """Structured join qualification; every check fail-closed with a reason."""
+    """Structured join qualification; every check fail-closed with a reason.
+
+    JOIN validates runtime, mounts, identity, observation, and enforcement.
+    It never decides per-action capacity: foreign or held load reduces the
+    observed offer (recorded here) and per-action admission decides what
+    fits — a worker serving external load (e.g. vLLM) may still accept
+    compatible CPU work. The two hard refusals stay: GPU declared without
+    trusted broker evidence, and unknown backends/capabilities. ``held``,
+    ``gpu_sample``, ``mem_gb``, ``load1``, and ``now`` default to live
+    readings; explicit values are the test seam for a busy box (same
+    pattern as the sealed-identity stub in preemption tests).
+    """
     checks: dict[str, Any] = {}
     if queue_root is None:
         return {"ok": False, "reason": "no queue root to prove shared access",
@@ -732,7 +777,17 @@ def qualify_host(
         from prismabuild import box_capacity
 
         declared = _declared_demand(host, roster_path)
-        observed = box_capacity.observe(declared, held={})
+        observe_kwargs: dict[str, Any] = {}
+        if gpu_sample is not None:
+            observe_kwargs["gpu_sample"] = gpu_sample
+        if mem_gb is not None:
+            observe_kwargs["mem_gb"] = mem_gb
+        if load1 is not None:
+            observe_kwargs["load1"] = load1
+        if now is not None:
+            observe_kwargs["now"] = now
+        observed = box_capacity.observe(
+            declared, held if held is not None else {}, **observe_kwargs)
         checks["offer"] = {"declared": declared,
                            "capacity": dict(observed.capacity),
                            "foreign": dict(observed.foreign),
@@ -743,10 +798,15 @@ def qualify_host(
                     "reason": "GPU declared but broker snapshot untrusted: "
                               f"{observed.detail.get('gpu_capacity_error')}",
                     "checks": checks}
-        if observed.foreign:
-            return {"ok": False,
-                    "reason": f"foreign load holds this box: {observed.foreign}",
-                    "checks": checks}
+        # Foreign or held load never refuses the join: it is recorded in the
+        # observed offer and per-action admission decides what fits. A GPU
+        # reduced to zero by foreign holders is an explicit deferral, never
+        # a silent admission — loops re-observe every poll and admit GPU
+        # work only on fresh unattributed capacity.
+        if declared.get("gpu", 0) > 0 and observed.capacity.get("gpu", 0) <= 0:
+            checks["offer"]["gpu_admission"] = (
+                "deferred-to-per-action-admission: no GPU capacity in the "
+                "observed offer")
     except (ImportError, OSError, ValueError) as exc:
         return {"ok": False, "reason": f"capacity observation failed: {exc}",
                 "checks": checks}
@@ -778,6 +838,11 @@ def join(
     socket_path: Path | None = None,
     broker_call: Callable[[dict], dict] | None = None,
     runtime_root: Path | None = None,
+    held: Any = None,
+    gpu_sample: Any = None,
+    mem_gb: Any = None,
+    load1: Any = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Validate, then open this host's gate. The gate is untouched on refusal.
 
@@ -799,7 +864,9 @@ def join(
                 "owner": owner, "reason": detail}
     checks = qualify_host(host, queue_root=queue_root, roster_path=roster_path,
                           socket_path=socket_path, broker_call=broker_call,
-                          runtime_root=runtime_root)
+                          runtime_root=runtime_root, held=held,
+                          gpu_sample=gpu_sample, mem_gb=mem_gb, load1=load1,
+                          now=now)
     if not checks["ok"]:
         return {"status": "refused", "phase": "qualification", "host": host,
                 "owner": owner, "reason": checks["reason"], "checks": checks}
@@ -911,30 +978,58 @@ def resign(
             pending_note = ("claim census unknown; fence and resources retained: "
                             + "; ".join(census_unknown))
         else:
+            # Crash-resume: withdrawn membership rows owed a successor are
+            # authoritative queue state, not process memory. A resigner that
+            # died after withdraw (before terminal or publish) leaves rows
+            # no CLAIMED scan can see; they rejoin here every round until
+            # settled, including under a new supervisor incarnation.
+            resumed, resume_skipped = ([], [])
+            if withdraw_owned:
+                resumed, resume_skipped = resume_owed(queue, host, owner)
+            if resume_skipped:
+                armed = False
+                pending_note = ("unrevivable membership rows; fence retained: "
+                                + "; ".join(resume_skipped))
+            for row in resumed:
+                if (row["action_key"] not in handled
+                        and not any(s["action_key"] == row["action_key"]
+                                    for s in owned)):
+                    handled[row["action_key"]] = {
+                        "handoff": "resumed-intent",
+                        "snapshot": _snap_id({**row, **row.get("snapshot", {})}),
+                        "plan": row["plan"], "revive_by": row["revive_by"]}
             fresh = [snap for snap in owned
                      if snap["action_key"] not in handled]
             handoff_error: str | None = None
             if withdraw_owned:
                 for snap in fresh:
                     action_key = str(snap["action_key"])
+                    if not _pending_requeue(snap):
+                        # Graceful resign never cancels unrepeatable work:
+                        # retry-unsafe or budget-exhausted rows are retained
+                        # and drained until their natural exact terminal.
+                        # Explicit destructive cancellation is a separate
+                        # operator input (withdraw), never implicit resign.
+                        # Budgets are never reset to enable departure.
+                        handled[action_key] = {
+                            "handoff": "retained-uninterruptible",
+                            "snapshot": _snap_id(snap)}
+                        continue
                     try:
-                        plan = None
-                        if _pending_requeue(snap):
-                            # Built BEFORE the withdraw: a claim that cannot
-                            # be re-published must be left running, and the
-                            # successor may only be published after the
-                            # original attempt's exact terminal (publishing
-                            # while the holder is live races its finish,
-                            # whose requeue disposition would overwrite it).
-                            plan = queue.plan_requeue(snap["record"])
+                        # Built BEFORE the withdraw: a claim that cannot
+                        # be re-published must be left running, and the
+                        # successor may only be published after the
+                        # original attempt's exact terminal (publishing
+                        # while the holder is live races its finish,
+                        # whose requeue disposition would overwrite it).
+                        plan = queue.plan_requeue(snap["record"])
                         result = queue.withdraw(
                             action_key,
                             reason=f"resign {owner}: {reason}", by=owner)
                         handled[action_key] = {"handoff": "withdrawn",
                                                "snapshot": _snap_id(snap),
                                                "withdraw": result.get("status")}
-                        if plan is not None:
-                            handled[action_key]["plan"] = plan
+                        handled[action_key]["plan"] = plan
                     except (OSError, ValueError,
                             pool_module.PoolContractError) as exc:
                         # A holder that concluded between the census and the
@@ -970,9 +1065,24 @@ def resign(
                 parked = parked_markers(parked_root, gate_now)
                 parked_names = {p.name for p in parked}
                 acks = expected_markers(census, gate_now) <= parked_names
+                # Proof census: owned claims UNION handled-but-no-longer-claimed
+                # attempts. A handled attempt whose claim left (finished,
+                # entombed, reaped) still owes its exact terminal proof;
+                # deriving missing from `owned` alone would declare such
+                # work proven the moment its claim file moved. Rows whose
+                # successor was published (or adopted) already proved their
+                # terminal before the publish and are done.
+                proof = list(owned)
+                owned_keys = {str(s["action_key"]) for s in owned}
+                for action_key, entry in handled.items():
+                    if action_key not in owned_keys and not entry.get("published"):
+                        probe = {"action_key": action_key,
+                                 **entry.get("snapshot", {})}
+                        proof.append(probe)
                 missing = sorted(
-                    snap["action_key"][:12] for snap in owned
-                    if terminal_of(queue, snap) is None)
+                    snap["action_key"][:12] for snap in proof
+                    if isinstance(snap.get("action_key"), str)
+                    and terminal_of(queue, snap) is None)
                 # Settle planned successors: only after the original
                 # attempt's exact terminal, and only when no ready occupant
                 # (a holder that self-requeued is adopted by linkage check).
@@ -1006,7 +1116,7 @@ def resign(
                     try:
                         queue.publish(**plan["arguments"],
                                       preempted_claim=plan["snapshot"],
-                                      handoff_by=owner)
+                                      handoff_by=entry.get("revive_by", owner))
                     except (OSError, ValueError,
                             pool_module.PoolContractError) as exc:
                         armed = False
@@ -1020,8 +1130,22 @@ def resign(
                         pending_note = f"loop census unknown: {census_error}"
                     elif missing:
                         armed = False
-                        pending_note = ("attempts without exact terminal: "
-                                        + ", ".join(missing))
+                        retained = sorted(
+                            snap["action_key"][:12] for snap in proof
+                            if isinstance(snap.get("action_key"), str)
+                            and terminal_of(queue, snap) is None
+                            and handled.get(
+                                str(snap["action_key"]), {}).get("handoff")
+                            == "retained-uninterruptible")
+                        if retained and len(retained) == len(missing):
+                            pending_note = ("draining uninterruptible work "
+                                            "(retry-unsafe or budget-exhausted; "
+                                            "cancel it explicitly with withdraw, "
+                                            "resign never cancels): "
+                                            + ", ".join(retained))
+                        else:
+                            pending_note = ("attempts without exact terminal: "
+                                            + ", ".join(missing))
                     elif not isinstance(scopes, int):
                         armed = False
                         pending_note = f"broker scope census unknown: {broker_now}"
@@ -1078,8 +1202,140 @@ def resign(
 def _snap_id(snap: dict[str, Any]) -> dict[str, Any]:
     ids = {k: snap.get(k) for k in
            ("action_key", "published_unix", "attempts", "claimed_by",
-            "claimed_unix", "max_attempts", "retry_safe")}
+            "claimed_unix", "max_attempts", "retry_safe",
+            "withdrawn_unix", "withdrawn_by", "withdrawn_host")}
     return ids
+
+
+def _membership_owner_parts(owner: str) -> tuple[str, int, str] | None:
+    """Parse a membership supervisor owner, else None (never a takeover key)."""
+    try:
+        text = str(owner)
+        host, _, rest = text.partition(":")
+        kind, _, starttime = rest.partition(":")
+        label, _, pid_text = kind.partition("-")
+        if not host or label != "supervisor" or not starttime:
+            return None
+        pid = int(pid_text)
+        if pid <= 0:
+            return None
+    except (ValueError, AttributeError):
+        return None
+    return host, pid, starttime
+
+
+def _owner_gone(host: str, owner: str) -> tuple[bool, str]:
+    """Whether a past supervisor owner is provably gone (dead or replaced).
+
+    Returns (gone, reason). Only exact local-host membership owners can
+    come back True; permission/read errors are unknown (False), never dead.
+    """
+    parts = _membership_owner_parts(owner)
+    if parts is None:
+        return False, "not a membership owner"
+    old_host, pid, starttime = parts
+    if old_host != host:
+        return False, "another host's owner"
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return True, "pid absent"
+    except OSError as exc:
+        return False, f"pid unreadable: {exc}"
+    _, _, rest = line.rpartition(")")
+    fields = rest.split()
+    current = fields[19] if len(fields) > 19 else None
+    if current != starttime:
+        return True, "pid reused"
+    return False, "supervisor still live"
+
+
+def resume_owed(
+    queue: pool_module.PoolQueue, host: str, owner: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Withdrawn membership rows still owed a successor (crash-resume set).
+
+    Scans the authoritative ``withdrawn/`` decisions (top level only —
+    retired superseded markers live beneath): rows this lane withdrew
+    (membership-shaped ``withdrawn_by``, ``withdrawn_host`` == this host)
+    that carry retry budget and have neither a ready successor nor a
+    same-generation done/failed terminal. A row withdrawn by the current
+    owner is this run's own; a row withdrawn by a past owner is adopted
+    only when that supervision is provably gone — same rule the broker
+    enforces for gate takeover. Anything else (operator withdrawals,
+    unparsable rows, unbuildable plans) is reported, never revived.
+    """
+    owed: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    directory = queue.dir(pool_module.WITHDRAWN)
+    if not directory.is_dir():
+        return [], [f"withdrawn directory unreadable: {directory}"]
+    try:
+        paths = sorted(directory.glob("*.json"))
+    except OSError as exc:
+        return [], [f"withdrawn directory not listable: {exc}"]
+    for path in paths:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            skipped.append(f"{path.name}: unreadable ({exc})")
+            continue
+        if not isinstance(record, dict):
+            skipped.append(f"{path.name}: non-object record")
+            continue
+        action_key = record.get("action_key")
+        if not isinstance(action_key, str) or len(action_key) != 64:
+            skipped.append(f"{path.name}: bad action key")
+            continue
+        withdrawn_by = record.get("withdrawn_by")
+        if not isinstance(withdrawn_by, str) or not _membership_owner_parts(
+                withdrawn_by):
+            continue  # not this lane's: operator/admission/legacy rows
+        if record.get("withdrawn_host") != host:
+            continue  # another host's row, never ours to revive
+        if withdrawn_by != owner:
+            gone, why = _owner_gone(host, withdrawn_by)
+            if not gone:
+                skipped.append(f"{action_key[:12]}: prior owner not gone ({why})")
+                continue
+        attempts = record.get("attempts")
+        limit = record.get("max_attempts", pool_module.DEFAULT_MAX_ATTEMPTS)
+        if not (record.get("retry_safe") is True and type(attempts) is int
+                and attempts >= 0 and type(limit) is int
+                and attempts + 1 < limit):
+            continue  # no retry budget: terminal stands, nothing owed
+        try:
+            terminal_here = json.loads(queue.item_path(
+                pool_module.READY, action_key).read_text())
+        except (OSError, ValueError):
+            terminal_here = None
+        if isinstance(terminal_here, dict):
+            continue  # a successor (or newer publication) occupies ready
+        concluded = False
+        for state in (pool_module.DONE, pool_module.FAILED):
+            try:
+                terminal = json.loads(queue.item_path(
+                    state, action_key).read_text())
+            except (OSError, ValueError):
+                continue
+            if (isinstance(terminal, dict)
+                    and terminal.get("published_unix") == record.get(
+                        "published_unix")):
+                concluded = True
+        if concluded:
+            continue  # this generation concluded; nothing owed
+        try:
+            plan = queue.plan_requeue(record)
+        except (OSError, ValueError,
+                pool_module.PoolContractError) as exc:
+            skipped.append(f"{action_key[:12]}: unplannable ({exc})")
+            continue
+        owed.append({"action_key": action_key,
+                     "snapshot": _snap_id(record),
+                     "plan": plan,
+                     "revive_by": withdrawn_by})
+    owed.sort(key=lambda snap: str(snap["action_key"]))
+    return owed, skipped
 
 
 def _call_as_request(
@@ -1181,9 +1437,17 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("--socket", type=Path, default=None)
     args = ap.parse_args(argv)
     if args.cmd == "join":
+        held = None
+        if args.queue_root is not None:
+            try:
+                held = pool_module.PoolQueue(
+                    Path(args.queue_root)).ledger().held
+            except (OSError, ValueError):
+                held = None
         result = join(
             args.host, reason=args.reason, queue_root=args.queue_root,
             roster_path=args.roster, gate=args.gate, socket_path=args.socket,
+            held=held,
         )
     elif args.cmd == "resign":
         result = resign(

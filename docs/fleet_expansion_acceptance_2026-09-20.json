@@ -13,8 +13,9 @@
     "issue": "https://github.com/RobTand/prismabuild/issues/727",
     "note": "New-files-only lane: no pool/tier/residency production edits. Claims nothing beyond its own tests + docs. Runtime/deploy proof explicitly out of scope.",
     "remaining_gaps": [
-      "lease-worker automatic attestation/reclaim production path (PR #730): this lane consumes refs proof only; refs present keep resign resigning",
-      "cohort barrier #567, wsl-gpu limits, new-backend qualification: untouched"
+      "lease-worker automatic attestation/reclaim production path (PR #730): refs present keep resign resigning; this lane consumes only",
+      "chained resign requeues (attempts>0 with resigned lineage): fail closed with reason, shared prefix guard not widened",
+      "cohort barrier #567, wsl-gpu limits, new backends: untouched"
     ],
     "validated_repairs": []
   },
@@ -38,9 +39,9 @@
   ],
   "step": "merge",
   "validation": {
-    "lane": "/tmp/opencode/pb-worker-expansion-hunks11.json: 2/2 shards green (13 + 15 passed), priority -10",
-    "adjacent": "/tmp/opencode/pb-worker-expansion-adjacent2.json: 5/5 shards green (preemption-handoff 17, background-holder 7, resource-broker 86, durable-hold 10, drain-ownership 18), priority -10",
-    "red_evidence": "red3/green1/green2 (withdraw-only completion + missing requeue RED); hunks3 (IndentationError caught by fleet); hunks4-10 (holder-finish successor race found by fleet, fixed by publish-after-terminal)",
+    "lane": "/tmp/opencode/pb-worker-expansion-r73.json: 2/2 shards green (13 + 21 passed), priority -10",
+    "adjacent": "/tmp/opencode/pb-worker-expansion-adjacent3.json: 5/5 shards green (preemption-handoff 17, background-holder 7, resource-broker 86, durable-hold 10, drain-ownership 18), priority -10",
+    "red_evidence": "red3/green1/green2 + hunks series retained; holder-finish successor race and stale-pending_note loop bug both caught by fleet, fixed by sequencing",
     "priority_note": "earlier runs used priority 10 per the original brief; all runs since the workflow correction use -10"
   }
 }

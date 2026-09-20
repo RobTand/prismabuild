@@ -106,6 +106,11 @@ overflow; preserve PB CPU affinity, including in containers).
 
 ## 3. Join/resign on the existing lifecycle (explicit, not advisory)
 
+> Superseded in details by §6 (root-reviewed revision, all applied) and §7
+> (lifecycle nature). This section remains the original sketch; where it
+> disagrees with §6/§7 (e.g. per-call owner nonces, withdraw-before-ack
+> ordering, `pending_requeue` reporting), §6/§7 govern.
+
 Worker = host fleet member = all loops on that host. Instance identity =
 `(host, supervisor_incarnation)` where incarnation binds
 `(supervisor pid, /proc starttime, fresh nonce, changed_unix of its drain)`.
@@ -499,6 +504,7 @@ saved outside the checkout; time fields are tool-derived UTC.
 
 ### 6.8 Reader-refs gate (consumer side; writer is the lease worker)
 
+
 Resign reports `resigned` only with reader refs drained **as well as**
 scopes/claims: the completion order is exact terminals → empty broker
 scopes → refs drained → bracketed park acks around a stable census/epoch/
@@ -526,6 +532,69 @@ release/telemetry writers: `Authority.handle` scope export and
   `docs/amd_gpu_capacity_2026-09-12.md`,
   `docs/heterogeneous_cohort_design_2026-09-19.md`,
   `docs/staged_read_contract_2026-09-20.md` + ledger + acceptance template.
+
+## 7. What JOIN/RESIGN are (lifecycle command, not a roster edit)
+
+
+JOIN and RESIGN are supervisor-lifecycle commands executed on the worker
+itself (operator or authorized agent, same box only — `--host` for another
+box refuses). They are NOT roster edits and NOT a second membership
+authority:
+
+- The roster (`fleet_boxes.json` presence) stays the hardware-registration
+  and desired-membership declaration. A box the roster declares absent
+  refuses JOIN until un-declared and published; first-time provision (roster
+  entry + publish + broker + interpreter + storage) is a prerequisite JOIN
+  never performs.
+- The broker durable maintenance state is what survives restart: a resigned
+  (draining) gate replays closed after reboot (plus the boot hold until
+  client verification), and a supervisor replacement takes over only its
+  own abandoned membership drain — explicit old epoch enforced in the
+  broker mutex, old incarnation verified dead/replaced, new incarnation
+  verified live. Upgrade/operator drains stay `force_end`-only.
+- No always-on mystery loop: the supervisor enforces the declaration every
+  tick (absent → drain to zero, reselection of loop shape from the file),
+  loops obey the gate every poll (park + skip offer/admission, exact-loop
+  markers), and the CLI is the explicit verb that moves the gate after
+  qualification (JOIN) or proves completion (RESIGN). Steady state needs no
+  manual process.
+
+Proofs already reviewed and kept: exact gate epoch through the broker
+mutex (never a client-side comparison), same/current supervisor
+incarnation re-derived every resign round, takeover restricted to the
+lane's own abandoned drain. Retry handoff preserves the original budget
+verbatim — successor `attempts` is exactly prior + 1 with
+`attempt_history_missing_before` set, `retry_safe`/`max_attempts` carried,
+`resigned_by` lineage beside the immutable withdrawal decision, and the
+original attempt's exact terminal (generation + claim identity) proven
+before the publish. No READY row is ever claimed while live reader refs
+for this host remain (FLEET-13).
+
+Exactness rules applied after review (all in this lane):
+
+- Terminal proof is strictly typed: `published_unix` (non-bool number),
+  `claimed_by` (non-empty string), `claimed_unix` (non-bool number) must
+  match, and `done/`/`failed/` terminals must carry the actual transition
+  counter — exactly snapshot attempts + 1 as integers, never bool. A
+  same-number, skipped, missing, or counter-less record never matches.
+  Withdrawn terminals require the same typed generation/claim identity.
+- Graceful resign retains uninterruptible work: retry-unsafe or
+  budget-exhausted rows are never withdrawn by resign — they drain to
+  their natural exact terminal with an explicit reason. Destructive
+  cancellation is a separate operator `withdraw`, never implicit resign;
+  budgets are never reset to enable departure.
+- Crash-resume is queue-state, not process memory: handoff intent is
+  re-derived every round from authoritative `withdrawn/` decisions
+  (membership-shaped `withdrawn_by`, same host, retry budget, no
+  successor, generation unconcluded). A new supervisor adopts only rows
+  whose prior owner is provably gone. Successor adoption requires exact
+  lineage (`supersedes_withdrawal.withdrawn_unix` + `resigned_by`), and a
+  newer unrelated publication is preserved with the fence retained.
+- Proof census is owned claims UNION handled-but-unclaimed attempts, so a
+  concluded attempt never leaves the proof by its claim file moving.
+- Broker dead-proof is strict: same-host membership owner, pid absent
+  (dead) or starttime mismatch (replaced); permission/read errors and
+  foreign hosts answer not-dead and any takeover stays refused.
 
 ## References
 

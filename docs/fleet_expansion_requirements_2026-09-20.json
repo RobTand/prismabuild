@@ -108,6 +108,24 @@
       "acceptance": "tests/test_fleet_membership_busy_resign.py::test_resign_retains_fence_on_unreadable_reader_refs + test_resign_drained_when_no_leases_namespace",
       "acceptance_assertion": "Absent leases namespace drains; present-but-unenumerable pins retain with reason.",
       "maturity": "tested"
+    },
+    {
+      "id": "FLEET-14",
+      "owner": "PB:membership",
+      "text": "Resign handoff intent survives resigner crash via authoritative withdrawn decisions; new supervisors adopt only provably-gone owners' rows with exact successor lineage, never double-publish, never clobber newer publications.",
+      "enforcement": "fleet_membership.resume_owed + exact-linkage adopt in the resign rounds",
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_resign_resumes_withdrawn_row_after_crash + test_resign_preserves_newer_unrelated_publication",
+      "acceptance_assertion": "Withdraw-then-crash resumes to resigned with one linked successor; unrelated ready rows survive byte-identical.",
+      "maturity": "tested"
+    },
+    {
+      "id": "FLEET-15",
+      "owner": "PB:membership",
+      "text": "Exact-attempt terminals require fully typed identity plus the exact transition counter; graceful resign retains retry-unsafe/budget-exhausted work to its natural terminal and never cancels it.",
+      "enforcement": "fleet_membership._terminal_matches + retained-uninterruptible handoff",
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_terminal_rejects_malformed_and_stale_counters + test_resign_retains_uninterruptible_work_until_natural_terminal",
+      "acceptance_assertion": "Malformed/stale counters never match; uninterruptible rows drain naturally with no withdrawal record.",
+      "maturity": "tested"
     }
   ]
 }

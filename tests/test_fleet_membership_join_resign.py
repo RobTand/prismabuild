@@ -184,9 +184,13 @@ def _runtime_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_resign_withdraws_while_busy_and_waits_for_terminal(
+def test_resign_retains_uninterruptible_work_until_natural_terminal(
     queue: pool.PoolQueue, tmp_path: Path, monkeypatch
 ) -> None:
+    """Graceful resign never cancels retry-unsafe work: the claim is neither
+    withdrawn nor touched, the row drains to its natural exact terminal,
+    and only then does resign complete. Destructive cancellation stays an
+    explicit operator withdraw."""
     import threading
 
     key = "1" * 64
@@ -215,16 +219,20 @@ def test_resign_withdraws_while_busy_and_waits_for_terminal(
         raise AssertionError(payload)
 
     (parked / "111-s1-999.0").touch()
+    errors: list = []
+    finished = threading.Event()
 
     def holder_concludes():
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            if queue.item_path(pool.WITHDRAWN, key).exists():
-                break
-            time.sleep(0.2)
-        queue.finish(key, status="failed",
-                     detail={"termination_reason": "resign-withdrawn"},
-                     claim_snapshot=snapshot)
+        try:
+            time.sleep(3.0)
+            # No withdrawal may have arrived: graceful resign retains.
+            assert queue.item_path(pool.CLAIMED, key).exists()
+            assert not queue.item_path(pool.WITHDRAWN, key).exists()
+            queue.finish(key, status="executed", detail={},
+                         claim_snapshot=snapshot)
+            finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
 
     finisher = threading.Thread(target=holder_concludes, daemon=True)
     finisher.start()
@@ -234,14 +242,18 @@ def test_resign_withdraws_while_busy_and_waits_for_terminal(
                         live=[(111, "s1")], wait_s=40.0)
     finally:
         finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert finished.is_set()
     assert out["status"] == "resigned", (
         f"phase={out.get('phase')} reason={out.get('reason')} "
-        f"withdrawn={out.get('withdrawn')} broker={out.get('broker')}"
+        f"broker={out.get('broker')}"
     )
     assert out["gate_key"] == "999.0"
     assert out["owner"] == owner
     assert calls and calls[0]["op"] == "maintenance_begin"
-    assert queue.item_path(pool.WITHDRAWN, key).exists()
+    # Retained, never cancelled: no withdrawal record anywhere.
+    assert not queue.item_path(pool.WITHDRAWN, key).exists()
+    assert queue.item_path(pool.DONE, key).exists()
     assert fm.terminal_of(queue, snapshot) is not None
 
 

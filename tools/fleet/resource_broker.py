@@ -124,19 +124,32 @@ def _live_supervisor_owner(owner):
 
 
 def _dead_supervisor_owner(owner):
-    """Whether the named supervision is verifiably gone (dead or replaced).
+    """Whether the named supervision is provably gone (dead or replaced).
 
-    True when the owner is membership-shaped and its pid is unobservable or
-    answers a different start time (PID reuse names a different process).
-    A live pid with the SAME start time is still around: never take over
-    from it. Unshaped owners answer False — only a membership drain can be
-    taken over, never an upgrade or operator hold.
+    True only on proof: the owner is membership-shaped for THIS host and
+    its pid is absent (dead) or answers a different start time (reused for
+    another process). A live pid with the SAME start time is still around.
+    Anything else — unshaped owners (never a membership drain), another
+    host's owner (not this broker's business), permission or read errors
+    (unreadable is not proven dead) — answers False, and a takeover
+    requiring dead stays refused.
     """
     parts = _supervisor_owner_parts(owner)
     if parts is None:
         return False
-    _host, pid, starttime = parts
-    return _proc_starttime(pid) != starttime
+    host, pid, starttime = parts
+    if host != socket.gethostname():
+        return False
+    try:
+        line = Path(f'/proc/{pid}/stat').read_text()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    _, _, rest = line.rpartition(')')
+    fields = rest.split()
+    current = fields[19] if len(fields) > 19 else None
+    return current != starttime
 
 def _atomic(path, value, *, mode=0o600):
     temp=path.with_name('.'+path.name+'.'+secrets.token_hex(8))
