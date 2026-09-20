@@ -166,14 +166,67 @@ _PUBLISH_POLL_S = 0.25
 #: Residency subdirectories that never hold consumer fragments.
 _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 
-#: Retained-reference ceiling for one publisher's lookup reuse (#761).  A
-#: retained reference is one interned path string -- shared by every record
-#: that names it -- plus one set slot, so the live forest's thirteen
-#: 36k-entry fragments retain about 474k references in roughly 20 MB.  Four
-#: million is an order of magnitude above that and a fraction of the mover's
-#: existing 1 GiB envelope; past it a further file answers uncached, which
-#: costs the pre-fix parse for that one file and never a wrong answer.
-_MAX_RETAINED_REFERENCES = 4_000_000
+#: Byte ceiling for one publisher's lookup reuse (#761), and the conservative
+#: retained sizes it is measured in.  A count of anything -- references,
+#: records, paths -- bounds only the thing it counts, so this is bytes, every
+#: retained row is priced, and each price is charged ONCE at insert from the
+#: actual object: the real string lengths, the real mention count, the real
+#: per-record overhead.  Nothing is free, including a malformed or empty
+#: record, because a row that costs nothing is a row that can be added
+#: without limit.
+#:
+#: Each constant is an over-estimate of CPython's real cost on a 64-bit
+#: build, so the figure :meth:`_index_bytes` reports is never under the
+#: truth.  ``_STR_CHAR_BYTES`` is the UCS-4 width, which is what a
+#: non-Latin-1 path actually costs and four times what an ASCII one does:
+#: erring high is the point, and it means a long or unicode path is charged
+#: what it is rather than a flat guess.
+#:
+#: This prices the RETAINED index only.  The transient cost of decoding one
+#: 22 MB fragment is a peak that is freed before the next lookup; it belongs
+#: to the process's peak RSS, not here, and the two are reported separately.
+#:
+#: On the live forest measured for #761 -- 118 fragments, thirteen of them
+#: naming ~36k paths of about 100 ASCII characters, sidecars totalling 27 KB
+#: -- this prices the index near 40 MB against a measured peak RSS delta of
+#: 52 MB.  192 MiB is well clear of both and under a fifth of the mover's
+#: existing 1 GiB envelope.  Past the ceiling a record is not retained: that
+#: file answers uncached, which costs what it cost before this existed and
+#: is never a different answer.  Because every charge is exact and travels
+#: with its entry, a refusal is never permanent -- it lifts as soon as the
+#: index has room.
+_INDEX_BUDGET_BYTES = 192 << 20
+_STR_HEADER_BYTES = 64
+_STR_CHAR_BYTES = 4
+_DICT_SLOT_BYTES = 104
+_SET_SLOT_BYTES = 32
+_RECORD_OVERHEAD_BYTES = 512
+_MENTION_OVERHEAD_BYTES = 512
+_IDENTITY_FIELD_BYTES = 152
+
+
+def _string_bytes(value: object) -> int:
+    """Conservative retained size of one string: header plus UCS-4 width."""
+
+    return _STR_HEADER_BYTES + _STR_CHAR_BYTES * len(str(value))
+
+
+def _interned_bytes(path: str) -> int:
+    """What holding one path in the shared interned table costs."""
+
+    return _string_bytes(path) + _DICT_SLOT_BYTES
+
+
+def _mention_bytes(mention: tuple) -> int:
+    """What one retained sidecar mention costs: tuple, digest, identity."""
+
+    _size, digest, identity = mention
+    total = _MENTION_OVERHEAD_BYTES
+    if isinstance(digest, str):
+        total += _string_bytes(digest)
+    if isinstance(identity, dict):
+        total += len(identity) * _IDENTITY_FIELD_BYTES
+    return total
 
 
 def _metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
@@ -306,10 +359,15 @@ class _StagedPublisher:
         # ownership lock is a POSIX file lock, which does not exclude two
         # threads of one process from each other.
         self._lookup_lock = threading.Lock()
-        self._fragments: dict[str, tuple[tuple, object]] = {}
-        self._materials: dict[tuple[str, str], tuple[tuple, object]] = {}
+        # Each entry is ``(version, record, charge)``: the charge is measured
+        # from the real object at insert and travels with it, so dropping an
+        # entry cannot forget to discount it and no row is ever free.
+        self._fragments: dict[str, tuple[tuple, object, int]] = {}
+        self._materials: dict[tuple[str, str], tuple[tuple, object, int]] = {}
         self._interned: dict[str, str] = {}
-        self._retained = 0
+        self._interned_cost = 0
+        self._fragment_cost = 0
+        self._material_cost = 0
 
     def try_adopt(self, entry: dict[str, object], destination: Path,
                   source_id: str | None = None,
@@ -541,24 +599,117 @@ class _StagedPublisher:
                 out.append(name)
         return sorted(out)[:5]
 
-    def _retain(self, key: str, version: tuple, record: object,
-                references: int = 0) -> None:
-        """Hold one parsed fragment record against its version, inside the
-        ceiling.
+    def _index_bytes(self) -> int:
+        """What the reuse index currently costs, in retained bytes.
 
-        Over ``_MAX_RETAINED_REFERENCES`` the record is simply not kept:
-        that file answers uncached on every lookup, which costs exactly what
-        it cost before this existed and is never a different answer.
+        Every retained structure is in here -- the shared interned table,
+        the fragment records and the sidecar records -- each charged once
+        from the object it holds.  This is the retained cost, not the peak:
+        a 22 MB fragment's decode buffer is freed before the next lookup and
+        belongs to the process's peak RSS instead.
         """
 
-        previous = self._fragments.get(key)
-        if previous is not None and isinstance(previous[1], tuple):
-            self._retained -= len(previous[1][1])
-        if self._retained + references > _MAX_RETAINED_REFERENCES:
-            self._fragments.pop(key, None)
+        return self._interned_cost + self._fragment_cost + self._material_cost
+
+    def _forget_fragment(self, key: str) -> None:
+        """Drop one fragment entry and discount exactly what it was charged."""
+
+        previous = self._fragments.pop(key, None)
+        if previous is not None:
+            self._fragment_cost -= previous[2]
+
+    def _forget_material(self, key: tuple[str, str]) -> None:
+        """Drop one sidecar entry and discount exactly what it was charged."""
+
+        previous = self._materials.pop(key, None)
+        if previous is not None:
+            self._material_cost -= previous[2]
+
+    def _intern(self, path: str) -> str:
+        """One shared copy of a staged path, charged the first time it lands."""
+
+        existing = self._interned.get(path)
+        if existing is not None:
+            return existing
+        self._interned[path] = path
+        self._interned_cost += _interned_bytes(path)
+        return path
+
+    def _reclaim(self) -> None:
+        """Give back what the index holds for metadata that is no longer there.
+
+        Two kinds of residue, both of which would otherwise sit in the index
+        for the life of the publisher.  A file that *disappears* from the
+        forest is never visited again -- the per-lookup drop paths only run
+        on a file the directory scan still lists -- so its entry is dropped
+        here, by the one authority that can say it is gone: a stat.  And a
+        dropped or replaced record leaves its paths interned but
+        unreferenced, so the interned table is rebuilt from what records
+        still name, and its charge recomputed from scratch rather than
+        adjusted -- the one accounting that cannot drift.
+
+        Run only when the ceiling is actually in the way, never on the hot
+        path: one stat per retained entry, and the retained set is bounded
+        by the forest.
+        """
+
+        for key in [k for k in self._fragments if not os.path.exists(k)]:
+            self._forget_fragment(key)
+        for key in [k for k in self._materials
+                    if not reader_lease.material_path(
+                        self.residency_root, k[0], k[1]).exists()]:
+            self._forget_material(key)
+        live: set[str] = set()
+        for _version, record, _charge in self._fragments.values():
+            if isinstance(record, tuple):
+                live.update(record[1])
+        for _version, record, _charge in self._materials.values():
+            if isinstance(record, dict):
+                live.update(record)
+        self._interned = {}
+        self._interned_cost = 0
+        for path in live:
+            self._intern(path)
+
+    def _room_for(self, cost: int) -> bool:
+        """Whether the index can hold ``cost`` more bytes, reclaiming first.
+
+        ``cost`` is an upper bound that assumes every path it names is new
+        to the interned table, so a yes here is never optimistic.  A refusal
+        only ever follows a reclaim, so it means the index is genuinely that
+        full -- never that its accounting drifted.
+        """
+
+        if self._index_bytes() + cost <= _INDEX_BUDGET_BYTES:
+            return True
+        self._reclaim()
+        return self._index_bytes() + cost <= _INDEX_BUDGET_BYTES
+
+    def _keep_fragment(self, key: str, version: tuple, record: object,
+                       charge: int) -> None:
+        """Retain one fragment entry, replacing and re-pricing any previous."""
+
+        self._forget_fragment(key)
+        self._fragments[key] = (version, record, charge)
+        self._fragment_cost += charge
+
+    def _remember_verdict(self, key: str, version: tuple,
+                          record: object) -> None:
+        """Retain a corrupt-or-foreign file's verdict, if there is room.
+
+        A row that names no path still costs its key, its version tuple and
+        its dict slot.  Pricing it at zero is how an index with a budget
+        grows without limit: a directory of empty or malformed files would
+        be admitted without end.  So it is charged and checked like any
+        other, and refused like any other when the ceiling is reached.
+        """
+
+        self._forget_fragment(key)
+        charge = _RECORD_OVERHEAD_BYTES + _string_bytes(key)
+        if not self._room_for(charge):
             return
-        self._retained += references
-        self._fragments[key] = (version, record)
+        self._fragments[key] = (version, record, charge)
+        self._fragment_cost += charge
 
     def _fragment_record(self, path: Path) -> object:
         """One fragment file's reusable record, parsed once per version.
@@ -583,10 +734,10 @@ class _StagedPublisher:
         try:
             current = _metadata_version(os.stat(path))
         except FileNotFoundError:
-            self._fragments.pop(key, None)
+            self._forget_fragment(key)
             return None
         except OSError:
-            self._fragments.pop(key, None)
+            self._forget_fragment(key)
             return "tainted"
         cached = self._fragments.get(key)
         if cached is not None and cached[0] == current:
@@ -594,22 +745,21 @@ class _StagedPublisher:
         try:
             version, raw = _read_metadata(path)
         except FileNotFoundError:
-            self._fragments.pop(key, None)
+            self._forget_fragment(key)
             return None
         except OSError:
-            self._fragments.pop(key, None)
+            self._forget_fragment(key)
             return "tainted"
         try:
             fragment = json.loads(raw)
         except ValueError:
-            self._retain(key, version, "tainted")
+            self._remember_verdict(key, version, "tainted")
             return "tainted"
         if (not isinstance(fragment, dict)
                 or fragment.get("schema")
                 != residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1):
-            self._retain(key, version, None)
+            self._remember_verdict(key, version, None)
             return None
-        intern = self._interned
         names: set[str] = set()
         for entry in (fragment.get("entries") or {}).values():
             if not isinstance(entry, dict):
@@ -619,13 +769,23 @@ class _StagedPublisher:
                 # ``normpath("")`` is ``"."``, which never equals an absolute
                 # destination -- the pre-fix loop skipped these the same way.
                 continue
-            normalized = os.path.normpath(str(staged))
-            names.add(intern.setdefault(normalized, normalized))
-        record = (str(fragment.get("mover_action_key") or ""),
-                  frozenset(names))
+            names.add(os.path.normpath(str(staged)))
+        mover = str(fragment.get("mover_action_key") or "")
+        # Priced from the real objects before anything is interned, so a
+        # record that will not be kept leaves nothing behind.  The interned
+        # share is priced as if every path were new, which it may be after a
+        # reclaim, so the estimate is never optimistic.
+        self._forget_fragment(key)
+        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(key)
+                  + _string_bytes(mover)
+                  + len(names) * _SET_SLOT_BYTES)
+        interning = sum(_interned_bytes(name) for name in names)
+        if not self._room_for(charge + interning):
+            return mover, frozenset(names)
+        record = (mover, frozenset(self._intern(name) for name in names))
         # Anchored on the version the read saw, not the version the stat saw:
         # the content held is the content those bytes carried.
-        self._retain(key, version, record, references=len(names))
+        self._keep_fragment(key, version, record, charge)
         return record
 
     def _material_record(self, consumer: str, mover: str) -> object:
@@ -648,10 +808,10 @@ class _StagedPublisher:
         try:
             current = _metadata_version(os.stat(path))
         except FileNotFoundError:
-            self._materials.pop(cache_key, None)
+            self._forget_material(cache_key)
             return None
         except OSError:
-            self._materials.pop(cache_key, None)
+            self._forget_material(cache_key)
             return "tainted"
         cached = self._materials.get(cache_key)
         if cached is not None and cached[0] == current:
@@ -659,25 +819,43 @@ class _StagedPublisher:
         try:
             version, raw = _read_metadata(path)
         except FileNotFoundError:
-            self._materials.pop(cache_key, None)
+            self._forget_material(cache_key)
             return None
         except OSError:
-            self._materials.pop(cache_key, None)
+            self._forget_material(cache_key)
             return "tainted"
         try:
             body = reader_lease.validate_material(json.loads(raw))
         except ValueError:
-            self._materials[cache_key] = (version, "tainted")
+            self._forget_material(cache_key)
+            charge = _RECORD_OVERHEAD_BYTES + _string_bytes(consumer) \
+                + _string_bytes(mover)
+            if self._room_for(charge):
+                self._materials[cache_key] = (version, "tainted", charge)
+                self._material_cost += charge
             return "tainted"
-        intern = self._interned
         mentions: dict[str, tuple] = {}
         for mention in (body.get("entries") or {}).values():
             normalized = os.path.normpath(str(mention["stage_path"]))
-            normalized = intern.setdefault(normalized, normalized)
             mentions[normalized] = mentions.get(normalized, ()) + ((
                 mention.get("bytes"), mention.get("sha256"),
                 mention.get("file_id")),)
-        self._materials[cache_key] = (version, mentions)
+        # Sidecar mentions are the heaviest thing the index holds -- a digest
+        # string and an identity dict each -- so each one is charged what it
+        # actually retains rather than a flat figure.
+        self._forget_material(cache_key)
+        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
+                  + _string_bytes(mover)
+                  + len(mentions) * _DICT_SLOT_BYTES
+                  + sum(_mention_bytes(one)
+                        for carried in mentions.values() for one in carried))
+        interning = sum(_interned_bytes(path) for path in mentions)
+        if not self._room_for(charge + interning):
+            return mentions
+        mentions = {self._intern(path): carried
+                    for path, carried in mentions.items()}
+        self._materials[cache_key] = (version, mentions, charge)
+        self._material_cost += charge
         return mentions
 
     @staticmethod

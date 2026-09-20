@@ -23,6 +23,9 @@ cannot confound:
 * the invalidation cases -- a rewritten, added, removed, corrupted or
   unreadable record must be seen *before* the next decision, and an unreadable
   one must never cache as success.
+* the ceiling cases -- churn under a ceiling small enough to reach must stay
+  bounded *and* leave reuse working, because an accounting that forgets to
+  discount a dropped record degrades silently back to re-parsing everything.
 * ``test_a_shared_source_and_a_stale_donor_still_decide_as_before`` -- the two
   scopes the brief names, exercised through the same publisher instance that
   did the reuse, so reuse cannot quietly hold a verdict the forest no longer
@@ -247,6 +250,28 @@ def _sweep(forest) -> list[tuple]:
     return out
 
 
+def _assert_cardinality_is_bounded(publisher, where: str) -> None:
+    """Every retained row costs at least the per-record overhead.
+
+    This is what bounds *cardinality*: the ceiling is bytes, so it bounds
+    the number of rows only if no row is free.  Residue is allowed between
+    reclaims -- a fragment that leaves the forest is never visited again, so
+    its entry waits for the reclaim that pressure triggers -- but it is
+    always paid for, so it can never exceed the ceiling however long it
+    waits.
+    """
+
+    floor = len(publisher._fragments) * stage_move._RECORD_OVERHEAD_BYTES
+    assert floor <= publisher._index_bytes(), (
+        f"{where}: {len(publisher._fragments)} retained rows are charged "
+        f"{publisher._index_bytes()} bytes in total, less than the "
+        f"{stage_move._RECORD_OVERHEAD_BYTES} bytes a single row costs; a "
+        f"row priced below its overhead lets cardinality escape a byte "
+        f"ceiling entirely")
+    assert (publisher._index_bytes()
+            <= stage_move._INDEX_BUDGET_BYTES), f"{where}: past the ceiling"
+
+
 # --------------------------------------------------------------------------
 # The instrument itself
 # --------------------------------------------------------------------------
@@ -345,6 +370,198 @@ def test_one_pass_parses_each_metadata_file_at_most_once(forest):
     assert not duplicates, (
         f"{len(duplicates)} metadata file(s) were opened more than once for "
         f"{DESTINATIONS} destinations: {sorted(duplicates)[:3]}")
+
+
+# --------------------------------------------------------------------------
+# The ceiling: bounded, and never permanently in the way
+# --------------------------------------------------------------------------
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads an unreadable file")
+def test_repeatedly_unreadable_metadata_does_not_drift_the_accounting(forest):
+    """The reachable leak: a drop path that forgets what it dropped (#761 review).
+
+    A cached fragment that becomes unreadable is dropped on the very next
+    lookup -- that is the fail-closed behaviour, and it is the one drop path
+    a running mover actually reaches, because a file that *vanishes* is
+    never visited again.  If that drop does not discount what it held, the
+    index's accounting climbs by the record's whole size every time the file
+    flickers, while the index holds no more than before.  Nothing is wrong
+    with any verdict, so only the accounting shows it.
+
+    Ten flickers here, and the index must cost exactly what it cost before
+    them.  A drop that forgets would report ten times the content.
+    """
+
+    publisher = forest["publisher"]
+    fragment = residency_map.fragment_path(
+        forest["residency_root"], CONSUMER, MOVER)
+    mode = fragment.stat().st_mode
+
+    _sweep(forest)
+    settled = publisher._index_bytes()
+    assert settled > 0, "nothing was retained, so nothing is being measured"
+
+    for flicker in range(10):
+        fragment.chmod(0o000)
+        try:
+            assert _sweep(forest)[0][1] == "unknown"
+        finally:
+            fragment.chmod(mode)
+        assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
+        assert publisher._index_bytes() == settled, (
+            f"after {flicker + 1} unreadable/readable cycles the index "
+            f"reports {publisher._index_bytes()} bytes against {settled} "
+            f"before, holding the same content; a drop that does not "
+            f"discount what it dropped drifts upward until the ceiling "
+            f"rejects everything and reuse is dead for the process")
+
+
+def test_churn_stays_bounded_and_leaves_reuse_working(forest, monkeypatch):
+    """Churn under a reachable ceiling must bound memory *and* keep reuse.
+
+    Fragments come and go over a mover's life.  One that disappears is never
+    visited again, so nothing on the per-lookup path can drop its entry --
+    only a reclaim under pressure can, and if none happens the index grows
+    with every fragment ever seen.  This adds and deletes under a ceiling
+    small enough to reach, then restores room and checks reuse still works.
+
+    The size half alone would pass while reuse was dead; the reuse half
+    alone would pass while memory grew.  Both are asserted.
+    """
+
+    publisher, work = forest["publisher"], forest["work"]
+    real = stage_move._INDEX_BUDGET_BYTES
+    _sweep(forest)
+    tiny = publisher._index_bytes() * 2
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", tiny)
+
+    for round_ in range(12):
+        consumer, mover = _key(f"churn{round_}c"), _key(f"churn{round_}m")
+        forest["write_fragment"](consumer, mover, forest["fragment_entries"])
+        assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
+        assert publisher._index_bytes() <= tiny, (
+            f"round {round_}: the index passed its ceiling")
+
+        residency_map.fragment_path(
+            forest["residency_root"], consumer, mover).unlink()
+        _sweep(forest)
+        assert publisher._index_bytes() <= tiny, (
+            f"round {round_}: the index passed its ceiling after a delete")
+        _assert_cardinality_is_bounded(publisher, f"round {round_}")
+
+        # Replacement churn too: same content, new version every round.
+        forest["write_fragment"](CONSUMER, MOVER, forest["fragment_entries"])
+        forest["write_material"](CONSUMER, MOVER, forest["material_entries"])
+        _sweep(forest)
+        assert publisher._index_bytes() <= tiny, (
+            f"round {round_}: the index passed its ceiling on replacement")
+
+    # The ceiling was a ceiling, not a one-way door: with room again, reuse
+    # works.  A drifted accounting would still be rejecting everything here.
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", real)
+    first = _sweep(forest)
+    work.reset()
+    again = _sweep(forest)
+    assert again == first, "reuse changed a verdict after churn"
+    assert work.parses == 0, (
+        f"after churn the second pass re-parsed {work.parses} files: the "
+        f"ceiling disabled reuse permanently instead of bounding it")
+
+
+def test_records_that_name_no_path_still_cost_and_are_bounded(forest,
+                                                               monkeypatch):
+    """A row priced at zero is a row that can be added without limit.
+
+    Fragments that parse but are not residency fragments -- and fragments
+    that name nothing -- retain no paths, so an accounting that prices only
+    paths prices them at nothing and admits them without end.  That is the
+    same failure class as an accounting that forgets what it dropped:
+    something grows while nothing counts it.
+
+    Three hundred such files against a nearly full index.  The index must
+    stay inside its ceiling *and* stop taking rows; size alone would pass
+    while cardinality ran away.
+    """
+
+    publisher = forest["publisher"]
+    _sweep(forest)
+    settled = len(publisher._fragments)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES",
+                        publisher._index_bytes() + 4096)
+
+    for index in range(300):
+        directory = forest["residency_root"] / _key(f"empty{index}c")
+        directory.mkdir(exist_ok=True)
+        (directory / f"{_key(f'empty{index}m')}.json").write_text(
+            '{"schema": "not-a-residency-fragment"}')
+
+    assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
+    assert publisher._index_bytes() <= stage_move._INDEX_BUDGET_BYTES, (
+        "the index passed its ceiling on rows that name no path")
+    assert len(publisher._fragments) < settled + 300, (
+        f"the index took {len(publisher._fragments) - settled} of 300 rows "
+        f"that name no path while reporting "
+        f"{publisher._index_bytes()} bytes; a row charged nothing evades "
+        f"the ceiling however large the ceiling is")
+    _assert_cardinality_is_bounded(publisher, "rows that name no path")
+
+
+def test_a_long_path_is_charged_its_length_not_a_flat_figure(tmp_path):
+    """A flat per-path price under-charges the input most likely to blow it.
+
+    Path lengths are not a constant and a unicode path is not one byte per
+    character, so a flat figure is a guess standing in for something the
+    code can read exactly.  This builds a forest of one fragment naming one
+    very long path and asserts the index charges at least what that path
+    measures -- which a flat figure, by construction, does not.
+    """
+
+    stage_root, residency_root = tmp_path / "stage", tmp_path / "residency"
+    residency_root.mkdir()
+    deep = stage_root / ("directory" * 14) / ("segment" * 16)
+    deep.mkdir(parents=True)
+    body = b"long-path-payload"
+    destination = deep / (("name" * 24) + ".bin")
+    destination.write_bytes(body)
+    norm = os.path.normpath(str(destination))
+    digest = hashlib.sha256(body).hexdigest()
+    key = residency_map.residency_map_key("/mnt/shared/pool/long.bin", 0)
+
+    residency_map.write_fragment(residency_root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
+        "tier_id": TIER, "stage_root": str(stage_root),
+        "manifest_sha256": MANIFEST,
+        "entries": {key: {"stage_path": norm, "bytes": len(body),
+                          "offset": 0, "sha256": digest}}})
+
+    publisher = stage_move._StagedPublisher(
+        queue=pool.PoolQueue(tmp_path / "pool"), stage_root=stage_root,
+        residency_root=residency_root, mover_action_key=_key("thismover0"),
+        manifest_sha256=MANIFEST, tier_id=TIER,
+        cas_root=str(tmp_path / "pool" / "cas"))
+
+    assert publisher._proof_search(norm, len(body), digest)[1] == "owned"
+    assert len(norm) > 400, "the fixture must actually be a long path"
+    assert publisher._index_bytes() >= len(norm), (
+        f"the index charges {publisher._index_bytes()} bytes for a record "
+        f"whose single retained path is {len(norm)} characters long; a flat "
+        f"per-path price under-counts exactly the inputs most likely to "
+        f"exhaust the budget")
+
+
+def test_a_record_too_big_for_the_ceiling_still_decides_correctly(forest,
+                                                                  monkeypatch):
+    """Over the ceiling is uncached, never wrong and never a held verdict."""
+
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", 1)
+    assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
+    assert forest["publisher"]._index_bytes() == 0, (
+        "nothing may be retained under a ceiling nothing fits in")
+
+    # And the interned table is not a back door: a record that was priced
+    # and refused must leave nothing behind in it.
+    assert forest["publisher"]._interned == {}
 
 
 # --------------------------------------------------------------------------
