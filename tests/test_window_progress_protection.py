@@ -347,7 +347,17 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
                         stage_root=str(tmp_path / "stage"))
     stage_release.evict(queue, q1, consumer_action_key=Q,
                         stage_root=str(tmp_path / "stage"))
-    assert ledger.available().get("stage_gib") == 3
+    # Composed with the accepted #742 shared-egress semantics: the two
+    # corpora are byte-identical, so p1's staged entry is shared with Q's
+    # mover and its egress DECHARGES (marker dead, never free credit)
+    # instead of releasing.  Exact conservation: three minted markers are
+    # two free tokens plus one dead marker, nothing held, nothing phantom.
+    minted = queue.tier_ledger(TIER)
+    assert minted.available().get("stage_gib") == 2
+    assert minted.capacity().get("stage_gib") == 2
+    assert minted.held().get("stage_gib", 0) == 0
+    assert (minted.root / "minted" / "dead"
+            / "stage_gib-0000").exists()
 
 
 def test_parallel_fit_runs_both(tmp_path: Path) -> None:
