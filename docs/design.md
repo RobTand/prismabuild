@@ -4246,16 +4246,29 @@ so no two concluding paths can disagree.
 
 The contract is three-valued, never two:
 
-* **Occupied — retain.** A receipt naming the tier with `bytes_staged > 0`, or
-  a published residency fragment naming this mover. A partial batch is
-  occupancy: half a batch on the stage is half a stage spent.
+* **Occupied — retain.** A receipt naming the tier with a positive
+  `bytes_staged`, or a published residency fragment naming this mover. A
+  partial batch is occupancy: half a batch on the stage is half a stage spent.
+  An overrun is occupancy too -- it refused for staging MORE than it declared.
 * **Proven empty — release.** A mover that filed a refusal receipt
-  (`residency_moved_nothing`) and published no fragment. A zero-output failure
-  frees its reservation because nothing is occupying anything.
-* **Unknown — retain.** Anything else, including a MISSING move receipt.
-  `stage_move` publishes a fragment per entry as the bytes land and calls
-  `record_move` once, last, so a kill in that window leaves real bytes and no
-  receipt at all. Absence of a receipt is silence, not a report of zero.
+  (`residency_moved_nothing`) naming this tier, reporting `bytes_staged` as
+  EXACT non-boolean integer zero, and published no fragment. All three, as a
+  conjunction. A zero-output failure frees its reservation because nothing is
+  occupying anything.
+* **Unknown — retain.** Anything else, including a MISSING move receipt and a
+  malformed count. `stage_move` publishes a fragment per entry as the bytes
+  land and calls `record_move` once, last, so a kill in that window leaves
+  real bytes and no receipt at all. Absence of a receipt is silence, not a
+  report of zero; a negative count or a `bool` (`isinstance(False, int)` is
+  True) is broken metadata, which is not a measurement of an empty stage.
+
+The tier-token half of a terminal may also be asked when NO terminal record
+exists at all -- a finish tombstone whose finisher died, a lease widowed by a
+record that is gone. `_filed_pin_holds` answers that case, and no ending at
+all is the strongest form of "this cleanup cannot see the ending", never proof
+that nothing is pinned: it retains when the key still holds a prepaid-output
+funding record that is not `released`. A mover outside this lane has no such
+record and is swept exactly as before.
 
 Retention is safe here only because the leftovers have a named owner:
 `produced_output.retire_batch` runs `stage_release.evict` for that mover key,
