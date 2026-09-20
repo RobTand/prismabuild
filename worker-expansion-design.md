@@ -784,3 +784,39 @@ phases nobody would ever stage.
   claim, funded window tick publishing the later mover, its completion,
   and the successor consumer claim. Operator cancellation of the same
   shape stops publication across ticks.
+
+## R13 addendum (2026-09-20): handoff classified by the durable decision
+
+> R13 CORRECTION to the R12 addendum's first two bullets (preserved
+> above as dated history, not rewritten): owner shape alone classifies
+> nothing anymore. R12's shape predicate could not verify the "only
+> retry-owed rows" assumption it was commented with, let a
+> supervisor-shaped ordinary cancellation preserve a window, and asked
+> the later publish validation to retroactively authorize an earlier
+> keep-alive it never saw. The R12 tests now pass the proven carrier;
+> the shape-only expectations were replaced in the same commit.
+
+Root review: `pool.withdraw` accepts the resign-built handoff snapshot
+as `membership_handoff` and proves it under the key lock -- live claim
+still that attempt (`_same_claim`), generation uncovered, restart
+permission with remaining budget and existing lineage
+(`_preemption_eligible`) -- persisting an explicit `membership_handoff`
+identity (owner, attempts, budget, generation) in the immutable
+decision, and only then preserving the sealed plan. Stale reads,
+replaced claims, covered generations, exhausted budgets and foreign
+rows refuse BEFORE anything is stopped or filed. The tier-loop window
+reads that exact decision back (every field typed and equal to the
+marker's own); a supervisor-shaped marker with no or mismatched proof
+retires like an operator cancellation. Admission preemption semantics
+unchanged; window funding, supply mint, shared egress, and SDK code
+untouched. Produced-output template still deliberately unimplemented
+(no such binding in the accepted tree; the projection refuses rather
+than drops).
+
+Proven RED on f98c03c7d4 (supervisor-shaped cancellation without proof
+wrongly preserves; proof/refusal API absent) and GREEN after: carrier
+unit contract (shape-without-proof retires on both paths, proof
+persists exact, stale/foreign/covered/exhausted refuse with the live
+claim standing), the updated R12 two-phase window suite through the
+carrier, an ordinary `fm.resign` drain of a staged consumer end to
+end, and the withdraw/window-adjacent plus 726/funding focused shards.

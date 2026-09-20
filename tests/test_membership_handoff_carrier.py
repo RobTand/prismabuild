@@ -119,7 +119,7 @@ def _staged(queue: pool.PoolQueue, tmp_path: Path) -> dict[str, object]:
     return plan
 
 
-def test_shape_without_proof_files_ordinary_cancellation(
+def test_shape_without_proof_retires_consumer_plan(
     queue: pool.PoolQueue, tmp_path: Path,
 ) -> None:
     """A supervisor-shaped `by` with no handoff proof retires the window
@@ -127,10 +127,21 @@ def test_shape_without_proof_files_ordinary_cancellation(
     nothing."""
     host = socket.gethostname()
     owner = _owner(host)
-    plan = _staged(queue, tmp_path)
+    _staged(queue, tmp_path)
     consumer = queue.withdraw(CONSUMER, reason="shape only", by=owner)
     assert consumer["residency_plan_superseded"] is True
+
+
+def test_shape_without_proof_mover_retires_at_tick(
+    queue: pool.PoolQueue, tmp_path: Path,
+) -> None:
+    """The window side of the same rule: a supervisor-shaped mover marker
+    with no proven handoff retires the plan at the next tick."""
+    host = socket.gethostname()
+    owner = _owner(host)
+    plan = _staged(queue, tmp_path)
     queue.withdraw(MOVER, reason="shape only", by=owner)
+    assert residency_plan.superseded(queue, plan) is None
     tick = tier_loop.residency_window(
         queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(tmp_path / "stage")}})
