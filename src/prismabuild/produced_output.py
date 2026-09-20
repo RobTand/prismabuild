@@ -775,7 +775,19 @@ def validate_descriptor(value: object, template: Mapping[str, object],
     _resolve_contained(str(checked_template["output_prefix"]), raw_path,
                        where="descriptor path")
     size = _positive_int(value.get("bytes"), where="descriptor bytes")
-    digest = _hex64(value.get("sha256"), where="descriptor sha256")
+    # The existing DEV data-manifest convention: a descriptor digest is
+    # either a real hex64 (verified, and the mover enforces it on copy) or
+    # JSON null (DEV path -- no payload hashing prerequisite; identity is
+    # path+size+order through the manifest digest over the descriptor list,
+    # plus the mover's necessary-copy/material evidence). Anything else --
+    # including the string "None" or any non-hex spelling -- refuses; a
+    # null is never coerced into a digest and a supplied digest is never
+    # weakened.
+    raw_digest = value.get("sha256")
+    if raw_digest is None:
+        digest = None
+    else:
+        digest = _hex64(raw_digest, where="descriptor sha256")
     generation = value.get("producer_generation")
     if not isinstance(generation, str) or not generation or "/" in generation:
         raise ProducedOutputError(
@@ -1761,7 +1773,10 @@ def commit_batch(queue, instance: Mapping[str, object],
             "owner_attempt": dict(checked_instance["owner_attempt"]),
             "object_set_id": manifest_object_set_id({
                 f"{d['bytes']}:{d['path']}": {"bytes": int(d["bytes"]),
-                                             "sha256": str(d["sha256"])}
+                                             "sha256": (d["sha256"]
+                                                        if d["sha256"]
+                                                        is not None else
+                                                        None)}
                 for d in sealed}),
             "unix": time.time(),
         }
@@ -2101,7 +2116,11 @@ def build_stage_manifest(batch: Mapping[str, object],
         raise ProducedOutputError("batch carries no entries to stage")
     manifest_entries = [
         {"path": str(e["path"]), "offset": 0, "bytes": int(e["bytes"]),
-         "sha256": str(e["sha256"])} for e in entries]
+         # DEV null digests stay JSON null through the manifest (core's
+         # data-manifest validator and the mover both accept null); never
+         # stringified.
+         "sha256": (e["sha256"] if e["sha256"] is not None else None)}
+        for e in entries]
     total = sum(int(e["bytes"]) for e in manifest_entries)
     return {
         "schema": "prismaquant.prismabuild.data_manifest.v1",
