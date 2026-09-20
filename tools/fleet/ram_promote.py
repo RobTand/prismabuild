@@ -150,11 +150,20 @@ def promote(args, *, stop=None) -> dict[str, object]:
     copier = _Copier(
         mounts=mounts, pacer=None, stage_root=Path(args.ram_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
-        owner=str(args.action_key))
+        owner=str(args.action_key),
+        # The source is the stage, not the pool: split ranges are read from
+        # the staged names the stage mover wrote, from byte zero.
+        source_stage_root=source)
 
     before = proc_io()
     cpu_before = cpu_seconds()
     started = time.time()
+    # The start gate: order this copy's first rename against an egress that
+    # may be snapshotting right now.  The claim already exists, so an egress
+    # that snapshots after this point attributes the copy through the claim;
+    # one that snapshotted before waits out here until its delete completes.
+    # Acquired and released -- nothing is held during the copy itself.
+    pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.ram_root)
     copier.run(window, whole=whole, stop=stop)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()

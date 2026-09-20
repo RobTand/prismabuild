@@ -157,7 +157,8 @@ class _Copier:
 
     def __init__(self, *, mounts: prewarm_loop.MountMap, pacer, stage_root: Path,
                  mount_prefix: str, block: int, workers: int,
-                 owner: str = "") -> None:
+                 owner: str = "",
+                 source_stage_root: Path | str | None = None) -> None:
         self.mounts = mounts
         self.pacer = pacer
         self.stage_root = stage_root
@@ -165,6 +166,15 @@ class _Copier:
         self.block = block
         self.workers = max(1, workers)
         self.owner = str(owner or "")
+        #: Read the copy's bytes from an already-staged tree instead of the
+        #: pool: a promotion's source is the stage, where split ranges live
+        #: under their staged names from byte zero rather than under the
+        #: manifest's pool path at the manifest offset.  ``None`` keeps the
+        #: pool behavior (``mounts`` plus the entry offset); set, the caller
+        #: passes the staged source per entry (see ``run``) and the offset is
+        #: always zero.  ``stage_move`` leaves this unset.
+        self.source_stage_root = (
+            None if source_stage_root is None else Path(source_stage_root))
         self.lock = threading.Lock()
         self.staged: dict[str, dict[str, object]] = {}
         self.bytes_staged = 0
@@ -198,17 +208,28 @@ class _Copier:
             f".{destination.name}.{self.owner[:16]}.partial")
 
     def _copy_one(self, entry: dict[str, object], destination: Path,
-                  admission, stop: threading.Event) -> tuple[int, str]:
+                  admission, stop: threading.Event,
+                  source: Path | str | None = None,
+                  source_offset: int | None = None) -> tuple[int, str]:
         """Read this entry's bytes, write them, hash them; return size and digest.
 
         The temporary lives beside the final name so the publish is a rename
         within one dataset, and it is removed on any failure: a stage littered
         with half-copies would charge the tier for bytes no map ever names.
+
+        ``source``/``source_offset`` override the pool default (the mounts map
+        plus the entry's own offset) for copies whose source is an already-
+        staged tree, where split ranges live under their staged names from
+        byte zero.  Omitted, the pool behavior is byte-identical.
         """
 
-        source = self.mounts.local(str(entry["path"]))
+        if source is None:
+            source = self.mounts.local(str(entry["path"]))
+            source_offset = int(entry["offset"])
+        source = str(source)
+        offset = int(source_offset
+                     if source_offset is not None else entry["offset"])
         want = int(entry["bytes"])
-        offset = int(entry["offset"])
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._temporary(destination)
         digest = hashlib.sha256()
@@ -292,8 +313,18 @@ class _Copier:
                         path, offset, int(entry["bytes"]),
                         mount_prefix=self.mount_prefix, whole_file=path in whole)
                     destination = self.stage_root / relative
+                    if self.source_stage_root is not None:
+                        # A promotion reads the staged tree, where this same
+                        # relative name is what the stage mover wrote -- split
+                        # ranges from byte zero, never the manifest's pool
+                        # path at the manifest offset.
+                        staged_source = self.source_stage_root / relative
+                        staged_offset = 0
+                    else:
+                        staged_source, staged_offset = None, offset
                     written, digest = self._copy_one(
-                        entry, destination, admission, stop)
+                        entry, destination, admission, stop,
+                        source=staged_source, source_offset=staged_offset)
                 except (OSError, ValueError) as exc:
                     with self.lock:
                         if len(self.errors) < 20:
@@ -671,6 +702,10 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     before = proc_io()
     cpu_before = cpu_seconds()
     started = time.time()
+    # The start gate, same as the promotion's: order this copy's first rename
+    # against an egress that may be snapshotting right now.  Acquired and
+    # released -- nothing is held during the copy itself.
+    pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.stage_root)
     copier.run(window, whole=whole, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish)
     elapsed = max(1e-9, time.time() - started)
