@@ -1807,27 +1807,38 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
                           template: Mapping[str, object],
                           descriptors: list[Mapping[str, object]], *,
                           batch_id: str, tier: str, cas_root,
-                          mover_template: Mapping[str, object],
-                          container_owner_fn,
+                          producer_action_key: str | None = None,
                           command_extra: Sequence[str] = (),
                           retry_policy: Mapping[str, object] | None = None,
                           ) -> dict[str, object]:
     """The operational prepaid writer path for one finished batch (R7).
 
-    Production call sequence, all existing mechanisms: build the sealed
-    batch reference (``PoolQueue.build_produced_output_batch_ref``) -> seal
-    a movement action off the PRODUCER'S OWN SUBMISSION TEMPLATE through
-    the ordinary ``movement_actions.seal_movement_action`` (the same
-    construction pbrun's movement children use, with the submitter's
-    ``container_owner_fn``; the sealed request carries the batch
-    reference and the batch's own data-manifest input in its params) ->
-    stage the funding intent (reserved, no tokens moved) -> publish the
-    mover READY row -> fund by exact transfer of the producer's existing
-    window (``fund_output_batch``) -> ``commit_batch`` (files the
-    immutable batch against the pool record; no second acquisition from
-    free). The fleet's ordinary claim then admits the mover through the
-    prepaid cover, and the worker executes the sealed argv on the storage
-    owner.
+    Callable INSIDE the admitted producer action: the movement template is
+    RECOVERED from the producer's own sealed request through the existing
+    CAS request interface (``producer_action_key``, defaulting to this
+    action's ``PRISMABUILD_ACTION_KEY``), never from submitter-local
+    state. The child inherits the parent request's inputs (checkout
+    snapshot), code closure, environment base, execution scope, task
+    identity and cwd exactly as pbrun's movement children inherit the
+    consumer's template; the parent's own data-manifest input is replaced
+    by the batch's; the marker namespace is the queue's container-owners
+    directory; the ownership identity is the parent's sealed checkout
+    snapshot id (content-addressed, stable, already in the request). No
+    checkout is rescanned or resealed per batch and no scratch directory
+    is created.
+
+    Sequence, all existing mechanisms: build the sealed batch reference
+    (``PoolQueue.build_produced_output_batch_ref``) -> seal the movement
+    action through the ordinary ``movement_actions.seal_movement_action``
+    (the same construction pbrun's movement children use; the sealed
+    request carries the batch reference and the batch's data-manifest
+    input in its params) -> stage the funding intent (reserved, no tokens
+    moved) -> publish the mover READY row -> fund by exact transfer of
+    the producer's existing window (``fund_output_batch``) ->
+    ``commit_batch`` (files the immutable batch against the pool record;
+    no second acquisition from free). The fleet's ordinary claim then
+    admits the mover through the prepaid cover, and the worker executes
+    the sealed argv on the storage owner.
 
     The mover's interpreter, tool paths, stage root and placement host
     come from the TIER RECORD the storage role announced
@@ -1901,9 +1912,38 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         committed["funding"] = "prepaid"
         committed["duplicate"] = True
         return committed
+    # The producer's own sealed request, through the existing request
+    # interface: this is the runtime parent context the mover inherits.
+    producer = str(producer_action_key or
+                   os.environ.get(core_mod.ACTION_KEY_ENV) or "")
+    if len(producer) != 64:
+        return {"ok": False, "step": "parent-request",
+                "refusal": "producer-request-required: pass "
+                           "producer_action_key or run under a launcher "
+                           "that sets PRISMABUILD_ACTION_KEY"}
+    try:
+        cas = core_mod.PrismaBuildCAS(cas_root)
+        request_path = (Path(cas.root) / "requests" / producer[:2]
+                        / f"{producer}.json")
+        with open(request_path, "rb") as handle:
+            raw = handle.read(8 * 1024 * 1024 + 1)
+        if len(raw) > 8 * 1024 * 1024:
+            raise ProducedOutputError("producer request oversize")
+        request = core_mod.validate_action(core_mod._decode_strict_json(
+            raw, where="producer action request"))
+        if str(request.get("action_key")) != producer:
+            raise ProducedOutputError("producer request key mismatch")
+    except FileNotFoundError:
+        return {"ok": False, "step": "parent-request",
+                "refusal": f"producer-request-missing: {request_path}"}
+    except Exception as exc:
+        return {"ok": False, "step": "parent-request",
+                "refusal": f"producer-request-unreadable: {exc}"}
     # The batch's stage data manifest, sealed as the request's data-manifest
     # input exactly as a consumer submission's is: the mover finds it in its
-    # own sealed request, never on a caller's filesystem.
+    # own sealed request, never on a caller's filesystem. The parent's own
+    # data-manifest input is dropped from the child's inputs so the child
+    # carries exactly one -- the batch's.
     batch_view = {"entries": [dict(d) for d in descriptors],
                   "batch_id": batch_id, "manifest_digest": manifest_digest}
     mount_prefix = str(Path.commonpath(
@@ -1917,7 +1957,6 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
             json.dump(manifest_body, stream, sort_keys=True)
         try:
             core_mod.load_data_manifest(manifest_tmp)
-            cas = core_mod.PrismaBuildCAS(cas_root)
             manifest_input, _ = cas.ingest_input(
                 manifest_tmp,
                 input_id=core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
@@ -1925,6 +1964,25 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
             os.unlink(manifest_tmp)
     except Exception as exc:
         return {"ok": False, "step": "manifest", "refusal": str(exc)}
+    parent_inputs = [dict(entry) for entry in request.get("inputs") or ()
+                     if isinstance(entry, Mapping)]
+    child_inputs = [entry for entry in parent_inputs
+                    if str(entry.get("id"))
+                    != core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
+    snapshot_id = next((str(entry.get("sha256"))
+                        for entry in child_inputs
+                        if entry.get("sha256")), producer)
+    mover_template = {
+        "task": dict(request["task"]),
+        "inputs": child_inputs + [manifest_input],
+        "code_closure": request["code_closure"],
+        "environment": request["environment"],
+        "execution_scope": request["execution_scope"],
+        "params": {"cwd": str((request.get("params") or {}).get("cwd")
+                              or ".")},
+        "marker_root": Path(queue.root) / pool_mod.CONTAINER_OWNERS,
+        "checkout_identity": {"checkout_snapshot": snapshot_id},
+    }
     # Movement-node resolution off the TIER RECORD (the ordinary path):
     # interpreter/tools/mountpoint/host are facts about the box that runs
     # the movers, announced beside the tier by tier_loop.py.
@@ -1975,7 +2033,6 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
             tags=[host] if host else [],
             log_name=f"produced-output-mover-{batch_id}.log",
             retry_policy=mover_retry_policy,
-            container_owner_fn=container_owner_fn,
             extra_params={
                 "produced_output_batch": dict(ref),
                 "data_manifest": {"input": manifest_input},
@@ -1995,17 +2052,18 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         staged["step"] = "stage"
         return staged
     try:
-        template_inputs = mover_template.get("inputs") or []
-        publish_kwargs: dict[str, object] = {}
-        if template_inputs:
-            # The movement-child addressing: the submission's checkout
+        snapshot_entry = next(
+            (entry for entry in child_inputs
+             if str(entry.get("id")) == "pbrun.checkout-snapshot"), None)
+        if snapshot_entry is not None:
+            # The movement-child addressing: the parent request's checkout
             # snapshot input, exactly as pbrun's movement rows publish.
-            publish_kwargs["checkout_snapshot"] = template_inputs[0]
+            addressing = {"checkout_snapshot": snapshot_entry}
         else:
-            publish_kwargs["checkout_root"] = str(Path.cwd())
+            addressing = {"checkout_root": str(Path.cwd())}
         queue.publish(
             action_key=mover, cas_root=str(cas.root),
-            worker_script=mover_tool, **publish_kwargs,
+            worker_script=mover_tool, **addressing,
             resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
             residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
                        "tier_id": tier,

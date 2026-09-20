@@ -1313,46 +1313,20 @@ def container_owner(
     placement=None,
     container_images=(),
 ) -> str:
-    """Stable ownership id sealed before the action key exists.
+    """The submitter's ownership hash: git identity stays with pbrun.
 
-    The action key includes the environment, and the environment needs this id,
-    so using the final key would be recursive.  Hash the complete pre-lifecycle
-    submission identity, including task and retry policy, normalized effective
-    placement, normalized declared images, the pre-owner environment, and the
-    marker namespace, instead.  Adding the owner and marker variables
-    afterwards is deterministic and leaves no caller-chosen ownership
-    namespace.
-
-    ``container_images`` belongs to that identity even though it is not part
-    of the command: two actions differing only in which image they require
-    must not share a Docker ownership label and ``<owner>.used`` marker, or
-    one action's cleanup can remove the other's live container.  It is
-    included only when nonempty, so a submission without a declaration is
-    byte-for-byte what it was before the field existed.
+    The construction lives in ``prismabuild.movement_actions.container_owner``
+    (the one implementation, shared with the produced-output writer lane);
+    this wrapper injects pbrun's ``_git_identity`` so a template without an
+    explicit identity keeps its exact historical digest.
     """
 
-    identity = _git_identity(Path(cwd)) if identity is None else identity
-    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
-    params = {
-        "command": command,
-        "cwd": cwd_identity,
-        "demand": demand,
-        "placement": placement or {"required_tags": []},
-        "retry_policy": retry_policy,
-    }
-    if container_images:
-        params["container_images"] = list(container_images)
-    pre_owner_identity = {
-        "schema": "prismaquant.prismabuild.container_owner_identity.v1",
-        "task": {"determinism": determinism},
-        "checkout": identity,
-        "params": params,
-        "environment": {"variables": variables},
-        "container_lifecycle": {"marker_root": str(marker_root)},
-    }
-    return hashlib.sha256(
-        json.dumps(pre_owner_identity, sort_keys=True).encode()
-    ).hexdigest()
+    return movement_actions.container_owner(
+        command, cwd, demand, variables,
+        determinism=determinism, retry_policy=retry_policy,
+        marker_root=marker_root, identity=identity,
+        logical_cwd=logical_cwd, placement=placement,
+        container_images=container_images, identity_fn=_git_identity)
 
 
 def keep_droppings_out_of_git(cwd: Path) -> Path | None:

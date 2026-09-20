@@ -9,6 +9,8 @@ here; this module IS the one construction, moved verbatim.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -64,6 +66,68 @@ def movement_tools(tier: Mapping[str, object], *,
     return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
 
 
+def container_owner(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    determinism,
+    retry_policy,
+    marker_root,
+    identity=None,
+    logical_cwd=None,
+    placement=None,
+    container_images=(),
+    identity_fn: Callable[[Path], dict] | None = None,
+) -> str:
+    """Stable ownership id sealed before the action key exists.
+
+    The action key includes the environment, and the environment needs this id,
+    so using the final key would be recursive.  Hash the complete pre-lifecycle
+    submission identity, including task and retry policy, normalized effective
+    placement, normalized declared images, the pre-owner environment, and the
+    marker namespace, instead.  Adding the owner and marker variables
+    afterwards is deterministic and leaves no caller-chosen ownership
+    namespace.
+
+    ``container_images`` belongs to that identity even though it is not part
+    of the command: two actions differing only in which image they require
+    must not share a Docker ownership label and ``<owner>.used`` marker, or
+    one action's cleanup can remove the other's live container.  It is
+    included only when nonempty, so a submission without a declaration is
+    byte-for-byte what it was before the field existed.
+    """
+
+    if identity is None:
+        if identity_fn is None:
+            raise ValueError(
+                "container_owner needs an explicit identity or an "
+                "identity_fn; ownership is never guessed")
+        identity = identity_fn(Path(cwd))
+    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
+    params = {
+        "command": command,
+        "cwd": cwd_identity,
+        "demand": demand,
+        "placement": placement or {"required_tags": []},
+        "retry_policy": retry_policy,
+    }
+    if container_images:
+        params["container_images"] = list(container_images)
+    pre_owner_identity = {
+        "schema": "prismaquant.prismabuild.container_owner_identity.v1",
+        "task": {"determinism": determinism},
+        "checkout": identity,
+        "params": params,
+        "environment": {"variables": variables},
+        "container_lifecycle": {"marker_root": str(marker_root)},
+    }
+    return hashlib.sha256(
+        json.dumps(pre_owner_identity, sort_keys=True).encode()
+    ).hexdigest()
+
+
 def seal_movement_action(
     template: Mapping[str, object],
     *,
@@ -84,20 +148,17 @@ def seal_movement_action(
     demand is tier tokens rather than CPU and GPU, and it is placed on the
     box that owns the stage rather than on the box that will compute.
 
-    ``container_owner_fn`` is the submitter's ``container_owner`` (its
-    definition stays with the submission machinery that owns git identity
-    and stamp names); callers pass it explicitly so this module never
-    grows a second ownership scheme. ``extra_params`` carries lane-specific
-    parameters beside the movement keys -- the produced-output lane seals
-    its ``produced_output_batch`` reference and its own batch data
-    manifest here.
+    ``container_owner_fn`` defaults to this module's ``container_owner``
+    with the template's ``checkout_identity``; pbrun passes its wrapper so
+    a template without an explicit identity keeps its exact historical
+    git-derived digest. ``extra_params`` carries lane-specific parameters
+    beside the movement keys -- the produced-output lane seals its
+    ``produced_output_batch`` reference and its own batch data manifest
+    here.
     """
 
     if container_owner_fn is None:
-        raise ValueError(
-            "seal_movement_action needs the submitter's container_owner "
-            "function; ownership is settled by the submission machinery, "
-            "never reimplemented here")
+        container_owner_fn = container_owner
     params: dict[str, object] = {
         name: template["params"][name]                    # type: ignore[index]
         for name in _MOVEMENT_PARAM_KEYS
