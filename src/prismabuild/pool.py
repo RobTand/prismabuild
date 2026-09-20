@@ -697,16 +697,17 @@ def progress_policy(
 def _sealed_produced_output_batch(
     cas_root: str | Path,
     action_key: str,
-) -> Mapping[str, object] | None:
-    """Read the sealed batch reference from the CAS-filed action request.
+) -> tuple[Mapping[str, object] | None, bool]:
+    """Read the sealed batch reference and request presence (R5).
 
-    Returns the raw ``action.params.produced_output_batch`` value, or None
-    when no request file exists (legacy direct publish declares nothing).
-    A request file that exists but is unreadable, undecodable, invalid, or
-    bound to a different key refuses: missing/corrupt authority never
-    silently becomes legacy. Shape validation belongs to the caller
-    (filed template + namespace + residency bind), which never trusts this
-    mapping beyond it being the real sealed params.
+    Returns ``(value_or_None, request_present)``. Only key ABSENCE means no
+    requirement: a present non-mapping value -- including explicit JSON
+    ``null`` -- is malformed and refuses. No request file (legacy direct
+    publish) declares nothing. A request file that exists but is unreadable,
+    undecodable, invalid, key-mismatched, or has non-object params refuses:
+    missing/corrupt authority never silently becomes legacy. Shape validation
+    belongs to the caller (filed template + namespace + residency bind),
+    which never trusts this mapping beyond it being the real sealed params.
     """
 
     key = str(action_key)
@@ -714,7 +715,7 @@ def _sealed_produced_output_batch(
     try:
         raw = pb._read_regular_file_nofollow(request, where="pool action request")
     except FileNotFoundError:
-        return None
+        return (None, False)
     try:
         action = pb.validate_action(
             pb._decode_strict_json(raw, where="pool action request"))
@@ -727,13 +728,13 @@ def _sealed_produced_output_batch(
     params = action.get("params")
     if not isinstance(params, Mapping):
         raise PoolContractError("pool action request params must be an object")
-    value = params.get("produced_output_batch")
-    if value is None:
-        return None
+    if "produced_output_batch" not in params:
+        return (None, True)
+    value = params["produced_output_batch"]
     if not isinstance(value, Mapping):
         raise PoolContractError(
             "action.params.produced_output_batch must be an object")
-    return value
+    return (value, True)
 
 
 def _sealed_progress_policy(
@@ -3514,19 +3515,21 @@ class PoolQueue:
             except ValueError as exc:
                 raise PoolContractError(str(exc)) from exc
         produced_batch_ref = None
-        # Required immutable admission carrier (R4): bound to the REAL sealed
-        # params, never to the kwarg alone. The CAS-filed action request is
-        # read through the existing request loader with key validation
-        # (`_sealed_produced_output_batch`, same machinery as the sealed
-        # progress policy): no request file means legacy direct publish
-        # (kwarg governs, fully validated); a sealed reference is derived
-        # from it even when the kwarg is omitted (the requirement cannot be
-        # omitted while the request carries it); a contradictory kwarg
-        # refuses; an unreadable/invalid sealed request refuses before READY
-        # exposure and never silently becomes legacy.
+        # Required immutable admission carrier (R4/R5): bound to the REAL
+        # sealed params, never to the kwarg alone. The CAS-filed action
+        # request is read through the existing request loader with key
+        # validation (`_sealed_produced_output_batch`, same machinery as the
+        # sealed progress policy): no request file means legacy direct
+        # publish; a sealed reference is derived from it even when the kwarg
+        # is omitted; a contradictory kwarg refuses; a VALID filed request
+        # with no batch field plus a nonempty kwarg is contradictory (the
+        # kwarg cannot invent semantics for an actually sealed request) --
+        # only the pre-existing no-request direct-API path accepts a kwarg.
+        # An unreadable/invalid sealed request refuses before READY exposure
+        # and never silently becomes legacy.
         try:
-            sealed_batch_raw = _sealed_produced_output_batch(
-                cas_root, action_key)
+            sealed_batch_raw, sealed_request_present = (
+                _sealed_produced_output_batch(cas_root, action_key))
         except PoolContractError:
             raise
         except (ValueError, OSError) as exc:
@@ -3559,6 +3562,11 @@ class PoolQueue:
                         "produced-output batch kwarg contradicts the sealed "
                         "action request: the sealed params govern")
         elif produced_output_batch is not None:
+            if sealed_request_present:
+                raise PoolContractError(
+                    "produced-output batch kwarg contradicts the sealed "
+                    "action request: a filed request with no batch field "
+                    "cannot gain output semantics from a kwarg")
             if produced_output_template is not None:
                 raise PoolContractError(
                     "produced-output batch and template are mutually exclusive: "
@@ -3575,6 +3583,52 @@ class PoolQueue:
                 raise PoolContractError(
                     "a produced-output batch mover must carry the residency "
                     "block its reference binds")
+        if produced_batch_ref is not None:
+            # Publication precondition (R5): an output mover row is exposed
+            # only with matching staged intent or explicit committed recovery
+            # authority. Reserved intent naming the same batch/manifest is the
+            # staged precondition (covers stage->publish republication, which
+            # is idempotent while the intent exists); transferring intent plus
+            # the durable prewrite, or transferring/consumed intent plus the
+            # filed commit, is committed recovery (post-producer republication
+            # included). Missing/mismatched/corrupt intent refuses here,
+            # before READY exposure; the claim gate remains the hard barrier.
+            # 744 holds the mover lock across stage->publish->drive->commit.
+            try:
+                _prec_rec, _prec_state = self.output_funding_file_state(
+                    action_key, str(produced_batch_ref["tier_id"]))
+            except (OSError, PoolContractError, ValueError):
+                _prec_rec, _prec_state = None, "corrupt"
+            if _prec_state == "corrupt":
+                raise PoolContractError(
+                    "unknown-retain: output funding unreadable for publication")
+            if _prec_state == "absent":
+                raise PoolContractError("output-funding-missing")
+            assert isinstance(_prec_rec, dict)
+            if (str(_prec_rec.get("batch_id"))
+                    != str(produced_batch_ref["batch_id"])
+                    or str(_prec_rec.get("manifest_digest"))
+                    != str(produced_batch_ref["manifest_digest"])):
+                raise PoolContractError("mover-publication-mismatch")
+            _prec_ok = False
+            if str(_prec_rec.get("state")) == "reserved":
+                _prec_ok = True
+            else:
+                try:
+                    _prec_ok = bool(self._output_precommit_authority(_prec_rec))
+                except (OSError, PoolContractError, ValueError):
+                    _prec_ok = False
+                except Exception:
+                    _prec_ok = False
+                if not _prec_ok:
+                    try:
+                        _prec_ok = bool(self._output_batch_authority(_prec_rec))
+                    except (OSError, PoolContractError, ValueError):
+                        _prec_ok = False
+                    except Exception:
+                        _prec_ok = False
+            if not _prec_ok:
+                raise PoolContractError("output-funding-missing")
         if tier_demand and residency is None and produced_ref is None:
             # Derived, never typed (#595): every tier demand the fleet's own
             # submitters seal travels beside the residency block whose
@@ -6357,6 +6411,39 @@ class PoolQueue:
                 # owner's other tokens moved: the filed set is authoritative.
                 selected = sorted(str(n) for n in filed_tokens) \
                     if isinstance(filed_tokens, list) else selected
+            # Publication rebind (R4/R5): a staged reserved intent filed
+            # before publication carries the 0.0 unpublished sentinel; rotate
+            # it once (single-file rotation, fresh generation, same tokens)
+            # to the live mover publication before the first rename, so the
+            # transferring record the claim covers names the real publication.
+            # ONLY the 0.0 sentinel may rebind: a nonzero bound publication
+            # that mismatches the live row is stale and refuses (never adopts
+            # old credit under a fresh publication).
+            try:
+                _bound_pub = float(current.get("published_unix"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return {"ok": False, "refusal": "unknown-retain: mover-publication"}
+            if _bound_pub != float(live_mover_published):
+                if not (str(current.get("state")) == "reserved"
+                        and _bound_pub == 0.0):
+                    return {"ok": False, "refusal": "mover-publication-mismatch"}
+                if not (math.isfinite(float(live_mover_published))
+                        and float(live_mover_published) > 0):
+                    return {"ok": False, "refusal": "unknown-retain: mover-publication"}
+                _rotated = dict(current)
+                _rotated["published_unix"] = float(live_mover_published)
+                _rotated["generation"] = uuid.uuid4().hex
+                _rotated["unix"] = time.time()
+                try:
+                    self._rotate_output_funding_locked(
+                        _rotated, expect_generation=str(
+                            current.get("generation")))
+                except (OSError, PoolContractError, ValueError) as exc:
+                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+                current = self.read_output_funding(mover_key, tier)
+                if (current is None
+                        or str(current.get("state")) != "reserved"):
+                    return {"ok": False, "refusal": "funding-race-deferred"}
             generation = str(current.get("generation"))
         else:
             generation = uuid.uuid4().hex

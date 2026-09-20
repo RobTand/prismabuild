@@ -236,6 +236,10 @@ def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
 
@@ -300,6 +304,10 @@ def test_reject_stale_bindings(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
 
@@ -380,6 +388,10 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path) -> None
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
@@ -412,6 +424,10 @@ def test_owner_finish_race_serialized(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     ledger = q.tier_ledger(TIER)
@@ -476,6 +492,10 @@ def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
@@ -510,11 +530,18 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     cap = ledger.capacity().get(KIND)
 
     # 1) Intent write fails -> no intent, no mutation, sum intact.
+    # Remove the staged intent first so fund must file a fresh one (which the
+    # injection then breaks); nothing may be recorded or moved.
+    q.funding_output_path(mover, TIER).unlink()
     real_write = pool._write_json_atomic
 
     def fail_intent(path, *a, **k):
@@ -691,6 +718,10 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
     # Publish mover (crash immediately after READY publication, before drive).
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     assert q.item_path(pool.READY, mover).exists()
@@ -725,6 +756,10 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -770,6 +805,10 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -796,6 +835,10 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b2", TIER, descs2)
     manifest2 = po.output_manifest_sha256(descs2)
     total2 = sum(int(d["bytes"]) for d in descs2)
+    staged2 = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover2, instance=inst,
+        template=template, batch_id="b2", descriptors=descs2)
+    assert staged2.get("ok") is True, staged2
     ref2 = _ref(inst, template, "b2", descs2)
     _publish_mover(q, mover2, manifest2, total2, gib=1, batch_ref=ref2)
     staged2 = q.stage_output_intent(
@@ -835,6 +878,10 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -864,6 +911,10 @@ def test_required_corrupt_intent_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -890,6 +941,10 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -927,6 +982,10 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path) -> None:
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs,
         mover_published=1234567.0)
+    assert staged.get("ok") is True, staged
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
@@ -1049,6 +1108,11 @@ def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path) -> None
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "derive")
     mover = action["action_key"]
+    # Publication precondition: stage the intent first (claim-safe order).
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     # No kwarg: derivation from the real sealed params is required.
     q.publish(action_key=mover, cas_root=cas.root,
               worker_script="/w.py", checkout_root=checkout,
@@ -1120,10 +1184,16 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> Non
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     # Publish via the sealed path (derivation, no kwarg) for a mover key
-    # bound to a real filed request. No intent is staged and no batch is
-    # committed for this mover: the sealed key alone makes this row required.
+    # bound to a real filed request: seal first (the key is content-addressed),
+    # then stage the intent, then publish. Crash prefix: intent lost with no
+    # filed commit. The sealed key alone makes this row required: no
+    # commitments scan is consulted.
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "crash")
     mover = action["action_key"]
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     q.publish(action_key=mover, cas_root=cas.root,
               worker_script="/w.py", checkout_root=checkout,
               resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
@@ -1133,6 +1203,7 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> Non
     # Crash prefix: no filed commit exists for this mover, and the staged
     # intent is lost. No commitments scan is consulted: the sealed key alone
     # makes this row required.
+    q.funding_output_path(mover, TIER).unlink()
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-sq-crash") is None
     assert q.item_path(pool.READY, mover).exists()
@@ -1188,6 +1259,10 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     funded = q.fund_output_batch(
@@ -1220,3 +1295,92 @@ def test_legacy_mover_without_reference_claims_fresh(tmp_path: Path) -> None:
     assert got is not None and got["action_key"] == mover, got
     assert ledger.available().get(KIND) == free_before - 1
     q.finish(mover, status="executed")
+
+
+def test_publish_without_staged_intent_refuses(tmp_path: Path) -> None:
+    """Publication precondition: no staged intent => refuse before READY."""
+    owner = _hexkey("pp-owner")
+    mover = _hexkey("pp-mover")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    with pytest.raises(pool.PoolContractError):
+        _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
+    assert pool._read_json(q.item_path(pool.READY, mover)) is None
+
+
+def test_publish_mismatched_intent_refuses(tmp_path: Path) -> None:
+    """Staged intent for another batch => publication refuses (R5)."""
+    owner = _hexkey("pp2-owner")
+    mover = _hexkey("pp2-mover")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    descs2 = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b2", TIER, descs2)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b2", descriptors=descs2)
+    assert staged.get("ok") is True, staged
+    with pytest.raises(pool.PoolContractError):
+        _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
+    assert pool._read_json(q.item_path(pool.READY, mover)) is None
+
+
+def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path) -> None:
+    """Valid filed request, no batch field + nonempty kwarg => contradictory."""
+    from prismabuild import core as _pb
+    owner = _hexkey("sq-nofield-owner")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    checkout = tmp_path / "co-sealed-nofield"
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "task.py").write_text("print('x')\n")
+    import sys as _sys
+    body = {
+        'schema': _pb.ACTION_SCHEMA_V2,
+        'task': {'definition_id': 'tests/sealed-mover',
+                 'definition_version': 'v1',
+                 'task_class': 'generation', 'determinism': 'deterministic',
+                 'artifact_family': 'generic', 'artifact_kind': 'generic',
+                 'argv': [_sys.executable, 'task.py'],
+                 'working_directory': '.',
+                 'result_path': 'result'},
+        'inputs': [],
+        'code_closure': _pb.build_code_closure(checkout, ['task.py']),
+        'params': {},
+        'environment': {'variables': {}, 'toolchain': {}},
+        'execution_scope': {'portability': 'portable', 'platform_key': None,
+                            'host_class': None},
+    }
+    action = _pb.seal_action(body)
+    cas = _pb.PrismaBuildCAS(tmp_path / 'cas-sealed-nofield')
+    cas.publish_action_request(action)
+    mover = action["action_key"]
+    with pytest.raises(pool.PoolContractError):
+        q.publish(action_key=mover, cas_root=cas.root,
+                  worker_script="/w.py", checkout_root=checkout,
+                  resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "tier_id": TIER, "manifest_sha256": manifest,
+                             "manifest_bytes": total,
+                             "range_start_bytes": 0,
+                             "range_end_bytes": total},
+                  produced_output_batch=ref)
+    assert pool._read_json(q.item_path(pool.READY, mover)) is None
