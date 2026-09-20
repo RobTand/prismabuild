@@ -42,7 +42,7 @@ def _staged_once(tmp_path: Path):
     _, manifest, _ = _pool_fixture(tmp_path)
     files_len = 1 << 20
     receipt = stage_move.move(_move_args(
-        tmp_path, queue, manifest, WHOLE_MOVER, 1 << 18, (1 << 18) + files_len))
+        tmp_path, queue, manifest, WHOLE_MOVER, 0, files_len))
     assert receipt["complete"] is True
     queue.record_move(WHOLE_MOVER, receipt)
     return queue, manifest, files_len

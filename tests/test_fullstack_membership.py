@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
 CAPACITY = {"cpu": 2, "mem_gb": 2}
@@ -63,11 +64,12 @@ def test_qualification_container_image_unknown_vs_present(tmp_path: Path) -> Non
     queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))
     _publish(queue, "b" * 64, tags=["x86"], container_images=[IMAGE])
-    assert _claim(queue, tags=["x86"]) is None
+    assert _claim(queue, tags=["x86", pb.CONTAINER_IMAGE_TAG]) is None
     queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS),
                    observed_images=[IMAGE])
-    admitted = _claim(queue, tags=["x86"], observed_images=[IMAGE])
+    admitted = _claim(queue, tags=["x86", pb.CONTAINER_IMAGE_TAG],
+                      observed_images=[IMAGE])
     assert admitted is not None
     assert admitted["action_key"] == "b" * 64
 
@@ -99,18 +101,18 @@ def test_stale_incarnation_cannot_take_a_replacement(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.ledger("worker-a")
-    ledger.ensure_capacity(dict(CAPACITY))
+    ledger.ensure_capacity({"cpu": 1, "mem_gb": 1})
     demand = {"cpu": 1, "mem_gb": 1}
     first = ledger.begin_acquire("e" * 64, demand)
     assert first is not None
     assert ledger.commit_acquire("e" * 64, first) == 2
-    second = ledger.begin_acquire("e" * 64, demand)
-    assert second is not None
-    moved = ledger.commit_acquire("e" * 64, second)
-    assert moved < 2
+    # No capacity remains: a stale incarnation takes no replacement.
+    assert ledger.begin_acquire("e" * 64, demand) is None
     assert ledger.held() == {"cpu": 1, "mem_gb": 1}
-    assert ledger.abandon_acquire(second) >= 0
+    # The spent handle cannot resign the live replacement's tokens.
+    assert ledger.abandon_acquire(first) == 0
     assert ledger.held() == {"cpu": 1, "mem_gb": 1}
+    assert ledger.available() == {}
 
 
 def test_failed_containment_retains_charge(tmp_path: Path) -> None:
@@ -143,7 +145,7 @@ def test_mixed_capability_matrix_without_hosts(tmp_path: Path) -> None:
     cpu_work = _claim(queue, tags=["x86"])
     assert cpu_work is not None
     assert cpu_work["action_key"] == "1" * 64
-    gpu_work = _claim(queue, tags=["x86", "gb10"], has_gpu=True,
-                      observed_images=[IMAGE])
+    gpu_work = _claim(queue, tags=["x86", "gb10", pb.CONTAINER_IMAGE_TAG],
+                      has_gpu=True, observed_images=[IMAGE])
     assert gpu_work is not None
     assert gpu_work["action_key"] == "2" * 64
