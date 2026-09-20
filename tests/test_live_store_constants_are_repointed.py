@@ -88,6 +88,15 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "host-local publication fence owned by live workers; repointed so "
         "tests never contend on their lock inode"
     ),
+    # Per-uid role singleton locks under /tmp (#709): not the live store, so
+    # the mount scan rightly ignores it -- but live *state* owned by this
+    # box's running roles, and a routine ``ensure_roles`` or role-entrypoint
+    # test left pointed at it would contend with those roles or file stray
+    # lock directories into /tmp.
+    ("worker_loop", "ROLE_LOCK_ROOT"): (
+        "host-local role singleton locks owned by live workers; repointed so "
+        "tests never contend on their lock inodes"
+    ),
     ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT"): (
         "under /tmp, so not the live store -- but live *state* owned by the "
         "loops running on this box, and the suite was minting a permanent lock "

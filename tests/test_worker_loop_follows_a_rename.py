@@ -137,5 +137,9 @@ def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
 
     offer = calls[-1]
     assert offer["host"] == "sparky"
+    # Current advertised capability: the declared-image claim check (#714)
+    # rides the same subset rule, so this loop offers container-image-v1 and
+    # a pre-check loop cannot claim image-pinned work and die inside it.
     assert offer["tags"] == ["gb10", "sparky", "cpu", "progress-v1",
-                             "progress-helper-v1", "progress-cycle-v1"], offer["tags"]
+                             "progress-helper-v1", "progress-cycle-v1",
+                             "container-image-v1"], offer["tags"]
