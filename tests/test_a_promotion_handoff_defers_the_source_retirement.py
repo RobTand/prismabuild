@@ -245,14 +245,14 @@ def test_the_promotion_claim_is_recognized_through_the_real_helper(
 # Egress during the handoff: defer with proof and charge held.
 
 
-def test_an_egress_during_a_live_promotion_defers_with_proof_and_charge(
+def test_an_egress_during_a_live_promotion_keeps_the_sources_proof(
         tmp_path: Path) -> None:
-    """The bytes stay -- and so must their proof and their occupancy.
+    """The bytes stay -- and so must the only records that prove them.
 
-    Before the repair this pass counted the entry as *shared* and returned
-    ``complete``: the file survived while its fragment, its material sidecar
-    and its tokens all went.  ``bytes_shared`` stayed 0, so the settle freed
-    every token (``free[kind] = count - 0``) for bytes that never left.
+    Before the repair this pass counted the entry as *shared* and reported
+    ``complete``, so it unlinked this mover's fragment and material sidecar
+    while the file itself survived: exactly the proofless SSD copy the
+    deployed head left behind.
     """
 
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
@@ -263,27 +263,46 @@ def test_an_egress_during_a_live_promotion_defers_with_proof_and_charge(
 
     assert staged.exists(), "a live promotion source must not be unlinked"
     assert reader_lease.stat_identity(str(staged)) == identity
-    assert receipt["entries_deferred"] == 1, receipt
-    assert receipt["entries_deleted"] == 0
-    assert receipt["entries_shared"] == 0, (
-        "a handoff is a deferral, not a co-owner's shared skip")
-    assert receipt["complete"] is False, (
-        "bytes are still on the stage: the sweep must retry")
-    assert receipt["handoff_deferred"] == 1, receipt
-
     # The proof the surviving bytes need: same-path fragment plus sidecar.
-    assert _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert _material_path(queue, CONSUMER_A, MOVER_A).exists()
+    assert _fragment_path(queue, CONSUMER_A, MOVER_A).exists(), (
+        "the surviving bytes lost their fragment: nothing can prove them")
+    assert _material_path(queue, CONSUMER_A, MOVER_A).exists(), (
+        "the surviving bytes lost their material sidecar")
     composed = residency_map.compose(residency_map.read_fragments(
         queue.root / pool.RESIDENCY, CONSUMER_A))["entries"]
     assert [str(entry["stage_path"]) for entry in composed.values()] == [
         str(staged)], "the consumer's map must still name the staged range"
 
-    # The charge: nothing freed, nothing decharged, while the bytes are here.
+    assert receipt["entries_deferred"] == 1, receipt
+    assert receipt["entries_deleted"] == 0
+    assert receipt["entries_shared"] == 0, (
+        "a handoff is a deferral, not a co-owner's shared skip")
+    assert receipt["handoff_deferred"] == 1, receipt
+    assert receipt["complete"] is False, (
+        "bytes are still on the stage: the sweep must retry")
+
+
+def test_an_egress_during_a_live_promotion_keeps_the_sources_charge(
+        tmp_path: Path) -> None:
+    """Occupancy stays with the occupied bytes.
+
+    The shared branch added no ``bytes_shared``, so the settle computed
+    ``shared_part = min(count - freed, _tokens_for_egressed_bytes(0)) = 0``
+    and ``free[kind] = count``: every token came back as free while every
+    byte was still on the stage.
+    """
+
+    queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
+    _claim_promotion(queue, tmp_path, manifest, manifest_sha)
+
+    receipt = _evict(queue, stage)
+
+    assert staged.exists()
+    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
+        storage_tiers.STAGE_CAPACITY_KIND: 1}, (
+            "tokens came back free for bytes that never left the stage")
     assert receipt["tokens_released"] == 0
     assert receipt["tokens_decharged"] == 0
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}
 
 
 def test_a_handoff_only_deferral_files_no_retiring_mark(
