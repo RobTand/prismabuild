@@ -1,56 +1,36 @@
-"""PB-produced-output staging scope: the smallest explicit extension (prototype).
+"""PB-produced-output staging scope: deterministic PB-owned path (R2).
 
 An admitted GPU action writes new exact activation/cotangent/checkpoint
 artifacts and reads them again during THE SAME action. Existing PB manifests
 only stage pre-existing immutable external inputs. This module owns the
-staging/protection/cleanup contract for those produced outputs; it does not
-copy bytes itself (existing movers do), does not create a parallel cache, and
-does not rewrite any sealed input manifest or action key.
+staging contract for produced outputs; it does not copy bytes itself
+(existing movers do), creates no parallel cache/ledger/dispatcher, and never
+rewrites a sealed input manifest or action key.
 
-Separation (normative):
-  * immutable external inputs: sealed parent manifest, pre-exist the action,
-    staged per the frozen read plan (residency_plan/residency_map).
-  * same-action produced outputs: declared here, filed separately, composed
-    into their own material namespace, never merged into the external map.
+R2 split (root review, defects 1-7):
 
-Ownership:
-  * PQ keeps the exact-activation owner
-    (perturbed_x_cache.write_exact_activation_cache_entry): bytes + receipt.
-  * PB owns copy/adopt + material generation + lease + retirement (this
-    scope + existing movers/residency/ledgers + reader_lease lane).
+  * TEMPLATE (sealed pre-submit): authorized prefix/slots/classes, durable
+    byte maxima, per-tier minimum/window demand, allowed tiers. Carries NO
+    action key and NO broker nonce (the client cannot know either).
+  * INSTANCE (runtime, bound post-admission): template reference +
+    owner (action/nonce/scope) derived from the PROTECTED live claim, never
+    from caller arguments. Foreign/stale attempt context refuses.
+  * BATCH (immutable committed window): exact manifest + class bytes + mover
+    ownership on one tier. One scope holds many batches; each batch composes
+    under its own namespace with the existing one-manifest validator.
 
-  OWNER vs NAMESPACE (root direction, binding here):
-  * OWNER = (producer_action_key, attempt{nonce, scope_id}): the running
-    admitted GPU action/attempt. Holder binding, ref attempts, and the
-    containment/terminal proof (`containment_certificate_ok`) name the
-    OWNER only. Retry mints a new OWNER attempt; old refs never transfer.
-  * NAMESPACE = output_consumer_key(scope): the material/readset namespace
-    (fragment dir, composed map, pin directory, ledger reservation holder).
-    It is derived, has NO terminal record, and must NEVER be confused with
-    the OWNER key nor borrow another action's terminal proof. A containment
-    certificate naming the NAMESPACE is invalid by construction.
-  * Writer digests are reused, never recomputed: descriptors bind the exact
-    owner's streaming receipt (`SerializedEntryDigest` on write,
-    `hashlib.sha256(payload)` on in-memory checkpoint pickle), never a
-    hash-after-write reread of the HDD payload. `_file_sha256` rereads in
-    cost_streaming are loader-side (source shards/metadata), not produced
-    outputs.
+OWNER vs NAMESPACE: OWNER = (owner_action_key, owner_attempt) names the
+running action for holder binding and for the authoritative terminal/
+containment proof. NAMESPACE (instance/batch derived keys) names material,
+maps, pins and ledger holders and has NO terminal record. A certificate
+naming a namespace is invalid. Writer digests are reused from the streaming
+receipt, never recomputed by rereading HDD payloads.
 
-Status: PROTOTYPE for root review. Shared production wiring waits for root
-approval of the concrete API. No capability is advertised by this file.
-
-Root SDK heads-up (tracked, not owned here):
-  * PB730 `pin_id_for` excludes expected keys: two equal-sized source files
-    under one cover at offset 0 collide. PB owner is correcting to a
-    canonical object set + generation identity; this module already seals
-    that set (`canonical_expected_id`) for the manifest and requires the
-    corrected pin to include it (§4 table, §13 design addendum). No edit to
-    `reader_lease.py` from this lane.
-  * Sealed helper root is `PRISMABUILD_READER_HELPER_ROOT`
-    (immutable generation root; PQ verifies `__file__` under it).
-  * Span = label-source manifest coordinates, not physical staged offset
-    (always 0 under content-addressed names) nor the logical window cursor
-    (`accepted_phase`). See `label_span_for_manifest`.
+PB730 owns: corrected `pin_id_for` (canonical object set), the additive
+owner/material-namespace SDK contract, the containment writer, and the
+immutable helper-env injection. This lane does not edit `reader_lease.py`,
+does not invent pin serialization (ours is the manifest object set only),
+and returns the exact SDK dependency instead of a stub.
 """
 
 from __future__ import annotations
@@ -61,42 +41,60 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import uuid
 
-PRODUCED_OUTPUT_SCOPE_SCHEMA_V1 = (
-    "prismaquant.prismabuild.produced_output_scope.v1"
-)
-PRODUCED_OUTPUT_DESCRIPTOR_SCHEMA_V1 = (
-    "prismaquant.prismabuild.produced_output_descriptor.v1"
-)
-PRODUCED_OUTPUT_MANIFEST_SCHEMA_V1 = (
-    "prismaquant.prismabuild.produced_output_manifest.v1"
-)
+TEMPLATE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_template.v1"
+INSTANCE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_instance.v1"
+DESCRIPTOR_SCHEMA_V2 = "prismaquant.prismabuild.produced_output_descriptor.v2"
+BATCH_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_batch.v1"
+BATCH_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_manifest.v1"
 
-#: Reserved subdirectories under the residency root. Fragments for outputs
-#: live beside input fragments but under their own namespace so
-#: residency_map.compose (one manifest identity) is never asked to merge
-#: dynamic output fragments with external input fragments.
+OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
+OUTPUT_BATCHES_SUBDIR = "produced-output-batches"
 OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 
-#: Sealed immutable generation helper root (root-selected, Q2). PQ resolves
-#: the published runtime helper by this environment value, never by a mutable
-#: `/repo` checkout, and verifies the imported `reader_lease.__file__` lives
-#: under it. Spelled once here so PB + PQ cannot drift.
+#: Sealed helper-root env name (spelling only; PB730 owns injection).
+#: PQ resolves the published runtime helper from this value and verifies
+#: `reader_lease.__file__` under it. Never a mutable `/repo` checkout.
 READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 
+#: Exact SDK dependency until PB730 lands (not a stub qualifier).
+SDK_DEPENDENCY = (
+    "PB730 additive owner/material-namespace SDK contract "
+    "(acquire/open/release binding material under the batch namespace to "
+    "the registered OWNER attempt) + corrected pin_id_for including the "
+    "canonical expected object set and material generations"
+)
+
+ARTIFACT_CLASSES = frozenset({"payload", "checkpoint", "temp"})
+
 _HEX = frozenset("0123456789abcdef")
+_HEX32 = 32
 
 
 class ProducedOutputError(ValueError):
-    """A scope or descriptor that does not say what it must."""
+    """A template, instance, descriptor or batch that does not say what it must."""
 
 
 def _hex64(value: object, *, where: str) -> str:
     if (not isinstance(value, str) or len(value) != 64
             or any(c not in _HEX for c in value)):
         raise ProducedOutputError(f"{where} must be a 64-character hex key")
+    return value
+
+
+def _hex32(value: object, *, where: str) -> str:
+    if (not isinstance(value, str) or len(value) != 32
+            or any(c not in _HEX for c in value)):
+        raise ProducedOutputError(f"{where} must be a 32-character hex nonce")
+    return value
+
+
+def _name(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not value or "/" in value:
+        raise ProducedOutputError(f"{where} must be a non-empty name with no '/'")
     return value
 
 
@@ -109,249 +107,428 @@ def _abs_norm(value: object, *, where: str) -> str:
     return normal
 
 
-def _slot(value: object, *, where: str) -> str:
-    if not isinstance(value, str) or not value or "/" in value:
-        raise ProducedOutputError(f"{where} must be a non-empty name with no '/'")
-    return value
+def _int_exact(value: object, *, where: str) -> int:
+    # type() is int: bool is NOT an int here (True == 1 must not pass).
+    if type(value) is not int:
+        raise ProducedOutputError(f"{where} must be an integer")
+    return int(value)
 
 
 def _positive_int(value: object, *, where: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ProducedOutputError(f"{where} must be a positive integer")
-    return value
+    checked = _int_exact(value, where=where)
+    if checked <= 0:
+        raise ProducedOutputError(f"{where} must be positive")
+    return checked
 
 
 def _nonneg_int(value: object, *, where: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ProducedOutputError(f"{where} must be a non-negative integer")
-    return value
-
-
-def _digest(value: object, *, where: str) -> str:
-    return _hex64(value, where=where)
+    checked = _int_exact(value, where=where)
+    if checked < 0:
+        raise ProducedOutputError(f"{where} must be non-negative")
+    return checked
 
 
 def mint_generation() -> str:
-    """One materialization generation: new bytes always mean a new identity.
-
-    A retry of the same mover republishes under the same key with a NEW
-    generation, so mover_action_key alone is never the generation and a
-    same-path/length republish with different bytes can never ABA-alias.
-    """
+    """One materialization generation: new bytes always mean a new identity."""
 
     return uuid.uuid4().hex
 
 
-def validate_scope(value: object) -> dict[str, object]:
-    """Check a produced-output scope declaration.
+# --------------------------------------------------------------------------
+# Templates (sealed pre-submit; no action key, no nonce)
+# --------------------------------------------------------------------------
 
-    Required keys: schema, version (1), producer_action_key, attempt
-    {nonce, scope_id}, output_prefix (abs, normalized), slots (distinct
-    non-empty names), byte_envelopes {payload_max_bytes,
-    checkpoint_max_bytes, temp_overlap_max_bytes}, permitted_tiers
-    (distinct non-empty tier ids).
-
-    The before-write budget is the SUM of the three envelopes: checkpoint
-    and partial temp/overlap count BEFORE writing, never by registering
-    bytes afterwards. The durable pool budget (output_prefix bytes on HDD)
-    is distinct from the shared SSD/RAM reservation (tier ledger tokens)
-    which is distinct from host decode buffers (the action's mem demand).
-    """
+def validate_template(value: object) -> dict[str, object]:
+    """Check a sealed scope template."""
 
     if not isinstance(value, Mapping):
-        raise ProducedOutputError("a produced-output scope must be an object")
+        raise ProducedOutputError("a produced-output template must be an object")
     allowed = frozenset({
-        "schema", "version", "producer_action_key", "attempt",
-        "output_prefix", "slots", "byte_envelopes", "permitted_tiers",
+        "schema", "version", "template_id", "output_prefix", "slots",
+        "durable_maxima", "working_demands", "permitted_tiers",
     })
     unknown = sorted(set(value) - allowed)
     if unknown:
-        raise ProducedOutputError(f"unknown scope fields: {unknown}")
-    if value.get("schema") != PRODUCED_OUTPUT_SCOPE_SCHEMA_V1:
-        raise ProducedOutputError(
-            f"scope schema must be {PRODUCED_OUTPUT_SCOPE_SCHEMA_V1!r}")
-    if value.get("version") != 1:
-        raise ProducedOutputError("scope version must be 1")
-    producer = _hex64(value.get("producer_action_key"),
-                      where="scope producer_action_key")
-    attempt = value.get("attempt")
-    if not isinstance(attempt, Mapping):
-        raise ProducedOutputError("scope attempt must be an object")
-    if set(attempt) != {"nonce", "scope_id"}:
-        raise ProducedOutputError("scope attempt must carry nonce + scope_id")
-    nonce = attempt.get("nonce")
-    scope_id = attempt.get("scope_id")
-    if not isinstance(nonce, str) or not nonce or "/" in nonce:
-        raise ProducedOutputError("scope attempt.nonce must be a non-empty name")
-    if not isinstance(scope_id, str) or not scope_id or "/" in scope_id:
-        raise ProducedOutputError("scope attempt.scope_id must be a non-empty name")
-    prefix = _abs_norm(value.get("output_prefix"), where="scope output_prefix")
+        raise ProducedOutputError(f"unknown template fields: {unknown}")
+    if value.get("schema") != TEMPLATE_SCHEMA_V1:
+        raise ProducedOutputError(f"template schema must be {TEMPLATE_SCHEMA_V1!r}")
+    if type(value.get("version")) is not int or value.get("version") != 1:
+        raise ProducedOutputError("template version must be integer 1")
+    template_id = _name(value.get("template_id"), where="template template_id")
+    prefix = _abs_norm(value.get("output_prefix"), where="template output_prefix")
     slots = value.get("slots")
-    if not isinstance(slots, list) or not slots:
-        raise ProducedOutputError("scope slots must be a non-empty array")
-    checked_slots = [_slot(s, where="scope slots[]") for s in slots]
-    if len(set(checked_slots)) != len(checked_slots):
-        raise ProducedOutputError("scope slots must not repeat a slot")
-    envelopes = value.get("byte_envelopes")
-    if not isinstance(envelopes, Mapping):
-        raise ProducedOutputError("scope byte_envelopes must be an object")
-    if set(envelopes) != {"payload_max_bytes", "checkpoint_max_bytes",
-                          "temp_overlap_max_bytes"}:
+    if not isinstance(slots, Mapping) or not slots:
+        raise ProducedOutputError("template slots must be a non-empty object")
+    checked_slots: dict[str, str] = {}
+    for slot, spec in slots.items():
+        name = _name(slot, where="template slots[]")
+        if not isinstance(spec, Mapping) or set(spec) != {"class"}:
+            raise ProducedOutputError(
+                f"template slot {name!r} must carry exactly {{class}}")
+        cls = spec.get("class")
+        if cls not in ARTIFACT_CLASSES:
+            raise ProducedOutputError(
+                f"template slot {name!r} class must be one of "
+                f"{sorted(ARTIFACT_CLASSES)}")
+        if name in checked_slots:
+            raise ProducedOutputError("template slots must not repeat a slot")
+        checked_slots[name] = str(cls)
+    maxima = value.get("durable_maxima")
+    if not isinstance(maxima, Mapping):
+        raise ProducedOutputError("template durable_maxima must be an object")
+    if set(maxima) != {"payload_max_bytes", "checkpoint_max_bytes",
+                       "temp_max_bytes"}:
         raise ProducedOutputError(
-            "scope byte_envelopes must carry payload/checkpoint/temp_overlap maxima")
-    payload = _positive_int(envelopes.get("payload_max_bytes"),
-                            where="scope byte_envelopes.payload_max_bytes")
-    checkpoint = _positive_int(envelopes.get("checkpoint_max_bytes"),
-                               where="scope byte_envelopes.checkpoint_max_bytes")
-    overlap = _positive_int(envelopes.get("temp_overlap_max_bytes"),
-                            where="scope byte_envelopes.temp_overlap_max_bytes")
+            "template durable_maxima must carry payload/checkpoint/temp maxima")
+    payload = _positive_int(maxima.get("payload_max_bytes"),
+                            where="template durable_maxima.payload_max_bytes")
+    checkpoint = _nonneg_int(maxima.get("checkpoint_max_bytes"),
+                             where="template durable_maxima.checkpoint_max_bytes")
+    temp = _nonneg_int(maxima.get("temp_max_bytes"),
+                       where="template durable_maxima.temp_max_bytes")
+    demands = value.get("working_demands")
+    if not isinstance(demands, Mapping) or not demands:
+        raise ProducedOutputError("template working_demands must be non-empty")
+    checked_demands: dict[str, dict[str, int]] = {}
+    for tier, spec in demands.items():
+        if not isinstance(tier, str) or not tier:
+            raise ProducedOutputError("template working_demands keys must be tier ids")
+        if not isinstance(spec, Mapping) or set(spec) != {"minimum_gib", "window_gib"}:
+            raise ProducedOutputError(
+                f"template working_demands[{tier!r}] must carry minimum/window GiB")
+        minimum = _nonneg_int(spec.get("minimum_gib"),
+                              where=f"template working_demands[{tier}].minimum_gib")
+        window = _positive_int(spec.get("window_gib"),
+                               where=f"template working_demands[{tier}].window_gib")
+        checked_demands[str(tier)] = {"minimum_gib": minimum, "window_gib": window}
     tiers = value.get("permitted_tiers")
     if not isinstance(tiers, list) or not tiers:
-        raise ProducedOutputError("scope permitted_tiers must be a non-empty array")
-    checked_tiers = []
-    for tier in tiers:
-        if not isinstance(tier, str) or not tier or "/" in tier.split(":")[0]:
-            # Tier ids are "<kind>:<host>" or "arc:<host>"; keep the check
-            # structural, not a discovery claim.
-            raise ProducedOutputError("scope permitted_tiers[] must be tier ids")
-        checked_tiers.append(tier)
+        raise ProducedOutputError("template permitted_tiers must be non-empty")
+    checked_tiers = [str(t) for t in tiers]
     if len(set(checked_tiers)) != len(checked_tiers):
-        raise ProducedOutputError("scope permitted_tiers must not repeat a tier")
+        raise ProducedOutputError("template permitted_tiers must not repeat a tier")
+    if set(checked_tiers) != set(checked_demands):
+        raise ProducedOutputError(
+            "template permitted_tiers must equal the working_demands tiers")
     return {
-        "schema": PRODUCED_OUTPUT_SCOPE_SCHEMA_V1,
+        "schema": TEMPLATE_SCHEMA_V1,
         "version": 1,
-        "producer_action_key": producer,
-        "attempt": {"nonce": nonce, "scope_id": scope_id},
+        "template_id": template_id,
         "output_prefix": prefix,
         "slots": checked_slots,
-        "byte_envelopes": {
+        "durable_maxima": {
             "payload_max_bytes": payload,
             "checkpoint_max_bytes": checkpoint,
-            "temp_overlap_max_bytes": overlap,
+            "temp_max_bytes": temp,
         },
-        "permitted_tiers": checked_tiers,
+        "working_demands": checked_demands,
+        "permitted_tiers": sorted(checked_tiers),
     }
 
 
-def total_reservation_bytes(scope: Mapping[str, object]) -> int:
-    """Before-write budget: payload + checkpoint + temp/overlap."""
+def template_sha256(template: Mapping[str, object]) -> str:
+    """Canonical identity of one sealed template."""
 
-    checked = validate_scope(scope)
-    env = checked["byte_envelopes"]
-    assert isinstance(env, dict)
-    return int(env["payload_max_bytes"]) + int(env["checkpoint_max_bytes"]) \
-        + int(env["temp_overlap_max_bytes"])
+    checked = validate_template(template)
+    raw = json.dumps(checked, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
-def output_consumer_key(scope: Mapping[str, object]) -> str:
-    """The material/readset namespace for this scope, distinct from the owner.
+def template_path(queue_root: str | Path, template: Mapping[str, object]) -> Path:
+    checked = validate_template(template)
+    return (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            / f"{checked['template_id']}.json")
 
-    The lease OWNER is the running (producer_action_key, attempt). The
-    composed output map, pin directory, and ledger reservation holder live
-    under this derived 64-hex NAMESPACE so dynamic output fragments are never
-    mixed into the external input map and compose() keeps its
-    one-manifest-identity assumption. The namespace has no terminal record:
-    containment/terminal proofs name the OWNER key + attempt only. A
-    certificate naming this namespace is invalid and must refuse
-    (`*-retain`). The namespace must never be confused with the owner action
-    key and must never borrow another action's terminal proof.
+
+def declare_template(queue_root: str | Path, template: Mapping[str, object]) -> Path:
+    """File one template immutably; a conflicting body refuses."""
+
+    from prismabuild import pool as pool_mod
+
+    checked = validate_template(template)
+    path = template_path(queue_root, checked)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(checked, sort_keys=True,
+                     separators=(",", ":")).encode() + b"\n"
+    try:
+        pool_mod._publish_immutable(path, raw, where="produced-output template")
+    except pool_mod.PoolContractError as exc:
+        raise ProducedOutputError(
+            f"a different template is already filed for {checked['template_id']}: {exc}"
+        ) from None
+    return path
+
+
+# --------------------------------------------------------------------------
+# Instances (runtime; bound to the live claim, never caller-supplied)
+# --------------------------------------------------------------------------
+
+def _claim_attempt(queue, live: Mapping[str, object]) -> tuple[dict[str, str], str]:
+    """Derive the owner attempt from the PROTECTED live claim.
+
+    Broker path (production): the live claimed record carries
+    `resource_scope` with a 32-hex `nonce` and a `scope_id`; use it.
+    Claim path (fixture): derive a 32-hex nonce from the claim's protected
+    identity (action + claimed_unix + claimed_by) and a `claim-<pub>-<unix>`
+    scope id. Returns (attempt, source). Never trusts caller arguments.
     """
 
-    checked = validate_scope(scope)
-    attempt = checked["attempt"]
+    control = live.get("resource_scope")
+    if isinstance(control, Mapping):
+        nonce, scope_id = control.get("nonce"), control.get("scope_id")
+        if (isinstance(nonce, str) and len(nonce) == 32
+                and all(c in _HEX for c in nonce)
+                and isinstance(scope_id, str) and scope_id and "/" not in scope_id):
+            return {"nonce": nonce, "scope_id": scope_id}, "broker"
+    action = str(live.get("action_key") or "")
+    claimed_unix = live.get("claimed_unix")
+    claimed_by = str(live.get("claimed_by") or "")
+    published_unix = live.get("published_unix")
+    seed = f"{action}:{claimed_unix}:{claimed_by}".encode()
+    nonce = hashlib.sha256(seed).hexdigest()[:32]
+    try:
+        scope_id = f"claim-{int(published_unix)}-{int(float(claimed_unix))}"
+    except (TypeError, ValueError):
+        raise ProducedOutputError("live claim lacks a usable claim identity")
+    return {"nonce": nonce, "scope_id": scope_id}, "claim"
+
+
+def bind_instance(queue, template: Mapping[str, object], *,
+                  owner_action_key: str,
+                  claim_snapshot: Mapping[str, object]) -> dict[str, object]:
+    """Bind a runtime instance to the LIVE claim; refuse foreign/stale context.
+
+    `claim_snapshot` is the dict `queue.claim()` returned. The live claimed
+    record is re-read and compared with `pool._same_claim`; a missing record,
+    an action-key mismatch, or a generation/owner mismatch refuses
+    (foreign/stale). The attempt comes from the live record (broker nonce
+    when present, else claim-derived) — caller-supplied nonce/scope are not
+    accepted in any form.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    checked = validate_template(template)
+    owner = _hex64(owner_action_key, where="instance owner_action_key")
+    if not isinstance(claim_snapshot, Mapping):
+        raise ProducedOutputError("instance binding needs the claim snapshot")
+    if claim_snapshot.get("action_key") != owner:
+        raise ProducedOutputError("foreign claim snapshot: action key mismatch")
+    live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+    if live is None:
+        raise ProducedOutputError("stale claim snapshot: no live claimed record")
+    try:
+        same = pool_mod._same_claim(live, claim_snapshot)
+    except Exception as exc:
+        raise ProducedOutputError(f"stale claim snapshot: {exc}") from None
+    if not same:
+        raise ProducedOutputError("stale claim snapshot: live claim moved on")
+    attempt, source = _claim_attempt(queue, live)
+    return {
+        "schema": INSTANCE_SCHEMA_V1,
+        "version": 1,
+        "template_id": str(checked["template_id"]),
+        "template_sha256": template_sha256(checked),
+        "owner_action_key": owner,
+        "owner_attempt": attempt,
+        "attempt_source": source,
+        "output_prefix": str(checked["output_prefix"]),
+        "bound_unix": time.time(),
+    }
+
+
+def validate_instance(value: object) -> dict[str, object]:
+    """Check a bound instance (exact owner attempt, integer version)."""
+
+    if not isinstance(value, Mapping):
+        raise ProducedOutputError("a produced-output instance must be an object")
+    allowed = frozenset({
+        "schema", "version", "template_id", "template_sha256",
+        "owner_action_key", "owner_attempt", "attempt_source",
+        "output_prefix", "bound_unix",
+    })
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ProducedOutputError(f"unknown instance fields: {unknown}")
+    if value.get("schema") != INSTANCE_SCHEMA_V1:
+        raise ProducedOutputError(f"instance schema must be {INSTANCE_SCHEMA_V1!r}")
+    if type(value.get("version")) is not int or value.get("version") != 1:
+        raise ProducedOutputError("instance version must be integer 1")
+    template_id = _name(value.get("template_id"), where="instance template_id")
+    digest = _hex64(value.get("template_sha256"), where="instance template_sha256")
+    owner = _hex64(value.get("owner_action_key"), where="instance owner_action_key")
+    attempt = value.get("owner_attempt")
+    if not isinstance(attempt, Mapping) or set(attempt) != {"nonce", "scope_id"}:
+        raise ProducedOutputError("instance owner_attempt must carry nonce + scope_id")
+    nonce = _hex32(attempt.get("nonce"), where="instance owner_attempt.nonce")
+    scope_id = _name(attempt.get("scope_id"), where="instance owner_attempt.scope_id")
+    source = value.get("attempt_source")
+    if source not in ("broker", "claim"):
+        raise ProducedOutputError("instance attempt_source must be broker|claim")
+    prefix = _abs_norm(value.get("output_prefix"), where="instance output_prefix")
+    return {
+        "schema": INSTANCE_SCHEMA_V1,
+        "version": 1,
+        "template_id": template_id,
+        "template_sha256": digest,
+        "owner_action_key": owner,
+        "owner_attempt": {"nonce": nonce, "scope_id": scope_id},
+        "attempt_source": str(source),
+        "output_prefix": prefix,
+        "bound_unix": value.get("bound_unix"),
+    }
+
+
+def instance_namespace(instance: Mapping[str, object]) -> str:
+    """Material/ledger namespace for the instance (NOT the owner key)."""
+
+    checked = validate_instance(instance)
+    attempt = checked["owner_attempt"]
     assert isinstance(attempt, dict)
-    raw = ("produced-output:" + str(checked["producer_action_key"]) + ":"
-           + str(attempt["nonce"]) + ":" + str(attempt["scope_id"]) + ":"
-           + str(checked["output_prefix"]))
+    raw = ("produced-output-instance:" + str(checked["template_sha256"]) + ":"
+           + str(checked["owner_action_key"]) + ":" + str(attempt["nonce"])
+           + ":" + str(attempt["scope_id"]))
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def validate_descriptor(value: object, scope: Mapping[str, object]) -> dict[str, object]:
-    """Check one durably committed artifact descriptor against its scope.
+def instance_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
+    checked = validate_instance(instance)
+    attempt = checked["owner_attempt"]
+    assert isinstance(attempt, dict)
+    return (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+            / str(checked["owner_action_key"])
+            / f"{checked['template_id']}.{attempt['nonce']}")
 
-    Immutable triple: path (under output_prefix), bytes, sha256, plus the
-    producer generation and logical slot that make same-path/length
-    republishes distinct. No descriptor is ever edited in place; a new
-    generation mints a new descriptor.
+
+def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
+    """File one bound instance immutably; a conflicting body refuses."""
+
+    from prismabuild import pool as pool_mod
+
+    checked = validate_instance(instance)
+    directory = instance_dir(queue_root, checked)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "instance.json"
+    raw = json.dumps(checked, sort_keys=True,
+                     separators=(",", ":")).encode() + b"\n"
+    try:
+        pool_mod._publish_immutable(path, raw, where="produced-output instance")
+    except pool_mod.PoolContractError as exc:
+        raise ProducedOutputError(
+            f"a different instance is already filed for this owner/template/nonce: {exc}"
+        ) from None
+    return path
+
+
+# --------------------------------------------------------------------------
+# Descriptors (class-enforcing, prefix-realpath-checked)
+# --------------------------------------------------------------------------
+
+def _resolve_contained(prefix: str, path: str, *, where: str) -> str:
+    """Realpath containment: string prefix alone never proves identity.
+
+    Both sides go through `os.path.realpath` (symlinks resolved); containment
+    is `os.path.commonpath`. Callers additionally hold the output-prefix
+    ownership lock across the check-and-act so a symlink swap between check
+    and use orders against retirement instead of racing it.
     """
 
-    checked_scope = validate_scope(scope)
+    real_prefix = os.path.realpath(prefix)
+    real_path = os.path.realpath(path)
+    try:
+        common = os.path.commonpath([real_prefix, real_path])
+    except ValueError as exc:
+        raise ProducedOutputError(f"{where} is not under the scope prefix: {exc}")
+    if common != real_prefix:
+        raise ProducedOutputError(f"{where} escapes the scope prefix")
+    return real_path
+
+
+def validate_descriptor(value: object, template: Mapping[str, object],
+                        instance: Mapping[str, object]) -> dict[str, object]:
+    """Check one descriptor against the sealed template + bound instance."""
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    if checked_instance["template_sha256"] != template_sha256(checked_template):
+        raise ProducedOutputError("descriptor instance names another template")
     if not isinstance(value, Mapping):
         raise ProducedOutputError("a descriptor must be an object")
     allowed = frozenset({
-        "schema", "slot", "path", "bytes", "sha256",
-        "producer_generation", "producer_action_key", "attempt",
+        "schema", "slot", "artifact_class", "path", "bytes", "sha256",
+        "producer_generation", "owner_action_key", "owner_attempt",
     })
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ProducedOutputError(f"unknown descriptor fields: {unknown}")
-    if value.get("schema") != PRODUCED_OUTPUT_DESCRIPTOR_SCHEMA_V1:
+    if value.get("schema") != DESCRIPTOR_SCHEMA_V2:
         raise ProducedOutputError(
-            f"descriptor schema must be {PRODUCED_OUTPUT_DESCRIPTOR_SCHEMA_V1!r}")
-    slot = _slot(value.get("slot"), where="descriptor slot")
-    if slot not in checked_scope["slots"]:
+            f"descriptor schema must be {DESCRIPTOR_SCHEMA_V2!r}")
+    slot = _name(value.get("slot"), where="descriptor slot")
+    slot_class = checked_template["slots"].get(slot)
+    if slot_class is None:
         raise ProducedOutputError(
-            f"descriptor slot {slot!r} is not in the scope's authorized slots")
-    path = _abs_norm(value.get("path"), where="descriptor path")
-    prefix = str(checked_scope["output_prefix"])
-    if not (path == prefix or path.startswith(prefix.rstrip("/") + "/")):
+            f"descriptor slot {slot!r} is not in the template's authorized slots")
+    cls = value.get("artifact_class")
+    if cls != slot_class:
         raise ProducedOutputError(
-            f"descriptor path must live under the scope prefix {prefix!r}")
+            f"descriptor class {cls!r} disagrees with slot {slot!r} class "
+            f"{slot_class!r}")
+    raw_path = value.get("path")
+    _abs_norm(raw_path, where="descriptor path")
+    assert isinstance(raw_path, str)
+    _resolve_contained(str(checked_template["output_prefix"]), raw_path,
+                       where="descriptor path")
     size = _positive_int(value.get("bytes"), where="descriptor bytes")
-    digest = _digest(value.get("sha256"), where="descriptor sha256")
+    digest = _hex64(value.get("sha256"), where="descriptor sha256")
     generation = value.get("producer_generation")
     if not isinstance(generation, str) or not generation or "/" in generation:
         raise ProducedOutputError(
             "descriptor producer_generation must be a non-empty name")
-    if value.get("producer_action_key") != checked_scope["producer_action_key"]:
+    if value.get("owner_action_key") != checked_instance["owner_action_key"]:
+        raise ProducedOutputError("descriptor owner must equal the instance owner")
+    attempt = value.get("owner_attempt")
+    if not isinstance(attempt, Mapping) or dict(attempt) != dict(
+            checked_instance["owner_attempt"]):
+        raise ProducedOutputError("descriptor attempt must equal the instance attempt")
+    maxima = checked_instance_maxima(checked_template)
+    cap = {"payload": maxima["payload_max_bytes"], "checkpoint": maxima[
+        "checkpoint_max_bytes"], "temp": maxima["temp_max_bytes"]}[str(cls)]
+    if size > cap:
         raise ProducedOutputError(
-            "descriptor producer_action_key must equal the scope's")
-    attempt = value.get("attempt")
-    if not isinstance(attempt, Mapping) or dict(attempt) != dict(checked_scope["attempt"]):
-        raise ProducedOutputError(
-            "descriptor attempt must equal the scope's exact action/attempt")
-    # Envelope check is against the payload class here; checkpoint-class
-    # descriptors are validated by the caller against the checkpoint class
-    # with the same shape (kind travels beside the descriptor, never inside
-    # the sealed triple).
-    env = checked_scope["byte_envelopes"]
-    assert isinstance(env, dict)
-    if size > int(env["payload_max_bytes"]):
-        raise ProducedOutputError("descriptor bytes exceed the payload envelope")
+            f"descriptor bytes exceed the {cls} durable maxima")
     return {
-        "schema": PRODUCED_OUTPUT_DESCRIPTOR_SCHEMA_V1,
+        "schema": DESCRIPTOR_SCHEMA_V2,
         "slot": slot,
-        "path": path,
+        "artifact_class": str(cls),
+        "path": os.path.normpath(raw_path),
         "bytes": size,
         "sha256": digest,
         "producer_generation": generation,
-        "producer_action_key": str(checked_scope["producer_action_key"]),
-        "attempt": dict(checked_scope["attempt"]),
+        "owner_action_key": str(checked_instance["owner_action_key"]),
+        "owner_attempt": dict(checked_instance["owner_attempt"]),
     }
 
 
-def output_manifest_sha256(descriptors: list[Mapping[str, object]]) -> str:
-    """The immutable v2 output manifest digest over sealed descriptors."""
-
-    canonical = json.dumps(
-        [dict(d) for d in descriptors], sort_keys=True,
-        separators=(",", ":")).encode()
-    return hashlib.sha256(canonical).hexdigest()
+def checked_instance_maxima(template: Mapping[str, object]) -> dict[str, int]:
+    maxima = validate_template(template)["durable_maxima"]
+    assert isinstance(maxima, dict)
+    return {key: int(maxima[key]) for key in maxima}
 
 
-def canonical_expected_id(
+# --------------------------------------------------------------------------
+# Manifest object set (ours) vs pin serialization (PB730's)
+# --------------------------------------------------------------------------
+
+def manifest_object_set_id(
     expected: Mapping[str, Mapping[str, object]],
 ) -> str:
-    """Canonical object-set identity for a pin window (PB730 collision fix).
+    """Canonical object-set identity for a batch window (manifest side).
 
-    `reader_lease.pin_id_for` on the pending lane names
-    (consumer|tier|epoch|start|end|movers|generations) but NOT the expected
-    keys: two equal-sized source files under one cover at offset 0 with equal
-    size collide to one pin_id. The corrected pin must include this canonical
-    set (sorted `key:bytes:sha256-or-null`, `|`-joined, sha256 hex). PB owner
-    is fixing `pin_id_for` now; this helper seals the set PB-side so the
-    manifest, the `expected` argument, and the future pin agree on one
-    spelling. No edit to `reader_lease.py` from this lane.
+    Sorted `key:bytes:sha256-or-null`, `|`-joined, sha256 hex. This names the
+    manifest's object set for the `expected` argument. PIN serialization is
+    PB730-owned: the corrected `pin_id_for` must include this set plus
+    material generations; this helper never serializes a pin.
     """
 
     parts = []
@@ -360,7 +537,7 @@ def canonical_expected_id(
         if not isinstance(spec, Mapping):
             raise ProducedOutputError("expected specs must be objects")
         size = spec.get("bytes")
-        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        if type(size) is not int or size <= 0:
             raise ProducedOutputError("expected bytes must be positive")
         digest = spec.get("sha256")
         if digest is not None and not (
@@ -371,50 +548,50 @@ def canonical_expected_id(
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def label_span_for_manifest(total_bytes: int) -> dict[str, int]:
-    """Label-source span for a whole-scope window (Q3).
+def canonical_expected_id(expected: Mapping[str, Mapping[str, object]]) -> str:
+    """Deprecated alias of `manifest_object_set_id` (kept for history)."""
 
-    Span = label-source manifest coordinates `[0, total)`: the window the pin
-    names. It is NOT the physical staged offset (always 0 under
-    content-addressed staged names) and NOT the logical window cursor
-    (`accepted_phase` progress). Per-entry spans are the entry's
-    declared-file coordinates `[offset, offset+bytes)`. Callers pass this
-    `span` to `reader_lease.acquire`; coverage is proven by `expected`, never
-    by span arithmetic.
+    return manifest_object_set_id(expected)
+
+
+def label_span_for_manifest(total_bytes: int,
+                            coordinate_space: str = "output-manifest"
+                            ) -> dict[str, object]:
+    """Label-source span for a batch window (never a source-file span).
+
+    `coordinate_space` names what `[start_bytes, end_bytes)` counts:
+    `"output-manifest"` for a batch's logical manifest/read-plan span (a sum
+    over files), never `"source-file"`. Physical staged offsets are always 0
+    under content-addressed names; the logical window cursor is
+    `accepted_phase`. Coverage is proven by `expected` + material
+    generations, never by span arithmetic.
     """
 
     total = _positive_int(total_bytes, where="label span total_bytes")
-    return {"start_bytes": 0, "end_bytes": total}
-
-
-def scope_file_path(queue_root: str | Path, scope: Mapping[str, object]) -> Path:
-    """`<queue>/residency/produced-output-scopes/<producer>/<scope_id>.json`."""
-
-    checked = validate_scope(scope)
-    attempt = checked["attempt"]
-    assert isinstance(attempt, dict)
-    return (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
-            / str(checked["producer_action_key"])
-            / f"{str(attempt['scope_id'])}.json")
-
-
-def declare_scope(queue_root: str | Path, scope: Mapping[str, object]) -> Path:
-    """File one scope immutably; a conflicting body refuses, never replaces."""
-
-    from prismabuild import pool as pool_mod
-
-    checked = validate_scope(scope)
-    path = scope_file_path(queue_root, checked)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = json.dumps(checked, sort_keys=True,
-                     separators=(",", ":")).encode() + b"\n"
-    try:
-        pool_mod._publish_immutable(path, raw, where="produced-output scope")
-    except pool_mod.PoolContractError as exc:
+    if coordinate_space != "output-manifest":
         raise ProducedOutputError(
-            f"a different scope is already filed for this producer/scope_id: {exc}"
-        ) from None
-    return path
+            "label span coordinate_space must be 'output-manifest'")
+    return {"coordinate_space": coordinate_space,
+            "start_bytes": 0, "end_bytes": total}
+
+
+def output_manifest_sha256(descriptors: list[Mapping[str, object]]) -> str:
+    """Immutable batch-manifest digest over sealed descriptors."""
+
+    canonical = json.dumps(
+        [dict(d) for d in descriptors], sort_keys=True,
+        separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# Reservations: standing minimum + per-batch prewrite, then TRANSFER
+# --------------------------------------------------------------------------
+
+def reservation_holder(instance: Mapping[str, object]) -> str:
+    """Standing-minimum ledger holder (the instance namespace)."""
+
+    return instance_namespace(instance)
 
 
 def output_fragment_root(residency_root: str | Path) -> Path:
@@ -423,95 +600,40 @@ def output_fragment_root(residency_root: str | Path) -> Path:
     return Path(residency_root) / OUTPUT_FRAGMENTS_SUBDIR
 
 
-def reservation_key(scope: Mapping[str, object]) -> str:
-    """The ledger holder for a scope's shared-tier reservation."""
+def batch_namespace(instance: Mapping[str, object], batch_id: str,
+                    manifest_digest: str) -> str:
+    """Immutable batch namespace bound to its exact manifest + owner scope."""
 
-    # The material namespace holds the reservation so input movers and output
-    # staging never share one holder's accounting.
-    return output_consumer_key(scope)
-
-
-def reserve_scope(queue, scope: Mapping[str, object], tier_id: str) -> dict[str, object]:
-    """Reserve shared-tier capacity for the scope BEFORE any byte is written.
-
-    Uses the existing tier ledger (all-or-nothing acquire). The reserved
-    GiB covers payload + checkpoint + temp/overlap (total_reservation_bytes),
-    in the tier's own capacity kind. Returns {"ok": True, ...} or
-    {"ok": False, "refusal": ...} with typed refusals:
-    tier-not-permitted | tier-unknown | never-fits-tier-capacity |
-    tier-reservation-unavailable. Never registers bytes posthoc.
-    """
-
-    from prismabuild import storage_tiers as tiers_mod
-
-    checked = validate_scope(scope)
-    if tier_id not in checked["permitted_tiers"]:
-        return {"ok": False, "refusal": "tier-not-permitted"}
-    total = total_reservation_bytes(checked)
-    gib = tiers_mod.stage_tokens_for_bytes(total)
-    kind = tiers_mod.capacity_kind_of(tier_id)
-    # Tier ledgers are keyed by bare kind ("stage_gib"); the "@tier" form
-    # only exists on action demand before split_demand partitions it.
-    demand = {kind: gib}
-    ledger = queue.tier_ledger(tier_id)
-    if not ledger.base.is_dir():
-        return {"ok": False, "refusal": "tier-unknown"}
-    total_cap = ledger.capacity()
-    if any(total_cap.get(k, 0) < need for k, need in demand.items()):
-        return {"ok": False, "refusal": "never-fits-tier-capacity",
-                "demand": demand, "capacity": total_cap}
-    if not ledger.acquire(reservation_key(checked), demand):
-        return {"ok": False, "refusal": "tier-reservation-unavailable",
-                "demand": demand, "available": ledger.available()}
-    return {"ok": True, "tier_id": tier_id, "demand": demand,
-            "reservation_key": reservation_key(checked),
-            "reservation_bytes": total}
+    checked = validate_instance(instance)
+    _name(batch_id, where="batch_id")
+    _hex64(manifest_digest, where="manifest_digest")
+    raw = ("produced-output-batch:" + instance_namespace(checked) + ":"
+           + batch_id + ":" + manifest_digest)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def release_scope(queue, scope: Mapping[str, object]) -> int:
-    """Return the scope's whole shared-tier reservation (reclaim path only).
-
-    Must run AFTER physical reclaim (egress deletes), never before: release
-    before reclaim would admit a mover onto capacity that is still occupied.
-    Safe to call twice.
-    """
-
-    return queue.release_tier_reservations(reservation_key(scope))
+def _commitments_path(queue_root: str | Path,
+                      instance: Mapping[str, object]) -> Path:
+    return instance_dir(queue_root, instance) / "commitments.json"
 
 
-def build_output_manifest(descriptors: list[Mapping[str, object]],
-                          scope: Mapping[str, object]) -> dict[str, object]:
-    """Seal validated descriptors into an immutable output manifest (v2)."""
-
-    checked = validate_scope(scope)
-    sealed = [validate_descriptor(d, checked) for d in descriptors]
-    digest = output_manifest_sha256(sealed)
-    total = sum(int(d["bytes"]) for d in sealed)
-    env = checked["byte_envelopes"]
-    assert isinstance(env, dict)
-    if total > int(env["payload_max_bytes"]):
-        raise ProducedOutputError(
-            "sealed output bytes exceed the scope payload envelope")
-    return {
-        "schema": PRODUCED_OUTPUT_MANIFEST_SCHEMA_V1,
-        "producer_action_key": str(checked["producer_action_key"]),
-        "attempt": dict(checked["attempt"]),
-        "output_prefix": str(checked["output_prefix"]),
-        "output_consumer_key": output_consumer_key(checked),
-        "manifest_sha256": digest,
-        "total_bytes": total,
-        "entry_count": len(sealed),
-        "entries": sealed,
-    }
+def _read_commitments(path: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {"batches": {}}
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("batches"), Mapping):
+        raise ProducedOutputError("commitments record is corrupt")
+    return {"batches": dict(raw["batches"])}
 
 
-def _write_atomic(path: Path, payload: Mapping[str, object]) -> Path:
+def _write_commitments(path: Path, record: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.")
+        dir=str(path.parent), prefix=".commitments.")
     try:
         with os.fdopen(handle, "w") as stream:
-            json.dump(payload, stream, sort_keys=True)
+            json.dump({"batches": dict(record["batches"])}, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -519,30 +641,511 @@ def _write_atomic(path: Path, payload: Mapping[str, object]) -> Path:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
-    return path
+
+
+def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
+    sums = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for record in batches.values():
+        if not isinstance(record, Mapping) or record.get("retired"):
+            continue
+        class_bytes = record.get("class_bytes")
+        if not isinstance(class_bytes, Mapping):
+            continue
+        for cls in sums:
+            sums[cls] += int(class_bytes.get(cls, 0) or 0)
+    return sums
+
+
+def reserve_working_minimum(queue, instance: Mapping[str, object],
+                            template: Mapping[str, object]) -> dict[str, object]:
+    """Reserve the admitted standing minimum per tier (idempotent).
+
+    Advance credit held for the instance lifetime under the instance
+    namespace; per-batch copies transfer their own exact prewrite holdings
+    to mover ownership (no free interval, counted once each). Returns
+    {"ok": True, ...} or {"ok": False, "refusal": ...}.
+    """
+
+    from prismabuild import storage_tiers as tiers_mod
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    holder = reservation_holder(checked_instance)
+    acquired: dict[str, dict[str, int]] = {}
+    for tier in checked_template["permitted_tiers"]:
+        kind = tiers_mod.capacity_kind_of(tier)
+        minimum = int(checked_template["working_demands"][tier]["minimum_gib"])
+        if minimum == 0:
+            continue
+        ledger = queue.tier_ledger(tier)
+        if not ledger.base.is_dir():
+            return {"ok": False, "refusal": "tier-unknown", "tier_id": tier}
+        if ledger.capacity().get(kind, 0) < minimum:
+            return {"ok": False, "refusal": "never-fits-tier-capacity",
+                    "tier_id": tier}
+        held = ledger.holder_tokens(holder).get(kind, 0)
+        if held >= minimum:
+            acquired[tier] = {kind: 0}
+            continue
+        if not ledger.acquire(holder, {kind: minimum - held}):
+            return {"ok": False, "refusal": "tier-reservation-unavailable",
+                    "tier_id": tier, "available": ledger.available()}
+        acquired[tier] = {kind: minimum - held}
+    return {"ok": True, "holder": holder, "acquired": acquired}
+
+
+def require_prewrite(queue, instance: Mapping[str, object],
+                     template: Mapping[str, object], *, batch_id: str,
+                     tier: str, class_bytes: Mapping[str, int]) -> dict[str, object]:
+    """File a prewrite budget claim BEFORE any HDD byte is written.
+
+    The production writer path must call this (not an optional helper):
+    uncharged temp/checkpoint writes refuse here. Checks standing
+    reservation presence + durable headroom for the planned class bytes and
+    files an immutable prewrite record the later commit must present.
+    Zero-byte classes are valid (explicit zeros, never missing keys).
+    """
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    _name(batch_id, where="batch_id")
+    if tier not in checked_template["permitted_tiers"]:
+        return {"ok": False, "refusal": "tier-not-permitted"}
+    if not isinstance(class_bytes, Mapping) or set(class_bytes) != {
+            "payload", "checkpoint", "temp"}:
+        return {"ok": False, "refusal": "prewrite-classes-must-name-all-three"}
+    planned = {}
+    for cls in ("payload", "checkpoint", "temp"):
+        planned[cls] = _nonneg_int(class_bytes.get(cls),
+                                   where=f"prewrite class_bytes.{cls}")
+    from prismabuild import storage_tiers as tiers_mod
+    kind = tiers_mod.capacity_kind_of(tier)
+    holder = reservation_holder(checked_instance)
+    if not queue.tier_ledger(tier).holder_tokens(holder).get(kind, 0):
+        # Standing minimum proves admission; without it nothing is prewritable.
+        # (Zero-minimum tiers still need the instance bound + headroom below.)
+        minimum = int(checked_template["working_demands"][tier]["minimum_gib"])
+        if minimum > 0:
+            return {"ok": False, "refusal": "prewrite-reservation-missing"}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+        sums = _class_sums(commitments["batches"])
+        assert isinstance(sums, dict)
+        maxima = checked_instance_maxima(checked_template)
+        for cls in sums:
+            cap = maxima[f"{cls}_max_bytes"]
+            if sums[cls] + planned[cls] > cap:
+                return {"ok": False, "refusal": f"prewrite-exceeds-{cls}-maxima",
+                        "class": cls}
+        directory = instance_dir(queue.root, checked_instance) / "prewrites"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{batch_id}.prewrite.json"
+        record = {"batch_id": batch_id, "tier": tier, "class_bytes": planned,
+                  "owner_action_key": str(checked_instance["owner_action_key"]),
+                  "owner_attempt": dict(checked_instance["owner_attempt"])}
+        raw = json.dumps(record, sort_keys=True,
+                         separators=(",", ":")).encode() + b"\n"
+        try:
+            from prismabuild import pool as pool_mod
+            pool_mod._publish_immutable(path, raw, where="produced-output prewrite")
+        except Exception as exc:
+            return {"ok": False, "refusal": f"prewrite-conflict: {exc}"}
+    return {"ok": True, "batch_id": batch_id, "class_bytes": planned}
+
+
+def commit_batch(queue, instance: Mapping[str, object],
+                 template: Mapping[str, object],
+                 descriptors: list[Mapping[str, object]], *, batch_id: str,
+                 tier: str, mover_key: str) -> dict[str, object]:
+    """Commit one immutable batch: check, prewrite-match, acquire exact under
+    the batch holder, TRANSFER whole to mover ownership (no free interval),
+    file the batch record. All-or-nothing with typed refusals."""
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import storage_tiers as tiers_mod
+
+    checked_template = validate_template(template)
+    checked_instance = validate_instance(instance)
+    _name(batch_id, where="batch_id")
+    mover = _hex64(mover_key, where="batch mover_key")
+    if tier not in checked_template["permitted_tiers"]:
+        return {"ok": False, "refusal": "tier-not-permitted"}
+    sealed = [validate_descriptor(d, checked_template, checked_instance)
+              for d in descriptors]
+    # lstat size check only (no payload reread; digests ride the writer receipt
+    # and the mover verifies on copy).
+    for desc in sealed:
+        try:
+            if os.lstat(desc["path"]).st_size != int(desc["bytes"]):
+                return {"ok": False, "refusal": "descriptor-size-mismatch",
+                        "path": desc["path"]}
+        except OSError as exc:
+            return {"ok": False, "refusal": f"descriptor-unstatable: {exc}"}
+    class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for desc in sealed:
+        class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
+    manifest_digest = output_manifest_sha256(sealed)
+    batch_ns = batch_namespace(checked_instance, batch_id, manifest_digest)
+    kind = tiers_mod.capacity_kind_of(tier)
+    batch_total = sum(class_bytes.values())
+    batch_gib = tiers_mod.stage_tokens_for_bytes(batch_total)
+    window = int(checked_template["working_demands"][tier]["window_gib"])
+    if batch_gib > window:
+        return {"ok": False, "refusal": "batch-exceeds-window",
+                "batch_gib": batch_gib, "window_gib": window}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        if batch_id in batches:
+            existing = batches[batch_id]
+            if (isinstance(existing, Mapping)
+                    and existing.get("manifest_digest") == manifest_digest):
+                return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                        "batch_namespace": batch_ns,
+                        "manifest_digest": manifest_digest}
+            return {"ok": False, "refusal": "batch-id-in-use"}
+        prewrite_path = (instance_dir(queue.root, checked_instance) / "prewrites"
+                         / f"{batch_id}.prewrite.json")
+        try:
+            prewrite = json.loads(prewrite_path.read_text())
+        except (OSError, ValueError):
+            return {"ok": False, "refusal": "prewrite-reservation-missing"}
+        if (not isinstance(prewrite, Mapping)
+                or prewrite.get("tier") != tier
+                or dict(prewrite.get("class_bytes", {})) != class_bytes):
+            return {"ok": False, "refusal": "prewrite-mismatch"}
+        sums = _class_sums(batches)
+        maxima = checked_instance_maxima(checked_template)
+        for cls in sums:
+            if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
+                return {"ok": False, "refusal": f"commit-exceeds-{cls}-maxima"}
+        ledger = queue.tier_ledger(tier)
+        if not ledger.acquire(batch_ns, {kind: batch_gib}):
+            return {"ok": False, "refusal": "tier-reservation-unavailable",
+                    "available": ledger.available()}
+        moved = queue.transfer_tier_reservation(tier, batch_ns, mover)
+        if moved != batch_gib:
+            return {"ok": False, "refusal": "transfer-short",
+                    "moved": moved, "expected": batch_gib}
+        batch_record = {
+            "schema": BATCH_SCHEMA_V1,
+            "batch_id": batch_id,
+            "batch_namespace": batch_ns,
+            "manifest_schema": BATCH_MANIFEST_SCHEMA_V1,
+            "manifest_digest": manifest_digest,
+            "tier": tier,
+            "mover_key": mover,
+            "class_bytes": class_bytes,
+            "total_bytes": batch_total,
+            "entry_count": len(sealed),
+            "entries": sealed,
+            "template_id": str(checked_template["template_id"]),
+            "template_sha256": template_sha256(checked_template),
+            "owner_action_key": str(checked_instance["owner_action_key"]),
+            "owner_attempt": dict(checked_instance["owner_attempt"]),
+            "object_set_id": manifest_object_set_id({
+                f"{d['bytes']}:{d['path']}": {"bytes": int(d["bytes"]),
+                                             "sha256": str(d["sha256"])}
+                for d in sealed}),
+            "unix": time.time(),
+        }
+        batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                     / instance_namespace(checked_instance))
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        batch_path = batch_dir / f"{batch_id}.json"
+        try:
+            pool_mod._publish_immutable(
+                batch_path,
+                json.dumps(batch_record, sort_keys=True,
+                           separators=(",", ":")).encode() + b"\n",
+                where="produced-output batch")
+        except pool_mod.PoolContractError as exc:
+            return {"ok": False, "refusal": f"batch-conflict: {exc}"}
+        batches[batch_id] = {
+            "manifest_digest": manifest_digest,
+            "batch_namespace": batch_ns,
+            "tier": tier,
+            "mover_key": mover,
+            "class_bytes": class_bytes,
+            "retired": False,
+        }
+        _write_commitments(_commitments_path(queue.root, checked_instance),
+                           {"batches": batches})
+    return {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
+            "manifest_digest": manifest_digest, "class_bytes": class_bytes,
+            "mover_key": mover, "tier": tier}
+
+
+def build_stage_manifest(batch: Mapping[str, object],
+                         mount_prefix: str) -> dict[str, object]:
+    """Synthetic data manifest for `stage_move.move` (one mover per batch)."""
+
+    entries = batch.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ProducedOutputError("batch carries no entries to stage")
+    manifest_entries = [
+        {"path": str(e["path"]), "offset": 0, "bytes": int(e["bytes"]),
+         "sha256": str(e["sha256"])} for e in entries]
+    total = sum(int(e["bytes"]) for e in manifest_entries)
+    return {
+        "schema": "prismaquant.prismabuild.data_manifest.v1",
+        "produced_by": {"tool": "produced-output-batch"},
+        "mount_prefix": mount_prefix,
+        "entries": manifest_entries,
+        "entry_count": len(manifest_entries),
+        "total_bytes": total,
+        "annotations": {
+            "coordinate_space": "output-manifest-batch",
+            "batch_id": str(batch.get("batch_id")),
+            "manifest_digest": str(batch.get("manifest_digest")),
+        },
+    }
+
+
+def retire_batch(queue, batch: Mapping[str, object], *, stage_root: str,
+                 residency_root: str | Path) -> dict[str, object]:
+    """Evict one batch's staged files, then mark it retired. Charge retained
+    on any incomplete/tainted result; retirement is recorded only after a
+    complete egress."""
+
+    from prismabuild import pool as pool_mod
+    import stage_release
+
+    if not isinstance(batch, Mapping):
+        return {"ok": False, "refusal": "bad-batch"}
+    consumer = str(batch.get("batch_namespace") or "")
+    mover = str(batch.get("mover_key") or "")
+    if len(consumer) != 64 or len(mover) != 64:
+        return {"ok": False, "refusal": "bad-batch-namespace"}
+    receipt = stage_release.evict(
+        queue, mover, consumer_action_key=consumer,
+        stage_root=str(stage_root), residency_root=str(residency_root))
+    if not receipt.get("complete"):
+        return {"ok": False, "refusal": "egress-incomplete", "receipt": receipt}
+    return {"ok": True, "receipt": receipt}
+
+
+def mark_batch_retired(queue_root: str | Path, instance: Mapping[str, object],
+                       batch_id: str) -> None:
+    """Record retirement after a complete egress (under the prefix lock)."""
+
+    checked = validate_instance(instance)
+    path = _commitments_path(queue_root, checked)
+    record = _read_commitments(path)
+    batches = record["batches"]
+    assert isinstance(batches, dict)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError("unknown batch_id for this instance")
+    entry = dict(entry)
+    entry["retired"] = True
+    batches[batch_id] = entry
+    _write_commitments(path, {"batches": batches})
+
+
+def safe_release_instance(queue, instance: Mapping[str, object],
+                          template: Mapping[str, object]) -> dict[str, object]:
+    """Release the standing minimum ONLY when retirement is proven safe.
+
+    Fresh census under the prefix lock: instance + commitments readable
+    (unknown retains); every batch retired AND its mover holder empty AND its
+    fragments gone (active retains); live-lease refs absent where the SDK is
+    available (live retains, dependency named when not); owner terminal
+    present (owner-active retains). Releases exactly once (second call 0).
+    """
+
+    from prismabuild import pool as pool_mod
+
+    checked_template = validate_template(template)
+    try:
+        checked = validate_instance(instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    with queue.stage_ownership_lock(str(checked["output_prefix"])):
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+        for batch_id, entry in batches.items():
+            if not isinstance(entry, Mapping):
+                return {"ok": False, "refusal": "unknown-retain: bad-batch-entry"}
+            if entry.get("retired"):
+                continue
+            return {"ok": False, "refusal": "active-batches-retain",
+                    "batch_id": batch_id}
+        for batch_id, entry in batches.items():
+            assert isinstance(entry, Mapping)
+            mover = str(entry.get("mover_key") or "")
+            tier = str(entry.get("tier") or "")
+            if mover and tier:
+                try:
+                    if queue.tier_ledger(tier).holder_tokens(mover):
+                        return {"ok": False, "refusal": "active-movers-retain",
+                                "batch_id": batch_id}
+                except Exception as exc:
+                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            ns = str(entry.get("batch_namespace") or "")
+            if ns:
+                frag_dir = out_base / ns
+                try:
+                    if frag_dir.is_dir() and any(frag_dir.iterdir()):
+                        return {"ok": False, "refusal": "active-movers-retain",
+                                "batch_id": batch_id}
+                except OSError as exc:
+                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        try:
+            import reader_lease  # PB730 SDK when deployed; absent on main
+        except ImportError:
+            reader_lease = None  # type: ignore[assignment]
+        if reader_lease is not None:
+            try:
+                staged: set[str] = set()
+                live = reader_lease.live_for(queue, staged or None,
+                                             residency_root=str(out_base))
+                if live:
+                    return {"ok": False, "refusal": "live-refs-retain",
+                            "pins": sorted(live)[:8]}
+            except Exception as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        owner = str(checked["owner_action_key"])
+        terminal = (pool_mod._read_json(queue.item_path(pool_mod.DONE, owner))
+                    or pool_mod._read_json(queue.item_path(pool_mod.FAILED, owner))
+                    or pool_mod._read_json(queue.item_path(pool_mod.WITHDRAWN, owner)))
+        live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        if terminal is None:
+            if live_claim is not None:
+                return {"ok": False, "refusal": "owner-active-retain"}
+            return {"ok": False, "refusal": "unknown-retain: no-terminal"}
+        released = 0
+        for tier in checked_template["permitted_tiers"]:
+            try:
+                released += queue.release_tier_reservations(
+                    reservation_holder(checked))
+            except Exception:
+                break
+        # reservation_holder is one holder across tiers; release is idempotent.
+        return {"ok": True, "released": released}
+
+
+def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, object]]:
+    """Deterministic read-only reconciliation for the tier-loop tick.
+
+    NEW method owned by this lane. For each bound instance: compose each
+    unretired batch's fragments (existing validator, one manifest each),
+    report staged/retire-needed events. No publishing (liveness), no deletion
+    (lease), no placement. Proposed hook: call once per `tier_loop.cycle`
+    after `residency_window` and extend its events (exact diff through root).
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import residency_map as map_mod
+
+    events: list[dict[str, object]] = []
+    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    try:
+        owners = sorted(p.name for p in scopes_root.iterdir() if p.is_dir())
+    except OSError:
+        return events
+    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    for owner in owners:
+        try:
+            files = sorted((scopes_root / owner).glob("*.json"))
+        except OSError:
+            continue
+        for path in files:
+            if path.name == "commitments.json" or ".commitments" in path.name:
+                continue
+            try:
+                instance = validate_instance(json.loads(path.read_text()))
+            except (OSError, ValueError):
+                continue
+            try:
+                commitments = _read_commitments(
+                    _commitments_path(queue.root, instance))
+            except ProducedOutputError:
+                continue
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            for batch_id, entry in batches.items():
+                if not isinstance(entry, Mapping) or entry.get("retired"):
+                    continue
+                ns = str(entry.get("batch_namespace") or "")
+                try:
+                    fragments = map_mod.read_fragments(out_base, ns)
+                except Exception:
+                    continue
+                if not fragments:
+                    events.append({"event": "output-batch-unstaged",
+                                   "batch_id": batch_id, "namespace": ns})
+                    continue
+                try:
+                    composed = map_mod.compose(fragments)
+                except ValueError as exc:
+                    events.append({"event": "output-batch-invalid",
+                                   "batch_id": batch_id, "error": repr(exc)})
+                    continue
+                entries = composed.get("entries")
+                events.append({
+                    "event": "output-batch-staged",
+                    "batch_id": batch_id, "namespace": ns,
+                    "manifest_digest": str(entry.get("manifest_digest")),
+                    "entries": len(entries) if isinstance(entries, Mapping) else 0,
+                })
+    return events
+
+
+def checked_instance_maxima(template: Mapping[str, object]) -> dict[str, int]:
+    maxima = validate_template(template)["durable_maxima"]
+    assert isinstance(maxima, dict)
+    return {key: int(maxima[key]) for key in maxima}
 
 
 __all__ = [
-    "PRODUCED_OUTPUT_SCOPE_SCHEMA_V1",
-    "PRODUCED_OUTPUT_DESCRIPTOR_SCHEMA_V1",
-    "PRODUCED_OUTPUT_MANIFEST_SCHEMA_V1",
+    "TEMPLATE_SCHEMA_V1",
+    "INSTANCE_SCHEMA_V1",
+    "DESCRIPTOR_SCHEMA_V2",
+    "BATCH_SCHEMA_V1",
+    "BATCH_MANIFEST_SCHEMA_V1",
+    "OUTPUT_TEMPLATES_SUBDIR",
     "OUTPUT_SCOPES_SUBDIR",
+    "OUTPUT_BATCHES_SUBDIR",
     "OUTPUT_FRAGMENTS_SUBDIR",
     "READER_HELPER_ROOT_ENV",
+    "SDK_DEPENDENCY",
+    "ARTIFACT_CLASSES",
     "ProducedOutputError",
     "mint_generation",
-    "validate_scope",
-    "total_reservation_bytes",
-    "output_consumer_key",
+    "validate_template",
+    "template_sha256",
+    "template_path",
+    "declare_template",
+    "bind_instance",
+    "validate_instance",
+    "instance_namespace",
+    "instance_dir",
+    "declare_instance",
     "validate_descriptor",
-    "output_manifest_sha256",
+    "checked_instance_maxima",
+    "manifest_object_set_id",
     "canonical_expected_id",
     "label_span_for_manifest",
-    "scope_file_path",
-    "declare_scope",
+    "output_manifest_sha256",
+    "reservation_holder",
     "output_fragment_root",
-    "reservation_key",
-    "reserve_scope",
-    "release_scope",
-    "build_output_manifest",
+    "batch_namespace",
+    "reserve_working_minimum",
+    "require_prewrite",
+    "commit_batch",
+    "build_stage_manifest",
+    "retire_batch",
+    "mark_batch_retired",
+    "safe_release_instance",
+    "output_scope_tick",
 ]
