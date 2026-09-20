@@ -657,7 +657,9 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         claimed = q.claim(owner=f"w-null-{tag}")
         assert claimed is not None and claimed["action_key"] == mover
         funding = q.read_output_funding(mover, TIER)
-        assert funding is not None and funding["state"] == "transferring"
+        # The funded claim consumed the prepaid record (the mover's copy
+        # runs after consumption; the fence is already fused).
+        assert funding is not None and funding["state"] == "consumed"
 
         # The REAL mover: sealed argv execution copies and size-verifies;
         # the null declared digest skips equality, the computed digest
