@@ -3822,11 +3822,19 @@ only `containment_certificate_ok` over the exact owner nonce/scope
 DONE/FAILED/WITHDRAWN record by key alone never suffices. Funding-intent
 movers always retain with `funding-intent-reconcile-retain` for the
 funding/reconciliation lane: metadata absence never proves physical
-absence. Prewrite aborts prove exact planned-path absence before freeing
-headroom; duplicate commits never re-mint quota. Durable-origin maxima
-stay distinct from tier window credit. Commit-batch funding, movement/tick
-handoff, and the general funded-window primitive remain with their owning
-lanes.
+absence. Every mutation re-checks the single admitted-template boundary
+(instance digest equals the passed template; a substituted larger maxima
+is refused) and `commit_batch` additionally requires the live owner
+claim to name the instance attempt. Prewrite aborts prove exact planned-
+path absence before freeing headroom; duplicate commits never re-mint
+quota. Stage retirement is tied to the actual egress receipt under lock
+(exact mover/namespace/attempt match, staged paths recorded) and frees
+the tier window only; durable-origin classes stay charged until
+`reclaim_origin` proves every origin path absent, exactly once. Census
+paths attributable to recorded staged paths retain by name; unknown
+census retains; unrelated pins never block. Commit-batch funding,
+movement/tick handoff, and the general funded-window primitive remain
+with their owning lanes.
 
 ### The movement node
 
