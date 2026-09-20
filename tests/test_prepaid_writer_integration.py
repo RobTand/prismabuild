@@ -1804,3 +1804,83 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+
+def test_a_malformed_byte_count_is_not_a_report_of_zero(
+        tmp_path: Path) -> None:
+    """Exact non-boolean integer zero releases; every other shape retains.
+
+    The emptiness half of the conjunction reads ONE field of the mover's
+    own receipt, and two values used to slip through it as "empty".
+    `isinstance(False, int)` is True and `False > 0` is False, so a bool
+    in `bytes_staged` passed an `isinstance(...) and staged > 0` test and
+    was read as a report of zero. A negative count did the same. Neither
+    is a measurement of an empty stage; both are broken metadata, which
+    proves nothing -- the same absence-of-evidence-as-proof this
+    predicate family has been wrong about before, one type-check down.
+
+    This file already knew the trap: `pool.py:7570` excludes `bool` on
+    this same field name. It was not carried down to the produced-output
+    gate. The bool case is driven through the REAL terminal, so the
+    aggregate ledger is what answers; the remaining shapes are asserted
+    on the gate itself, and the honest zero is re-checked last so the
+    release direction is measured on the same fixture as the retention.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    origin_path = Path(str(descs[0]["path"]))
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    # A mover that really does stage nothing, through the ordinary seam.
+    origin_path.unlink()
+    claimed = _claim_mover(q, "w-malformed")
+    assert claimed["action_key"] == mover
+    assert q.execute(claimed, timeout_s=240).get("returncode") != 0
+    assert _staged(stage_root, "*.bin") == []
+    honest = dict(q.move_record(mover) or {})
+    assert honest.get("tier_id") == TIER, honest
+    assert honest.get("bytes_staged") == 0, honest
+
+    # `False` where the count belongs, filed before the terminal runs.
+    q.record_move(mover, {**honest, "bytes_staged": False})
+    q.finish(mover, status="failed")
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # The same record `finish` judged: attempts remain, so the retry ladder
+    # requeued the row READY rather than filing a terminal, and the row
+    # still carries the tier residency block the gate reads.
+    assert po._mover_live_state(q, mover) == "ready"
+    record = pool._read_json(q.item_path(pool.READY, mover))
+    assert isinstance(record, dict), record
+    assert record["residency"]["tier_id"] == TIER, record["residency"]
+    assert q.output_partial_pin_holds(record, mover) is True
+
+    # Every other shape that is not exact non-boolean integer zero.
+    for malformed in (False, True, -1, 1, "0", 0.0, None, [0]):
+        q.record_move(mover, {**honest, "bytes_staged": malformed})
+        assert q.output_partial_pin_holds(record, mover) is True, malformed
+    q.record_move(mover, {k: v for k, v in honest.items()
+                          if k != "bytes_staged"})
+    assert q.output_partial_pin_holds(record, mover) is True
+
+    # And the release direction is intact: an honest zero, with nothing
+    # published, is still a proven-empty stage.
+    q.record_move(mover, honest)
+    assert q.output_partial_pin_holds(record, mover) is False

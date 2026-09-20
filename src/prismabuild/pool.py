@@ -8041,11 +8041,12 @@ class PoolQueue:
         about the stage.
 
         EMPTINESS, which needs both halves: the mover's own receipt names
-        this tier and reports ``bytes_staged == 0``, AND
-        :meth:`_output_published_material` proves no fragment.  An overrun
-        reports bytes above its declaration, so it never qualifies; a
-        receipt about another tier says nothing about this one; a missing or
-        shapeless receipt says nothing at all; and any unreadable probe
+        this tier and reports ``bytes_staged`` as EXACT non-boolean integer
+        zero, AND :meth:`_output_published_material` proves no fragment.  An
+        overrun reports bytes above its declaration, so it never qualifies;
+        a receipt about another tier says nothing about this one; a missing
+        receipt, a negative count, a ``bool`` or any other shape is
+        malformed metadata that proves nothing; and any unreadable probe
         answers unknown.  All of those retain.
         """
 
@@ -8085,10 +8086,16 @@ class PoolQueue:
             # A report about some other tier proves nothing about this one.
             return True
         staged = receipt.get("bytes_staged")
-        if not isinstance(staged, int) or staged > 0:
-            # Shapeless (unknown) or a positive count (occupied).  An
-            # overrun lands here: it refused for staging MORE than it
-            # declared, and its bytes are on the stage.
+        if not (isinstance(staged, int) and not isinstance(staged, bool)
+                and staged == 0):
+            # EXACT non-boolean integer zero is the only report of emptiness.
+            # A positive count is occupancy (an overrun lands here: it
+            # refused for staging MORE than it declared, and its bytes are
+            # on the stage).  A negative count, a ``bool`` -- for which
+            # ``isinstance(x, int)`` is True and ``False > 0`` is False, the
+            # trap this file already avoids at :7570 on this same field --
+            # and any other shape are malformed metadata, which proves
+            # nothing and therefore retains.
             return True
         # The mover's own count says nothing landed on this tier -- the only
         # receipt that can prove emptiness.  It still has to agree with
