@@ -196,7 +196,7 @@ def test_substituted_template_prewrite_refused(tmp_path: Path) -> None:
     assert refused == {"ok": False, "refusal": "template-mismatch"}
 
 
-def test_stale_owner_prewrite_refused(tmp_path: Path) -> None:
+def test_stale_owner_commit_refused(tmp_path: Path) -> None:
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -204,14 +204,28 @@ def test_stale_owner_prewrite_refused(tmp_path: Path) -> None:
     bound = _bind(queue, template)
     instance = bound["instance"]
     assert po.admit_instance(queue, instance, template)["ok"] is True
-    # A retry mints a new attempt on the same key: the old instance is
-    # superseded and authorizes nothing new.
-    control2 = _file_broker_control(queue, OWNER)
-    assert control2["nonce"] != bound["control"]["nonce"]
-    refused = po.require_prewrite(
+    assert po.require_prewrite(
         queue, instance, template, batch_id="stale", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
-        paths=[str(origin / "stale.pt")])
+        paths=[str(origin / "stale.pt")])["ok"] is True
+    payload = b"S" * 64
+    _write(origin / "stale.pt", payload)
+    desc = po.validate_descriptor({
+        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+        "artifact_class": "payload", "path": str(origin / "stale.pt"),
+        "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        "producer_generation": po.mint_generation(),
+        "owner_action_key": instance["owner_action_key"],
+        "owner_attempt": dict(instance["owner_attempt"]),
+    }, template, instance)
+    # A retry mints a new attempt on the same key: the old instance is
+    # superseded and its commit -- quota plus token movement -- refuses.
+    # The duplicate replay path still answers (it mutates nothing).
+    control2 = _file_broker_control(queue, OWNER)
+    assert control2["nonce"] != bound["control"]["nonce"]
+    refused = po.commit_batch(queue, instance, template, [desc],
+                              batch_id="stale", tier=STAGE_TIER,
+                              mover_key=MOVER0)
     assert refused == {"ok": False, "refusal": "stale-superseded-owner"}
 
 

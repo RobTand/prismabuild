@@ -631,11 +631,16 @@ def _require_live_owner(queue, checked_instance: Mapping[str, object]
     The live CLAIMED row for the owner key must name the instance's exact
     broker attempt (nonce + scope); a live row for another attempt means
     this instance is superseded (a retry owns the key now), and no live
-    row means the owner is not running. Either way no new durable bytes
-    may be authorized. A corrupt or unreadable live row is unknown state
-    that retains rather than authorizing. Cleanup paths (abort, retire,
-    release, reclaim) never call this: freeing headroom must work after
-    the owner is gone.
+    row means the owner is not running. Either way `commit_batch` -- the
+    mutation that consumes durable quota and moves tier tokens -- must
+    not run. A corrupt or unreadable live row is unknown state that
+    retains rather than authorizing. The duplicate-commit replay path
+    runs before this check (it mutates nothing); reservation-only
+    (`require_prewrite`) and cleanup paths (abort, retire, release,
+    reclaim) never call this: a stale reservation lands in its own
+    superseded instance directory where it can neither consume quota
+    nor move tokens, while freeing headroom must work after the owner
+    is gone.
     """
 
     from prismabuild import pool as pool_mod
@@ -1262,9 +1267,6 @@ def require_prewrite(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
     planned_paths.sort()
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        gated = _require_live_owner(queue, checked_instance)
-        if gated is not None:
-            return gated
         try:
             sums = _outstanding_sums(queue.root, checked_instance, batch_id)
         except ProducedOutputError as exc:
