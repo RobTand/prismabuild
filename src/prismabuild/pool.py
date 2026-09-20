@@ -8152,12 +8152,62 @@ class PoolQueue:
         ending must not be the thing that releases its capacity.
         """
 
+        seen = False
         for state in (DONE, FAILED):
             try:
                 record = _read_json(self.item_path(state, str(action_key)))
             except (OSError, PoolContractError):
                 return True
-            if isinstance(record, Mapping) and self.pin_holds_tier_tokens(record, str(action_key)):
+            if isinstance(record, Mapping):
+                seen = True
+                if self.pin_holds_tier_tokens(record, str(action_key)):
+                    return True
+        if seen:
+            # An ending was found and judged: it does not pin.
+            return False
+        # NO ending at all is the strongest form of "cannot see the ending",
+        # not proof that nothing is pinned.  A box that died mid-copy files
+        # no terminal, and its bytes are on the stage; releasing here is the
+        # same free-on-absence this predicate family has been wrong about
+        # three times already.  Scoped by positive evidence that this key is
+        # a funded produced-output mover whose fence has not been retired.
+        return self._output_funding_unretired(str(action_key))
+
+    def _output_funding_unretired(self, action_key: str) -> bool:
+        """Does a prepaid-output fence for this key exist and still stand?
+
+        ``False`` only on a PROVEN-absent funding directory or entry, or a
+        record proven ``released`` (its egress already ran and returned the
+        tokens).  Any record in another state, and any read failure, answers
+        ``True``: a cleanup that cannot establish the fence is retired must
+        not be the thing that frees it.  Keys with no produced-output
+        funding at all -- every consumer-window mover -- answer ``False``
+        and are swept exactly as before.
+        """
+
+        funding_dir = self.root / TIER_FUNDING
+        suffix = ".output-funding.json"
+        prefix = f"{action_key}."
+        try:
+            names = [entry.name for entry in os.scandir(funding_dir)
+                     if entry.name.startswith(prefix)
+                     and entry.name.endswith(suffix)]
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        for name in names:
+            tier_id = name[len(prefix):-len(suffix)]
+            if not tier_id:
+                return True
+            try:
+                record, file_state = self.output_funding_file_state(
+                    str(action_key), tier_id)
+            except (OSError, PoolContractError, ValueError):
+                return True
+            if file_state != "ok" or not isinstance(record, Mapping):
+                return True
+            if str(record.get("state")) != "released":
                 return True
         return False
 

@@ -242,7 +242,7 @@ def _moved_nothing(q: pool.PoolQueue, mover: str) -> None:
     """
 
     q.record_move(mover, {
-        "tier_id": TIER, "stage_root": "/stage",
+        "tier_id": TIER,
         "bytes_staged": 0, "entries_declared": 0, "entries_staged": 0,
         "complete": False, "refusal": "residency_moved_nothing"})
 

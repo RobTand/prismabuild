@@ -1747,3 +1747,60 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 3, "holders": {owner: 1}}
+
+
+def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
+        tmp_path: Path) -> None:
+    """The sweeps are real cleanup, and they had the same blind spot.
+
+    `_filed_pin_holds` asks the DONE/FAILED record whether the ending it
+    is cleaning up after pins bytes. A box that dies mid-copy files NO
+    ending at all, so that loop found nothing and answered "does not
+    pin" -- and `sweep_widowed_leases` then released the tier tokens of a
+    mover whose bytes are on the stage. Its own docstring already says a
+    cleanup that cannot see the ending must not be the thing that frees
+    the capacity; no ending at all is the strongest form of that.
+
+    Scoped by positive evidence: the key holds a prepaid-output funding
+    record that is not `released`. A consumer-window mover has no such
+    record and is swept exactly as before.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    claimed = _claim_mover(q, "w-widowed")
+    assert claimed["action_key"] == mover
+    q.execute(claimed, timeout_s=240)
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+
+    # The finisher dies: the claim is gone, the lease is stale, and no
+    # terminal record was ever filed.
+    q.item_path(pool.CLAIMED, mover).unlink()
+    lease = pool._read_json(q.lease_path(mover)) or {}
+    lease["heartbeat_unix"] = pool._now() - 10_000
+    pool._write_json_atomic(q.lease_path(mover), lease)
+    assert pool._read_json(q.item_path(pool.DONE, mover)) is None
+    assert pool._read_json(q.item_path(pool.FAILED, mover)) is None
+
+    assert q.sweep_widowed_leases(timeout_s=60) == [mover]
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    assert _tier_census(ledger) == {
+        "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
