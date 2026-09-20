@@ -2273,6 +2273,26 @@ receipt remains unresolved; neither recovery path invents success.
 
 ## Automatic client convergence
 
+Worker membership uses this same broker maintenance gate and the existing
+roster, offers, queue withdrawal and reaper machinery. The published
+`fleet_membership.py join` command qualifies a registered local worker before
+opening its gate. `resign` closes admission first, requests handoff only for
+retry-safe owned work, and waits for exact-attempt containment and reader
+settlement before declaring departure. Unknown ownership or cleanup evidence
+retains the hold. It neither terminates unrelated work nor treats absence from
+one census as proof of departure.
+
+Retry handoffs preserve the sealed work unit, finite attempt budget, residency
+declaration and frozen window plan. A durable carrier binds the withdrawal to
+the live claim's action, nonce, broker scope and publication lineage; an
+operator label alone grants no retry or plan-preservation authority. Repeated
+handoffs follow that lineage without resetting the budget. The implementation
+and heterogeneous-worker qualification boundaries are specified in
+[the fleet expansion contract](../worker-expansion-design.md), with
+[per-requirement evidence](fleet_expansion_requirements_2026-09-20.json) and
+[component merge acceptance](fleet_expansion_acceptance_2026-09-20.json).
+Component qualification does not establish deployed JOIN/RESIGN conformance.
+
 The published immutable runtime is the desired client version. Worker loops
 reload at an idle boundary for every generation, including a republish of the
 same commit. Locally installed privileged clients converge through a root timer
