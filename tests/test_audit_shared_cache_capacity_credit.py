@@ -144,6 +144,13 @@ def _run_mover(tmp_path: Path, queue: pool.PoolQueue, manifest_path: Path,
     """The actual mover lifecycle: claim -> copy -> file receipt -> finish."""
     claimed = _claim(queue)
     assert claimed is not None and claimed["action_key"] == mover
+    _complete_move(tmp_path, queue, manifest_path, mover, consumer, start, end)
+    return claimed
+
+
+def _complete_move(tmp_path: Path, queue: pool.PoolQueue, manifest_path: Path,
+                   mover: str, consumer: str, start: int, end: int):
+    """Copy, file the receipt and finish an already-claimed mover."""
     receipt = stage_move.move(_move_args(
         tmp_path, queue, manifest_path, mover, consumer, start, end))
     assert receipt["complete"] is True
@@ -333,12 +340,10 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     assert (numbers["capacity"], numbers["held"], numbers["free"]) == (1, 1, 0)
 
 
-def test_retire_held_is_idempotent_and_never_reminted(tmp_path: Path) -> None:
+def test_retire_held_is_idempotent_and_reclaimable(tmp_path: Path) -> None:
     """Ledger unit: destroying held tokens counts actuals, retries converge,
-    and a destroyed name never reappears as free -- its marker is kept, so
-    ``ensure_capacity`` skips the index forever.  Honest growth fills around
-    the dead indexes and settles exactly at wanted-minus-dead (safe
-    direction, stable across mints)."""
+    and a destroyed name never reappears except through dead-set reclaim
+    inside an honestly backed wanted bound (no transient excess)."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.tier_ledger(TIER)
@@ -352,14 +357,67 @@ def test_retire_held_is_idempotent_and_never_reminted(tmp_path: Path) -> None:
     assert ledger.retire_held(MOVER_A, {KIND: 2}) == {KIND: 1}
     assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
     assert ledger.retire_held(MOVER_A, {KIND: 1}) == {}
-    # Honest regrowth to 6 fills around the 3 dead indexes and settles
-    # exact and stable: no dead name returns, no churn on repeat mints.
-    queue.mint_tier_capacity(TIER, {KIND: 6})
-    assert ledger.capacity().get(KIND) == 3
-    assert ledger.available().get(KIND) == 3
-    queue.mint_tier_capacity(TIER, {KIND: 6})
-    assert ledger.capacity().get(KIND) == 3
-    assert ledger.available().get(KIND) == 3
+    dead = sorted(path.name for path in (ledger.minted_dir / "dead").iterdir())
+    assert len(dead) == 3, dead
+    # Honest regrowth to 6 reclaims exactly the dead slots inside the
+    # wanted bound: capacity returns whole, free exact, then stable.
+    result = queue.mint_tier_capacity(TIER, {KIND: 6})
+    assert result["reclaimed"] == {KIND: 3}, result
+    assert ledger.capacity().get(KIND) == 6
+    assert ledger.available().get(KIND) == 6
+    result = queue.mint_tier_capacity(TIER, {KIND: 6})
+    assert result["reclaimed"] == {}, result
+    assert ledger.capacity().get(KIND) == 6
+
+
+def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
+    """A token renamed into a reclaiming slot mid-apply cannot duplicate:
+    the guard already passed, but the ordinary ensure still saves it --
+    adoption re-marks the found token and the fill loop skips the marked
+    name, so no second copy is ever created. Capacity stays exact."""
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    ledger = queue.tier_ledger(TIER)
+    queue.mint_tier_capacity(TIER, {KIND: 4})
+    assert ledger.acquire(MOVER_A, {KIND: 2}) is True
+    assert ledger.retire_held(MOVER_A, {KIND: 1}) == {KIND: 1}
+    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    dead_dir = ledger.minted_dir / "dead"
+    (victim,) = sorted(path.name for path in dead_dir.iterdir())
+    spare = tmp_path / "spare-token"
+    spare.write_bytes(b"x")
+    (ledger.held_dir / MOVER_B).mkdir(parents=True, exist_ok=True)
+    real_unlink = Path.unlink
+
+    def _rename_in(path_self, *args, **kwargs):
+        if str(path_self) == str(dead_dir / victim):
+            # A rename landing between the guard and the unlink: the slot
+            # is live again before anything is reaped.
+            os.rename(str(spare), str(ledger.held_dir / MOVER_B / victim))
+        return real_unlink(path_self, *args, **kwargs)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(Path, "unlink", _rename_in)
+    try:
+        result = queue.mint_tier_capacity(TIER, {KIND: 4})
+    finally:
+        monkey.undo()
+    # No duplicate: the slot is held once, marked once, dead record gone.
+    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert (ledger.minted_dir / victim).exists()
+    assert not (dead_dir / victim).exists()
+    assert result["reclaimed"] == {KIND: 1}, result
+    assert ledger.capacity().get(KIND) == 4
+    copies = 0
+    for path in pool._scan(ledger.free_dir):
+        copies += path.name == victim
+    for holder in pool._scan(ledger.held_dir):
+        if holder.is_dir():
+            for path in pool._glob(holder, "*-*"):
+                copies += path.name == victim
+    assert copies == 1, "exactly one live token carries the name"
+    result = queue.mint_tier_capacity(TIER, {KIND: 4})
+    assert ledger.capacity().get(KIND) == 4
 
 
 # -- R3: the actual cycle, fractional buckets, failed decharge -------------
@@ -382,7 +440,8 @@ def _tiny_discover(stage: Path, capacity_bytes: int, fill: int):
                  worker_mem_gb):
         return {TIER: {
             "tier_id": TIER, "tier": "stage", "host": socket.gethostname(),
-            "mountpoint": str(stage), "dataset": "tank/stage",
+            "pool": "tank/stage", "dataset": "tank/stage",
+            "mountpoint": str(stage),
             "capacity_bytes": capacity_bytes,
             "capacity_source": storage_tiers.WRITABLE_CAPACITY_SOURCE,
             "primarycache": "all",
@@ -662,3 +721,114 @@ def test_concurrent_egress_and_mint_never_shows_phantom(tmp_path: Path) -> None:
     assert _claim(queue) is None
     numbers = _ledger_numbers(queue)
     assert (numbers["capacity"], numbers["held"], numbers["free"]) == (1, 1, 0)
+
+
+# -- R4: mixed-time mint + dead-marker regrowth (minimal REDs) ----------------
+
+def test_mixed_time_mint_does_not_create_free(tmp_path: Path) -> None:
+    """A copy+complete landing between discovery and the mint must not mint
+    free: the actual cycle runs with discovery W=1 while A's bytes land
+    before the mint section, and C must still be refused.  The lock-time
+    re-sample is doubled by the modelled disk (same shape as the
+    production `stage_dataset` reader); everything else is the production
+    path, including the mint lock that orders A's filing against the
+    re-sample."""
+    disk = {"writable": 1}  # the modelled disk
+    queue = _fleet(tmp_path)
+    manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    total = 2 * MIB
+    queue.mint_tier_capacity(TIER, {KIND: 1})
+    _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
+    _shield_consumer(queue)
+    claimed = _claim(queue)
+    assert claimed is not None and claimed["action_key"] == MOVER_A
+    assert _ledger_numbers(queue)["free"] == 0
+
+    real_apply = pool.PoolQueue._apply_tier_capacity
+    real_helper = tier_loop.mint_stage_supply
+    applied: list[dict] = []
+
+    def completing_helper(*args, **kwargs):
+        if not applied:
+            # A lands between discovery and the mint section, for real --
+            # before any lock is taken, so no copy runs under a global lock.
+            _complete_move(tmp_path, queue, manifest_path,
+                           MOVER_A, CONSUMER_A, 0, MIB)
+            disk["writable"] = 0
+            applied.append("completed")
+        return real_helper(*args, **kwargs)
+
+    def recording_apply(self, tier_id, tier_ledger, wanted):
+        applied.append(dict(wanted))
+        return real_apply(self, tier_id, tier_ledger, wanted)
+
+    def fake_stage_dataset(pool_name, **kwargs):
+        return {"dataset": pool_name, "available_bytes": disk["writable"] * storage_tiers.GIB,
+                "mountpoint": str(tmp_path / "stage"), "primarycache": "all"}
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(tier_loop, "mint_stage_supply", completing_helper)
+    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", recording_apply)
+    monkey.setattr(storage_tiers, "stage_dataset", fake_stage_dataset)
+    try:
+        announced = tier_loop.cycle(
+            queue, host=socket.gethostname(), source_pool="tank",
+            receipts=tier_loop.ReceiptCache(),
+            discover=_tiny_discover(
+                tmp_path / "stage", capacity_bytes=disk["writable"] * storage_tiers.GIB,
+                fill=0))
+    finally:
+        monkey.undo()
+    wanteds = [entry for entry in applied if isinstance(entry, dict)]
+    assert len(wanteds) == 1, wanteds
+    # Mechanism, not just verdict: the mint must pair the re-sampled
+    # writable (0, after the copy) with the newcomer's landed (1).
+    assert wanteds[0][KIND] == 1, wanteds
+    numbers = _ledger_numbers(queue)
+    snap = {"applied": wanteds, "ledger": numbers, "disk": dict(disk)}
+    print("AUDIT mixed-time " + json.dumps(snap, sort_keys=True))
+    _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
+    assert _claim(queue) is None, (
+        "MIXED-TIME OVERMINT: " + json.dumps(snap, sort_keys=True))
+    assert numbers["free"] == 0, snap
+
+
+def test_fresh_mint_regrows_usable_capacity(tmp_path: Path) -> None:
+    """Decharged names must not ratchet usable capacity down: after A/B
+    shared, A decharge and B delete, a fresh mint on honestly regrown
+    writable readmits a newcomer -- repeatedly, without shrinkage."""
+    queue = _fleet(tmp_path)
+    manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    total = 2 * MIB
+    _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
+    _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
+    _supply(queue, 0)
+    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+                                stage_root=str(tmp_path / "stage"))
+    assert first.get("tokens_decharged") == 1
+    second = stage_release.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
+                                 stage_root=str(tmp_path / "stage"))
+    assert second["entries_deleted"] == 1 and second["tokens_released"] == 1
+
+    # The file is gone: writable honestly holds 1 token again.
+    _supply(queue, 1)
+    _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
+    c_claim = _claim(queue)
+    snap = {"ledger": _ledger_numbers(queue)}
+    print("AUDIT regrow " + json.dumps(snap, sort_keys=True))
+    assert c_claim is not None and c_claim["action_key"] == MOVER_C, (
+        "DEAD-MARKER LEAKAGE: " + json.dumps(snap, sort_keys=True))
+
+    # A second wave on the same ledger must find the same room, not less.
+    _publish_mover(queue, "d" * 64, MIB, 2 * MIB, manifest_sha, total)
+    _supply(queue, 2)
+    d_claim = _claim(queue)
+    snap["round2"] = _ledger_numbers(queue)
+    assert d_claim is not None, (
+        "DEAD-MARKER LEAKAGE (round 2): " + json.dumps(snap, sort_keys=True))
+    _supply(queue, 2)
+    assert _ledger_numbers(queue) == snap["round2"], snap

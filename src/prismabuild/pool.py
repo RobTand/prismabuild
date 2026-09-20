@@ -2010,18 +2010,24 @@ class ResourceLedger:
         transient phantom a concurrent claimant could steal before the same
         apply's retire removed it again.  A kept marker names a deliberately
         retired index, which ``ensure_capacity`` skips forever: the name can
-        never reappear as writable free while the bytes remain.  There is no
-        marker/token ordering problem to solve -- a single unlink per token,
-        retried idempotently -- and no second state: the markers themselves
-        are the durable record.  Missing tokens (an earlier decharge, a raced
-        release) count as already gone, so this is safe to call twice; only
-        actual destructions are returned.
+        never reappear as writable free while the bytes remain.  Each
+        destroyed name is also recorded durably beside the markers
+        (``minted/dead/<name>``), so honest regrowth can reclaim exactly
+        those slots when backing exists -- see
+        :meth:`PoolQueue._reclaim_dead_markers`.  There is no
+        marker/token ordering problem to solve -- a single unlink per
+        token, retried idempotently -- and no second ledger: the dead
+        records live in the same ledger directory as the markers
+        themselves.  Missing tokens (an earlier decharge, a raced release)
+        count as already gone, so this is safe to call twice; only actual
+        destructions are returned.
         """
 
         destroyed: dict[str, int] = {}
         holder = self.held_dir / action_key
         if not holder.is_dir():
             return destroyed
+        dead_dir: Path | None = None
         for kind, count in sorted(counts.items()):
             want = int(count)
             if want <= 0:
@@ -2037,6 +2043,21 @@ class ResourceLedger:
                 except OSError:
                     continue
                 taken += 1
+                if dead_dir is None:
+                    dead_dir = self.minted_dir / "dead"
+                    try:
+                        dead_dir.mkdir(parents=True, exist_ok=True)
+                    except OSError:
+                        dead_dir = None
+                if dead_dir is not None:
+                    try:
+                        descriptor = os.open(
+                            dead_dir / token.name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    except OSError:
+                        pass
+                    else:
+                        os.close(descriptor)
             if taken:
                 destroyed[kind] = taken
         self._drop_empty_holder(holder)
@@ -4106,7 +4127,32 @@ class PoolQueue:
         fill measurement must survive the action's conclusion -- a tier prices
         its next mover from receipts, and a receipt inside a terminal record
         would be read through a different path on every reaper generation.
+
+        Under the receipt tier's mint lock when the receipt names one: the
+        mint's writable sample and landed snapshot run under the same lock,
+        so filing here is totally ordered against them -- a completion that
+        files before the sample counts with bytes the sample saw, one that
+        files after waits for the next mint (#733 R4).  No payload moves
+        under this lock; the copy already ran.  The mint lock is a leaf
+        everywhere (never held while taking transition/ownership), and
+        same-thread nesting is supported, so filing from inside a mint
+        section cannot deadlock.  A receipt naming no tier files exactly as
+        before (egress receipts are not move receipts and never count).
         """
+
+        tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
+        if isinstance(tier_id, str) and tier_id:
+            try:
+                lock = self.tier_mint_lock(tier_id)
+            except (PoolContractError, OSError):
+                lock = None
+            if lock is not None:
+                with lock:
+                    return self._file_move(action_key, record)
+        return self._file_move(action_key, record)
+
+    def _file_move(self, action_key: str, record: Mapping[str, object]) -> Path:
+        """The atomic receipt write behind :meth:`record_move`."""
 
         path = self.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -5328,11 +5374,104 @@ class PoolQueue:
         Never call without holding :meth:`tier_mint_lock` for the tier.
         """
 
+        reclaimed = self._reclaim_dead_markers(ledger, wanted)
         ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
         total = ledger.capacity()
         lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
         retired = ledger.retire_free_capacity(lower) if lower else {}
-        return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+        return {"tier_id": tier_id, "capacity": ledger.capacity(),
+                "retired": retired, "reclaimed": reclaimed}
+
+    def _reclaim_dead_markers(
+        self, ledger: ResourceLedger, wanted: Mapping[str, int],
+    ) -> dict[str, int]:
+        """Reclaim destroyed names the wanted number has headroom for (#733 R4).
+
+        The authority is the durable dead set (``minted/dead/`` names filed
+        by :meth:`ResourceLedger.retire_held`), never an absence inferred
+        from listings: no scan pair here can miss a rename the way the
+        retired ``ensure_capacity`` analysis showed.  For each name in the
+        set, up to per-kind ``wanted - live`` headroom: guard-stat the
+        token absent from free and held, then unlink the dead record and
+        the original marker, so the ordinary ensure below recreates the
+        slot inside the same wanted bound.  Every intermediate state stays
+        ``<= wanted`` (backed): nothing unbacked is ever claimable.  A
+        guard that finds a live token drops the stale dead record and
+        leaves the original marker alone -- adoption re-marks through its
+        existing path, and the next apply converges.  Dead beyond headroom
+        wait for honest growth.  Crash between set operations converges
+        (markerless and tokenless is never-minted; a rename-caught token
+        is re-marked by adoption).
+        """
+
+        reclaimed: dict[str, int] = {}
+        dead_dir = ledger.minted_dir / "dead"
+        try:
+            names = sorted(path.name for path in _scan(dead_dir)
+                           if path.is_file())
+        except OSError:
+            return reclaimed
+        if not names:
+            return reclaimed
+        try:
+            live_count: dict[str, int] = {}
+            for path in _glob(ledger.free_dir, "*-*"):
+                kind = path.name.rsplit("-", 1)[0]
+                live_count[kind] = live_count.get(kind, 0) + 1
+            for holder in _scan(ledger.held_dir):
+                if holder.is_dir():
+                    for path in _glob(holder, "*-*"):
+                        kind = path.name.rsplit("-", 1)[0]
+                        live_count[kind] = live_count.get(kind, 0) + 1
+        except OSError:
+            return reclaimed
+        for name in names:
+            kind, _, _ = name.rpartition("-")
+            if not kind or kind not in wanted:
+                continue
+            if live_count.get(kind, 0) >= int(wanted[kind]):
+                continue
+            if self._dead_token_live(ledger, name):
+                self._drop_stale_dead(dead_dir, name)
+                continue
+            try:
+                (dead_dir / name).unlink()
+            except OSError:
+                continue
+            try:
+                (ledger.minted_dir / name).unlink()
+            except OSError:
+                continue
+            live_count[kind] = live_count.get(kind, 0) + 1
+            reclaimed[kind] = reclaimed.get(kind, 0) + 1
+        return reclaimed
+
+    def _dead_token_live(self, ledger: ResourceLedger, name: str) -> bool:
+        """Best-effort guard: does a token called ``name`` exist anywhere.
+
+        Either answer converges (live: drop the stale record, keep the
+        marker; absent: reclaim), so a rename racing this stat cannot
+        strand or duplicate capacity -- adoption and the next apply close
+        whichever side it lands on.
+        """
+
+        try:
+            if (ledger.free_dir / name).exists():
+                return True
+            for holder in _scan(ledger.held_dir):
+                if holder.is_dir() and (holder / name).exists():
+                    return True
+        except OSError:
+            return True
+        return False
+
+    def _drop_stale_dead(self, dead_dir: Path, name: str) -> None:
+        """Forget a dead record whose token is live again, best-effort."""
+
+        try:
+            (dead_dir / name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def mint_tier_capacity_guarded(self, tier_id: str, wanted_fn) -> dict[str, object]:
         """Mint one tier's capacity to a number snapshotted under the lock.
