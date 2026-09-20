@@ -147,6 +147,19 @@ PROGRESS_TAG = "progress-v1"
 PROGRESS_HELPER_TAG = "progress-helper-v1"
 # Optional cyclic phase semantics; older v1 policy readers reject the field.
 PROGRESS_CYCLE_TAG = "progress-cycle-v1"
+#: The placement tag a worker offers when it can check an action's declared
+#: container images against its own local Docker before claiming.
+#:
+#: Same shape and same reason as :data:`PROGRESS_TAG`: the claim check is code
+#: a worker either has or does not, and a loop from before the check would
+#: claim image-pinned work, consume the attempt and die inside the action --
+#: #714.  Item tags must already be a subset of the worker's, so requiring a
+#: tag the old loops do not offer is what makes that unreachable.  A worker
+#: without Docker still offers the tag: it performs the check, finds the
+#: presence unknown, and refuses, leaving the item ready for a box that can
+#: see it -- which is the fail-closed behavior this tag exists to reach, not
+#: a reason to hide the capability.
+CONTAINER_IMAGE_TAG = "container-image-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -8088,6 +8101,7 @@ __all__ = [
     "PROGRESS_TAG",
     "PROGRESS_HELPER_TAG",
     "PROGRESS_CYCLE_TAG",
+    "CONTAINER_IMAGE_TAG",
     "action_progress_policy",
     "report_action_progress",
     "validate_progress_policy",

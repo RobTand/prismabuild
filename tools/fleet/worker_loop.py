@@ -108,8 +108,8 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import (adaptive_cpu, box_capacity, core as pb,  # noqa: E402
-                         cpu_topology, pool)
+from prismabuild import (adaptive_cpu, box_capacity, container_images,  # noqa: E402
+                         core as pb, cpu_topology, pool)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1101,6 +1101,12 @@ def _run_loop(stop_requested):
     # against the currently published one below.
     observer = None
     observer_initialized = False
+    #: This box's bounded local Docker inventory, shared by its loops through
+    #: a host-local record: one listing per TTL for the box, not one per loop
+    #: per poll.  It is refreshed independently of the ready queue so the
+    #: first image-pinned submission can be placed, and a failure leaves
+    #: ``None`` (unknown), never an empty set (#714).
+    inventory = container_images.InventoryCache()
     def offered_tags(name: str) -> list[str]:
         """What this box offers, for the name it currently has.
 
@@ -1126,6 +1132,13 @@ def _run_loop(stop_requested):
             # for a box that can serve it.
             tags.append("cpu")
         tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG))
+        # This loop's code performs the declared-image claim check, so it may
+        # take image-pinned work.  A loop from before the check does not offer
+        # the tag and therefore cannot claim that work and die inside it
+        # (#714).  Docker being absent does not remove the capability: the
+        # check then finds presence unknown and refuses, leaving the item
+        # ready for a box that can see it.
+        tags.append(pb.CONTAINER_IMAGE_TAG)
         return tags
 
     host = socket.gethostname()
@@ -1324,11 +1337,18 @@ def _run_loop(stop_requested):
             time.sleep(args.poll_s)
             continue
 
+        # The offer's inventory: the shared record, refreshed at most once per
+        # TTL for the box.  It says what this box can positively show right
+        # now, and an item that declares images is not placeable here without
+        # it.
+        observed_images = inventory.get()
+
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=declared,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
-                           timeout_s=args.timeout_s, addresses=addresses):
+                           timeout_s=args.timeout_s, addresses=addresses,
+                           observed_images=observed_images):
             """The exact advisory record this poll offers the queue.
 
             A closure, not a kwargs dict, so the publisher's child runs the
@@ -1359,6 +1379,11 @@ def _run_loop(stop_requested):
                 # and this is whether it would count committed work first (#480).
                 progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
                 addresses=addresses,
+                # Which local image references this box can positively show.
+                # Present-and-empty says it looked and has none; absent says
+                # it could not look.  An image-pinned item reads both as
+                # not-here at claim and as not-placeable here at dispatch.
+                observed_images=observed_images,
             )
 
         publication = publish_offer(
@@ -1424,12 +1449,23 @@ def _run_loop(stop_requested):
         if drift is not None:
             _refuse_moved_runtime(drift, host=host, boundary="claim boundary")
             return 0
+        # The claim's own evidence, taken after publication so it is not the
+        # offer's TTL that answers a claim.  While image-pinned work is
+        # waiting, the shared record is re-probed at CLAIM_FRESHNESS_S, once
+        # for the box, in this poll and outside every pool lock.  A claim can
+        # still race an image removal between this observation and the
+        # container start; the probe bounds how stale the box's evidence is,
+        # never how immutable the image is.
+        claim_images = (
+            inventory.get(max_age_s=container_images.CLAIM_FRESHNESS_S)
+            if container_images.required_from_items(discovery.snapshot)
+            else None)
         try:
             outcome = queue.serve_once(
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
-                ready=discovery.snapshot,
+                ready=discovery.snapshot, observed_images=claim_images,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop

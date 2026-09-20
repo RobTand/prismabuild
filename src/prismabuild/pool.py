@@ -143,6 +143,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import container_images as image_inventory
 from . import residency_map
 from . import storage_tiers
 from . import box_capacity
@@ -2665,6 +2666,7 @@ class PoolQueue:
         timeout_ceiling_s: float | None = None,
         progress_contracts: Sequence[str] | None = None,
         addresses: Sequence[str] | None = None,
+        observed_images: Sequence[str] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -2775,6 +2777,14 @@ class PoolQueue:
             # storage role that finds no addresses protects every client, as
             # it did before the field existed.
             record["addresses"] = sorted({str(a) for a in addresses})
+        if observed_images is not None:
+            # The exact local references this box positively holds, as the
+            # inventory reports them: bare image IDs and repository-qualified
+            # RepoDigests.  Present-but-empty says the box looked and has
+            # none; absent says the box could not look, and an item that
+            # declares images must read that absence as unknown (#714).
+            record["container_images"] = sorted(
+                {str(entry) for entry in observed_images})
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)
@@ -2850,6 +2860,12 @@ class PoolQueue:
         if not isinstance(required, list):
             raise PoolContractError("pool item tags must be a list")
         wanted = {str(t) for t in required}
+        declared_images = item.get("container_images")
+        if declared_images is not None and (
+                not isinstance(declared_images, list)
+                or not all(isinstance(entry, str) for entry in declared_images)):
+            raise PoolContractError(
+                "pool item container_images must be a list of strings")
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -2859,6 +2875,17 @@ class PoolQueue:
                 continue
             if needs_gpu and not offer.get("has_gpu"):
                 continue
+            if declared_images:
+                # Presence is positive evidence only.  An offer that did not
+                # report an inventory -- a loop from before the field, a box
+                # whose Docker could not be read -- is unknown, and unknown
+                # must not count as a capable box (#714).
+                present = offer.get("container_images")
+                if not isinstance(present, list):
+                    continue
+                seen = {str(entry) for entry in present}
+                if any(image not in seen for image in declared_images):
+                    continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
             # difference is what a publish looks like from the queue: capacity
@@ -3162,6 +3189,7 @@ class PoolQueue:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_safe: bool | None = None,
         container_owner: str | None = None,
+        container_images: Sequence[str] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         residency: Mapping[str, object] | None = None,
         recompute: bool = False,
@@ -3175,6 +3203,12 @@ class PoolQueue:
         claim about the box.  Omitting it means the action is admitted on
         placement alone, which is the pre-ledger behaviour.
 
+        ``container_images`` is the action's sealed set of exact local image
+        references, copied here so the claim can check the box's inventory
+        before it spends an attempt.  Absent means the action declares none,
+        and the item is byte-identical to what it was before the field
+        existed (#714).
+
         ``refuse_withdrawn`` is for *automatic* republication: inside this
         method's transition lock a live cancellation marker refuses the
         submission with :class:`WithdrawnActionError` instead of retiring it.
@@ -3186,6 +3220,40 @@ class PoolQueue:
         self._refuse_if_fenced()
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
+        image_refs: list[str] = []
+        if container_images is not None:
+            # The queue item's copy of the action's sealed requirement.  It is
+            # validated here so a direct producer cannot publish a requirement
+            # the claim check would have to treat as malformed.  It is a
+            # projection of the sealed params -- the direct API trusts its
+            # producer to have derived it, and never re-reads the CAS request
+            # to prove that -- never a second authority.
+            try:
+                image_refs = list(image_inventory.normalize_refs(container_images))
+            except ValueError as exc:
+                raise PoolContractError(f"container_images: {exc}") from exc
+        # Every declaration check is a precondition, ahead of the first side
+        # effect below: a publication this method refuses must not have
+        # retired a live withdrawal, created a directory or answered an
+        # adoption on its way to refusing (#714 review, #708's cancellation
+        # contract).
+        normalized_tags = normalize_placement_tags(tags)
+        if image_refs:
+            # The capability the claim check rides must travel with the
+            # requirement, never be forgotten by a producer: a box that does
+            # not offer it is a loop from before the check, which is exactly
+            # the worker #714 must not reach.
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, pb.CONTAINER_IMAGE_TAG])
+        elif pb.CONTAINER_IMAGE_TAG in normalized_tags:
+            # One spelling of the declaration: the tag is the capability, and
+            # an item carrying it without references is a producer that
+            # dropped the sealed requirement.  Refused rather than run
+            # unchecked.
+            raise PoolContractError(
+                f"{pb.CONTAINER_IMAGE_TAG} requires container_images; an item "
+                "may not require the declared-image capability without "
+                "declaring one")
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
@@ -3280,7 +3348,7 @@ class PoolQueue:
             "action_key": action_key,
             "cas_root": str(cas_root),
             "worker_script": str(worker_script),
-            "tags": normalize_placement_tags(tags),
+            "tags": normalized_tags,
             "needs_gpu": bool(needs_gpu),
             "priority": int(priority),
             "resources": demand,
@@ -3308,6 +3376,8 @@ class PoolQueue:
             item["retry_safe"] = retry_safe
         if container_owner is not None:
             item["container_owner"] = str(container_owner)
+        if image_refs:
+            item["container_images"] = image_refs
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "published_unix": superseded.get("published_unix"),
@@ -5624,6 +5694,7 @@ class PoolQueue:
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
         ready: list[dict[str, object]] | None = None,
+        observed_images: Container[str] | None = None,
     ) -> dict[str, object] | None:
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
@@ -5673,7 +5744,8 @@ class PoolQueue:
                 return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                    capacity=capacity, cpu_tiers=tiers,
                                    controller=controller,
-                                   gpu_controller=gpu_controller, ready=ready)
+                                   gpu_controller=gpu_controller, ready=ready,
+                                   observed_images=observed_images)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -5691,7 +5763,7 @@ class PoolQueue:
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers,
-                           ready=ready)
+                           ready=ready, observed_images=observed_images)
 
     @staticmethod
     def _admission_lock(controller: cpu_admission.Controller | None):
@@ -5858,7 +5930,8 @@ class PoolQueue:
             "preempted_claim": dict(record),
             **addressing,
         }
-        for field in ("max_attempts", "retry_safe", "container_owner"):
+        for field in ("max_attempts", "retry_safe", "container_owner",
+                      "container_images"):
             if record.get(field) is not None:
                 arguments[field] = record[field]
         return arguments
@@ -6189,6 +6262,7 @@ class PoolQueue:
         controller: cpu_admission.Controller | None = None,
         gpu_controller: gpu_admission.Controller | None = None,
         ready: list[dict[str, object]] | None = None,
+        observed_images: Container[str] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -6221,6 +6295,14 @@ class PoolQueue:
         the reservation back, to give the borrow back with it: a claimant that
         lost the rename occupied no borrowed CPU, and a refusal there costs
         one sample's borrow rather than a claim.
+        An item that declares container images (``container_images``, sealed
+        from the action's own params) is refused before any resource decision
+        unless ``observed_images`` positively holds every reference.  ``None``
+        is unknown, an absent reference is named in the denial, and neither
+        path records a pass or touches an attempt or a token: the item stays
+        ready, which is what keeps it portable to the box that has the image
+        (#714).
+
         A starved item (``passes >= STARVATION_FLOOR``) that this host could
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
@@ -6323,6 +6405,53 @@ class PoolQueue:
                             "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
                         })
                     continue
+                declared_images = item.get("container_images")
+                item_tags = item.get("tags")
+                if (not declared_images and isinstance(item_tags, list)
+                        and pb.CONTAINER_IMAGE_TAG in item_tags):
+                    # A record this pool did not write (publish refuses the
+                    # pair) that requires the capability but states no
+                    # reference.  Fail closed: an unstated requirement is
+                    # not an absent one.
+                    self.record_denial(item, "container_image_requirement_missing", {
+                        "tags": item_tags,
+                    })
+                    continue
+                if declared_images:
+                    if (not isinstance(declared_images, list)
+                            or not all(isinstance(image, str)
+                                       for image in declared_images)):
+                        # The pool writes this field from the sealed action;
+                        # a foreign shape is a denial for the item rather than
+                        # a raise out of a poll whose only handler re-raises
+                        # (#592).
+                        self.record_denial(item, "malformed_container_images", {
+                            "container_images": item.get("container_images")})
+                        continue
+                    observed = None
+                    if observed_images is not None:
+                        try:
+                            observed = {str(entry) for entry in observed_images}
+                        except TypeError:
+                            observed = None
+                    if observed is None:
+                        # Unknown is not presence.  Fail closed: the item
+                        # stays ready for a box that can show the reference.
+                        self.record_denial(
+                            item, "container_image_presence_unknown", {
+                                "required": declared_images,
+                            })
+                        continue
+                    absent = image_inventory.missing(declared_images, observed)
+                    if absent:
+                        # Named, and deliberately no ``record_pass`` and no
+                        # token work: this box is not being skipped while it
+                        # waits, it simply cannot run the item, and only a box
+                        # that positively holds the image may claim it (#714).
+                        self.record_denial(item, "container_image_absent", {
+                            "absent": list(absent), "required": declared_images,
+                        })
+                        continue
                 if self.withdrawal_covers(
                         item, action_key=key, withdrawn=withdrawn) is not None:
                     # Already filed under ``withdrawn``, and of the generation that
@@ -10357,6 +10486,7 @@ class PoolQueue:
         adaptive_cpu: bool = False,
         containment: bool = False,
         ready: list[dict[str, object]] | None = None,
+        observed_images: Container[str] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -10368,13 +10498,17 @@ class PoolQueue:
         ``ready`` is a prefetched ``ready_items`` snapshot, read in an
         abandonable child by a caller that must not park in the scan (#16).
         ``None`` scans here, in-process, as before.
+
+        ``observed_images`` is the claiming box's bounded local container
+        inventory, passed through to the claim check for items that declare
+        one; absent means unknown, and unknown refuses (#714).
         """
 
         if self._sweep_due():
             self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
-                          ready=ready)
+                          ready=ready, observed_images=observed_images)
         if item is None:
             return None
         key = str(item["action_key"])

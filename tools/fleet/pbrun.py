@@ -82,8 +82,8 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    adaptive_gpu, core as pb, decomposition as dc, pool, residency_plan,
-    slurm_lane, storage_tiers,
+    adaptive_gpu, container_images, core as pb, decomposition as dc, pool,
+    residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -1311,30 +1311,42 @@ def container_owner(
     identity=None,
     logical_cwd=None,
     placement=None,
+    container_images=(),
 ) -> str:
     """Stable ownership id sealed before the action key exists.
 
     The action key includes the environment, and the environment needs this id,
     so using the final key would be recursive.  Hash the complete pre-lifecycle
     submission identity, including task and retry policy, normalized effective
-    placement, the pre-owner environment, and the marker namespace, instead.
-    Adding the owner and marker variables afterwards is deterministic and
-    leaves no caller-chosen ownership namespace.
+    placement, normalized declared images, the pre-owner environment, and the
+    marker namespace, instead.  Adding the owner and marker variables
+    afterwards is deterministic and leaves no caller-chosen ownership
+    namespace.
+
+    ``container_images`` belongs to that identity even though it is not part
+    of the command: two actions differing only in which image they require
+    must not share a Docker ownership label and ``<owner>.used`` marker, or
+    one action's cleanup can remove the other's live container.  It is
+    included only when nonempty, so a submission without a declaration is
+    byte-for-byte what it was before the field existed.
     """
 
     identity = _git_identity(Path(cwd)) if identity is None else identity
     cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
+    params = {
+        "command": command,
+        "cwd": cwd_identity,
+        "demand": demand,
+        "placement": placement or {"required_tags": []},
+        "retry_policy": retry_policy,
+    }
+    if container_images:
+        params["container_images"] = list(container_images)
     pre_owner_identity = {
         "schema": "prismaquant.prismabuild.container_owner_identity.v1",
         "task": {"determinism": determinism},
         "checkout": identity,
-        "params": {
-            "command": command,
-            "cwd": cwd_identity,
-            "demand": demand,
-            "placement": placement or {"required_tags": []},
-            "retry_policy": retry_policy,
-        },
+        "params": params,
         "environment": {"variables": variables},
         "container_lifecycle": {"marker_root": str(marker_root)},
     }
@@ -1804,6 +1816,88 @@ def parse_progress_phases(
 def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
     return [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
         [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
+
+
+def container_image_required_tags(images: Sequence[str]) -> list[str]:
+    """The capability an image-pinned action must require of a claiming box.
+
+    Same shape and reason as :func:`progress_required_tags`: a loop from
+    before the claim check would take the work, spend the attempt and die in
+    the container, which is exactly #714.  Requiring the tag the new loops
+    offer is what makes that unreachable without a second matcher.
+    """
+
+    return [pb.CONTAINER_IMAGE_TAG] if images else []
+
+
+def container_image_refusal(images: Sequence[object]) -> str | None:
+    """Why ``--container-image`` refuses this list, or ``None``.
+
+    Shared with ``pbcampaign``'s row validation so a manifest is refused at
+    load time in the words the flag would use at submit time.
+    """
+
+    try:
+        container_images.normalize_refs(images)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def require_container_image_scope(*, images: Sequence[str], transport: str) -> None:
+    """Refuse image declarations the named transport cannot enforce.
+
+    The check is a pull-queue claim decision over worker offers; the SLURM
+    lane has no worker inventory to read and would seal a requirement nothing
+    ever verifies.  Refused rather than silently dropped, because the whole
+    point of the declaration is that its absence is what #714 was.
+    """
+
+    if images and transport != "pool":
+        raise ValueError(
+            "--container-image is a pull-queue placement requirement; the "
+            "SLURM lane cannot verify a box's local Docker inventory. Submit "
+            "this action on the pool")
+
+
+def container_image_notice(queue, intent: Mapping[str, object]) -> str:
+    """Which recorded eligible boxes can positively run the declared images.
+
+    A report, not the control.  What stops a loop from before the claim check
+    taking the work is the required capability tag; what stops a box without
+    the image taking it is the claim-time inventory check; and what stops a
+    submission into a fleet that reports the image nowhere is the ordinary
+    placement refusal.  This is the census beside them, so the operator can
+    tell "the box that has it is between announcements" apart from "the box
+    that has the tags never adopted the capability" and from "nobody has it".
+    """
+
+    images = list(intent.get("container_images") or [])
+    if not images:
+        return ""
+    request = {name: value for name, value in intent.items()
+               if name != "container_images"}
+    eligible = queue.placeable_hosts(
+        {**request, "tags": [tag for tag in request.get("tags") or []
+                             if tag != pb.CONTAINER_IMAGE_TAG]},
+        max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if eligible is None:                       # nobody has announced at all
+        return ""
+    capable = set(queue.placeable_hosts(
+        request, max_age_s=RECORDED_OFFER_MAX_AGE_S) or [])
+    reporting = queue.placeable_hosts(
+        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    line = ("pbrun: container image " + ", ".join(images)
+            + " required; reported on record by: "
+            + (", ".join(reporting) if reporting else "(nobody)"))
+    not_reporting = sorted(set(capable) - set(reporting))
+    if not_reporting:
+        line += "; capable but not reporting it: " + ", ".join(not_reporting)
+    no_capability = sorted(set(eligible) - capable)
+    if no_capability:
+        line += (f"; not offering {pb.CONTAINER_IMAGE_TAG}: "
+                 + ", ".join(no_capability))
+    return line + "."
 
 
 def require_deployed_read_plan_storage(*, source_root: Path | None = None,
@@ -4426,6 +4520,7 @@ def freeze_action_template(
     execution_timeout_s: float | None,
     progress: Mapping[str, object] | None,
     profile: object | None,
+    container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
@@ -4481,6 +4576,7 @@ def freeze_action_template(
         identity=identity,
         logical_cwd=logical_cwd,
         placement=placement,
+        container_images=container_image_refs,
     )
     marker = marker_root / f"{owner}.used"
     variables[CONTAINER_OWNER_ENV] = owner
@@ -4588,6 +4684,13 @@ def freeze_action_template(
         # Absent, the key is byte-identical to what it was before this flag
         # existed, so nothing already in the store is orphaned.
         params[pb.PROFILE_PARAM] = profile
+    if container_image_refs:
+        # Sealed for the same reason: an image-pinned action is a different
+        # action from its unpinned twin, and the requirement has to travel on
+        # the action's own bytes -- the queue item's copy is a scheduling
+        # projection of this one, never the other way around (#714).  Absent,
+        # the key is byte-identical to what it was before this flag existed.
+        params["container_images"] = list(container_image_refs)
     return {
         "cas": cas,
         "marker_root": marker_root,
@@ -4731,6 +4834,11 @@ def seal_action_from_template(
         identity=template["checkout_identity"],
         logical_cwd=params["cwd"],
         placement=params["placement"],
+        # The action's own declared images, so a child or an override that
+        # changes them re-derives its own Docker lifecycle rather than sharing
+        # the template's or a sibling's (#714 review).  A movement node cuts
+        # its params from _MOVEMENT_PARAM_KEYS, which does not carry them.
+        container_images=params.get("container_images") or (),
     )
     variables[CONTAINER_OWNER_ENV] = owner
     variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
@@ -5566,6 +5674,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "a matching box actually offers")
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
+    ap.add_argument(
+        "--container-image", action="append", default=[], metavar="REF",
+        help="require the claiming box's local Docker to positively hold this "
+             "image before the action is claimed (repeatable). Accepts "
+             "sha256:<64 hex> for a local image ID or "
+             "repository@sha256:<64 hex> for a manifest digest; a mutable tag "
+             "is refused because it cannot be part of the action's identity. "
+             "PrismaBuild does not pull, load or transfer images: the "
+             "reference must already be local on the claiming box, a box that "
+             "cannot show it leaves the item ready for a box that can, and "
+             "dispatch refuses when no recorded eligible worker reports it. "
+             "Sealed into the action key and requires the container-image-v1 "
+             "worker capability")
     ap.add_argument("--measurement", action="store_true",
                     help="seal task_class=measurement (pool: verified platform, "
                          "local unless --host-class is explicit; "
@@ -5823,6 +5944,17 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         "retry_safe": args.retry_safe,
     }
     determinism = "deterministic" if args.deterministic else "stochastic"
+    # An image reference is sealed into the action's identity, so a mutable
+    # tag or a malformed digest is an argument error here, before any
+    # checkout work, exactly like a missing --cwd.
+    image_refusal = container_image_refusal(args.container_image)
+    if image_refusal is not None:
+        args.refuse_argument(f"--container-image: {image_refusal}")
+    images = container_images.normalize_refs(args.container_image)
+    try:
+        require_container_image_scope(images=images, transport=args.transport)
+    except ValueError as exc:
+        args.refuse_argument(str(exc))
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
@@ -5968,6 +6100,15 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
             [*tags, *progress_required_tags(progress_policy)])
+    if images:
+        # The same capability-not-place rule for declared images: the tag is
+        # what keeps a loop from before the claim check (#714) from taking
+        # work it can only fail.  Which boxes actually hold a reference is
+        # decided by their announced inventory, not by this tag -- a box
+        # offering the tag without the image refuses at claim and leaves the
+        # item ready.
+        tags = pool.normalize_placement_tags(
+            [*tags, *container_image_required_tags(images)])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
@@ -6068,6 +6209,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         execution_timeout_s=args.timeout_s,
         progress=progress_policy,
         profile=args.profile,
+        container_image_refs=images,
         wrapper_dir=wrapper_dir,
     )
     return {
@@ -6107,6 +6249,10 @@ def announce_placement(
     demand = params["demand"]
     progress_policy = args.progress_policy
     intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    if params.get("container_images"):
+        # The sealed requirement, so every verdict below -- placeable,
+        # placement_hosts, the refusal -- reads the same matcher a claim does.
+        intent["container_images"] = list(params["container_images"])
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
@@ -6149,6 +6295,10 @@ def announce_placement(
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)
 
+    image_notice = container_image_notice(queue, intent)
+    if image_notice:
+        print(image_notice, file=sys.stderr, flush=True)
+
     # Refuse work the RECORDED fleet cannot run, at the one moment the caller
     # is still watching.  A required tag no box has offered is not a slow
     # submission: the item matches no worker's placement filter, so it sits in
@@ -6165,19 +6315,60 @@ def announce_placement(
     # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
     # ever announced and stays a warning, so a fleet whose loops predate the
     # registry can submit unchecked.
+    #
+    # Images are one more term in the same matcher, and they make the refusal
+    # sharper rather than a new kind of check: a declared reference no
+    # recorded eligible offer positively reports is exactly as unplaceable as
+    # a tag no box offers, and it fails here instead of in the container
+    # (#714).
     live_verdict = queue.placeable(intent)
     capability_verdict = queue.placeable(
         intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
+        image_line = ""
+        if intent.get("container_images"):
+            image_line = (
+                "  container images: "
+                + ", ".join(intent["container_images"])
+                + " (no recorded eligible worker reports "
+                + ("it" if len(intent["container_images"]) == 1 else "them")
+                + ")\n")
+        remedy = (
+            "Load or pull the image on a box that offers these tags and the "
+            f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
+            "next inventory refresh. An image declaration is a claim-time "
+            "requirement, so a box that cannot positively show it will not "
+            "run the action."
+            if image_line else
+            "Fix the --tag, or start a worker on a box that offers it."
+        )
         raise SystemExit(
             f"pbrun: no recorded worker can run this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
+            f"{image_line}"
             f"  demand:        {demand}\n"
             f"  offered on record: "
             f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
-            f"Fix the --tag, or start a worker on a box that offers it."
+            f"{remedy}"
         )
     if capability_verdict is None:
+        if intent.get("container_images"):
+            # No worker has announced at all, so no inventory exists to place
+            # an image-pinned action against.  Submitting unchecked would put
+            # the action back in the exact position #714 describes: any old
+            # loop that matches the tags could claim it and fail inside the
+            # container.  Refused.
+            raise SystemExit(
+                "pbrun: no worker offers on record, and this action declares "
+                "container image "
+                + ", ".join(intent["container_images"])
+                + ".\n"
+                "  An image requirement is checked against the claiming "
+                "worker's local Docker inventory, and no worker has announced "
+                "one. Start a worker whose loop offers "
+                f"{pb.CONTAINER_IMAGE_TAG}, load the image on a box that "
+                "offers these tags, and resubmit."
+            )
         print("pbrun: no worker offers on record; submitting unchecked",
               file=sys.stderr, flush=True)
     elif live_verdict is not True:
@@ -6241,6 +6432,10 @@ def publication_row(
         "container_owner": str(variables[CONTAINER_OWNER_ENV]),
         "checkout_snapshot": params["checkout_snapshot"],
     }
+    if params.get("container_images"):
+        # Derived from the sealed body, never re-read from the caller: the row
+        # describes the action, so the action's own params are the authority.
+        row["container_images"] = list(params["container_images"])
     # The repo checkout can advance just before the atomic runtime generation
     # rolls.  The previous PoolQueue already accepts the safety-critical bound,
     # so keep that mixed window usable; add the explanatory annotation once the

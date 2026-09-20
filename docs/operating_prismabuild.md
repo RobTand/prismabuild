@@ -193,6 +193,7 @@ its existing limits. This is not a whole-submission timeout.
 | `--gpu-capacity N` | Explicit capacity override for `--exclusive`; normally leave it unset so worker offers supply the physical capacity. It does not set shared job concurrency. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
+| `--container-image REF` | Require the claiming box's local Docker to positively hold this exact image reference before the action is claimed. Repeatable. Accepts `sha256:<64 hex>` (local image ID) or `repository@sha256:<64 hex>` (manifest digest); a mutable tag is refused. **Part of the action identity**, and it moves the Docker ownership id. Pool only. | Refused: the lane has no worker inventory to check. |
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
@@ -204,6 +205,63 @@ can ledger only those names. `pbcampaign` performs the same client validation
 while loading the entire manifest, before it publishes even an earlier valid
 row. This is a command-client boundary: the generic `PoolQueue` API retains
 its producer-defined resource vocabulary.
+
+### Declared container images
+
+`pbrun --container-image REF` (repeatable; `container_images` on a campaign
+row) declares an image the action needs **already present in the claiming
+box's local Docker**. It exists because a `gb10`-tagged action that needed an
+image only sparky had was claimed by sparklina and died inside its wrapper
+after the attempt was spent (#714).
+
+What PB does with it:
+
+- **Seal it, never parse it.** The normalized references are part of the
+  action's params, its key, and its Docker ownership id; PB does not read
+  them out of a command line, and it does not pull, load, copy or transfer
+  an image. The sealed action is the authority; the queue item's
+  `container_images` is its scheduling projection, and `publish` refuses an
+  item that claims the `container-image-v1` capability without references.
+  Deriving that projection from the sealed params is the producer's job:
+  `pbrun`, `fleet_submit` and `pbcampaign` do it, while a direct
+  `PoolQueue.publish` caller is trusted to do the same -- the queue record is
+  not re-verified against the sealed CAS body.
+- **Require the capability.** A declared image adds the required placement
+  tag `container-image-v1`. Only a worker loop that performs the claim check
+  offers it, so an old loop cannot claim image-pinned work during a rolling
+  deployment.
+- **Place on positive evidence.** Workers announce the references they
+  positively hold in their offer (`container_images`); an offer that did not
+  report an inventory -- Docker absent, a read failure, a loop from before
+  the field -- is *unknown*, and unknown is not presence. `placeable`,
+  `placeable_hosts` and `pbcampaign`'s census all read that matcher, and a
+  dispatch into a fleet that reports the reference nowhere is refused before
+  anything is queued, naming the reference.
+- **Refuse at claim, keep it portable.** At claim time the worker reads its
+  shared inventory record freshly (re-probed at least every five seconds
+  while image-pinned work is waiting, outside every pool lock). A missing
+  reference is denied as `container_image_absent` with the digest named; an
+  unreadable inventory is `container_image_presence_unknown`. Either denial
+  records no pass, spends no attempt and takes no token, so the item stays
+  `ready` and the box that has the image claims it. The residual race -- an
+  image removed after the observation and before the container starts -- is
+  reported by the action's own run time, not presented as impossible.
+
+Practical rules:
+
+- Reference forms. `sha256:<64 hex>` matches the local image **ID**;
+  `repository@sha256:<64 hex>` matches that exact **RepoDigest**, repository
+  context included. The two are not aliases. Mutable tags (`repo:tag`) are
+  refused; use a digest.
+- The image must be local *before* the action is claimed. A workflow that
+  loads its image from an archive inside the action (PrismaQuant's
+  `container.archive`) must **not** declare it: PB would deny the claim
+  before the loader ran. Load/pull first, then declare, or leave the
+  requirement undeclared and own the run-time failure.
+- A 16-loop box costs one Docker metadata read per interval, not one per
+  loop per poll; the record lives in this uid's private local cache and a
+  record that is malformed, foreign, future-dated or symlinked reads as
+  unknown.
 
 ### `--profile`: an opt-in profile, sealed into the key
 

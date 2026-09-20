@@ -59,6 +59,12 @@ and each one is exactly one ``pbrun`` flag:
 ``retry_safe``       ``--retry-safe``
 ``progress_phases``  ``--progress-phase``, once per entry, ``"name=seconds"``
 ``progress_cycle``   ``--progress-cycle`` (boolean; requires phases)
+``container_images`` ``--container-image``, once per entry: an exact local
+                     image reference (``sha256:<64 hex>`` or
+                     ``repository@sha256:<64 hex>``) the claiming box must
+                     positively hold before the action runs. Mutable tags are
+                     refused; PB never pulls or loads, so the image must
+                     already be local. Pool transport only
 ``max_attempts``     ``--max-attempts``
 ``data_manifest``    ``--data-manifest``: file naming the shared-mount bytes
                      this row reads, so a storage-role loop can make them
@@ -258,6 +264,7 @@ _REPEATED_FIELDS = (
     ("tags", "--tag"),
     ("snapshot_ref", "--snapshot-ref"),
     ("progress_phases", "--progress-phase"),
+    ("container_images", "--container-image"),
 )
 KNOWN_FIELDS = frozenset(
     {"argv", "demand", "env"}
@@ -560,6 +567,17 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     except SystemExit as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    images = row.get("container_images") or []
+    refusal = pbrun.container_image_refusal(images)
+    if refusal is not None:
+        raise _refuse(index, "container_images", refusal, images)
+    try:
+        # The same closed vocabulary pbrun applies at submit time: the image
+        # check is a pull-queue claim decision, and a SLURM row would carry a
+        # requirement nothing verifies.
+        pbrun.require_container_image_scope(images=images, transport=transport)
+    except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     attempts = row.get("max_attempts")
     if attempts is None:
