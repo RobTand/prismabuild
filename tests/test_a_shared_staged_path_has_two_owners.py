@@ -306,7 +306,7 @@ def test_a_claimed_copy_without_a_fragment_still_owns_its_paths(fleet) -> None:
     assert receipt["entries_deleted"] == 0
 
 
-def test_a_copy_start_waits_out_an_in_progress_egress_snapshot() -> None:
+def test_a_copy_start_waits_out_an_in_progress_egress_snapshot(tmp_path: Path) -> None:
     """The start gate orders a new claim after a snapshotting egress.
 
     Event-driven, no sleeps: the main thread holds the ownership lock (the
@@ -391,7 +391,7 @@ def test_ownership_scan_scales_with_fragments_not_entries(tmp_path: Path) -> Non
                 "tier_id": TIER, "stage_root": str(stage),
                 "manifest_sha256": "a" * 64,
                 "entries": {
-                    f"{i}:/mnt/shared/noise-{consumer}-{mover}-{i}.bin": {
+                    f"0:/mnt/shared/noise-{consumer}-{mover}-{i}.bin": {
                         "stage_path": str(stage / f"n-{consumer}-{mover}-{i}.bin"),
                         "bytes": 1024, "sha256": "b" * 64, "offset": 0,
                     } for i in range(3)
