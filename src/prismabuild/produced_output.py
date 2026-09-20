@@ -172,7 +172,9 @@ def validate_template(value: object) -> dict[str, object]:
                 f"{sorted(ARTIFACT_CLASSES)}")
         if name in checked_slots:
             raise ProducedOutputError("template slots must not repeat a slot")
-        checked_slots[name] = str(cls)
+        # Preserve the sealed shape ({slot: {class}}) so validation is
+        # idempotent: a validated template re-validates byte-identically.
+        checked_slots[name] = {"class": str(cls)}
     maxima = value.get("durable_maxima")
     if not isinstance(maxima, Mapping):
         raise ProducedOutputError("template durable_maxima must be an object")
@@ -465,10 +467,11 @@ def validate_descriptor(value: object, template: Mapping[str, object],
         raise ProducedOutputError(
             f"descriptor schema must be {DESCRIPTOR_SCHEMA_V2!r}")
     slot = _name(value.get("slot"), where="descriptor slot")
-    slot_class = checked_template["slots"].get(slot)
-    if slot_class is None:
+    slot_spec = checked_template["slots"].get(slot)
+    if slot_spec is None:
         raise ProducedOutputError(
             f"descriptor slot {slot!r} is not in the template's authorized slots")
+    slot_class = slot_spec.get("class") if isinstance(slot_spec, Mapping) else slot_spec
     cls = value.get("artifact_class")
     if cls != slot_class:
         raise ProducedOutputError(
