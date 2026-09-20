@@ -115,6 +115,23 @@ def stat_identity(path: str) -> dict[str, int] | None:
         return None
 
 
+def file_id_matches(published: object, live: object) -> bool:
+    """Whether a recorded ``file_id`` is the identity the file has now.
+
+    The one comparison every strict reader, every publication proof and
+    every adoption verification makes: a material entry's recorded identity
+    against a live ``stat_identity`` of the same name, field by field,
+    ignoring anything else either dict carries.  ``False`` for anything
+    unreadable -- an unstatable file or a malformed record is a mismatch,
+    never a pass (#755).
+    """
+
+    if not isinstance(published, Mapping) or not isinstance(live, Mapping):
+        return False
+    return all(live.get(field) == published.get(field)
+               for field in ("ino", "size", "mtime_ns", "ctime_ns"))
+
+
 def _check_identity(value: object, *, where: str) -> dict[str, int]:
     if not isinstance(value, Mapping):
         raise ReaderLeaseError(f"{where} must be an object")
@@ -2653,6 +2670,7 @@ __all__ = [
     "retiring_for",
     "retiring_path",
     "stat_identity",
+    "file_id_matches",
     "validate_material",
     "validate_pin",
     "validate_retiring",

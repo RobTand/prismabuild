@@ -207,11 +207,14 @@ class _StagedPublisher:
       identity: adopt the published incarnation, discard the temp.
       Unchanged bytes keep every live pin valid, so no pin census is
       needed on this path;
-    * present and provably different -- a sidecar digest that matches
-      neither the declared nor the computed digest, or a live stat the
-      sidecar no longer names: refuse at once, without replacing.
-      A shared name with divergent content is a conflict for an owner
-      to resolve, never a blind overwrite;
+    * present and provably different -- a record that dates the current
+      incarnation names a digest that matches neither the declared nor
+      the computed digest: refuse at once, without replacing.  A shared
+      name with divergent content is a conflict for an owner to resolve,
+      never a blind overwrite.  A record whose sidecar dates a
+      superseded incarnation is not this: it is deferred like an
+      undated vouch while another record may still prove the current
+      one (#755);
     * present but unproven, live-pinned, or unreadable: refuse at once
       for pins and unreadable proof state; otherwise wait out the grace
       for a late fragment or an in-flight publisher, then refuse --
@@ -361,8 +364,9 @@ class _StagedPublisher:
                     f"shared staged name is live-pinned by "
                     f"{pins}, not replacing: {destination}")
         if standing == "owned":
-            # A fragment vouches but the date is missing: a crash between
-            # the fragment and its sidecar, or a publisher still running.
+            # A fragment vouches but no usable date exists: a crash between
+            # the fragment and its sidecar, a publisher still running, or a
+            # sidecar dating an incarnation this name no longer carries.
             # Defer to the stall policy's retry; never replace what
             # another publication names -- including after the grace.
             if heal:
@@ -512,11 +516,15 @@ class _StagedPublisher:
           manifests (no repeat hash of the existing file); or the origin
           fast path (the published file still carries this copy's source
           identity) with the sidecar digest riding along;
-        * ``"divergent"`` -- a fragment names the path but the bytes are
-          provably not these (digest or stat mismatch): immediate
-          refuse, never wait;
+        * ``"divergent"`` -- a record that dates the *current* incarnation
+          names the path but the bytes are provably not these (digest
+          mismatch): immediate refuse, never wait.  A record whose
+          ``file_id`` names a superseded incarnation is not this: it says
+          nothing about the bytes that are there now, so it is skipped and
+          the search keeps looking for one that does (#755);
         * ``"owned"`` -- a fragment names the path without proving it
-          (sidecar missing): defer, a rerun may date it;
+          (sidecar missing, undated, or dating a superseded incarnation):
+          defer, a rerun may date it;
         * ``"clean"`` -- no fragment names the path at all;
         * ``"unknown"`` -- unreadable proof state: fail closed even over
           an otherwise valid proof, since an unreadable fragment might
@@ -562,7 +570,12 @@ class _StagedPublisher:
                         f"staged destination holds different bytes than "
                         f"manifest digest for {norm}; refusing to "
                         f"invalidate its owner")
-                elif candidate == "owned":
+                elif candidate in ("owned", "stale"):
+                    # ``owned``: a vouch without a usable date.  ``stale``:
+                    # a date for an incarnation this name no longer carries
+                    # -- not evidence that the current bytes differ, so a
+                    # later record may still prove them.  Neither adopts
+                    # and neither permits replacement.
                     standing = "owned"
                 elif candidate is not None and found is None:
                     found = candidate
@@ -577,8 +590,16 @@ class _StagedPublisher:
                          computed: str | None = None,
                          source_id: str | None = None,
                          ) -> tuple[str, dict[str, int]] | str | None:
-        """One fragment file's verdict: proof, "divergent", "owned",
-        "tainted" or None (names nothing here)."""
+        """One fragment file's verdict: proof, "divergent", "stale",
+        "owned", "tainted" or None (names nothing here).
+
+        Identity before content: the sidecar's ``file_id`` is compared
+        against the live stat first, because a record dating a superseded
+        incarnation says nothing about the bytes that are there now --
+        whatever digest it carries (#755).  Only a record that dates the
+        current incarnation may prove these bytes (digest match) or
+        disprove them (digest mismatch, ``divergent``).
+        """
 
         try:
             with open(fragment_path) as stream:
@@ -627,6 +648,25 @@ class _StagedPublisher:
             break
         else:
             return "owned"
+        file_id = reader_lease.stat_identity(norm)
+        published = None
+        for mention in (sidecar.get("entries") or {}).values():
+            if (isinstance(mention, dict)
+                    and os.path.normpath(
+                        str(mention.get("stage_path") or "")) == norm
+                    and isinstance(mention.get("file_id"), dict)):
+                published = mention["file_id"]
+                break
+        if file_id is None or not isinstance(published, dict):
+            # Identity unreadable: the record can neither prove these bytes
+            # nor clear them, and the fail-closed answer stays divergent.
+            return "divergent"
+        if not reader_lease.file_id_matches(published, file_id):
+            # A date for an incarnation this name no longer carries -- the
+            # file was replaced after this sidecar was written.  Not proof,
+            # not divergence, not permission to overwrite: another record
+            # may still date the incarnation that is there (#755).
+            return "stale"
         if isinstance(declared, str) and declared:
             if digest != declared:
                 return "divergent"
@@ -646,20 +686,6 @@ class _StagedPublisher:
             record_digest = digest
         else:
             return "owned"
-        file_id = reader_lease.stat_identity(norm)
-        published = None
-        for mention in (sidecar.get("entries") or {}).values():
-            if (isinstance(mention, dict)
-                    and os.path.normpath(
-                        str(mention.get("stage_path") or "")) == norm
-                    and isinstance(mention.get("file_id"), dict)):
-                published = mention["file_id"]
-                break
-        if (not isinstance(published, dict) or file_id is None
-                or file_id != {key: published.get(key)
-                               for key in ("ino", "size", "mtime_ns",
-                                           "ctime_ns")}):
-            return "divergent"
         return record_digest, file_id
 
 
