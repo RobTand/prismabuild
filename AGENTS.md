@@ -47,10 +47,13 @@ campaign completion, read [the staged-read contract](docs/staged_read_contract_2
 and its [requirement ledger](docs/staged_read_requirements_2026-09-20.json).
 State target versus implemented/deployed per requirement — a `proposed`
 target is owed work, never a claim. Merging, launching, deploying, or
-declaring completion each needs its scoped acceptance record from the
-contract's checklist (§10) with actual evidence (action keys, receipts,
-refusals); reasoned exceptions cite explicit user authority, never agent
-waiver. Spec completion is not implementation satisfaction.
+declaring completion each needs its scoped acceptance record — see the
+[acceptance-record template](docs/staged_read_acceptance_record_template_2026-09-20.md)
+for the distinct prelaunch/merge/deploy/complete fields — with actual
+evidence (action keys, receipts, refusals); reasoned exceptions cite
+explicit user authority, never agent waiver. No waiver of the current
+staged-only policy without user authority. Spec completion is not
+implementation satisfaction.
 
 
 ## Progress and termination — Rob, 2026-09-10 (#480)

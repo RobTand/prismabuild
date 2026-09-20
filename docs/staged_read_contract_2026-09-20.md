@@ -44,16 +44,20 @@ than one of them.
 - ID-03 manifest wire identity: SHA-256 over the sealed file bytes (gzip
   member included where the manifest ships gzipped). What pbrun seals into
   the action key and what the dispatcher binds on the wire.
-- ID-04 manifest canonical identity: SHA-256 over the decoded document
-  canonicalized by exactly `cost_stage_checkpoint.canonical_json_sha256`
-  (sorted keys, fixed separators, UTF-8 encode, `NaN`/`Infinity` refused —
-  non-finite floats have no canonical form and refuse at seal; the single
-  writer newline is excluded from the digest input). Decoded-compare goes
-  canonical-vs-canonical through that one function. Raw-bytes-vs-seal
-  comparisons are forbidden. Not every manifest needs both identities: a
-  manifest consumed only as sealed wire carries ID-03; a manifest compared
-  after decode carries ID-04; a manifest doing both carries both, each
-  checked at its own boundary.
+- ID-04 manifest canonical identity: canonicalization is schema-specific,
+  never a universal PB rule. The PQ receipt path uses exactly
+  `cost_stage_checkpoint.canonical_json_sha256` with producer compat
+  (`ensure_ascii=False`, `allow_nan=False`: UTF-8 bytes, non-finite
+  floats refused — they have no canonical form and refuse at seal; the
+  single writer newline is excluded from the digest input). PB schemas
+  retain their own canonical function; PQ's function is never imported
+  into PB across the repo boundary — each side names its function and
+  version, and cross-side checks compare digest strings, never code.
+  Decoded-compare goes canonical-vs-canonical through the named function.
+  Raw-bytes-vs-seal comparisons are forbidden. Not every manifest needs
+  both identities: a manifest consumed only as sealed wire carries ID-03;
+  a manifest compared after decode carries ID-04; a manifest doing both
+  carries both, each checked at its own boundary.
 - ID-05 provenance, certification, integrity, and location — four
   independent facts, never one field. `certification: dev_uncertified |
   certified` asserts only which release gate ran with its required
@@ -101,10 +105,15 @@ Three coordinates, defined separately; conflating them is refused.
   consumers; there is no universal tile-without-overlap across physical
   files.
 - RNG-02 staged-object identity: `(tier_id, epoch, object_name,
-  object_length)` where split ranges live at offset 0 of their own object.
-  The lease pins this physical byte object, generation included; a
-  re-published object under a new epoch or generation is a different
-  lease target even at the same name.
+  object_length, materialization_generation, content_identity)` where
+  split ranges live at offset 0 of their own object. Generation plus
+  content identity are part of the tuple: the same epoch, path, and
+  length MUST NOT rebind new bytes (ABA) — a republished object is a
+  different lease target. The lease pins this physical byte object.
+  Acquisition and open validate the bound identity (generation +
+  content) and pin the lifetime including async prefetch and mmap
+  mappings: no stat-then-open race — the descriptor validated is the
+  descriptor read, and a mapping outliving its pin is refused.
 - RNG-03 logical read-plan cursor: `(phase, position)` in consumption
   order, which MAY repeat the same source ranges (forward reference,
   reverse replay, chain rebuild). Coverage is proven once per logical
@@ -129,16 +138,16 @@ refused.
 | submitted → waiting | submitter | sealed action, manifests bound (ID-03/ID-04 as applicable) | row visible in `ready/` | sealed request in CAS | malformed seal → never published; ack (ID-09a) is acceptance, not promise |
 | waiting → admitted | claiming worker | tokens fit (INV-01); declared initial working set ready (INV-02); runtime supported (ID-08) | `ready/` → `claimed/` rename under queue discipline | claim record | shortage → denial naming tier/shortage; no pass recorded |
 | admitted → running | worker loop | leases acquired (SM-03) | payload executes | attempt `(nonce, scope_id)`; request immutable | lease refused → back to waiting with reason |
-| running → terminal-success | worker loop | exit 0 | record in `done/`, status `executed`, plus CAS receipt for PB's own records | terminal record + CAS receipt | nonzero exit, timeout, or worker-observed refusal → failed. Payload-identity verification (ID-04/ID-06) is the application consumer's check on its own inputs, not something the worker performs on arbitrary payloads and not something terminal success attests |
+| running → terminal-success | worker loop | exit 0 AND PB publication succeeds (terminal record filed plus CAS receipt for PB's own records) | record in `done/`, status `executed` | terminal record + CAS receipt | nonzero exit, timeout, or worker-observed refusal → failed. Exit 0 with ingestion failure → `result-ingestion-failed`, a failure distinct from execution failure; bytes unpublished. Payload-identity verification (ID-04/ID-06) is the application consumer's check on its own inputs, not something the worker performs on arbitrary payloads and not something terminal success attests |
 | running → terminal-failed | worker loop / reaper | nonzero exit, timeout, or identity refusal; attempt identity + terminal reason preserved | record in `done/` failed or `failed/` | terminal record + log tail | — |
-| waiting/admitted → withdrawn | authorized PB lifecycle only (plan revision, duplicate, supersede policy) | withdrawal authorized AND, if running, owned child containment completed before any resource release | row leaves contention without verdict | `withdrawn/superseded/` drop | a drop is never read as a verdict; release-before-containment is forbidden |
+| waiting/admitted/running → withdrawn | authorized PB lifecycle only (plan revision, duplicate, supersede policy) | running attempts reach containment, then a durable terminal record for the attempt, before any resource release or retry | row leaves contention without verdict | `withdrawn/superseded/` drop plus the attempt's terminal record | a drop is never read as a verdict; release-or-retry-before-terminal is forbidden |
 
 ### SM-02 materialization (per staged range)
 
 | From → to | Actor | Precondition | Effect | Durable record | Failure |
 |---|---|---|---|---|---|
 | absent → copying | mover | tokens reserved for range ceiling; source readable | bytes copy to temp beside final name | mover row receipt (started) | overrun vs reservation → `residency_overran_reservation`, refused before copy |
-| copying → published | mover | digest matches manifest entry; length == range length | atomic rename into place; map names it under epoch | `movers/` receipt via `record_move` + map fragment | mismatch → delete temp, range unpublished |
+| copying → published | mover | tokens reserved for range ceiling; source readable; length == range length; integrity computed during the necessary copy | atomic rename into place; map names it under epoch with the recorded actual digest plus source change-detection evidence | `movers/` receipt via `record_move` + map fragment | expected digest null → the actual digest is recorded, never claimed as "matches known expected". Mismatch against a present expectation → delete temp, range unpublished. Dev certification unchanged (DEV-04) |
 | published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
 | retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
 | published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
@@ -203,9 +212,9 @@ a stale timestamp) before releasing tokens or pins.
 - INV-11 eligibility is class-tag conjunction as implemented; host-pair
   tags admitting neither box are plan errors refused at dispatch.
 - INV-12 checkpoint adoption checks identity/trust without recompute, caps
-  trust at the source mode, and never upgrades adopted `pool-declared`
-  integrity/location evidence without re-verification of the bytes in
-  place; promotion updates integrity and location only and never
+  integrity/location evidence at what re-verification of the bytes in
+  place actually established, and never upgrades either without that
+  re-verification; promotion updates integrity and location only and never
   re-issues certification (ID-05).
 
 ## 6. Prefetch, tiers, and the read set
@@ -229,7 +238,8 @@ a stale timestamp) before releasing tokens or pins.
   run waive the user's staged-only policy. Legacy diagnostics that must
   read pool bytes require explicit scoped user authorization naming the
   ranges and the reason; the authorization rides the sealed request, and
-  resulting payloads stay `pool-declared`. Our own acceptance never
+  resulting payloads carry uncertified integrity/location records with no
+  staged tier claim. Our own acceptance never
   substitutes.
 
 ## 7. Progress, frontier, and liveness
@@ -338,10 +348,14 @@ Staged workflow checklists (each machines-readable: every box names its
 ledger requirement id; reasoned exceptions cite explicit user authority;
 no agent waiver; no performance/quality numbers set here):
 
-- Before launch: identities bound (ID-01–ID-09 as applicable); initial
-  working set ready per verdict (INV-02); strict tier opens enforced on
-  bulk legs or the run is explicitly non-staged with `pool-declared`
-  payloads (INV-03/INV-04 or TIER-04 authorization); window fit proven or
+- Before launch: submission is declarative (rows name inputs, ranges,
+  progress, runtime); PB waits and gates readiness — initial working-set
+  readiness is a pre-claim responsibility of the claiming worker reading
+  the verdict, never pre-submission proof and never agent polling of
+  readiness as a runtime. Identities bound (ID-01–ID-09 as applicable);
+  strict tier opens enforced on bulk legs or the run is explicitly
+  non-staged with uncertified payload records and no staged tier claim
+  (INV-03/INV-04 or TIER-04 authorization); window fit proven or
   `unsupported-workset` refused (PRG-02/PRG-04). A future terminal receipt
   is never demanded before launch.
 - Before merge: scoped validated repair with documented remaining gaps
