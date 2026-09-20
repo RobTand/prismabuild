@@ -200,18 +200,19 @@ def _lock_held_elsewhere(queue: pool.PoolQueue, mover: str):
         thread.join(30)
 
 
-def _tier_record(stage: Path) -> dict[str, object]:
+def _tier_record(stage: Path, *, gib: int = STAGE_GIB) -> dict[str, object]:
     return {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
             "host": "dl380g10", "tier": "stage", "mountpoint": str(stage),
-            "capacity_bytes": STAGE_GIB * GIB}
+            "capacity_bytes": gib * GIB}
 
 
-def _cycle(queue: pool.PoolQueue, stage: Path) -> None:
+def _cycle(queue: pool.PoolQueue, stage: Path, *, gib: int = STAGE_GIB) -> None:
     """One whole tier cycle, the way the loop on the storage box runs it."""
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: {TIER: _tier_record(stage)})
+                    discover=lambda **_kwargs: {
+                        TIER: _tier_record(stage, gib=gib)})
 
 
 # ------------------------------------------------------------- the invariant
@@ -586,10 +587,10 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
 
     # The actual probe: free (2) + the admission shortfall (2).
     pressure = tier_loop.window_pressure(
-        q, tiers={TIER: _tier_record(stage)})
+        q, tiers={TIER: _tier_record(stage, gib=6)})
     assert pressure.get(TIER) == 4, pressure
 
-    _cycle(q, stage)
+    _cycle(q, stage, gib=6)
 
     assert q.tier_ledger(TIER).holder_tokens(_hexkey("firstmover0")) == {
         "stage_gib": PHASE_GIB}
