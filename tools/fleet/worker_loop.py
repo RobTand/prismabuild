@@ -533,10 +533,12 @@ def _open_publication_lock(path: Path) -> int:
 #: A role is a box singleton -- one storage reader, one tier minter -- and the
 #: queue has no lock that makes two of them safe: two readers warm the same
 #: bytes twice and publish contradictory receipts, which is the compounding
-#: movers wedge of 2026-09-19 (#709).  The supervisor's own claim refuses a
-#: second supervisor, but the roles cannot rely on the launcher being single:
-#: a stale generation's supervisor or a hand-started loop holds no claim at
-#: all.  So the lock is taken here, by the process that serves.  The root is
+#: movers wedge of 2026-09-19 (#709).  The supervisor's own host-wide claim
+#: already refuses a second supervisor, but that claim belongs to the
+#: supervisor, not to the role: role entrypoints previously had no per-role
+#: lock, so a direct invocation, a legacy loop or a stale generation's
+#: supervisor could serve a second role beside the running one.  So the lock
+#: is taken here, by the process that serves.  The root is
 #: host-local and private per uid, the same discipline the admission lock
 #: keeps, and ``/tmp`` being cleared on some hosts only means a missing lock
 #: file is "no information" and is re-created -- the same accepted lapse the

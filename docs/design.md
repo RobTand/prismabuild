@@ -2503,9 +2503,11 @@ The handshake above makes a running role *fresh*; it does not make it
 the storage box, and each was free to start its own ``prewarm_loop`` and
 ``tier_loop`` against one queue: two readers of one ready list, double-published
 movers and contradictory fill measurements compounding the fill-capacity wedge.
-The supervisor's box claim should have refused the second process; the role
-guard exists because a role cannot depend on its launcher being single -- a
-stale generation's supervisor or a hand-started loop holds no claim at all.
+The supervisor's own host-wide claim already refuses a second supervisor, but
+the claim is the launcher's, not the role's: role entrypoints previously had
+no per-role lock, so a direct invocation, a legacy loop or a stale
+generation's supervisor could serve a second role beside the current one.
+The guard exists because a role cannot depend on its launcher being single.
 
 * **A service role owns a host-local singleton lock.**  ``worker_loop``'s
   ``take_role_singleton`` takes a nonblocking ``flock`` on
@@ -2545,9 +2547,12 @@ stale generation's supervisor or a hand-started loop holds no claim at all.
   transition: ``role storage pid N state T (stopped)`` in its log, and the
   shut down pending line names the state holding a stop open.  A state that
   cannot be read is "unreadable", never "stopped"; ``Z`` is a zombie, dead
-  and awaiting reap, not an alarm.  Nothing is resumed, killed or replaced
-  while stopped: the stop is the operator's to undo (``kill -CONT``), and
-  the stopped holder keeps the singleton lock while it is diagnosed.
+  and awaiting reap, not an alarm.  The guard never sends ``SIGCONT`` and
+  never starts a replacement before the predecessor actually exits; the
+  existing stale-role rotation may still queue its ``SIGTERM``, which the
+  kernel holds while the role is stopped.  Resuming is the operator's to
+  undo (``kill -CONT``), and the stopped holder keeps the singleton lock
+  while it is diagnosed.
 
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
