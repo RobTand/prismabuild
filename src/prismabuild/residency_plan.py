@@ -1222,13 +1222,19 @@ def retire_predecessor_cancellations(
       the whole renewal refuses while any hit is unreadable, and nothing is
       retired before that refusal -- an operator resolves it.
 
-    The boundary is this call.  A cancellation filed after it -- under the
-    child's lock, whether the interleaving lands before or after the fresh
-    plan is frozen -- is a decision about the new generation and still
-    supersedes it; the automatic publisher never retires a cancellation.
-    ``None`` from ``withdrawn_keys``-backed reads is the ordinary first seal,
-    which is not a renewal at all and returns an empty answer without taking a
-    lock.
+    The boundary for a later child is *that child's own locked retirement* in
+    this transaction -- not this call, and not the freeze that follows it.  The
+    marker is moved while the child's transition lock is held, so a
+    cancellation filed for that child after that instant survives, and the
+    window's next cycle reads it as live: it refuses to publish the child and
+    marks the fresh plan superseded.  The first lead is not special-cased
+    here: retiring its marker in this pass is redundant with the explicit
+    publication the submission runs immediately afterwards, and that
+    publication -- ``publish``'s own transition lock -- is the lead's ordinary
+    boundary, which this helper neither widens nor replaces.  The automatic
+    publisher never retires a cancellation.  ``None`` from
+    ``withdrawn_keys``-backed reads is the ordinary first seal, which is not a
+    renewal at all and returns an empty answer without taking a lock.
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")

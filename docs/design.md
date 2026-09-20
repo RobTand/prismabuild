@@ -4017,12 +4017,23 @@ markers as evidence: under the consumer's transition lock, after
 child still names the old window, and under each child's own lock in the
 parent-before-child order every writer here keeps. The immutable decision
 under `withdrawn/decisions/` stays, and the visible marker itself is filed
-under `withdrawn/superseded/`. The boundary is the seal: a cancellation filed
-after it -- whether the interleaving lands before or after the fresh plan is
-frozen -- is a decision about the new generation and still supersedes it. The
-renewal never teaches the automatic publisher to ignore a marker: the
-window's `refuse_withdrawn` publications and its supersession pass are
-unchanged, and only the deliberate submission retires one.
+under `withdrawn/superseded/`. For a later child the boundary is *that child's
+own locked retirement* in this transaction, not the submission and not the
+freeze that follows it: a cancellation filed for the child after its marker is
+moved survives, and the window's next cycle reads it as live -- it refuses to
+publish the child and marks the fresh plan superseded. The first lead is the
+ordinary explicit-submission case: the submission publishes it in the same
+transaction, and `publish`'s own transition lock is its boundary, unchanged by
+this renewal. The renewal never teaches the automatic publisher to ignore a
+marker: the window's `refuse_withdrawn` publications and its supersession pass
+are unchanged, and only the deliberate submission retires one.
+
+An operator's `--withdraw` of a historical child whose new queue row does not
+exist yet addresses that child's *old* generation: the verb re-affirms the
+durable decision but writes no new visible marker, so it does not stop future
+staging. To cancel future staging, withdraw the **live consumer** -- whose
+withdrawal marks the plan superseded -- or withdraw the child once its new row
+is queued.
 
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
