@@ -744,3 +744,43 @@ one, after the work was stopped).
   implemented: no such binding exists in the accepted tree, and the
   projection refuses rather than drops whatever `publish` will not
   take. Concrete extension coordinates with root once admitted.
+
+## R12 addendum (2026-09-20): retry continues the frozen window
+
+> R12 CORRECTION to the R11 addendum's third bullet (which is preserved
+> above as dated history, not rewritten): withdrawing the consumer does
+> NOT retire its frozen filing anymore. R11 observed the retire and
+> showed the first re-claim still working; R12 proves the retire
+> stranded every later phase and removes it for membership handoffs.
+> The R11 test expectation (`residency_plan_superseded is True`) was
+> updated to the corrected lifecycle in the same commit.
+
+Root review: `pool.withdraw` retired a consumer plan filing whenever
+`preempted_by` was absent (membership passes none), and
+`tier_loop.residency_window` retired it again at any tick that saw a
+membership-withdrawn mover (`_operator_withdrawal` read every
+non-admission marker as an operator decision). Either retire sets
+`publishable=[]` permanently, so a successor stalled behind later
+phases nobody would ever stage.
+
+- Membership handoff preserves the sealed plan and its attempt-bound
+  retry authorization: `pool.withdraw` skips the plan mark when `by`
+  is the exact membership supervisor-owner shape (the same predicate
+  the requeue prefix check uses; only the resign lane mints it, and
+  only for retry-owed rows), and `_operator_withdrawal` answers False
+  for membership-shaped live markers. Actual operator cancellations
+  (any other `by`, no `preempted_by`) still retire, through both paths.
+- No generic skip flag, no resealed plan in tests, no erased terminal,
+  no external resumer: the durable retry identity is the owner shape
+  at withdraw time plus the exact successor lineage
+  (`resigned_by` + `supersedes_withdrawal`) verified at publish by the
+  existing guards. Window funding, capacity/supply mint, shared egress,
+  and SDK code untouched (tier_loop classification hunks only).
+- Proven RED on 3f7402 (consumer withdraw retires the filing; interval
+  tick retires the plan on a membership-withdrawn mover; operator
+  control still retires) and GREEN after, on a TWO-PHASE real plan:
+  membership drain/withdraw, a normal window tick while the withdrawal
+  is still visible before requeue, settlement, requeue, new-worker
+  claim, funded window tick publishing the later mover, its completion,
+  and the successor consumer claim. Operator cancellation of the same
+  shape stops publication across ticks.

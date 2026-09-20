@@ -258,7 +258,7 @@ def _withdrawn_keys(queue: pool.PoolQueue,
 
 
 def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether one live marker is an operator's decision, not admission's.
+    """Whether one live marker is an operator's decision, not a handoff's.
 
     Admission preempts a background holder through the same withdrawal
     ladder, then republishes it immediately with ``supersedes_withdrawal``
@@ -266,13 +266,22 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     same work -- while an operator's decision has no successor and retires
     the window it was made against (#708).  The immutable decision carries
     ``preempted_by`` when admission made it, so the marker record answers.
+
+    A membership handoff answers the same way: a membership supervisor
+    owner (the exact ``{host}:supervisor-{pid}:{starttime}`` shape the
+    pool checks) withdraws only retry-owed rows whose successor revives
+    this exact marker, so the window must keep staging the plan's later
+    phases through the settlement interval instead of retiring it.  Only
+    a non-membership marker with no ``preempted_by`` retires the window.
     """
 
     try:
         marker = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
     except (OSError, pool.PoolContractError):
         return False      # unreadable: not a decision this cycle acts on
-    return isinstance(marker, Mapping) and not marker.get("preempted_by")
+    if not isinstance(marker, Mapping) or marker.get("preempted_by"):
+        return False
+    return not pool._membership_withdrawal_owner(marker.get("withdrawn_by"))
 
 
 def drop_prior_ram_epochs(

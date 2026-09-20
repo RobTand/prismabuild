@@ -10206,14 +10206,21 @@ class PoolQueue:
                     stop_pending["stop_error"] = f"{type(exc).__name__}: {exc}"
 
         # The plan that minted a withdrawn *consumer* is marked superseded as
-        # it goes.  A mover's key names no plan -- the plan lives under the
-        # consumer's key -- so this is a no-op for one, and a mover's plan is
-        # marked by the window that would otherwise republish it (#708).
+        # it goes -- unless the withdrawal is a membership handoff.  A
+        # membership supervisor owner (`{host}:supervisor-{pid}:{starttime}`,
+        # the exact shape `_membership_withdrawal_owner` checks) withdraws
+        # only retry-owed rows whose work continues under a new generation
+        # that revives this exact decision: retiring the filing here would
+        # strand the successor's later phases, while an operator's decision
+        # has no successor and retires the window it was made against.  A
+        # mover's key names no plan -- the plan lives under the consumer's
+        # key -- so this is a no-op for one, and a mover's plan is marked
+        # by the window that would otherwise republish it (#708).
         # Admission's own preemption is excluded: it requeues its holder in
         # the same breath, and marking the plan would pause the window it just
         # put back.
         plan_superseded = False
-        if preempted_by is None:
+        if preempted_by is None and not _membership_withdrawal_owner(by):
             plan_superseded = self.mark_residency_plan_superseded(
                 key, reason=reason or "withdrawn")
 

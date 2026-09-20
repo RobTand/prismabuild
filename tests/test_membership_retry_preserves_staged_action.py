@@ -212,10 +212,11 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
                          capacity={"cpu": 4, "mem_gb": 16})
     assert snap_a is not None and snap_a["action_key"] == CONSUMER
     withdrawn, ready = _resign_handoff(queue, CONSUMER, snap_a, owner)
-    # The withdrawal retires the frozen filing like an operator cancel
-    # does -- yet the retry is not stranded by it: the claim path never
-    # reads supersede markers, and a fresh seal replaces the filing.
-    assert withdrawn["residency_plan_superseded"] is True
+    # A membership handoff preserves its sealed plan: the same work
+    # continues under a new generation, so the filing is NOT retired the
+    # way an operator cancellation retires it (R12 corrected the R11
+    # claim here) -- and the retry is therefore not stranded by it.
+    assert withdrawn["residency_plan_superseded"] is False
     assert ready["residency"] == original["residency"]
     assert ready["attempts"] == 1
     assert ready["resigned_by"] == owner
