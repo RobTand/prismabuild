@@ -85,7 +85,7 @@ def _terminal_transferring(q: pool.PoolQueue, gib: int = 3
         generation="b" * 32) is True
     done = q.item_path(pool.DONE, mover)
     done.parent.mkdir(parents=True, exist_ok=True)
-    return ledger, mover, name, str(done)
+    return ledger, mover, name, done
 
 
 def _names(ledger, key: str) -> list[str]:
@@ -257,7 +257,10 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
     assert len(bound) == 2
     first, second = bound
     # Crash part-way through a stale re-home (the exact split state a
-    # retry inherits): the first bound token already sits grant-ward.
+    # retry inherits): the first bound token already sits grant-ward.  The
+    # grant holder directory must be recreated by hand because the
+    # completed handoff above removed it once it emptied.
+    os.makedirs(ledger.held_dir / grant, exist_ok=True)
     os.rename(ledger.held_dir / mover / first,
               ledger.held_dir / grant / first)
     assert _names(ledger, mover) == [second]
