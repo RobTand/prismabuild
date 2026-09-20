@@ -1694,9 +1694,13 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     worker = claim.get("claimed_by")
     if not isinstance(worker, str) or not worker:
         return {"ok": False, "refusal": "no-worker-context"}
-    # Fleet alias, never the container-local hostname: a census for this
-    # host must find container readers holding under the alias.
-    host = claim.get("claimed_host")
+    # Fleet alias from the queue's own holder resolution (ledger, then
+    # record, then intent) -- never the container-local hostname: a census
+    # for this host must find container readers holding under the alias.
+    try:
+        host = queue.resolve_claim_holder(action_key, claim)
+    except (AttributeError, OSError, ValueError):
+        host = None
     if not isinstance(host, str) or not host:
         return {"ok": False, "refusal": "no-host-context"}
     incarnation = claim.get("worker_incarnation")

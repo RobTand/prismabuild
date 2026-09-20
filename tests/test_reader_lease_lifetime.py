@@ -807,6 +807,16 @@ def test_injected_context_comes_from_pb_sources(fleet,
                 queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
     assert reader_lease.injected_context(
         queue, env=bare)["refusal"] == "no-attempt-context"
+    # Nothing names a box: no local hostname substitution, ever.
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps(
+        {"action_key": CONSUMER, "claimed_by": "worker-7",
+         "resource_scope": {"action_key": CONSUMER, "nonce": nonce,
+                            "scope_id": "unit-1"}}))
+    assert reader_lease.injected_context(
+        queue, env={**bare,
+                    "PRISMABUILD_ACTION_NONCE": nonce,
+                    "PRISMABUILD_ACTION_SCOPE": "unit-1"},
+    )["refusal"] == "no-host-context"
 
 
 def test_acquire_for_carries_fleet_identity_into_refs(fleet) -> None:
