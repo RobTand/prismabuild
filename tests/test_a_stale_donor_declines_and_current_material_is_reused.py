@@ -215,7 +215,13 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
              for key in ledger.held_keys()) if gib}
     root = queue.residency_fragment_root()
     accounted: dict[str, int] = {}
-    for consumer in sorted(e.name for e in root.iterdir() if e.is_dir()):
+    hexdigits = set("0123456789abcdef")
+    # Only consumer directories -- the material sidecars and pin files live
+    # in sibling directories of this root that name no consumer.
+    consumers = sorted(e.name for e in root.iterdir()
+                       if e.is_dir() and len(e.name) == 64
+                       and set(e.name) <= hexdigits)
+    for consumer in consumers:
         for fragment in residency_map.read_fragments(root, consumer):
             mover = str(fragment["mover_action_key"])
             for entry in dict(fragment["entries"]).values():
