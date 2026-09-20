@@ -14,6 +14,13 @@ carries a residency block whose leads are phase 0's mover, that only that
 mover is published, and that the frozen plan's rows are the ones sealed.
 The queue, the tier announcement and the manifest are local; the CAS is
 real.
+
+The last three tests drive #708's repricing contract through the same real
+path: a withdrawal marks the frozen window superseded, a deliberate
+resubmission reseals at the *current* measured fill offer through this
+sealing path (key, CAS body and argv agreeing), and a resubmission while the
+old window's work is still claimed refuses rather than replacing the old
+plan.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ from test_pbrun_detach import _checkout  # noqa: E402
 TIER = "prismabuild-stage:sparky"
 GIB = storage_tiers.GIB
 PHASE_BYTES = 2 * GIB
+FILL_KIND = f"fill_mb_s_pool_side@{TIER}"
 
 
 def _manifest() -> dict[str, object]:
@@ -56,8 +64,29 @@ def _manifest() -> dict[str, object]:
     }
 
 
-def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    """One detached ``--residency stage`` submission against a local queue."""
+def _announce_tier(queue: pool.PoolQueue, *, fill: int | None = None,
+                   mountpoint: Path | None = None) -> None:
+    """Announce the stage tier, optionally with the fill offer it mints."""
+
+    record: dict[str, object] = {
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": TIER, "host": "sparky", "tier": "stage",
+        "mountpoint": str(mountpoint if mountpoint is not None
+                          else queue.root / "stage"),
+        "mover_python": sys.executable,
+        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
+    }
+    if fill is not None:
+        record["tokens"] = {storage_tiers.FILL_KIND: fill}
+    queue.announce_tier(record)
+
+
+def _prepare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """The checkout, queue, tier and argv one submission path needs.
+
+    Built once per test so a second ``pbrun.main`` is a resubmission of the
+    same consumer rather than a fresh fixture.
+    """
 
     work = _checkout(tmp_path)
     manifest_path = tmp_path / "manifest.json"
@@ -69,13 +98,7 @@ def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object
         host="sparky", tags=["sparky", "gb10"], has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
     )
-    queue.announce_tier({
-        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
-        "tier_id": TIER, "host": "sparky", "tier": "stage",
-        "mountpoint": str(tmp_path / "stage"),
-        "mover_python": sys.executable,
-        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
-    })
+    _announce_tier(queue, mountpoint=tmp_path / "stage")
 
     monkeypatch.setattr(pbrun, "SH", tmp_path)
     monkeypatch.setattr(pbrun, "POLL_S", 0.001)
@@ -86,8 +109,41 @@ def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object
         "--residency", "stage",
         "--", "/bin/bash", "-lc", "printf staged",
     ])
+    return {"queue": queue, "manifest_raw": manifest_raw, "work": work}
+
+
+def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """One detached ``--residency stage`` submission against a local queue."""
+
+    prepared = _prepare(tmp_path, monkeypatch)
     assert pbrun.main() == 0
-    return {"queue": queue, "manifest_raw": manifest_raw}
+    return prepared
+
+
+def _price_receipt(queue: pool.PoolQueue, key: str, *, delivered_mb_s: int) -> None:
+    """One mover receipt that prices the next window's fill demand.
+
+    ``mover_fill_demand_from_receipts`` takes ``min(file-side rate, window
+    delivery / sharers)``, so a single reader with a high file-side rate
+    prices the pool at exactly what the window measured it delivering.
+    """
+
+    queue.record_move(key, {
+        "action_key": key, "tier_id": TIER, "consumer_action_key": "c" * 64,
+        "stage_root": str(queue.root / "stage"), "manifest_sha256": "d" * 64,
+        "range_start_bytes": 0, "range_end_bytes": PHASE_BYTES,
+        "bytes_staged": PHASE_BYTES, "bytes_copied": PHASE_BYTES,
+        "complete": True, "seconds": 20.0, "mb_per_s_file_side": 10_000.0,
+        "movers_claimed_on_tier": 1,
+        "disk_pacing": {"mean_pool_read_mb_s": float(delivered_mb_s)},
+        "unix": 1000.0,
+    })
+
+
+def _receipt_blob(tmp_path: Path, key: str) -> dict[str, object]:
+    path = tmp_path / "cas" / "requests" / key[:2] / f"{key}.json"
+    assert path.exists(), f"sealed action {key[:12]} never reached the CAS"
+    return json.loads(path.read_text())
 
 
 def _detach_key(capsys) -> str:
@@ -158,3 +214,169 @@ def test_the_frozen_plan_rows_are_the_ones_sealed(
     for key in sealed:
         blob = tmp_path / "cas" / "requests" / key[:2] / f"{key}.json"
         assert blob.exists(), f"sealed action {key[:12]} never reached the CAS"
+
+
+# -- repricing after a withdrawal goes through this same sealing path (#708) --
+
+
+STALE_RECEIPT = "a" * 64
+
+
+def _claim(queue: pool.PoolQueue, key: str) -> None:
+    source = queue.item_path(pool.READY, key)
+    item = json.loads(source.read_text())
+    source.unlink()
+    item.update({"action_key": key, "claimed_unix": 1000.0,
+                 "claimed_by": "worker", "claimed_host": "sparky"})
+    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
+
+
+def test_a_superseded_window_reseals_at_the_tier_current_offer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """RED before #708: the resubmission reused the frozen plan and its price.
+
+    The wedge's numbers: the window was sealed at a fill demand of 259 MB/s,
+    the only receipt then.  The operator withdrew the consumer -- marking the
+    plan superseded -- and the tier, which mints what the pool currently
+    offers, announced 65 on its next cycle.  The stale receipt is deliberately
+    left filed, so a fresh seal at 65 can only come from that current offer.
+    The deliberate resubmission seals a *new* plan whose row, CAS body and
+    argv all carry 65 -- with a new action key, because a key is the hash of
+    the body it seals.
+    """
+
+    prepared = _prepare(tmp_path, monkeypatch)
+    queue = prepared["queue"]
+    _price_receipt(queue, STALE_RECEIPT, delivered_mb_s=259)
+    assert pbrun.main() == 0
+    consumer_key = _detach_key(capsys)
+
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    stale_lead = str(stale["phases"][0]["mover_row"]["action_key"])
+    assert stale["phases"][0]["mover_row"]["resources"][FILL_KIND] == 259
+    assert stale["demand_source"]["fill"] == "receipts"
+
+    # The operator ends the stale-priced window.  Marking is immediate; the
+    # body stays filed until the old work has ended.
+    result = queue.withdraw(consumer_key, reason="stale price", by="operator")
+    assert result.get("residency_plan_superseded") is True
+    queue.withdraw(stale_lead, reason="stale price", by="operator")
+    assert residency_plan.read(queue, consumer_key) is not None
+    assert residency_plan.superseded(queue, stale) is not None
+
+    # The tier announces what the pool currently offers.
+    _announce_tier(queue, fill=65, mountpoint=tmp_path / "stage")
+
+    assert pbrun.main() == 0
+    assert _detach_key(capsys) == consumer_key
+    fresh = residency_plan.read(queue, consumer_key)
+    assert fresh is not None
+    mover = fresh["phases"][0]["mover_row"]
+    assert mover["resources"][FILL_KIND] == 65
+    assert mover["action_key"] != stale_lead, "a repriced row is a new identity"
+    assert fresh["demand_source"]["fill"] == "tier-offer-cap"
+    assert fresh["demand_source"]["tier_offer_mb_s"] == 65
+    assert residency_plan.superseded(queue, fresh) is None, (
+        "the stale cancellation never covers the replacement")
+    # The old body was reaped by the planner before the fresh one was frozen.
+    directory = queue.residency_plan_path(consumer_key).parent
+    archived = [path for path in (directory / residency_plan.SUPERSEDED).iterdir()
+                if not path.name.endswith(".superseded.json")
+                and not path.name.endswith(".marker.json")]
+    assert archived
+
+    # Key, sealed body and argv agree about the price the row was published
+    # with -- the property #710 refused to break by rewriting in place.
+    ledger_row = pool._read_json(
+        queue.item_path(pool.READY, str(mover["action_key"])))
+    assert ledger_row is not None
+    assert ledger_row["resources"][FILL_KIND] == 65
+    blob = _receipt_blob(tmp_path, str(mover["action_key"]))
+    assert blob["action_key"] == mover["action_key"]
+    assert blob["params"]["demand"][FILL_KIND] == 65
+    command = blob["params"]["command"]
+    assert command[command.index("--fill-mb-s-pool-side") + 1] == "65"
+    assert command[command.index("--range-start-bytes") + 1] == "0"
+    consumer_row = pool._read_json(queue.item_path(pool.READY, consumer_key))
+    assert consumer_row["residency"]["leads"] == [str(mover["action_key"])]
+
+
+def test_a_resubmission_refuses_while_the_old_windows_work_is_claimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """A live claim is never replaced: refuse, and leave the old plan filed."""
+
+    submitted = _submit(tmp_path, monkeypatch)
+    queue = submitted["queue"]
+    consumer_key = _detach_key(capsys)
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    lead = str(stale["phases"][0]["mover_row"]["action_key"])
+
+    # The lead is running and the consumer is withdrawn: the old window's
+    # ownership has not ended.
+    _claim(queue, lead)
+    queue.withdraw(consumer_key, reason="stale price", by="operator")
+
+    with pytest.raises(SystemExit, match="has not ended"):
+        pbrun.main()
+
+    assert residency_plan.read(queue, consumer_key) == stale, (
+        "the old plan binding is preserved, never replaced")
+
+
+@pytest.mark.parametrize("damage", ["corrupt", "unreadable"])
+def test_a_resubmission_refuses_an_unreadable_supersession_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, damage: str,
+) -> None:
+    """Unknown retirement state is not "not retired": refuse rather than reuse."""
+
+    submitted = _submit(tmp_path, monkeypatch)
+    queue = submitted["queue"]
+    consumer_key = _detach_key(capsys)
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    # The withdrawal writes a valid marker; damage it in place so the only
+    # state the planner can read is "retirement, unreadable".
+    queue.withdraw(consumer_key, reason="test", by="test")
+    marker = residency_plan.superseded_path(queue, stale)
+    if marker.exists():
+        marker.unlink()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if damage == "corrupt":
+        marker.write_text("{ this is not a marker")
+    else:
+        marker.mkdir()        # present, and unreadable as a file
+
+    with pytest.raises(SystemExit, match="unreadable"):
+        pbrun.main()
+
+    assert residency_plan.read(queue, consumer_key) == stale, (
+        "a damaged marker never authorizes a replacement")
+
+
+def test_an_admission_preemption_keeps_the_frozen_plan_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """Admission's own cancellation requeues its holder; the plan is not dead."""
+
+    submitted = _submit(tmp_path, monkeypatch)
+    queue = submitted["queue"]
+    consumer_key = _detach_key(capsys)
+    stale = residency_plan.read(queue, consumer_key)
+    assert stale is not None
+    lead = str(stale["phases"][0]["mover_row"]["action_key"])
+
+    _claim(queue, lead)
+    result = queue.withdraw(lead, reason="preempted for foreground work",
+                            by="admission", preempted_by="f" * 64)
+    assert result["status"] == "withdrawn"
+    assert result.get("residency_plan_superseded") is False
+
+    # The plan is still the agreed decomposition; a retry reuses it rather
+    # than refusing or repricing.
+    reused = residency_plan.read(queue, consumer_key)
+    assert reused == stale
+    assert residency_plan.superseded(queue, reused) is None

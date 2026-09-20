@@ -3894,6 +3894,115 @@ that holds no tokens counts as unpublished, because the same manifest seals the
 same key on a second campaign and a leftover `done` record would otherwise read
 as "already staged".
 
+**A withdrawal supersedes the window, and only then can it be repriced (#708).**
+An operator's `--withdraw` of a mover is a decision about the plan that sealed
+it, not about one row: the row cannot be edited or repriced in place -- its
+action key hashes the sealed resources and argv -- and a window that silently
+republished the cancelled copy would undo the decision at the price it was
+cancelled for (2026-09-19: movers sealed at fill 259 republished against a
+measured offer of 65.7, re-wedging the tier the withdrawal was meant to break).
+So the coordinator marks the plan superseded, by the plan body's digest **and
+the filing's incarnation** (inode, mtime, size), and publishes nothing further
+from it: no mover and no promotion, at any price. Egress rows still run --
+freeing bytes the consumer has read past is cleanup, not staging.
+
+Three identities keep the marker honest. The digest keys it to the body it
+retired; the incarnation keys it to the *filing*, so a deliberate same-body
+resubmission after a reap is not covered by the marker of the body it
+replaced; and `preempted_by` on the marker separates an operator's decision
+from admission's own preemption, which republishes its holder with
+`supersedes_withdrawal` in the same breath and must keep its plan. A marker
+that cannot be read or parsed is **not** "no marker":
+`residency_plan.superseded` answers with an `unreadable` record, and the
+window, adoption, pressure probe and planner all refuse or defer on it.
+
+`None` from `superseded` -- "not retired" -- is an assertion about identity,
+so it is only allowed on a proof: the stamp must be three whole integers
+(JSON integers, not floats or booleans) **and** the current filing's
+incarnation must have been successfully read. A missing, wrongly shaped or
+non-integer stamp, or a stat of the plan that fails, is *unknown* retirement,
+not a different filing, and answers `unreadable` with the reason. The same
+distinction reaches `read_filed`: a stat that failed is reported through
+`on_unreadable` and never answered as "no plan filed", because a caller about
+to seal or reap over unknown state would be guessing.
+
+**The handoff belongs to its callers, not only to its helpers.** The locked
+helpers were correct before the callers were: a caller that read a plan by
+key and then asked `reap` to archive "whatever is filed" could archive a
+replacement it never saw, and a publication outside the consumer's boundary
+could land after the plan that authorized it was reaped. Three call sites fix
+that by sharing one rule -- capture the filing, then act only on that filing
+under the consumer's transition lock:
+
+* `pbrun.residency_stage_rows` captures `(plan, filing)` through
+  `read_filed`, passes both to `reap`, and decides again from whatever is
+  actually filed when the locked reap removes nothing. A reap that refused is
+  never read as "the old filing is gone": it either refuses by name while
+  live work remains, or adopts the replacement filing that now stands.
+* `pbrun.main` holds the consumer's transition lock across the whole
+  ownership transaction -- handoff, seal, `freeze`, the consumer's own
+  publication and the lead mover's. A dead consumer's cleanup pass rereads an
+  old failed or withdrawn terminal every cycle; between a bare `freeze` and
+  the consumer's row it would see a filed plan nobody owns and reap it.
+* Both automatic window publications (`residency_window` and
+  `ram_residency_window`) call `residency_plan.window_owned` under the
+  consumer's lock immediately before `publish(..., refuse_withdrawn=True)`:
+  the captured filing must still be the filed one and the consumer must still
+  be the live, current generation. A cycle snapshot that went stale in
+  between publishes nothing and files a
+  `mover-publish-deferred-stale-window` (or its ram spelling) event. Egress
+  publication stays outside this boundary: freeing bytes the consumer has
+  read past is cleanup, not a new child.
+* `tier_loop.withdraw_dead_consumer_movers` sweeps one terminal per
+  consumer-lock transaction. Its scan observes the terminal and checks for a
+  live consumer outside the lock, so both are re-read inside it -- through
+  `residency_plan.live_state`, whose uncertain answer defers -- and the plan
+  attribution, every child withdrawal and the reap happen there too. Without
+  the lock, a pass that read the old terminal could reach the lead a
+  concurrent resubmission had just published and cancel it; `reap`'s locked
+  recheck runs far too late to undo that.
+
+`handoff_safe` reads under the same discipline. It holds the consumer's lock
+across the whole scan and each child's transition lock across that child's
+two state reads, parent before child -- the one order every writer here keeps
+and the same-thread nesting `posix_lock.held` already supports. Two bare
+`Path.exists` reads let an atomic READY->CLAIMED claim land between them and
+look like a child none of whose states is live; a read that fails is
+uncertainty too, and a state that cannot be read answers "defer", never
+"absent". Only a complete, current scan proves a handoff safe.
+
+The body stays filed while anything still names it. A withdrawn consumer's
+queued or claimed children are still attributable, so
+`withdraw_dead_consumer_movers` keeps cancelling them; a running consumer's
+other resident ranges stay named by the plan for the orphan sweep and for
+adoption, because a handoff must not expose them. The body is archived -- the
+reason in its name, the retired marker beside it as evidence -- only once
+`residency_plan.handoff_safe` says no consumer and no queued or claimed child
+still refers to it, under the consumer's transition lock. `freeze`,
+`mark_superseded` and `reap` all take that one lock and recheck the exact
+filing inside it, so a stale reaper cannot archive the plan a concurrent
+resubmission just sealed, even when the new body is byte-identical. Until the
+handoff is safe a resubmission refuses by name rather than replacing the old
+plan. Nothing about retirement releases a token: resident ranges keep their
+holders, and their bytes are adopted or evicted by the ordinary paths.
+
+**Automatic republication cannot retire a cancellation.** The cycle's
+withdrawn-key snapshot is a scheduling input, not an exclusion: a cancellation
+filed after the snapshot would otherwise be superseded by the very
+`publish` that hands the mover out again. So the tier loop's publications pass
+`refuse_withdrawn`, and `publish` checks for a live marker *inside its own
+transition lock* before it retires anything: the cancellation either wins
+outright (the publication refuses, the plan is marked) or loses outright (the
+withdrawal runs after and cancels the fresh row). Explicit submissions keep
+their own semantics -- re-submitting a key is how a person asks for the work
+again, and the marker is retired as evidence. A deliberately requested fresh
+plan seals its price through the same `pbrun --residency stage` path: the
+tier's **current announced offer** caps the measured single-reader share, so
+a window sealed after the offer sank is admissible without any sealed row
+being rewritten. `residency_plan.freeze` stays first-writer; a superseded
+filing must be reaped before its successor can be sealed, and the planner
+reaps it itself once the handoff is safe.
+
 **The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
 reads the *queue record* of a concluding mover to decide whether its tier tokens
 stay held, so a mover row that reaches the queue without a residency block --

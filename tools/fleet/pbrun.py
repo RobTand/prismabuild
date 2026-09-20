@@ -4293,6 +4293,14 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
                         "its worker checks it at the next heartbeat")
         if status == "already_withdrawn":
             note.insert(0, "already withdrawn")
+        if result.get("residency_plan_superseded"):
+            # The window this consumer froze is stopped with it (#708): say so
+            # where the operator reads the outcome, because the remedy -- a
+            # resubmission that seals a fresh plan at today's price -- is only
+            # available after this one's work ends.
+            note.append("marked its residency plan superseded; a resubmission "
+                        "seals a fresh one at the current price once the old "
+                        "work has ended")
         print(f"pbrun: withdrew {key[:12]} from {where}; " + "; ".join(note),
               file=sys.stderr)
         # An older loop may not understand durable generation decisions.
@@ -4942,6 +4950,39 @@ def movement_tools(tier: Mapping[str, object], *,
     return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
 
 
+def current_fill_offer(tier: Mapping[str, object],
+                       measured: int | None) -> tuple[int | None, int | None, str]:
+    """The fill a *freshly sealed* mover may reserve, and where it came from.
+
+    A sealed row is never rewritten, so the only moment the price can follow
+    the tier is when the window is sealed (#708, #710).  The tier's announced
+    tokens are the offer admission will honour on this cycle; the
+    receipts-derived single-reader share is the fallback for a tier that
+    announces none.  When both exist the smaller wins: never ask more than
+    the tier offers, and never ask more than a reader has been measured
+    drawing.  The tier's own probe rule sizes its offer, so a fresh mover
+    sealed here is admissible without the tier having to grow past it.
+
+    Returns ``(fill, offer, basis)``; a ``None`` fill means nothing has
+    priced the pool, which is the ordinary first-submission state.
+    """
+
+    offer: int | None = None
+    tokens = tier.get("tokens")
+    if isinstance(tokens, Mapping):
+        value = tokens.get(storage_tiers.FILL_KIND)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            offer = int(value)
+    if offer is None:
+        return (measured, None,
+                "receipts" if measured is not None else "unmeasured")
+    if measured is None:
+        return offer, offer, "tier-offer"
+    if measured <= offer:
+        return measured, offer, "receipts-under-offer"
+    return offer, offer, "tier-offer-cap"
+
+
 def residency_stage_rows(
     template: Mapping[str, object],
     *,
@@ -4987,19 +5028,91 @@ def residency_stage_rows(
     # different mover keys and a different plan -- and ``residency_plan.freeze``
     # is first-writer, so it would refuse the whole submission with both bodies
     # in hand.  The frozen plan is the answer to that question, already agreed.
-    frozen = residency_plan.read(queue, consumer_action_key)
-    if frozen is not None:
-        return {
-            "plan": frozen,
-            "residency": {
-                "schema": pool.RESIDENCY_SCHEMA_V1,
-                "manifest_sha256": str(frozen["manifest_sha256"]),
-                "manifest_bytes": int(frozen["manifest_bytes"]),
-                "tier_id": str(frozen["tier_id"]),
-                "leads": residency_plan.leads_for(frozen),
-            },
-            "reused_frozen_plan": True,
-        }
+    #
+    # The one exception is a plan a withdrawal marked superseded (#708): the
+    # request is new, the old window must not be resurrected at the price it
+    # was cancelled for, and the only supported reprice is this sealing path
+    # run again -- after the old window's work has ended.
+    #
+    # The reading and the filing are one captured identity, never a key read
+    # and a later "whatever is filed": a replacement can land between an
+    # advisory check and a reap, and a caller that never saw it must not
+    # archive it.  ``reap`` rechecks the exact ``(plan, filing)`` inside the
+    # consumer's lock; when it removes nothing, this loop reads what is
+    # actually filed now and decides again from that, rather than treating a
+    # refused reap as "the old filing is gone" (#708 review).
+    refusals: list[Exception] = []
+
+    def filed_now():
+        seen = len(refusals)
+        plan, identity = residency_plan.read_filed(
+            queue, consumer_action_key, on_unreadable=refusals.append)
+        if plan is None and len(refusals) > seen:
+            # A plan body this reader refuses, or a stat that failed: unknown
+            # state, and a fresh seal over it would be a guess (#708 review).
+            raise SystemExit(
+                f"pbrun: the residency plan filed for "
+                f"{consumer_action_key[:12]} cannot be read "
+                f"({refusals[-1]!r}); refusing to reuse or replace it. An "
+                f"operator must resolve it under {residency_plan.SUPERSEDED}/.")
+        return plan, identity
+
+    frozen, filing = filed_now()
+    for _attempt in range(3):
+        if frozen is None:
+            break
+        marker = residency_plan.superseded(queue, frozen)
+        if marker is None:
+            return {
+                "plan": frozen,
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": str(frozen["manifest_sha256"]),
+                    "manifest_bytes": int(frozen["manifest_bytes"]),
+                    "tier_id": str(frozen["tier_id"]),
+                    "leads": residency_plan.leads_for(frozen),
+                },
+                "reused_frozen_plan": True,
+            }
+        if marker.get("unreadable"):
+            # Unknown retirement is not "not retired": without a readable
+            # marker nobody can say which window the operator stopped, so a
+            # fresh seal would be a guess and is refused (#708 review).
+            raise SystemExit(
+                f"pbrun: the supersession marker for {consumer_action_key[:12]} "
+                f"is unreadable ({marker.get('error') or 'unknown state'}); "
+                f"refusing to reuse or replace its frozen plan. An operator "
+                f"must resolve the marker under {residency_plan.SUPERSEDED}/.")
+        # A withdrawal marked this window superseded (#708).  Rows are sealed
+        # with the resources their keys hash, so the only supported way to
+        # request the range again at today's price is a fresh plan through
+        # this same sealing path -- and only once the old window's ownership
+        # has ended.  A live consumer or a claimed child is not replaced from
+        # under itself: the old plan is not rewritten, and this refuses.
+        safe, why = residency_plan.handoff_safe(queue, consumer_action_key, frozen)
+        if not safe:
+            raise SystemExit(
+                f"pbrun: the residency plan for {consumer_action_key[:12]} was "
+                f"superseded ({marker.get('reason') or 'withdrawn'}), and its "
+                f"work has not ended: {why}.  Withdraw the consumer and let "
+                f"the tiers loop reap the old window, then resubmit; sealed "
+                f"rows and a frozen plan are never rewritten in place.")
+        reaped = residency_plan.reap(
+            queue, consumer_action_key, reason="superseded-reseal",
+            plan=frozen, filing=filing)
+        if reaped is not None:
+            frozen = None
+            break
+        # The locked reap removed nothing: the handoff went live, or another
+        # handoff changed the filing, after the advisory check above.  Read
+        # the filing that actually stands and decide again from it; a stable
+        # refusal follows on the next pass.
+        frozen, filing = filed_now()
+    else:
+        raise SystemExit(
+            f"pbrun: the residency plan for {consumer_action_key[:12]} kept "
+            f"changing while this submission decided against it; nothing was "
+            f"sealed and nothing published. Retry the submission.")
     stage_root = str(tier.get("mountpoint") or "")
     if not stage_root.startswith("/"):
         raise SystemExit(
@@ -5054,9 +5167,11 @@ def residency_stage_rows(
     # tier mints what the disks delivered plus one probe mover's worth, and a
     # mover that reserves nothing can never be rationed against another.  None
     # until both sides of the bound exist, because a guessed bandwidth is the
-    # habit this replaces.
-    fill = storage_tiers.mover_fill_demand_from_receipts(
+    # habit this replaces.  The tier's *current* offer caps it: a fresh seal
+    # asks no more than admission will honour on this cycle (#708).
+    measured_fill = storage_tiers.mover_fill_demand_from_receipts(
         receipts, tier_id=tier_id, pool_identity=tier_identity)
+    fill, offered_fill, fill_basis = current_fill_offer(tier, measured_fill)
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
@@ -5351,11 +5466,13 @@ def residency_stage_rows(
         # Which receipts priced these movers' cpu and mem_gb, so a demand in
         # the queue traces back to a measurement rather than to a habit.  On
         # the plan, not on a row: ``tier_loop`` publishes a row as
-        # ``queue.publish(**row)``, whose parameters are a closed set.
+        # ``queue.publish(**row)``, whose parameters are a closed set.  The
+        # fill entry names the basis: which tier offer capped it, or that
+        # only receipts priced it.
         demand_source={**priced["demand_source"],
                        "fill_mb_s_pool_side": fill,
-                       "fill": ("receipts" if fill is not None
-                                else "unmeasured")})
+                       "fill": fill_basis,
+                       "tier_offer_mb_s": offered_fill})
     return {
         "plan": plan,
         "residency": {
@@ -6282,28 +6399,37 @@ def main() -> int:
     # a frozen plan and no queue rows rather than a half-published window.
     staged = None
     if args.residency == "stage":
-        staged = residency_stage_rows(
-            template, consumer_action_key=key,
-            tier=resolve_stage_tier(q, args.residency_tier),
-            args=args, queue=q, cas=cas)
-        residency_plan.freeze(q, staged["plan"])
-
-    publication = publication_row(action, args=args, queue=q)
-    if staged is not None:
-        publication["residency"] = staged["residency"]
-    queued_path = publish_or_refuse(q, publication)
-    if staged is not None:
-        # The first phase only -- its first chunk when that phase sealed
-        # chunked (#675).  The rest is the tiers loop's to publish as
-        # this action's accepted progress advances: publishing the whole plan
-        # here would put every phase of a 223-phase read order in ``ready`` at
-        # once, and reserve a stage several times its own size.
-        lead = staged["plan"]["phases"][0]
-        publish_or_refuse(q, dict(residency_plan.lead_mover_row(staged["plan"])))
-        print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
-              f"{staged['plan']['tier_id']}; published phase "
-              f"{lead['name']!r} ({lead['stage_gib']} GiB)",
-              file=sys.stderr, flush=True)
+        # One ownership transaction, under the consumer's existing transition
+        # lock: handoff, seal, consumer publication and lead publication are
+        # indivisible.  A dead consumer's cleanup rereads an old failed or
+        # withdrawn terminal every cycle, and between ``freeze`` and the
+        # consumer's own row it would see a filed plan nobody owns and reap
+        # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
+        # all take this same lock and nest inside it (#708 review).
+        with q._transition_locked(key):
+            staged = residency_stage_rows(
+                template, consumer_action_key=key,
+                tier=resolve_stage_tier(q, args.residency_tier),
+                args=args, queue=q, cas=cas)
+            residency_plan.freeze(q, staged["plan"])
+            publication = publication_row(action, args=args, queue=q)
+            publication["residency"] = staged["residency"]
+            queued_path = publish_or_refuse(q, publication)
+            # The first phase only -- its first chunk when that phase sealed
+            # chunked (#675).  The rest is the tiers loop's to publish as
+            # this action's accepted progress advances: publishing the whole
+            # plan here would put every phase of a 223-phase read order in
+            # ``ready`` at once, and reserve a stage several times its size.
+            lead = staged["plan"]["phases"][0]
+            publish_or_refuse(
+                q, dict(residency_plan.lead_mover_row(staged["plan"])))
+            print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
+                  f"{staged['plan']['tier_id']}; published phase "
+                  f"{lead['name']!r} ({lead['stage_gib']} GiB)",
+                  file=sys.stderr, flush=True)
+    else:
+        publication = publication_row(action, args=args, queue=q)
+        queued_path = publish_or_refuse(q, publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

@@ -77,14 +77,32 @@ the consumer never waits on a mover that is waiting on the consumer.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import time
 
 from . import core as pb
 from . import pool as _pool
 from . import storage_tiers
 
 RESIDENCY_PLAN_SCHEMA_V1 = "prismaquant.prismabuild.residency_plan.v1"
+
+#: The marker filed beside a plan whose window an operator has withdrawn.
+#: The plan body stays readable; the marker is what stops publication and
+#: what a resubmission consults before sealing a fresh plan (#708).
+RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1 = (
+    "prismaquant.prismabuild.residency_plan_superseded.v1")
+
+#: Where a retired plan goes: a subdirectory of the live plan directory, for
+#: the reason ``withdrawn/superseded`` is one.  Every reader of the live
+#: directory addresses a plan as ``<consumer_action_key>.json`` -- ``read``
+#: below, ``pbstatus``'s starvation census, the MCP cursor join, ``pbmetrics``
+#: -- so a subdirectory is invisible to all of them while the retirement
+#: marker and the reaped body stay on disk as evidence.
+SUPERSEDED = "superseded"
 
 _HEX = frozenset("0123456789abcdef")
 #: What a phase says, and nothing else.  Unknown keys refuse, for the reason
@@ -580,15 +598,22 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     """
 
     checked = validate_plan(plan)
-    path = queue.residency_plan_path(str(checked["consumer_action_key"]))
+    key = str(checked["consumer_action_key"])
+    path = queue.residency_plan_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        _pool._publish_immutable(
-            path, pb._canonical_bytes(checked), where="residency plan")
-    except _pool.PoolContractError as exc:
-        raise ResidencyPlanError(
-            f"a different residency plan is already filed for "
-            f"{checked['consumer_action_key']}: {exc}") from None
+    # The consumer's own transition lock, the one ``withdraw`` and the queue's
+    # publication use: a plan is filed, marked and reaped exclusively, so a
+    # reap cannot archive a body filed between its read and its rename, and a
+    # deliberate reseal cannot interleave with the retirement of its
+    # predecessor (#708).
+    with queue._transition_locked(key):
+        try:
+            _pool._publish_immutable(
+                path, pb._canonical_bytes(checked), where="residency plan")
+        except _pool.PoolContractError as exc:
+            raise ResidencyPlanError(
+                f"a different residency plan is already filed for "
+                f"{key}: {exc}") from None
     return checked
 
 
@@ -635,6 +660,534 @@ def read(queue, consumer_action_key: str, *,
     except ValueError as error:
         refused(error)
         return None
+
+
+def _stat_incarnation(path: Path) -> tuple[tuple[int, int, int] | None, OSError | None]:
+    """One filing's incarnation, keeping absence apart from unavailable.
+
+    ``incarnation`` answers ``None`` for both because a caller that only asks
+    "is a plan there" may treat them alike.  A caller deciding against a
+    filing may not: a stat that failed is unknown state, not evidence the
+    file is gone, and a fresh seal over unknown state is a guess (#708
+    review).  Returns ``(incarnation, None)``, ``(None, None)`` for an absent
+    file, or ``(None, error)`` for a stat that failed.
+    """
+
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None, None
+    except OSError as error:
+        return None, error
+    return (int(info.st_ino), int(info.st_mtime_ns), int(info.st_size)), None
+
+
+def incarnation(path: Path) -> tuple[int, int, int] | None:
+    """A filed file's incarnation: the inode, mtime and size it is now.
+
+    Identity for the retirement machinery, not a content hash.  Two seals of
+    one body are two files with different inodes, which is exactly what tells
+    a deliberate same-body resubmission from the filing a marker was written
+    for (#708 review); a content digest cannot.  ``None`` means the file is
+    not there (or not statable), never "unchanged"; a caller that must tell
+    those apart reads through :func:`read_filed`, which retains the
+    diagnostic.
+    """
+
+    return _stat_incarnation(path)[0]
+
+
+def read_filed(queue, consumer_action_key: str, *,
+               on_unreadable: Callable[[Exception], None] | None = None,
+               ) -> tuple[dict[str, object] | None, tuple[int, int, int] | None]:
+    """One filed plan and the incarnation it was read from, both consistent.
+
+    ``read`` alone answers "what does the plan say"; retirement needs "which
+    *filing* of it did the caller decide against", and a replacement can land
+    between a read and a later stat.  So the stat wraps the read and is
+    repeated until it brackets one unchanged file -- the same filing the
+    marker's incarnation check is later made against.
+
+    An incarnation that could not be read at all -- a stat that failed, as
+    opposed to a file that is absent -- is *not* answered as "no plan filed":
+    it is reported through ``on_unreadable``, because a caller about to seal
+    or reap over it holds unknown state, and the only safe reading of unknown
+    state is deferral (#708 review).  ``read``'s own refusals arrive through
+    the same callback.
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+
+    def refused(error: Exception) -> None:
+        if on_unreadable is not None:
+            on_unreadable(error)
+
+    path = queue.residency_plan_path(key)
+    for _attempt in range(3):
+        before, error = _stat_incarnation(path)
+        if error is not None:
+            refused(error)
+            return None, None
+        if before is None:
+            return None, None
+        plan = read(queue, key, on_unreadable=on_unreadable)
+        if plan is None:
+            return None, None
+        after, error = _stat_incarnation(path)
+        if error is not None:
+            refused(error)
+            return None, None
+        if after == before:
+            return plan, before
+    return None, None      # churning under us: defer to the next cycle
+
+
+def _retired_slug(value: object) -> str:
+    """A short, filesystem-safe word for why a plan was retired."""
+
+    cleaned = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return cleaned[:48] or "retired"
+
+
+def superseded_path(queue, plan: Mapping[str, object]) -> Path:
+    """The identity-bound address of one plan filing's retirement marker."""
+
+    key = _action_key(plan.get("consumer_action_key"),
+                      where="consumer_action_key")
+    return _superseded_path(queue, key, plan_sha256(plan))
+
+
+def _superseded_path(queue, consumer_action_key: str,
+                     plan_sha256: str) -> Path:
+    """One plan *identity*'s retirement marker: a sibling of the live plan.
+
+    Keyed by the plan body's digest as well as the consumer, so a marker
+    cannot cover a later plan of the same consumer -- a stale cancellation
+    must never retire a concurrent replacement.
+    """
+
+    return (queue.residency_plan_path(consumer_action_key).parent / SUPERSEDED
+            / f"{consumer_action_key}.{plan_sha256}.superseded.json")
+
+
+def plan_sha256(plan: Mapping[str, object]) -> str:
+    """The identity of one frozen plan body, the way ``freeze`` wrote it."""
+
+    return hashlib.sha256(
+        pb._canonical_bytes(validate_plan(plan))).hexdigest()
+
+
+def _stamped_incarnation(value: object) -> tuple[int, int, int] | None:
+    """A marker's filing stamp, only when it is three whole integers.
+
+    The marker is JSON written by another process on a shared mount.  The one
+    answer that may never be read as "a different filing" -- which authorizes
+    reuse and republication -- is a stamp this reader could not parse, so a
+    missing, wrongly shaped, non-integer or boolean stamp answers ``None``
+    here and every caller turns that into a deferral (#708 review).
+    """
+
+    if not isinstance(value, list) or len(value) != 3:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        return None
+    return (int(value[0]), int(value[1]), int(value[2]))
+
+
+def _read_marker(path: Path) -> tuple[str, dict[str, object] | None, str | None]:
+    """``(state, marker, error)``: absent, ok, or unreadable with its reason.
+
+    Enumerated before reading, because this mount's negative cache can hide a
+    marker another box just wrote; and a marker this reader cannot parse is
+    *unreadable*, a state no caller may read as "no marker".
+    """
+
+    try:
+        paths = _pool._glob(path.parent, path.name)
+    except OSError as exc:                                    # pragma: no cover
+        return "unreadable", None, f"{type(exc).__name__}: {exc}"
+    if not paths:
+        return "absent", None, None
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        return "unreadable", None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(raw, Mapping):
+        return "unreadable", None, "marker is not a JSON object"
+    return "ok", dict(raw), None
+
+
+def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
+    """The retirement marker covering *this filing* of one plan, or ``None``.
+
+    The canonical plan body stays where it was filed: ``read`` still answers
+    with it, which is what keeps a withdrawn consumer's queued children
+    attributable for ``withdraw_dead_consumer_movers`` and what keeps a
+    running consumer's resident ranges named for the orphan sweep and
+    adoption.  What the marker changes is *publication*: the coordinator and
+    the planner consult it before staging anything from the plan, and a
+    resubmission seals a fresh plan once the old window's ownership has
+    ended.
+
+    Two identities are checked, because neither alone is enough.  The digest
+    keys the marker to the body it retired; the file incarnation ties it to
+    the *filing*, so a deliberate same-body resubmission after a reap is not
+    covered by the marker of the body it replaced.
+
+    Unknown retirement is not "not retired": an unreadable or malformed
+    marker answers with a record carrying ``unreadable`` (and the reason),
+    which callers must refuse or defer on.  ``None`` means an absent marker,
+    or one written for another filing of the same body.
+    """
+
+    key = _action_key(plan.get("consumer_action_key"),
+                      where="consumer_action_key")
+    digest = plan_sha256(plan)
+    state, marker, error = _read_marker(_superseded_path(queue, key, digest))
+    if state == "absent":
+        return None
+    if state == "unreadable" or marker is None:
+        return {
+            "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
+            "consumer_action_key": key, "plan_sha256": digest,
+            "reason": "unreadable-marker", "unreadable": True,
+            "error": error or "unreadable marker",
+        }
+    if (marker.get("schema") != RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1
+            or marker.get("consumer_action_key") != key
+            or marker.get("plan_sha256") != digest):
+        return {
+            "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
+            "consumer_action_key": key, "plan_sha256": digest,
+            "reason": "corrupt-marker", "unreadable": True,
+            "error": "marker identity disagrees with its address",
+        }
+    stamped = _stamped_incarnation(marker.get("plan_incarnation"))
+    if stamped is None:
+        # A stamp this reader cannot parse says nothing about which filing
+        # the marker covers, and unknown retirement is not "not retired".
+        return {
+            "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
+            "consumer_action_key": key, "plan_sha256": digest,
+            "reason": "malformed-incarnation", "unreadable": True,
+            "error": ("the marker's plan_incarnation is not three whole "
+                      f"integers: {marker.get('plan_incarnation')!r}"),
+        }
+    current = incarnation(queue.residency_plan_path(key))
+    if current is None:
+        # The marker names a filing this reader cannot stat.  Only a
+        # successfully read current identity may prove the marker covers a
+        # different filing; an unavailable one defers (#708 review).
+        return {
+            "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
+            "consumer_action_key": key, "plan_sha256": digest,
+            "reason": "plan-stat-unavailable", "unreadable": True,
+            "error": "the filed plan's incarnation could not be read",
+        }
+    if stamped != current:
+        # A valid stamp for another filing of the same body.  A deliberate
+        # same-body resubmission after a reap is not covered by it.
+        return None
+    return marker
+
+
+def mark_superseded(queue, consumer_action_key: str, *,
+                    plan: Mapping[str, object] | None = None,
+                    filing: tuple[int, int, int] | None = None,
+                    reason: str = "", movers: Sequence[str] = (),
+                    by: str = "") -> dict[str, object] | None:
+    """Mark one *filing* of a frozen plan superseded, under its own lock.
+
+    A withdrawal is a decision about the *window* that minted the withdrawn
+    action, not about one row.  Rows cannot be edited or repriced in place --
+    a mover's action key hashes the resources and argv it was sealed with
+    (#710) -- and a window whose mover an operator cancelled cannot be
+    published again without overriding that decision (#708).  The marker is
+    the supported answer: publication from the plan stops, its bytes and
+    fragments stay attributable until the work ends, and a deliberate
+    resubmission can seal a fresh plan at the current price.
+
+    ``plan`` and ``filing`` are the caller's decision inputs, from
+    :func:`read_filed`.  Under the consumer's transition lock the current
+    file is re-read and its incarnation compared, so a body that changed
+    after the caller decided is never marked -- a stale cancellation does not
+    retire a concurrent replacement.  With neither given, the current filing
+    is marked, which is what withdrawing an action by its own key means.
+
+    Idempotent and first-writer; the marker names the filing it covers.
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+    with queue._transition_locked(key):
+        current = incarnation(queue.residency_plan_path(key))
+        if current is None:
+            return None
+        if filing is not None and tuple(filing) != current:
+            return None       # the filing changed under the caller: defer
+        current_plan = read(queue, key)
+        if current_plan is None:
+            return None
+        digest = plan_sha256(current_plan)
+        if plan is not None and plan_sha256(plan) != digest:
+            return None
+        path = _superseded_path(queue, key, digest)
+        state, existing, _error = _read_marker(path)
+        if state == "unreadable":
+            return None       # unknown state: an operator resolves it
+        if state == "ok" and existing is not None:
+            # ``current`` was read inside the lock, so a valid stamp that
+            # equals it is this filing's own marker.  A malformed stamp is
+            # never authority -- it is moved to evidence and replaced.
+            if _stamped_incarnation(existing.get("plan_incarnation")) == current:
+                return existing
+            # A marker for an earlier filing of the same body that a failed
+            # reap left at the active address: evidence now, not authority.
+            _retire_marker(queue, key, digest, current)
+        marker: dict[str, object] = {
+            "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
+            "consumer_action_key": key,
+            "plan_sha256": digest,
+            "plan_incarnation": list(current),
+            "reason": str(reason),
+            "marked_unix": time.time(),
+            "marked_by": str(by),
+            "movers": [str(mover) for mover in movers],
+        }
+        try:
+            _pool._publish_immutable(
+                path, pb._canonical_bytes(marker),
+                where="residency plan supersession")
+        except _pool.PoolContractError:
+            # A concurrent mark of this exact filing won; its marker is the
+            # decision, not this one.
+            state, existing, _error = _read_marker(path)
+            return existing if state == "ok" else None
+        return marker
+
+
+def child_keys(plan: Mapping[str, object]) -> list[str]:
+    """Every movement and egress key the plan will ever publish, both legs.
+
+    ``mover_keys`` answers what may hold tier occupancy; this answers what may
+    be *live work* -- a queued or claimed row of either kind -- which is the
+    question a handoff has to ask before a fresh plan replaces a frozen one.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    out: list[str] = []
+    for phase in phases:
+        for mover_role, egress_role, chunk_table in (
+                ("mover_row", "egress_row", "stage_chunks"),
+                ("ram_mover_row", "ram_egress_row", "ram_chunks")):
+            chunks = phase.get(chunk_table)
+            if isinstance(chunks, list):
+                for chunk in chunks:
+                    out.append(str(chunk[mover_role]["action_key"]))
+                    out.append(str(chunk[egress_role]["action_key"]))
+                continue
+            if mover_role in phase:
+                out.append(str(phase[mover_role]["action_key"]))
+            if egress_role in phase:
+                out.append(str(phase[egress_role]["action_key"]))
+    return out
+
+
+#: How one key's live queue state is said in a handoff refusal.
+_LIVE_STATE_LABELS = {_pool.CLAIMED: "claimed", _pool.READY: "queued"}
+
+
+def live_state(queue, action_key: str) -> tuple[str | None, str]:
+    """Where one key is queued right now: ``CLAIMED``, ``READY``, or nothing.
+
+    The caller holds the key's transition lock, so a claim cannot be in
+    progress and both states are one snapshot.  A stat that fails is *not*
+    absence -- this mount's negative cache answers a just-written record as
+    missing, and a reader that turned an I/O error into "empty" would infer a
+    safety nobody proved -- so an absent pair is confirmed by listing the two
+    directories before it is believed.  ``(None, why)`` is that uncertainty,
+    and every caller must defer on it: ``handoff_safe`` refuses on it, and the
+    dead-consumer sweep skips the key for this cycle.
+    """
+
+    for state in (_pool.CLAIMED, _pool.READY):
+        try:
+            queue.item_path(state, action_key).stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return None, f"its {state} record could not be read: {exc}"
+        return state, ""
+    try:
+        for state in (_pool.CLAIMED, _pool.READY):
+            names = {path.stem for path in _pool._scan(queue.dir(state))}
+            if action_key in names:
+                return state, ""
+    except OSError as exc:
+        return None, f"the queue could not be listed: {exc}"
+    return None, ""
+
+
+def handoff_safe(queue, consumer_action_key: str,
+                 plan: Mapping[str, object]) -> tuple[bool, str]:
+    """Whether a superseded window's ownership has ended.
+
+    A fresh plan is a different decomposition: its mover keys differ, so
+    replacing the old one while any of the old window's work is still live
+    would strand a queued or running row nobody can publish, egress or
+    attribute.  The test is the queue's own state, never a clock:
+
+    * the consumer itself must not be in ``ready/`` or ``claimed/`` -- a live
+      window is not handed off from underneath it, it is withdrawn first;
+    * no movement or egress row the plan sealed may be queued or claimed.
+
+    Resident ranges are deliberately not part of the test: their tokens are
+    held by their own keys, a successor adopts them by descriptor, and
+    nothing about a handoff releases them.
+
+    The consumer's transition lock is held across the whole scan, and each
+    child's across its own states -- parent before child, the one order every
+    writer here keeps, and same-thread nesting is supported.  Without the
+    child's lock a READY->CLAIMED claim lands between the CLAIMED and READY
+    reads and looks like a child none of whose states is live, which is the
+    exact window in which a reaper archives a plan a worker is still
+    fulfilling.  A state that cannot be read is uncertainty and answers
+    ``(False, why)``: this function proves safety, and only a complete,
+    current scan proves it.
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+    with queue._transition_locked(key):
+        state, why = live_state(queue, key)
+        if why:
+            return False, f"the consumer: {why}"
+        if state is not None:
+            return False, f"the consumer is still {_LIVE_STATE_LABELS[state]}"
+        for child in child_keys(plan):
+            try:
+                with queue._transition_locked(child):
+                    state, why = live_state(queue, child)
+            except OSError as exc:                            # pragma: no cover
+                return False, f"its row {child[:12]} could not be locked: {exc}"
+            if why:
+                return False, f"its row {child[:12]}: {why}"
+            if state is not None:
+                return False, f"its row {child[:12]} is {_LIVE_STATE_LABELS[state]}"
+    return True, "no live consumer and no queued or claimed child"
+
+
+def window_owned(queue, consumer_action_key: str, *,
+                 filing: tuple[int, int, int] | None = None,
+                 generation: object | None = None) -> tuple[bool, str]:
+    """Whether a captured plan filing and consumer generation still stand.
+
+    The automatic publication sites call this while holding the consumer's
+    transition lock, immediately before the child ``publish`` it authorizes.
+    The lock is what makes the answer mean anything: the plan cannot be
+    reaped, replaced or marked, and the consumer cannot be withdrawn or
+    resubmitted, between it and that publication.  ``filing`` is from
+    :func:`read_filed` and ``generation`` is the consumer record's
+    ``published_unix`` from the same cycle; ``(False, reason)`` defers to the
+    next cycle, which reads what is actually there (#708 review).
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+    current = incarnation(queue.residency_plan_path(key))
+    if current is None:
+        return False, "its plan filing is gone"
+    if filing is not None and tuple(filing) != current:
+        return False, "its plan filing was replaced"
+    for state in (_pool.CLAIMED, _pool.READY):
+        path = queue.item_path(state, key)
+        try:
+            path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return False, f"the consumer's {state} record could not be read: {exc}"
+        if generation is not None:
+            try:
+                item = _pool._read_json(path)
+            except (OSError, ValueError) as exc:
+                return False, f"the consumer's record could not be read: {exc}"
+            if not isinstance(item, Mapping):
+                return False, "the consumer's record could not be read"
+            if item.get("published_unix") != generation:
+                return False, "the consumer was resubmitted"
+        return True, ""
+    return False, "the consumer is no longer live"
+
+
+def _retire_marker(queue, consumer_action_key: str, digest: str,
+                   filing: tuple[int, int, int]) -> None:
+    """Move a reaped filing's active marker to evidence, under its lock.
+
+    The active marker means "the filed body is superseded".  Once the body is
+    archived, a later seal of even the identical body is a new decision and
+    must start without it; the marker is retained beside the archived body
+    rather than deleted.
+    """
+
+    path = _superseded_path(queue, consumer_action_key, digest)
+    try:
+        if not path.is_file():
+            return
+        evidence = path.parent / (
+            f"{consumer_action_key}.{digest}.{filing[1]}.{time.time():.6f}"
+            f".marker.json")
+        os.replace(path, evidence)
+    except OSError:                                           # pragma: no cover
+        return
+
+
+def reap(queue, consumer_action_key: str, *,
+         reason: str = "",
+         plan: Mapping[str, object] | None = None,
+         filing: tuple[int, int, int] | None = None,
+         ) -> dict[str, object] | None:
+    """Archive a frozen plan whose ownership has ended; ``None`` while it has not.
+
+    This is the physical half of retirement, and it is deliberately delayed:
+    the marker stops publication at once, and the body moves out of the live
+    directory only when :func:`handoff_safe` says no consumer and no queued or
+    claimed child still names it.  Until then every reader -- the dead
+    consumer's mover withdrawal, the running consumer's orphan protection,
+    the planner's reuse -- sees the filed body exactly as it was sealed.
+
+    Serialized on the consumer's transition lock against ``freeze``,
+    ``mark_superseded`` and every other reaper, and the exact filing the
+    caller decided against is rechecked inside that lock: a concurrent
+    resubmission cannot have its new plan archived by a stale reaper, even
+    when the new body is byte-identical.  The filing's active marker is
+    retired with it, so the next seal starts clean.
+
+    ``None`` means "nothing moved": there was no plan, its body no longer
+    validates (no cover, so no handoff can be shown safe), its work is still
+    live, or the filing changed since the caller read it.
+    """
+
+    key = _action_key(consumer_action_key, where="consumer_action_key")
+    with queue._transition_locked(key):
+        filed, current = read_filed(queue, key)
+        if filed is None or current is None:
+            return None
+        if filing is not None and tuple(filing) != current:
+            return None       # a different filing is filed now
+        if plan is not None and plan_sha256(plan) != plan_sha256(filed):
+            return None
+        safe, _why = handoff_safe(queue, key, filed)
+        if not safe:
+            return None
+        path = queue.residency_plan_path(key)
+        target = (path.parent / SUPERSEDED
+                  / f"{path.stem}.{time.time():.6f}.{_retired_slug(reason)}.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(path, target)
+        except FileNotFoundError:
+            return None           # something else reaped it first
+        _retire_marker(queue, key, plan_sha256(filed), current)
+        return filed
 
 
 def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:
@@ -879,7 +1432,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            published: Sequence[str] = (),
            staged: Sequence[str] = (),
            runahead_cap_gib: int | None = None,
-           mover_role: str = "mover_row") -> dict[str, object]:
+           mover_role: str = "mover_row",
+           withdrawn: Sequence[str] = ()) -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -899,6 +1453,17 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     parameter closes.  A phase the submitter sealed without this leg has
     nothing on the tier: published by nobody, evicted by nobody.  Each
     entry's ``mover_row`` and ``egress_row`` are the pair the role names.
+
+    ``withdrawn`` names the leg's action keys that carry a live withdrawal
+    marker.  Such a leg is never published: its key is a content hash, so
+    publishing it would retire the operator's marker and run the cancelled
+    copy again at the price it was cancelled for, which is the state #708
+    was filed about.  It is not a stall and it takes no room -- the next
+    publishable leg is what the consumer can still be staged with -- and the
+    coordinator retires the plan that names it, so this is the guard against
+    a marker filed between that pass and this decision rather than the
+    decision itself.  Eviction is untouched: an egress frees bytes nobody
+    has cancelled.
 
     A phase the submitter sealed chunked decides per chunk: each chunk is
     a leg with its own ``chunk_index``, its own range and its own rows, in
@@ -939,6 +1504,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     passed = {str(phase["name"]) for phase in phases[:len(phases) - len(ahead)]}
     already = set(published)
     resident = set(staged)
+    cancelled = set(withdrawn)
     legs = _legs(plan, mover_role=mover_role)
 
     evict = []
@@ -974,7 +1540,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
         if leg["phase"] not in ahead_names:
             continue
         key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-        if key in already:
+        if key in already or key in cancelled:
             continue
         need = int(leg["stage_gib"])
         is_current = leg["phase"] == current_name
