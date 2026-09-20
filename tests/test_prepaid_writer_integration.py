@@ -82,7 +82,7 @@ def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
 
-def _template(prefix: str) -> dict:
+def _template(prefix: str, window_gib: int = 2) -> dict:
     body = {
         "schema": po.TEMPLATE_SCHEMA_V1,
         "version": 1,
@@ -94,7 +94,8 @@ def _template(prefix: str) -> dict:
             "checkpoint_max_bytes": 1 << 20,
             "temp_max_bytes": 1 << 20,
         },
-        "working_demands": {TIER: {"minimum_gib": 1, "window_gib": 2}},
+        "working_demands": {TIER: {"minimum_gib": 1,
+                                   "window_gib": window_gib}},
         "permitted_tiers": [TIER],
     }
     return po.validate_template(body)
@@ -976,3 +977,71 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
     assert row.get("priority") == -10
     assert row.get("retry_safe") is True
     assert int(row.get("max_attempts", 0)) >= 1
+
+
+def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
+        tmp_path: Path) -> None:
+    """Four batches through a window that never holds more than ONE credit.
+
+    Sizing a window to the batch count proves only that the batches fit.
+    Here the tier's whole CAPACITY and the admitted window are both ONE
+    credit, so batch N can only fund if batch N-1's credit genuinely came
+    back at retirement: a counter that lost it would exhaust the window
+    permanently and refuse from batch 2 onward. Real sealed movers
+    through `Pool.execute`, real retirement, real reclaim -- no mocks.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"), window_gib=1)
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=1)
+    ledger = q.tier_ledger(TIER)
+    assert ledger.capacity().get(KIND, 0) == 1
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+
+    free_after_each: list[int] = []
+    for n in range(4):
+        tag, batch_id = f"r{n}", f"rb{n}"
+        if n:
+            # The window is empty: the previous batch's credit went to
+            # FREE at retirement, never back to producer holdings.
+            refill = po.refill_window(q, inst, template, tier=TIER)
+            assert refill.get("ok") is True, (
+                n, refill, dict(ledger.available()))
+            assert ledger.holder_tokens(owner).get(KIND, 0) == 1, n
+        descs = _descriptors(tmp_path, template, inst, tag,
+                             bytes([65 + n]) * 512)
+        _prewrite(q, inst, template, batch_id, TIER, descs)
+        res = po.publish_prepaid_batch(
+            q, inst, template, descs, batch_id=batch_id, tier=TIER,
+            cas_root=cas_root, producer_action_key=owner,
+            command_extra=["--unpaced"])
+        assert res.get("ok") is True, (n, res)
+        mover = str(res["mover_key"])
+        # Funding is an exact transfer: the owner spent its whole window.
+        assert ledger.holder_tokens(owner).get(KIND, 0) == 0, n
+        assert ledger.holder_tokens(mover).get(KIND, 0) == 1, n
+        claimed = _claim_mover(q, f"w-{tag}")
+        assert claimed["action_key"] == mover
+        receipt = _execute_mover(q, cas_root, mover,
+                                 tmp_path / "mover-checkout")
+        assert receipt["complete"] is True, (n, receipt)
+        q.finish(mover, status="executed")
+        assert po.retire_batch(
+            q, inst, template, batch_id, stage_root=str(stage_root),
+            residency_root=residency)["ok"] is True, n
+        (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
+        assert po.reclaim_origin(
+            q, inst, template, batch_id=batch_id)["ok"] is True, n
+        assert ledger.holder_tokens(mover).get(KIND, 0) == 0, n
+        free_after_each.append(ledger.available().get(KIND, 0))
+
+    # The counter loses nothing: every retirement returned the credit,
+    # through four cycles of a one-credit window.
+    assert free_after_each == [1, 1, 1, 1], free_after_each
+    q.finish(owner, status="executed")
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    assert ledger.available() == ledger.capacity()
