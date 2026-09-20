@@ -101,6 +101,12 @@ PARTIAL_SUFFIX = ".partial"
 #: mover's own fragment named from bytes nothing named at all.
 UNATTRIBUTED_EVENT = "stage-unattributed-evicted"
 
+#: The event a bounded orphan recovery publishes.  Deliberately not
+#: ``UNATTRIBUTED_EVENT``: that one reports what routine reconciliation found
+#: unowned by walking the stage, and this one reports a named historical range
+#: an operator asked about by identity.  Telling them apart is the audit.
+ORPHAN_RECOVERY_EVENT = "stage-orphan-recovered"
+
 #: The file a stage root carries to say which queue it belongs to (#628), and
 #: the event a sweep publishes when a root does not belong to it.
 STAGE_ROOT_MARKER = ".prismabuild-stage.json"
@@ -1215,9 +1221,15 @@ def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
     return True
 
 
-def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str],
+def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
                            residency_root: str | Path | None = None) -> set[str]:
     """Every stage path a mover the fleet still wants has vouched for.
+
+    ``wanted=None`` means *every* fragment counts, wanted or not.  The
+    reconciliation cannot use that -- a withdrawn mover's fragment is exactly
+    what it exists to clear -- but a bounded repair can, and prefers to: there
+    the question is not "whose bytes are these" but "is there any reason at
+    all to keep them", and one more retained file is a pass.
 
     Read off the fragments, because a fragment is the only document that says
     "this file is that mover's": the plan names ranges and the ledger names
@@ -1238,7 +1250,8 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str],
         return out
     for consumer in consumers:
         for fragment in residency_map.read_fragments(root, consumer):
-            if str(fragment.get("mover_action_key") or "") not in wanted:
+            if (wanted is not None
+                    and str(fragment.get("mover_action_key") or "") not in wanted):
                 continue
             for entry in dict(fragment["entries"]).values():
                 out.add(os.path.normpath(str(entry["stage_path"])))
@@ -1392,6 +1405,379 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     return receipt
 
 
+def _scope_for_range(cas_root: str, manifest_sha256: str,
+                     start: int, end: int,
+                     ) -> tuple[set[str], list[dict[str, object]], str] | None:
+    """The staged names one historical range covers, by the usual mapping.
+
+    The same derivation ``_claimed_paths`` runs for a claim in flight, driven
+    from a pinned manifest digest and range instead of a sealed claim: the
+    manifest is immutable under its digest, so the names it yields are a fact
+    about that request and not about anything currently on the tier.  Returns
+    ``None`` when the manifest or the window cannot be read, which the caller
+    turns into a refusal -- an undeterminable scope never reads as empty.
+    """
+
+    layout = _cached_manifest_layout(cas_root, manifest_sha256)
+    if layout is None:
+        return None
+    mount_prefix, entries = layout
+    whole = whole_file_paths(entries)
+    try:
+        window = prewarm_loop.entries_between(entries, start, end)
+    except (ValueError, TypeError):
+        return None
+    names: set[str] = set()
+    for entry in window:
+        path, offset = str(entry["path"]), int(entry["offset"])
+        try:
+            names.add(stage_relative(
+                path, offset, int(entry["bytes"]),
+                mount_prefix=mount_prefix, whole_file=path in whole))
+        except ValueError:
+            continue
+    return names, list(window), mount_prefix
+
+
+def _bounded_int(value: object) -> int | None:
+    """A nonnegative integer that is not a bool, or ``None``."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _move_receipt(queue: pool.PoolQueue, action_key: str,
+                  ) -> tuple[dict[str, object] | None, str]:
+    """One filed move receipt, or why it cannot be evidence.
+
+    The receipt is the positive terminal evidence this repair turns on.  An
+    absent one is not "finished": it is no answer, and no answer refuses.
+    """
+
+    try:
+        record = pool._read_json(queue.move_path(action_key))
+    except (OSError, pool.PoolContractError) as exc:
+        return None, f"{action_key[:12]}: receipt unreadable: {exc}"
+    if not isinstance(record, Mapping):
+        return None, f"{action_key[:12]}: no filed move receipt"
+    if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
+        return None, f"{action_key[:12]}: receipt is not a pool move record"
+    if record.get("complete") is not True:
+        return None, f"{action_key[:12]}: receipt does not report complete"
+    return dict(record), ""
+
+
+def recover_orphaned_range(
+        queue: pool.PoolQueue, *, stage_root: str,
+        head_action_key: str, egress_action_key: str,
+        cas_root: str | Path | None = None,
+        residency_root: str | Path | None = None,
+        apply: bool = False) -> dict[str, object]:
+    """Retire the cache copies of one retired head that nothing can prove.
+
+    Routine ``reconcile`` structurally cannot reach these.  It decides
+    ownership from the ``user.pbstage.source`` mark, and ``stage_move`` sets
+    that same mark on every file it publishes, so a stage copy always reads as
+    prewarm-owned and lands in ``unowned_left`` for the life of the fleet.  A
+    head whose fragment and material are gone therefore leaves bytes no
+    document proves and no sweep may touch, and every later head pays the
+    publisher grace once per entry for them.
+
+    Scope is bound to history, not to the caller.  The only identities taken
+    are the head's own filed move receipt and the egress receipt that retired
+    it; the tier, the stage root, the consumer, the manifest and the exact
+    range are **read off those receipts**, so there is no caller-supplied
+    digest or window to get wrong.  Both must be filed, well-formed and
+    ``complete``: absence is not terminal evidence, it is no evidence.
+
+    Permission is that identity-bound scope **plus** the positive absence of
+    every other ownership, established fresh under the lock the egress holds.
+    The old source mark is never permission -- only a necessary condition, so
+    an unmarked or unanswerable file is retained.  Every fragment retains,
+    wanted or not; live pins, claims in flight and promotion source handoffs
+    retain; and any census that cannot be read **refuses the pass** rather
+    than reading as absence.
+
+    Originals are proven before anything is destroyed: every entry the window
+    names must still exist at its source path, and that path must resolve
+    outside the stage root, so a staged copy is never the last surviving
+    input.  Ambiguity retains, and any refused or unreadable entry fails the
+    whole pass -- over-retaining is a pass and over-removing is a failure.
+
+    ``apply`` is false by default: the pass reports what it *would* retire and
+    changes nothing.
+    """
+
+    stage = Path(stage_root)
+    receipt: dict[str, object] = {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1,
+        "event": ORPHAN_RECOVERY_EVENT,
+        "action_key": "",
+        "head_action_key": head_action_key,
+        "egress_action_key": egress_action_key,
+        "consumer_action_key": "",
+        "tier_id": "",
+        "stage_root": str(stage),
+        "reason": "orphan-recovery",
+        "applied": bool(apply),
+        "scope_entries": 0,
+        "entries_eligible": 0,
+        "entries_retired": 0,
+        "entries_retained": 0,
+        "entries_already_gone": 0,
+        "entries_refused": 0,
+        "bytes_eligible": 0,
+        "bytes_retired": 0,
+        "retained_reasons": {},
+        "originals_checked": 0,
+        "originals_present": 0,
+        "complete": True,
+        "errors": [],
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
+
+    def refuse(why: str) -> dict[str, object]:
+        receipt["skipped"] = why
+        receipt["complete"] = False
+        errs = list(receipt["errors"])
+        errs.append(why)
+        receipt["errors"] = errs
+        return receipt
+
+    # Whose stage this is comes before anything else on it (#628): a root
+    # that does not belong to this queue is refused before its receipts are
+    # even read.
+    refusal = stage_root_refusal(queue, stage)
+    if refusal is not None:
+        receipt["event"] = STAGE_ROOT_REFUSED_EVENT
+        return refuse(refusal)
+
+    head, why = _move_receipt(queue, head_action_key)
+    if head is None:
+        return refuse(f"head evidence refused: {why}")
+    egress, why = _move_receipt(queue, egress_action_key)
+    if egress is None:
+        return refuse(f"egress evidence refused: {why}")
+    if egress.get("reason") != "egress":
+        return refuse(
+            f"{egress_action_key[:12]} is not an egress receipt")
+
+    consumer = str(head.get("consumer_action_key") or "")
+    tier_id = str(head.get("tier_id") or "")
+    manifest_sha256 = str(head.get("manifest_sha256") or "")
+    start = _bounded_int(head.get("range_start_bytes"))
+    end = _bounded_int(head.get("range_end_bytes"))
+    if not consumer or not tier_id or not manifest_sha256:
+        return refuse("the head receipt names no consumer, tier or manifest")
+    if start is None or end is None or end <= start:
+        return refuse("the head receipt names no usable byte range")
+    if str(egress.get("consumer_action_key") or "") != consumer:
+        return refuse("the egress retired a different consumer's window")
+    for label, record in (("head", head), ("egress", egress)):
+        named = str(record.get("stage_root") or "")
+        if named and os.path.normpath(named) != os.path.normpath(str(stage)):
+            return refuse(
+                f"the {label} receipt names stage root {named}, not {stage}")
+    own_cas_early = (str(cas_root) if cas_root is not None
+                     else str(queue.root.parent / "cas"))
+    for label, key in (("head", head_action_key),
+                       ("egress", egress_action_key)):
+        sealed = prewarm_loop.sealed_request(Path(own_cas_early), key)
+        if not isinstance(sealed, Mapping):
+            return refuse(f"the {label} request {key[:12]} is not sealed in "
+                          f"the CAS; its scope cannot be bound")
+        params = sealed.get("params")
+        declared = (params.get("data_manifest")
+                    if isinstance(params, Mapping) else None)
+        named = (declared.get("input") if isinstance(declared, Mapping)
+                 else None)
+        digest = (named.get("sha256") if isinstance(named, Mapping) else None)
+        if digest != manifest_sha256:
+            return refuse(
+                f"the sealed {label} request names manifest "
+                f"{str(digest)[:12]}, not the {manifest_sha256[:12]} its "
+                f"receipt recorded")
+    receipt["consumer_action_key"] = consumer
+    receipt["tier_id"] = tier_id
+    receipt["manifest_sha256"] = manifest_sha256
+    receipt["range_start_bytes"] = start
+    receipt["range_end_bytes"] = end
+
+    own_cas = (str(cas_root) if cas_root is not None
+               else str(queue.root.parent / "cas"))
+    with queue.stage_ownership_lock(str(stage)):
+        for key, label in ((head_action_key, "head"), (consumer, "consumer")):
+            for state in (pool.READY, pool.CLAIMED):
+                try:
+                    if queue.item_path(state, key).exists():
+                        return refuse(
+                            f"{label} {key[:12]} is still {state}; recovery "
+                            f"acts only on a finished request")
+                except OSError as exc:
+                    return refuse(f"{label} {key[:12]} unreadable: {exc}")
+        in_flight = movers_in_flight(queue, tier_id=tier_id)
+        if in_flight:
+            receipt["movers_in_flight"] = sorted(in_flight)
+            return refuse("movers_in_flight")
+        try:
+            stage_resolved = stage.resolve(strict=True)
+        except OSError as exc:
+            return refuse(f"stage_root_unreadable: {exc}")
+
+        layout = _cached_manifest_layout(own_cas, manifest_sha256)
+        if layout is None:
+            return refuse(
+                f"manifest {manifest_sha256[:12]} unreadable; scope "
+                f"undeterminable")
+        mount_prefix, entries = layout
+        whole = whole_file_paths(entries)
+        try:
+            window = prewarm_loop.entries_between(entries, start, end)
+        except (ValueError, TypeError) as exc:
+            return refuse(f"range not cuttable: {exc}")
+        if not window:
+            return refuse("the recorded range covers no manifest entry")
+        # ``entries_between`` includes a straddling entry whole, so the
+        # window is a cover of the range and not a partition of it: it may
+        # exceed the span, and must never fall short of it.  The manifest is
+        # the authority for what the range contains -- a manifest-wide
+        # ``entry_count`` is a different number and is not interchangeable
+        # with the entries one range covers.
+        covered = sum(int(one.get("bytes", 0)) for one in window)
+        if covered < end - start:
+            return refuse(
+                f"the window covers {covered} bytes, short of the "
+                f"{end - start} the head recorded; scope is not the "
+                f"recorded range")
+        staged = _bounded_int(head.get("entries_staged"))
+        if staged is not None and staged != len(window):
+            return refuse(
+                f"the window holds {len(window)} entries, not the {staged} "
+                f"the head recorded staging; scope is not that window")
+        names: dict[str, dict[str, object]] = {}
+        for entry in window:
+            source, offset = str(entry["path"]), int(entry["offset"])
+            try:
+                relative = stage_relative(
+                    source, offset, int(entry["bytes"]),
+                    mount_prefix=mount_prefix, whole_file=source in whole)
+            except ValueError as exc:
+                # A name that cannot be derived shrinks the scope silently if
+                # it is skipped, and a partial scope is a different question
+                # from the one the receipt asked.
+                return refuse(f"{source}: staged name underivable: {exc}")
+            names[relative] = entry
+        receipt["scope_entries"] = len(names)
+
+        # Originals first: nothing is destroyed before the inputs they stand
+        # for are proven to survive it.
+        checked = present = 0
+        for entry in window:
+            source = str(entry.get("path") or "")
+            if not source:
+                return refuse("a window entry names no source path")
+            checked += 1
+            try:
+                if not Path(source).exists():
+                    return refuse(
+                        f"original missing for {source}; the staged copy may "
+                        f"be the last surviving input")
+                if stage_resolved in Path(source).resolve().parents:
+                    return refuse(
+                        f"original {source} resolves inside the stage root; "
+                        f"it is not a separate input")
+            except OSError as exc:
+                return refuse(f"original {source} unreadable: {exc}")
+            present += 1
+        receipt["originals_checked"] = checked
+        receipt["originals_present"] = present
+
+        # Every fragment retains, wanted or not: the question here is not
+        # whose bytes these are but whether anything at all still names them.
+        attributed = attributed_stage_paths(queue, wanted=None,
+                                            residency_root=residency_root)
+        pin_owners, pin_taint = reader_lease.live_for(
+            queue, None, residency_root=residency_root)
+        if pin_taint:
+            return refuse(f"pin census unreadable: {'; '.join(pin_taint[:3])}")
+        attributed |= set(pin_owners)
+        claimed, claim_taint = _claimed_paths(queue, tier_id, own_cas)
+        if claim_taint:
+            return refuse(
+                f"claim census unreadable: {'; '.join(claim_taint[:3])}")
+        attributed |= {os.path.normpath(str(stage / one)) for one in claimed}
+        handoffs, handoff_taint = _claimed_source_paths(queue, stage, own_cas)
+        if handoff_taint:
+            return refuse(
+                f"promotion handoff census unreadable: "
+                f"{'; '.join(handoff_taint[:3])}")
+        attributed |= {os.path.normpath(str(one)) for one in handoffs}
+
+        retained: dict[str, int] = {}
+
+        def retain(why: str) -> None:
+            retained[why] = retained.get(why, 0) + 1
+
+        eligible: list[tuple[Path, int]] = []
+        already_gone = 0
+        for relative in sorted(names):
+            path = stage / relative
+            try:
+                if not path.exists():
+                    already_gone += 1
+                    continue
+                if path.is_symlink() or not path.is_file():
+                    retain("not_a_regular_file")
+                    continue
+                if stage_resolved not in path.resolve().parents:
+                    retain("outside_the_owned_stage_root")
+                    continue
+                size = path.stat().st_size
+            except OSError as exc:
+                # An entry nothing can read is not an entry proven unowned.
+                return refuse(f"{relative}: {exc}")
+            if os.path.normpath(str(path)) in attributed:
+                retain("attributed_pinned_claimed_or_handed_off")
+                continue
+            if _marked_by_the_prewarm_stage(path) is not True:
+                retain("not_marked_by_the_stage")
+                continue
+            eligible.append((path, int(size)))
+
+        receipt["entries_eligible"] = len(eligible)
+        receipt["bytes_eligible"] = sum(size for _path, size in eligible)
+        receipt["entries_retained"] = sum(retained.values())
+        receipt["entries_already_gone"] = already_gone
+        receipt["retained_reasons"] = dict(sorted(retained.items()))
+        receipt["mount_prefix"] = mount_prefix
+        if not apply:
+            return receipt
+
+        retired = bytes_retired = 0
+        errors: list[str] = []
+        for path, size in eligible:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                already_gone += 1
+                continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            retired += 1
+            bytes_retired += size
+            _prune_empty(path.parent, stage)
+        receipt["entries_retired"] = retired
+        receipt["bytes_retired"] = bytes_retired
+        receipt["entries_already_gone"] = already_gone
+        receipt["entries_refused"] = len(errors)
+        receipt["errors"] = errors
+        receipt["complete"] = not errors
+    return receipt
+
+
 def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str) -> set[str]:
     """Mover keys ready or claimed on this tier, i.e. copies that may be writing.
 
@@ -1445,10 +1831,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--action-key", default=None,
                         help="this egress node's own action key; defaults to "
                              f"{pb.ACTION_KEY_ENV}, which the launcher sets")
-    parser.add_argument("--mover-action-key", required=True,
+    parser.add_argument("--mover-action-key", default=None,
                         help="the movement node whose staged bytes are being taken back")
-    parser.add_argument("--consumer-action-key", required=True,
+    parser.add_argument("--consumer-action-key", default=None,
                         help="the action those bytes were staged for")
+    recovery = parser.add_argument_group(
+        "bounded orphan recovery",
+        "retire the cache copies of one RETIRED head that nothing can prove. "
+        "Reports and changes nothing unless --apply is given.")
+    recovery.add_argument("--recover-orphaned-range", action="store_true",
+                          help="run the recovery instead of an eviction")
+    recovery.add_argument("--head-action-key", default=None,
+                          help="the retired head, by its filed move receipt")
+    recovery.add_argument("--egress-action-key", default=None,
+                          help="the egress receipt that retired it")
+    recovery.add_argument("--cas-root", default=None,
+                          help="default <pool-root>/../cas")
+    recovery.add_argument("--apply", action="store_true",
+                          help="actually unlink; omit to report only")
     parser.add_argument("--stage-root", required=True,
                         help="the staging dataset's mountpoint; nothing outside it "
                              "is ever deleted")
@@ -1462,6 +1862,34 @@ def main(argv: list[str] | None = None) -> int:
     args.action_key = own_action_key(args.action_key)
 
     queue = pool.PoolQueue(Path(args.pool_root))
+    if args.recover_orphaned_range:
+        required = {"--head-action-key": args.head_action_key,
+                    "--egress-action-key": args.egress_action_key}
+        absent = sorted(name for name, value in required.items()
+                        if value is None)
+        if absent:
+            parser.error(
+                f"--recover-orphaned-range needs {', '.join(absent)}")
+        # Consumer, tier, manifest and range are read off the filed receipts,
+        # not taken here: there is no caller-supplied duplicate to disagree
+        # with history.
+        receipt = recover_orphaned_range(
+            queue, stage_root=args.stage_root,
+            head_action_key=args.head_action_key,
+            egress_action_key=args.egress_action_key,
+            cas_root=args.cas_root, residency_root=args.residency_root,
+            apply=args.apply)
+        queue.record_move(args.action_key, receipt)
+        if args.receipt:
+            with open(args.receipt, "w") as stream:
+                json.dump(receipt, stream, indent=1, sort_keys=True)
+                stream.write("\n")
+        print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
+        return 0 if receipt["complete"] else 1
+    for name, value in (("--mover-action-key", args.mover_action_key),
+                        ("--consumer-action-key", args.consumer_action_key)):
+        if not value:
+            parser.error(f"{name} is required for an eviction")
     receipt = evict(queue, args.mover_action_key,
                     consumer_action_key=args.consumer_action_key,
                     stage_root=args.stage_root,
