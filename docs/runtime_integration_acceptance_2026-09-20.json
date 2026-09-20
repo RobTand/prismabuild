@@ -1,0 +1,24 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "scope": ["ID-08", "ACC-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "issue": "https://github.com/RobTand/prismabuild/issues/753",
+    "pr": "https://github.com/RobTand/prismabuild/pull/754",
+    "source": "e5697b32802769072b6075a28a36b4a36ec49d8a",
+    "note": "Publish the required fleet-expansion guide and structured contract ledgers through the existing manifest; follow their sealed relative links in the publication test. Align launch fixtures and isolate the retained generation store.",
+    "remaining_gaps": ["Window recovery and prepaid-output integration", "Shared-file publication and dev reuse", "Integrated deployment and both-Spark strict-reader qualification", "Full campaign validity"]
+  },
+  "validation": {
+    "mode": "Published PrismaBuild priority -10, x86 CPU, bounded aggregate resources and native threads",
+    "full_before_fix": "6317 passed,3 failed,4 skipped and6 subtests passed across8 shards atb908b2578ac (tree identical to main19e17643370). Actual source bundles verified for b696cd9eb90d,d34757ce3757,5cdc4423626f,2d27748956bd,d095765a16a1,c86ef1c3d2e9,9fc43094e76f,e48102847080.",
+    "failures": "Missing published fleet-expansion guide; checkpoint fixture's old wrap_argv signature; retained-generation store absent from test isolation registry.",
+    "targeted_after_fix": "169 passed,zero skips at e5697b32802: c10b83441e5f,ec622601e2e3,26a1725f5d69,dcf5c271f298. All terminal/CAS outcomes and actual checkout bundles verified against source plus closure metadata.",
+    "limitations": "The full suite was not repeated after these focused repairs. Four full-suite skip reasons were not emitted by the published client and remain unknown/unqualified. This record itself is a subsequent documentation-only addition.",
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb753-root-acceptance.json"
+  },
+  "deploy": {"status": "not-this-step", "requires": "Reviewed integrated generation qualification; preserve PB742 quiescent worker/storage convergence and prove live readers after publication."},
+  "complete": {"status": "not-achieved"},
+  "exceptions": []
+}
