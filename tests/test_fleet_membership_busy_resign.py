@@ -1456,3 +1456,41 @@ def test_unreadable_withdrawn_census_keeps_gate_closed(
     assert out["status"] == "refused", out
     assert out["phase"] == "unsettled-unknown", out
     assert json.loads(gate.read_text())["draining"] is True
+
+
+def test_unreadable_claimed_census_retains_resignation(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """A dark claimed directory cannot establish that the worker resigned."""
+    host = socket.gethostname()
+    _incarnation(monkeypatch)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    queue.ensure_layout()
+    claimed = queue.dir(pool.CLAIMED)
+
+    def inspect_and_resign():
+        owned, unknown = fm.claimed_census(queue, host)
+        assert owned == [] and unknown, "unreadable claims were reported empty"
+        out = fm.resign(host, reason="claim census dark", queue_root=queue.root,
+                        gate=gate, broker_call=_broker_call(authority),
+                        live=[], wait_s=0)
+        assert out["status"] == "resigning", out
+        assert json.loads(gate.read_text())["draining"] is True
+
+    if os.geteuid() != 0:
+        os.chmod(claimed, 0)
+        try:
+            inspect_and_resign()
+        finally:
+            os.chmod(claimed, 0o755)
+    else:
+        real_scandir = os.scandir
+
+        def denied_scandir(path, *args, **kwargs):
+            if Path(path) == claimed:
+                raise PermissionError(13, "Permission denied")
+            return real_scandir(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "scandir", denied_scandir)
+        inspect_and_resign()

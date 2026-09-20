@@ -368,9 +368,15 @@ def claimed_census(
     if not claimed_dir.is_dir():
         return [], [f"claimed directory unreadable: {claimed_dir}"]
     try:
-        paths = sorted(claimed_dir.glob("*.json"))
+        # An unreadable census is unknown, never an empty set of claims.
+        # Path.glob suppresses directory errors; materialize the names
+        # with scandir so resignation retains its gate on an I/O failure.
+        with os.scandir(claimed_dir) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".json"))
     except OSError as exc:
         return [], [f"claimed directory not listable: {exc}"]
+    paths = [claimed_dir / name for name in names]
     for path in paths:
         try:
             record = json.loads(path.read_text())

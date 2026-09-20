@@ -7,17 +7,38 @@
     "status": "not-this-step"
   },
   "exceptions": [],
-  "ledger_commit": "pending-push",
+  "ledger_commit": "f773c9e44cb8fe1daa1a5f573f156e15ad9248ef (validated production source; later acceptance metadata only)",
   "merge": {
     "branch": "feat/worker-expansion-join-resign-20260920",
     "issue": "https://github.com/RobTand/prismabuild/issues/727",
-    "note": "New-files-only lane: no pool/tier/residency production edits. Claims nothing beyond its own tests + docs. Runtime/deploy proof explicitly out of scope.",
+    "note": "Root-reviewed join/resign implementation using existing roster, broker gate, pool claim/withdrawal lineage and worker reaper. Component qualification only; no live worker was joined or resigned by these fixtures, no runtime capability advertised.",
     "remaining_gaps": [
-      "lease-worker automatic attestation/reclaim production path (PR #730): refs present keep resign resigning; this lane consumes only",
-      "chained resign requeues (attempts>0 with resigned lineage): fail closed with reason, shared prefix guard not widened",
-      "cohort barrier #567, wsl-gpu limits, new backends: untouched"
+      "Accepted PB730 reader cleanup integration and deployed native/container containment on both Sparks",
+      "Published fleet join/resign and heterogeneous runtime qualification beyond CPU capability fixtures",
+      "Cohort barrier #567, WSL-GPU limits and newly introduced execution backends"
     ],
-    "validated_repairs": []
+    "validated_repairs": [
+      {
+        "actions": [
+          "b65e3678e8f8",
+          "ef46b65cef8a",
+          "1a9f66674bf6",
+          "b477211853a6",
+          "4a7965e42d3c"
+        ],
+        "result": "179 passed, zero skips, terminal rc0 and CAS receipts; fetched source bundles differ only by PB closure and final design-note appendix",
+        "scope": "membership component",
+        "source": "f773c9e44cb8fe1daa1a5f573f156e15ad9248ef"
+      },
+      {
+        "actions": [
+          "b59647d1720c",
+          "064d48d277e3"
+        ],
+        "result": "92 passed, zero skips, exact committed production and docs source plus PB closure",
+        "scope": "broker/park overlap"
+      }
+    ]
   },
   "prelaunch": {
     "status": "not-this-step"
@@ -35,13 +56,17 @@
     "FLEET-09",
     "FLEET-10",
     "FLEET-11",
-    "FLEET-12"
+    "FLEET-12",
+    "FLEET-13",
+    "FLEET-14",
+    "FLEET-15"
   ],
   "step": "merge",
   "validation": {
-    "lane": "/tmp/opencode/pb-worker-expansion-r73.json: 2/2 shards green (13 + 21 passed), priority -10",
-    "adjacent": "/tmp/opencode/pb-worker-expansion-adjacent3.json: 5/5 shards green (preemption-handoff 17, background-holder 7, resource-broker 86, durable-hold 10, drain-ownership 18), priority -10",
-    "red_evidence": "red3/green1/green2 + hunks series retained; holder-finish successor race and stale-pending_note loop bug both caught by fleet, fixed by sequencing",
-    "priority_note": "earlier runs used priority 10 per the original brief; all runs since the workflow correction use -10"
+    "lane": "179 passed across five PB shards including accepted726 integration fixtures; priority -10, CPU/x86, 1CPU/2GiB per shard",
+    "limitations": "Controlled kernel/daemon peers and tiny data; no live JOIN/RESIGN, no GPU or campaign performance claim.",
+    "overlap": "92 broker/park tests at exact f773 source, additional verification not unique coverage",
+    "red_evidence": "c33766fa761da2a314d00e70464d8b451438643643dc03c10d7ecd0972852f51: actual unreadable withdrawal census returns empty on99b96d; 1failed/34passed, rc1. Fetched source delta is new test plus PB closure only.",
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb728-root-acceptance.json"
   }
 }
