@@ -336,8 +336,18 @@ def test_the_launcher_names_the_map_only_when_there_is_one(queue, tmp_path) -> N
     assert queue.residency_map_environment({"action_key": CONSUMER}) == {}
 
 
-def test_an_action_is_told_its_own_key_and_never_asked_to_seal_it() -> None:
+def test_an_action_is_told_its_own_key_and_never_asked_to_seal_it(
+        monkeypatch) -> None:
     """A key inside the argv it is computed from has no fixed point."""
+
+    # A synthetic action is not the broker-owned attempt this process may
+    # happen to be running as (an admitted shard inherits the launcher's
+    # reader-identity bundle in its environment).  Scrub it so the
+    # synthetic call sees the legacy no-identity path -- the production
+    # check itself is never weakened; see ``_reader_identity_environment``.
+    for name in (pb.ACTION_NONCE_ENV, pb.ACTION_SCOPE_ENV,
+                 pb.READER_HELPER_ROOT_ENV):
+        monkeypatch.delenv(name, raising=False)
 
     action = {"action_key": "d" * 64, "params": {}}
 
@@ -357,6 +367,12 @@ def test_an_action_that_seals_the_residency_names_is_refused() -> None:
 
 
 def test_the_map_path_reaches_the_action_when_the_launcher_set_it(monkeypatch) -> None:
+    # Same synthetic-action isolation as above: the ambient launcher
+    # bundle (when this test runs inside an admitted shard) is not this
+    # fabricated action's identity.
+    for name in (pb.ACTION_NONCE_ENV, pb.ACTION_SCOPE_ENV,
+                 pb.READER_HELPER_ROOT_ENV):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(pb.RESIDENCY_MAP_ENV, "/mnt/shared/pb-queue/residency/x.map.json")
 
     environment = pb._residency_environment({"action_key": "d" * 64, "params": {}}, {})
