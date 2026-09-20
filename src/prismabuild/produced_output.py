@@ -1503,6 +1503,8 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             intent_names = sorted(
                 p.name for p in _funding_dir(queue.root, checked).iterdir()
                 if p.is_file() and p.name.endswith(".funding.json"))
+        except FileNotFoundError:
+            intent_names = []
         except OSError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         for name in intent_names:
@@ -1596,6 +1598,8 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             funding_names = sorted(
                 p.name for p in _funding_dir(queue.root, checked).iterdir()
                 if p.is_file() and p.name.endswith(".funding.json"))
+        except FileNotFoundError:
+            funding_names = []
         except OSError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         for name in funding_names:
