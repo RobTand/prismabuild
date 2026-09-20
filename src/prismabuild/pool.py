@@ -5619,7 +5619,13 @@ class PoolQueue:
         if not offer.get("has_gpu"):
             return 0.0            # no GPU to take power from; nothing to prefer away
         stamp = detail.get("gpu_power_sampled_unix")
-        load = detail.get("gpu_power_fraction")
+        # Placement is about drawn power, not the limiter flag: an idle
+        # SW-capped device draws ~3% of its SoC envelope while the legacy
+        # congestion proxy reads 1.0.  Prefer the raw measured fraction when
+        # the offer carries it; fall back to the legacy proxy for old offers.
+        measured = detail.get("gpu_power_measured_fraction")
+        legacy = detail.get("gpu_power_fraction")
+        load = measured if number(measured) else legacy
         if (number(stamp) and 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S
                 and number(load)):
             return load

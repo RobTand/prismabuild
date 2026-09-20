@@ -2863,11 +2863,19 @@ or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
 It is not a thermal control and nothing here measures temperature or
-throughput. The GPU side reads power against the device's own envelope, which
-is what `adaptive_gpu` already admits on, because `gpu_utilization` reports a
-resident kernel rather than working SMs. The CPU side reads `load1` per
-preferred core. Both come from the offer's `observed_detail`
-(`gpu_power_fraction`, `gpu_power_sampled_unix`, `observed_unix`, `load1`) and
+throughput. The GPU side reads drawn power against the device's own envelope,
+because `gpu_utilization` reports a resident kernel rather than working SMs.
+Two fields leave `box_capacity.observe`: `gpu_power_measured_fraction` is the
+raw sampled draw over that envelope, while the legacy `gpu_power_fraction` is
+the congestion proxy the fleet already published (`max(raw, 1.0 if limited)`,
+the same reading `adaptive_gpu` calls congested). Placement prefers the
+measured fraction and falls back to the legacy proxy for old offers, so an
+idle SW-capped GB10 (~0.03 measured, 1.0 proxy, Sep-20 Sparklina flap) does
+not defer CPU work. The limiter itself travels as `gpu_limited` with
+`gpu_throttle_mask` / `gpu_throttle_reasons` for diagnosis. The CPU side reads
+`load1` per preferred core. All come from the offer's `observed_detail`
+(`gpu_power_measured_fraction`, `gpu_power_fraction`, `gpu_limited`,
+`gpu_power_sampled_unix`, `observed_unix`, `load1`) and
 both must be fresher than `GPU_SAMPLE_MAX_AGE_S`. The two thresholds --- when a
 box counts as busy, and how much better an alternative must look --- are
 `PoolQueue.CROSS_RESOURCE_BUSY` and `PoolQueue.CROSS_RESOURCE_MARGIN`. They are

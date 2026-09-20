@@ -277,8 +277,14 @@ class Controller:
                         or sample['memory_pressure_full'] >= .1
                         or sample['cpu_pressure_some'] >= 10.
                         or sample['host_available_bytes'] < reserve + demand.get('mem_gb', 0) * GIB)
-            # Idle clock gating (0x4) is normal. Thermal, power and external
-            # slowdown are congestion even if the sampled power has fallen.
+            # ``gpu_idle`` (clocks dropping because nothing runs) is normal.
+            # Software power cap, thermal, power-brake, HW slowdown, SW thermal
+            # and sync-boost slowdown are congestion even if the sampled power
+            # has fallen.  Observed Sep-20 on Sparklina: mask 0x4 tracks
+            # ``sw_power_cap Active`` with ``gpu_idle Not Active`` at 4.3 W idle,
+            # per https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlClocksEventReasons.html
+            # (GpuIdle = nothing running; SwPowerCap = clocks optimized not to
+            # exceed power limits).
             limited = device.get('limited')
             if memory_only:
                 # Without a power series there is no observable plateau, so

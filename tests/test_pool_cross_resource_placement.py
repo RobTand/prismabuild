@@ -77,3 +77,29 @@ def test_a_stale_local_reading_is_not_a_busy_box(placement):
     queue, announce, claim, key = placement
     announce(socket.gethostname(), busy=True, tags=['local'], stale=True)
     assert claim()
+
+
+def _offer(*, measured=None, legacy=None, age=0.0, has_gpu=True):
+    detail = {'observed_unix': time.time() - age,
+              'load1': 0.,
+              'gpu_power_sampled_unix': time.time() - age}
+    if measured is not None:
+        detail['gpu_power_measured_fraction'] = measured
+    if legacy is not None:
+        detail['gpu_power_fraction'] = legacy
+    return {'observed_detail': detail, 'has_gpu': has_gpu,
+            'cpu_tiers': {'preferred': [0, 1, 2, 3], 'fallback': []}}
+
+
+def test_placement_prefers_measured_fraction_over_legacy_proxy():
+    """Idle SW-capped box: proxy 1.0 must not defer CPU work when raw is 0.03."""
+    idle_capped = _offer(measured=4.32 / 140.0, legacy=1.0)
+    assert pool.PoolQueue._opposite_resource_load(idle_capped, gpu_job=False) == pytest.approx(4.32 / 140.0)
+    busy = _offer(measured=0.75, legacy=1.0)
+    assert pool.PoolQueue._opposite_resource_load(busy, gpu_job=False) == pytest.approx(0.75)
+
+
+def test_placement_falls_back_to_legacy_proxy_for_old_offers():
+    legacy_only = _offer(legacy=0.75)
+    assert pool.PoolQueue._opposite_resource_load(legacy_only, gpu_job=False) == pytest.approx(0.75)
+    assert pool.PoolQueue._opposite_resource_load(_offer(), gpu_job=False) is None

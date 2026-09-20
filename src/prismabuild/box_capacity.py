@@ -370,7 +370,19 @@ def observe(
             # rule ``adaptive_gpu`` already admits on.  Published only when
             # every device answers: an unreadable device must not average away
             # as idle, so one gap withholds the whole field.
+            #
+            # Two numbers leave this block, because one name was doing two
+            # jobs.  ``gpu_power_fraction`` is the congestion proxy placement
+            # and old consumers already read: a throttled device reads at its
+            # envelope (1.0) whatever the sampled draw says, the same reading
+            # ``adaptive_gpu`` calls congested.  ``gpu_power_measured_fraction``
+            # is the raw sampled draw over the same reference, with no limiter
+            # clamp: an idle SW-capped GB10 reads ~0.03 here while the proxy
+            # reads 1.0.  Never read the proxy as measured saturation.
+            # ``gpu_limited`` carries the limiter flag itself so a reader can
+            # tell the two apart without re-reading the broker.
             power_fractions = []
+            measured_fractions = []
             for device in devices:
                 power = _number(device.get("power_w"))
                 reference = _number(device.get("power_limit_w"), positive=True)
@@ -378,13 +390,26 @@ def observe(
                     reference = _number(device.get("power_reference_w"), positive=True)
                 if power is None or reference is None:
                     break
+                measured_fractions.append(power / reference)
                 # A throttled device is at its envelope whatever the sampled
                 # draw says, the same reading ``adaptive_gpu`` calls congested.
                 power_fractions.append(max(power / reference,
                                            1.0 if device.get("limited") is True else 0.0))
             if len(power_fractions) == len(devices):
                 detail["gpu_power_fraction"] = max(power_fractions)
+                detail["gpu_power_measured_fraction"] = max(measured_fractions)
                 detail["gpu_power_sampled_unix"] = gpu_sample["sampled_unix"]
+                limited_flags = [device.get("limited") for device in devices]
+                if all(flag is None for flag in limited_flags):
+                    detail["gpu_limited"] = None
+                else:
+                    detail["gpu_limited"] = any(flag is True for flag in limited_flags)
+                detail["gpu_throttle_mask"] = [
+                    device.get("throttle_active_mask") for device in devices
+                ] if any("throttle_active_mask" in device for device in devices) else None
+                detail["gpu_throttle_reasons"] = [
+                    device.get("throttle_reasons") for device in devices
+                ] if any("throttle_reasons" in device for device in devices) else None
             capacity["gpu"] = min(wanted["gpu"], len(devices))
             if foreign_processes:
                 # The public inventory is already the broker's exact
