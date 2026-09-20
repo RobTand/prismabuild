@@ -299,6 +299,14 @@ TIER_FUNDING_SCHEMA_V1 = "prismabuild.tier_funding.v1"
 TIER_FUNDING_STATES = frozenset({
     "reserved", "transferring", "consumed", "released",
 })
+#: Which plan leg role one funding kind pays for.  A fence funds staged
+#: (or promoted) occupancy; rate kinds and tiers with no movement legs
+#: never carry advance credit, so a record naming any other kind covers
+#: nothing.
+_FUNDING_KIND_ROLES = {
+    "stage_gib": "mover_row",
+    "ram_gib": "ram_mover_row",
+}
 #: Where a tier loop files what it discovered about one tier, for readers.
 TIERS = "tiers"
 #: The residency block an item may carry (#583): what a movement node moves,
@@ -2330,6 +2338,41 @@ class ResourceLedger:
             released += 1
         return released
 
+    def release_except(self, action_key: str, keep_names: Container[str]) -> int:
+        """Return every token except the named ones; count returned.
+
+        Funded-claim rollback (liveness lane): unwinding a claim whose fence
+        must stay fused releases only the remainder this attempt newly took
+        from free, never the fence the funding record still names.  Releasing
+        by key would free the fence into a stealer window; keeping everything
+        would double-hold on retry.  The keep set is the exact token list the
+        claim verified against the funding record under the key's transition
+        lock, so names outside it are this attempt's remainder and nothing
+        else.  Contained per token like :meth:`release_kinds`: a rename this
+        call could not do is done by the next attempt rather than costing the
+        caller its unwind.  This is claim rollback, not egress: it never
+        deletes bytes and never touches shared-physical decharge, which the
+        shared-cache lane owns.
+        """
+
+        keep = set(keep_names)
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return 0
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        released = 0
+        for token in _scan(holder):
+            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                continue
+            if token.name in keep:
+                continue
+            try:
+                os.rename(token, self.free_dir / token.name)
+            except OSError:
+                continue
+            released += 1
+        return released
+
     def _empty_into_free(self, holder: Path) -> int:
         """Return physical tokens before removing their adaptive metadata.
 
@@ -3425,7 +3468,7 @@ class PoolQueue:
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
-        "cpu_allocation", "tier_reservations", "residency_verdict",
+        "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
@@ -4471,18 +4514,30 @@ class PoolQueue:
         fresh generation rather than editing one.  Only ``state`` advances,
         through :meth:`advance_funding_state`.
 
-        The write is compare-and-swap on generation: ``expect_generation``
-        names the record this write replaces (``None`` when creating).  A
-        mismatch refuses instead of overwriting, so a verifying claim's
-        generation pin can never be pulled out from under it -- not even by
-        a replenish racing it, which simply retries next cycle.
+        Every writer holds the mover's transition lock: this call acquires
+        it non-blocking and refuses with ``PoolContractError`` when a claim
+        (or another coordinator cycle) holds it, so generation replacement
+        never races a verifying claim.  The generation check itself is
+        read-check-replace -- a loud refusal on rotation, not an atomic
+        compare-and-swap; the lock is what makes concurrent writers safe.
+        See :meth:`_write_funding_locked` for the body.
+        """
 
-        Caller holds the mover's transition lock: :meth:`reserve_fence` and
-        :meth:`advance_funding_state` both acquire it (non-blocking) around
-        their read-modify-write, and the claim path holds it from its tier
-        acquire through its consumed-marking.  The CAS is the second lock,
-        not the first: it turns a lost race into a refusal even where two
-        writers met.
+        checked = self.validate_funding(record)
+        mover = str(checked["mover_action_key"])
+        with self.mover_transition_lock(mover, blocking=False) as acquired:
+            if not acquired:
+                raise PoolContractError(
+                    "funding writer lost the transition race")
+            return self._write_funding_locked(
+                checked, expect_generation=expect_generation)
+
+    def _write_funding_locked(self, record: Mapping[str, object], *,
+                              expect_generation: str | None = None) -> Path:
+        """File one generation's binding; caller holds the mover lock.
+
+        ``expect_generation`` names the record this write replaces (``None``
+        when creating).  A mismatch refuses instead of overwriting.
         """
 
         checked = self.validate_funding(record)
@@ -4543,8 +4598,9 @@ class PoolQueue:
         ``consumed``; any live state -> ``released``; ``reserved`` may be
         rewritten by a fresh reservation, which mints a new generation
         instead).  When ``generation`` is given it must match the filed
-        record: the compare-and-swap covers identity and state together, so
-        a rotated binding can never be advanced by a holder of the old one.
+        record: the check turns a stale writer into a loud ``False``, while
+        the mover lock (held by the caller) is what keeps two writers from
+        interleaving the read and the replace.
         """
 
         current = self.read_funding(mover_action_key, tier_id)
@@ -4582,16 +4638,23 @@ class PoolQueue:
         parse, sit in ``transferring``, name this tier/mover/kind, carry the
         row's own ``published_unix`` (a republished content-hash key never
         inherits an older generation's credit), repeat the row's sealed
-        residency range, bind the live frozen consumer/plan (the record's
-        ``consumer_action_key`` still files a plan whose digest is still the
-        record's ``plan_sha256`` -- a replaced plan never inherits credit,
-        and the claim path is the only reader that can enforce this on the
-        row it is about to run), and name token files that are all still
-        held under this key right now with this kind's prefix.  Stale
-        physical holdings -- a landed range's complete receipt, a previous
-        attempt's leftovers, another generation's fence, a superseded plan's
-        credit -- never match, so an old copy always pays its full demand.
-        Never raises for queue-state reasons; unknown is ``(0, None)``.
+        residency range, be cut as a leg for this mover over exactly that
+        range by the live frozen plan in the role this kind funds, and name
+        token files that are all still held under this key right now with
+        this kind's prefix.  Stale physical holdings -- a landed range's
+        complete receipt, a previous attempt's leftovers, another
+        generation's fence, a superseded plan's credit, a mover outside the
+        sealed plan -- never match, so an old copy always pays its full
+        demand.  Never raises for queue-state reasons; unknown is
+        ``(0, None)``.
+
+        The record may sit in ``transferring`` (awaiting this claim) or in
+        ``consumed`` with the full bound token set still held: spending
+        always ends DONE, released, or requeued-with-release, so a
+        ``consumed`` fence still held in full under the same publication is
+        provably unspent -- exactly what a marking-failure unwind leaves
+        behind, and exactly what the retry re-covers without taking it
+        twice.  Anything partially held covers nothing.
         """
 
         if need <= 0 or not isinstance(item, Mapping):
@@ -4600,7 +4663,11 @@ class PoolQueue:
         if not isinstance(key, str):
             return (0, None)
         record = self.read_funding(key, tier_id)
-        if record is None or record.get("state") != "transferring":
+        if record is None:
+            return (0, None)
+        if record.get("state") == "consumed":
+            pass  # retry-reuse, proven below by the full held token set
+        elif record.get("state") != "transferring":
             return (0, None)
         if (str(record.get("tier_id")) != str(tier_id)
                 or str(record.get("mover_action_key")) != key
@@ -4639,6 +4706,30 @@ class PoolQueue:
             return (0, None)
         if (not isinstance(live_digest, str)
                 or str(record.get("plan_sha256")) != live_digest):
+            return (0, None)
+        # Sealed-plan membership: the live plan must actually cut this mover
+        # as a leg in the role this kind funds, over exactly the bound
+        # range.  A matching digest plus a caller-supplied row range is not
+        # enough: neither proves the plan names this mover for these bytes,
+        # so a scope/consumer/manifest/entry outside the sealed plan never
+        # inherits credit however well its row is typed.
+        try:
+            role = _FUNDING_KIND_ROLES.get(str(kind))
+            leg = (None if role is None else
+                   _residency_plan.find_mover_leg(live_plan, key))
+        except (OSError, PoolContractError, ValueError):
+            return (0, None)
+        except Exception:
+            return (0, None)
+        if leg is None or str(leg.get("mover_role")) != str(role):
+            return (0, None)
+        try:
+            plan_range = (int(leg["start_bytes"]), int(leg["end_bytes"]))
+            bound_range = (int(record.get("range_start_bytes")),  # type: ignore[arg-type]
+                           int(record.get("range_end_bytes")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return (0, None)
+        if plan_range != bound_range:
             return (0, None)
         tokens = record.get("tokens")
         if not isinstance(tokens, list) or not tokens:
@@ -5058,7 +5149,7 @@ class PoolQueue:
 
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
-        handles: dict[str, str], funded: dict[str, dict[str, int]],
+        handles: dict[str, str], funded: dict[str, dict[str, object]],
     ) -> dict[str, object] | None:
         """Take every tier's tokens, or say which tier stopped it.
 
@@ -5073,9 +5164,12 @@ class PoolQueue:
         busy.
 
         ``funded`` is filled per tier with what this claim's funding record
-        covers (``{tier_id: {kind: count}}``): pre-positioned fence tokens the
-        coordinator transferred under this key, verified by name against what
-        is actually held.  The ``begin_acquire`` below takes only the
+        covers (``{tier_id: {"kinds": {kind: count}, "generation": ...,
+        "tokens": [...]}}``): pre-positioned fence tokens the coordinator
+        transferred under this key, verified by name against what is actually
+        held, with the verified token names bound into the entry so a later
+        rollback can return the remainder this attempt took while keeping
+        exactly the fence.  The ``begin_acquire`` below takes only the
         remainder from free, so a funded claim never double-holds.  Anything
         else the key holds -- a landed range's tokens, a previous attempt's
         leftovers -- is physical occupancy and is never subtracted here: only
@@ -5110,8 +5204,29 @@ class PoolQueue:
                         covered[kind] = count
                         generation = covered_generation
             if any(covered.values()):
-                funded[tier_id] = {"kinds": dict(covered),
-                                   "generation": generation}
+                # Bind the verified token names now, under this key's
+                # transition lock: the rollback below must tell the fence it
+                # keeps from the remainder it returns, and names read later
+                # could be a rotated generation's.  Anything off -- moved
+                # state, rotated generation, unnamed tokens -- fails closed
+                # to no cover, and the claim pays its full demand.  Both
+                # ``transferring`` and held-in-full ``consumed`` qualify,
+                # exactly the states ``funded_cover`` covers.
+                proof = self.read_funding(action_key, tier_id)
+                names: list[str] = []
+                if (proof is not None
+                        and proof.get("state") in ("transferring", "consumed")
+                        and isinstance(proof.get("generation"), str)
+                        and str(proof.get("generation")) == generation
+                        and isinstance(proof.get("tokens"), list)
+                        and proof.get("tokens")):
+                    names = sorted(str(name) for name in proof["tokens"])  # type: ignore[union-attr]
+                if not names:
+                    covered = {}
+                else:
+                    funded[tier_id] = {"kinds": dict(covered),
+                                       "generation": generation,
+                                       "tokens": names}
             remainder = {kind: int(need) - int(covered.get(kind, 0))
                          for kind, need in needs.items()}
             handle = ledger.begin_acquire(action_key, remainder)
@@ -5134,6 +5249,41 @@ class PoolQueue:
 
         return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
                    for tier_id, handle in sorted(handles.items()))
+
+    def _unwind_funded_tier_commit(
+        self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
+        tier_funded: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        """Return a rolled-back claim's remainder, keep its verified fences.
+
+        Past ``_commit_tier_acquire`` the handles are empty, so abandoning
+        them returns nothing: the remainder this attempt newly took from free
+        is filed under the key beside the fence.  Per tier: unfunded tiers
+        release by key (everything there is remainder); funded tiers release
+        everything EXCEPT the exact token names the claim verified against
+        the funding record, so the fence stays fused with no free interval
+        for a stealer while the remainder goes home and the retry cannot add
+        it again.  Releasing the fence by key would open that steal gap;
+        keeping everything would double-hold on retry.  Contained per tier
+        like :meth:`release_tier_reservations`: a tier this call cannot read
+        keeps its tokens for the next attempt rather than costing the unwind.
+        """
+
+        for tier_id in sorted(tier_demand):
+            try:
+                ledger = self.tier_ledger(tier_id)
+            except (OSError, PoolContractError, ValueError):
+                continue
+            entry = tier_funded.get(tier_id)
+            names = (entry.get("tokens") if isinstance(entry, dict) else None)
+            try:
+                if isinstance(names, list) and names:
+                    ledger.release_except(
+                        action_key, {str(name) for name in names})
+                else:
+                    ledger.release(action_key)
+            except (OSError, PoolContractError, ValueError):
+                continue
 
     # -- residency (#583) -------------------------------------------------
 
@@ -7128,7 +7278,7 @@ class PoolQueue:
                     reservation_demand["gpu"] = 1
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
-                tier_funded: dict[str, dict[str, int]] = {}
+                tier_funded: dict[str, dict[str, object]] = {}
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
@@ -7397,6 +7547,56 @@ class PoolQueue:
                                 or (adaptive_gpu is not None and _read_json(
                                     ledger.held_dir / key / gpu_admission.METADATA) is None)):
                             incomplete = True
+                    # ``_unwind_funded_claim`` below serves every rollback on
+                    # this item: host take and committed remainder go home,
+                    # verified fences stay fused, the row goes back.
+                    def _unwind_funded_claim(
+                        reason: str, detail: dict[str, object], *,
+                        post_persist: bool,
+                    ) -> bool:
+                        """Roll one tier/funded claim back to ready, fenced.
+
+                        Host take and committed remainder go home; verified
+                        fences stay fused (see
+                        ``_unwind_funded_tier_commit``); the row goes back.
+                        ``post_persist`` restorations rewrite ``dst`` from
+                        ``moved`` first, because past persistence ``dst`` may
+                        hold claim content that must never be linked back as
+                        a ready row.  Returns whether the row was restored to
+                        ``ready`` (``False`` leaves a lease-less claimed row
+                        plus the denial for the reaper: a disk failure inside
+                        persistence is already catastrophic territory, and a
+                        claimed-content row in ``ready`` would be worse).
+                        """
+
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            ledger.release(key)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(
+                                controller, gpu_controller, gpu_probe)
+                        self._abandon_tier_acquire(tier_handles)
+                        self._unwind_funded_tier_commit(
+                            key, tier_demand, tier_funded)
+                        if post_persist:
+                            with suppress(Exception):
+                                self.lease_path(key).unlink()
+                            try:
+                                _write_json_atomic(dst, moved)
+                            except (OSError, PoolContractError, ValueError):
+                                self.record_denial(item, reason, detail)
+                                return False
+                        try:
+                            os.link(dst, src)
+                        except OSError:
+                            self.record_denial(item, reason, detail)
+                            return False
+                        else:
+                            dst.unlink(missing_ok=True)
+                            self.item_path(INTENT, key).unlink(missing_ok=True)
+                        self.record_denial(item, reason, detail)
+                        return True
+
                     if incomplete:
                         # A stale-acquisition sweep took part of the reservation,
                         # or tokens of an earlier incarnation are filed under this
@@ -7405,46 +7605,34 @@ class PoolQueue:
                         # rewrite below has not happened yet, so putting it back
                         # restores the item exactly as it was.
                         #
-                        # A funded claim unwinds differently: its fence stays
-                        # fused under this key (the record is untouched, same
-                        # generation), so the entitlement survives the failure
-                        # and the next attempt re-verifies the same binding
-                        # instead of re-taking it from free.  Only the unfused
-                        # remainder -- the handles and the host take -- goes
-                        # back.  Physical occupancy keeps the pre-existing
-                        # release semantics everywhere else, unchanged here.
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            ledger.release(key)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
-                        self._abandon_tier_acquire(tier_handles)
-                        if not tier_funded:
-                            self.release_tier_reservations(key)
-                        # else: fused fence stays (see above); the host take
-                        # is already back via the host-ledger release above.
-                        # Link rather than rename.  ``publish`` writes ``ready``
-                        # unconditionally, so a re-submission of this key can
-                        # already be sitting there, and a rename would replace that
-                        # new generation with these older bytes and lose the
-                        # request.  If it is there, leave the claim for the reaper
-                        # instead: an extra reaper cycle costs one attempt, a
-                        # clobbered generation costs the whole submission.
-                        try:
-                            os.link(dst, src)
-                        except OSError:
-                            pass
-                        else:
-                            dst.unlink(missing_ok=True)
-                            self.item_path(INTENT, key).unlink(missing_ok=True)
-                        self.record_denial(item, "committed_reservation_incomplete", {
+                        # A funded claim unwinds fence-first: the verified fence
+                        # stays fused under this key (the record is untouched,
+                        # same generation), so the entitlement survives the
+                        # failure and the next attempt re-verifies the same
+                        # binding instead of re-taking it from free -- while the
+                        # remainder this attempt newly committed goes home via
+                        # ``_unwind_funded_tier_commit`` (release-by-key would
+                        # free the fence into a stealer window; keeping it all
+                        # would double-hold on retry).  Physical occupancy keeps
+                        # the pre-existing release semantics everywhere else,
+                        # unchanged here.
+                        _unwind_funded_claim("committed_reservation_incomplete", {
                             "filed_tokens": filed,
                             "expected_tokens": sum(reservation_demand.values()),
                             "tier_filed_tokens": tier_filed,
                             "tier_expected_tokens": tier_wanted,
                             "adaptive_cpu": adaptive is not None,
                             "adaptive_gpu": adaptive_gpu is not None,
-                        })
+                        }, post_persist=False)
+                        # Link rather than rename (inside the closure):
+                        # ``publish`` writes ``ready`` unconditionally, so a
+                        # re-submission of this key can already be sitting
+                        # there, and a rename would replace that new
+                        # generation with these older bytes and lose the
+                        # request.  If it is there, leave the claim for the
+                        # reaper instead: an extra reaper cycle costs one
+                        # attempt, a clobbered generation costs the whole
+                        # submission.
                         continue
                 except BaseException:
                     # The handle is the only name these tokens have, and it
@@ -7555,7 +7743,8 @@ class PoolQueue:
                     # recoverable entitlement (both records still
                     # ``transferring`` for the next attempt to re-verify),
                     # never consumed-but-no-executable-claim stranded credit.
-                    # The fused fence stays (tier releases skipped below),
+                    # The fence stays fused while the remainder this attempt
+                    # committed goes home (see ``_unwind_funded_tier_commit``);
                     # the row goes back byte-identical, and the next attempt
                     # re-verifies the same binding: preserved, never freed
                     # into a stealer window, never double-spent.
@@ -7565,8 +7754,12 @@ class PoolQueue:
                                   if isinstance(entry, dict) else None)
                         kinds = (entry.get("kinds")
                                  if isinstance(entry, dict) else None)
+                        bound_names = (entry.get("tokens")
+                                       if isinstance(entry, dict) else None)
                         needs = tier_demand.get(funded_tier, {})
-                        ok = isinstance(kinds, dict) and bool(kinds)
+                        ok = (isinstance(kinds, dict) and bool(kinds)
+                              and isinstance(bound_names, list)
+                              and bool(bound_names))
                         if ok:
                             for kind_name, count in kinds.items():
                                 try:
@@ -7581,33 +7774,56 @@ class PoolQueue:
                                         or live_generation != pinned):
                                     ok = False
                                     break
+                        if ok:
+                            # Exact token set: the fence the rollback keeps
+                            # must be exactly what is still held -- a rotated
+                            # generation's names fail closed here, never as a
+                            # half-kept fence.  ``consumed`` qualifies exactly
+                            # when held in full (see ``funded_cover``): the
+                            # retry of a marking-failure unwind.
+                            live = self.read_funding(key, funded_tier)
+                            live_names = (live.get("tokens")
+                                          if isinstance(live, dict) else None)
+                            if (not isinstance(live, dict)
+                                    or live.get("state") not in (
+                                        "transferring", "consumed")
+                                    or live.get("generation") != pinned
+                                    or not isinstance(live_names, list)
+                                    or sorted(str(name) for name in live_names)
+                                    != sorted(str(name)
+                                              for name in bound_names)):
+                                ok = False
                         if not ok:
                             funding_verified = False
                             break
                     if not funding_verified:
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            ledger.release(key)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
-                        self._abandon_tier_acquire(tier_handles)
-                        # tier releases skipped: fused fence stays (see above)
-                        try:
-                            os.link(dst, src)
-                        except OSError:
-                            pass
-                        else:
-                            dst.unlink(missing_ok=True)
-                            self.item_path(INTENT, key).unlink(missing_ok=True)
-                        self.record_denial(item, "committed_reservation_incomplete", {
+                        _unwind_funded_claim("committed_reservation_incomplete", {
                             "filed_tokens": filed,
                             "expected_tokens": sum(reservation_demand.values()),
                             "tier_filed_tokens": tier_filed,
                             "tier_expected_tokens": tier_wanted,
                             "adaptive_cpu": adaptive is not None,
                             "adaptive_gpu": adaptive_gpu is not None,
-                        })
+                        }, post_persist=False)
                         continue
+                if tier_funded:
+                    # Bind the exact funding generations to this durable
+                    # attempt: every later release/recovery decision (settle,
+                    # reapers, egress) proves against these names instead of
+                    # trusting record state alone.  A ``transferring`` record
+                    # whose generation and token set match a live
+                    # claimed/terminal attempt is entitlement-or-physical
+                    # under that attempt, never free credit.
+                    claimed["tier_funding"] = {
+                        funded_tier: {
+                            "generation": entry.get("generation"),
+                            "kinds": dict(entry.get("kinds") or {}),
+                            "tokens": [str(name) for name in
+                                       (entry.get("tokens") or [])],
+                        }
+                        for funded_tier, entry in sorted(tier_funded.items())
+                        if isinstance(entry, dict)
+                    }
                 # Read here, where the claim record is being written anyway,
                 # so the receipt costs no extra write and cannot race: after
                 # this point the prewarm loop has already skipped this key,
@@ -7625,26 +7841,63 @@ class PoolQueue:
                             PREWARM_RECEIPT_REF: key,
                             "manifest_sha256": digest,
                         }
-                _write_json_atomic(dst, claimed)
-                self.write_lease(
-                    key,
-                    owner=owner, claim_snapshot=claimed,
-                    container_owner=(str(claimed["container_owner"])
-                                     if claimed.get("container_owner") else None),
-                )
+                try:
+                    _write_json_atomic(dst, claimed)
+                except (OSError, PoolContractError, ValueError) as exc:
+                    # The claim record never landed (atomic replace leaves
+                    # ``dst`` with its old bytes): nothing may execute.
+                    # Fence-first unwind, row still byte-identical.
+                    _unwind_funded_claim("claim_persistence_failed", {
+                        "error": str(exc),
+                        "phase": "claim-record",
+                        "filed_tokens": filed,
+                        "expected_tokens": sum(reservation_demand.values()),
+                        "tier_filed_tokens": tier_filed,
+                        "tier_expected_tokens": tier_wanted,
+                        "adaptive_cpu": adaptive is not None,
+                        "adaptive_gpu": adaptive_gpu is not None,
+                    }, post_persist=False)
+                    continue
+                try:
+                    self.write_lease(
+                        key,
+                        owner=owner, claim_snapshot=claimed,
+                        container_owner=(str(claimed["container_owner"])
+                                         if claimed.get("container_owner") else None),
+                    )
+                except (OSError, PoolContractError, ValueError) as exc:
+                    # The lease never landed but ``dst`` now holds claim
+                    # content: restore it from ``moved`` before linking back,
+                    # so a claimed-content row never lands in ``ready``.
+                    _unwind_funded_claim("claim_persistence_failed", {
+                        "error": str(exc),
+                        "phase": "lease",
+                        "filed_tokens": filed,
+                        "expected_tokens": sum(reservation_demand.values()),
+                        "tier_filed_tokens": tier_filed,
+                        "tier_expected_tokens": tier_wanted,
+                        "adaptive_cpu": adaptive is not None,
+                        "adaptive_gpu": adaptive_gpu is not None,
+                    }, post_persist=True)
+                    continue
                 if tier_funded:
-                    # Fuse each funding shut only after the claim is durable:
-                    # persistence above is the point of no return, so a
-                    # persistence failure still leaves every record
-                    # ``transferring`` for the next attempt (recoverable
-                    # entitlement, never stranded consumed credit).  The claim
-                    # holds this key's transition lock throughout, so no
-                    # coordinator transfer/cancel interleaves between the
-                    # pre-persistence verification and these marks; a mark
-                    # that still fails (I/O, not concurrency) leaves a
-                    # ``transferring`` record under an already-executable
-                    # claim, which the mover-terminal settle closes on finish
-                    # rather than stranding a second subtraction.
+                    # Fuse each funding shut only after the claim is durable.
+                    # A mark that fails here unwinds the whole claim back to
+                    # ready instead of returning it: no execution without
+                    # complete durable proof.  One claim carries at most one
+                    # funded tier in practice (a row has a single residency
+                    # block, and ``funded_cover`` requires the row's
+                    # residency tier to equal the record's tier), so the loop
+                    # below iterates once; it stays generic, and the
+                    # consumed-reuse rule in ``funded_cover`` recovers even a
+                    # hypothetical partial fuse exactly.  The claim holds this
+                    # key's transition lock throughout, so no coordinator
+                    # transfer/cancel interleaves between the pre-persistence
+                    # verification and these marks; only I/O can still fail,
+                    # and I/O failure keeps the entitlement (records stay
+                    # ``transferring``) for the next attempt.
+                    funding_sealed = True
+                    failed_tier: str | None = None
                     for funded_tier, entry in tier_funded.items():
                         pinned = (entry.get("generation")
                                   if isinstance(entry, dict) else None)
@@ -7662,6 +7915,20 @@ class PoolQueue:
                                 and (pinned is None or current.get(
                                     "generation") == pinned)):
                             continue
+                        funding_sealed = False
+                        failed_tier = funded_tier
+                        break
+                    if not funding_sealed:
+                        _unwind_funded_claim("funding_not_durable", {
+                            "tier_id": failed_tier,
+                            "filed_tokens": filed,
+                            "expected_tokens": sum(reservation_demand.values()),
+                            "tier_filed_tokens": tier_filed,
+                            "tier_expected_tokens": tier_wanted,
+                            "adaptive_cpu": adaptive is not None,
+                            "adaptive_gpu": adaptive_gpu is not None,
+                        }, post_persist=True)
+                        continue
                 self.passes_path(key).unlink(missing_ok=True)
                 return claimed
         return None

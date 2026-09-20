@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 from pathlib import Path
 import sys
 
@@ -497,7 +498,11 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     assert str(record["generation"]) == generation
 
     # Retired credit metadata frees nothing: every state effect refuses,
-    # the idempotent reserve moves nothing, and the cover stays zero.
+    # the idempotent reserve moves nothing.  The cover still answers the
+    # full fence while it is held in full under the same publication --
+    # that is the retry-reuse of an unexecuted attempt, unreachable for a
+    # DONE row (no DONE row ever claims again), and it dies the moment the
+    # set is partial or the key republishes (see the next test).
     assert queue.advance_funding_state(
         mover, TIER, expect="consumed", advance_to="released",
         generation=generation) is False
@@ -509,7 +514,268 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
         queue, plan, mover, row, kind="stage_gib"), 2) is True
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
     assert ledger.available().get("stage_gib") == free_before
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
     # Only the owner path may return landed bytes; until it does the
     # ledger still charges them to the mover that staged them.
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+
+
+def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -> None:
+    """Injected claim-record failure: no execution, exact fence recovery."""
+    queue = _queue(tmp_path, stage_gib=4)
+    ledger = queue.tier_ledger(TIER)
+    mover, consumer = _hexkey("inj-mover"), _hexkey("inj-consumer")
+    plan = _plan(queue, consumer, mover, tag="inj")
+    row = _publish_mover(queue, plan, mover)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-inj")
+    generation = _reserve_and_transfer(
+        queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
+
+    real_write = pool._write_json_atomic
+
+    def fail_claim_record(path, *args, **kwargs):
+        if (str(path).endswith(f"{mover}.json")
+                and f"{pool.CLAIMED}{os.sep}" in str(path)):
+            raise OSError("injected claim-record failure")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(pool, "_write_json_atomic", fail_claim_record)
+    assert queue.claim(tags=["dl380g10"], owner="w-inj") is None
+    # The row is back in ready with its publication intact; the fence never
+    # touched free, so the free count is exact and no stealer window opened.
+    row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    assert isinstance(row2, dict)
+    assert row2["published_unix"] == row["published_unix"]
+    assert row2["resources"] == row["resources"]
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "transferring"
+    assert str(record["generation"]) == generation
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert ledger.available().get("stage_gib") == 2
+
+    # Retry spends the same fence exactly once: holdings do not grow.
+    monkeypatch.setattr(pool, "_write_json_atomic", real_write)
+    got = queue.claim(tags=["dl380g10"], owner="w-inj-retry")
+    assert got is not None and got["action_key"] == mover
+    assert got["tier_funding"][TIER]["generation"] == generation
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert ledger.available().get("stage_gib") == 2
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "consumed"
+    queue.finish(mover, status="executed")
+    assert ledger.available().get("stage_gib") == 4
+
+
+def test_lease_write_failure_returns_remainder_keeps_fence(
+        tmp_path: Path, monkeypatch) -> None:
+    """Injected lease failure on a funded+remainder claim: exact unwind."""
+    queue = _queue(tmp_path, stage_gib=4, ram_gib=4)
+    stage_ledger = queue.tier_ledger(TIER)
+    ram_ledger = queue.tier_ledger(RAM_TIER)
+    mover, consumer = _hexkey("lease-mover"), _hexkey("lease-consumer")
+    plan = _plan(queue, consumer, mover, tag="lease")
+    resources = {STAGE_KIND: 2, RAM_KIND: 2}
+    row = _publish_mover(queue, plan, mover, resources=resources)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-lease")
+    generation = _reserve_and_transfer(
+        queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
+
+    real_lease = pool.PoolQueue.write_lease
+
+    def fail_lease(*args, **kwargs):
+        raise pool.PoolContractError("injected lease failure")
+
+    monkeypatch.setattr(pool.PoolQueue, "write_lease", fail_lease)
+    assert queue.claim(tags=["dl380g10"], owner="w-lease") is None
+    # Funded fence kept in full; the ram remainder this attempt committed
+    # went home exactly (ram free is whole again); nothing executed.
+    row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    assert isinstance(row2, dict)
+    assert row2["published_unix"] == row["published_unix"]
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "transferring"
+    assert str(record["generation"]) == generation
+    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert stage_ledger.available().get("stage_gib") == 2
+    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 0
+    assert ram_ledger.available().get("ram_gib") == 4
+
+    # Retry takes the remainder exactly once beside the same fence.
+    monkeypatch.setattr(pool.PoolQueue, "write_lease", real_lease)
+    got = queue.claim(tags=["dl380g10"], owner="w-lease-retry")
+    assert got is not None and got["action_key"] == mover
+    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 2
+    assert stage_ledger.available().get("stage_gib") == 2
+    assert ram_ledger.available().get("ram_gib") == 2
+    queue.finish(mover, status="executed")
+    assert stage_ledger.available().get("stage_gib") == 4
+    assert ram_ledger.available().get("ram_gib") == 4
+
+
+def test_mark_failure_unwinds_without_execution(
+        tmp_path: Path, monkeypatch) -> None:
+    """Injected consumed-marker failure: no execution, exact fence recovery.
+
+    One claim carries at most one funded tier -- a row has a single
+    residency block, and ``funded_cover`` requires the row's residency tier
+    to equal the record's tier -- so the marking loop's partial-failure
+    shape (tier1 fused, tier2 failed) is structurally unreachable; the
+    generic loop plus the consumed-reuse rule still recovers it exactly if
+    it ever arises.  What is reachable and tested here: the single mark
+    fails, the claim unwinds instead of executing, repeated failures neither
+    grow holdings nor open a stealer window, and the retry fuses the same
+    generation shut spending the fence exactly once.
+    """
+    queue = _queue(tmp_path, stage_gib=4, ram_gib=4)
+    stage_ledger = queue.tier_ledger(TIER)
+    ram_ledger = queue.tier_ledger(RAM_TIER)
+    mover, consumer = _hexkey("mark-mover"), _hexkey("mark-consumer")
+    plan = _plan(queue, consumer, mover, tag="mark")
+    resources = {STAGE_KIND: 2, RAM_KIND: 2}
+    row = _publish_mover(queue, plan, mover, resources=resources)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-mark")
+    generation = _reserve_and_transfer(
+        queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
+
+    real_mark = pool.PoolQueue._advance_funding_state_locked
+    failures = {"count": 0}
+
+    def fail_mark_once(self, mover_key, tier_id, **kwargs):
+        if failures["count"] < 2:
+            failures["count"] += 1
+            return False
+        return real_mark(self, mover_key, tier_id, **kwargs)
+
+    monkeypatch.setattr(pool.PoolQueue, "_advance_funding_state_locked",
+                        fail_mark_once)
+    for attempt in ("w-mark-1", "w-mark-2"):
+        assert queue.claim(tags=["dl380g10"], owner=attempt) is None
+        # No execution either time; the fence stayed held in full under its
+        # generation, the ram remainder went home -- never freed, never
+        # regrown.
+        assert queue.item_path(pool.READY, mover).exists()
+        record = queue.read_funding(mover, TIER)
+        assert record is not None and record["state"] == "transferring"
+        assert str(record["generation"]) == generation
+        assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+        assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 0
+        assert stage_ledger.available().get("stage_gib") == 2
+        assert ram_ledger.available().get("ram_gib") == 4
+    assert failures["count"] == 2
+
+    # Injection exhausted: the retry fuses the same generation shut and runs
+    # with holdings byte-exact beside a once-taken remainder.
+    monkeypatch.setattr(pool.PoolQueue, "_advance_funding_state_locked",
+                        real_mark)
+    got = queue.claim(tags=["dl380g10"], owner="w-mark-retry")
+    assert got is not None and got["action_key"] == mover
+    assert got["tier_funding"][TIER]["generation"] == generation
+    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 2
+    assert stage_ledger.available().get("stage_gib") == 2
+    assert ram_ledger.available().get("ram_gib") == 2
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "consumed"
+    assert str(record["generation"]) == generation
+    queue.finish(mover, status="executed")
+    assert stage_ledger.available().get("stage_gib") == 4
+    assert ram_ledger.available().get("ram_gib") == 4
+
+
+def test_consumed_cover_needs_full_held_set(tmp_path: Path) -> None:
+    """Retry-reuse dies the moment the bound set is partial."""
+    queue = _queue(tmp_path, stage_gib=4)
+    ledger = queue.tier_ledger(TIER)
+    mover, consumer = _hexkey("part-mover"), _hexkey("part-consumer")
+    plan = _plan(queue, consumer, mover, tag="part")
+    row = _publish_mover(queue, plan, mover)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-part")
+    generation = _reserve_and_transfer(
+        queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
+
+    got = queue.claim(tags=["dl380g10"], owner="w-part")
+    assert got is not None and got["action_key"] == mover
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "consumed"
+    bound = [str(name) for name in record["tokens"]]
+    assert len(bound) == 2
+    # Fully held under the same publication: the retry re-covers.
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
+    # One bound token gone: nothing is covered, never a half credit.
+    assert ledger.release_except(mover, bound[1:]) == 1
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    # All gone: still nothing.
+    assert ledger.release(mover) == 1
+    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    queue.finish(mover, status="executed")
+
+
+def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
+    """One small ACTUAL mover path: copy bytes, pin, delete, release."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import stage_release
+    from prismabuild import residency_map
+    queue = _queue(tmp_path, stage_gib=3)
+    ledger = queue.tier_ledger(TIER)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert stage_release.register_stage_root(
+        queue, tier_id=TIER, stage_root=str(stage)) == "registered"
+
+    span = 1 << 20
+    mover, consumer = _hexkey("real-mover"), _hexkey("real-consumer")
+    plan = residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=TIER, stage_root="/stage/prewarm",
+        manifest_sha256=MANIFEST, manifest_bytes=span, phases=[{
+            "name": "phase-real",
+            "start_bytes": 0, "end_bytes": span, "stage_gib": 1,
+            "mover_row": {
+                **_row(mover, {STAGE_KIND: 1}, queue),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                    "manifest_sha256": MANIFEST, "manifest_bytes": span,
+                    "range_start_bytes": 0, "range_end_bytes": span},
+            },
+            "egress_row": _row(_hexkey("real-egress"), {"mem_gb": 1}, queue),
+        }])
+    row = _publish_mover(queue, plan, mover)
+    grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-real")
+    generation = _reserve_and_transfer(
+        queue, plan, mover, row, kind="stage_gib", gib=1, grant=grant)
+
+    got = queue.claim(tags=["dl380g10"], owner="w-real")
+    assert got is not None and got["action_key"] == mover
+    # The actual copy: real bytes on the stage, fragment filed, receipt
+    # measured -- the pin below is earned by bytes, not by a comment.
+    staged = stage / "real.bin"
+    staged.write_bytes(b"s" * span)
+    residency_map.write_fragment(queue.residency_fragment_root(), {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
+        "entries": {residency_map.residency_map_key("/pool/real.bin", 0): {
+            "stage_path": str(staged), "bytes": span,
+            "offset": 0, "sha256": "b" * 64}}})
+    queue.record_move(mover, {
+        "consumer_action_key": consumer, "tier_id": TIER,
+        "stage_root": str(stage), "complete": True, "bytes_staged": span})
+    queue.finish(mover, status="executed")
+    # Landed and pinned: charged to the mover, record consumed.
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert ledger.available().get("stage_gib") == 2
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "consumed"
+    assert str(record["generation"]) == generation
+    assert queue.advance_funding_state(
+        mover, TIER, expect="consumed", advance_to="released",
+        generation=generation) is False
+    # Only the owner path returns landed bytes: the real egress deletes the
+    # real file, releases the charge, and drops the fragment.
+    receipt = stage_release.evict(
+        queue, mover, consumer_action_key=consumer, stage_root=str(stage))
+    assert not staged.exists()
+    assert int(receipt.get("tokens_released", 0)) == 1
+    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
+    assert ledger.available().get("stage_gib") == 3
