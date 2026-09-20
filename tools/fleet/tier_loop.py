@@ -50,6 +50,7 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
@@ -559,13 +560,18 @@ def _ram_window_state(
         queue: pool.PoolQueue, consumer: Mapping[str, object],
         plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
         *, prefill_depth: int | None,
-        withdrawn: Sequence[str] = ()) -> dict[str, object] | None:
+        withdrawn: Sequence[str] = (),
+        own_fence_gib: int = 0) -> dict[str, object] | None:
     """One consumer's ram decision inputs, or ``None`` when it has no ram leg.
 
     The stage window's own question, asked of the ram ledger: what fits, what
     the run-ahead bound covers, and -- the one bound that is a dependency
     rather than a size -- which phases' stage ranges have landed, because a
     promotion's source is the stage and nothing else.
+
+    ``own_fence_gib`` reads this consumer's held fence back into free for
+    this decision alone, exactly like the stage loop does: a fence never
+    blocks its own window.
     """
 
     ram_tier_id = plan.get("ram_tier_id")
@@ -645,14 +651,37 @@ def ram_residency_window(
         return events
     cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
+    ram_protection = _protect_tier_advances(
+        queue, tiers, mover_role="ram_mover_row",
+        tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
+                              if residency_plan.ram_mover_keys(plan) else ""),
+        state_of=_ram_mover_state)
+    ram_gated = ram_protection["gated"]
+    assert isinstance(ram_gated, dict)
+    ram_grants = ram_protection["grants"]
+    assert isinstance(ram_grants, dict)
+    events.extend(ram_protection["events"])  # type: ignore[arg-type]
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
         plan, incarnation = residency_plan.read_filed(queue, key)
         if plan is None:
             continue      # a plan this reader refuses is reported once, below
+        # A fence never blocks its own window (stage loop reads it back the
+        # same way); sum this consumer's held ram grants here.
+        own_fence_gib = 0
+        for (grant_key, grant_tier), grant_name in ram_grants.items():
+            if grant_key != key or not isinstance(grant_name, str):
+                continue
+            try:
+                own_fence_gib += int(queue.tier_ledger(
+                    grant_tier).holder_tokens(grant_name).get(
+                        storage_tiers.capacity_kind_of(grant_tier), 0))
+            except (OSError, pool.PoolContractError, ValueError):
+                continue
         state = _ram_window_state(queue, consumer, plan, tiers,
                                   prefill_depth=depth,
-                                  withdrawn=sorted(cancelled))
+                                  withdrawn=sorted(cancelled),
+                                  own_fence_gib=own_fence_gib)
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
@@ -670,7 +699,19 @@ def ram_residency_window(
                     "free_gib", "capacity_gib", "reason", "waiting_for")},
                 "chunk_index": stall.get("chunk_index"),
                 "tier_id": ram_tier_id})
-        publishable = [] if superseded is not None else state["publishable"]
+        publishable = ([] if (superseded is not None
+                              or (key, ram_tier_id) in ram_gated)
+                         else state["publishable"])
+        gate = ram_gated.get((key, ram_tier_id))
+        if gate is not None and superseded is None:
+            assert isinstance(gate, dict)
+            events.append({
+                "event": "ram-window-gated", "consumer": key,
+                "tier_id": ram_tier_id, "reason": str(gate.get("reason")),
+                "permanent": bool(gate.get("permanent")),
+                "need_gib": gate.get("need_gib"),
+                "output_note": str(gate.get("output_note") or ""),
+            })
         ram_tier_record = tiers.get(ram_tier_id)
         if (isinstance(ram_tier_record, Mapping)
                 and not _tier_admits_movers(ram_tier_record)):
@@ -768,6 +809,7 @@ def ram_residency_window(
                            "action_key": egress_key,
                            "mover": str(mover_row["action_key"]),  # type: ignore[index]
                            "tier_id": ram_tier_id})
+    events.extend(_settle_protected(queue, ram_protection))
     return events
 
 
@@ -1613,6 +1655,691 @@ def reclaim_failed_mover_partials(
     return events
 
 
+def _advance_wants(queue: pool.PoolQueue,
+                   tiers: Mapping[str, Mapping[str, object]], *,
+                   mover_role: str, tier_of, state_of,
+                   ) -> list[dict[str, object]]:
+    """Per-consumer advance needs for one movement leg, in queue scan order.
+
+    One entry per live consumer whose plan carries this leg on a local tier.
+    Plans that do not read, name another box's tier, or fail the needs check
+    are skipped here; the window loops below handle them exactly as before.
+    Order is the queue's own scan order -- the same fairness the claim poll
+    already uses -- never a re-ranking invented here.
+    """
+
+    wants: list[dict[str, object]] = []
+    for consumer in live_consumers(queue):
+        key = str(consumer["action_key"])
+        plan = residency_plan.read(queue, key)
+        if plan is None:
+            continue
+        tier_id = tier_of(plan)
+        if not isinstance(tier_id, str) or tier_id not in tiers:
+            continue
+        try:
+            already, staged = state_of(queue, plan, tier_id)
+        except (OSError, pool.PoolContractError):
+            continue
+        try:
+            role_keys = (residency_plan.ram_mover_keys(plan)
+                         if mover_role == "ram_mover_row"
+                         else residency_plan.stage_mover_keys(plan))
+            rowed = [key for key in role_keys
+                     if queue.item_path(pool.READY, str(key)).exists()]
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        try:
+            needs = residency_plan.advance_needs(
+                plan, consumer["accepted_phase"],  # type: ignore[arg-type]
+                published=sorted(already), rowed=rowed,
+                mover_role=mover_role)
+        except residency_plan.ResidencyPlanError:
+            continue
+        lead = needs.get("lead_mover_action_key")
+        already_set = set(already)
+        staged_set = set(staged)
+        wants.append({
+            "key": key, "consumer": consumer, "plan": plan,
+            "tier_id": tier_id, "accepted": consumer["accepted_phase"],
+            "needs": needs, "already": already_set, "staged": staged_set,
+            # Newcomer while its lead is unpublished: the gate blocks the
+            # formation event (publishing the lead), not the landing.  Once
+            # the lead is queued, later cycles treat it as admitted.
+            "newcomer": bool(lead) and str(lead) not in already_set,
+        })
+    return wants
+
+
+def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
+                grant: str, key: str, plan: Mapping[str, object],
+                leg: Mapping[str, object], demand: int) -> bool:
+    """Acquire one fence under the grant key and bind its names to a record.
+
+    Crash repair included: a grant left holding by a coordinator that died
+    between ``acquire`` and ``write_funding`` is bound (not doubled) here,
+    and a later top-up binds the union actually held.  The binding carries
+    the mover row's own ``published_unix`` so the claim later verifies the
+    exact publication it was fenced for -- a republished content-hash key
+    never inherits older credit.  Never raises for queue-state reasons;
+    unknown is ``False``.
+    """
+
+    try:
+        plan_digest = residency_plan.plan_sha256(plan)
+        start = int(leg["start_bytes"])
+        stop = int(leg["end_bytes"])
+        row = pool._read_json(queue.item_path(
+            pool.READY, str(leg["mover_action_key"])))
+        published_unix = float((row or {}).get("published_unix"))  # type: ignore[arg-type]
+    except (ValueError, OSError, KeyError, TypeError, pool.PoolContractError):
+        return False
+    fields = {"consumer_action_key": str(key), "plan_sha256": plan_digest,
+              "mover_action_key": str(leg["mover_action_key"]),
+              "range_start_bytes": start, "range_end_bytes": stop,
+              "kind": str(kind), "published_unix": published_unix}
+    try:
+        return bool(queue.reserve_fence(
+            str(tier_id), grant, fields, int(demand)))
+    except (OSError, pool.PoolContractError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _protect_tier_advances(queue: pool.PoolQueue,
+                           tiers: Mapping[str, Mapping[str, object]], *,
+                           mover_role: str, tier_of, state_of,
+                           ) -> dict[str, object]:
+    """Gate newcomers and fence protected nexts on every local tier, one pass.
+
+    Returns ``{"gated": {(key, tier_id): {...}}, "protected":
+    {(key, tier_id): {...}}, "grants": {(key, tier_id): grant_key},
+    "events": [...]}``.  The only mutations are fence ``acquire``/``release``
+    (reserve, cancel) plus funding-record writes; transfers run in the
+    post-pass settle, queue rows are never written here.  Unreadable ledger,
+    ready, or capacity evidence defers the tier with the record named.
+    """
+
+    gated: dict[tuple[str, str], dict[str, object]] = {}
+    protected: dict[tuple[str, str], dict[str, object]] = {}
+    grants: dict[tuple[str, str], str] = {}
+    events: list[dict[str, object]] = []
+    wants = _advance_wants(queue, tiers, mover_role=mover_role,
+                           tier_of=tier_of, state_of=state_of)
+    try:
+        ready_items = queue.ready_items()
+    except (OSError, pool.PoolContractError) as exc:
+        events.append({"event": "advance-deferred-unknown-evidence",
+                       "leg": mover_role,
+                       "error": f"ready scan unreadable: {exc}"})
+        return {"gated": gated, "protected": protected, "events": events}
+    by_tier: dict[str, list[dict[str, object]]] = {}
+    for want in wants:
+        by_tier.setdefault(str(want["tier_id"]), []).append(want)
+    for tier_id, tier_wants in sorted(by_tier.items()):
+        ledger = queue.tier_ledger(tier_id)
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        try:
+            held = {str(holder): dict(ledger.holder_tokens(holder))
+                    for holder in ledger.held_keys()}
+            capacity = ledger.capacity().get(kind)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": f"ledger unreadable: {exc}"})
+            continue
+        capacity_gib = None if capacity is None else int(capacity)
+        if capacity_gib is None:
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": "no minted capacity for tier kind"})
+            continue
+        ready_rows: list[tuple[str, int]] = []
+        ready_by_key: dict[str, Mapping[str, object]] = {}
+        for item in ready_items:
+            if not isinstance(item, Mapping):
+                continue
+            action = item.get("action_key")
+            try:
+                _host, demands = storage_tiers.split_demand(
+                    item.get("resources") or {})
+            except (ValueError, TypeError, AttributeError):
+                continue
+            tier_needs = demands.get(tier_id)
+            if isinstance(tier_needs, Mapping):
+                try:
+                    row_gib = int(tier_needs.get(kind, 0))
+                except (TypeError, ValueError):
+                    continue
+                if row_gib and isinstance(action, str):
+                    ready_rows.append((action, row_gib))
+                    ready_by_key[action] = item
+        held_total = sum(int(tokens.get(kind, 0)) for tokens in held.values())
+        output_gib = 0  # unenforced until the produced-output contract lands
+        # New money per queued row: a row fully covered by its funding
+        # record will consume its fence instead of free, so it commits no
+        # new capacity.  Funded rows are invisible to everyone but the
+        # record; anything else counts in full.
+        funded_rows: set[str] = set()
+        for row_key, row_need in ready_rows:
+            try:
+                covered, _generation = queue.funded_cover(
+                    tier_id, ready_by_key[row_key], kind, row_need)
+            except (OSError, PoolContractError, ValueError, KeyError):
+                continue
+            if covered >= row_need:
+                funded_rows.add(row_key)
+        ready_new_money = sum(
+            need for row_key, need in ready_rows if row_key not in funded_rows)
+        # The minimum protected next across landed windows, in queue scan
+        # order: a second current may not land in the room the first advance
+        # was promised.  Same-pass newcomers commit their unpublished
+        # current-plus-next to the running footprint instead (see below), so
+        # neither source is ever counted twice.  Funded nexts commit no new
+        # money (their fence already holds it), so only unfunded ones reserve
+        # room here.
+        reserve_next: int | None = None
+        for want in tier_wants:
+            if want["newcomer"]:
+                continue
+            for candidate in (want["needs"].get("waiting") or []):
+                if not isinstance(candidate, dict):
+                    continue
+                mover_name = str(candidate["mover_action_key"])
+                if mover_name in want["already"]:
+                    continue
+                need_gib = int(candidate["stage_gib"])
+                row_item = ready_by_key.get(mover_name)
+                if row_item is None:
+                    # Unpublished, or already claimed-holding (counted in
+                    # held): either way no *new* room need be kept beyond
+                    # what the holder scan already counts.
+                    if int(held.get(mover_name, {}).get(kind, 0)) >= need_gib:
+                        break
+                    covered = 0
+                else:
+                    try:
+                        covered, _generation = queue.funded_cover(
+                            tier_id, row_item, kind, need_gib)
+                    except (OSError, PoolContractError, ValueError, KeyError):
+                        covered = 0
+                if covered < need_gib and (
+                        reserve_next is None or need_gib < reserve_next):
+                    reserve_next = need_gib
+                break
+        running_extra = 0
+        running_fence = 0
+        expected_grants: set[str] = set()
+        for want in tier_wants:
+            key = str(want["key"])
+            needs = want["needs"]
+            waiting = needs.get("waiting")
+            assert isinstance(waiting, list)
+            cur = int(needs.get("current_min_gib") or 0)
+            nxt = needs.get("next_min_gib")
+            next_gib = int(nxt) if isinstance(nxt, int) else 0
+            if want["newcomer"]:
+                decision = window_credit.gate_newcomer(
+                    held_gib=held_total + running_extra, ready_gib=ready_new_money,
+                    output_gib=output_gib, capacity_gib=capacity_gib,
+                    cur_min_gib=cur, next_min_gib=nxt if isinstance(nxt, int) else None,
+                    existing_min_next_gib=reserve_next or 0)
+                if not decision["admit"]:
+                    gated[(key, tier_id)] = {
+                        "reason": str(decision["reason"]),
+                        "permanent": bool(decision.get("permanent")),
+                        "need_gib": cur, "tier_id": tier_id,
+                        "output_note": str(decision.get("output_note") or ""),
+                    }
+                    continue
+                running_extra += cur + next_gib
+            # The fence protects the next published-but-unclaimed advance
+            # (see advance_needs): a queued row the window still wants, whose
+            # claim is imminent.  Unpublished futures stay gate-protected in
+            # the joint footprint -- fencing room for a row that does not
+            # exist yet would strangle its own publish.
+            queued = needs.get("queued")
+            if not isinstance(queued, list) or not queued:
+                continue
+            first = queued[0]
+            assert isinstance(first, dict)
+            demand = int(first["stage_gib"])
+            phase = str(first["phase"])
+            chunk = first["chunk_index"]
+            grant = window_credit.grant_key(key, tier_id, mover_role, phase,
+                                            chunk if isinstance(chunk, int) else None)
+            expected_grants.add(grant)
+            grants[(key, tier_id)] = grant
+            held_grant = int(held.get(grant, {}).get(kind, 0))
+            mover = str(first["mover_action_key"])
+            mover_holds = int(held.get(mover, {}).get(kind, 0)) >= demand
+            try:
+                mover_rowed = queue.item_path(pool.READY, mover).exists()
+            except (OSError, pool.PoolContractError):
+                continue
+            if held_grant > 0:
+                record = queue.read_funding(mover, tier_id)
+                if record is None:
+                    # Tokens held with no binding (a crash between acquire
+                    # and write): bind the names now rather than fence twice.
+                    bound = _bind_fence(
+                        queue, tier_id, kind, grant, key, want["plan"],
+                        first, demand)
+                    if not bound:
+                        continue
+                    record = queue.read_funding(mover, tier_id)
+                # Coordinator-side binding check: the fence belongs to this
+                # live plan and consumer.  A replaced plan (same mover keys
+                # under a new digest) or a foreign consumer never inherits
+                # it -- the claim path cannot see these fields on the row,
+                # so this comparison is the only place that can.
+                try:
+                    live_digest = residency_plan.plan_sha256(want["plan"])
+                except (ValueError, OSError):
+                    live_digest = ""
+                if (record is None
+                        or str(record.get("consumer_action_key")) != key
+                        or str(record.get("plan_sha256")) != live_digest):
+                    released = window_credit.cancel(ledger, grant)["released"]
+                    if released:
+                        held_total -= released
+                    if record is not None and record.get("state") in (
+                            "reserved", "transferring"):
+                        queue.advance_funding_state(
+                            mover, tier_id, expect=str(record.get("state")),
+                            advance_to="released",
+                            generation=(str(record.get("generation"))
+                                        if isinstance(record.get("generation"),
+                                                     str) else None))
+                    if released:
+                        events.append({"event": "advance-released",
+                                       "consumer": key, "tier_id": tier_id,
+                                       "leg": mover_role,
+                                       "reason": "binding-stale",
+                                       "released_gib": released})
+                    continue
+                superseded = residency_plan.superseded(queue, want["plan"])
+                due = window_credit.cancel_due(
+                    consumer_live=True, superseded=superseded is not None,
+                    need_gib=demand, mover_holds_need=mover_holds)
+                if due is not None:
+                    released = window_credit.cancel(ledger, grant)["released"]
+                    if released:
+                        held_total -= released
+                    record = queue.read_funding(mover, tier_id)
+                    if record is not None and record.get("state") in (
+                            "reserved", "transferring"):
+                        queue.advance_funding_state(
+                            mover, tier_id, expect=str(record.get("state")),
+                            advance_to="released",
+                            generation=(str(record.get("generation"))
+                                        if isinstance(record.get("generation"),
+                                                     str) else None))
+                    if released:
+                        events.append({"event": "advance-released",
+                                       "consumer": key, "tier_id": tier_id,
+                                       "leg": mover_role, "reason": due,
+                                       "released_gib": released})
+                    continue
+                protected[(key, tier_id)] = {
+                    "grant": grant, "mover": mover, "need_gib": demand,
+                    "phase": phase, "tier_id": tier_id, "kind": kind,
+                    "leg": mover_role,
+                }
+                continue
+            prior = needs.get("queued_prior")
+            assert isinstance(prior, list)
+            retired = True
+            for leg in prior:
+                assert isinstance(leg, dict)
+                if str(leg["mover_action_key"]) in want["staged"]:
+                    continue
+                try:
+                    if queue.item_path(
+                            pool.DONE, str(leg["egress_action_key"])).exists():
+                        continue
+                except (OSError, pool.PoolContractError):
+                    pass
+                retired = False
+                break
+            if not window_credit.replenish_ok(
+                    grant_outstanding=False, need_gib=demand,
+                    prior_retired=retired):
+                continue
+            if mover_holds or not mover_rowed:
+                # Claimed-holding needs no fence (its claim committed); an
+                # unpublished mover gets none either, so a fence can neither
+                # strangle its own publish nor strand room no window will ask
+                # for.  The publish-to-fence gap inside one cycle is the
+                # documented residual; every later cycle re-evaluates.
+                continue
+            # New-money peak: everything held, everything queued that will
+            # commit new capacity, and this pass's admitted footprints must
+            # leave the tier within capacity.  The protected row will consume
+            # its fence instead of free, so it is not counted twice.
+            if not window_credit.fence_fits(
+                    held_gib=held_total + running_extra + running_fence,
+                    ready_gib=ready_new_money, output_gib=output_gib,
+                    capacity_gib=capacity_gib):
+                continue
+            if not _bind_fence(
+                    queue, tier_id, kind, grant, key, want["plan"],
+                    first, demand):
+                continue
+            running_fence += demand
+            held_total += demand
+            events.append({"event": "advance-credit-held",
+                           "consumer": key, "tier_id": tier_id,
+                           "leg": mover_role, "phase": phase,
+                           "held_gib": demand})
+            protected[(key, tier_id)] = {
+                "grant": grant, "mover": mover, "need_gib": demand,
+                "phase": phase, "tier_id": tier_id, "kind": kind,
+                "leg": mover_role,
+            }
+        try:
+            dangling = [holder for holder in window_credit.held_grants(ledger)
+                        if holder not in expected_grants]
+        except (OSError, pool.PoolContractError):
+            dangling = []
+        for grant in dangling:
+            released = window_credit.cancel(ledger, grant)["released"]
+            if released:
+                events.append({"event": "advance-released",
+                               "consumer": None, "tier_id": tier_id,
+                               "leg": mover_role, "reason": "dangling-grant",
+                               "released_gib": released})
+    return {"gated": gated, "protected": protected, "grants": grants,
+            "events": events}
+
+
+def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
+                           mover_role: str, consumer: str | None,
+                           mover: str) -> list[dict[str, object]]:
+    """Release one terminal mover's exact unspent fence, never its physical.
+
+    Shared by the protected loop (mover terminal with a live entry) and the
+    funding scan below (mover terminal with no live entry -- a withdrawn or
+    failed consumer's stranded fence, which no protected entry visits).
+    ``consumed`` records are landed bytes: finish kept them on purpose and
+    only an egress may return them.  A ``transferring`` record whose
+    generation and token set match the terminal attempt's own
+    ``tier_funding`` proof is that attempt's fence-or-bytes, never free
+    credit.  Anything else releases only on an exact name match between the
+    bound tokens and what the mover holds; the record always closes.
+    Takes the mover's transition lock non-blocking (a live claim wins, this
+    defers), so both call sites are safe locked or not.
+    """
+
+    events: list[dict[str, object]] = []
+    try:
+        with queue._transition_locked(mover, blocking=False) as acquired:
+            if not acquired:
+                return events
+            record = queue.read_funding(mover, str(tier_id))
+            if record is None:
+                return events
+            state = str(record.get("state"))
+            if state in ("consumed", "released"):
+                return events
+            try:
+                terminal = (queue.item_path(pool.DONE, mover).exists()
+                            or queue.item_path(pool.FAILED, mover).exists()
+                            or queue.item_path(
+                                pool.WITHDRAWN, mover).exists())
+            except (OSError, pool.PoolContractError):
+                return events
+            if not terminal:
+                return events
+            bound = record.get("tokens")
+            bound_names = (set(str(name) for name in bound)
+                           if isinstance(bound, list) and bound else set())
+            bound_generation = (str(record.get("generation"))
+                                if isinstance(record.get("generation"), str)
+                                else None)
+            if not bound_names or bound_generation is None:
+                return events
+            if state == "transferring":
+                bound_to_attempt = False
+                for _state in (pool.DONE, pool.FAILED):
+                    try:
+                        ended = pool._read_json(queue.item_path(_state, mover))
+                    except (OSError, pool.PoolContractError):
+                        continue
+                    if not isinstance(ended, Mapping):
+                        continue
+                    proof = ended.get("tier_funding")
+                    if not isinstance(proof, Mapping):
+                        continue
+                    tier_proof = proof.get(str(tier_id))
+                    if not isinstance(tier_proof, Mapping):
+                        continue
+                    try:
+                        proof_names = {
+                            str(name) for name in
+                            tier_proof.get("tokens") or []}
+                    except (TypeError, ValueError):
+                        continue
+                    if (str(tier_proof.get("generation")) == bound_generation
+                            and proof_names == bound_names
+                            and proof_names):
+                        bound_to_attempt = True
+                        break
+                if bound_to_attempt:
+                    return events
+            try:
+                mover_names = {
+                    path.name for path in pool._glob(
+                        ledger.held_dir / mover, "*-*")}
+            except (OSError, pool.PoolContractError, ValueError):
+                mover_names = set()
+            if mover_names == bound_names:
+                released = window_credit.cancel(ledger, mover)["released"]
+                if released:
+                    events.append({"event": "advance-released",
+                                   "consumer": consumer,
+                                   "tier_id": str(tier_id),
+                                   "leg": str(mover_role),
+                                   "reason": "mover-terminal-fused",
+                                   "released_gib": released})
+            queue.advance_funding_state(
+                mover, str(tier_id), expect=state,
+                advance_to="released", generation=bound_generation)
+    except (OSError, pool.PoolContractError, ValueError):
+        pass
+    return events
+
+
+def _settle_protected(queue: pool.PoolQueue,
+                        protection: Mapping[str, object]) -> list[dict[str, object]]:
+    """Move held fences onto their published movers; release the moot ones.
+
+    Transfer runs under the mover's transition lock (never blocking: a busy
+    mover belongs to a live claim, which wins), so a ready claim racing the
+    coordinator cannot interleave mid-move.  ``transfer`` never lets a token
+    touch free, and a crash part-way leaves the sum split across the two
+    holders -- the next cycle completes the remainder by the same rule, which
+    is the whole partial-transfer recovery proof.  The mover's claim then
+    counts the fused fence toward its demand (funded-claim bookkeeping), so
+    nothing is ever charged twice.
+
+    Exact-set discipline throughout: a terminal mover releases only what
+    matches its funding record's names (anything fused beyond that belongs to
+    an owner path -- finish, withdrawal, egress -- which serves it); an
+    unpublished, nonterminal mover rolls its fence back to ``reserved``
+    rather than stranding it under a key that will never run.
+    """
+
+    events: list[dict[str, object]] = []
+    protected = protection.get("protected")
+    assert isinstance(protected, dict)
+    seen: set[tuple[str, str]] = set()
+    for (key, tier_id), entry in sorted(protected.items()):
+        assert isinstance(entry, dict)
+        if (key, tier_id) in seen:
+            continue
+        seen.add((key, tier_id))
+        ledger = queue.tier_ledger(str(tier_id))
+        grant = str(entry["grant"])
+        mover = str(entry["mover"])
+        kind = str(entry["kind"])
+        try:
+            locked = queue._transition_locked(mover, blocking=False)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        try:
+            with locked as acquired:
+                if not acquired:
+                    continue
+                record = queue.read_funding(mover, str(tier_id))
+                try:
+                    held_grant = int(ledger.holder_tokens(grant).get(kind, 0))
+                    held_mover = int(ledger.holder_tokens(mover).get(kind, 0))
+                except (OSError, pool.PoolContractError, ValueError):
+                    continue
+                try:
+                    terminal = (queue.item_path(pool.DONE, mover).exists()
+                                or queue.item_path(pool.FAILED, mover).exists()
+                                or queue.item_path(
+                                    pool.WITHDRAWN, mover).exists())
+                    rowed = (queue.item_path(pool.READY, mover).exists()
+                             or queue.item_path(pool.CLAIMED, mover).exists())
+                except (OSError, pool.PoolContractError):
+                    continue
+                bound = (record.get("tokens") if isinstance(record, dict)
+                         else None)
+                bound_names = (set(str(name) for name in bound)
+                               if isinstance(bound, list) and bound else set())
+                bound_generation = (str(record.get("generation"))
+                                    if isinstance(record, dict)
+                                    and isinstance(record.get("generation"),
+                                                   str) else None)
+                if terminal:
+                    # Owner paths serve whatever a terminal mover holds beyond
+                    # the fence; an unspent fence comes home only on an exact
+                    # match, and the record always closes.  A ``consumed``
+                    # record's tokens are landed bytes, not unspent credit --
+                    # the claim counted them and DONE filed them as physical
+                    # -- so credit reconciliation never frees them: finish
+                    # kept them on purpose and only an egress (delete, then
+                    # release, then drop the fragment) may return them.
+                    # Releasing here would charge the next mover against
+                    # capacity already spent and ENOSPC the stage.
+                    if held_grant > 0:
+                        released = window_credit.cancel(ledger, grant)["released"]
+                        if released:
+                            events.append({"event": "advance-released",
+                                           "consumer": key,
+                                           "tier_id": str(tier_id),
+                                           "leg": str(entry["leg"]),
+                                           "reason": "mover-terminal",
+                                           "released_gib": released})
+                    events.extend(_settle_terminal_fence(
+                        queue, ledger, tier_id=str(tier_id),
+                        mover_role=str(entry["leg"]), consumer=key,
+                        mover=mover))
+                    continue
+                if not rowed:
+                    # No queue row will ever claim this: roll an exact fence
+                    # back to the grant instead of stranding it.
+                    if (bound_names and held_grant <= 0 and record is not None
+                            and record.get("state") == "transferring"):
+                        try:
+                            mover_names = {
+                                path.name for path in pool._glob(
+                                    ledger.held_dir / mover, "*-*")}
+                        except (OSError, pool.PoolContractError, ValueError):
+                            mover_names = set()
+                        if mover_names == bound_names:
+                            queue.transfer_tier_reservation(
+                                str(tier_id), mover, grant)
+                            queue.advance_funding_state(
+                                mover, str(tier_id), expect="transferring",
+                                advance_to="reserved",
+                                generation=bound_generation)
+                            events.append({"event": "advance-released",
+                                           "consumer": key,
+                                           "tier_id": str(tier_id),
+                                           "leg": str(entry["leg"]),
+                                           "reason": "mover-unpublished-rollback",
+                                           "released_gib": 0})
+                    continue
+                if held_grant > 0:
+                    moved = queue.transfer_fence(str(tier_id), grant, mover)
+                    if moved:
+                        queue.advance_funding_state(
+                            mover, str(tier_id), expect="reserved",
+                            advance_to="transferring",
+                            generation=bound_generation)
+                        events.append({"event": "advance-handed-off",
+                                       "consumer": key, "tier_id": str(tier_id),
+                                       "leg": str(entry["leg"]), "mover": mover,
+                                       "moved_gib": moved})
+                    continue
+                # No fence under the grant: either never reserved (nothing to
+                # do) or the transfer landed without its mark (a crash between
+                # the move and the record write).  The latter is exactly
+                # recoverable: the bound names are all under the mover, so
+                # complete the marking instead of moving anything twice.
+                if (bound_names and record is not None
+                        and record.get("state") == "reserved"):
+                    try:
+                        mover_names = {
+                            path.name for path in pool._glob(
+                                ledger.held_dir / mover, "*-*")}
+                    except (OSError, pool.PoolContractError, ValueError):
+                        mover_names = set()
+                    if all(name in mover_names for name in bound_names):
+                        queue.advance_funding_state(
+                            mover, str(tier_id), expect="reserved",
+                            advance_to="transferring",
+                            generation=bound_generation)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+    # Terminal movers with no live protected entry: a withdrawn or failed
+    # consumer's stranded fence is visited by nobody above, so its exact
+    # unspent tokens would leak until a sweep that spares plan members.
+    # Scan the funding records themselves; live and handled movers are
+    # skipped, everything else goes through the same terminal discipline.
+    handled: set[str] = set()
+    for (_key, _tier), _entry in sorted(protected.items()):
+        if isinstance(_entry, dict) and isinstance(_entry.get("mover"), str):
+            handled.add(str(_entry["mover"]))
+    try:
+        funding_dir = queue.root / pool.TIER_FUNDING
+        funding_files = sorted(funding_dir.glob("*.funding.json"))
+    except (OSError, pool.PoolContractError, ValueError):
+        funding_files = []
+    for funding_path in funding_files:
+        stem = funding_path.name
+        if not stem.endswith(".funding.json"):
+            continue
+        stem = stem[: -len(".funding.json")]
+        mover_name, dot, scan_tier = stem.rpartition(".")
+        if not dot or len(mover_name) != 64 or not scan_tier:
+            continue
+        if mover_name in handled:
+            continue
+        try:
+            scan_ledger = queue.tier_ledger(scan_tier)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        scan_record = queue.read_funding(mover_name, scan_tier)
+        if scan_record is None or scan_record.get("state") in (
+                "consumed", "released"):
+            continue
+        scan_leg: str | None = None
+        for (_key, _tier), _entry in sorted(protected.items()):
+            if (str(_tier) == scan_tier and isinstance(_entry, dict)
+                    and isinstance(_entry.get("leg"), str)):
+                scan_leg = str(_entry["leg"])
+                break
+        events.extend(_settle_terminal_fence(
+            queue, scan_ledger, tier_id=scan_tier,
+            mover_role=scan_leg or "mover_row", consumer=None,
+            mover=mover_name))
+    return events
+
+
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
                      now: float | None = None,
                      withdrawn: frozenset[str] | None = None) -> list[dict[str, object]]:
@@ -1639,6 +2366,15 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
 
     published: list[dict[str, object]] = []
     cancelled = _withdrawn_keys(queue, withdrawn)
+    protection = _protect_tier_advances(
+        queue, tiers, mover_role="mover_row",
+        tier_of=lambda plan: plan.get("tier_id"),
+        state_of=_mover_state)
+    gated = protection["gated"]
+    assert isinstance(gated, dict)
+    grants = protection["grants"]
+    assert isinstance(grants, dict)
+    published.extend(protection["events"])  # type: ignore[arg-type]
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
@@ -1702,6 +2438,18 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         ledger = queue.tier_ledger(tier_id)
         kind = storage_tiers.capacity_kind_of(tier_id)
         free = ledger.available().get(kind, 0)
+        # A fence never blocks its own window: the grant this consumer's next
+        # advance holds is readable back into free for this decision alone.
+        # Everyone else -- stealers, later windows, the pressure probe --
+        # still sees the fenced ledger.  No grants means no change.
+        assert isinstance(grants, dict)
+        own_grant = grants.get((key, tier_id))
+        if isinstance(own_grant, str):
+            try:
+                free = int(free) + int(
+                    ledger.holder_tokens(own_grant).get(kind, 0))
+            except (OSError, pool.PoolContractError, ValueError):
+                pass
         # The minted total, not the free remainder: the run-ahead bound of a
         # rolling window is a fraction of the tier, and a bound read off what
         # is free would shrink as the window it is bounding fills it.
@@ -1728,8 +2476,22 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
         # A superseded plan publishes its egresses -- cleanup the consumer has
-        # already paid for -- and nothing else.
-        publishable = [] if superseded is not None else decision["publish"]
+        # already paid for -- and nothing else.  A gated newcomer likewise
+        # publishes no movers this cycle: its first step would consume the
+        # room a live window's advance was promised, so it waits with the
+        # reason named while its egresses and map still run.
+        gate = gated.get((key, tier_id))
+        publishable = ([] if (superseded is not None or gate is not None)
+                       else decision["publish"])
+        if gate is not None and superseded is None:
+            assert isinstance(gate, dict)
+            published.append({
+                "event": "window-gated", "consumer": key,
+                "tier_id": tier_id, "reason": str(gate.get("reason")),
+                "permanent": bool(gate.get("permanent")),
+                "need_gib": gate.get("need_gib"),
+                "output_note": str(gate.get("output_note") or ""),
+            })
         if not _tier_admits_movers(tier_record):
             # A root that is present but unregistered admits nothing more
             # (#631): the movers wait while the evict loop below still
@@ -1859,6 +2621,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # and the consumer on the pool: slower, never wrong.
             published.append({"event": "map-compose-failed", "consumer": key,
                               "error": repr(exc)})
+    published.extend(_settle_protected(queue, protection))
     return published
 
 
