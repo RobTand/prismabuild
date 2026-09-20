@@ -15,7 +15,7 @@ Backing arithmetic for the interleaving test (wanted == backing == 2):
   under a co-owner: reissue is honest only on growth, and there is
   none here).
 * claimant C: a published mover row (1 MiB range, floor 1 token)
-  demanding 2 tokens -- the whole honest supply.
+  demanding 3 tokens -- more than the two backed credits.
 
 The injected race is held -> free BETWEEN the reclaim's free listing
 and its holder listing, performed by a helper thread calling the REAL
@@ -26,11 +26,10 @@ only observes (completed vs still-blocked after a bounded wait) and
 never steers the helper.  H's token is then missed by both listings,
 headroom reads 2 - 1 = 1, and the dead name is reissued with no
 backing -- 3 free against backing 2 at that prefix.  The real
-claimant, in its own thread through ``PoolQueue.claim``, takes 2
-(including the phantom) before the same apply's retire can trim it;
-the retire (free-only) removes the honest remainder instead, so the
-books converge at total 2 while C holds the phantom -- persistent
-unbacked admission the trim never repairs.
+claimant, in its own thread through ``PoolQueue.claim``, takes all 3
+before the same apply's retire can trim the excess. The free-only
+retire cannot remove held credits, so the final total remains 3
+against backing of 2: persistent over-admission.
 
 With the guard (``_guarded_mutation`` via ``PoolQueue.tier_ledger``)
 the release serializes outside the apply, headroom reads exact, the
@@ -38,9 +37,10 @@ real claim declines, the dead name stays dead, and the books close
 exact with no unbacked prefix.
 
 RED provenance: the conformance test below FAILS on the actual base
-commit ``3420951679`` (new tests only, no source change -- see the R6
-report for the action key): prefix 3, claim wins, claimant holds the
-reissued dead name, total converges at 2.  No test proves the race by
+commit ``3420951679`` (new tests only, root action ``dbea093b40f9``):
+prefix 3, claim wins, claimant holds all three credits, total stays 3.
+The hook interrupts the actual headroom census in both implementations.
+No test proves the race by
 disabling the mechanism under test.  GREEN is the same test passing
 on the guarded tree.
 
@@ -210,6 +210,26 @@ def _brief(observed: dict) -> tuple:
             observed.get("final_free"),
             (result.get("reclaimed"), result.get("retired"))
             if isinstance(result, dict) else None)
+
+
+def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch):
+    """An unreadable holder type is unknown, not proof it holds no tokens."""
+    queue, dead_name = _shaped_queue(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    holder = ledger.held_dir / HOLDER_H
+    original_stat = Path.stat
+
+    def failing_stat(path, *args, **kwargs):
+        if path == holder:
+            raise OSError(5, "injected holder metadata I/O error")
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(Path, "stat", failing_stat)
+        result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    assert result["reclaimed"] == {}
+    assert (ledger.minted_dir / "dead" / dead_name).exists()
+    assert ledger.capacity().get(KIND) == 2
 
 
 def test_r6_reclaim_headroom_atomic_with_exclusion(tmp_path: Path,

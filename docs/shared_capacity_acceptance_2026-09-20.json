@@ -1,0 +1,30 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "scope": ["INV-01", "INV-07", "ACC-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "issue": "https://github.com/RobTand/prismabuild/issues/733",
+    "pr": "https://github.com/RobTand/prismabuild/pull/742",
+    "source": "e534da78cf649b74c950f29fbda335b27b63d846",
+    "integrated_source": "d4dd2a19db512070cb90ab65982ae0c241946ea8",
+    "note": "Reviewed shared-file decharge, atomic retired-token recovery, fresh backing observation and tier mutation exclusion. Component acceptance only; whole-invariant conformance remains partial.",
+    "remaining_gaps": ["Window progress policy", "Produced-output prepaid transfer integration", "Overlapping publisher incarnation repair", "Deployed both-Spark reader and campaign qualification"]
+  },
+  "validation": {
+    "mode": "Published PrismaBuild priority -10, x86 CPU fixtures, bounded threads and aggregate memory",
+    "r6": "92 passed, zero skips; 31e0033f1bee, 1bfaf7018a0b, 911b9153df64. Actual source bundles match e534 plus closure metadata.",
+    "root_red": "dbea093b40f9: actual342095 plus tests only admits3 and retains3 against backing2;1 failed,7 deselected. The root test interrupts the actual census in both implementations.",
+    "root_green": "ae57b5df521a:8 passed, zero skips at e534 plus strengthened test.",
+    "integrated": "40d84f018ec9, a14e2a7915dd, 7a5d08be0fba, 879b150ba2fd:78 passed, zero skips atd4dd2a19, including accepted membership, stage/RAM windows, funding and reader unknown-state behavior. All four bundles match source plus closure metadata.",
+    "diagnostic": "a00976f9b16e: holder metadata I/O error already retains correctly,1 passed,8 deselected; not a new behavioral RED or production repair.",
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb742-root-acceptance.json",
+    "limitations": "Counts overlap. Tiny modeled backing and actual production token/claim transitions do not establish live storage throughput, NFS lock overhead or full workload conformance. Final changes afterd4dd are a separately qualified diagnostic test and documentation."
+  },
+  "deploy": {
+    "status": "not-this-step",
+    "requires": "Quiescent queue and settled reader state; no new tier-admitted work until all workers AND storage roles converge on the guarded generation. No mixed-version overshoot allowance. PR748 transfer_tokens must use the same blocking mutation guard when integrated."
+  },
+  "complete": {"status": "not-achieved"},
+  "exceptions": []
+}
