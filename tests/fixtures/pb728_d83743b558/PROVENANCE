@@ -1,0 +1,13 @@
+# Immutable integration fixture: membership gate at PB728 candidate.
+#
+# Source: commit d83743b558 (Merge commit '988629991865a3fd365af4e52ba59dc806eca434'
+# into feat/worker-expansion-join-resign-20260920), path
+# tools/fleet/fleet_membership.py.
+# SHA-256 of fleet_membership.py in this directory:
+# fb861ead6a8e5d17573f58584510d06ea91ab1472d75b9f6fe02c94a42fbe82b
+#
+# DO NOT EDIT. The owning lane (membership/728) owns this code; this copy
+# exists only so SDK regression tests can exercise the real gate
+# (reader_refs_gate) against the fixed reader_lease without importing a
+# mutable tree. tests/test_reader_refs_holder_unknown.py asserts the hash
+# before importing.

@@ -4290,6 +4290,54 @@ pressure named still takes every orphan, which is what an operator means. And
 exactly one terminal record and an adopted mover has none; the supported way to
 return that range is its egress, which is the path the sweep already uses.
 
+### Reader pins: a live reader blocks eviction until it releases
+
+Fragments say bytes are staged; they do not say who is reading them. A reader
+pin (`src/prismabuild/reader_lease.py`, schema `reader_pin.v1`) says it: one
+pin file per staged window beside the fragments, holding one ref per logical
+acquisition. `acquire` proves the window is covered by published material,
+checks the tier epoch and every file's portable identity under the stage
+root's ownership lock, and appends the ref; `open_pinned` checks the
+descriptor it will actually read and records the serving tier at open;
+`release` drops exactly its own ref, independent of compute progress. Two
+acquires need two releases; retrying one acquire token reuses its ref; a
+forked child registers its own inherited ref, so a parent release cannot
+unpin it.
+
+The egress defers to any live ref: it keeps the file, the fragment and the
+charge, files a retiring mark bound to the material generation (closed to
+new acquires for that generation only), and deletes after the last release.
+The reconciliation holds the same ownership lock across query and delete,
+and treats a live pin as attribution. Lock order is transition, then
+ownership, then rename/unlink on every path; acquire takes ownership only.
+
+Object identity is portable across clients: tier namespace, epoch, path,
+length, per-publish materialization generation (uuid4, so a same-key retry
+republishes as a new generation), content digest, and backend
+`(ino, size, mtime_ns, ctime_ns)` — never `st_dev`, which disagrees across
+NFS clients. Publish-time identity rides a mover-written sidecar
+(`residency/material/`, schema `reader_material.v1`); the map fragment
+schema v1 is unchanged, and the fragment-owner scan skips the `leases/` and
+`material/` namespaces. A RAM promotion proves its source window across
+however many stage movers cover it (`source-coverage-gap` refuses
+boundedly), verifies its copy against the sidecar digest, and its live
+claim — parsed from the sealed request — protects the source leg through
+the copy. Containment of another attempt's refs needs the broker's scope
+attestation plus the attempt's terminal evidence, read authoritatively;
+anything unanswerable retains the charge. Capability tag `reader-lease-v1`
+is advertised only once qualified and deployed. Capacity liveness (who may
+hold how much against whom) stays a named next policy step.
+
+Automatic ref recovery binds the owning action's exact nonce, scope, worker
+incarnation and terminal record, separately from the material's namespace.
+Cleanup obtains the broker's token-gated stopped-scope export; a release
+reply alone is not containment proof. If that export is incomplete and exact
+attempt refs remain, `finish_pending` retains the claim and reservations.
+The existing worker reaper retries normal cleanup after settlement; egress
+can then reclaim orphan refs. A lost attestation file can be reconstructed
+from a validated complete export stored in the terminal. Unknown scope or
+pin state retains ownership, and an old attempt cannot release a successor.
+
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
 A consumer that fails with movers published leaves them running for nobody.
