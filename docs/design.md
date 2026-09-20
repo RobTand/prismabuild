@@ -3811,8 +3811,22 @@ protected live claim + launch halves). The template carries no action key or
 nonce; the instance binds the real protected attempt later. `pbcampaign`
 list rows forward the option (`produced_output_template` row field to
 `--produced-output-template`); decomposed logical children are out of scope.
-Prewrite/commit/retire/release/funding, movement/tick handoff, and the
-general funded-window primitive remain with their owning lanes.
+
+Release (`produced_output.safe_release_instance`) requires the coherent
+accepted `prismabuild.reader_lease` package (same file the fleet imports;
+a missing or foreign SDK retains), an untainted SDK pin census over the
+owner and batch namespaces, and exact owner containment: any live claim
+retains, an unreadable claim retains as unknown, and with no live claim
+only `containment_certificate_ok` over the exact owner nonce/scope
+(broker attestation + matching terminal telemetry) authorizes -- a bare
+DONE/FAILED/WITHDRAWN record by key alone never suffices. Funding-intent
+movers always retain with `funding-intent-reconcile-retain` for the
+funding/reconciliation lane: metadata absence never proves physical
+absence. Prewrite aborts prove exact planned-path absence before freeing
+headroom; duplicate commits never re-mint quota. Durable-origin maxima
+stay distinct from tier window credit. Commit-batch funding, movement/tick
+handoff, and the general funded-window primitive remain with their owning
+lanes.
 
 ### The movement node
 
