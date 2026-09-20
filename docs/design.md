@@ -3830,20 +3830,23 @@ the exact attempt (stale/superseded/absent owners refuse before the
 first payload write; replays grant nothing). `commit_batch`
 additionally requires the live owner for quota consumption and token
 movement. Prewrite aborts prove exact planned-path absence before
-freeing headroom; duplicate commits never re-mint quota. Stage
-retirement has one public path (`retire_batch` drives egress and files
-the receipt-tied record under lock: exact mover/namespace/attempt
-match against the loader-validated batch record, staged paths recorded;
-fragment-read failure refuses rather than recording empty) and frees
-the tier window only; durable-origin classes stay charged until
-`reclaim_origin` proves every loader-validated entry path absent,
-exactly once. Census paths attributable to recorded staged paths
-retain by name; unknown census retains; unrelated pins never block.
-The egress claimed-copy attribution skips verified producer holds
-(item `produced_output` ref, no movement range) so a rolling producer
-larger than cache can sweep while live; unknown rows still taint.
-Commit-batch funding, movement/tick handoff, and the general
-funded-window primitive remain with their owning lanes.
+freeing headroom; duplicate commits never re-mint quota. Batches load
+through one bounded validator (schema/binding/strict counts/
+re-validated entries/canonical manifest); damaged records retain.
+Retirement has one public path (`retire_batch` validates provenance
+and the commitments/immutable-record agreement on mover, tier, and
+canonical namespace BEFORE egress, drives egress, and files under
+lock) and frees the tier window only; durable-origin classes stay
+charged until `reclaim_origin` proves every loader-validated entry
+path absent, exactly once. Holder release derives from validated
+records, never mutable fields alone. Census paths attributable to
+recorded staged paths retain by name; unknown census retains;
+unrelated pins never block. The egress claimed-copy attribution skips
+only verified producer holds (item ref equals the sealed request's
+validated declaration, no movement range); substituted or
+declaration-less rows taint. Commit-batch funding, movement/tick
+handoff, and the general funded-window primitive remain with their
+owning lanes.
 
 ### The movement node
 
