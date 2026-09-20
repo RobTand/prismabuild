@@ -73,6 +73,11 @@ def _settlement_evidence(value):
 def scope_id(key, nonce):
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
 
+#: ASCII-decimal nonzero start time (field 22 of /proc/<pid>/stat is clock
+#: ticks since boot; 20 digits bound it far above any real uptime while
+#: keeping the match itself the proof, with no int() conversion to fail).
+_STARTIME_RE = re.compile(r'[1-9][0-9]*')
+
 def _supervisor_owner_parts(owner):
     """(host, pid, starttime) for a membership supervisor owner, else None.
 
@@ -106,15 +111,18 @@ def _proc_starttime(pid):
 
 
 def _proven_starttime(starttime):
-    """Positive decimal /proc start-time proof, nothing else.
+    """Positive ASCII-decimal /proc start-time proof, nothing else.
 
     Owner strings mint ``unknown`` when /proc was unreadable, and a
     hand-written owner can name anything at all. Neither proves PID reuse:
-    only an all-decimal positive field-22 value can be compared against a
-    live ``/proc/<pid>/stat`` read. Anything else is unproven, never dead.
+    only an ASCII all-digit nonzero value can be compared against a live
+    ``/proc/<pid>/stat`` field-22 read. Anything else is unproven, never
+    dead. The check is a character-class test on purpose: ``str.isdigit``
+    accepts non-ASCII decimals (e.g. superscripts) that ``int`` rejects,
+    and unbounded digit strings must not reach ``int`` at all.
     """
-    return (isinstance(starttime, str) and starttime.isdigit()
-            and int(starttime) > 0)
+    return (isinstance(starttime, str) and len(starttime) <= 20
+            and _STARTIME_RE.fullmatch(starttime) is not None)
 
 
 def _live_supervisor_owner(owner):

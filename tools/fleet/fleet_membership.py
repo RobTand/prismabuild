@@ -1533,9 +1533,18 @@ def resume_owed(
     if not directory.is_dir():
         return [], [f"withdrawn directory unreadable: {directory}"]
     try:
-        paths = sorted(directory.glob("*.json"))
+        # Materialize with os.scandir, not Path.glob: the stdlib glob
+        # selector suppresses directory OSError (`pathlib._WildcardSelector.
+        # _select_from` catches OSError around scandir and yields nothing),
+        # so a permission-denied census would read as "nothing owed" and
+        # JOIN would open the gate over unknown rows. scandir preserves
+        # the error and the caller below fails closed on it.
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".json"))
     except OSError as exc:
         return [], [f"withdrawn directory not listable: {exc}"]
+    paths = [directory / name for name in names]
     for path in paths:
         try:
             record = json.loads(path.read_text())

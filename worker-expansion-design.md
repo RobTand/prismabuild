@@ -673,3 +673,23 @@ Root R9 (production failures in the accepted direction, not accepted yet):
   membership helpers before any dead/reused decision; `unknown` and
   malformed names never prove gone. Removed the shadowing duplicate
   `test_fenced_claim_open_fence_claims` definition.
+
+## R10 addendum (2026-09-20): census materialization + ASCII proof
+
+Root final review, accepted direction pending qualification:
+
+- `resume_owed` materializes the withdrawn/ census with `os.scandir`,
+  not `Path.glob`: the stdlib glob selector suppresses directory OSError
+  (`pathlib._WildcardSelector._select_from` catches OSError around
+  scandir and yields nothing), so a permission-denied census read as
+  "nothing owed" and JOIN opened the gate over unknown rows. scandir
+  preserves the error; the census reports skipped and JOIN refuses
+  `unsettled-unknown`. Proven RED on 99b96d (real chmod 0, non-root:
+  old code returns `([], [])`) and GREEN after the fix, plus a root-
+  runner seam raising the same EACCES out of the real census call.
+- `_proven_starttime` is an ASCII character-class match (`[1-9][0-9]*`,
+  length-bounded) with no `int()` conversion: `str.isdigit` accepts
+  non-ASCII decimals `int` rejects, and unbounded digit strings must
+  not reach `int` at all.
+- Merged accepted main 6deb388 (PR726 integration fixtures) into this
+  branch; accepted files preserved, no main push.

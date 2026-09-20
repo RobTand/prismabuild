@@ -1075,6 +1075,9 @@ def test_dead_owner_proof_matrix() -> None:
         f"{host}:supervisor-1:unknown") is False
     assert _broker._dead_supervisor_owner(
         f"{host}:supervisor-1:0") is False
+    # Non-ASCII decimals (isdigit True, int() rejects) prove nothing either.
+    assert _broker._dead_supervisor_owner(
+        f"{host}:supervisor-1:\u00b2") is False
     assert _broker._dead_supervisor_owner(
         f"{host}:supervisor-{2 ** 22}:1") is True
     me = (f"{host}:supervisor-{os.getpid()}:"
@@ -1397,3 +1400,59 @@ def test_lineage_treats_unreadable_ready_as_unknown(
     rec = fm.reconcile_membership(queue, host, owner)
     assert rec["published"] == [] and rec["adopted"] == []
     assert any("unreadable" in str(r.get("reason", "")) for r in rec["retained"])
+
+
+def test_unreadable_withdrawn_census_keeps_gate_closed(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """An unreadable withdrawn/ census is unknown, never empty.
+
+    ``Path.glob`` suppresses directory OSError and yields no entries, so
+    a permission-denied census must not read as "nothing owed" with the
+    gate opening over unknown rows: ``resume_owed`` reports skipped via
+    error-preserving ``os.scandir`` materialization, and JOIN retains the
+    closed gate. Runs a real chmod when non-root; under a root runner
+    the same EACCES comes out of the real census call itself (never a
+    faked ``resume_owed`` return). Mode is restored in ``finally``.
+    """
+    host = socket.gethostname()
+    owner = _incarnation(monkeypatch)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    auth.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": owner})
+    queue.ensure_layout()
+    withdrawn = queue.dir(pool.WITHDRAWN)
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    monkeypatch.setattr(fm, "_mount_identity", lambda path: {
+        "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
+        "mountpoint": "/mnt/shared"})
+
+    def attempt_join():
+        return fm.join(host, reason="census dark", roster_path=roster,
+                       queue_root=queue.root, gate=gate,
+                       runtime_root=_busy_runtime(tmp_path),
+                       broker_call=_broker_call(authority))
+
+    if os.geteuid() != 0:
+        os.chmod(withdrawn, 0)
+        try:
+            owed, skipped = fm.resume_owed(queue, host, owner)
+            assert owed == [] and skipped != []
+            out = attempt_join()
+        finally:
+            os.chmod(withdrawn, 0o755)
+    else:
+        real_scandir = os.scandir
+
+        def denied_scandir(path, *args, **kwargs):
+            if Path(path) == withdrawn:
+                raise PermissionError(13, "Permission denied")
+            return real_scandir(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "scandir", denied_scandir)
+        owed, skipped = fm.resume_owed(queue, host, owner)
+        assert owed == [] and skipped != []
+        out = attempt_join()
+    assert out["status"] == "refused", out
+    assert out["phase"] == "unsettled-unknown", out
+    assert json.loads(gate.read_text())["draining"] is True
