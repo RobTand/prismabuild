@@ -73,6 +73,71 @@ def _settlement_evidence(value):
 def scope_id(key, nonce):
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
 
+def _supervisor_owner_parts(owner):
+    """(host, pid, starttime) for a membership supervisor owner, else None.
+
+    The membership owner kind is exactly ``{host}:supervisor-{pid}:
+    {starttime}``. Upgrade, operator, and unattributed owners never parse
+    here and therefore never qualify for takeover, only for ``force_end``.
+    """
+    try:
+        text = str(owner)
+        host, _, rest = text.partition(':')
+        kind, _, starttime = rest.partition(':')
+        label, _, pid_text = kind.partition('-')
+        if not host or label != 'supervisor' or not starttime:
+            return None
+        pid = int(pid_text)
+        if pid <= 0:
+            return None
+    except (ValueError, AttributeError):
+        return None
+    return host, pid, starttime
+
+
+def _proc_starttime(pid):
+    try:
+        line = Path(f'/proc/{pid}/stat').read_text()
+    except OSError:
+        return None
+    _, _, rest = line.rpartition(')')
+    fields = rest.split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def _live_supervisor_owner(owner):
+    """Whether ``owner`` names this box's live supervision, verified here.
+
+    The host must be this box and ``/proc/<pid>/stat`` start time (field
+    22, counted from the last ``)`` so a ``comm`` with spaces cannot shift
+    it) must equal the named one, defeating PID reuse. Anything else —
+    legacy owners, unattributed drains, malformed strings, dead processes —
+    is not a live supervisor and never authorizes a takeover.
+    """
+    parts = _supervisor_owner_parts(owner)
+    if parts is None:
+        return False
+    host, pid, starttime = parts
+    if host != socket.gethostname():
+        return False
+    return _proc_starttime(pid) == starttime
+
+
+def _dead_supervisor_owner(owner):
+    """Whether the named supervision is verifiably gone (dead or replaced).
+
+    True when the owner is membership-shaped and its pid is unobservable or
+    answers a different start time (PID reuse names a different process).
+    A live pid with the SAME start time is still around: never take over
+    from it. Unshaped owners answer False — only a membership drain can be
+    taken over, never an upgrade or operator hold.
+    """
+    parts = _supervisor_owner_parts(owner)
+    if parts is None:
+        return False
+    _host, pid, starttime = parts
+    return _proc_starttime(pid) != starttime
+
 def _atomic(path, value, *, mode=0o600):
     temp=path.with_name('.'+path.name+'.'+secrets.token_hex(8))
     try:
@@ -632,16 +697,29 @@ class Authority:
         """
         if uid!=0:raise PermissionError('maintenance requires root')
         op=request['op']
-        allowed=({'op','reason','owner'} if op=='maintenance_begin'
-                 else {'op'} if op=='maintenance_status' else {'op','owner'})
+        allowed=({'op','reason','owner','expected_changed_unix'} if op=='maintenance_begin'
+                 else {'op'} if op=='maintenance_status' else {'op','owner','expected_changed_unix'})
         if (set(request)-allowed or ('reason' in request and not isinstance(request['reason'],str))
-                or ('owner' in request and (not isinstance(request['owner'],str) or not request['owner'].strip()))):
+                or ('owner' in request and (not isinstance(request['owner'],str) or not request['owner'].strip()))
+                or ('expected_changed_unix' in request and (
+                    not isinstance(request['expected_changed_unix'],(int,float))
+                    or isinstance(request['expected_changed_unix'],bool)))):
             raise ValueError('invalid maintenance fields')
         owner=request.get('owner',MAINTENANCE_UNOWNED)[:200]
         with self.lock:
             held=self.maintenance.get('owner',MAINTENANCE_UNOWNED) if self.maintenance['draining'] else None
             # An unclaimed drain belongs to nobody, so it is not somebody else's.
             foreign=held not in (None,owner,MAINTENANCE_UNOWNED)
+            if 'expected_changed_unix' in request:
+                # Compare-and-set through this mutex: the gate may have moved
+                # between the caller's read and this call, and only the value
+                # enforced here is the linearization. A stale process holding
+                # an old epoch refuses; it never clears a newer drain.
+                current=self.maintenance.get('changed_unix')
+                if current!=request['expected_changed_unix']:
+                    raise ValueError('maintenance epoch changed during call: '
+                                     f'expected {request["expected_changed_unix"]!r}, '
+                                     f'gate holds {current!r}')
             if op=='maintenance_begin':
                 if foreign:raise PermissionError('maintenance drain is held by '+held)
                 if held is None:
@@ -666,13 +744,30 @@ class Authority:
                             raise
             status=self._maintenance_status()
             if op in {'maintenance_end','maintenance_force_end'}:
+                takeover=None
                 if foreign and op=='maintenance_end':
-                    raise PermissionError('maintenance drain is held by '+held)
+                    # Supervisor-restart takeover of THIS membership's own
+                    # drain, never of another maintenance: the caller names
+                    # the exact epoch it read (enforced above), proves it IS
+                    # the live supervision of this box, and the held owner
+                    # must be a membership drain whose supervision is
+                    # verifiably dead or replaced. A live old supervisor, an
+                    # upgrade/operator/unshaped hold, or a stale epoch stays
+                    # refused — a live root supervisor is no license to steal
+                    # another maintenance, and ``force_end`` (root-owned,
+                    # recorded) remains the only path for those.
+                    if ('expected_changed_unix' in request
+                            and _live_supervisor_owner(owner)
+                            and _dead_supervisor_owner(held)):
+                        takeover={'takeover_of':held,'takeover_by':owner}
+                    else:
+                        raise PermissionError('maintenance drain is held by '+held)
                 if not status['health']:raise ValueError('resource broker is not healthy; maintenance remains active')
                 value={'schema':MAINTENANCE_SCHEMA,'draining':False,'changed_unix':time.time()}
                 # A forced release is evidence, not a state: it stays in the gate
                 # until the next drain overwrites it, naming both parties.
                 if foreign:value.update({'forced_end_of':held,'forced_end_by':owner})
+                if takeover is not None:value.update(takeover)
                 # The volatile open mirror never precedes durable release.  If
                 # the mirror fails, retain this process's in-memory closure;
                 # a restart reads the committed release and retries the mirror.

@@ -1,1 +1,46 @@
-{"complete":{"status":"not-this-step"},"contract_commit":"e91a55d","deploy":{"status":"not-this-step"},"exceptions":[],"ledger_commit":"085fcd0c0c","merge":{"branch":"feat/worker-expansion-join-resign-20260920","issue":"https://github.com/RobTand/prismabuild/issues/727","note":"New-files-only lane: no pool/tier/residency production edits. Claims nothing beyond its own tests + docs. Runtime/deploy proof explicitly out of scope.","remaining_gaps":["FLEET-11 retry handoff + claim-fence hook: proposed hunks in design §6.5, need lease-worker approval (suite xfail-strict)","cohort barrier #567, wsl-gpu limits, new-backend qualification: untouched"],"validated_repairs":[]},"prelaunch":{"status":"not-this-step"},"schema":"pb.staged_read_acceptance.v1","scope":["FLEET-01","FLEET-02","FLEET-03","FLEET-04","FLEET-05","FLEET-06","FLEET-07","FLEET-08","FLEET-09","FLEET-10","FLEET-11","FLEET-12"],"step":"merge","validation":{"adjacent":"/tmp/opencode/pb-worker-expansion-adjacent.json: 3/3 shards green (roster 26, drain-ownership 18, claim-race 9), priority -10","lane":"/tmp/opencode/pb-worker-expansion-green4.json: 2/2 shards green (13 passed; 4 passed + 1 xfailed-strict), priority -10","red_evidence":"/tmp/opencode/pb-worker-expansion-red3.json + green1/green2.json retained (withdraw-only completion + missing requeue proven RED)"}}
+{
+  "complete": {
+    "status": "not-this-step"
+  },
+  "contract_commit": "e91a55d",
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "ledger_commit": "pending-push",
+  "merge": {
+    "branch": "feat/worker-expansion-join-resign-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/727",
+    "note": "New-files-only lane: no pool/tier/residency production edits. Claims nothing beyond its own tests + docs. Runtime/deploy proof explicitly out of scope.",
+    "remaining_gaps": [
+      "lease-worker automatic attestation/reclaim production path (PR #730): this lane consumes refs proof only; refs present keep resign resigning",
+      "cohort barrier #567, wsl-gpu limits, new-backend qualification: untouched"
+    ],
+    "validated_repairs": []
+  },
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "schema": "pb.staged_read_acceptance.v1",
+  "scope": [
+    "FLEET-01",
+    "FLEET-02",
+    "FLEET-03",
+    "FLEET-04",
+    "FLEET-05",
+    "FLEET-06",
+    "FLEET-07",
+    "FLEET-08",
+    "FLEET-09",
+    "FLEET-10",
+    "FLEET-11",
+    "FLEET-12"
+  ],
+  "step": "merge",
+  "validation": {
+    "lane": "/tmp/opencode/pb-worker-expansion-hunks11.json: 2/2 shards green (13 + 15 passed), priority -10",
+    "adjacent": "/tmp/opencode/pb-worker-expansion-adjacent2.json: 5/5 shards green (preemption-handoff 17, background-holder 7, resource-broker 86, durable-hold 10, drain-ownership 18), priority -10",
+    "red_evidence": "red3/green1/green2 (withdraw-only completion + missing requeue RED); hunks3 (IndentationError caught by fleet); hunks4-10 (holder-finish successor race found by fleet, fixed by publish-after-terminal)",
+    "priority_note": "earlier runs used priority 10 per the original brief; all runs since the workflow correction use -10"
+  }
+}

@@ -269,21 +269,6 @@ checkout. No local candidate execution, no new nodes, no capacity inflation.
 - Stage/lease proofs (SM-02/SM-03 gaps in the staged-read ledger) are untouched
   by this lane.
 
-## References
-
-- `tools/fleet/fleet_boxes.json`, `tools/fleet/fleet_roster.py`,
-  `tools/fleet/supervise.py:377-500,1539-1680`,
-  `tools/fleet/worker_loop.py:140-300,1230-1470`,
-  `tools/fleet/resource_broker.py:267-380,635-780,766-...`,
-  `src/prismabuild/pool.py:announce/offers/placeable/claim/serve_once/withdraw`,
-  `src/prismabuild/box_capacity.py:observe/GPU_MEMORY_DOMAINS/freshness`,
-  `docs/design.md` (live inventory, sealed env, attestation),
-  `docs/operating_prismabuild.md` (placement, demand, measurement),
-  `docs/agent_execution_policy.md` (adding workers, telemetry rules),
-  `docs/amd_gpu_capacity_2026-09-12.md`,
-  `docs/heterogeneous_cohort_design_2026-09-19.md`,
-  `docs/staged_read_contract_2026-09-20.md` + ledger + acceptance template.
-
 ## 6. Revision after root critical review (2026-09-20)
 
 Root reviewed the §3 design and the first `fleet_membership.py` draft and did
@@ -321,17 +306,15 @@ non-retry-safe rows file explicit interrupted terminal, never a silent
 duplicate. Source/tier lease cleanup on the PB-owned path finishes before
 capacity is reported released.
 
-### 6.2 Retry handoff is not automatic
+### 6.2 Retry handoff is explicit and budget-preserving (applied)
 
 `queue.withdraw` publishes the immutable decision and drives withdrawal; it
-does **not** requeue. The budget-preserving requeue is the admission
-handoff `publish(preempted_claim=...)`, whose guard (`_preemption_eligible`
-+ `preempted_by` decision linkage) deliberately accepts only the admission
-path today: a resign CLI must not impersonate it. Until the §6.5 hunk (or
-its approved variant) lands, retry-safe resign rows are reported
-`pending_requeue` and the host stays `resigning`; the existing operator
-`pool_reset` path remains the only requeue. Attempt budgets
-(`max_attempts`, `retry_safe`, withdrawal links) are preserved verbatim.
+does **not** requeue. The resign driver hands retry-safe rows to successors
+through the applied plan-then-publish handoff (§6.5): same budget rule
+as admission (attempts increment, never refund), linked by exact
+`withdrawn_by` equality. Unknown/non-retry-safe rows file explicit
+interrupted terminal, never a silent duplicate. Source/tier lease cleanup
+on the PB-owned path finishes before capacity is reported released.
 
 ### 6.3 Durable authority mapping
 
@@ -366,22 +349,61 @@ performs.
   end the old epoch: operator `maintenance_force_end` (recorded as
   `forced_end_of/by`) is the only path, by existing broker authority.
 - Join transition: roster active + full §6.6 qualification + expected epoch
-  presented + caller incarnation live → `maintenance_end`. A legitimate join
-  after a resign works because the *same live supervisor incarnation* that
-  can prove itself ends the drain it (or its predecessor epoch) holds only
-  when the broker's owner check passes; otherwise operator force is required
-  and recorded.
+  presented + caller incarnation live → `maintenance_end`. A supervisor
+  restart takes over an old durable drain by presenting the explicit old
+  epoch (broker-enforced CAS) plus a live-supervisor owner — never
+  `force_end`. The broker permits this ONLY for its own kind: the held
+  owner must be membership-shaped (`supervisor-`) AND verifiably
+  dead/replaced (pid gone or starttime mismatch). A live old supervisor, an
+  upgrade/operator/unshaped hold, or a stale epoch stays refused even from a
+  live root supervisor — liveness grants no license to steal another
+  maintenance, and root-owned `force_end` (recorded) remains the only path
+  for those.
 
-### 6.5 Exact shared-pool hook (proposed, NOT applied — lease worker owns `pool.py`)
+### 6.5 Shared-pool hook (APPLIED in this lane — pool.py owned here by root grant)
 
 The resign linearization point is the broker mutex for scope creation, but
 the queue rename (`_claim`: `_write_claim_intent` + `os.rename(ready,
-claimed)`) does not consult any fence today: a claim can win after a resign
-began. The minimal hook re-checks a caller-supplied fence under the same
-per-key transition exclusion that guards the rename, so a drain that began
-before the intent write is observed deterministically.
+claimed)`) did not consult any fence. The applied hook re-checks a
+caller-supplied `admission_open` fence under the same per-key transition
+exclusion that guards the rename. This narrows the poll-check→rename race;
+it does NOT lock the broker's gate — a drain can still begin after the
+check. A claim that wins then cannot execute (broker `create` refuses under
+its mutex; the loop's cleanup path releases it), and the resign proof
+accounts for it: repeated census, bracketed park acks around a stable
+census/epoch/incarnation, and empty broker scopes before SUCCESS.
 
-Against `e91a55d`, `src/prismabuild/pool.py`:
+Against `e91a55d`, `src/prismabuild/pool.py` (applied):
+
+- `claim(...)` / `_claim(...)` / `serve_once(...)` take keyword-only
+  `admission_open: Callable[[], bool] | None = None` (default preserves
+  behavior). The `_claim` check sits immediately before the intent write,
+  unwinding like the tier-shortage path (ledger abandon, borrow/probe
+  return, tier abandon) with a new advisory-only `resign_fenced` denial.
+- `worker_loop` (and the `worker.py` one-shot) pass a gate reader, so the
+  last check sits milliseconds — not one poll — before the rename.
+
+- Retry handoff (applied): public `PoolQueue.plan_requeue(record)` (pure
+  successor constructor + `_preemption_eligible` guard, no side effects).
+  The resign driver builds the plan before withdrawing, withdraws, waits
+  for the original attempt's exact terminal, then publishes via
+  `publish(preempted_claim=..., handoff_by=...)` — publishing after the
+  terminal is what keeps a live holder's finish from overwriting the
+  successor. The `publish` guard accepts, besides the admission
+  `preempted_by` linkage, a resign linkage: the withdrawal decision's
+  `withdrawn_by` exactly equal to `handoff_by`. Only the party that
+  cancelled can revive; operator cancellations stay unrevivable through it.
+  Successors carry `resigned_by` lineage, attempts increment, budget never
+  refunds.
+
+The resign linearization point is the broker mutex for scope creation. The
+queue rename does not lock that gate: the `_claim` fence check narrows the
+poll-check→rename race but a drain can still begin after it. A claim that
+wins then cannot execute (broker `create` refuses; loop cleanup releases
+it), and the resign proof — repeated census, bracketed park acks around a
+stable census/epoch/incarnation, empty scopes — accounts for it.
+
+Against `e91a55d`, `src/prismabuild/pool.py` (all applied):
 
 - `claim(...)` gains keyword-only `admission_open: Callable[[], bool] | None
   = None`, forwarded to `_claim(...)` as `admission_open`.
@@ -418,16 +440,13 @@ Against `e91a55d`, `src/prismabuild/pool.py`:
   (`read_maintenance_gate() is None`) at call time, so the last check sits
   milliseconds — not one poll — before the rename.
 
-- Retry-handoff generalization (separate hunk, same approval lane): a public
-  `PoolQueue.requeue_interrupted(record)` encapsulating `_requeue_arguments`
-  + `withdraw` + `publish(preempted_claim=...)` with the existing
-  `_preemption_eligible` guard, so a resign driver can hand retry-safe rows
-  to new attempts without impersonating the admission path. Until approved,
-  §6.2 stands.
-
-Until root approves, the CLI treats the poll-check→rename window as
-unobservable-by-construction: post-begin re-census + SUCCESS refused while
-any owned-claim set cannot be proven closed.
+- Resign-side broker CAS (applied): `maintenance_begin/end` accept
+  `expected_changed_unix`, enforced under the broker mutex — the CLI reads
+  the gate only to send its expectation. A supervisor restart takes over an
+  old durable drain by presenting the explicit old epoch plus a
+  live-supervisor owner the broker verifies itself (`takeover_of/by`
+  evidence); stale epochs refuse, dead owners stay refused, never
+  `force_end`.
 
 ### 6.6 Join qualification (more than broker health)
 
@@ -454,25 +473,45 @@ Join records structured per-check results and refuses on any failure:
    `eligible | qualifying | draining | unavailable | unknown` — the earlier
    `qualifying?` placeholder is withdrawn.
 
-### 6.7 RED fixtures (this lane, PB-mandatory)
+### 6.7 Fixtures and hunk tests (this lane, PB-mandatory)
 
 `tests/test_fleet_membership_busy_resign.py` (new, mine) drives real paths
 only — real `PoolQueue`, real broker `Authority` with the established stub
 backend, real gate files, real `worker_loop` gate readers, real parked
 markers:
 
-- busy resign: claimed attempt with no terminal + `active_scopes != []` →
-  resign must not report success (meaningful RED against withdraw-only
-  completion).
-- retry takeover: withdrawn retry-safe row requeues as a new attempt with
-  preserved budget and no duplicate adoption (RED until the §6.5 handoff
-  hunk lands; asserts the exact pending state meanwhile).
+- busy resign: claimed attempt concludes through the real holder
+  `finish`; resign waits for the exact-attempt terminal and empty scopes
+  before `resigned` (was meaningfully RED against withdraw-only completion).
+- retry takeover: withdrawn retry-safe row requeues automatically with
+  preserved budget, exact terminal, `resigned_by` lineage, no duplicate.
 - scope containment: `maintenance_begin` refuses new `create` under the
-  broker mutex; stop → reclaim → verify → empty → release completes and
-  `active_scopes` returns to zero (the order resign must observe).
+  broker mutex; stop → release empties `active_scopes` (the order resign
+  observes).
+- fence: closed `admission_open` refuses at the rename, open admits; stale
+  broker epochs refuse; live-supervisor takeover of a dead owner's drain
+  succeeds with evidence while foreign non-supervisors stay refused;
+  local directories fail shared-mount proof; exact-attempt terminals do not
+  leak across generations of one key.
 
 Validation runs at `--priority -10` (self-validation behind campaign priority 0)
 saved outside the checkout; time fields are tool-derived UTC.
+
+### 6.8 Reader-refs gate (consumer side; writer is the lease worker)
+
+Resign reports `resigned` only with reader refs drained **as well as**
+scopes/claims: the completion order is exact terminals → empty broker
+scopes → refs drained → bracketed park acks around a stable census/epoch/
+incarnation. Attestation writing and ref reclaim are the lease worker's
+automatic production path (PR #730); this lane only consumes the proof via
+`refs_for_holder` (preferred, when its lane has merged) with a
+documented absence rule otherwise: a missing leases namespace is provably
+drained, a present-but-unreadable one retains the fence. Refs remaining
+their automatic path hasn't reclaimed keep the host `resigning` with the
+reason — never reported clean on heartbeat loss, missing reads, or another
+host's refs. No membership authority, no global lock, no duplicated
+release/telemetry writers: `Authority.handle` scope export and
+`ResourceScope` telemetry/release stay lease-worker owned.
 
 
 - `tools/fleet/fleet_boxes.json`, `tools/fleet/fleet_roster.py`,
@@ -487,3 +526,19 @@ saved outside the checkout; time fields are tool-derived UTC.
   `docs/amd_gpu_capacity_2026-09-12.md`,
   `docs/heterogeneous_cohort_design_2026-09-19.md`,
   `docs/staged_read_contract_2026-09-20.md` + ledger + acceptance template.
+
+## References
+
+- `tools/fleet/fleet_boxes.json`, `tools/fleet/fleet_roster.py`,
+  `tools/fleet/supervise.py:377-500,1539-1680`,
+  `tools/fleet/worker_loop.py:140-300,1230-1470`,
+  `tools/fleet/resource_broker.py:267-380,635-780,766-...`,
+  `src/prismabuild/pool.py:announce/offers/placeable/claim/serve_once/withdraw`,
+  `src/prismabuild/box_capacity.py:observe/GPU_MEMORY_DOMAINS/freshness`,
+  `docs/design.md` (live inventory, sealed env, attestation),
+  `docs/operating_prismabuild.md` (placement, demand, measurement),
+  `docs/agent_execution_policy.md` (adding workers, telemetry rules),
+  `docs/amd_gpu_capacity_2026-09-12.md`,
+  `docs/heterogeneous_cohort_design_2026-09-19.md`,
+  `docs/staged_read_contract_2026-09-20.md` + ledger + acceptance template.
+

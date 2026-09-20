@@ -1466,6 +1466,10 @@ def _run_loop(stop_requested):
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
                 ready=discovery.snapshot, observed_images=claim_images,
+                # Re-checked under the per-key transition lock just before
+                # the claim rename, so a resign drain that began after this
+                # poll's gate check still refuses the claim deterministically.
+                admission_open=lambda: read_maintenance_gate() is None,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop

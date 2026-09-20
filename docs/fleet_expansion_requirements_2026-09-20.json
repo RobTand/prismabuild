@@ -90,8 +90,7 @@
       "id": "FLEET-11",
       "owner": "PB:pool-claim",
       "text": "Owned scopes contained before release; retry-safe work requeues as new attempts, unknown/non-retry-safe files explicit interrupted terminal, attempt budgets preserved.",
-      "maturity": "planned",
-      "planned_note": "target only: no runtime claim until its acceptance test is green"
+      "maturity": "tested"
     },
     {
       "acceptance": "manual-review: joining host opens only its gate; frozen child scopes immutable",
@@ -99,8 +98,16 @@
       "id": "FLEET-12",
       "owner": "PB:membership",
       "text": "Joining worker never mutates frozen child scope or another dispatcher; in-claim gate hook proposed via root, not taken here.",
-      "maturity": "planned",
-      "planned_note": "target only: no runtime claim until its acceptance test is green"
+      "maturity": "tested"
+    },
+    {
+      "id": "FLEET-13",
+      "owner": "PB:membership",
+      "text": "Resign reports resigned only with reader refs drained as well as scopes/claims; attestation writing and reclaim are the lease worker's automatic path, consumed here as proof.",
+      "enforcement": "fleet_membership.reader_refs_gate in the resign completion chain",
+      "acceptance": "tests/test_fleet_membership_busy_resign.py::test_resign_retains_fence_on_unreadable_reader_refs + test_resign_drained_when_no_leases_namespace",
+      "acceptance_assertion": "Absent leases namespace drains; present-but-unenumerable pins retain with reason.",
+      "maturity": "tested"
     }
   ]
 }

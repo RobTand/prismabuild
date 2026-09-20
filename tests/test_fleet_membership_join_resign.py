@@ -159,8 +159,22 @@ def _incarnation(monkeypatch, host: str) -> str:
 def _active_roster(tmp_path: Path, host: str) -> Path:
     roster = tmp_path / "fleet_boxes.json"
     roster.write_text(json.dumps(
-        {"boxes": {host: {"loops": 1, "args": []}}}))
+        {"boxes": {host: {"loops": 1, "args": ["--class", "x86"]}}}))
     return roster
+
+
+def _shared_queue(monkeypatch, tmp_path: Path) -> Path:
+    """Simulate the shared export for qualification: an NFS mount identity
+    (environment control, same class as hostname patching) plus a real
+    queue layout created through the real ensure_layout path."""
+    from prismabuild import pool as _pool
+
+    root = tmp_path / "q"
+    _pool.PoolQueue(root).ensure_layout()
+    monkeypatch.setattr(fm, "_mount_identity", lambda path: {
+        "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
+        "mountpoint": "/mnt/shared"})
+    return root
 
 
 def _runtime_root(tmp_path: Path) -> Path:
@@ -228,7 +242,7 @@ def test_resign_withdraws_while_busy_and_waits_for_terminal(
     assert out["owner"] == owner
     assert calls and calls[0]["op"] == "maintenance_begin"
     assert queue.item_path(pool.WITHDRAWN, key).exists()
-    assert fm.terminal_of(queue, key) is not None
+    assert fm.terminal_of(queue, snapshot) is not None
 
 
 def test_replacement_incarnation_markers_do_not_ack(tmp_path: Path) -> None:
@@ -249,7 +263,8 @@ def test_join_refuses_absent_roster(tmp_path: Path, monkeypatch) -> None:
         host: {"loops": 1, "args": [],
                "status": "offline", "status_reason": "r",
                "status_by": "root", "status_unix": 1.0}}}))
-    out = fm.join(host, roster_path=roster, queue_root=tmp_path / "q",
+    queue_root = _shared_queue(monkeypatch, tmp_path)
+    out = fm.join(host, roster_path=roster, queue_root=queue_root,
                   runtime_root=_runtime_root(tmp_path),
                   broker_call=lambda p: {"ok": True, "health": True,
                                          "draining": True, "active_scopes": 0,
@@ -261,7 +276,8 @@ def test_join_refuses_unhealthy_broker(tmp_path: Path, monkeypatch) -> None:
     host = socket.gethostname()
     _incarnation(monkeypatch, host)
     roster = _active_roster(tmp_path, host)
-    out = fm.join(host, roster_path=roster, queue_root=tmp_path / "q",
+    queue_root = _shared_queue(monkeypatch, tmp_path)
+    out = fm.join(host, roster_path=roster, queue_root=queue_root,
                   runtime_root=_runtime_root(tmp_path),
                   broker_call=lambda p: {"ok": False, "error": "down"})
     assert out["status"] == "refused" and out["phase"] == "qualification"
@@ -298,8 +314,9 @@ def test_join_opens_gate_after_qualification(
                     "active_scopes": 0, "active_scope_ids": []}
         raise AssertionError(payload)
 
+    queue_root = _shared_queue(monkeypatch, tmp_path)
     out = fm.join(host, reason="test join", roster_path=roster,
-                  queue_root=tmp_path / "q", gate=gate,
+                  queue_root=queue_root, gate=gate,
                   runtime_root=_runtime_root(tmp_path),
                   broker_call=fake_broker)
     assert out["status"] == "joined", out

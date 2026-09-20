@@ -109,7 +109,7 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 
 from __future__ import annotations
 
-from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
 from contextlib import contextmanager, nullcontext, suppress
 import errno
@@ -3191,6 +3191,7 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
+        handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
@@ -3329,13 +3330,22 @@ class PoolQueue:
         # kept -- moved to ``superseded/``, not deleted -- and the new item
         # carries what it revived.
         if preempted_claim is not None:
-            # Only the admission handoff may carry an interrupted attempt into
-            # a new generation. An intervening publication or operator decision
-            # wins; never overwrite it with the earlier selection snapshot.
+            # Only a handoff that can name the cancellation it revives may
+            # carry an interrupted attempt into a new generation: the
+            # admission path via the withdrawal's ``preempted_by``, or a
+            # resign driver via ``handoff_by`` exactly equal to the
+            # withdrawal's ``withdrawn_by``. An intervening publication or
+            # operator decision wins; never overwrite it with the earlier
+            # selection snapshot.
             decision = self.withdrawal_covers(preempted_claim, action_key=action_key)
+            handoff = decision.get("preempted_by") if decision is not None else None
+            if (handoff is None and handoff_by is not None
+                    and decision is not None
+                    and decision.get("withdrawn_by") == handoff_by):
+                handoff = handoff_by
             visible = _read_json(self.item_path(WITHDRAWN, action_key))
             live = _read_json(self.item_path(CLAIMED, action_key))
-            if (decision is None or not decision.get("preempted_by")
+            if (decision is None or not handoff
                     or visible is None
                     or visible.get("published_unix") != preempted_claim.get("published_unix")
                     or self.item_path(READY, action_key).exists()
@@ -3395,6 +3405,12 @@ class PoolQueue:
                 # the marker is retired, and the visible cost of #364 has to be
                 # on it rather than one dereference away.
                 item["preempted_by"] = str(superseded["preempted_by"])
+            elif (handoff_by is not None
+                    and superseded.get("withdrawn_by") == handoff_by):
+                # The resign-handoff analogue: derived from the resign
+                # withdrawal this successor revives, so a reader can tell a
+                # resign requeue from an admission preemption.
+                item["resigned_by"] = str(handoff_by)
         if preempted_claim is not None:
             # Reuse the ordinary bounded attempt counter. Earlier interrupted
             # launches belong to the linked immutable withdrawal generations,
@@ -5737,7 +5753,15 @@ class PoolQueue:
         adaptive_cpu: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
+        """Take one ready item, atomically.  ``None`` when nothing matches.
+
+        ``admission_open`` is an optional caller-owned fence (a worker resign
+        drain): ``_claim`` re-checks it under the per-key transition lock
+        immediately before the intent write, so a fence that closed after the
+        poll check is still observed. ``None`` preserves current behavior.
+        """
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
@@ -5787,7 +5811,8 @@ class PoolQueue:
                                    capacity=capacity, cpu_tiers=tiers,
                                    controller=controller,
                                    gpu_controller=gpu_controller, ready=ready,
-                                   observed_images=observed_images)
+                                   observed_images=observed_images,
+                                   admission_open=admission_open)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -5805,7 +5830,8 @@ class PoolQueue:
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers,
-                           ready=ready, observed_images=observed_images)
+                           ready=ready, observed_images=observed_images,
+                           admission_open=admission_open)
 
     @staticmethod
     def _admission_lock(controller: cpu_admission.Controller | None):
@@ -5977,6 +6003,35 @@ class PoolQueue:
             if record.get(field) is not None:
                 arguments[field] = record[field]
         return arguments
+
+    def plan_requeue(self, record: Mapping[str, object]) -> dict[str, object]:
+        """Build the successor publication for a withdrawn owned claim.
+
+        Pure constructor: no withdraw, no publish, no side effects. A claim
+        that cannot be re-published (or carries no retry budget) raises
+        instead of losing the work — the caller leaves it running. The
+        successor may only be published after the original attempt's exact
+        terminal is filed: publishing while the holder is still live races
+        the holder's own finish, whose requeue disposition would overwrite
+        this successor. See ``publish(..., handoff_by=...)`` for the linkage
+        the eventual publication must prove.
+        """
+
+        if not isinstance(record, Mapping):
+            raise PoolContractError("requeue needs the claimed record")
+        key = record.get("action_key")
+        if not isinstance(key, str) or len(key) != 64:
+            raise PoolContractError("requeue needs a 64-character action key")
+        snapshot = dict(record)
+        arguments = self._requeue_arguments(snapshot, action_key=key)
+        if arguments is None:
+            raise PoolContractError(
+                f"{key[:12]} cannot be re-published from its claim")
+        if not self._preemption_eligible(snapshot):
+            raise PoolContractError(
+                f"{key[:12]} carries no retry budget for a requeue")
+        arguments.pop("preempted_claim", None)
+        return {"arguments": arguments, "snapshot": snapshot}
 
     def _preempt_background_holder(
         self,
@@ -6305,6 +6360,7 @@ class PoolQueue:
         gpu_controller: gpu_admission.Controller | None = None,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -6788,6 +6844,28 @@ class PoolQueue:
                             })
                             continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
+                    # Resign fence, re-checked under this key's transition
+                    # exclusion. This narrows the poll-check to rename race
+                    # but does NOT lock the broker's gate: a drain can still
+                    # begin after this check. A claim that wins then cannot
+                    # execute — broker scope ``create`` refuses under its
+                    # mutex and the loop's cleanup path releases it — and the
+                    # resign proof (repeated census, bracketed park acks,
+                    # empty scopes) accounts for it before SUCCESS. ``None``
+                    # preserves current behavior for fenceless callers. The
+                    # unwind mirrors the tier-shortage path above it.
+                    if admission_open is not None and not admission_open():
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller,
+                                                   gpu_probe)
+                        self.record_denial(item, "resign_fenced", {
+                            "action_key": key,
+                        })
+                        continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
                     dst = self.item_path(CLAIMED, key)
@@ -10529,6 +10607,7 @@ class PoolQueue:
         containment: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -10544,13 +10623,17 @@ class PoolQueue:
         ``observed_images`` is the claiming box's bounded local container
         inventory, passed through to the claim check for items that declare
         one; absent means unknown, and unknown refuses (#714).
+
+        ``admission_open`` is an optional caller-owned fence re-checked under
+        the per-key transition lock just before the claim rename.
         """
 
         if self._sweep_due():
             self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
-                          ready=ready, observed_images=observed_images)
+                          ready=ready, observed_images=observed_images,
+                          admission_open=admission_open)
         if item is None:
             return None
         key = str(item["action_key"])
