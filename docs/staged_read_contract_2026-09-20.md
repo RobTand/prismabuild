@@ -353,8 +353,8 @@ no agent waiver; no performance/quality numbers set here):
   readiness is a pre-claim responsibility of the claiming worker reading
   the verdict, never pre-submission proof and never agent polling of
   readiness as a runtime. Identities bound (ID-01–ID-09 as applicable);
-  strict tier opens enforced on bulk legs or the run is explicitly
-  non-staged with uncertified payload records and no staged tier claim
+  strict tier opens enforced on bulk legs or the run carries scoped user
+  authorization with uncertified payload records and no staged tier claim
   (INV-03/INV-04 or TIER-04 authorization); window fit proven or
   `unsupported-workset` refused (PRG-02/PRG-04). A future terminal receipt
   is never demanded before launch.

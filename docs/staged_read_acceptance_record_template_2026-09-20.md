@@ -16,16 +16,20 @@ no agent waiver exists. No performance or quality numbers are set here.
   "ledger_commit": "<ledger JSON commit>",
   "scope": ["<requirement IDs in scope>"],
   "prelaunch": {
-    "submission": "<sealed request key>",
-    "readiness_verdict": "<residency_verdict state per lead>",
-    "tier_policy": "strict | non-staged-uncertified | scoped-user-authorization:<authority-ref>",
+    "submission": {
+      "sealed_key": "<optional until submit; recorded when submitted>",
+      "declares": ["inputs", "ranges", "progress", "runtime"]
+    },
+    "readiness_gate": "PB-owned verdict required at claim (residency_verdict per lead); declared here and evaluated by the claiming worker — never a human-obtained ready verdict, and no sealed key is required before submission",
+    "tier_policy": "strict | scoped-user-authorization:<authority-ref>",
     "window_fit": "proven | unsupported-workset:<reason>"
   },
   "merge": {
     "branch": "<branch>",
     "issue": "<issue URL>",
     "validated_repairs": [{"id": "<REQ-ID>", "actions": ["<action_key>"], "outcome": "<terminal status + receipt>"}],
-    "remaining_gaps": ["<REQ-ID + reason>"]
+    "remaining_gaps": ["<REQ-ID + reason>"],
+    "note": "<optional: what this record does NOT claim>"
   },
   "deploy": {
     "generation": "<runtime generation id>",
@@ -40,33 +44,38 @@ no agent waiver exists. No performance or quality numbers are set here.
 }
 ```
 
+`tier_policy` has two alternatives only: `strict`, or
+`scoped-user-authorization:<authority-ref>` naming the ranges, the reason,
+and the explicit user authority on the sealed request. There is no
+standalone non-staged alternative: uncertified status never waives a
+forbidden tier.
+
 Only the object matching `step` needs full contents; the other three
 steps read `{"status": "not-this-step"}`. `unknown` is legitimate for
 `role_convergence` and `open_unknowns` entries — never for hiding a
 required check.
 
-## Worked example: PB720 merge step (real keys)
+## Worked example: documentation-contract merge step (this lane)
+
+Documentation coherence only. It proves no invariant, no SAFE-03, and no
+test verdict — pass counts from other lanes' suites are cited nowhere
+here. (PB720 keys live in the delivery record and the VER-01 ledger
+entry, not in this example.)
 
 ```json
 {
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
-  "contract_commit": "not-applicable (predates contract)",
-  "ledger_commit": "not-applicable (predates ledger)",
-  "scope": ["SAFE-03"],
+  "contract_commit": "<HEAD of docs/formal-staged-read-contract-20260920 at review>",
+  "ledger_commit": "<HEAD of docs/formal-staged-read-contract-20260920 at review>",
+  "scope": ["SC-03"],
   "prelaunch": {"status": "not-this-step"},
   "merge": {
-    "branch": "fix/pbmcp-power-reporting-20260920",
-    "issue": "https://github.com/RobTand/prismabuild/issues/719",
-    "validated_repairs": [
-      {"id": "SAFE-03", "actions": [
-        "0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a",
-        "263957bf71ea8d2bb6a97e898d30e6f1675866498790f6dee8976a16f05cf28d",
-        "a62a13a366ca288bfb264b9e9fdf6c2ba9dfa28675094cc1c5ea876de15cb8e1",
-        "0b5d2fa45ed81204cf718d173951d2119e0d48a03de3c4ad57c999ff4b7159f7"],
-       "outcome": "all done dl380g10/sparky rc 0; receipts filed; 183 passed 3/3 shards"}
-    ],
-    "remaining_gaps": ["staged-reader strictness: out of scope for this repair"]
+    "branch": "docs/formal-staged-read-contract-20260920",
+    "issue": "https://github.com/RobTand/prismabuild/issues/723",
+    "validated_repairs": [],
+    "remaining_gaps": ["all proposed enforcements: out of scope for a docs lane; see ledger axes"],
+    "note": "Checks performed: ledger JSON parses (56 requirements, v3 schema); every ledger ID appears in the doc and vice versa; zero stale trust-mode enums across doc, ledger, and template. Claims nothing beyond documentation coherence."
   },
   "deploy": {"status": "not-this-step"},
   "complete": {"status": "not-this-step"},
