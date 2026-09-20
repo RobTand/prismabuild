@@ -11,17 +11,19 @@ being single.
 
 The contract tested here, against real subprocesses and real locks:
 
-1. a service role takes a host-local, per-role ``flock`` at startup -- under a
-   private per-uid directory, named by the role script rather than by a
-   generation, never unlinked -- and refuses to start when another instance
-   already holds it.  A ``--once`` operator cycle is a bounded diagnostic,
-   not a second service, and keeps the pool's own mint-lock serialization.
+1. every valid role invocation takes a host-local, per-role ``flock`` at
+   startup -- under a private per-uid directory, named by the role script
+   rather than by a generation, never unlinked -- and refuses when another
+   instance already holds it.  A ``--once`` invocation is not exempt: it can
+   mint, announce and warm against the real queue, so the one-cycle form
+   takes the same lock and the same refusal.
 2. the supervisor probes the same lock before spawning, so an instance the
    ownership census cannot prove is reported instead of raced, and nothing
    unproven is signalled.
 3. the lock path does not move when the generation is republished, one
    role's lock never excludes another role, and the lock is released when
-   its holder exits.
+   its holder exits.  Refusal never depends on naming the holder: the pid is
+   a /proc/locks diagnostic, and contention is safe without it.
 
 Nothing here inspects or signals a live fleet process: the contender is a
 real child of this test, and the only ``SIGSTOP`` in the suite is a test
@@ -266,14 +268,42 @@ def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
         os.close(held)
 
 
-def test_a_once_operator_cycle_takes_no_service_lock(
+def test_contention_refuses_even_when_no_holder_can_be_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The one-cycle form stays the operator's diagnostic (see #593).
+    """Safety is the flock, not a pid file: an unreadable holder still refuses.
 
-    It is a bounded, single mint serialized by the pool's own per-tier lock,
-    not a second service; refusing it while the supervised role is up would
-    break the advertised operator mode.
+    The holder here writes nothing anywhere.  The refusal reads /proc/locks
+    only to decorate its message, and a failure to do so must not change the
+    answer: "held, holder unknown" is never free.
+    """
+
+    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    script = tmp_path / "gen" / "tools" / STORAGE
+    lock = _lock_path(tmp_path / "role-locks")
+    lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    monkeypatch.setattr(worker_loop, "_role_lock_holder",
+                        lambda descriptor: None)
+    try:
+        assert worker_loop.role_singleton_holder(script) == (True, None)
+        with pytest.raises(worker_loop.RoleLockHeld) as refusal:
+            worker_loop.take_role_singleton(script)
+        assert refusal.value.holder is None
+    finally:
+        os.close(held)
+
+
+def test_a_once_operator_cycle_also_refuses_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """A one-shot invocation mutates too, so it takes the same lock (#709).
+
+    ``prewarm_loop --once`` warms bytes and publishes prewarm records just as
+    the service does; exempting the one-cycle form would be exactly the
+    bypass the guard exists to close.  The regression pins that the cycle
+    never runs behind a held lock.
     """
 
     import prewarm_loop
@@ -286,7 +316,11 @@ def test_a_once_operator_cycle_takes_no_service_lock(
     monkeypatch.setattr(worker_loop, "GENERATION_VERSION", receipt)
     monkeypatch.setattr(worker_loop, "RUNTIME_VERSION", receipt)
     monkeypatch.setattr(worker_loop, "read_maintenance_gate", lambda: None)
-    monkeypatch.setattr(prewarm_loop, "cycle", lambda *a, **k: {})
+    monkeypatch.setattr(prewarm_loop, "require_storage_pacing",
+                        lambda *a, **k: None)
+    warmed: list[bool] = []
+    monkeypatch.setattr(prewarm_loop, "cycle",
+                        lambda *a, **k: warmed.append(True) or {})
     local = tmp_path / "storage_pool" / "shared"
     local.mkdir(parents=True)
 
@@ -295,9 +329,42 @@ def test_a_once_operator_cycle_takes_no_service_lock(
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
-        assert prewarm_loop.main([
+        code = prewarm_loop.main([
             "--mount-map", f"/mnt/shared={local}",
-            "--pool-root", str(tmp_path / "pb-queue"),
-            "--once", "--dry-run"]) == 0
+            "--pool-root", str(tmp_path / "pb-queue"), "--once"])
+        assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT, code
+        assert warmed == [], "a second reader warmed behind the singleton"
+        assert "refusing" in capsys.readouterr().err.lower()
+    finally:
+        os.close(held)
+
+
+def test_a_once_tier_cycle_also_refuses_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tier minter's one-shot form can mint and announce; same lock."""
+
+    import tier_loop
+
+    lock_root = tmp_path / "role-locks"
+    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", lock_root)
+    receipt = tmp_path / "generation" / "RUNTIME_VERSION.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps({"commit": "c" * 40}))
+    monkeypatch.setattr(tier_loop.runtime_gate, "GENERATION_VERSION", receipt)
+    monkeypatch.setattr(tier_loop.runtime_gate, "RUNTIME_VERSION", receipt)
+    minted: list[bool] = []
+    monkeypatch.setattr(tier_loop, "cycle",
+                        lambda *a, **k: minted.append(True) or [])
+
+    lock = _lock_path(lock_root, TIERS)
+    lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert tier_loop.main([
+            "--pool-root", str(tmp_path / "pb-queue"), "--once",
+        ]) == worker_loop.ROLE_SINGLETON_HELD_EXIT
+        assert minted == [], "a second minter minted behind the singleton"
     finally:
         os.close(held)
