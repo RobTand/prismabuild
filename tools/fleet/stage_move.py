@@ -243,12 +243,11 @@ class _StagedPublisher:
     """
 
     def __init__(self, *, queue, stage_root, residency_root,
-                 consumer_action_key: str, mover_action_key: str,
+                 mover_action_key: str,
                  manifest_sha256: str, tier_id: str, cas_root) -> None:
         self.queue = queue
         self.stage_root = Path(stage_root)
         self.residency_root = Path(residency_root)
-        self.consumer = consumer_action_key
         self.mover = mover_action_key
         self.manifest_sha256 = manifest_sha256
         self.tier_id = tier_id
@@ -632,11 +631,6 @@ class _StagedPublisher:
             if digest != declared:
                 return "divergent"
             record_digest: str = declared
-        elif consumer == self.consumer:
-            # Digest-less manifests pin no content across consumers:
-            # only this consumer's own verified copy adopts blind, and
-            # its recorded digest rides along for the new sidecar.
-            record_digest = digest
         elif (source_id is not None
                 and self._published_source_id(norm) == source_id):
             # Origin fast path: the published file still carries this
@@ -1211,7 +1205,6 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         publisher=_StagedPublisher(
             queue=queue, stage_root=Path(args.stage_root),
             residency_root=residency_root,
-            consumer_action_key=str(args.consumer_action_key),
             mover_action_key=str(args.action_key),
             manifest_sha256=str(args.manifest_sha256),
             tier_id=str(args.tier_id), cas_root=str(args.cas_root)))
