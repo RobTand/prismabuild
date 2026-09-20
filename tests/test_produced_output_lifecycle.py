@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from pathlib import Path
 import sys
@@ -372,18 +373,50 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         second = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
         assert second["ok"] is True and second["released"] == 0
-        # A leftover batch-namespace token releases exactly once: craft a
-        # retired batch record (mover already egressed, fragment gone) with
-        # one remainder token, as a partial transfer would leave.
-        digest = "f" * 64
+        # A leftover batch-namespace token releases exactly once: file a
+        # real batch record plus its commitments entry (mover already
+        # egressed, fragment gone) with one remainder token, as a
+        # partial transfer would leave. Holder identity comes from the
+        # validated record, so both halves are required.
+        desc = po.validate_descriptor({
+            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+            "artifact_class": "payload",
+            "path": str(origin / "left.pt"),
+            "bytes": 64, "sha256": hashlib.sha256(b"L" * 64).hexdigest(),
+            "producer_generation": po.mint_generation(),
+            "owner_action_key": instance["owner_action_key"],
+            "owner_attempt": dict(instance["owner_attempt"]),
+        }, template, instance)
+        digest = po.output_manifest_sha256([desc])
         ns = po.batch_namespace(instance, "batch-left", digest)
         mover = "e" * 64
+        batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+                      / po.instance_namespace(instance) / "batch-left.json")
+        batch_file.parent.mkdir(parents=True, exist_ok=True)
+        batch_file.write_bytes(json.dumps({
+            "schema": po.BATCH_SCHEMA_V1, "batch_id": "batch-left",
+            "batch_namespace": ns,
+            "manifest_schema": po.BATCH_MANIFEST_SCHEMA_V1,
+            "manifest_digest": digest, "tier": STAGE_TIER,
+            "mover_key": mover,
+            "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
+            "total_bytes": 64, "entry_count": 1, "entries": [desc],
+            "template_id": str(po.validate_template(template)["template_id"]),
+            "template_sha256": po.template_sha256(template),
+            "owner_action_key": instance["owner_action_key"],
+            "owner_attempt": dict(instance["owner_attempt"]),
+            "object_set_id": po.manifest_object_set_id(
+                {f"64:{desc['path']}": {"bytes": 64,
+                                        "sha256": desc["sha256"]}}),
+            "unix": 0.0}, sort_keys=True).encode() + b"\n")
+        import stat as _stat
+        os.chmod(batch_file, _stat.S_IRUSR | _stat.S_IRGRP | _stat.S_IROTH)
         commitments_path = po._commitments_path(queue.root, instance)
         record = {"batches": {
             "batch-left": {
                 "manifest_digest": digest, "batch_namespace": ns,
                 "tier": STAGE_TIER, "mover_key": mover,
-                "class_bytes": {"payload": 0, "checkpoint": 0, "temp": 0},
+                "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
                 "retired": True}},
             "admission": {"minimum_gib": {STAGE_TIER: 1},
                           "window_gib": {STAGE_TIER: 2},

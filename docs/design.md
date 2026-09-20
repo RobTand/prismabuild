@@ -3824,17 +3824,29 @@ movers always retain with `funding-intent-reconcile-retain` for the
 funding/reconciliation lane: metadata absence never proves physical
 absence. Every mutation re-checks the single admitted-template boundary
 (instance digest equals the passed template; a substituted larger maxima
-is refused) and `commit_batch` additionally requires the live owner
-claim to name the instance attempt. Prewrite aborts prove exact planned-
-path absence before freeing headroom; duplicate commits never re-mint
-quota. Stage retirement is tied to the actual egress receipt under lock
-(exact mover/namespace/attempt match, staged paths recorded) and frees
-the tier window only; durable-origin classes stay charged until
-`reclaim_origin` proves every origin path absent, exactly once. Census
-paths attributable to recorded staged paths retain by name; unknown
-census retains; unrelated pins never block. Commit-batch funding,
-movement/tick handoff, and the general funded-window primitive remain
-with their owning lanes.
+is refused). `require_prewrite` SUCCESS is the authorization to start
+writing bytes, so new reservations require the live owner claim to name
+the exact attempt (stale/superseded/absent owners refuse before the
+first payload write; replays grant nothing). `commit_batch`
+additionally requires the live owner for quota consumption and token
+movement. Prewrite aborts prove exact planned-path absence before
+freeing headroom; duplicate commits never re-mint quota. Batches load
+through one bounded validator (schema/binding/strict counts/
+re-validated entries/canonical manifest); damaged records retain.
+Retirement has one public path (`retire_batch` validates provenance
+and the commitments/immutable-record agreement on mover, tier, and
+canonical namespace BEFORE egress, drives egress, and files under
+lock) and frees the tier window only; durable-origin classes stay
+charged until `reclaim_origin` proves every loader-validated entry
+path absent, exactly once. Holder release derives from validated
+records, never mutable fields alone. Census paths attributable to
+recorded staged paths retain by name; unknown census retains;
+unrelated pins never block. The egress claimed-copy attribution skips
+only verified producer holds (item ref equals the sealed request's
+validated declaration, no movement range); substituted or
+declaration-less rows taint. Commit-batch funding, movement/tick
+handoff, and the general funded-window primitive remain with their
+owning lanes.
 
 ### The movement node
 
