@@ -703,8 +703,10 @@ the argv is prefixed (the CPU-affinity `taskset` wrapper stays inside
 the wrap untouched; no root is ever inferred from command text). A
 retained root is trusted only as a direct non-staging child of the
 fleet's generation store whose receipt names it (40-hex commit) and
-whose manifest covers the sealed worker, the proxy, and the proxy's
-own broker/layout imports byte-for-byte over sealed non-symlink files
+whose manifest covers the sealed worker, the proxy, its broker/layout
+imports, and the package code imported before containment (`__init__`,
+`resource_scope`, `core`, `progress`, `residency_map`, `storage_tiers`)
+byte-for-byte over sealed non-symlink files
 (the `supervise._proven_roots` / `_published_generation` and
 `publish_runtime._barrier_generation` rule); anything else refuses
 rather than executing an untrusted proxy outside the contained slice.

@@ -81,6 +81,12 @@ def _published_generation(store: Path, name: str, *,
         _CHECKOUT / "tools" / "prismabuild_worker.py")
     add("src/prismabuild/core.py",
         _CHECKOUT / "src" / "prismabuild" / "core.py")
+    # resource_exec.main imports the package before entering the broker
+    # scope. Keep that real import closure in the retained fixture too.
+    for module in ("__init__", "resource_scope", "progress",
+                   "residency_map", "storage_tiers"):
+        rel = f"src/prismabuild/{module}.py"
+        add(rel, _CHECKOUT / rel)
     fleet_exec = _CHECKOUT / "tools" / "fleet" / "resource_exec.py"
     fleet_broker = _CHECKOUT / "tools" / "fleet" / "resource_broker.py"
     fleet_paths = _CHECKOUT / "tools" / "fleet" / "runtime_paths.py"
@@ -183,6 +189,28 @@ def test_dev_stub_keeps_current_proxy() -> None:
     assert _scope().wrap_argv(argv, worker_script="/worker.py")[1].startswith(
         str(current))
     assert _scope().wrap_argv(["/bin/true"])[1].startswith(str(current))
+
+
+@pytest.mark.parametrize("fault", ["changed-package-import", "uncovered-scope-import"])
+def test_unverified_proxy_package_code_refuses(fleet_store, fault) -> None:
+    """The proxy imports package code before it sends the contained command."""
+    gen_a = _published_generation(fleet_store, "gen-package-proof")
+    if fault == "changed-package-import":
+        path = gen_a / "src/prismabuild/__init__.py"
+        path.chmod(0o644)
+        path.write_text(path.read_text() + "\n# changed after publication\n")
+        path.chmod(0o444)
+    else:
+        path = gen_a / "RUNTIME_VERSION.json"
+        receipt = json.loads(path.read_text())
+        del receipt["files"]["src/prismabuild/resource_scope.py"]
+        path.chmod(0o644)
+        path.write_text(json.dumps(receipt))
+        path.chmod(0o444)
+    worker = str(gen_a / "tools/prismabuild_worker.py")
+    with pytest.raises(OSError):
+        _scope().wrap_argv([sys.executable, worker, "run-local"],
+                           worker_script=worker)
 
 
 def _contained_harness(monkeypatch, tmp_path, queue, item, seen):

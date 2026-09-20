@@ -333,6 +333,14 @@ _WORKER_TAIL = ("tools", "prismabuild_worker.py")
 #: directory are proven with it.
 _PROXY_CANDIDATES = ("tools/resource_exec.py", "tools/fleet/resource_exec.py")
 _PROXY_DEPENDENCIES = ("resource_broker.py", "runtime_paths.py")
+# resource_exec.main imports resource_scope through the package before it
+# asks the broker to enter containment. __init__ eagerly imports core,
+# progress and residency_map; the latter imports storage_tiers. Their bytes
+# therefore need the same publication proof as the executable proxy.
+_PROXY_PACKAGE_DEPENDENCIES = (
+    "__init__.py", "resource_scope.py", "core.py", "progress.py",
+    "residency_map.py", "storage_tiers.py",
+)
 
 
 class ResourceScope:
@@ -513,6 +521,9 @@ class ResourceScope:
             raise OSError(f"worker {worker} is not the generation's sealed "
                           "entry point; refusing")
         self._verified_member(root, worker_rel, files)
+        for dependency in _PROXY_PACKAGE_DEPENDENCIES:
+            self._verified_member(
+                root, f"src/prismabuild/{dependency}", files)
         for proxy_rel in _PROXY_CANDIDATES:
             if proxy_rel not in files:
                 continue  # this layout does not carry that spelling
