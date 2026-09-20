@@ -61,6 +61,7 @@ if str(TOOL_DIR) not in sys.path:
 
 import fleet_roster  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
+import resource_broker as broker_mod  # noqa: E402
 import worker_loop  # noqa: E402
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
@@ -821,8 +822,16 @@ def _broker_mutate(
     socket_path: Path | None,
     broker_call: Callable[[dict], dict] | None,
 ) -> dict[str, Any]:
-    """Send a mutating broker op with the epoch; the broker enforces the CAS."""
-    payload: dict[str, Any] = {"op": op, "owner": owner, "reason": reason}
+    """Send a mutating broker op with the epoch; the broker enforces the CAS.
+
+    Each op carries exactly the fields ``Authority.admin`` allows: ``reason``
+    rides only ``maintenance_begin``/``maintenance_takeover`` — sending it
+    on ``maintenance_end``/``maintenance_force_end`` is refused as invalid
+    maintenance fields, so it is never sent there.
+    """
+    payload: dict[str, Any] = {"op": op, "owner": owner}
+    if op in {"maintenance_begin", "maintenance_takeover"}:
+        payload["reason"] = reason
     if expected_changed_unix is not None:
         payload["expected_changed_unix"] = expected_changed_unix
     return broker_call_func(payload, socket_path, broker_call)
@@ -909,19 +918,33 @@ def join(
     gate_now = read_gate(gate_path)
     if gate_now is None:
         unsettled: list[str] = []
+        unknown: list[str] = []
         if queue_root is not None:
             try:
                 queue_here = pool_module.PoolQueue(Path(queue_root))
-                owed, _ = resume_owed(queue_here, host, owner)
+                owed, skipped = resume_owed(queue_here, host, owner)
                 unsettled = _unsettled_owed_keys(queue_here, owed)
+                unknown = sorted(skipped)
             except (OSError, ValueError):
                 unsettled = []
+                unknown = ["queue census unreadable"]
         return {"status": "already_joined", "host": host, "owner": owner,
                 "checks": checks,
-                "unsettled_membership_rows": unsettled}
+                "unsettled_membership_rows": unsettled,
+                "unsettled_unknown_rows": unknown}
     if queue_root is not None:
         queue_here = pool_module.PoolQueue(Path(queue_root))
         owed_here, skipped_here = resume_owed(queue_here, host, owner)
+        if skipped_here:
+            # Unknown is not settled: an unreadable directory, a corrupt
+            # decision, an unknown prior owner, or an unplannable
+            # membership row keeps the fence. Other hosts' and operator
+            # rows never reach `skipped` (lane-irrelevant, ignored).
+            return {"status": "refused", "phase": "unsettled-unknown",
+                    "host": host, "owner": owner,
+                    "reason": "membership rows unreadable or unrevivable: "
+                              + "; ".join(sorted(skipped_here)),
+                    "checks": checks}
         unsettled_here = _unsettled_owed_keys(queue_here, owed_here)
         if unsettled_here:
             # Ending this drain would clear unsettled handoff obligations:
@@ -989,22 +1012,31 @@ def resign(
     try:
         began = _broker_mutate("maintenance_begin", owner, reason,
                                gate_epoch(gate_before), socket_path, broker_call)
-    except PermissionError as exc:
+    except (OSError, ValueError, PermissionError, RuntimeError) as exc:
         # A previous resign's drain may still be in force under a dead
         # incarnation (this process is its restart, or another CLI died
-        # here). Take it over through the broker mutex — exact epoch,
-        # dead membership hold, live self — keeping the gate closed.
-        # Anything else (upgrade/operator holds, live owners, stale
-        # epochs) stays refused by the broker itself.
-        if "held by" not in str(exc):
-            return {"status": "refused", "phase": "maintenance_begin",
-                    "host": host, "owner": owner,
-                    "reason": f"PermissionError: {exc}"}
+        # here). Take it over through the broker mutex — but never by
+        # parsing refusal prose: the transport (`broker_request` over the
+        # Unix socket) converts every broker refusal into `OSError`, so no
+        # Python exception type survives it. Instead read the current gate
+        # and, only when it names a closed foreign membership drain whose
+        # supervision is provably gone, present this live owner with the
+        # exact epoch just read. The broker re-verifies dead/live/epoch
+        # under its mutex and stays authoritative: operator/upgrade holds,
+        # live old supervisors, and stale epochs refuse there.
         gate_now = read_gate(gate_path)
         if gate_now is None:
             return {"status": "refused", "phase": "maintenance_begin",
                     "host": host, "owner": owner,
-                    "reason": "gate opened under a refused begin; re-read and retry"}
+                    "reason": f"{type(exc).__name__}: {exc}; "
+                              "gate opened under a refused begin; re-read and retry"}
+        held = gate_now.get("owner") if isinstance(gate_now, dict) else None
+        gone, _ = (_owner_gone(host, held) if isinstance(held, str)
+                   else (False, "no owner"))
+        if held == owner or not isinstance(held, str) or not gone:
+            return {"status": "refused", "phase": "maintenance_begin",
+                    "host": host, "owner": owner,
+                    "reason": f"{type(exc).__name__}: {exc}"}
         try:
             took = _broker_mutate("maintenance_takeover", owner, reason,
                                   gate_epoch(gate_now), socket_path, broker_call)
@@ -1013,9 +1045,6 @@ def resign(
                     "host": host, "owner": owner,
                     "reason": f"{type(exc2).__name__}: {exc2}"}
         began = took
-    except (OSError, ValueError, RuntimeError) as exc:
-        return {"status": "refused", "phase": "maintenance_begin", "host": host,
-                "owner": owner, "reason": f"{type(exc).__name__}: {exc}"}
     # The epoch is the gate file the broker just synced, never a reply field:
     # the status reply carries no changed_unix by contract.
     gate_now = read_gate(gate_path)
@@ -1281,6 +1310,9 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
     - ``decision``: the covering withdrawal decision (live file preferred,
       else the retired immutable one), else None.
     - ``successor``: the ready occupant row, if any.
+    - ``successor_unknown``: the ready slot could not be read (unreadable
+      directory entry or corrupt bytes — distinguished from proven
+      absence). Unknown is never clobbered: callers retain and block.
     - ``successor_exact``: the occupant is OUR successor — same key,
       parent generation (``supersedes_withdrawal.published_unix`` equals
       the decision's), same decision timestamp, same owner linkage
@@ -1302,7 +1334,8 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
     out: dict[str, Any] = {"terminal": terminal_of(queue, snapshot)
                            if isinstance(key, str) and len(key) == 64 else None,
                            "decision": None, "decision_live": False,
-                           "successor": None, "successor_exact": False,
+                           "successor": None, "successor_unknown": False,
+                           "successor_exact": False,
                            "foreign": False}
     if not key:
         return out
@@ -1328,11 +1361,27 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
                 break
     out["decision"] = decision
     try:
-        ready = json.loads(queue.item_path(
-            pool_module.READY, key).read_text())
-    except (OSError, ValueError):
-        ready = None
+        ready_raw: str | None = queue.item_path(
+            pool_module.READY, key).read_text()
+    except FileNotFoundError:
+        ready_raw = None  # proven absence: the slot is free
+    except OSError as exc:
+        # Unreadable is not absent: planning a publication over this
+        # would clobber an occupant no reader can see. Retain and block.
+        out["successor_unknown"] = True
+        out["successor_unknown_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    if ready_raw is None:
+        return out
+    try:
+        ready = json.loads(ready_raw)
+    except ValueError as exc:
+        out["successor_unknown"] = True
+        out["successor_unknown_error"] = f"corrupt ready record: {exc}"
+        return out
     if not isinstance(ready, dict):
+        out["successor_unknown"] = True
+        out["successor_unknown_error"] = "ready record is not an object"
         return out
     out["successor"] = ready
     link = ready.get("supersedes_withdrawal")
@@ -1426,9 +1475,11 @@ def _owner_gone(host: str, owner: str) -> tuple[bool, str]:
     old_host, pid, starttime = parts
     if old_host != host:
         return False, "another host's owner"
-    if starttime == "unknown":
-        # Minted without proof; can never prove gone.
-        return False, "owner start time unknown"
+    if not broker_mod._proven_starttime(starttime):
+        # Minted without proof (``unknown``) or malformed: neither proves
+        # gone, and a named non-decimal value always differs from a real
+        # field-22 read, which must not read as PID reuse.
+        return False, "owner start time not proven"
     try:
         line = Path(f"/proc/{pid}/stat").read_text()
     except FileNotFoundError:
@@ -1520,6 +1571,16 @@ def resume_owed(
         if status["terminal"] is not None and status["terminal"][0] in (
                 "done", "failed"):
             continue  # this generation concluded; nothing owed
+        if status.get("successor_unknown"):
+            # The ready slot could not be read: unknown, never absent.
+            # Returned (no plan) so JOIN/resign keep the fence and the
+            # reconciler retains instead of publishing over it.
+            owed.append({"action_key": action_key,
+                         "snapshot": snapshot,
+                         "plan": None,
+                         "revive_by": withdrawn_by,
+                         "successor_exact": False})
+            continue
         if status["successor_exact"]:
             # Settled: the exact successor discharges this handoff. Return
             # it (no plan) so the reconciler can adopt/report it; JOIN
@@ -1625,6 +1686,12 @@ def reconcile_membership(queue: pool_module.PoolQueue, host: str,
             continue
         if terminal[0] != "withdrawn":
             # Concluded by completion, not interruption: nothing to revive.
+            continue
+        if status.get("successor_unknown"):
+            report["retained"].append(
+                {"action_key": action_key[:12],
+                 "reason": "ready occupant unreadable: "
+                           f"{status.get('successor_unknown_error')}"})
             continue
         if status["successor_exact"]:
             report["adopted"].append(action_key[:12])

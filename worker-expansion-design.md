@@ -642,3 +642,34 @@ unreachable; JOIN cleared the gate on `owed==empty`), and
   `_unsettled_owed_keys` (exact + withdrawn terminal discharges);
   `reconcile_membership` adopts exact, retains foreign, publishes
   matured no-occupant rows, and re-checks lineage after a publish race.
+
+## R9 addendum (2026-09-20): real broker protocol + unknown census
+
+Root R9 (production failures in the accepted direction, not accepted yet):
+
+- `_broker_mutate` sends exactly the fields `Authority.admin` allows per
+  op: `reason` rides `maintenance_begin`/`maintenance_takeover` only —
+  `maintenance_end`/`maintenance_force_end` never carry it (the old
+  always-send broke every real join with invalid maintenance fields; a
+  fake hid it). Proven by qualified join through the real admin with the
+  recorded end payload asserted reason-free.
+- Resign takeover no longer parses refusal prose: the socket transport
+  (`broker_request`) converts every refusal to `OSError`, so no Python
+  exception type survives it. On any begin failure resign reads the
+  current gate and, only for a closed foreign membership drain whose
+  supervision is provably gone, takes over with the exact epoch just
+  read; the broker re-verifies dead/live/epoch under its mutex and stays
+  authoritative. Proven over a real Unix-socket Server/Handler/
+  ResourceScope client (privileged peer controlled in-fixture only):
+  dead-owner takeover keeps the closed epoch, live and operator holds
+  refuse, and the full resign lifecycle runs on the socket client.
+- Unknown is not settled: JOIN refuses on any `resume_owed` skipped row
+  (unreadable directory/decision, unknown prior owner, unplannable row;
+  other-host/operator rows stay lane-irrelevant) before `maintenance_end`,
+  and `lineage_status` distinguishes an unreadable ready slot
+  (`successor_unknown`: retain/block) from proven absence (free). The
+  queue publish guard remains the authority; no duplicate validator.
+- Owner proof requires a positive decimal starttime in both broker and
+  membership helpers before any dead/reused decision; `unknown` and
+  malformed names never prove gone. Removed the shadowing duplicate
+  `test_fenced_claim_open_fence_claims` definition.

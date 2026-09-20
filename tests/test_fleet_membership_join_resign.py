@@ -10,6 +10,7 @@ gates are the real ``worker_loop`` drain shape on tmp paths.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import time
@@ -24,9 +25,27 @@ sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
+import resource_broker as broker_mod  # noqa: E402
 import worker_loop  # noqa: E402
 
 CPU = {"cpu": 1}
+
+
+class _Backend:
+    """Minimal kernel double: the broker tests own group behavior; the
+    join protocol tests only need a healthy, empty inventory."""
+
+    def healthy(self):
+        return True
+
+    def inventory(self):
+        return {}
+
+
+@pytest.fixture()
+def authority(tmp_path: Path):
+    return broker_mod.Authority(tmp_path / "broker-state", os.getuid(),
+                               _Backend(), max_memory_bytes=1024**3)
 
 
 def _publish(q: pool.PoolQueue, key: str, **kw) -> None:
@@ -304,36 +323,74 @@ def test_join_refuses_foreign_host(tmp_path: Path, monkeypatch) -> None:
     assert out["status"] == "refused" and out["phase"] == "host"
 
 
-def test_join_opens_gate_after_qualification(
-    tmp_path: Path, monkeypatch
+def test_join_opens_gate_through_real_broker_protocol(
+    tmp_path: Path, monkeypatch, authority
 ) -> None:
+    """Qualified join reaches the real broker admin with exactly the
+    supported fields: the recorded end payload carries no reason, the
+    broker auto-takeovers a dead membership hold at the named epoch, and
+    the gate opens. (A fake accepting any payload hid the invalid-fields
+    refusal end-with-reason always drew.)"""
     host = socket.gethostname()
-    owner = _incarnation(monkeypatch, host)
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{broker_mod._proc_starttime(os.getpid())}")
+    assert broker_mod._live_supervisor_owner(me) is True
+    monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
     roster = _active_roster(tmp_path, host)
-    gate = tmp_path / "maintenance.json"
-    gate.write_text(json.dumps({"draining": True, "changed_unix": 5.0,
-                                "owner": "old"}))
+    old = f"{host}:supervisor-4194304:1"
+    authority.admin(0, {"op": "maintenance_begin", "reason": "run1",
+                        "owner": old})
+    gate = Path(authority.maintenance_path)
+    epoch = json.loads(gate.read_text())["changed_unix"]
+    queue_root = _shared_queue(monkeypatch, tmp_path)  # empty: nothing owed
+    sent: list[dict] = []
 
-    def fake_broker(payload: dict) -> dict:
-        if payload["op"] == "maintenance_status":
-            return {"ok": True, "draining": True, "health": True,
-                    "active_scopes": 0, "active_scope_ids": [],
-                    "maintenance_owner": "old"}
-        if payload["op"] == "maintenance_end":
-            gate.write_text(json.dumps({"draining": False,
-                                        "changed_unix": 6.0}))
-            return {"ok": True, "draining": False, "health": True,
-                    "active_scopes": 0, "active_scope_ids": []}
-        raise AssertionError(payload)
+    def recording_call(payload: dict) -> dict:
+        sent.append(dict(payload))
+        return authority.admin(0, dict(payload))
 
-    queue_root = _shared_queue(monkeypatch, tmp_path)
     out = fm.join(host, reason="test join", roster_path=roster,
                   queue_root=queue_root, gate=gate,
                   runtime_root=_runtime_root(tmp_path),
-                  broker_call=fake_broker)
+                  broker_call=recording_call)
     assert out["status"] == "joined", out
-    assert out["owner"] == owner
+    assert out["owner"] == me
+    ends = [p for p in sent if p.get("op") == "maintenance_end"]
+    assert len(ends) == 1 and "reason" not in ends[0], sent
+    assert ends[0].get("expected_changed_unix") == epoch
     assert fm.read_gate(gate) is None
+
+
+def test_join_refuses_unknown_membership_rows(
+    tmp_path: Path, monkeypatch, authority
+) -> None:
+    """Unknown is not settled: a withdrawn row no reader can parse keeps
+    the fence instead of opening the gate over it."""
+    host = socket.gethostname()
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{broker_mod._proc_starttime(os.getpid())}")
+    monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
+    roster = _active_roster(tmp_path, host)
+    queue_root = _shared_queue(monkeypatch, tmp_path)
+    (queue_root / "withdrawn").mkdir(parents=True, exist_ok=True)
+    (queue_root / "withdrawn" / ("9" * 64 + ".json")).write_text("{broken")
+    authority.admin(0, {"op": "maintenance_begin", "reason": "t",
+                        "owner": me})
+    gate = Path(authority.maintenance_path)
+    sent: list[dict] = []
+
+    def recording_call(payload: dict) -> dict:
+        sent.append(dict(payload))
+        return authority.admin(0, dict(payload))
+
+    out = fm.join(host, reason="too early", roster_path=roster,
+                  queue_root=queue_root, gate=gate,
+                  runtime_root=_runtime_root(tmp_path),
+                  broker_call=recording_call)
+    assert out["status"] == "refused", out
+    assert out["phase"] == "unsettled-unknown", out
+    assert not [p for p in sent if p.get("op") == "maintenance_end"]
+    assert json.loads(gate.read_text())["draining"] is True
 
 
 def test_resign_never_releases_on_heartbeat_loss(queue: pool.PoolQueue, tmp_path: Path) -> None:

@@ -105,6 +105,18 @@ def _proc_starttime(pid):
     return fields[19] if len(fields) > 19 else None
 
 
+def _proven_starttime(starttime):
+    """Positive decimal /proc start-time proof, nothing else.
+
+    Owner strings mint ``unknown`` when /proc was unreadable, and a
+    hand-written owner can name anything at all. Neither proves PID reuse:
+    only an all-decimal positive field-22 value can be compared against a
+    live ``/proc/<pid>/stat`` read. Anything else is unproven, never dead.
+    """
+    return (isinstance(starttime, str) and starttime.isdigit()
+            and int(starttime) > 0)
+
+
 def _live_supervisor_owner(owner):
     """Whether ``owner`` names this box's live supervision, verified here.
 
@@ -119,6 +131,8 @@ def _live_supervisor_owner(owner):
         return False
     host, pid, starttime = parts
     if host != socket.gethostname():
+        return False
+    if not _proven_starttime(starttime):
         return False
     return _proc_starttime(pid) == starttime
 
@@ -140,8 +154,10 @@ def _dead_supervisor_owner(owner):
     host, pid, starttime = parts
     if host != socket.gethostname():
         return False
-    if starttime == "unknown":
-        # Minted without proof; can never prove gone.
+    if not _proven_starttime(starttime):
+        # Minted without proof (``unknown``) or malformed: can never prove
+        # gone or reuse. A named non-decimal value always differs from a
+        # real field-22 read, which must not read as PID reuse.
         return False
     try:
         line = Path(f'/proc/{pid}/stat').read_text()

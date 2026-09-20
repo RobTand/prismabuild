@@ -300,18 +300,6 @@ def _proc_starttime(pid: int) -> str:
 
 
 def test_fenced_claim_open_fence_claims(queue: pool.PoolQueue) -> None:
-    """An open fence claims through the real _claim path."""
-    key = "a" * 64
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co",
-                  worker_script=queue.root / "worker.py",
-                  resources={"cpu": 1}, max_attempts=1, retry_safe=True,
-                  tags=["x86"])
-    assert queue.claim(tags=["x86"], owner="h:1:q1", capacity={"cpu": 4},
-                       admission_open=lambda: True) is not None
-
-
-def test_fenced_claim_open_fence_claims(queue: pool.PoolQueue) -> None:
     key = "b" * 64
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
@@ -365,7 +353,7 @@ def test_broker_epoch_cas_refuses_stale(authority) -> None:
 def test_broker_restart_takeover_without_force(authority) -> None:
     """A live supervisor takes over a dead owner's drain with the old epoch."""
     auth, _ = authority
-    old = f"{socket.gethostname()}:supervisor-1:0"
+    old = f"{socket.gethostname()}:supervisor-4194304:1"
     auth.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": old})
     epoch = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
     me = f"{socket.gethostname()}:supervisor-{os.getpid()}:{_proc_starttime(os.getpid())}"
@@ -928,7 +916,7 @@ def test_lineage_rejects_coincident_counter_foreign_row(
 
 
 def test_takeover_keeps_gate_closed_and_resumes(
-    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+    queue: pool.PoolQueue, live_broker, tmp_path: Path, monkeypatch
 ) -> None:
     """A crashed drain is taken over without opening admission: the new
     incarnation presents the exact epoch through the real broker admin,
@@ -940,13 +928,15 @@ def test_takeover_keeps_gate_closed_and_resumes(
     old_owner = f"{host}:supervisor-4194304:1"
     _sealed_shape(monkeypatch)
     snapshot = _publish_claim(queue, key, max_attempts=3)
-    auth, _ = authority
+    auth, call = live_broker
     gate = Path(auth.maintenance_path)
-    # Crashed run 1 went through the REAL admin: drain held by the (now
-    # dead) old owner.
-    begun = auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
-                           "owner": old_owner})
-    assert begun["draining"] is True
+    # Crashed run 1 went through the REAL socket server: drain held by the
+    # (now dead) old owner. The transport converts the held-by refusal to
+    # OSError, which resign must survive via gate-state takeover (never by
+    # parsing refusal prose).
+    began = call({"op": "maintenance_begin", "reason": "run1",
+                  "owner": old_owner})
+    assert began["draining"] is True
     epoch = json.loads(gate.read_text())["changed_unix"]
     # Live new incarnation (real pid + starttime so the broker's own
     # liveness check passes takeover); same box.
@@ -977,7 +967,7 @@ def test_takeover_keeps_gate_closed_and_resumes(
         try:
             out = fm.resign(host, reason="takeover resume",
                             queue_root=queue.root, gate=gate,
-                            broker_call=_broker_call(authority),
+                            broker_call=call,
                             live=[], wait_s=40.0)
         finally:
             finisher.join(timeout=10.0)
@@ -1077,8 +1067,14 @@ def test_dead_owner_proof_matrix() -> None:
     host = socket.gethostname()
     assert _broker._dead_supervisor_owner("client-upgrade") is False
     assert _broker._dead_supervisor_owner(f"otherbox:supervisor-1:2") is False
+    # A named non-decimal starttime proves nothing: it always differs from
+    # a real field-22 read, which must not read as PID reuse.
     assert _broker._dead_supervisor_owner(
-        f"{host}:supervisor-1:not-a-starttime") is True
+        f"{host}:supervisor-1:not-a-starttime") is False
+    assert _broker._dead_supervisor_owner(
+        f"{host}:supervisor-1:unknown") is False
+    assert _broker._dead_supervisor_owner(
+        f"{host}:supervisor-1:0") is False
     assert _broker._dead_supervisor_owner(
         f"{host}:supervisor-{2 ** 22}:1") is True
     me = (f"{host}:supervisor-{os.getpid()}:"
@@ -1245,3 +1241,159 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     assert ready.get("resigned_by") == owner
     link = ready.get("supersedes_withdrawal")
     assert isinstance(link, dict) and link.get("withdrawn_by") == owner
+
+
+def _live_owner() -> str:
+    """This box's provably live supervisor owner (real pid + starttime)."""
+    host = socket.gethostname()
+    owner = (f"{host}:supervisor-{os.getpid()}:"
+             f"{_proc_starttime(os.getpid())}")
+    assert broker_mod._live_supervisor_owner(owner) is True
+    return owner
+
+
+@pytest.fixture()
+def live_broker(authority, tmp_path: Path):
+    """Real Authority behind a real Unix-socket broker, driven through the
+    real ResourceScope socket client. The privileged peer boundary is
+    controlled in-fixture only (see _RootPeerSocket); no live privilege
+    is touched."""
+    import threading
+    from prismabuild.resource_scope import broker_request
+
+    auth, _ = authority
+
+    class _RootPeerSocket:
+        """Accepted-socket proxy reporting root peer creds.
+
+        The privileged peer boundary, controlled in-fixture only: the
+        server side reads uid 0 off its own accepted socket while the
+        client speaks the real framing over a real socketpair path. No
+        live privilege is touched and no global socket behavior changes.
+        """
+
+        def __init__(self, real):
+            self._real = real
+
+        def getsockopt(self, level, optname, *rest):
+            if (level == socket.SOL_SOCKET
+                    and optname == socket.SO_PEERCRED):
+                import struct
+                return struct.pack("3i", os.getpid(), 0, 0)
+            return self._real.getsockopt(level, optname, *rest)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    class _RootPeerServer(broker_mod.Server):
+        def get_request(self):
+            real, addr = super().get_request()
+            return _RootPeerSocket(real), addr
+
+    sock = tmp_path / "resources.sock"
+    server = _RootPeerServer(str(sock), broker_mod.Handler)
+    server.authority = auth
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05},
+        daemon=True)
+    thread.start()
+    try:
+        yield auth, lambda payload: broker_request(
+            dict(payload), socket_path=sock)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+def test_broker_end_refuses_reason_field(authority) -> None:
+    """The field contract itself: reason rides begin/takeover only."""
+    auth, _ = authority
+    auth.admin(0, {"op": "maintenance_begin", "reason": "t",
+                   "owner": f"{socket.gethostname()}:supervisor-4194304:1"})
+    epoch = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(ValueError, match="invalid maintenance fields"):
+        auth.admin(0, {"op": "maintenance_end", "owner": "x", "reason": "r",
+                       "expected_changed_unix": epoch})
+
+
+def test_takeover_protocol_over_real_socket(live_broker) -> None:
+    """Dead-owner takeover through Socket/Handler/ResourceScope: the wire
+    surfaces the held-by refusal as OSError (never a Python
+    PermissionError), takeover keeps the gate closed on the same epoch."""
+    auth, call = live_broker
+    host = socket.gethostname()
+    old = f"{host}:supervisor-4194304:1"
+    me = _live_owner()
+    began = call({"op": "maintenance_begin", "owner": old, "reason": "run1"})
+    assert began["ok"] is True and began["draining"] is True
+    epoch = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(OSError, match="refused"):
+        call({"op": "maintenance_begin", "owner": me, "reason": "run2",
+              "expected_changed_unix": epoch})
+    took = call({"op": "maintenance_takeover", "owner": me,
+                 "reason": "resume", "expected_changed_unix": epoch})
+    assert took["ok"] is True and took["draining"] is True
+    gate = json.loads(Path(auth.maintenance_path).read_text())
+    assert gate["draining"] is True
+    assert gate["changed_unix"] == epoch
+    assert gate["owner"] == me
+    assert gate["takeover_of"] == old
+
+
+def test_takeover_refuses_live_and_foreign_holds_over_real_socket(
+    live_broker,
+) -> None:
+    """Takeover of a live membership hold and of a foreign (operator)
+    hold both refuse over the wire; the gate is untouched either way."""
+    auth, call = live_broker
+    host = socket.gethostname()
+    me = _live_owner()
+    began = call({"op": "maintenance_begin", "owner": me, "reason": "t"})
+    assert began["ok"] is True
+    epoch = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(OSError, match="refused"):
+        call({"op": "maintenance_takeover", "owner": me, "reason": "t",
+              "expected_changed_unix": epoch})
+    gate = json.loads(Path(auth.maintenance_path).read_text())
+    assert gate["owner"] == me and gate["changed_unix"] == epoch
+    ended = call({"op": "maintenance_end", "owner": me,
+                  "expected_changed_unix": epoch})
+    assert ended["ok"] is True and ended["draining"] is False
+    call({"op": "maintenance_begin", "owner": "upgrade-window",
+          "reason": "t"})
+    epoch2 = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(OSError, match="refused"):
+        call({"op": "maintenance_takeover", "owner": me, "reason": "t",
+              "expected_changed_unix": epoch2})
+    gate = json.loads(Path(auth.maintenance_path).read_text())
+    assert gate["draining"] is True and gate["owner"] == "upgrade-window"
+
+
+def test_lineage_treats_unreadable_ready_as_unknown(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
+    """An unreadable ready slot is unknown, never absent: nothing plans a
+    publication over it — the reconciler retains and JOIN keeps the fence."""
+    _incarnation(monkeypatch)
+    key = "6" * 64
+    host = socket.gethostname()
+    owner = f"{host}:supervisor-9:8"
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    queue.withdraw(key, reason=f"resign {owner}: t", by=owner)
+    queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
+    live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    snap = {"action_key": key, "published_unix": live["published_unix"],
+            "attempts": live["attempts"], "claimed_by": live["claimed_by"],
+            "claimed_unix": live["claimed_unix"]}
+    queue.item_path(pool.READY, key).mkdir()  # read_text -> IsADirectoryError
+    status = fm.lineage_status(queue, snap, owner)
+    assert status["successor"] is None
+    assert status["successor_unknown"] is True
+    assert status["successor_exact"] is False
+    owed, _ = fm.resume_owed(queue, host, owner)
+    assert [r["action_key"] for r in owed] == [key]
+    assert owed[0]["plan"] is None
+    rec = fm.reconcile_membership(queue, host, owner)
+    assert rec["published"] == [] and rec["adopted"] == []
+    assert any("unreadable" in str(r.get("reason", "")) for r in rec["retained"])
