@@ -1494,7 +1494,7 @@ def test_payload_identity_env_is_assignment_not_leak() -> None:
     scope = stamped["PRISMABUILD_ACTION_SCOPE"]
     assert scope.startswith("prismabuild-job") and scope.endswith(".slice")
     helper = stamped["PRISMABUILD_READER_HELPER_ROOT"]
-    assert helper.endswith("/src")
+    assert helper and not helper.endswith("/src")
 
 
 def test_owner_and_material_namespace_stay_split(fleet) -> None:
@@ -1709,3 +1709,169 @@ def test_withdrawn_with_telemetry_reclaims_automatically(fleet) -> None:
     assert receipt["auto_reclaimed"] == [acquired["ref_id"]]
     assert not staged.exists()
     assert receipt["entries_deleted"] == 1
+
+
+def test_mixed_half_control_refuses_without_intent_synthesis(fleet) -> None:
+    """Strict: control scope without control nonce refuses; intent never fills it."""
+
+    queue, stage = fleet
+    claimed = queue.dir(pool.CLAIMED)
+    claimed.mkdir(parents=True, exist_ok=True)
+    nonce = "n" * 32
+    (claimed / f"{CONSUMER}.json").write_text(json.dumps({
+        "action_key": CONSUMER,
+        "claimed_by": "worker-7",
+        "claimed_host": "sparky",
+        "resource_scope": {"action_key": CONSUMER, "scope_id": "unit-1"},
+        "resource_scope_intent": {"action_key": CONSUMER, "nonce": nonce}}))
+    env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
+           "PRISMABUILD_RESIDENCY_MAP": str(
+               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json"),
+           "PRISMABUILD_ACTION_NONCE": nonce,
+           "PRISMABUILD_ACTION_SCOPE": "unit-1"}
+    refused = reader_lease.injected_context(queue, env=env)
+    assert refused == {"ok": False, "refusal": "no-control-context"}
+    # The legacy inspector still reports what exists, unqualified.
+    seen = reader_lease.inspect_claim_context(queue, CONSUMER)
+    assert seen["ok"] is True
+    assert seen["inspection"]["nonce"] == ""  # type: ignore[index]
+    assert seen["inspection"]["scope_id"] == "unit-1"  # type: ignore[index]
+
+
+def test_split_namespace_full_lifecycle_direct_calls(fleet) -> None:
+    """Owner/material split through direct release/inherit/open, no egress."""
+
+    PRODUCER = "e" * 64
+    READER = "f" * 64
+    queue, stage = fleet
+    staged = stage / "model" / "ox.bin"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"\x52" * 2048)
+    root = queue.root / pool.RESIDENCY
+    key = residency_map.residency_map_key("/mnt/shared/model/ox.bin", 0)
+    _publish(root, stage, PRODUCER, MOVER, "/mnt/shared/model/ox.bin",
+             staged, 2048, "b" * 64)
+    got = reader_lease.acquire(
+        queue, consumer_action_key=PRODUCER,
+        attempt={"nonce": "n1", "scope_id": "s1"}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": 2048},
+        holder={"host": "test-host", "worker": "worker-7", "pid": 5},
+        acquire_token="split-direct-token",
+        covers=[{"mover_action_key": MOVER, "manifest_sha256": "a" * 64}],
+        expected={key: {"bytes": 2048, "sha256": "b" * 64}},
+        residency_root=root, owner_action_key=READER)
+    assert got["ok"], got
+    # Fork handoff without naming the owner dir: found by scan.
+    inherited = reader_lease.register_inherited_ref(
+        queue, got["pin_id"], got["ref_id"],
+        child_holder={"host": "test-host", "worker": "worker-7", "pid": 6},
+        child_token="split-child-token")
+    assert inherited["ok"], inherited
+    fd, _ = reader_lease.open_pinned(queue, got["pin"],
+                                     inherited["ref_id"], key,
+                                     residency_root=root)
+    try:
+        assert os.read(fd, 2048) == b"\x52" * 2048
+    finally:
+        os.close(fd)
+    # Direct release without naming the owner dir: exact ref dropped.
+    assert reader_lease.release(
+        queue, got["pin_id"], got["ref_id"]) is True
+    owners, tainted = reader_lease.live_for(
+        queue, {os.path.normpath(str(staged))})
+    assert not tainted and len(owners) == 1
+    assert reader_lease.release(
+        queue, got["pin_id"], inherited["ref_id"]) is True
+    owners, tainted = reader_lease.live_for(
+        queue, {os.path.normpath(str(staged))})
+    assert not tainted and owners == {}
+
+
+def test_launch_rpc_carries_identity_env_to_broker(tmp_path) -> None:
+    """resource_exec transmits the stamped env in the actual run RPC.
+
+    A fake broker socket captures the request: the nonce/scope/helper
+    vars are present with exact values, outer stale values are
+    overwritten (never leaked through), and the attempt token rides the
+    request identity only -- never the payload env.
+    """
+
+    import socket as _socket
+    import threading
+
+    import resource_exec
+
+    sock_path = tmp_path / "broker.sock"
+    captured: dict = {}
+    ready = threading.Event()
+
+    def serve() -> None:
+        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        server.bind(str(sock_path))
+        server.listen(1)
+        ready.set()
+        conn, _ = server.accept()
+        with conn:
+            data = bytearray()
+            while b"\n" not in data:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                data.extend(chunk)
+            captured.update(
+                json.loads(data.split(b"\n", 1)[0].decode()))
+            conn.sendall(b'{"ok": true, "returncode": 0}\n')
+        server.close()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert ready.wait(timeout=30)
+    key, nonce = "a" * 64, "b" * 32
+    argv = ["resource_exec", "--socket", str(sock_path),
+            "--action-key", key, "--nonce", nonce,
+            "--token", "c" * 64, "--", "/usr/bin/true"]
+    import sys as _sys
+    old_argv = _sys.argv
+    old_env = dict(os.environ)
+    os.environ["PRISMABUILD_ACTION_NONCE"] = "o" * 32
+    os.environ["PRISMABUILD_ACTION_SCOPE"] = "outer-scope"
+    try:
+        _sys.argv = argv
+        assert resource_exec.main() == 0
+    finally:
+        _sys.argv = old_argv
+        os.environ.clear()
+        os.environ.update(old_env)
+    thread.join(timeout=30)
+    assert captured["op"] == "run"
+    assert captured["nonce"] == nonce
+    env = captured["env"]
+    assert env["PRISMABUILD_ACTION_NONCE"] == nonce
+    assert env["PRISMABUILD_ACTION_SCOPE"].startswith("prismabuild-job")
+    assert env["PRISMABUILD_ACTION_SCOPE"].endswith(".slice")
+    assert "PRISMABUILD_READER_HELPER_ROOT" in env
+    assert not env["PRISMABUILD_READER_HELPER_ROOT"].endswith("/src")
+    assert "token" not in env and "TOKEN" not in " ".join(env)
+
+
+def test_identity_derivation_failure_clears_stale_outer(
+        tmp_path, monkeypatch) -> None:
+    """Derivation failure removes keys; stale outer values never survive."""
+
+    import sys as _sys
+
+    import resource_exec
+
+    outer = {"PRISMABUILD_ACTION_NONCE": "o" * 32,
+             "PRISMABUILD_ACTION_SCOPE": "outer-scope",
+             "PRISMABUILD_READER_HELPER_ROOT": "/outer/root",
+             "OTHER": "kept"}
+    monkeypatch.setitem(_sys.modules, "resource_broker", None)
+    monkeypatch.setitem(_sys.modules, "runtime_paths", None)
+    stamped = resource_exec.payload_identity_env(
+        outer, action_key="a" * 64, nonce="b" * 32)
+    assert "PRISMABUILD_ACTION_NONCE" not in stamped
+    assert "PRISMABUILD_ACTION_SCOPE" not in stamped
+    assert "PRISMABUILD_READER_HELPER_ROOT" not in stamped
+    assert stamped["OTHER"] == "kept"
+    assert outer["PRISMABUILD_ACTION_NONCE"] == "o" * 32

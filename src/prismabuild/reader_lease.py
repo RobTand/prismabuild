@@ -1859,12 +1859,22 @@ def release(queue, pin_id: str, ref_id: str, *,
 
     Under the pin's stage-root ownership lock with a fresh read inside it,
     the same guard as acquire and the egress: a release racing an acquire
-    or another release is ordered, never lost.
+    or another release is ordered, never lost.  The pin lives under its
+    OWNER directory (material namespace and owner split for produced
+    output); an explicit consumer that misses falls back to a full scan,
+    since pin and ref ids are globally unique and the exact named ref is
+    the only thing ever dropped.
     """
 
-    for path in _pin_candidates(
-            queue, pin_id, consumer_action_key=consumer_action_key,
-            residency_root=residency_root):
+    candidates = _pin_candidates(
+        queue, pin_id, consumer_action_key=consumer_action_key,
+        residency_root=residency_root)
+    if (consumer_action_key is not None
+            and not any(path.exists() for path in candidates)):
+        candidates = _pin_candidates(
+            queue, pin_id, consumer_action_key=None,
+            residency_root=residency_root)
+    for path in candidates:
         first = _read_pin(path)
         if first is None:
             continue
@@ -1954,13 +1964,20 @@ def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
     Every mutation runs under the pin's stage-root ownership lock with a
     fresh read inside it: a parent release racing this registration either
     lands first (this re-reads and appends) or last (it re-reads and keeps
-    this ref).  No lost update either way.
+    this ref).  No lost update either way.  Pins live under their OWNER
+    directory; an explicit consumer that misses falls back to a full scan.
     Returns ``{"ok": True, "ref_id": ...}`` or ``{"ok": False, ...}``.
     """
 
-    for path in _pin_candidates(
-            queue, pin_id, consumer_action_key=consumer_action_key,
-            residency_root=residency_root):
+    candidates = _pin_candidates(
+        queue, pin_id, consumer_action_key=consumer_action_key,
+        residency_root=residency_root)
+    if (consumer_action_key is not None
+            and not any(path.exists() for path in candidates)):
+        candidates = _pin_candidates(
+            queue, pin_id, consumer_action_key=None,
+            residency_root=residency_root)
+    for path in candidates:
         first = _read_pin(path)
         if first is None:
             continue
@@ -2119,7 +2136,6 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if not isinstance(claim, Mapping):
         return {"ok": False, "refusal": "no-claim-context"}
     control = claim.get("resource_scope")
-    intent = claim.get("resource_scope_intent")
     claim_nonce = ""
     claim_scope = ""
     if isinstance(control, Mapping):
@@ -2133,10 +2149,11 @@ def injected_context(queue=None, *, env=None, residency_root=None):
             if isinstance(unit, str) and unit:
                 claim_scope = unit
                 break
-    if not claim_nonce and isinstance(intent, Mapping):
-        candidate = intent.get("nonce")
-        if isinstance(candidate, str) and candidate:
-            claim_nonce = candidate
+    # No intent fallback in the strict path: BOTH fields must come from
+    # the complete control record.  An intent nonce synthesizing a
+    # missing control nonce would bind an attempt the broker never
+    # issued for this scope.  Legacy inspection without acquiring is
+    # inspect_claim_context.
     launch_nonce = source.get(ACTION_NONCE_ENV) or ""
     launch_scope = source.get(ACTION_SCOPE_ENV) or ""
     # Strict: a COMPLETE launch-bound pair plus a COMPLETE matching

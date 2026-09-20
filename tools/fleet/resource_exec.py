@@ -34,12 +34,12 @@ def payload_identity_env(env, *, action_key, nonce):
     Pure and unit-testable: copies ``env`` and assigns
     ``PRISMABUILD_ACTION_NONCE``/``PRISMABUILD_ACTION_SCOPE`` from the
     exact launch identity (never the broker token) plus
-    ``PRISMABUILD_READER_HELPER_ROOT`` from this proxy's sealed script
-    path (the immutable generation root, ``.../src``).  Assignment, not
-    setdefault: an outer attempt's variables must not leak into the
-    inner payload.  When the sibling broker module is not importable
-    the attempt pair stays unset (strict readers refuse) while the
-    helper root is still derived.
+    ``PRISMABUILD_READER_HELPER_ROOT`` as the immutable generation ROOT
+    (consumers append ``/src`` themselves; this variable never names it,
+    so no layer can double it).  Assignment, not setdefault: an outer
+    attempt's variables must not leak into the inner payload -- and when
+    a derivation fails its keys are REMOVED, never left holding stale
+    outer values while documented as unset.
     """
 
     payload_env = dict(env)
@@ -51,12 +51,15 @@ def payload_identity_env(env, *, action_key, nonce):
         payload_env['PRISMABUILD_ACTION_NONCE'] = nonce
         payload_env['PRISMABUILD_ACTION_SCOPE'] = broker_scope_id(
             action_key, nonce)
+    else:
+        payload_env.pop('PRISMABUILD_ACTION_NONCE', None)
+        payload_env.pop('PRISMABUILD_ACTION_SCOPE', None)
     try:
         from runtime_paths import generation_root as sealed_root
         payload_env['PRISMABUILD_READER_HELPER_ROOT'] = str(
-            sealed_root(__file__) / "src")
+            sealed_root(__file__))
     except (ImportError, OSError):
-        pass
+        payload_env.pop('PRISMABUILD_READER_HELPER_ROOT', None)
     return payload_env
 
 
