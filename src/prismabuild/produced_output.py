@@ -631,12 +631,12 @@ def _require_live_owner(queue, checked_instance: Mapping[str, object]
     The live CLAIMED row for the owner key must name the instance's exact
     broker attempt (nonce + scope); a live row for another attempt means
     this instance is superseded (a retry owns the key now), and no live
-    row means the owner is not running. Either way `commit_batch` -- the
-    mutation that consumes durable quota and moves tier tokens -- must
-    not run. A corrupt or unreadable live row is unknown state that
-    retains rather than authorizing. The duplicate-commit replay path
-    runs before this check (it mutates nothing); reservation-only
-    (`require_prewrite`) and cleanup paths (abort, retire, release,
+    row means the owner is not running. Either way `require_prewrite`
+    (whose SUCCESS authorizes the first payload write) and `commit_batch`
+    (which consumes durable quota and moves tier tokens) must not run. A
+    corrupt or unreadable live row is unknown state that retains rather
+    than authorizing. The duplicate-commit replay path runs before this
+    check (it mutates nothing); cleanup paths (abort, retire, release,
     reclaim) never call this: a stale reservation lands in its own
     superseded instance directory where it can neither consume quota
     nor move tokens, while freeing headroom must work after the owner
@@ -1267,6 +1267,14 @@ def require_prewrite(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
     planned_paths.sort()
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        # Write authorization lives here: a SUCCESS return is the producer's
+        # permission to start writing HDD bytes, so a stale, superseded, or
+        # absent owner refuses BEFORE the first payload byte -- not later at
+        # commit. The idempotent duplicate replay below re-checks the same
+        # gate: a read-only duplicate grants no permission for new writes.
+        gated = _require_live_owner(queue, checked_instance)
+        if gated is not None:
+            return gated
         try:
             sums = _outstanding_sums(queue.root, checked_instance, batch_id)
         except ProducedOutputError as exc:
@@ -1592,7 +1600,84 @@ def build_stage_manifest(batch: Mapping[str, object],
     }
 
 
+def _load_batch_record(queue_root: str | Path,
+                       checked_instance: Mapping[str, object],
+                       checked_template: Mapping[str, object],
+                       commitments_entry: Mapping[str, object],
+                       batch_id: str) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Load and fully validate one immutable batch record.
+
+    The single loader for retire/reclaim (and any future reader): bounded
+    intake, exact schema/id/instance binding, non-empty entries whose
+    per-class sizes and total match the record, and -- strongest --
+    every entry re-validated as a descriptor against the bound template
+    and instance with the canonical manifest digest recomputed over them
+    matching the seal. A missing, unreadable, or damaged record (entries
+    removed, replaced, or unbound) raises `ProducedOutputError`: unknown
+    or tampered state retains quota and refuses retirement, never
+    filters away to a vacuous proof.
+    """
+
+    attempt = checked_instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    batch_file = (Path(queue_root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                  / instance_namespace(checked_instance)
+                  / f"{batch_id}.json")
+    try:
+        with open(batch_file, "rb") as handle:
+            raw = handle.read(4 * 1024 * 1024 + 1)
+    except FileNotFoundError:
+        raise ProducedOutputError(
+            "unknown-retain: batch-record-missing") from None
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    if len(raw) > 4 * 1024 * 1024:
+        raise ProducedOutputError("unknown-retain: batch-record-oversize")
+    try:
+        filed = json.loads(raw.decode())
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: batch-record-unreadable: {exc}") from None
+    if not isinstance(filed, Mapping):
+        raise ProducedOutputError("unknown-retain: batch-record-missing")
+    if filed.get("schema") != BATCH_SCHEMA_V1:
+        raise ProducedOutputError("unknown-retain: batch-record-schema")
+    if (str(filed.get("batch_id") or "") != batch_id
+            or str(filed.get("template_id") or "")
+            != str(checked_template["template_id"])
+            or str(filed.get("template_sha256") or "")
+            != str(checked_instance["template_sha256"])
+            or str(filed.get("owner_action_key") or "")
+            != str(checked_instance["owner_action_key"])
+            or dict(filed.get("owner_attempt") or {}) != dict(attempt)
+            or str(filed.get("manifest_digest") or "")
+            != str(commitments_entry.get("manifest_digest") or "")):
+        raise ProducedOutputError(
+            "unknown-retain: batch-record-binding-mismatch")
+    entries = filed.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ProducedOutputError("unknown-retain: batch-record-no-entries")
+    sealed = [validate_descriptor(dict(entry), checked_template,
+                                  checked_instance)
+              for entry in entries]
+    if int(filed.get("entry_count", -1)) != len(sealed):
+        raise ProducedOutputError("unknown-retain: batch-record-count")
+    classes = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for desc in sealed:
+        classes[str(desc["artifact_class"])] += int(desc["bytes"])
+    for cls in classes:
+        if int(classes[cls]) != int(
+                dict(commitments_entry.get("class_bytes", {})).get(cls, -1)):
+            raise ProducedOutputError("unknown-retain: batch-record-classes")
+    if sum(classes.values()) != int(filed.get("total_bytes", -1)):
+        raise ProducedOutputError("unknown-retain: batch-record-total")
+    if output_manifest_sha256(sealed) != str(filed.get("manifest_digest")):
+        raise ProducedOutputError("unknown-retain: batch-record-manifest")
+    return dict(filed), sealed
+
+
 def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
+                               checked_template: Mapping[str, object],
                                batch_id: str, receipt: Mapping[str, object],
                                staged_paths: list[str]) -> None:
     """File stage retirement under the caller's ownership lock.
@@ -1616,29 +1701,15 @@ def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
     if entry.get("retired"):
         return
     # Owner/attempt/manifest proof comes from the filed immutable batch
-    # record (exact sealed descriptors), cross-checked against both the
-    # commitments entry and this instance: neither a caller dict nor a
-    # bare commitments flag can retire another attempt's batch.
-    batch_file = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
-                  / instance_namespace(checked_instance)
-                  / f"{batch_id}.json")
+    # record through the single loader: exact schema/id/binding plus
+    # re-validated entries whose canonical digest matches the seal.
+    # Neither a caller dict nor a bare commitments flag can retire
+    # another attempt's batch or a damaged record.
     try:
-        with open(batch_file, "rb") as handle:
-            filed = json.loads(handle.read(4 * 1024 * 1024 + 1).decode())
-    except FileNotFoundError:
-        raise ProducedOutputError(
-            "unknown-retain: batch-record-missing") from None
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    if not isinstance(filed, Mapping):
-        raise ProducedOutputError("unknown-retain: batch-record-missing")
-    if (str(filed.get("owner_action_key") or "")
-            != str(checked_instance["owner_action_key"])
-            or dict(filed.get("owner_attempt") or {}) != dict(
-                checked_instance["owner_attempt"])
-            or str(filed.get("manifest_digest") or "")
-            != str(entry.get("manifest_digest") or "")):
-        raise ProducedOutputError("retire owner/attempt/manifest mismatch")
+        _load_batch_record(queue.root, checked_instance, checked_template,
+                            entry, batch_id)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(str(exc)) from None
     if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
         raise ProducedOutputError("retire needs a complete egress receipt")
     if receipt.get("errors"):
@@ -1699,7 +1770,9 @@ def retire_batch(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": "bad-batch-namespace"}
         # Capture the staged paths the egress is about to vouch while the
         # fragments still exist; after the delete only this record names
-        # them for later live-path attribution.
+        # them for later live-path attribution. A fragment read that
+        # fails is unknown attribution, never an empty set: retirement
+        # refuses rather than recording known-empty paths.
         staged_paths: list[str] = []
         try:
             from prismabuild import residency_map as map_mod
@@ -1709,13 +1782,17 @@ def retire_batch(queue, instance: Mapping[str, object],
             if fragments:
                 composed = map_mod.compose(fragments)
                 entries = composed.get("entries")
-                if isinstance(entries, Mapping):
-                    for record in entries.values():
-                        if isinstance(record, Mapping) and record.get("stage_path"):
-                            staged_paths.append(os.path.normpath(
-                                str(record["stage_path"])))
-        except Exception:
-            staged_paths = []
+                if not isinstance(entries, Mapping):
+                    return {"ok": False,
+                            "refusal": "unknown-retain: fragment-entries"}
+                for record in entries.values():
+                    if isinstance(record, Mapping) and record.get("stage_path"):
+                        staged_paths.append(os.path.normpath(
+                            str(record["stage_path"])))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         receipt = stage_release.evict(
             queue, mover, consumer_action_key=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
@@ -1724,40 +1801,12 @@ def retire_batch(queue, instance: Mapping[str, object],
                     "receipt": receipt}
         try:
             _mark_batch_retired_locked(
-                queue, checked_instance, batch_id, receipt, staged_paths)
+                queue, checked_instance, checked_template, batch_id,
+                receipt, staged_paths)
         except ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     return {"ok": True, "batch_id": batch_id, "receipt": receipt,
             "staged_paths": sorted(set(staged_paths))}
-
-
-def mark_batch_retired(queue, instance: Mapping[str, object],
-                       template: Mapping[str, object], batch_id: str, *,
-                       receipt: Mapping[str, object]) -> dict[str, object]:
-    """Record stage retirement for a caller-run egress receipt.
-
-    Same proof as `retire_batch`'s internal filing, for callers that drove
-    `stage_release.evict` themselves: bound contract, ownership lock, exact
-    batch/manifest/attempt match, complete error-free receipt naming this
-    mover and namespace. Returns a refusal dict instead of raising, so a
-    bare call without proof refuses rather than retiring an active batch.
-    """
-
-    try:
-        _require_bound_contract(template, instance)
-        checked_instance = validate_instance(instance)
-    except ProducedOutputError as exc:
-        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-    _name(batch_id, where="batch_id")
-    if not isinstance(receipt, Mapping):
-        return {"ok": False, "refusal": "retire-needs-receipt"}
-    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        try:
-            _mark_batch_retired_locked(
-                queue, checked_instance, batch_id, receipt, [])
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-    return {"ok": True, "batch_id": batch_id}
 
 
 def reclaim_origin(queue, instance: Mapping[str, object],
@@ -1793,26 +1842,17 @@ def reclaim_origin(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": "unknown-batch"}
         if entry.get("origin_reclaimed"):
             return {"ok": True, "batch_id": batch_id, "reclaimed": False}
-        # Origin paths come from the filed immutable batch record (exact
-        # sealed descriptors), never from caller arguments.
-        batch_file = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
-                      / instance_namespace(checked_instance)
-                      / f"{batch_id}.json")
+        # Origin paths come from the single batch-record loader (exact
+        # sealed descriptors, binding/entries/total re-validated), never
+        # from caller arguments: a damaged record retains instead of
+        # proving a vacuous absence.
         try:
-            with open(batch_file, "rb") as handle:
-                filed = json.loads(handle.read(4 * 1024 * 1024 + 1).decode())
-        except FileNotFoundError:
-            return {"ok": False, "refusal": "unknown-retain: batch-record-missing"}
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        if not isinstance(filed, Mapping):
-            return {"ok": False, "refusal": "unknown-retain: batch-record-missing"}
-        if (str(filed.get("manifest_digest") or "")
-                != str(entry.get("manifest_digest") or "")):
-            return {"ok": False, "refusal": "unknown-retain: batch-record-mismatch"}
-        for desc_path in sorted(str(e.get("path") or "") for e in
-                                (filed.get("entries") or [])
-                                if isinstance(e, Mapping)):
+            _, sealed = _load_batch_record(
+                queue.root, checked_instance, checked_template,
+                entry, batch_id)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        for desc_path in sorted(str(desc["path"]) for desc in sealed):
             if not desc_path:
                 return {"ok": False, "refusal": "unknown-retain: bad-entry"}
             try:
@@ -2542,7 +2582,6 @@ __all__ = [
     "commit_batch",
     "build_stage_manifest",
     "retire_batch",
-    "mark_batch_retired",
     "reclaim_origin",
     "safe_release_instance",
     "output_scope_tick",

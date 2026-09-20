@@ -350,6 +350,35 @@ def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[
     return layout
 
 
+def _is_produced_owner_hold(item: Mapping) -> bool:
+    """Whether a tier-demand claim is a verified producer reservation.
+
+    A produced-output producer holds its declared working-window tier
+    demand while live: the queue item carries the validated `produced_output`
+    ref (schema + template id + digest) projected by `PoolQueue.publish`
+    from the sealed template, and its sealed command is ordinary work,
+    never a movement range. Such a hold stages nothing itself, so the
+    claimed-copy attribution skips it; without the ref (or with a
+    malformed one) the row stays unknown and taints as before.
+    """
+
+    ref = item.get("produced_output")
+    if not isinstance(ref, Mapping):
+        return False
+    try:
+        from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
+    except ImportError:
+        return False
+    if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
+        return False
+    template_id = ref.get("template_id")
+    digest = ref.get("template_sha256")
+    return (isinstance(template_id, str) and bool(template_id)
+            and "/" not in template_id
+            and isinstance(digest, str) and len(digest) == 64
+            and all(c in "0123456789abcdef" for c in digest))
+
+
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
                    cas_root: str | Path | None = None) -> tuple[set[str], list[str]]:
     """Staged paths a claimed copy may be writing, by sealed range.
@@ -432,6 +461,18 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
             # Identified as a mover by its tier demand, but seals no argv:
             # corrupt, not a consumer -- consumers never reach this branch.
             tainted.append(f"{key[:12]}: mover seals no command")
+            continue
+        if "--range-start-bytes" not in command:
+            # A verified produced-output producer reservation, not a copy:
+            # it holds the declared working-window tier demand under the
+            # pool's admission (item `produced_output` ref) while its own
+            # command seals no movement range. Skipped exactly here --
+            # unknown rows (no ref, malformed ref, or a range that cannot
+            # be determined) still taint below, and an active copy's
+            # protection is untouched.
+            if _is_produced_owner_hold(item):
+                continue
+            tainted.append(f"{key[:12]}: mover seals no range")
             continue
         try:
             start = command[command.index("--range-start-bytes") + 1]
