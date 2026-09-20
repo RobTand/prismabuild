@@ -20,6 +20,14 @@ until a window cannot be placed without the room --- the ``pressure`` argument
 to :func:`sweep`.  Both are the same rule stated twice: an orphan is evicted
 when the tier needs its tokens, never because a clock said so.
 
+**A pending copy handoff defers the same way (#768).**  While a live ram
+promotion's sealed claim names a source leg, the egress keeps that leg's file,
+the stage mover's fragment, its material sidecar and its full occupancy charge,
+and retries after the claim ends.  The promotion's ram fragment names another
+tier and path and can never prove the SSD incarnation it read, so retiring the
+source early would leave a surviving file nothing can prove and free capacity
+its bytes still occupy.
+
 **Delete, then release, then drop the fragment.**  Each order is wrong in one
 direction and this one is wrong in none that matters: a crash after the deletes
 and before the release leaves tokens held for bytes that are gone, which costs
@@ -743,6 +751,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
+    deferred_handoffs: list[str] = []
     auto_reclaimed: list[str] = []
     auto_retained: dict[str, str] = {}
     retiring_written = False
@@ -856,11 +865,18 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             bytes_shared += int(entry["bytes"])
             continue
         if os.path.normpath(resolved) in source_paths:
-            # A live promotion is reading this source leg into RAM: the file
-            # stays, this mover's own vouching goes, exactly like a shared
-            # skip.  The promotion's ram fragment vouches once it lands.
-            shared += 1
-            shared_with.append("promotion-handoff")
+            # A live promotion is reading this source leg into RAM: a pending
+            # copy handoff, deferred exactly like a live pin.  The file, this
+            # mover's fragment, its material sidecar and its full occupancy
+            # charge all stay until the handoff ends -- the promotion's ram
+            # fragment names another tier and path and can never prove this
+            # SSD incarnation, so dropping the same-path proof here is what
+            # left an unprovable surviving file behind.  The next sweep
+            # deletes after the claim is gone, or decharges against a genuine
+            # same-path accounted co-owner; the retiring mark written below
+            # closes the material generation to new acquires.
+            deferred += 1
+            deferred_handoffs.append("promotion-handoff")
             continue
         pinned = pins.get(norm, [])
         if pinned:
@@ -990,6 +1006,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
         "entries_deferred": deferred,
         "live_pins": sorted(set(live_pins)),
+        "deferred_handoffs": sorted(set(deferred_handoffs)),
         "auto_reclaimed": sorted(set(auto_reclaimed)),
         "auto_retained": dict(sorted(auto_retained.items())),
         "retiring": retiring_written,
@@ -1003,7 +1020,9 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # the next sweep retries.  A shared skip is not an error, but its
         # tokens no longer come back as free either: the bytes live on
         # under another owner, so the duplicate ownership is decharged
-        # (#733) and only this mover's own vouching is dropped.
+        # (#733) and only this mover's own vouching is dropped.  A deferred
+        # handoff keeps this mover's own vouching too: the promotion's ram
+        # fragment cannot prove the SSD incarnation it read (#768).
         "complete": not errors and not deferred,
         "errors": errors,
         "host": socket.gethostname(),
