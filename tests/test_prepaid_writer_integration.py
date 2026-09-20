@@ -135,17 +135,24 @@ def _bind(q: pool.PoolQueue, template: dict, owner: str,
 
 
 def _descriptors(tmp_path: Path, template: dict, inst: dict, tag: str,
-                  payload: bytes) -> list[dict]:
+                  payload: bytes, *, digest_mode: str = "supplied"
+                  ) -> list[dict]:
     origin = Path(template["output_prefix"])
     origin.mkdir(parents=True, exist_ok=True)
     path = origin / f"{tag}.bin"
     path.write_bytes(payload)
     slot = "s0" if tag.startswith("p") else "s1"
     cls = "payload" if slot == "s0" else "checkpoint"
+    if digest_mode == "null":
+        # The existing DEV data-manifest convention: no payload digest; the
+        # identity is path+size+order and the mover's material evidence.
+        sha256 = None
+    else:
+        sha256 = hashlib.sha256(payload).hexdigest()
     return [po.validate_descriptor({
         "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": slot,
         "artifact_class": cls, "path": str(path),
-        "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload), "sha256": sha256,
         "producer_generation": po.mint_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
@@ -561,3 +568,125 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
         instance=inst, template=template, batch_id="b3", descriptors=descs3)
     assert third.get("ok") is False
     assert third.get("refusal") == "tier-reservation-unavailable", third
+
+
+def test_descriptor_digest_rules(tmp_path: Path) -> None:
+    """Descriptor digests: hex64 or the DEV null; never a coerced string."""
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    owner = _hexkey("digest-owner")
+    inst = _bind(q, template, owner)
+
+    null = _descriptors(tmp_path, template, inst, "p9", b"z" * 64,
+                        digest_mode="null")
+    assert null[0]["sha256"] is None  # stays JSON null, never "None"
+
+    supplied = _descriptors(tmp_path, template, inst, "p8", b"y" * 48)
+    assert len(supplied[0]["sha256"]) == 64
+
+    origin = Path(template["output_prefix"])
+    with pytest.raises(po.ProducedOutputError):
+        po.validate_descriptor({
+            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+            "artifact_class": "payload",
+            "path": str(origin / "bad.bin"),
+            "bytes": 4, "sha256": "None",
+            "producer_generation": po.mint_generation(),
+            "owner_action_key": inst["owner_action_key"],
+            "owner_attempt": dict(inst["owner_attempt"]),
+        }, template, inst)
+    with pytest.raises(po.ProducedOutputError):
+        po.validate_descriptor({
+            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+            "artifact_class": "payload",
+            "path": str(origin / "bad.bin"),
+            "bytes": 4, "sha256": "not-hex",
+            "producer_generation": po.mint_generation(),
+            "owner_action_key": inst["owner_action_key"],
+            "owner_attempt": dict(inst["owner_attempt"]),
+        }, template, inst)
+
+
+def test_dev_null_digest_first_and_second_batch_full_lifecycle(
+        tmp_path: Path) -> None:
+    """DEV convention end to end: sha256: null through the real path.
+
+    The PQ caller must not hash every tensor output: descriptors carry the
+    existing DEV null digest, and the whole sequence still works -- sealed
+    CAS producer+mover requests, funded claim with free exhausted, the
+    sealed argv copying REAL bytes (size-verified, digest-skipped), real
+    egress retirement and origin reclaim, two sequential batches, capacity
+    back. Identity is path+size+order (the manifest digest covers the
+    descriptor list) plus the mover's material evidence; nothing here is
+    a certified digest and none is claimed.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    results = []
+    for tag, batch_id, payload in (("n1", "b1", b"a" * 640),
+                                   ("n2", "b2", b"b" * 768)):
+        descs = _descriptors(tmp_path, template, inst, tag, payload,
+                             digest_mode="null")
+        assert descs[0]["sha256"] is None
+        _prewrite(q, inst, template, batch_id, TIER, descs)
+        res = po.publish_prepaid_batch(
+            q, inst, template, descs, batch_id=batch_id, tier=TIER,
+            cas_root=cas_root, producer_action_key=owner,
+            command_extra=["--unpaced"])
+        assert res.get("ok") is True, res
+        mover = str(res["mover_key"])
+        # The null digest survives every transition as JSON null.
+        rec = pool._read_json(
+            Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
+            / po.instance_namespace(inst) / f"{batch_id}.json")
+        assert rec["entries"][0]["sha256"] is None
+        assert res["manifest_digest"] == po.output_manifest_sha256(descs)
+
+        # Exhaust free credits once: only prepaid cover admits the movers.
+        free = ledger.available().get(KIND, 0)
+        if free:
+            assert ledger.acquire(_hexkey(f"null-squatter-{batch_id}"),
+                                  {KIND: free}) is True
+        claimed = q.claim(owner=f"w-null-{tag}")
+        assert claimed is not None and claimed["action_key"] == mover
+        funding = q.read_output_funding(mover, TIER)
+        assert funding is not None and funding["state"] == "transferring"
+
+        # The REAL mover: sealed argv execution copies and size-verifies;
+        # the null declared digest skips equality, the computed digest
+        # still lands in the receipt and fragment.
+        receipt = _execute_mover(q, cas_root, mover,
+                                 tmp_path / "mover-checkout")
+        assert receipt["complete"] is True, receipt
+        assert receipt["bytes_staged"] == len(payload)
+        staged = Path(stage_root) / f"{tag}.bin"
+        assert staged.read_bytes() == payload
+        q.finish(mover, status="executed")
+        retired = po.retire_batch(q, inst, template, batch_id,
+                                  stage_root=str(stage_root),
+                                  residency_root=po.output_fragment_root(
+                                      q.root / pool.RESIDENCY))
+        assert retired.get("ok") is True, json.dumps(retired, default=str)
+        results.append(res)
+
+    # Disjoint prepaid names across the two batches.
+    first = q.read_output_funding(str(results[0]["mover_key"]), TIER)
+    second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
+    assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
+
+    # Reclaim after producer-side disposal; the window returns.
+    for tag in ("n1", "n2"):
+        (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
+    for batch_id in ("b1", "b2"):
+        assert po.reclaim_origin(q, inst, template,
+                                 batch_id=batch_id)["ok"] is True
+    q.finish(owner, status="executed")
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
