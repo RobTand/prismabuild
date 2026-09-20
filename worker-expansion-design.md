@@ -611,3 +611,34 @@ Exactness rules applied after review (all in this lane):
   `docs/heterogeneous_cohort_design_2026-09-19.md`,
   `docs/staged_read_contract_2026-09-20.md` + ledger + acceptance template.
 
+
+## R8 addendum (2026-09-20): dirty-path reachability + full lineage
+
+Root R8 follow-up (dirty paths): the open-gate reconciler was unreachable
+under a closed drain (`continue` before the hook), `resume_owed` skipped
+every row with any READY occupant (exact/foreign adoption branches
+unreachable; JOIN cleared the gate on `owed==empty`), and
+`lineage_status` matched only `withdrawn_unix` + `resigned_by`.
+
+- Drain-path reconciliation is authoritative: `worker_loop` settles owed
+  handoffs inside the existing drain branch (after the generation fence,
+  no claim) via `reconcile_membership`; the open-gate hook remains for
+  non-draining crash resume. Proven by a real closed-gate `--once` poll
+  test, not a helper direct call.
+- `resume_owed` returns exact successors (plan `None`, `successor_exact`
+  True, JOIN treats as settled only with a withdrawn terminal) and
+  foreign/unknown occupants (plan `None`, unsettled, fence retained);
+  only no-occupant rows carry a `plan_requeue` plan. Crash-resume plans
+  restore `attempt_history_missing_before` from its `..._withdrawal`
+  aside so chained resign requeues (B resigning what A requeued,
+  attempts>0) keep budget — A→B→C proven without counter resets.
+- `lineage_status` exactness reuses the queue's own
+  `_preemption_prefix_valid` chain check plus typed key / parent
+  generation / timestamp / owner linkage / counter+1 / same budget /
+  missing-prefix checks. Same owner + same timestamp with altered
+  attempts, `max_attempts`, or parent refuses (regression tested); no
+  duplicate broad validator.
+- JOIN refuses on unsettled (foreign/unknown/waiting) via
+  `_unsettled_owed_keys` (exact + withdrawn terminal discharges);
+  `reconcile_membership` adopts exact, retains foreign, publishes
+  matured no-occupant rows, and re-checks lineage after a publish race.

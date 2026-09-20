@@ -828,6 +828,41 @@ def _broker_mutate(
     return broker_call_func(payload, socket_path, broker_call)
 
 
+def _unsettled_owed_keys(queue: pool_module.PoolQueue,
+                         owed: list[dict[str, Any]]) -> list[str]:
+    """Owed rows that still block a gate open: everything but discharged exact.
+
+    An exact successor discharges only with its complete typed lineage
+    (``lineage_status``) AND the original attempt's exact withdrawn
+    terminal. Foreign/unknown occupants, waiting holders (no terminal
+    yet), and unpublishable rows all stay unsettled — JOIN keeps the
+    fence, resign keeps waiting. Never raises: unreadable lineage reads
+    as unsettled (fail-closed).
+    """
+    unsettled: list[str] = []
+    for row in owed:
+        try:
+            action_key = str(row.get("action_key") or "")
+            snapshot = {"action_key": action_key, **row.get("snapshot", {})}
+            revive_by = str(row.get("revive_by") or "")
+            status = lineage_status(queue, snapshot, revive_by)
+        except Exception:
+            try:
+                unsettled.append(str(row.get("action_key", ""))[:12])
+            except (ValueError, TypeError):
+                pass
+            continue
+        terminal = status.get("terminal")
+        if status.get("successor_exact") and terminal is not None and (
+                terminal[0] == "withdrawn"):
+            continue  # discharged: exact lineage + withdrawn terminal
+        try:
+            unsettled.append(str(row["action_key"])[:12])
+        except (KeyError, ValueError, TypeError):
+            continue
+    return sorted(unsettled)
+
+
 def join(
     host: str | None = None,
     *,
@@ -873,8 +908,31 @@ def join(
     gate_path, _ = gate_paths(gate)
     gate_now = read_gate(gate_path)
     if gate_now is None:
+        unsettled: list[str] = []
+        if queue_root is not None:
+            try:
+                queue_here = pool_module.PoolQueue(Path(queue_root))
+                owed, _ = resume_owed(queue_here, host, owner)
+                unsettled = _unsettled_owed_keys(queue_here, owed)
+            except (OSError, ValueError):
+                unsettled = []
         return {"status": "already_joined", "host": host, "owner": owner,
-                "checks": checks}
+                "checks": checks,
+                "unsettled_membership_rows": unsettled}
+    if queue_root is not None:
+        queue_here = pool_module.PoolQueue(Path(queue_root))
+        owed_here, skipped_here = resume_owed(queue_here, host, owner)
+        unsettled_here = _unsettled_owed_keys(queue_here, owed_here)
+        if unsettled_here:
+            # Ending this drain would clear unsettled handoff obligations:
+            # resign (adopt and settle) first, then join. Exact successors
+            # with withdrawn terminals discharge; foreign/unknown and
+            # waiting holders stay unsettled.
+            return {"status": "refused", "phase": "unsettled-handoff",
+                    "host": host, "owner": owner,
+                    "reason": "membership drain holds unsettled handoffs: "
+                              + ", ".join(unsettled_here),
+                    "checks": checks}
     try:
         ended = _broker_mutate("maintenance_end", owner, reason or "join",
                                gate_epoch(gate_now), socket_path, broker_call)
@@ -931,7 +989,31 @@ def resign(
     try:
         began = _broker_mutate("maintenance_begin", owner, reason,
                                gate_epoch(gate_before), socket_path, broker_call)
-    except (OSError, ValueError, PermissionError, RuntimeError) as exc:
+    except PermissionError as exc:
+        # A previous resign's drain may still be in force under a dead
+        # incarnation (this process is its restart, or another CLI died
+        # here). Take it over through the broker mutex — exact epoch,
+        # dead membership hold, live self — keeping the gate closed.
+        # Anything else (upgrade/operator holds, live owners, stale
+        # epochs) stays refused by the broker itself.
+        if "held by" not in str(exc):
+            return {"status": "refused", "phase": "maintenance_begin",
+                    "host": host, "owner": owner,
+                    "reason": f"PermissionError: {exc}"}
+        gate_now = read_gate(gate_path)
+        if gate_now is None:
+            return {"status": "refused", "phase": "maintenance_begin",
+                    "host": host, "owner": owner,
+                    "reason": "gate opened under a refused begin; re-read and retry"}
+        try:
+            took = _broker_mutate("maintenance_takeover", owner, reason,
+                                  gate_epoch(gate_now), socket_path, broker_call)
+        except (OSError, ValueError, PermissionError, RuntimeError) as exc2:
+            return {"status": "refused", "phase": "maintenance_takeover",
+                    "host": host, "owner": owner,
+                    "reason": f"{type(exc2).__name__}: {exc2}"}
+        began = took
+    except (OSError, ValueError, RuntimeError) as exc:
         return {"status": "refused", "phase": "maintenance_begin", "host": host,
                 "owner": owner, "reason": f"{type(exc).__name__}: {exc}"}
     # The epoch is the gate file the broker just synced, never a reply field:
@@ -1083,47 +1165,27 @@ def resign(
                     snap["action_key"][:12] for snap in proof
                     if isinstance(snap.get("action_key"), str)
                     and terminal_of(queue, snap) is None)
-                # Settle planned successors: only after the original
-                # attempt's exact terminal, and only when no ready occupant
-                # (a holder that self-requeued is adopted by linkage check).
-                for action_key, entry in handled.items():
-                    plan = entry.get("plan")
-                    if plan is None or entry.get("published"):
-                        continue
-                    snap = next((s for s in owned
-                                 if s["action_key"] == action_key), None)
-                    probe = snap if snap is not None else {
-                        "action_key": action_key, **entry.get("snapshot", {})}
-                    terminal = terminal_of(queue, probe)
-                    if terminal is None or terminal[0] != "withdrawn":
-                        continue
-                    try:
-                        ready = json.loads(queue.item_path(
-                            pool_module.READY, action_key).read_text())
-                    except (OSError, ValueError):
-                        ready = None
-                    if isinstance(ready, dict):
-                        prior = entry["snapshot"].get("attempts")
-                        if (ready.get("action_key") == action_key
-                                and ready.get("attempts") == (
-                                    prior + 1 if isinstance(prior, int) else None)):
-                            entry["published"] = "adopted-holder-successor"
-                            continue
+                # Settle through the shared reconciler (the same path the
+                # worker loops drive every poll): publish matured successors,
+                # adopt exact ones, preserve foreign rows. Results merge into
+                # this run's handled map; failures retain with reasons.
+                reconciliation = reconcile_membership(queue, host, owner)
+                for published_key in reconciliation["published"]:
+                    for action_key, entry in handled.items():
+                        if action_key[:12] == published_key:
+                            entry["published"] = "resign-successor"
+                for adopted_key in reconciliation["adopted"]:
+                    for action_key, entry in handled.items():
+                        if action_key[:12] == adopted_key:
+                            entry["published"] = "adopted-exact-successor"
+                for retained in reconciliation["retained"]:
+                    if isinstance(retained, dict):
                         armed = False
-                        pending_note = (f"unexpected ready occupant for "
-                                        f"{action_key[:12]}; stopping")
+                        pending_note = (
+                            f"successor unsettled for "
+                            f"{retained.get('action_key', '?')}: "
+                            f"{retained.get('reason')}")
                         break
-                    try:
-                        queue.publish(**plan["arguments"],
-                                      preempted_claim=plan["snapshot"],
-                                      handoff_by=entry.get("revive_by", owner))
-                    except (OSError, ValueError,
-                            pool_module.PoolContractError) as exc:
-                        armed = False
-                        pending_note = (f"successor publish failed for "
-                                        f"{action_key[:12]}: {exc}")
-                        break
-                    entry["published"] = "resign-successor"
                 if pending_note is None:
                     if census_error is not None:
                         armed = False
@@ -1207,6 +1269,134 @@ def _snap_id(snap: dict[str, Any]) -> dict[str, Any]:
     return ids
 
 
+def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
+                     revive_by: str) -> dict[str, Any]:
+    """One typed exact reading of a handoff generation.
+
+    ``snapshot`` carries the attempt identity (action_key, published_unix,
+    attempts, claimed_by, claimed_unix); ``revive_by`` is the exact owner
+    name allowed to revive it (the decision's ``withdrawn_by``). Returns:
+
+    - ``terminal``: (kind, record) for the exact attempt, else None.
+    - ``decision``: the covering withdrawal decision (live file preferred,
+      else the retired immutable one), else None.
+    - ``successor``: the ready occupant row, if any.
+    - ``successor_exact``: the occupant is OUR successor — same key,
+      parent generation (``supersedes_withdrawal.published_unix`` equals
+      the decision's), same decision timestamp, same owner linkage
+      (``resigned_by`` and link ``withdrawn_by`` equal ``revive_by``),
+      counter exactly one more, same budget (``max_attempts``,
+      ``retry_safe``), missing-prefix consistency, AND the queue's own
+      ``_preemption_prefix_valid`` chain check passes. Same key and
+      counter alone never suffice: a different generation or a foreign
+      publication with coincident counters is preserved, never adopted;
+      same owner/timestamp with altered attempts, budget, or parent
+      refuses via the field checks and the pool validator.
+    - ``foreign``: a ready occupant that is not ours. Never claimed to
+      discharge this handoff; the row is preserved and diagnosed.
+
+    Malformed records, missing proof, and unreadable paths all read as
+    unknown/absent — never as a match.
+    """
+    key = str(snapshot.get("action_key") or "")
+    out: dict[str, Any] = {"terminal": terminal_of(queue, snapshot)
+                           if isinstance(key, str) and len(key) == 64 else None,
+                           "decision": None, "decision_live": False,
+                           "successor": None, "successor_exact": False,
+                           "foreign": False}
+    if not key:
+        return out
+    try:
+        live = json.loads(queue.item_path(
+            pool_module.WITHDRAWN, key).read_text())
+    except (OSError, ValueError):
+        live = None
+    decision = None
+    if (isinstance(live, dict)
+            and live.get("published_unix") == snapshot.get("published_unix")):
+        decision, out["decision_live"] = live, True
+    else:
+        try:
+            candidates = queue.withdrawal_decisions(key)
+        except (OSError, ValueError, pool_module.PoolContractError):
+            candidates = []
+        for _, candidate in candidates:
+            if (isinstance(candidate, dict)
+                    and candidate.get("published_unix") == snapshot.get(
+                        "published_unix")):
+                decision = candidate
+                break
+    out["decision"] = decision
+    try:
+        ready = json.loads(queue.item_path(
+            pool_module.READY, key).read_text())
+    except (OSError, ValueError):
+        ready = None
+    if not isinstance(ready, dict):
+        return out
+    out["successor"] = ready
+    link = ready.get("supersedes_withdrawal")
+    # Exact-successor discharge reuses the queue's own lineage owner:
+    # field equality here is only the fast prefilter; the authoritative
+    # chain check is ``_preemption_prefix_valid`` below, which verifies
+    # every parent generation against its immutable withdrawal decision
+    # (attempts, budget, retry permission, missing-prefix linkage, and
+    # the membership-shaped withdrawn_by). Same owner and same decision
+    # timestamp alone never suffice: altered attempts, max_attempts, or
+    # parent generation must refuse, and only the pool's validator knows
+    # the full parent chain (including chained resign requeues).
+    exact = False
+    if isinstance(decision, dict) and isinstance(link, dict):
+        ready_key = ready.get("action_key")
+        dec_pub = decision.get("published_unix")
+        link_pub = link.get("published_unix")
+        dec_wd = decision.get("withdrawn_unix")
+        link_wd = link.get("withdrawn_unix")
+        dec_by = decision.get("withdrawn_by")
+        link_by = link.get("withdrawn_by")
+        ready_resigned = ready.get("resigned_by")
+        dec_attempts = decision.get("attempts")
+        ready_attempts = ready.get("attempts")
+        dec_limit = decision.get("max_attempts")
+        ready_limit = ready.get("max_attempts")
+        dec_retry = decision.get("retry_safe")
+        ready_retry = ready.get("retry_safe")
+        ready_missing = ready.get("attempt_history_missing_before")
+        if (isinstance(ready_key, str) and ready_key == key
+                and type(dec_pub) in (int, float)
+                and not isinstance(dec_pub, bool)
+                and link_pub == dec_pub
+                and type(dec_wd) in (int, float)
+                and not isinstance(dec_wd, bool)
+                and link_wd == dec_wd
+                and isinstance(dec_by, str) and dec_by == revive_by
+                and link_by == revive_by
+                and isinstance(ready_resigned, str)
+                and ready_resigned == revive_by
+                and type(dec_attempts) is int and dec_attempts >= 0
+                and type(ready_attempts) is int
+                and ready_attempts == dec_attempts + 1
+                and type(dec_limit) is int and type(ready_limit) is int
+                and ready_limit == dec_limit
+                and ready_attempts < ready_limit
+                and dec_retry is True and ready_retry is True
+                and not ready.get("attempt_history")
+                and type(ready_missing) is int
+                and ready_missing == ready_attempts):
+            try:
+                exact = bool(queue._preemption_prefix_valid(
+                    ready, ready_attempts, ready_limit))
+            except (OSError, ValueError,
+                    pool_module.PoolContractError, AttributeError,
+                    TypeError, KeyError):
+                exact = False
+    if exact:
+        out["successor_exact"] = True
+    else:
+        out["foreign"] = True
+    return out
+
+
 def _membership_owner_parts(owner: str) -> tuple[str, int, str] | None:
     """Parse a membership supervisor owner, else None (never a takeover key)."""
     try:
@@ -1236,15 +1426,22 @@ def _owner_gone(host: str, owner: str) -> tuple[bool, str]:
     old_host, pid, starttime = parts
     if old_host != host:
         return False, "another host's owner"
+    if starttime == "unknown":
+        # Minted without proof; can never prove gone.
+        return False, "owner start time unknown"
     try:
         line = Path(f"/proc/{pid}/stat").read_text()
     except FileNotFoundError:
         return True, "pid absent"
     except OSError as exc:
+        # Permission or read errors prove nothing; unknown stays refused.
         return False, f"pid unreadable: {exc}"
     _, _, rest = line.rpartition(")")
     fields = rest.split()
     current = fields[19] if len(fields) > 19 else None
+    if current is None:
+        # Malformed stat: missing parsed proof is unknown, never reuse.
+        return False, "start time unreadable"
     if current != starttime:
         return True, "pid reused"
     return False, "supervisor still live"
@@ -1258,12 +1455,26 @@ def resume_owed(
     Scans the authoritative ``withdrawn/`` decisions (top level only —
     retired superseded markers live beneath): rows this lane withdrew
     (membership-shaped ``withdrawn_by``, ``withdrawn_host`` == this host)
-    that carry retry budget and have neither a ready successor nor a
-    same-generation done/failed terminal. A row withdrawn by the current
-    owner is this run's own; a row withdrawn by a past owner is adopted
-    only when that supervision is provably gone — same rule the broker
-    enforces for gate takeover. Anything else (operator withdrawals,
-    unparsable rows, unbuildable plans) is reported, never revived.
+    that carry retry budget and have no same-generation done/failed
+    terminal. A row withdrawn by the current owner is this run's own; a
+    row withdrawn by a past owner is adopted only when that supervision
+    is provably gone — same rule the broker enforces for gate takeover.
+
+    Successor handling (exact lineage via ``lineage_status``, which reuses
+    the queue's own ``_preemption_prefix_valid`` chain check):
+
+    - exact successor (full typed lineage, budget, counter, parent
+      generation, and publication linkage all match): discharged —
+      returned with ``successor_exact=True`` and no plan so callers can
+      adopt/report it without republishing. JOIN treats it as settled.
+    - foreign/unknown occupant (any READY row that is not exact):
+      unsettled — returned with ``plan=None`` so JOIN/resign keep the
+      fence and the reconciler retains (never overwrites) it.
+    - no occupant: returned with a ``plan_requeue`` plan for the
+      reconciler to publish once the exact withdrawn terminal lands.
+
+    Anything else (operator withdrawals, unparsable rows, unbuildable
+    plans) is reported, never revived.
     """
     owed: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -1298,42 +1509,61 @@ def resume_owed(
             if not gone:
                 skipped.append(f"{action_key[:12]}: prior owner not gone ({why})")
                 continue
-        attempts = record.get("attempts")
-        limit = record.get("max_attempts", pool_module.DEFAULT_MAX_ATTEMPTS)
-        if not (record.get("retry_safe") is True and type(attempts) is int
+        snapshot = _snap_id(record)
+        attempts = snapshot.get("attempts")
+        limit = snapshot.get("max_attempts", pool_module.DEFAULT_MAX_ATTEMPTS)
+        if not (snapshot.get("retry_safe") is True and type(attempts) is int
                 and attempts >= 0 and type(limit) is int
                 and attempts + 1 < limit):
             continue  # no retry budget: terminal stands, nothing owed
-        try:
-            terminal_here = json.loads(queue.item_path(
-                pool_module.READY, action_key).read_text())
-        except (OSError, ValueError):
-            terminal_here = None
-        if isinstance(terminal_here, dict):
-            continue  # a successor (or newer publication) occupies ready
-        concluded = False
-        for state in (pool_module.DONE, pool_module.FAILED):
-            try:
-                terminal = json.loads(queue.item_path(
-                    state, action_key).read_text())
-            except (OSError, ValueError):
-                continue
-            if (isinstance(terminal, dict)
-                    and terminal.get("published_unix") == record.get(
-                        "published_unix")):
-                concluded = True
-        if concluded:
+        status = lineage_status(queue, snapshot, withdrawn_by)
+        if status["terminal"] is not None and status["terminal"][0] in (
+                "done", "failed"):
             continue  # this generation concluded; nothing owed
+        if status["successor_exact"]:
+            # Settled: the exact successor discharges this handoff. Return
+            # it (no plan) so the reconciler can adopt/report it; JOIN
+            # treats exact as settled, not unsettled.
+            owed.append({"action_key": action_key,
+                         "snapshot": snapshot,
+                         "plan": None,
+                         "revive_by": withdrawn_by,
+                         "successor_exact": True})
+            continue
+        if status["successor"] is not None:
+            # Foreign/unknown occupant: unsettled, never overwritten.
+            # Returned (no plan) so JOIN/resign keep the fence and the
+            # reconciler retains with a reason.
+            owed.append({"action_key": action_key,
+                         "snapshot": snapshot,
+                         "plan": None,
+                         "revive_by": withdrawn_by,
+                         "successor_exact": False})
+            continue
+        # Crash-resume plans from the withdrawn record: ``withdraw`` moves
+        # the missing-prefix count aside (``attempt_history_missing_before``
+        # -> ``..._withdrawal``) so readers never mistake it for this
+        # record's own ending. ``plan_requeue`` (the existing queue handoff)
+        # reads the live count, so restore it into the planning copy —
+        # chained resign requeues (B resigning what A requeued) carry
+        # attempts>0 and would otherwise read as budget-exhausted. The
+        # immutable decisions still verify the full chain at publish.
+        for_plan = dict(record)
+        if ("attempt_history_missing_before" not in for_plan
+                and "attempt_history_missing_before_withdrawal" in for_plan):
+            for_plan["attempt_history_missing_before"] = for_plan[
+                "attempt_history_missing_before_withdrawal"]
         try:
-            plan = queue.plan_requeue(record)
+            plan = queue.plan_requeue(for_plan)
         except (OSError, ValueError,
                 pool_module.PoolContractError) as exc:
             skipped.append(f"{action_key[:12]}: unplannable ({exc})")
             continue
         owed.append({"action_key": action_key,
-                     "snapshot": _snap_id(record),
+                     "snapshot": snapshot,
                      "plan": plan,
-                     "revive_by": withdrawn_by})
+                     "revive_by": withdrawn_by,
+                     "successor_exact": False})
     owed.sort(key=lambda snap: str(snap["action_key"]))
     return owed, skipped
 
@@ -1349,6 +1579,88 @@ def _call_as_request(
         return broker_call_func(payload, socket_path, None)
 
     return call
+
+
+def reconcile_membership(queue: pool_module.PoolQueue, host: str,
+                           owner: str | None = None) -> dict[str, Any]:
+    """Settle membership handoff intents through the existing retry path.
+
+    The deterministic settlement both the resign CLI and the worker loops
+    drive (loops call this every poll, including under a closed drain —
+    see worker_loop's drain branch): for every owed withdrawn row with an
+    exact withdrawn-type terminal and no ready occupant, publish the
+    budget-preserving successor with the exact revival linkage; adopt
+    exact successors; preserve and diagnose everything else. Convergent
+    and idempotent across concurrent callers: the publish guard admits
+    only the exact decision revival, a second publisher finds the exact
+    successor and adopts it, and foreign rows are never touched. Never
+    raises — every row reports published, adopted, or retained with its
+    reason.
+    """
+    report: dict[str, Any] = {"published": [], "adopted": [],
+                              "retained": [], "skipped": []}
+    if owner is None:
+        owner, _ = supervisor_incarnation()
+        owner = owner or ""
+    try:
+        owed, skipped = resume_owed(queue, host, owner)
+    except (OSError, ValueError) as exc:
+        report["retained"].append({"error": f"census failed: {exc}"})
+        return report
+    report["skipped"] = skipped
+    for row in owed:
+        action_key = str(row["action_key"])
+        snapshot = {"action_key": action_key, **row.get("snapshot", {})}
+        try:
+            status = lineage_status(queue, snapshot, row["revive_by"])
+        except Exception as exc:                                 # noqa: BLE001
+            report["retained"].append(
+                {"action_key": action_key[:12],
+                 "reason": f"lineage unreadable: {exc}"})
+            continue
+        terminal = status["terminal"]
+        if terminal is None:
+            # Not yet: the holder has not concluded. Waiting is the caller's
+            # job (resign rounds, loop polls); this is not a failure.
+            continue
+        if terminal[0] != "withdrawn":
+            # Concluded by completion, not interruption: nothing to revive.
+            continue
+        if status["successor_exact"]:
+            report["adopted"].append(action_key[:12])
+            continue
+        if status["successor"] is not None:
+            report["retained"].append(
+                {"action_key": action_key[:12],
+                 "reason": "foreign ready occupant preserved"})
+            continue
+        plan = row.get("plan")
+        if plan is None:
+            report["retained"].append(
+                {"action_key": action_key[:12],
+                 "reason": "no requeue plan for unoccupied row"})
+            continue
+        try:
+            queue.publish(**plan["arguments"],
+                          preempted_claim=plan["snapshot"],
+                          handoff_by=row["revive_by"])
+        except (OSError, ValueError,
+                pool_module.PoolContractError) as exc:
+            # A concurrent publisher may have won: re-read lineage once
+            # so an exact successor reports adopted, not retained.
+            try:
+                raced = lineage_status(queue, snapshot, row["revive_by"])
+            except (OSError, ValueError):
+                raced = None
+            if raced is not None and raced.get("successor_exact"):
+                report["adopted"].append(action_key[:12])
+            else:
+                report["retained"].append(
+                    {"action_key": action_key[:12],
+                     "reason": f"successor publish failed: {exc}"})
+            continue
+        report["published"].append(action_key[:12])
+    return report
 
 
 def status(

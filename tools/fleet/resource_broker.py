@@ -140,6 +140,9 @@ def _dead_supervisor_owner(owner):
     host, pid, starttime = parts
     if host != socket.gethostname():
         return False
+    if starttime == "unknown":
+        # Minted without proof; can never prove gone.
+        return False
     try:
         line = Path(f'/proc/{pid}/stat').read_text()
     except FileNotFoundError:
@@ -149,6 +152,9 @@ def _dead_supervisor_owner(owner):
     _, _, rest = line.rpartition(')')
     fields = rest.split()
     current = fields[19] if len(fields) > 19 else None
+    if current is None:
+        # Malformed stat: missing parsed proof is unknown, never reuse.
+        return False
     return current != starttime
 
 def _atomic(path, value, *, mode=0o600):
@@ -523,7 +529,7 @@ class Authority:
         if not isinstance(request,dict):raise ValueError('request must be an object')
         op=request.get('op')
         if not isinstance(op,str):raise ValueError('operation must be a string')
-        if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end'}:
+        if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end','maintenance_takeover'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
@@ -711,12 +717,20 @@ class Authority:
         if uid!=0:raise PermissionError('maintenance requires root')
         op=request['op']
         allowed=({'op','reason','owner','expected_changed_unix'} if op=='maintenance_begin'
-                 else {'op'} if op=='maintenance_status' else {'op','owner','expected_changed_unix'})
+                 else {'op'} if op=='maintenance_status'
+                 else {'op','owner','expected_changed_unix'}
+                 if op in {'maintenance_end','maintenance_force_end'}
+                 else {'op','owner','reason','expected_changed_unix'}
+                 if op=='maintenance_takeover' else set())
+        if not allowed:raise ValueError('unknown maintenance operation')
         if (set(request)-allowed or ('reason' in request and not isinstance(request['reason'],str))
                 or ('owner' in request and (not isinstance(request['owner'],str) or not request['owner'].strip()))
                 or ('expected_changed_unix' in request and (
                     not isinstance(request['expected_changed_unix'],(int,float))
-                    or isinstance(request['expected_changed_unix'],bool)))):
+                    or isinstance(request['expected_changed_unix'],bool)))
+                or (op=='maintenance_takeover' and (
+                    'expected_changed_unix' not in request
+                    or 'owner' not in request or not request['owner'].strip()))):
             raise ValueError('invalid maintenance fields')
         owner=request.get('owner',MAINTENANCE_UNOWNED)[:200]
         with self.lock:
@@ -756,6 +770,40 @@ class Authority:
                             self.maintenance_error=self._force_volatile_gate_closed()
                             raise
             status=self._maintenance_status()
+            if op=='maintenance_takeover':
+                # Take over THIS membership's own abandoned drain without
+                # opening admission: the gate stays closed on the SAME epoch
+                # so parked markers and in-flight proofs keep naming it.
+                # Only a membership-shaped hold whose supervision is
+                # provably dead or replaced may be taken, by a caller that
+                # names the exact epoch and proves live supervision itself.
+                # Operator/upgrade holds, live old supervisors, stale
+                # epochs, and an open gate all refuse; force_end (root-owned,
+                # recorded) remains their only path.
+                if not self.maintenance['draining']:
+                    raise ValueError('no membership drain is in force to take over')
+                if not _dead_supervisor_owner(held):
+                    raise PermissionError('maintenance drain is held by '+str(held))
+                if not _live_supervisor_owner(owner):
+                    raise PermissionError('takeover owner is not live supervision')
+                value={'schema':MAINTENANCE_SCHEMA,'draining':True,
+                       'changed_unix':self.maintenance.get('changed_unix',time.time()),
+                       'reason':request.get('reason','membership takeover')[:1000],
+                       'owner':owner,'takeover_of':held,'takeover_by':owner,
+                       'takeover_unix':time.time()}
+                try:_atomic(self.maintenance_state_path,value,
+                            mode=0o600 if self.durable_maintenance else 0o644)
+                except OSError:
+                    if self.durable_maintenance:
+                        self.maintenance_error='durable maintenance takeover could not be committed'
+                        self._force_volatile_gate_closed()
+                    raise
+                self.maintenance=value
+                if self.durable_maintenance:
+                    try:self._sync_maintenance_gate(value)
+                    except OSError:
+                        self.maintenance_error=self._force_volatile_gate_closed()
+                        raise
             if op in {'maintenance_end','maintenance_force_end'}:
                 takeover=None
                 if foreign and op=='maintenance_end':

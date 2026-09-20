@@ -1240,6 +1240,30 @@ def _run_loop(stop_requested):
         if gate is not None:
             post_park_marker(gate)
             print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
+            # Drain-path membership reconciliation (authoritative for
+            # resigned workers): a resign CLI that died after withdrawing
+            # leaves owed rows no CLAIMED scan can see, and a resigned
+            # worker never reaches the open-gate hook below — the
+            # ``continue`` here skips it. Settle through the existing
+            # retry path without claiming: publish matured successors,
+            # adopt exact ones, preserve foreign rows. Bounded (one
+            # withdrawn/ glob when empty) and exception-isolated; any
+            # failure only skips this poll's settlement.
+            try:
+                from fleet_membership import reconcile_membership
+                reconciled = reconcile_membership(queue, host)
+                settled = (reconciled.get("published", [])
+                           + reconciled.get("adopted", []))
+                if settled:
+                    print(f"[{host}] membership reconciled in drain: {settled}",
+                          flush=True)
+                retained = reconciled.get("retained", [])
+                if retained:
+                    print(f"[{host}] membership retained in drain: {retained}",
+                          flush=True)
+            except Exception as exc:                             # noqa: BLE001
+                print(f"[{host}] membership reconciliation skipped in drain: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
             if args.once:
                 return 0
             time.sleep(args.poll_s)
@@ -1425,6 +1449,23 @@ def _run_loop(stop_requested):
         # shape is the box being broken, not the items.
         if stop_requested():
             return 0
+        # Membership handoff reconciliation, through the existing retry
+        # path: a resign CLI that died after withdrawing leaves owed rows
+        # no CLAIMED scan can see. The loops themselves settle them here —
+        # publish matured successors, adopt exact ones, preserve foreign
+        # rows — so settlement does not depend on the requester surviving.
+        # Bounded and exception-isolated: an empty withdrawn/ directory
+        # costs one glob, and any failure only skips this poll.
+        try:
+            from fleet_membership import reconcile_membership
+            reconciled = reconcile_membership(queue, host)
+            settled = (reconciled.get("published", [])
+                       + reconciled.get("adopted", []))
+            if settled:
+                print(f"[{host}] membership reconciled: {settled}", flush=True)
+        except Exception as exc:                                 # noqa: BLE001
+            print(f"[{host}] membership reconciliation skipped this poll: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
         # The claim-time handshake.  Everything above -- offer publication,
         # queue discovery -- may have taken seconds, and a publisher can
         # activate a successor generation inside exactly that window, so the

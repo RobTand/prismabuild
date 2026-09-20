@@ -161,6 +161,28 @@ POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
+
+
+def _membership_withdrawal_owner(value: object) -> bool:
+    """Whether ``value`` names a membership supervisor drain owner.
+
+    The fleet_membership owner kind is exactly
+    ``{host}:supervisor-{pid}:{starttime}`` with a positive pid. This is a
+    shape check only; liveness, host binding, and epoch continuity are
+    enforced by the broker mutex and the membership caller, never here.
+    """
+
+    if not isinstance(value, str):
+        return False
+    _host, _, rest = value.partition(":")
+    kind, _, starttime = rest.partition(":")
+    label, _, pid_text = kind.partition("-")
+    if not _host or label != "supervisor" or not starttime:
+        return False
+    try:
+        return int(pid_text) > 0
+    except (ValueError, TypeError):
+        return False
 POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
 #: What one movement node says it staged, and what the pool delivered while
 #: it did.  Read by the ``tiers`` role for the fill measurement, so it carries
@@ -5950,7 +5972,18 @@ class PoolQueue:
             if len(decisions) != 1:
                 return False
             parent = decisions[0][1]
-            if (not parent.get("preempted_by")
+            # Either the admission handoff (preempted_by) or the resign
+            # handoff: a membership-shaped withdrawn_by (the fleet_membership
+            # supervisor owner kind, `{host}:supervisor-{pid}:{starttime}`)
+            # with the same budget fields and no history rewrites. The two
+            # linkages are disjoint by construction — admission decisions
+            # never carry resigned_by, resign decisions never preempted_by —
+            # so widening admits chained resign requeues (B resigning what A
+            # requeued) without admitting anything the old rule refused.
+            preempted = bool(parent.get("preempted_by"))
+            resigned = (not preempted
+                        and _membership_withdrawal_owner(parent.get("withdrawn_by")))
+            if ((not preempted and not resigned)
                     or parent.get("attempts") != consumed - 1
                     or parent.get("max_attempts") != limit
                     or parent.get("retry_safe") is not True

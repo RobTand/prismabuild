@@ -99,7 +99,7 @@ def _broker_call(authority):
     """
     auth, _ = authority
     _MAINT = {"maintenance_begin", "maintenance_status", "maintenance_end",
-              "maintenance_force_end"}
+              "maintenance_force_end", "maintenance_takeover"}
 
     def call(payload: dict) -> dict:
         if payload.get("op") in _MAINT:
@@ -646,7 +646,7 @@ def test_resign_resumes_withdrawn_row_after_crash(
 
     key = "r" * 64
     host = socket.gethostname()
-    old_owner = f"{host}:supervisor-111:222"
+    old_owner = f"{host}:supervisor-4194304:1"
     snapshot = _publish_claim(queue, key, max_attempts=3)
     # Run 1 (crashed): withdrew, then died before terminal/publish.
     queue.withdraw(key, reason=f"resign {old_owner}: crash",
@@ -698,7 +698,7 @@ def test_resign_preserves_newer_unrelated_publication(
 
     key = "s" * 64
     host = socket.gethostname()
-    old_owner = f"{host}:supervisor-111:222"
+    old_owner = f"{host}:supervisor-4194304:1"
     snapshot = _publish_claim(queue, key, max_attempts=3)
     queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner)
     auth, _ = authority
@@ -760,7 +760,7 @@ def test_resign_second_run_publishes_no_duplicate(
     instead of publishing a second one."""
     import threading
 
-    key = "t" * 64
+    key = "5" * 64
     _incarnation(monkeypatch)
     _sealed_shape(monkeypatch)
     snapshot = _publish_claim(queue, key, max_attempts=3)
@@ -805,3 +805,443 @@ def test_resign_second_run_publishes_no_duplicate(
     assert after == before, "rerun must not publish a duplicate successor"
     assert len([i for i in queue.ready_items()
                 if i.get("action_key") == key]) == 1
+
+
+def test_chained_resign_preserves_budget_a_b_c(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """A resigns -> B claims -> B resigns -> C completes, budgets intact.
+
+    Three attempts on max_attempts=4: every successor carries attempts+1,
+    the missing-prefix link, and resign lineage, with no counter resets
+    and no duplicate successors. Exercises the generalized prefix chain
+    through the real resign path twice."""
+    import threading
+
+    _sealed_shape(monkeypatch)
+    _incarnation(monkeypatch)
+    key = "e" * 64
+    host = socket.gethostname()
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    owner = f"{host}:supervisor-9:8"
+    _publish_claim(queue, key, max_attempts=4)
+    errors: list = []
+
+    def finish_when_withdrawn():
+        deadline = time.monotonic() + 40.0
+        while time.monotonic() < deadline:
+            if queue.item_path(pool.WITHDRAWN, key).exists():
+                break
+            time.sleep(0.2)
+        snap = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+        queue.finish(key, status="failed",
+                     detail={"termination_reason": "chain"},
+                     claim_snapshot=snap)
+
+    def do_resign():
+        with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+            return fm.resign(host, reason="chain",
+                             queue_root=queue.root, gate=gate,
+                             broker_call=_broker_call(authority),
+                             live=[], wait_s=60.0)
+
+    t1 = threading.Thread(target=lambda: _finish_or_error(finish_when_withdrawn, errors))
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(worker_loop, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
+        t1.start()
+        try:
+            first = do_resign()
+        finally:
+            t1.join(timeout=15.0)
+    assert not errors, errors
+    assert first["status"] == "resigned", first
+    generation_b = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert int(generation_b.get("attempts")) == 1
+    assert int(generation_b.get("attempt_history_missing_before")) == 1
+    assert int(generation_b.get("max_attempts")) == 4
+    assert generation_b.get("resigned_by") == owner
+
+    snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:q2", capacity={"cpu": 4})
+    assert snap_b is not None and int(snap_b["attempts"]) == 1
+    t2 = threading.Thread(target=lambda: _finish_or_error(finish_when_withdrawn, errors))
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(worker_loop, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
+        t2.start()
+        try:
+            second = do_resign()
+        finally:
+            t2.join(timeout=15.0)
+    assert not errors, errors
+    assert second["status"] == "resigned", (
+        second.get("reason"), second.get("handled"))
+    generation_c = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert int(generation_c.get("attempts")) == 2
+    assert int(generation_c.get("attempt_history_missing_before")) == 2
+    assert int(generation_c.get("max_attempts")) == 4
+    assert generation_c.get("resigned_by") == owner
+    assert generation_c["supersedes_withdrawal"]["withdrawn_by"] == owner
+
+    snap_c = queue.claim(tags=["x86"], owner=f"{host}:1:q3", capacity={"cpu": 4})
+    assert snap_c is not None and int(snap_c["attempts"]) == 2
+    queue.finish(key, status="executed", detail={}, claim_snapshot=snap_c)
+    done = json.loads(queue.item_path(pool.DONE, key).read_text())
+    assert int(done.get("attempts")) == 3
+    assert int(done.get("max_attempts")) == 4
+
+
+def _finish_or_error(fn, errors):
+    try:
+        fn()
+    except BaseException:  # noqa: BLE001
+        import traceback
+        errors.append(traceback.format_exc())
+
+
+def test_lineage_rejects_coincident_counter_foreign_row(
+    queue: pool.PoolQueue,
+) -> None:
+    """Same key, same counter, different generation: lineage says foreign.
+
+    A ready occupant with attempts == prior+1 but a supersedes link to
+    another decision (or none at all) is preserved, never adopted as our
+    successor."""
+    key = "f" * 64
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    snap = {"action_key": key, "published_unix": snapshot["published_unix"],
+            "attempts": snapshot["attempts"],
+            "claimed_by": snapshot["claimed_by"],
+            "claimed_unix": snapshot["claimed_unix"]}
+    status = fm.lineage_status(queue, snap, "resign:someone")
+    assert status["terminal"] is None and not status["foreign"]
+    # A foreign publication with a coincident counter and no linkage.
+    queue.publish(action_key=key, cas_root=queue.root / "cas",
+                  checkout_root=queue.root / "co",
+                  worker_script=queue.root / "worker.py",
+                  resources={"cpu": 1}, max_attempts=3, retry_safe=True,
+                  tags=["x86"])
+    status = fm.lineage_status(queue, snap, "resign:someone")
+    assert status["foreign"] is True and not status["successor_exact"]
+    # Malformed terminal identity never matches either.
+    bad = dict(snap, claimed_by="")
+    assert fm.terminal_of(queue, bad) is None
+
+
+def test_takeover_keeps_gate_closed_and_resumes(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """A crashed drain is taken over without opening admission: the new
+    incarnation presents the exact epoch through the real broker admin,
+    the gate stays draining on the same epoch, and handoffs resume."""
+    import threading
+
+    key = "0" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-4194304:1"
+    _sealed_shape(monkeypatch)
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    # Crashed run 1 went through the REAL admin: drain held by the (now
+    # dead) old owner.
+    begun = auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
+                           "owner": old_owner})
+    assert begun["draining"] is True
+    epoch = json.loads(gate.read_text())["changed_unix"]
+    # Live new incarnation (real pid + starttime so the broker's own
+    # liveness check passes takeover); same box.
+    live_owner = (f"{host}:supervisor-{os.getpid()}:"
+                  f"{_proc_starttime(os.getpid())}")
+    monkeypatch.setattr(fm, "supervisor_incarnation",
+                        lambda: (live_owner, None))
+    errors: list = []
+    finished = threading.Event()
+
+    def holder_concludes():
+        try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if queue.item_path(pool.WITHDRAWN, key).exists():
+                    break
+                time.sleep(0.2)
+            queue.finish(key, status="failed",
+                         detail={"termination_reason": "takeover"},
+                         claim_snapshot=snapshot)
+            finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    finisher = threading.Thread(target=holder_concludes, daemon=True)
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        finisher.start()
+        try:
+            out = fm.resign(host, reason="takeover resume",
+                            queue_root=queue.root, gate=gate,
+                            broker_call=_broker_call(authority),
+                            live=[], wait_s=40.0)
+        finally:
+            finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert finished.is_set()
+    assert out["status"] == "resigned", out
+    gate_now = json.loads(gate.read_text())
+    assert gate_now["draining"] is True, "takeover must keep the gate closed"
+    assert gate_now["changed_unix"] == epoch, "epoch must not move"
+    assert gate_now["owner"] != old_owner
+    ready = queue.ready_items()
+    assert len([i for i in ready if i.get("action_key") == key]) == 1
+
+
+def test_join_refuses_unsettled_handoff_drain(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """JOIN must not clear a membership drain with unsettled obligations:
+    it refuses until a resign adopts and settles them."""
+    import threading
+
+    key = "1" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-4194304:1"
+    _sealed_shape(monkeypatch)
+    _incarnation(monkeypatch)
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
+                   "owner": old_owner})
+    queue.ensure_layout()
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    # Join must read the REAL queue (holding the unsettled row) through a
+    # namespace that proves shared: patch only the mount identity.
+    monkeypatch.setattr(fm, "_mount_identity", lambda path: {
+        "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
+        "mountpoint": "/mnt/shared"})
+    refused = fm.join(host, reason="too early", roster_path=roster,
+                      queue_root=queue.root, gate=gate,
+                      runtime_root=_busy_runtime(tmp_path),
+                      broker_call=_broker_call(authority))
+    assert refused["status"] == "refused", refused
+    assert refused["phase"] == "unsettled-handoff", refused
+    assert gate.read_text() and json.loads(gate.read_text())["draining"] is True
+
+
+def test_interrupted_request_settles_through_reconciler(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """The requester disappearing mid-handoff loses nothing: run 1 withdraws
+    and returns (deadline expiry = crash), the holder concludes normally,
+    the deployed reconciler path publishes the successor with no resign
+    running, and run 2 adopts it instead of duplicating it."""
+    import threading
+
+    _sealed_shape(monkeypatch)
+    _incarnation(monkeypatch)
+    key = "2" * 64
+    host = socket.gethostname()
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        first = fm.resign(host, reason="dies after withdraw",
+                          queue_root=queue.root, gate=gate,
+                          broker_call=_broker_call(authority),
+                          live=[], wait_s=0.0)
+    assert first["status"] == "resigning", first
+    assert queue.item_path(pool.WITHDRAWN, key).exists()
+    assert not queue.item_path(pool.READY, key).exists()
+    # Ordinary holder finish (no resign running anywhere).
+    queue.finish(key, status="failed",
+                 detail={"termination_reason": "reconciler"},
+                 claim_snapshot=snapshot)
+    # The deployed reconciliation call the worker loops drive every poll.
+    settled = fm.reconcile_membership(queue, host)
+    assert settled["published"] == [key[:12]], settled
+    assert settled["retained"] == []
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        second = fm.resign(host, reason="adopts reconciled row",
+                           queue_root=queue.root, gate=gate,
+                           broker_call=_broker_call(authority),
+                           live=[], wait_s=40.0)
+    assert second["status"] == "resigned", second
+    ready = [i for i in queue.ready_items() if i.get("action_key") == key]
+    assert len(ready) == 1 and int(ready[0]["attempts"]) == 1
+
+
+def test_dead_owner_proof_matrix() -> None:
+    """Malformed stat and foreign hosts never prove gone; only absent pids
+    and reused start times do."""
+    import resource_broker as _broker
+
+    host = socket.gethostname()
+    assert _broker._dead_supervisor_owner("client-upgrade") is False
+    assert _broker._dead_supervisor_owner(f"otherbox:supervisor-1:2") is False
+    assert _broker._dead_supervisor_owner(
+        f"{host}:supervisor-1:not-a-starttime") is True
+    assert _broker._dead_supervisor_owner(
+        f"{host}:supervisor-{2 ** 22}:1") is True
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{_proc_starttime(os.getpid())}")
+    assert _broker._live_supervisor_owner(me) is True
+    assert _broker._dead_supervisor_owner(me) is False
+    assert _broker._dead_supervisor_owner(f"{host}:supervisor-9:unknown") is False
+
+
+def test_takeover_refuses_open_gate_and_stale_epoch(authority) -> None:
+    """Takeover needs a live drain at the named epoch: open gates and moved
+    epochs refuse instead of minting or clearing anything."""
+    auth, _ = authority
+    host = socket.gethostname()
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{_proc_starttime(os.getpid())}")
+    with pytest.raises(ValueError, match="epoch changed"):
+        auth.admin(0, {"op": "maintenance_takeover", "owner": me,
+                       "reason": "t", "expected_changed_unix": 1.0})
+    auth.admin(0, {"op": "maintenance_begin", "reason": "t",
+                   "owner": f"{host}:supervisor-1:0"})
+    auth.admin(0, {"op": "maintenance_end",
+                   "owner": f"{host}:supervisor-1:0"})
+    opened_epoch = json.loads(
+        Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(ValueError, match="no membership drain"):
+        auth.admin(0, {"op": "maintenance_takeover", "owner": me,
+                       "reason": "t", "expected_changed_unix": opened_epoch})
+    old = f"{host}:supervisor-1:0"
+    auth.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": old})
+    epoch = json.loads(Path(auth.maintenance_path).read_text())["changed_unix"]
+    with pytest.raises(ValueError, match="epoch changed"):
+        auth.admin(0, {"op": "maintenance_takeover", "owner": me,
+                       "reason": "t", "expected_changed_unix": epoch + 5000})
+    with pytest.raises(ValueError, match="invalid maintenance"):
+        auth.admin(0, {"op": "maintenance_takeover", "owner": me,
+                       "reason": "t"})
+    assert auth.admin(0, {"op": "maintenance_status"})["draining"] is True
+
+
+def test_lineage_exact_requires_full_fields(queue: pool.PoolQueue, monkeypatch) -> None:
+    """Same owner and same decision timestamp never suffice: altered
+    attempts, budget, or parent generation must refuse exact.
+
+    Goes through the real handoff (publish/claim/withdraw/finish/publish)
+    so the exact READY row carries the pool's own prefix chain; then
+    mutates one field at a time in the READY occupant and proves
+    ``lineage_status`` refuses each (foreign, never exact). Reuses the
+    queue's ``_preemption_prefix_valid`` chain owner — no duplicate
+    validator.
+    """
+    _sealed_shape(monkeypatch)
+    key = "3" * 64
+    host = socket.gethostname()
+    owner = f"{host}:supervisor-9:8"
+    snapshot = _publish_claim(queue, key, max_attempts=4)
+    queue.withdraw(key, reason=f"resign {owner}: t", by=owner)
+    queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
+    live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    snap = {"action_key": key, "published_unix": live["published_unix"],
+            "attempts": live["attempts"], "claimed_by": live["claimed_by"],
+            "claimed_unix": live["claimed_unix"]}
+    plan = queue.plan_requeue(dict(live))
+    queue.publish(**plan["arguments"], preempted_claim=plan["snapshot"],
+                  handoff_by=owner)
+    # Exact via the retired immutable decision (live retired on publish).
+    status = fm.lineage_status(queue, snap, owner)
+    assert status["successor_exact"] is True, status
+    assert status["foreign"] is False
+    ready_path = queue.item_path(pool.READY, key)
+    exact_ready = json.loads(ready_path.read_text())
+
+    def mutated(**overrides):
+        row = dict(exact_ready)
+        row.update(overrides)
+        if "supersedes_withdrawal" in overrides:
+            row["supersedes_withdrawal"] = overrides["supersedes_withdrawal"]
+        ready_path.write_text(json.dumps(row))
+        return fm.lineage_status(queue, snap, owner)
+
+    # Altered counter with same owner/timestamp refuses.
+    st = mutated(attempts=int(exact_ready["attempts"]) + 1)
+    assert st["successor_exact"] is False and st["foreign"] is True, st
+    # Altered budget refuses.
+    st = mutated(max_attempts=int(exact_ready["max_attempts"]) + 1)
+    assert st["successor_exact"] is False and st["foreign"] is True, st
+    # Altered parent generation refuses (same withdrawn_unix, other parent).
+    link = dict(exact_ready["supersedes_withdrawal"])
+    link["published_unix"] = float(link["published_unix"]) + 1000.0
+    st = mutated(supersedes_withdrawal=link)
+    assert st["successor_exact"] is False and st["foreign"] is True, st
+    # Altered owner refuses even with timestamps intact.
+    st = mutated(resigned_by="otherbox:supervisor-1:2")
+    assert st["successor_exact"] is False and st["foreign"] is True, st
+    # Restore exact for other tests' isolation (file rewritten per test tmp).
+    ready_path.write_text(json.dumps(exact_ready))
+    assert fm.lineage_status(queue, snap, owner)["successor_exact"] is True
+
+
+def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch) -> None:
+    """A resigned worker settles owed handoffs through its real closed-gate
+    poll — not a helper direct call.
+
+    Drives the actual ``worker_loop._run_loop`` with a closed maintenance
+    gate and ``--once``: the drain branch (after the generation fence, no
+    claim) must publish the matured successor via the existing retry path.
+    The open-gate hook is unreachable under a closed gate (``continue``),
+    so this proves the drain-path reconciliation root required.
+    """
+    import importlib.util
+    import sys as _sys
+
+    _sealed_shape(monkeypatch)
+    host = socket.gethostname()
+    owner = f"{host}:supervisor-9:8"
+    # Real queue at the loop's hardcoded SH/"pb-queue" address.
+    real_queue = pool.PoolQueue(tmp_path / "pb-queue")
+    key = "4" * 64
+    real_queue.publish(action_key=key, cas_root=real_queue.root / "cas",
+                       checkout_root=real_queue.root / "co",
+                       worker_script=real_queue.root / "worker.py",
+                       resources={"cpu": 1}, max_attempts=3, retry_safe=True,
+                       tags=["x86"])
+    snap = real_queue.claim(tags=["x86"], owner=f"{host}:1:q1",
+                            capacity={"cpu": 4})
+    assert snap is not None
+    real_queue.withdraw(key, reason=f"resign {owner}: drain poll", by=owner)
+    real_queue.finish(key, status="failed", detail={}, claim_snapshot=snap)
+    assert real_queue.item_path(pool.WITHDRAWN, key).exists()
+    assert not real_queue.item_path(pool.READY, key).exists()
+
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": True, "changed_unix": 1.0,
+                                "reason": "test drain", "owner": owner}))
+    parked = tmp_path / "rollout" / "parked"
+    parked.mkdir(parents=True)
+
+    source = Path(__file__).resolve().parents[1] / "tools/fleet/worker_loop.py"
+    spec = importlib.util.spec_from_file_location("drain_poll_loop", source)
+    assert spec is not None and spec.loader is not None
+    loop = importlib.util.module_from_spec(spec)
+    _sys.modules["drain_poll_loop"] = loop
+    spec.loader.exec_module(loop)
+    monkeypatch.setattr(loop, "SH", tmp_path)
+    monkeypatch.setattr(loop, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(loop, "PARKED_ROOT", parked)
+    monkeypatch.setattr(loop, "loaded_runtime_commit", lambda: "test")
+    monkeypatch.setattr(loop, "published_commit", lambda: "test")
+    monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
+    monkeypatch.setattr(loop, "generation_drift",
+                        lambda loaded_commit=None, loaded_generation=None: None)
+    monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
+    monkeypatch.setattr(loop.sys, "argv",
+                        ["worker_loop.py", "--all-cores", "--cpu-slots", "1",
+                         "--poll-s", "0", "--once"])
+    # Reconciler resolves its owner from this lane's incarnation.
+    monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (owner, None))
+    rc = loop._run_loop(lambda: False)
+    assert rc == 0
+    ready_path = real_queue.item_path(pool.READY, key)
+    assert ready_path.exists(), "drain poll must publish the owed successor"
+    ready = json.loads(ready_path.read_text())
+    assert int(ready.get("attempts")) == 1
+    assert ready.get("resigned_by") == owner
+    link = ready.get("supersedes_withdrawal")
+    assert isinstance(link, dict) and link.get("withdrawn_by") == owner
