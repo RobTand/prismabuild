@@ -338,7 +338,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
                               stage_root=str(stage_root),
                               residency_root=po.output_fragment_root(
                                   q.root / pool.RESIDENCY))
-    assert retired.get("ok") is True, retired
+    assert retired.get("ok") is True, json.dumps(retired, default=str)
     # The egress returned the fence: usable capacity is back.
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
     assert ledger.available().get(KIND, 0) == 1
@@ -372,10 +372,11 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
                                  tmp_path / "mover-checkout")
         assert receipt["complete"] is True, receipt
         q.finish(mover, status="executed")
-        assert po.retire_batch(
+        retired = po.retire_batch(
             q, inst, template, batch_id, stage_root=str(stage_root),
             residency_root=po.output_fragment_root(
-                q.root / pool.RESIDENCY))["ok"] is True
+                q.root / pool.RESIDENCY))
+        assert retired.get("ok") is True, json.dumps(retired, default=str)
         results.append(res)
 
     # Disjoint credit names: the second batch never reused the first's.
