@@ -356,7 +356,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     assert minted.available().get("stage_gib") == 2
     assert minted.capacity().get("stage_gib") == 2
     assert minted.held().get("stage_gib", 0) == 0
-    assert (minted.root / "minted" / "dead"
+    assert (minted.minted_dir / "dead"
             / "stage_gib-0000").exists()
 
 
