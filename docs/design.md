@@ -4680,6 +4680,59 @@ fill a dataset to 0 B available at all -- a measured headroom off the
 dataset's own `used`/`logicalused` ratio rather than a constant -- is open;
 it is not this gate.
 
+### Bounded recovery of a retired head's orphaned copies
+
+Routine `reconcile` structurally cannot free one specific history: a head
+whose fragment and material a later egress retired while shared files
+survived. Every surviving copy carries the same `user.pbstage.source` mark
+`stage_move` stamps, so `reconcile` reads each as prewarm-owned and leaves it
+in `unowned_left` for the life of the fleet -- and every later head pays the
+publisher's 30 s grace once per orphaned entry (measured on the incident
+that motivated this: 36439 entries, 10895318814 bytes, ~0.53 files/s).
+`stage_release.recover_orphaned_range` is the operator-scoped repair for
+exactly that history, and nothing else: it changes no lifecycle the loop
+owns, takes no scope from its caller, and defaults to a dry run.
+
+Scope is bound to history, not to argument. The only identities taken are
+the head's filed move receipt and the egress receipt that retired it; the
+consumer, tier, stage root, manifest and exact byte range are read off those
+receipts. Each receipt must be filed, well-formed, `complete`, and record
+its **own** action key -- a record read by pathname that names another
+action is that action's receipt, misfiled, and is refused. Each historical
+CAS request is then read as an action and validated under its own key
+(`validate_action` plus the key comparison, the same sequence the pool
+applies to a claimed action): a bare JSON load would let any bytes at that
+path wear the key, and the flags below are the authority, so the body has to
+be the bytes that hash to the identity they are used under. The surviving
+flag checks bind the two requests to each other and to the receipts -- the
+egress names the head as its mover, both name the same consumer and stage
+root, the head alone carries tier and range, a missing or duplicated flag is
+refused, and a filed receipt may not widen the window its request authorized.
+
+Permission is that scope plus the positive absence of every other ownership,
+under the same stage ownership lock the egress holds, with the same
+stage-root ownership refusal first (#628) and no pass while any mover on the
+tier is ready or claimed. Every fragment retains, wanted or not -- a
+withdrawn mover's fragment included -- and the fragment census is
+`_fragment_owners` over the exact staged-path set the scope derived, never
+the map-composition reader's tolerance for bad fragments: a fragment that
+cannot be read or validated, or a residency root that cannot be listed,
+refuses the whole pass, because skipped is how unknown collapses into
+unowned and unowned is what deletes. Live pins, claims in flight and
+promotion handoffs retain; the old source mark is a necessary condition,
+never permission.
+
+Originals are proven before anything is destroyed: each window entry's
+source must exist as a **regular file** holding at least the `offset+bytes`
+extent the manifest names, resolving outside the stage root. `exists` alone
+would pass a directory or a source shrunken below its extent off as a
+surviving input. Size, never a digest -- proving recapturability is a stat,
+not a model-sized hash. Over-retaining is a pass and over-removing is a
+failure; every refusal lands before the first unlink.
+`tests/test_a_retired_heads_orphaned_cache_is_recovered_by_identity.py`
+holds each rule as a focused case, with the staged copies and originals
+asserted intact after every refusal.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a
