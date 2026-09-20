@@ -113,9 +113,11 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
     return control
 
 
-def _bind(q: pool.PoolQueue, template: dict, owner: str):
+def _bind(q: pool.PoolQueue, template: dict, owner: str,
+          cas_root: Path | None = None):
     terms = po.owner_demand_terms(template)
-    q.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
+    q.publish(action_key=owner, cas_root=str(cas_root or "/cas"),
+              worker_script="/w.py",
               checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, **terms},
               produced_output_template=template)
     claimed = q.claim(owner="w-owner")
@@ -215,7 +217,7 @@ def _producer_request(tmp_path: Path, cas_root: Path) -> str:
             checkout, ["tools/fleet/stage_move.py",
                        "tools/fleet/prewarm_loop.py",
                        "tools/fleet/stage_release.py"]),
-        "params": {"cwd": "."},
+        "params": {"cwd": ".", "command": ["/bin/true"]},
         "environment": {"variables": {"PATH": "/usr/bin:/bin"},
                         "toolchain": {}},
         "execution_scope": {"portability": "portable", "platform_key": None,
@@ -281,7 +283,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst = _bind(q, template, owner)
+    inst = _bind(q, template, owner, cas_root)
     payload = bytes(range(256)) * 8  # 2048 real bytes
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
     _prewrite(q, inst, template, "b1", TIER, descs)
@@ -351,7 +353,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst = _bind(q, template, owner)
+    inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
     results = []
@@ -466,7 +468,7 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     owner = _producer_request(tmp_path, tmp_path / "cas")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst = _bind(q, template, owner)
+    inst = _bind(q, template, owner, tmp_path / "cas")
     descs = _descriptors(tmp_path, template, inst, "p1", b"d" * 300)
     _prewrite(q, inst, template, "b1", TIER, descs)
     _announce_tier(q, tmp_path / "stage")
