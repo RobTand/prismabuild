@@ -3224,12 +3224,36 @@ class PoolQueue:
         if container_images is not None:
             # The queue item's copy of the action's sealed requirement.  It is
             # validated here so a direct producer cannot publish a requirement
-            # the claim check would have to treat as malformed, and it is a
-            # projection of the sealed params -- never a second authority.
+            # the claim check would have to treat as malformed.  It is a
+            # projection of the sealed params -- the direct API trusts its
+            # producer to have derived it, and never re-reads the CAS request
+            # to prove that -- never a second authority.
             try:
                 image_refs = list(image_inventory.normalize_refs(container_images))
             except ValueError as exc:
                 raise PoolContractError(f"container_images: {exc}") from exc
+        # Every declaration check is a precondition, ahead of the first side
+        # effect below: a publication this method refuses must not have
+        # retired a live withdrawal, created a directory or answered an
+        # adoption on its way to refusing (#714 review, #708's cancellation
+        # contract).
+        normalized_tags = normalize_placement_tags(tags)
+        if image_refs:
+            # The capability the claim check rides must travel with the
+            # requirement, never be forgotten by a producer: a box that does
+            # not offer it is a loop from before the check, which is exactly
+            # the worker #714 must not reach.
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, pb.CONTAINER_IMAGE_TAG])
+        elif pb.CONTAINER_IMAGE_TAG in normalized_tags:
+            # One spelling of the declaration: the tag is the capability, and
+            # an item carrying it without references is a producer that
+            # dropped the sealed requirement.  Refused rather than run
+            # unchecked.
+            raise PoolContractError(
+                f"{pb.CONTAINER_IMAGE_TAG} requires container_images; an item "
+                "may not require the declared-image capability without "
+                "declaring one")
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
@@ -3319,23 +3343,6 @@ class PoolQueue:
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
         superseded = self._supersede_withdrawal(action_key)
-        normalized_tags = normalize_placement_tags(tags)
-        if image_refs:
-            # The capability the claim check rides must travel with the
-            # requirement, never be forgotten by a producer: a box that does
-            # not offer it is a loop from before the check, which is exactly
-            # the worker #714 must not reach.
-            normalized_tags = normalize_placement_tags(
-                [*normalized_tags, pb.CONTAINER_IMAGE_TAG])
-        elif pb.CONTAINER_IMAGE_TAG in normalized_tags:
-            # One spelling of the declaration: the tag is the capability, and
-            # an item carrying it without references is a producer that
-            # dropped the sealed requirement.  Refused rather than run
-            # unchecked.
-            raise PoolContractError(
-                f"{pb.CONTAINER_IMAGE_TAG} requires container_images; an item "
-                "may not require the declared-image capability without "
-                "declaring one")
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,

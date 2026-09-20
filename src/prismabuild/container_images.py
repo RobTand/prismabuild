@@ -63,6 +63,7 @@ from pathlib import Path
 import re
 import select
 import shutil
+import signal
 import stat
 import subprocess
 import time
@@ -87,6 +88,12 @@ LOCAL_ENDPOINT = "unix:///var/run/docker.sock"
 #: Refuse an answer larger than this, and a record holding more entries.
 MAX_INVENTORY_BYTES = 8 * 1024 * 1024
 MAX_INVENTORY_ENTRIES = 4096
+
+#: One read's ceiling.  The probe reads through ``os.read`` in chunks of this
+#: size -- never ``BufferedReader.read()`` with no size, which a nonblocking
+#: stream may satisfy by draining a continuously-fed pipe into one arbitrarily
+#: large object -- so this is the most a single read can allocate.
+PROBE_CHUNK_BYTES = 64 * 1024
 
 INVENTORY_SCHEMA = "prismabuild.container_image_inventory.v1"
 
@@ -184,11 +191,18 @@ def missing(required, present) -> tuple[str, ...]:
 def _read_capped(stream, *, limit: int, deadline: float) -> bytes | None:
     """Read a nonblocking stream up to ``limit`` bytes before ``deadline``.
 
-    The cap is enforced while reading, not after: a Docker answer that grows
-    past the bound is refused without first being held in memory.
+    The cap is enforced *while reading*: one ``os.read`` of at most
+    :data:`PROBE_CHUNK_BYTES` (or the remaining budget plus one byte, so an
+    overrun is detectable) at a time, with the deadline re-checked between
+    reads.  ``stream.read()`` is deliberately never called: with no size, a
+    nonblocking ``BufferedReader`` may drain a continuously-fed pipe into a
+    single arbitrarily large object, which is a bound checked after the
+    allocation rather than a bound on it.  A read that returns nothing yet is
+    a spurious wakeup and the loop continues.
     """
 
-    os.set_blocking(stream.fileno(), False)
+    descriptor = stream.fileno()
+    os.set_blocking(descriptor, False)
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -196,17 +210,18 @@ def _read_capped(stream, *, limit: int, deadline: float) -> bytes | None:
         if remaining <= 0:
             return None
         try:
-            ready, _, _ = select.select([stream], [], [], remaining)
+            ready, _, _ = select.select([descriptor], [], [], remaining)
         except (OSError, ValueError):
             return None
         if not ready:
             return None
+        request = min(PROBE_CHUNK_BYTES, limit - total + 1)
         try:
-            chunk = stream.read()
-        except (OSError, ValueError):
+            chunk = os.read(descriptor, request)
+        except (BlockingIOError, InterruptedError):
+            continue                           # spurious wakeup, no data yet
+        except OSError:
             return None
-        if chunk is None:                      # spurious wakeup, no data yet
-            continue
         if not chunk:
             break
         total += len(chunk)
@@ -216,8 +231,62 @@ def _read_capped(stream, *, limit: int, deadline: float) -> bytes | None:
     return b"".join(chunks)
 
 
+def _signal_probe_group(pid: int) -> None:
+    """SIGKILL the probe's process group while its pid is still ours.
+
+    ``start_new_session`` made the spawned process a session and group
+    leader, so its pid is the group id.  This is called only while that
+    process is an unreaped child of this process: an unreaped child keeps its
+    pid allocated, so the group id cannot have been recycled and the signal
+    reaches the probe's own descendants and nothing else.  Failure is silent;
+    a group that no longer exists is already gone.
+    """
+
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _probe_exit_status(process, deadline: float):
+    """``("exited", code)`` without reaping, ``("reaped", code)``, or ``None``.
+
+    Linux reports through ``waitid(... | WNOWAIT)``, which leaves the child
+    unreaped: the caller can still signal its group under the ownership the
+    pid had when spawned.  A platform without ``waitid`` has no such report;
+    its only path reaps the leader and gives that ownership up, so the caller
+    is told which happened and keeps the weaker cleanup.
+    """
+
+    if not hasattr(os, "waitid"):
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+            return None
+        return ("reaped", process.returncode)
+    while True:
+        try:
+            info = os.waitid(os.P_PID, process.pid,
+                             os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except (ChildProcessError, OSError):
+            return None
+        if info is not None:
+            code = info.si_status if info.si_code == os.CLD_EXITED else -1
+            return ("exited", code)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.01)
+
+
 def _run_bounded(argv, *, env, timeout_s: float, limit: int) -> bytes | None:
-    """One subprocess read, bounded in time and bytes; ``None`` on any failure."""
+    """One subprocess read, bounded in time and bytes; ``None`` on any failure.
+
+    Cleanup is ownership-safe.  On every path that did not observe a clean
+    exit, the whole process group the probe was spawned in is signalled while
+    the leader is still unreaped: a leader that exited leaving a descendant
+    holding the stdout pipe cannot leak that descendant, and a pid that has
+    been reaped is never signalled after it could have been recycled.
+    """
 
     try:
         process = subprocess.Popen(
@@ -229,6 +298,7 @@ def _run_bounded(argv, *, env, timeout_s: float, limit: int) -> bytes | None:
     except (OSError, ValueError):
         return None
     deadline = time.monotonic() + timeout_s
+    clean = False
     try:
         stream = process.stdout
         if stream is None:
@@ -236,27 +306,24 @@ def _run_bounded(argv, *, env, timeout_s: float, limit: int) -> bytes | None:
         data = _read_capped(stream, limit=limit, deadline=deadline)
         if data is None:
             return None
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        report = _probe_exit_status(process, deadline)
+        if report is None:
             return None
-        process.wait(timeout=remaining)
-        if process.returncode != 0:
+        if report[1] != 0:
             return None
+        clean = True
         return data
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     finally:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, 9)
-            except OSError:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
+        if not clean and process.returncode is None:
+            _signal_probe_group(process.pid)
+        if process.returncode is None:
             try:
                 process.wait(timeout=1.0)
             except (OSError, subprocess.SubprocessError):
+                # A leader wedged past SIGKILL must not hold the worker's
+                # poll open; the group signal has already gone out.
                 pass
         if process.stdout is not None:
             try:

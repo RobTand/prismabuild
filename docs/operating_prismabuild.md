@@ -222,6 +222,10 @@ What PB does with it:
   an image. The sealed action is the authority; the queue item's
   `container_images` is its scheduling projection, and `publish` refuses an
   item that claims the `container-image-v1` capability without references.
+  Deriving that projection from the sealed params is the producer's job:
+  `pbrun`, `fleet_submit` and `pbcampaign` do it, while a direct
+  `PoolQueue.publish` caller is trusted to do the same -- the queue record is
+  not re-verified against the sealed CAS body.
 - **Require the capability.** A declared image adds the required placement
   tag `container-image-v1`. Only a worker loop that performs the claim check
   offers it, so an old loop cannot claim image-pinned work during a rolling

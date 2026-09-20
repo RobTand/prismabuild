@@ -94,6 +94,35 @@ def test_a_mutable_tag_is_refused_at_publication(tmp_path):
     assert not queue.item_path(pool.READY, KEY_A).exists()
 
 
+def test_a_refused_publication_retires_no_withdrawal(tmp_path):
+    """Validation is a precondition, not a step after retiring a decision.
+
+    A publication that is refused must leave the authoritative withdrawal
+    exactly where it was; retiring a live cancellation belongs to a
+    publication that actually replaces it (#708's contract, #714 review).
+    """
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY_A)
+    queue.withdraw(KEY_A, by="rob", reason="not needed", signal_child=False)
+    marker = queue.item_path(pool.WITHDRAWN, KEY_A)
+    before = marker.read_bytes()
+
+    with pytest.raises(pool.PoolContractError, match="container_images"):
+        publish(queue, KEY_A, tags=[pb.CONTAINER_IMAGE_TAG])
+
+    assert marker.exists()
+    assert marker.read_bytes() == before
+    assert queue.live_withdrawal(KEY_A) is not None
+    # ``withdraw`` itself files the ready source it replaced; the refusal must
+    # not have retired the withdrawal itself (``_supersede_withdrawal``'s
+    # capture), which is what a live cancellation losing its authority leaves
+    # behind.
+    assert not list(
+        queue.superseded_dir().glob(f"{KEY_A}*.withdrawal-source"))
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+
+
 def test_an_action_without_images_has_no_field_and_no_requirement(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})

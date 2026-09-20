@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import tracemalloc
 
 import pytest
 
@@ -167,6 +168,106 @@ def test_a_real_probe_read_is_capped_while_reading_not_after():
     result = ci._run_bounded(
         overflowing, env=dict(os.environ), timeout_s=10.0, limit=4096)
     assert result is None
+
+
+def test_a_single_read_never_allocates_past_the_chunk_bound():
+    """A sized read, not ``BufferedReader.read()``.
+
+    A nonblocking buffered stream can satisfy ``read()`` with no size by
+    draining a continuously-fed pipe into one arbitrarily large object, so
+    checking the length afterwards is not the bound.  The fake below models
+    exactly that drain; the tracked peak shows whether the reader ever asked
+    for it.
+    """
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"x" * 32)
+        os.close(write_fd)
+        write_fd = -1
+
+        class _Draining:
+            def fileno(self):
+                return read_fd
+
+            def read(self, size=-1):
+                # What ``read()`` without a size may return: one huge object,
+                # allocated inside the call, allocated once.
+                return b"y" * (8 << 20)
+
+        tracemalloc.start()
+        try:
+            result = ci._read_capped(
+                _Draining(), limit=4096, deadline=time.monotonic() + 5.0)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert result is None or len(result) <= 4096
+        assert peak < (1 << 20), f"one read allocated {peak} bytes"
+    finally:
+        os.close(read_fd)
+        if write_fd != -1:
+            os.close(write_fd)
+
+
+def test_a_probe_descendant_does_not_survive_the_deadline(tmp_path):
+    """The leader can exit while its child still holds the stdout pipe.
+
+    A deadline failure must signal the exact process group the probe was
+    spawned under, not only when the leader has not been reaped: polling the
+    leader first retires its pid, and a descendant that inherited the pipe
+    would otherwise outlive the read (#714 review).
+    """
+
+    child_script = tmp_path / "child.py"
+    child_script.write_text(
+        "import sys, time\n"
+        "with open(sys.argv[1], 'a') as stream:\n"
+        "    while True:\n"
+        "        stream.write('tick\\n')\n"
+        "        stream.flush()\n"
+        "        time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    leader_script = tmp_path / "leader.py"
+    leader_script.write_text(
+        "import os, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+        "with open(sys.argv[3], 'w') as stream:\n"
+        "    stream.write(str(child.pid))\n"
+        "os._exit(0)\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "child.log"
+    pid_file = tmp_path / "child.pid"
+
+    assert ci._run_bounded(
+        [sys.executable, str(leader_script), str(child_script), str(marker),
+         str(pid_file)],
+        env=dict(os.environ), timeout_s=0.6, limit=4096) is None
+
+    deadline = time.monotonic() + 5.0
+    child_pid = None
+    while time.monotonic() < deadline and child_pid is None:
+        if pid_file.exists():
+            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        else:
+            time.sleep(0.05)
+    assert child_pid is not None, "the leader never named its child"
+
+    def marker_size() -> int:
+        return marker.stat().st_size if marker.exists() else 0
+
+    time.sleep(0.5)
+    settled = marker_size()
+    time.sleep(1.0)
+    assert marker_size() == settled, "the orphaned probe child kept running"
+
+    status = Path(f"/proc/{child_pid}/stat")
+    if status.exists():
+        text = status.read_text(encoding="utf-8")
+        state = text[text.rindex(")") + 2:].split()[0]
+        assert state == "Z", f"probe child still running in state {state!r}"
 
 
 def test_a_real_probe_read_returns_output_under_the_cap():

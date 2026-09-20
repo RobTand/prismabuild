@@ -2019,7 +2019,15 @@ Contract:
   before the check cannot match image-pinned work; a loop that has the check
   but no readable Docker still offers the tag and fails closed at claim.
   `PoolQueue.publish` adds the tag with the references and refuses an item
-  that carries the tag without references.
+  that carries the tag without references, and every declaration check runs
+  before the publication's first side effect (including retiring a live
+  withdrawal), so a refused publication changes nothing.
+- **Producer responsibility.** Deriving the queue projection from the sealed
+  params is the producer's job: `pbrun`, `fleet_submit` and `pbcampaign` do
+  it. The direct `PoolQueue.publish` API validates the references and the tag
+  pairing it is handed and never re-reads the CAS request to prove the
+  comparison -- the row is trusted, not cryptographically verified against
+  the sealed body.
 - **Placement evidence.** A worker announces the references its local Docker
   positively holds (`container_images` on the offer). An offer with no field
   is unknown, not empty, and matches no image-pinned item. `_matching_offers`
