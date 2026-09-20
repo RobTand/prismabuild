@@ -261,6 +261,20 @@ def _desc(origin: Path, template: dict, slot: str, cls: str, name: str,
 
 def _stage_batch(queue: pool.PoolQueue, batch: dict, origin: Path,
                  stage: Path, out_base: Path, tmp_path: Path) -> dict:
+    receipt = _stage_batch_receipt(queue, batch, origin, stage, out_base,
+                                   tmp_path)
+    assert receipt["complete"] is True, {
+        "refusal": receipt.get("refusal"), "errors": receipt.get("errors"),
+        "bytes_staged": receipt.get("bytes_staged"),
+        "declared_bytes": receipt.get("declared_bytes")}
+    return receipt
+
+
+def _stage_batch_receipt(queue: pool.PoolQueue, batch: dict, origin: Path,
+                         stage: Path, out_base: Path,
+                         tmp_path: Path) -> dict:
+    """Run the real mover and return its receipt, refusal included."""
+
     manifest = po.build_stage_manifest(batch, str(origin))
     total = int(manifest["total_bytes"])
     manifest_path = tmp_path / f"manifest-{batch['batch_id']}.json"
@@ -282,12 +296,7 @@ def _stage_batch(queue: pool.PoolQueue, batch: dict, origin: Path,
         "--max-readers", "2",
         "--unpaced",
     ])
-    receipt = stage_move.move(args)
-    assert receipt["complete"] is True, {
-        "refusal": receipt.get("refusal"), "errors": receipt.get("errors"),
-        "bytes_staged": receipt.get("bytes_staged"),
-        "declared_bytes": receipt.get("declared_bytes")}
-    return receipt
+    return stage_move.move(args)
 
 
 def _file_sidecars(queue: pool.PoolQueue, batch: dict, out_base: Path):
@@ -650,6 +659,8 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
 
 def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
                                                    broker_endpoint) -> None:
+    if rlc is None:
+        pytest.skip(PIN_DEPENDENCY)
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
@@ -683,8 +694,11 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     assert batch0["ok"] is True
     _stage_batch(queue, batch0, origin, stage, out_base, tmp_path)
 
-    # Window 1: boundary-1 + cotangent genB (rollover, same slot new bytes) + checkpoint.
-    files1 = [str(origin / "boundary-1.pt"), str(origin / "cotangent-0.pt"),
+    # Window 1: boundary-1 + cotangent genB (rollover, same SLOT new bytes,
+    # its own origin path) + checkpoint. A live batch owns its origin
+    # paths until retirement, so the rolled generation writes its own
+    # file; regenerating one path is exercised separately below.
+    files1 = [str(origin / "boundary-1.pt"), str(origin / "cotangent-1.pt"),
               str(origin / "checkpoint-0.pt")]
     assert po.require_prewrite(
         queue, instance, template, batch_id="batch-0001",
@@ -695,7 +709,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     assert gen_b != gen_a
     descs1 = [
         _desc(origin, template, "boundary-1", "payload", "boundary-1.pt", b"D" * 4096, instance),
-        _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b"E" * 8192,
+        _desc(origin, template, "cotangent-0", "payload", "cotangent-1.pt", b"E" * 8192,
               instance, gen=gen_b),
         _desc(origin, template, "checkpoint-0", "checkpoint", "checkpoint-0.pt", b"F" * 2048,
               instance),
@@ -759,11 +773,16 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
         assert Path(str(entry["stage_path"])).read_bytes()
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER0) == {}
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {STAGE_BARE: 1}
+    # The rolled slot kept BOTH generations distinct on disk and in the
+    # manifest: new bytes are a new identity, not an overwrite.
+    assert (origin / "cotangent-0.pt").read_bytes() == b"B" * 8192
+    assert (origin / "cotangent-1.pt").read_bytes() == b"E" * 8192
     # HDD origin preserved through staged-copy eviction.
     assert (origin / "boundary-1.pt").is_file()
     assert (origin / "checkpoint-0.pt").is_file()
     # With window 1 still unretired, the batches retain sorts before owner.
-    early = po.safe_release_instance(queue, instance, template)
+    early = po.safe_release_instance(queue, instance, template,
+                                     lease_sdk=rlc)
     assert early["ok"] is False
     assert early["refusal"] == "active-batches-retain"
 
@@ -773,19 +792,21 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
                            residency_root=str(out_base))
     assert ret1["ok"] is True
     assert ret1["receipt"]["tokens_released"] == 1
-    held = po.safe_release_instance(queue, instance, template)
+    held = po.safe_release_instance(queue, instance, template,
+                                    lease_sdk=rlc)
     assert held["ok"] is False
     assert held["refusal"] == "owner-active-retain"
     # Finish the owner; leftover reclaim is idempotent (egress already
     # released each mover exactly once — receipts + empty ledger are proof).
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    sdk = rlc if HAS_PIN else None
-    first = po.safe_release_instance(queue, instance, template, lease_sdk=sdk)
+    proof = rlc.read_scope_attestation(queue, OWNER, bound["nonce"])
+    assert isinstance(proof, dict) and proof["scope_empty"] is True
+    first = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
     assert first["ok"] is True and first["released"] == 0
-    assert first["lease_proof"] == ("sdk-census-clean" if HAS_PIN
-                                    else "sdk-absent-structural")
-    second = po.safe_release_instance(queue, instance, template, lease_sdk=sdk)
+    assert first["lease_proof"] == "sdk-census-clean"
+    second = po.safe_release_instance(queue, instance, template,
+                                      lease_sdk=rlc)
     assert second["ok"] is True and second["released"] == 0
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {}
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(
@@ -1185,3 +1206,83 @@ def test_pin_census_taint_retains(tmp_path: Path, broker_endpoint) -> None:
     (junk_dir / "junk.json").unlink()
     clean = po.safe_release_instance(queue, instance, template, lease_sdk=rlc)
     assert clean == {"ok": True, "released": 0, "lease_proof": "sdk-census-clean"}
+
+
+def test_one_origin_path_per_live_batch_refuses_late_at_stage(
+        tmp_path: Path) -> None:
+    """A second live batch on one origin path refuses -- but only at stage.
+
+    RECORDED GAP, measured, not waived: staged material identity is keyed
+    by the ORIGIN PATH, so one path belongs to at most one unretired
+    batch -- replacing it would invalidate the first batch's published
+    material and anything fenced on it, which `_StagedPublisher` refuses.
+    `require_prewrite` and `commit_batch` nonetheless ACCEPT a second live
+    batch naming that same path: they account class bytes, maxima and
+    owner liveness, never paths across batches (`_outstanding_sums`). So
+    the producer is authorized to write the bytes and to commit them, and
+    only the mover refuses -- after the HDD write. `require_prewrite`
+    documents itself as the gate that refuses "BEFORE the first payload
+    byte"; for this case it does not.
+
+    This pins both halves so neither can change silently, and records the
+    supported sequence: retire the owning batch, then the path
+    regenerates.
+    """
+
+    origin = tmp_path / "pool-origin" / "outputs"
+    origin.mkdir(parents=True)
+    template = _template(str(origin))
+    queue = _queue(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert stage_release.register_stage_root(
+        queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
+    bound = _bind(queue, template)
+    instance = bound["instance"]
+    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    shared = str(origin / "cotangent-0.pt")
+
+    assert po.require_prewrite(
+        queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[shared])["ok"] is True
+    desc_a = _desc(origin, template, "cotangent-0", "payload",
+                   "cotangent-0.pt", b"A" * 4096, instance)
+    batch_a = po.commit_batch(queue, instance, template, [desc_a],
+                              batch_id="batch-a", tier=STAGE_TIER,
+                              mover_key=MOVER0)
+    assert batch_a["ok"] is True
+    _stage_batch(queue, batch_a, origin, stage, out_base, tmp_path)
+
+    # The gap: the write is authorized and the commit is accepted while
+    # batch-a still owns that path.
+    assert po.require_prewrite(
+        queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
+        class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
+        paths=[shared])["ok"] is True
+    desc_b = _desc(origin, template, "cotangent-0", "payload",
+                   "cotangent-0.pt", b"Z" * 4096, instance)
+    batch_b = po.commit_batch(queue, instance, template, [desc_b],
+                              batch_id="batch-b", tier=STAGE_TIER,
+                              mover_key=MOVER1)
+    assert batch_b["ok"] is True
+
+    # ... and the mover is where it actually refuses, naming the path it
+    # declined to invalidate. Nothing destructive ran: batch-a's staged
+    # bytes stand.
+    refused = _stage_batch_receipt(queue, batch_b, origin, stage, out_base,
+                                   tmp_path)
+    assert refused["complete"] is False, refused
+    assert any("cotangent-0.pt" in str(err) and "different bytes" in str(err)
+               for err in refused["errors"]), refused["errors"]
+    assert (stage / "cotangent-0.pt").read_bytes() == b"A" * 4096
+
+    # The supported sequence: retire the owning batch, then the same path
+    # regenerates through the ordinary mover.
+    assert po.retire_batch(queue, instance, template, "batch-a",
+                           stage_root=str(stage),
+                           residency_root=str(out_base))["ok"] is True
+    staged = _stage_batch(queue, batch_b, origin, stage, out_base, tmp_path)
+    assert staged["complete"] is True
+    assert (stage / "cotangent-0.pt").read_bytes() == b"Z" * 4096
