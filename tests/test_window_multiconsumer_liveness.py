@@ -1,0 +1,177 @@
+"""Multi-consumer window fit/liveness: per-consumer decisions oversubscribe shared free.
+
+PRG-04 audit fixture (PB main e91a55d, no production edits).  These tests use
+only real production paths -- ``residency_plan.build_plan``/``window``,
+``PoolQueue`` tier ledgers, ``tier_loop.residency_window``/``window_pressure``
+-- with small synthetic GiB sizes as test parameters (never fleet defaults).
+
+What they prove (all green on current main):
+
+* each consumer's ``window()`` fits alone against the same free snapshot, but
+  the two decisions jointly exceed that free snapshot;
+* the real coordinator (``residency_window``) publishes both consumers against
+  one free snapshot, because a publish to ``ready/`` reserves no tokens --
+  tokens move only at mover claim time (``pool._acquire_tier_tokens``:
+  ``never_fits_tier_capacity`` vs ``tier_reservation_unavailable``);
+* ``window_pressure`` reports the MAX next phase across consumers, not the
+  SUM, so the sweep frees for one advance, never for the joint need;
+* the per-consumer runahead budget (``capacity - step``) sums past capacity
+  for N>=2: no joint inequality exists anywhere on main.
+
+This is the PRG-04 gap: active staged + in-flight + minimum feasible next
+advancement + reserve <= capacity is never checked jointly, and no
+deterministic PB policy guarantees one admissible next step across concurrent
+consumers.  Admission serializes via retry (one mover wins
+``tier_reservation_unavailable`` while the other waits), but ordering is
+queue-scan order with no fairness, no starvation bound, and no
+permanent-oversize-vs-transient-wait typing at the window layer (that typing
+exists only per-mover at claim time).
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+
+from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+import tier_loop  # noqa: E402
+
+TIER = "prismabuild-stage:dl380g10"
+STAGE_KIND = f"stage_gib@{TIER}"
+MANIFEST = "9" * 64
+GIB = storage_tiers.GIB
+
+
+def _hexkey(seed: str) -> str:
+    return (seed.encode().hex() * 64)[:64]
+
+
+def _row(key: str, resources: dict[str, int], queue: pool.PoolQueue) -> dict[str, object]:
+    return {"action_key": key, "cas_root": str(queue.root / "cas"),
+            "checkout_root": str(queue.root / "co"),
+            "worker_script": str(queue.root / "worker.py"),
+            "tags": ["dl380g10"], "resources": resources}
+
+
+def _plan(queue: pool.PoolQueue, consumer: str, *,
+          gib_per_phase: int = 2, phases: int = 4,
+          seed: str = "mover") -> dict[str, object]:
+    built = []
+    for ordinal in range(phases):
+        start = ordinal * gib_per_phase * GIB
+        end = start + gib_per_phase * GIB
+        built.append({
+            "name": f"phase-{ordinal}",
+            "start_bytes": start, "end_bytes": end,
+            "stage_gib": gib_per_phase,
+            "mover_row": {
+                **_row(_hexkey(f"{seed}{consumer[:4]}{ordinal}"),
+                       {STAGE_KIND: gib_per_phase, "mem_gb": 1}, queue),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                    "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                    "range_start_bytes": start, "range_end_bytes": end},
+            },
+            "egress_row": _row(_hexkey(f"egress{consumer[:4]}{ordinal}"),
+                               {"mem_gb": 1}, queue),
+        })
+    return residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=TIER, stage_root="/stage/prewarm",
+        manifest_sha256=MANIFEST, manifest_bytes=1 << 30, phases=built)
+
+
+def _queue(tmp_path: Path, *, capacity_gib: int = 5) -> pool.PoolQueue:
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.ensure_layout()
+    q.mint_tier_capacity(TIER, {"stage_gib": capacity_gib})
+    return q
+
+
+def _claim(queue: pool.PoolQueue, plan: dict[str, object], consumer: str) -> None:
+    residency_plan.freeze(queue, plan)
+    queue.publish(
+        action_key=consumer, cas_root=queue.root / "cas",
+        checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
+        resources={"cpu": 1, "mem_gb": 1},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                   "leads": residency_plan.leads_for(plan)})
+
+
+CONSUMER_A = "a" * 64
+CONSUMER_B = "b" * 64
+
+
+def test_two_windows_each_fit_alone_but_jointly_exceed_free(tmp_path) -> None:
+    """Pure-function half: same free snapshot, two fitting decisions, joint overrun."""
+    queue = _queue(tmp_path, capacity_gib=5)
+    plan_a = _plan(queue, CONSUMER_A, seed="moverA")
+    plan_b = _plan(queue, CONSUMER_B, seed="moverB")
+
+    dec_a = residency_plan.window(plan_a, accepted_phase=None, free_gib=5)
+    dec_b = residency_plan.window(plan_b, accepted_phase=None, free_gib=5)
+
+    assert [e["phase"] for e in dec_a["publish"]] == ["phase-0", "phase-1"]
+    assert [e["phase"] for e in dec_b["publish"]] == ["phase-0", "phase-1"]
+    joint = (sum(int(e["stage_gib"]) for e in dec_a["publish"])
+             + sum(int(e["stage_gib"]) for e in dec_b["publish"]))
+    assert joint == 8
+    assert joint > 5  # each fits the 5 GiB snapshot alone; together they do not
+
+
+def test_residency_window_publishes_two_consumers_from_one_snapshot(tmp_path) -> None:
+    queue = _queue(tmp_path, capacity_gib=5)
+    plan_a = _plan(queue, CONSUMER_A, seed="moverA")
+    plan_b = _plan(queue, CONSUMER_B, seed="moverB")
+    _claim(queue, plan_a, CONSUMER_A)
+    _claim(queue, plan_b, CONSUMER_B)
+
+    events = tier_loop.residency_window(
+        queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
+                             "mountpoint": str(tmp_path / "stage")}})
+
+    published = [(e["consumer"], e["phase"]) for e in events
+                 if e.get("event") == "mover-published"]
+    consumers = {c for c, _p in published}
+    # Both live consumers are served from the same ledger snapshot: a publish
+    # reserves nothing, so the second decision cannot see the first.
+    assert CONSUMER_A in consumers and CONSUMER_B in consumers
+    # Jointly the published movers exceed the 5 GiB the snapshot offered: the
+    # ledger still reports the same free for both, admission sorts it out later.
+    kinds = queue.tier_ledger(TIER).available()
+    assert kinds.get("stage_gib", 0) == 5
+
+
+def test_window_pressure_reports_max_not_sum(tmp_path) -> None:
+    """After both first movers are queued-but-unstaged, pressure is one phase."""
+    queue = _queue(tmp_path, capacity_gib=5)
+    plan_a = _plan(queue, CONSUMER_A, seed="moverA")
+    plan_b = _plan(queue, CONSUMER_B, seed="moverB")
+    _claim(queue, plan_a, CONSUMER_A)
+    _claim(queue, plan_b, CONSUMER_B)
+    tier_loop.residency_window(
+        queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
+                             "mountpoint": str(tmp_path / "stage")}})
+
+    pressure = tier_loop.window_pressure(
+        queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
+                             "mountpoint": str(tmp_path / "stage")}})
+
+    assert pressure.get(TIER) == 2  # max(2, 2), not the joint 4
+
+
+def test_per_consumer_runahead_budgets_sum_past_capacity(tmp_path) -> None:
+    """Two rolling consumers each hold capacity-step; the sum is not bounded."""
+    queue = _queue(tmp_path, capacity_gib=6)
+    plan_a = _plan(queue, CONSUMER_A, seed="moverA")
+    plan_b = _plan(queue, CONSUMER_B, seed="moverB")
+
+    budget_a = residency_plan.runahead_budget_gib(
+        plan_a, "phase-0", capacity_gib=6)
+    budget_b = residency_plan.runahead_budget_gib(
+        plan_b, "phase-0", capacity_gib=6)
+
+    assert budget_a == 4 and budget_b == 4  # capacity - step, each
+    assert budget_a + budget_b == 8 > 6  # no joint bound exists on main
