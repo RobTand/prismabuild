@@ -1027,3 +1027,90 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     queue.finish(w1, status="executed")
     assert int(ledger.holder_tokens(w1).get("stage_gib", 0)) == 1
     assert ledger.available().get("stage_gib") == 1
+
+
+def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
+    """C=6: two cur+next windows admit with each token counted once.
+
+    After every actual take and every publish prefix the ledger adds up:
+    blind takes move planned nexts to held (no double), both windows
+    publish only with their advances retained, and a 5-token stealer is
+    denied while the 2-token advance room stays held.  One window then
+    runs to completion with real bytes while the other's fence stays
+    exact.
+    """
+    ctx = _setup_two_consumers(tmp_path, stage_gib=6)
+    queue = ctx["queue"]
+    tiers = _tiers(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    a0, a1 = ctx["aa"]["movers"]
+    b0, b1 = ctx["bb"]["movers"]
+
+    first = tier_loop.residency_window(queue, tiers=tiers)
+    # Both windows publish; nothing unfunded, gated, or unknown for A/B.
+    assert {a0, b0} <= _published(first)
+    assert [e for e in first if e.get("event") == "window-unfunded"] == []
+    assert [e for e in first if e.get("event") == "window-unknown"] == []
+    assert _gated(first) == {}
+    # Exact after the takes: blind-held advances plus free add to capacity.
+    grant_a = window_credit.grant_key(CONSUMER_A, TIER, "mover_row", "phase-1")
+    grant_b = window_credit.grant_key(CONSUMER_B, TIER, "mover_row", "phase-1")
+    total_held = sum(
+        int(tokens.get("stage_gib", 0))
+        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
+    assert total_held + ledger.available().get("stage_gib") == 6
+    assert int(ledger.holder_tokens(grant_a).get("stage_gib", 0)) + \
+        int(ledger.holder_tokens(a1).get("stage_gib", 0)) == 1
+    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
+        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
+
+    # Competing claim: a 5-token stealer cannot take advance room; the
+    # published prefix stays funded.
+    stealer5 = _hexkey("r3-steal-5")
+    _stealer_row(queue, stealer5, 5)
+    got = queue.claim(tags=["dl380g10"], owner="w-steal5",
+                      ready=_ready_only(queue, stealer5))
+    assert got is None
+    assert queue.item_path(pool.READY, stealer5).exists()
+    total_held = sum(
+        int(tokens.get("stage_gib", 0))
+        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
+    assert total_held + ledger.available().get("stage_gib") == 6
+    # Stealer withdraws: its queued demand must not pollute later windows.
+    queue.item_path(pool.READY, stealer5).unlink()
+
+    # One window runs with real bytes; the other's advance stays exact.
+    _land(queue, tmp_path, ctx["aa"]["manifest_path"], ctx["aa"]["digest"],
+          a0, CONSUMER_A, 0, SPAN, ctx["aa"]["payloads"]["p0.bin"],
+          owner="w-tight")
+    for _ in range(6):
+        tier_loop.residency_window(queue, tiers=tiers)
+        record = queue.read_funding(a1, TIER)
+        if record is not None and record.get("state") == "transferring":
+            break
+    _await_funded(queue, a1)
+    # A1's advance retained (transferred), B's still held (grant or mover);
+    # total exact.
+    assert int(ledger.holder_tokens(a1).get("stage_gib", 0)) == 1
+    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
+        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
+    total_held = sum(
+        int(tokens.get("stage_gib", 0))
+        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
+    assert total_held + ledger.available().get("stage_gib") == 6
+    free_before = ledger.available().get("stage_gib")
+    _claim_exact(queue, a1, owner="w-tight")
+    assert ledger.available().get("stage_gib") == free_before
+    receipt = stage_move.move(
+        _move_args(queue, tmp_path, ctx["aa"]["manifest_path"],
+                   ctx["aa"]["digest"], a1, CONSUMER_A, SPAN, 2 * SPAN))
+    assert receipt["complete"] is True
+    queue.record_move(a1, receipt)
+    queue.finish(a1, status="executed")
+    # Pins plus B's fence add up; nothing leaked, nothing doubled.
+    total_held = sum(
+        int(tokens.get("stage_gib", 0))
+        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
+    assert total_held + ledger.available().get("stage_gib") == 6
+    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
+        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
