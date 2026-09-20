@@ -1185,7 +1185,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 tier_id=str(source.get("tier_id") or ""),
                 stage_root=str(source.get("stage_root") or ""),
                 manifest_sha256=str(source.get("manifest_sha256") or ""),
-                generation=str(old_material.get("generation") or ""),
+                generation=reader_lease.adopted_generation(old_material),
                 entries=material_entries,  # type: ignore[arg-type]
                 epoch=(str(source.get("epoch") or "")
                        if source.get("epoch") is not None else None))

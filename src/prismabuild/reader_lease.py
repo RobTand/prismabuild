@@ -328,6 +328,7 @@ def validate_pin(value: object) -> dict[str, object]:
     unknown = sorted(set(value) - {
         "schema", "pin_id", "consumer_action_key", "tier_id", "epoch",
         "manifest_sha256", "range", "covers", "entries", "ram", "refs",
+        "stage_root",
     })
     if unknown:
         raise ReaderLeaseError(f"unknown reader pin fields: {unknown}")
@@ -411,6 +412,10 @@ def validate_pin(value: object) -> dict[str, object]:
     span = value.get("range")
     if not isinstance(span, Mapping):
         raise ReaderLeaseError("pin range must be an object")
+    stage_root = value.get("stage_root")
+    if (not isinstance(stage_root, str) or not stage_root.startswith("/")
+            or stage_root != os.path.normpath(stage_root)):
+        raise ReaderLeaseError("pin stage_root must be a normalized absolute path")
     return {
         "schema": LEASE_SCHEMA_V1,
         "pin_id": str(value.get("pin_id") or ""),
@@ -419,6 +424,7 @@ def validate_pin(value: object) -> dict[str, object]:
             where="pin consumer_action_key"),
         "tier_id": str(value.get("tier_id") or ""),
         "epoch": str(value.get("epoch") or ""),
+        "stage_root": stage_root,
         "manifest_sha256": str(value.get("manifest_sha256") or ""),
         "range": {"start_bytes": span.get("start_bytes"),
                   "end_bytes": span.get("end_bytes")},
@@ -659,38 +665,15 @@ def attestation_path(queue, action_key: str, nonce: str) -> Path:
             / f"{nonce}.json")
 
 
-def write_scope_attestation(queue, *, action_key: str, nonce: str,
-                            scope_id: str, host: str, worker: str,
-                            incarnation: str, scope_empty: bool) -> Path:
-    """File the broker's scope verdict for one attempt (broker calls this).
-
-    ``scope_empty`` True means the broker proved every process of the scope
-    stopped (container/cgroup gone, not a PID guess).  Atomic rename, so a
-    reader never sees half a verdict.
-    """
-
-    payload = {"schema": ATTESTATION_SCHEMA_V1,
-               "action_key": action_key, "nonce": nonce,
-               "scope_id": scope_id, "host": host, "worker": worker,
-               "incarnation": incarnation, "scope_empty": bool(scope_empty),
-               "unix": time.time()}
-    if (not isinstance(action_key, str) or len(action_key) != 64
-            or not isinstance(nonce, str) or not nonce):
-        raise ReaderLeaseError("attestation needs an action key and nonce")
-    path = attestation_path(queue, action_key, nonce)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "w") as stream:
-        json.dump(payload, stream, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(tmp, path)
-    return path
-
-
 def read_scope_attestation(queue, action_key: str, nonce: str):
-    """A broker attestation, or ``None`` (absent), or the error (taint)."""
+    """A broker attestation, or ``None`` (absent), or the error (taint).
+
+    Read side of a cross-lane contract: the writer is the membership
+    lane, filing from a token-gated broker ``status`` verdict after it
+    proves the scope stopped and empty.  This module never writes one;
+    verification additionally requires terminal broker telemetry, so a
+    forged file alone proves nothing.
+    """
 
     try:
         with open(attestation_path(queue, action_key, nonce)) as stream:
@@ -706,29 +689,54 @@ def read_scope_attestation(queue, action_key: str, nonce: str):
 
 
 def _terminal_attempt_ids(record: Mapping[str, object]) -> list[tuple[str, str]]:
-    """Attempt (nonce, scope) identities a terminal record carries, if any."""
+    """Attempt (nonce, scope) identities a terminal record carries, if any.
+
+    Reads the real shapes PB writes: ``resource_scope.nonce`` on claims,
+    and the broker-produced ``resource_telemetry`` (``{action_key, nonce,
+    scope_unit, host}``) on terminal outcomes, top-level or under
+    ``detail``.  Anything else is not attempt evidence.
+    """
 
     out: list[tuple[str, str]] = []
+
+    def _take(nonce: object, scope: object) -> None:
+        if isinstance(nonce, str) and nonce:
+            out.append((nonce, str(scope) if isinstance(scope, str) else ""))
+
     scope = record.get("resource_scope")
     if isinstance(scope, Mapping):
-        nonce = scope.get("nonce")
-        if isinstance(nonce, str) and nonce:
-            unit = scope.get("unit")
-            out.append((nonce, str(unit) if isinstance(unit, str) else ""))
+        _take(scope.get("nonce"), scope.get("unit"))
+    for carrier in (record.get("resource_telemetry"),
+                    record.get("detail", {}).get("resource_telemetry")
+                    if isinstance(record.get("detail"), Mapping) else None):
+        if isinstance(carrier, Mapping):
+            _take(carrier.get("nonce"), carrier.get("scope_unit"))
     for field in ("nonce", "attempt_nonce"):
-        nonce = record.get(field)
-        if isinstance(nonce, str) and nonce:
-            out.append((nonce, str(record.get("scope_id") or "")))
+        _take(record.get(field), record.get("scope_id"))
     return out
 
 
-def _history_attempt_terminal(queue, action_key: str, nonce: str
-                              ) -> tuple[bool | None, str]:
-    """Whether attempt history names ``nonce`` terminally.
+def _terminal_broker_telemetry(record: Mapping[str, object]
+                               ) -> Mapping[str, object] | None:
+    """The broker-produced telemetry on a terminal record, if it parses."""
 
-    Returns ``(True, where)`` (terminal evidence for this attempt),
-    ``(False, where)`` (history names it non-terminally -- a newer attempt
-    is current), or ``(None, reason)`` (history unanswerable).
+    for carrier in (record.get("resource_telemetry"),
+                    record.get("detail", {}).get("resource_telemetry")
+                    if isinstance(record.get("detail"), Mapping) else None):
+        if isinstance(carrier, Mapping) and carrier.get("nonce"):
+            return carrier
+    return None
+
+
+def _history_attempt_terminal(queue, action_key: str, nonce: str,
+                              scope_id: str
+                              ) -> tuple[bool | None, str]:
+    """Whether attempt history proves ``nonce`` terminally closed.
+
+    Returns ``(True, where)`` (a history outcome carries this attempt with
+    terminal disposition *and* broker telemetry naming it), ``(False,
+    where)`` (history names it non-terminally -- a newer attempt is
+    current), or ``(None, reason)`` (history unanswerable: retain).
     """
 
     base = Path(queue.root) / "attempts" / action_key
@@ -752,22 +760,22 @@ def _history_attempt_terminal(queue, action_key: str, nonce: str
                 return None, "attempt history unreadable"
             if not isinstance(outcome, Mapping):
                 continue
-            found = _terminal_attempt_ids(outcome)
-            record_nonce = outcome.get("nonce")
-            if (isinstance(record_nonce, str) and record_nonce
-                    and (record_nonce, "") not in found):
-                found.append((record_nonce, ""))
-            for attempt_nonce, _scope in found:
-                if attempt_nonce != nonce:
-                    continue
-                disposition = str(outcome.get("disposition") or "")
-                status = str(outcome.get("status") or "")
-                if disposition in ("done", "failed", "withdrawn") or (
-                        not disposition and status in (
-                            "executed", "cache_hit", "failed",
-                            "result-ingestion-failed")):
-                    return True, f"attempt-history:{generation}/{name}"
-                return False, f"attempt-history:{generation}/{name}"
+            telemetry = _terminal_broker_telemetry(outcome)
+            if telemetry is None:
+                continue
+            if (str(telemetry.get("nonce") or "") != nonce
+                    or str(telemetry.get("action_key") or "") != action_key):
+                continue
+            if scope_id and str(telemetry.get("scope_unit") or "") != scope_id:
+                continue
+            disposition = str(outcome.get("disposition") or "")
+            status = str(outcome.get("status") or "")
+            if disposition in ("done", "failed", "withdrawn") or (
+                    not disposition and status in (
+                        "executed", "cache_hit", "failed",
+                        "result-ingestion-failed")):
+                return True, f"attempt-history:{generation}/{name}"
+            return False, f"attempt-history:{generation}/{name}"
     return None, "attempt not in history"
 
 
@@ -776,14 +784,26 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
     """Whether a certificate authorizes releasing another attempt's refs.
 
     ``certificate`` carries identifiers only -- ``{action_key, nonce,
-    scope_id, worker?, incarnation?, host?}``.  Proof comes from two
-    authoritative reads: the broker attestation file for
-    ``(action_key, nonce)`` (must exist, ``scope_empty`` true, identifiers
-    matching), and terminal evidence for the exact attempt -- the queue's
-    terminal record for the action when it names this attempt, else the
-    attempt history.  A terminal record naming a DIFFERENT attempt (a newer
-    attempt is current) refuses: the attempt is superseded, not contained.
-    Anything unanswerable retains with a reason.
+    scope_id, worker?, incarnation?, host?}``.  Proof is two authoritative
+    reads, and neither suffices alone:
+
+    1. The broker attestation file for ``(action_key, nonce)`` must exist
+       with ``scope_empty`` true, and its body must bind the same
+       action_key, nonce and scope_id (plus worker/incarnation/host where
+       the certificate names them).  A caller-writable file asserting
+       emptiness, alone, is never proof.
+    2. The attempt's terminal record must carry broker telemetry
+       (``resource_telemetry`` with ``{action_key, nonce, scope_unit}``)
+       naming exactly this attempt: the queue's terminal record for the
+       action when its telemetry names this attempt, else the attempt
+       history.  A terminal record naming a DIFFERENT attempt (a retry is
+       current) consults the older history instead of retaining forever:
+       history proving this attempt terminally closed with matching
+       telemetry authorizes; history naming it non-terminally, or silence,
+       retains.
+
+    Anything unanswerable retains with a reason: no ``kill(0)``, no
+    cross-host ``/proc``, no heartbeat or timestamp expiry.
     """
 
     from prismabuild import pool as pool_mod
@@ -792,7 +812,7 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
     nonce = certificate.get("nonce")
     scope_id = str(certificate.get("scope_id") or "")
     if (not isinstance(action_key, str) or len(action_key) != 64
-            or not isinstance(nonce, str) or not nonce):
+            or not isinstance(nonce, str) or not nonce or not scope_id):
         return False, "certificate names no attempt"
     attestation = read_scope_attestation(queue, action_key, nonce)
     if attestation is None:
@@ -801,41 +821,58 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
         return False, f"broker-attestation-unreadable-retain: {attestation}"
     if attestation.get("scope_empty") is not True:
         return False, "scope-not-empty-retain"
-    if scope_id and str(attestation.get("scope_id") or "") != scope_id:
-        return False, "attestation-scope-mismatch-retain"
+    # The attestation body binds every ID it carries: a file naming another
+    # action, attempt or scope proves nothing about this one.
+    if (str(attestation.get("action_key") or "") != action_key
+            or str(attestation.get("nonce") or "") != nonce
+            or str(attestation.get("scope_id") or "") != scope_id):
+        return False, "attestation-id-mismatch-retain"
     for field in ("worker", "incarnation", "host"):
         wanted = certificate.get(field)
         if (isinstance(wanted, str) and wanted
                 and str(attestation.get(field) or "") != wanted):
             return False, f"attestation-{field}-mismatch-retain"
+
+    def telemetry_names(telemetry: Mapping[str, object]) -> bool:
+        return (str(telemetry.get("action_key") or "") == action_key
+                and str(telemetry.get("nonce") or "") == nonce
+                and str(telemetry.get("scope_unit") or "") == scope_id)
+
     terminal_state = None
-    terminal_record = None
+    names_this_attempt: bool | None = None
     for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
         try:
             record = pool_mod._read_json(queue.item_path(state, action_key))
         except (OSError, pool_mod.PoolContractError):
             return False, f"terminal record unreadable: {state}"
-        if record is not None:
-            terminal_state, terminal_record = state, record
-            break
-    if terminal_record is not None:
-        carried = _terminal_attempt_ids(terminal_record)
-        if carried and all(attempt_nonce != nonce for attempt_nonce, _ in carried):
-            # The terminal record belongs to another attempt (a retry is
-            # current): this attempt is superseded, its refs stay until its
-            # own terminal evidence exists.
-            return False, "terminal-names-newer-attempt-retain"
-        if not carried:
-            historic, _where = _history_attempt_terminal(
-                queue, action_key, nonce)
-            if historic is not True:
-                return False, "no-terminal-evidence-retain"
-    else:
-        historic, _where = _history_attempt_terminal(queue, action_key, nonce)
-        if historic is not True:
-            return False, "no-terminal-evidence-retain"
-    host = str(attestation.get("host") or "")
-    return True, f"contained-terminal-{terminal_state or 'history'}:{host}"
+        if record is None:
+            continue
+        terminal_state = state
+        telemetry = (_terminal_broker_telemetry(record)
+                     if isinstance(record, Mapping) else None)
+        if telemetry is not None:
+            names_this_attempt = telemetry_names(telemetry)
+        break
+    if names_this_attempt is True:
+        host = str(attestation.get("host") or "")
+        return True, f"contained-terminal-{terminal_state}:{host}"
+    if names_this_attempt is False:
+        # The terminal record belongs to another attempt: consult the exact
+        # older history rather than retaining forever on a supersede.
+        historic, _where = _history_attempt_terminal(
+            queue, action_key, nonce, scope_id)
+        if historic is True:
+            host = str(attestation.get("host") or "")
+            return True, f"contained-history:{host}"
+        if historic is False:
+            return False, "superseded-attempt-retain"
+        return False, "no-terminal-evidence-retain"
+    historic, _where = _history_attempt_terminal(queue, action_key, nonce,
+                                                scope_id)
+    if historic is True:
+        host = str(attestation.get("host") or "")
+        return True, f"contained-history:{host}"
+    return False, "no-terminal-evidence-retain"
 
 
 def release_refs(queue, refs: list[dict[str, str]],
@@ -853,7 +890,6 @@ def release_refs(queue, refs: list[dict[str, str]],
     """
 
     ok, reason = containment_certificate_ok(queue, certificate)
-    root = leases_root(queue, residency_root)
     released: list[str] = []
     skipped: list[str] = []
     if not ok:
@@ -861,47 +897,80 @@ def release_refs(queue, refs: list[dict[str, str]],
                 "skipped": [str(ref.get("ref_id", "?")) for ref in refs]}
     attempt_nonce = str(certificate.get("nonce") or "")
     attempt_scope = str(certificate.get("scope_id") or "")
+    cert_host = str(certificate.get("host") or "")
+    attestation = read_scope_attestation(
+        queue, str(certificate.get("action_key") or ""), attempt_nonce)
+    attested_host = (str(attestation.get("host") or "")
+                     if isinstance(attestation, Mapping) else "")
     for ref in refs:
         consumer = str(ref.get("consumer_action_key") or "")
         pin_id = str(ref.get("pin_id") or "")
         ref_id = str(ref.get("ref_id") or "")
-        path = root / consumer / f"{pin_id}.lease.json"
-        try:
-            with open(path) as stream:
-                pin = validate_pin(json.load(stream))
-        except FileNotFoundError:
+        first = None
+        for candidate in _pin_candidates(
+                queue, pin_id, consumer_action_key=consumer or None,
+                residency_root=residency_root):
+            first = _read_pin(candidate)
+            if first is not None:
+                path = candidate
+                break
+        if first is None:
             released.append(ref_id)  # already gone counts as released
             continue
-        except (OSError, ValueError) as exc:
-            skipped.append(f"{ref_id}: {exc}")
+        if isinstance(first, Exception):
+            skipped.append(f"{ref_id}: {first}")
             continue
-        refs_map = pin["refs"]
-        assert isinstance(refs_map, dict)
-        held = refs_map.get(ref_id)
-        if held is None:
+        stage_root = str(first.get("stage_root") or "")
+        if not stage_root:
+            skipped.append(f"{ref_id}: pin names no stage")
+            continue
+        with queue.stage_ownership_lock(stage_root):
+            pin = _read_pin(path)
+            if pin is None:
+                released.append(ref_id)
+                continue
+            if isinstance(pin, Exception):
+                skipped.append(f"{ref_id}: {pin}")
+                continue
+            refs_map = pin["refs"]
+            assert isinstance(refs_map, dict)
+            held = refs_map.get(ref_id)
+            if held is None:
+                released.append(ref_id)
+                continue
+            assert isinstance(held, dict)
+            held_attempt = held["attempt"]
+            assert isinstance(held_attempt, dict)
+            if str(held_attempt.get("nonce")) != attempt_nonce:
+                skipped.append(f"{ref_id}: attempt mismatch")
+                continue
+            if str(held_attempt.get("scope_id")) != attempt_scope:
+                skipped.append(f"{ref_id}: scope mismatch")
+                continue
+            held_holder = held.get("holder")
+            held_host = (str(held_holder.get("host") or "")
+                         if isinstance(held_holder, Mapping) else "")
+            if held_host != attested_host:
+                # Bound to the pin and the exact attempt: containment for
+                # one host never frees another host's ref.
+                skipped.append(f"{ref_id}: host mismatch")
+                continue
+            _ = cert_host  # bound at certificate verification already
+            del refs_map[ref_id]
             released.append(ref_id)
-            continue
-        assert isinstance(held, dict)
-        held_attempt = held["attempt"]
-        assert isinstance(held_attempt, dict)
-        if (attempt_nonce and str(held_attempt.get("nonce")) != attempt_nonce):
-            skipped.append(f"{ref_id}: attempt mismatch")
-            continue
-        if (attempt_scope
-                and str(held_attempt.get("scope_id")) != attempt_scope):
-            skipped.append(f"{ref_id}: scope mismatch")
-            continue
-        del refs_map[ref_id]
-        released.append(ref_id)
-        if refs_map:
-            pin["refs"] = refs_map
-            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(tmp, "w") as stream:
-                json.dump(validate_pin(pin), stream, sort_keys=True)
-                stream.write("\n")
-            os.replace(tmp, path)
-        else:
-            path.unlink(missing_ok=True)
+            if refs_map:
+                pin["refs"] = refs_map
+                try:
+                    _write_pin(path, pin)
+                except ReaderLeaseError as exc:
+                    skipped.append(f"{ref_id}: {exc}")
+                    released.remove(ref_id)
+            else:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    skipped.append(f"{ref_id}: {exc}")
+                    released.remove(ref_id)
     return {"ok": not skipped, "reason": reason, "released": released,
             "skipped": skipped}
 
@@ -980,6 +1049,9 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         context[f"retiring:{mover}"] = [str(mark["generation"]) for mark in marks]
 
     def cached_fragment(mover: str):
+        # Successes cache; misses never stick: a cached absence would blind
+        # later acquires in this context to newly published material, while
+        # the lock re-reads fresh before anything pins.
         key = f"fragment:{consumer_action_key}:{mover}"
         if key not in context:
             try:
@@ -987,15 +1059,18 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                         root, consumer_action_key, mover)) as stream:
                     context[key] = map_mod.validate_fragment(json.load(stream))
             except FileNotFoundError:
-                context[key] = None
+                return None
             except (OSError, ValueError) as exc:
-                context[key] = exc
+                return exc
         return context[key]
 
     def cached_material(mover: str):
         key = f"material:{consumer_action_key}:{mover}"
         if key not in context:
-            context[key] = read_material(root, consumer_action_key, mover)
+            material = read_material(root, consumer_action_key, mover)
+            if material is None or isinstance(material, Exception):
+                return material
+            context[key] = material
         return context[key]
 
     stage_root = ""
@@ -1085,7 +1160,12 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     else:
         pinned_keys = sorted(union)
 
-    with queue.stage_ownership_lock(stage_root or "/"):
+    if not stage_root:
+        # Without the stage root there is no correct lock key: refuse
+        # instead of pinning under a lock nobody else takes.
+        return {"ok": False,
+                "refusal": "ownership-uncertain: covers name no stage"}
+    with queue.stage_ownership_lock(stage_root):
         # Re-validate inside the lock, bypassing the caller context: an
         # egress either filed its fragment drop and retiring mark before
         # this snapshot (seen below) or waits out there until this pin
@@ -1163,12 +1243,15 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         directory = leases / consumer_action_key
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{pin_id}.lease.json"
-        try:
-            with open(path) as stream:
-                pin = validate_pin(json.load(stream))
+        pin = _read_pin(path)
+        if isinstance(pin, Exception):
+            return {"ok": False,
+                    "refusal": f"ownership-uncertain: {pin}"}
+        if pin is not None:
             same_window = (
                 str(pin["tier_id"]) == tier_id
                 and str(pin["epoch"]) == str(epoch or "")
+                and str(pin.get("stage_root") or "") == stage_root
                 and [(str(cover.get("mover_action_key") or ""),
                       str(cover.get("generation") or ""))
                      for cover in pin["covers"]]  # type: ignore[union-attr]
@@ -1196,13 +1279,14 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                 "unix": time.time(),
             }
             pin["refs"] = refs_map
-        except FileNotFoundError:
+        else:
             pin = {
                 "schema": LEASE_SCHEMA_V1,
                 "pin_id": pin_id,
                 "consumer_action_key": consumer_action_key,
                 "tier_id": tier_id,
                 "epoch": str(epoch or ""),
+                "stage_root": stage_root,
                 "manifest_sha256": str(covers[0].get("manifest_sha256") or ""),
                 "range": {"start_bytes": start, "end_bytes": end},
                 "covers": [{"mover_action_key": mover,
@@ -1219,14 +1303,12 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                     "unix": time.time(),
                 }},
             }
+        try:
+            _write_pin(path, pin)
+        except ReaderLeaseError as exc:
+            return {"ok": False,
+                    "refusal": f"ownership-uncertain: {exc}"}
         checked = validate_pin(pin)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with open(tmp, "w") as stream:
-            json.dump(checked, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
         # Stale marks for older generations of these movers can never close
         # a future acquire again: drop them now that the live generation is
         # known, so recovery does not need an operator.
@@ -1256,9 +1338,15 @@ def _announced_epoch(queue, tier_id: str) -> str | None:
     return str(epoch) if isinstance(epoch, str) and epoch else None
 
 
-def open_pinned(pin: Mapping[str, object], key: str
-                ) -> tuple[int, dict[str, object]]:
+def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
+                *, residency_root=None) -> tuple[int, dict[str, object]]:
     """Open one pinned path for the descriptor that will actually be read.
+
+    The opening ref must be live in the authoritative pin file at open
+    time: a stale dict from an already-released ref refuses, even when the
+    bytes are unchanged -- a released ref pins nothing.  (A release racing
+    this check is holder misuse: release-before-close is forbidden, and the
+    descriptor fence below still applies.)
 
     The ``fstat`` of the returned descriptor must equal the pin's identity --
     the descriptor validated is the descriptor read.  A same-path/length
@@ -1268,11 +1356,22 @@ def open_pinned(pin: Mapping[str, object], key: str
     Returns ``(fd, serving_tier_record)`` with ID-07
     ``{tier_id, epoch, pin_id, range_ref}`` recorded at open.  The caller
     owns the descriptor and must close it; the pinning ref must outlive it
-    (fork inherits the ref; mmap holds it; async prefetch holds it).
+    (fork inherits via a registered ref; mmap holds it; async prefetch
+    holds it).
     """
 
     checked = validate_pin(pin)
-    entries = checked["entries"]
+    pin_id = str(checked["pin_id"])
+    consumer = str(checked["consumer_action_key"])
+    live = _read_pin(leases_root(queue, residency_root) / consumer
+                     / f"{pin_id}.lease.json")
+    if live is None or isinstance(live, Exception):
+        raise ReaderLeaseError("pin is not live: refusing")
+    refs_map = live["refs"]
+    assert isinstance(refs_map, dict)
+    if ref_id not in refs_map:
+        raise ReaderLeaseError("opening ref is not live: refusing")
+    entries = live["entries"]
     assert isinstance(entries, list)
     match: dict[str, object] | None = None
     for entry in entries:
@@ -1280,10 +1379,9 @@ def open_pinned(pin: Mapping[str, object], key: str
         if entry.get("key") == key:
             match = entry
             break
-    if match is None and len(entries) == 1:
-        # Single-window pins filed by hand or legacy writers name no key.
-        match = entries[0]  # type: ignore[assignment]
     if match is None:
+        # Exact key or nothing: serving a wrong key's range under a
+        # right-looking pin is never a fallback.
         raise ReaderLeaseError(f"pin covers no such key {key!r}")
     stage_path = str(match["stage_path"])
     file_id = match["file_id"]
@@ -1318,44 +1416,84 @@ def release(queue, pin_id: str, ref_id: str, *,
     evictable); it never deletes (the egress does that, exactly once, after
     the delete).  Releasing never touches another holder's ref: two
     acquires need two releases.
+
+    Under the pin's stage-root ownership lock with a fresh read inside it,
+    the same guard as acquire and the egress: a release racing an acquire
+    or another release is ordered, never lost.
     """
 
+    for path in _pin_candidates(
+            queue, pin_id, consumer_action_key=consumer_action_key,
+            residency_root=residency_root):
+        first = _read_pin(path)
+        if first is None:
+            continue
+        if isinstance(first, Exception):
+            return False
+        stage_root = str(first.get("stage_root") or "")
+        if not stage_root:
+            return False
+        with queue.stage_ownership_lock(stage_root):
+            pin = _read_pin(path)
+            if pin is None:
+                return True  # a last release won the race; already gone
+            if isinstance(pin, Exception):
+                return False
+            refs_map = pin["refs"]
+            assert isinstance(refs_map, dict)
+            if ref_id not in refs_map:
+                return True  # already gone counts as released
+            del refs_map[ref_id]
+            if refs_map:
+                pin["refs"] = refs_map
+                try:
+                    _write_pin(path, pin)
+                except ReaderLeaseError:
+                    return False
+            else:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    return False
+            return True
+    return True
+
+
+def _pin_candidates(queue, pin_id: str, *,
+                    consumer_action_key: str | None = None,
+                    residency_root=None) -> list[Path]:
     root = leases_root(queue, residency_root)
     if consumer_action_key is not None:
-        candidates = [root / consumer_action_key / f"{pin_id}.lease.json"]
-    else:
-        candidates = []
-        try:
-            consumers = sorted(entry.name for entry in os.scandir(root)
-                               if entry.is_dir())
-        except OSError:
-            return True
-        for consumer in consumers:
-            candidates.append(root / consumer / f"{pin_id}.lease.json")
-    for path in candidates:
-        try:
-            with open(path) as stream:
-                pin = validate_pin(json.load(stream))
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError):
-            return False
-        refs_map = pin["refs"]
-        assert isinstance(refs_map, dict)
-        if ref_id not in refs_map:
-            return True  # already gone counts as released
-        del refs_map[ref_id]
-        if refs_map:
-            pin["refs"] = refs_map
-            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(tmp, "w") as stream:
-                json.dump(validate_pin(pin), stream, sort_keys=True)
-                stream.write("\n")
-            os.replace(tmp, path)
-        else:
-            path.unlink(missing_ok=True)
-        return True
-    return True
+        return [root / consumer_action_key / f"{pin_id}.lease.json"]
+    try:
+        consumers = sorted(entry.name for entry in os.scandir(root)
+                           if entry.is_dir())
+    except OSError:
+        return []
+    return [root / consumer / f"{pin_id}.lease.json" for consumer in consumers]
+
+
+def _read_pin(path: Path):
+    """A pin file, or ``None`` (absent), or the error (taint)."""
+
+    try:
+        with open(path) as stream:
+            return validate_pin(json.load(stream))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return exc
+
+
+def _write_pin(path: Path, pin: Mapping[str, object]) -> None:
+    checked = validate_pin(pin)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(tmp, "w") as stream:
+        json.dump(checked, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(tmp, path)
 
 
 def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
@@ -1373,61 +1511,208 @@ def register_inherited_ref(queue, pin_id: str, ref_id: str, *,
     holding an unregistered duplicate is contained before any free, and only
     its own release or certified containment moves the pin.
 
-    Runs under the stage root's ownership lock (pins live beside fragments
-    whose root this resolves from the pin file's own directory).
+    Every mutation runs under the pin's stage-root ownership lock with a
+    fresh read inside it: a parent release racing this registration either
+    lands first (this re-reads and appends) or last (it re-reads and keeps
+    this ref).  No lost update either way.
     Returns ``{"ok": True, "ref_id": ...}`` or ``{"ok": False, ...}``.
     """
 
-    root = leases_root(queue, residency_root)
-    candidates = ([root / consumer_action_key / f"{pin_id}.lease.json"]
-                  if consumer_action_key is not None else
-                  sorted(root.glob(f"*/{pin_id}.lease.json")))
-    for path in candidates:
-        try:
-            with open(path) as stream:
-                pin = validate_pin(json.load(stream))
-        except FileNotFoundError:
+    for path in _pin_candidates(
+            queue, pin_id, consumer_action_key=consumer_action_key,
+            residency_root=residency_root):
+        first = _read_pin(path)
+        if first is None:
             continue
-        except (OSError, ValueError) as exc:
-            return {"ok": False, "refusal": f"ownership-uncertain: {exc}"}
-        refs_map = pin["refs"]
-        assert isinstance(refs_map, dict)
-        parent = refs_map.get(ref_id)
-        if parent is None:
-            continue  # not this consumer's pin; keep looking
-        if not isinstance(parent, dict):
-            return {"ok": False, "refusal": "ownership-uncertain: bad ref"}
-        parent_attempt = parent.get("attempt")
-        parent_nonce = (str(parent_attempt.get("nonce") or "")
-                        if isinstance(parent_attempt, Mapping) else "")
-        child_ref = ref_id_for(
-            acquire_token=child_token,
-            host=str(child_holder.get("host") or ""),
-            nonce=parent_nonce, scope_id="")
-        refs_map[child_ref] = {
-            "acquire_token": child_token,
-            "attempt": (dict(parent_attempt)
-                        if isinstance(parent_attempt, Mapping)
-                        else {"nonce": parent_nonce, "scope_id": ""}),
-            "holder": dict(child_holder),
-            "unix": time.time(),
-        }
-        pin["refs"] = refs_map
-        try:
-            checked = validate_pin(pin)
-        except ReaderLeaseError as exc:
-            return {"ok": False, "refusal": f"ownership-uncertain: {exc}"}
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with open(tmp, "w") as stream:
-            json.dump(checked, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-        # The linkage rides the receipt/operator view, not the schema: the
-        # pin file stays strictly validatable.
-        return {"ok": True, "ref_id": child_ref, "inherited_from": ref_id}
+        if isinstance(first, Exception):
+            return {"ok": False, "refusal": f"ownership-uncertain: {first}"}
+        stage_root = str(first.get("stage_root") or "")
+        if not stage_root:
+            return {"ok": False,
+                    "refusal": "ownership-uncertain: pin names no stage"}
+        with queue.stage_ownership_lock(stage_root):
+            pin = _read_pin(path)
+            if pin is None:
+                continue  # raced a last release; try the next candidate
+            if isinstance(pin, Exception):
+                return {"ok": False,
+                        "refusal": f"ownership-uncertain: {pin}"}
+            refs_map = pin["refs"]
+            assert isinstance(refs_map, dict)
+            parent = refs_map.get(ref_id)
+            if parent is None:
+                continue  # not this consumer's pin; keep looking
+            if not isinstance(parent, dict):
+                return {"ok": False,
+                        "refusal": "ownership-uncertain: bad ref"}
+            parent_attempt = parent.get("attempt")
+            parent_nonce = (str(parent_attempt.get("nonce") or "")
+                            if isinstance(parent_attempt, Mapping) else "")
+            child_ref = ref_id_for(
+                acquire_token=child_token,
+                host=str(child_holder.get("host") or ""),
+                nonce=parent_nonce, scope_id="")
+            refs_map[child_ref] = {
+                "acquire_token": child_token,
+                "attempt": (dict(parent_attempt)
+                            if isinstance(parent_attempt, Mapping)
+                            else {"nonce": parent_nonce, "scope_id": ""}),
+                "holder": dict(child_holder),
+                "unix": time.time(),
+            }
+            pin["refs"] = refs_map
+            try:
+                _write_pin(path, pin)
+            except ReaderLeaseError as exc:
+                return {"ok": False, "refusal": f"ownership-uncertain: {exc}"}
+            # The linkage rides the receipt/operator view, not the schema:
+            # the pin file stays strictly validatable.
+            return {"ok": True, "ref_id": child_ref,
+                    "inherited_from": ref_id}
     return {"ok": False, "refusal": "unpublished"}
+
+
+# --------------------------------------------------------------------------
+# Injected reader context (SDK): identity from the execution environment
+# --------------------------------------------------------------------------
+
+def injected_context(queue=None, *, env=None, residency_root=None):
+    """Build this reader's identity from PB-owned sources, never invented.
+
+    Reads: the action key from ``ACTION_KEY_ENV`` (launcher-forwarded),
+    the composed map path from ``RESIDENCY_MAP_ENV`` (campaign scope),
+    and the attempt (nonce, scope unit) plus worker from this action's
+    live claim row (``resource_scope`` control record, broker-issued).
+    The host is this machine's own hostname, never caller-supplied, and
+    the helper generation root is the tree this module was imported from
+    (the sealed generation when imported via the published runtime).
+
+    No broker token is exposed: the control record's token never leaves
+    this function.  Anything missing refuses -- a context with a guessed
+    nonce, scope or worker would pin (or free) another attempt's bytes.
+
+    Returns ``{"ok": True, "ctx": {...}}`` or ``{"ok": False,
+    "refusal": ...}``.  ``ctx`` carries ``queue_root, action_key, nonce,
+    scope_id, worker, host, map_path, helper_root``.
+    """
+
+    import socket
+
+    from prismabuild import pool as pool_mod
+
+    source = dict(os.environ) if env is None else dict(env)
+    try:
+        from prismabuild.core import ACTION_KEY_ENV
+    except ImportError:
+        ACTION_KEY_ENV = "PRISMABUILD_ACTION_KEY"
+    try:
+        from prismabuild.residency_map import RESIDENCY_MAP_ENV
+    except ImportError:
+        RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
+    action_key = source.get(ACTION_KEY_ENV) or ""
+    if len(action_key) != 64 or any(
+            c not in _HEX for c in action_key):
+        return {"ok": False, "refusal": "no-action-context"}
+    map_path = source.get(RESIDENCY_MAP_ENV) or ""
+    if not map_path:
+        return {"ok": False, "refusal": "no-map-context"}
+    if queue is None:
+        queue = pool_mod.PoolQueue(
+            Path(map_path).parent.parent)
+    try:
+        claim = pool_mod._read_json(
+            queue.item_path(pool_mod.CLAIMED, action_key))
+    except (OSError, pool_mod.PoolContractError) as exc:
+        return {"ok": False, "refusal": f"claim-unreadable: {exc}"}
+    if not isinstance(claim, Mapping):
+        return {"ok": False, "refusal": "no-claim-context"}
+    control = claim.get("resource_scope")
+    intent = claim.get("resource_scope_intent")
+    nonce = ""
+    scope_id = ""
+    if isinstance(control, Mapping):
+        candidate = control.get("nonce")
+        if isinstance(candidate, str) and candidate:
+            nonce = candidate
+        unit = control.get("scope_id")
+        if isinstance(unit, str) and unit:
+            scope_id = unit
+    if not nonce and isinstance(intent, Mapping):
+        candidate = intent.get("nonce")
+        if isinstance(candidate, str) and candidate:
+            nonce = candidate
+    if not nonce or not scope_id:
+        return {"ok": False, "refusal": "no-attempt-context"}
+    worker = claim.get("claimed_by")
+    if not isinstance(worker, str) or not worker:
+        return {"ok": False, "refusal": "no-worker-context"}
+    return {"ok": True, "ctx": {
+        "queue_root": str(queue.root),
+        "action_key": action_key,
+        "nonce": nonce,
+        "scope_id": scope_id,
+        "worker": worker,
+        "host": socket.gethostname(),
+        "map_path": map_path,
+        "helper_root": str(Path(__file__).resolve().parents[2]),
+    }}
+
+
+def acquire_for(ctx: Mapping[str, object], *, tier_id: str, epoch: str,
+                covers: list[Mapping[str, str]],
+                expected: Mapping[str, Mapping[str, object]] | None = None,
+                span: Mapping[str, int], acquire_token: str,
+                ram=None, context: dict | None = None,
+                residency_root=None,
+                file_pin: bool = True) -> dict[str, object]:
+    """Acquire as an injected context: identity fixed, data selected.
+
+    The PQ-facing entry point.  Identity (consumer, attempt, holder) comes
+    only from ``ctx`` (see :func:`injected_context`); the caller selects
+    data (tier, epoch, covers, expected window) from its map lookup.  Exact
+    signature; no invented IDs cross this boundary.
+    """
+
+    import socket
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        queue = pool_mod.PoolQueue(Path(str(ctx["queue_root"])))
+        attempt = {"nonce": str(ctx["nonce"]),
+                   "scope_id": str(ctx["scope_id"])}
+        holder = {"host": socket.gethostname(), "pid": os.getpid()}
+        consumer = str(ctx["action_key"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"ok": False, "refusal": f"bad-context: {exc}"}
+    return acquire(
+        queue, consumer_action_key=consumer, attempt=attempt,
+        tier_id=tier_id, epoch=epoch,
+        span=span, holder=holder, acquire_token=acquire_token,
+        covers=covers, expected=expected, ram=ram,
+        residency_root=residency_root, context=context,
+        file_pin=file_pin)
+
+
+def adopted_generation(old_material: Mapping[str, object]) -> str:
+    """The generation an adoption carries over: stable reuse, new nothing.
+
+    Same bytes without replacement keep their actual generation -- the
+    successor dates its vouching with the publish it took over.  A new
+    generation is minted only with new bytes (see :func:`mint_generation`).
+    Raises :class:`ReaderLeaseError` when the source material is missing
+    or unparseable: adoption without proven generation is refused, never
+    guessed.
+    """
+
+    generation = old_material.get("generation")
+    if not isinstance(generation, str) or len(generation) != 32 or any(
+            c not in _HEX for c in generation):
+        raise ReaderLeaseError("adoption needs the source material generation")
+    entries = old_material.get("entries")
+    if not isinstance(entries, Mapping) or not entries:
+        raise ReaderLeaseError("adoption needs the source material entries")
+    return generation
 
 
 __all__ = [
@@ -1464,6 +1749,8 @@ __all__ = [
     "validate_retiring",
     "write_material",
     "write_retiring",
-    "write_scope_attestation",
     "read_scope_attestation",
+    "injected_context",
+    "acquire_for",
+    "adopted_generation",
 ]
