@@ -1461,11 +1461,84 @@ def _move_receipt(queue: pool.PoolQueue, action_key: str,
         return None, f"{action_key[:12]}: receipt unreadable: {exc}"
     if not isinstance(record, Mapping):
         return None, f"{action_key[:12]}: no filed move receipt"
+    if str(record.get("action_key") or "") != action_key:
+        return None, f"{action_key[:12]}: receipt is filed under another " \
+                     f"action's key"
     if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
         return None, f"{action_key[:12]}: receipt is not a pool move record"
     if record.get("complete") is not True:
         return None, f"{action_key[:12]}: receipt does not report complete"
     return dict(record), ""
+
+
+def _sealed_command_flags(
+        sealed: Mapping[str, object], *,
+        required: tuple[str, ...],
+        forbidden: tuple[str, ...]) -> tuple[dict[str, str] | None, str]:
+    """Read named flags out of a sealed request's argv, as list elements.
+
+    The command is read positionally and never re-parsed as a shell string.
+    Each named flag must appear exactly once: these requests are built by a
+    tool, so a duplicate is a real signal about how this one was built, not a
+    quirk to tolerate.  Only the named values are returned, so no caller can
+    print the whole argv.
+    """
+
+    params = sealed.get("params")
+    if not isinstance(params, Mapping):
+        return None, "carries no params"
+    command = params.get("command")
+    if not isinstance(command, list) or not command:
+        return None, "carries no command list"
+    if not all(isinstance(one, str) for one in command):
+        return None, "command is not a list of strings"
+    out: dict[str, str] = {}
+    for flag in tuple(required) + tuple(forbidden):
+        seen = [i for i, one in enumerate(command) if one == flag]
+        if len(seen) > 1:
+            return None, f"names {flag} {len(seen)} times"
+        if flag in forbidden:
+            if seen:
+                return None, f"names {flag}, which carries no authority here"
+            continue
+        if not seen:
+            return None, f"names no {flag}"
+        after = seen[0] + 1
+        if after >= len(command):
+            return None, f"{flag} names no value"
+        out[flag] = command[after]
+    return out, ""
+
+
+def _validated_sealed_request(
+        cas_root: str, action_key: str,
+        ) -> tuple[dict[str, object] | None, str]:
+    """A historical CAS request proven to be the action asked for.
+
+    ``prewarm_loop.sealed_request`` is a bare JSON load: any bytes at that
+    path answer for the sealed request, including a hand-edited body wearing
+    the key it is read under.  This repair treats the request's flags as the
+    authority for a destructive scope, so it applies the same sequence the
+    pool applies to a claimed action -- stable read, ``validate_action``
+    over the whole v2 contract, and the recorded key equal to the key asked
+    for -- and no bytes are re-hashed beyond that: the action key is the
+    digest work, and no payload is touched.
+    """
+
+    path = (Path(cas_root) / "requests" / action_key[:2]
+            / f"{action_key}.json")
+    try:
+        raw = pb._read_regular_file_nofollow(
+            path, where="orphan recovery action request")
+        action = pb.validate_action(pb._decode_strict_json(
+            raw, where="orphan recovery action request"))
+    except FileNotFoundError:
+        return None, f"{action_key[:12]}: not sealed in the CAS"
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return None, f"{action_key[:12]}: not a validly sealed action: {exc}"
+    if str(action.get("action_key") or "") != action_key:
+        return None, f"{action_key[:12]}: sealed for another action"
+    return action, ""
 
 
 def recover_orphaned_range(
@@ -1489,21 +1562,34 @@ def recover_orphaned_range(
     it; the tier, the stage root, the consumer, the manifest and the exact
     range are **read off those receipts**, so there is no caller-supplied
     digest or window to get wrong.  Both must be filed, well-formed and
-    ``complete``: absence is not terminal evidence, it is no evidence.
+    ``complete``: absence is not terminal evidence, it is no evidence.  Each
+    historical request is then read as an action and validated under its own
+    key (``validate_action`` plus the key comparison) before anything is
+    derived from it -- a bare JSON load would let any bytes at that path
+    answer for the sealed request -- and the surviving flag checks bind the
+    two requests to each other and to the receipts: the egress must name the
+    head as its mover, both must name the same consumer and stage root, the
+    head alone carries tier and range, and a filed receipt may not widen the
+    window its request authorized.
 
     Permission is that identity-bound scope **plus** the positive absence of
     every other ownership, established fresh under the lock the egress holds.
     The old source mark is never permission -- only a necessary condition, so
     an unmarked or unanswerable file is retained.  Every fragment retains,
-    wanted or not; live pins, claims in flight and promotion source handoffs
-    retain; and any census that cannot be read **refuses the pass** rather
-    than reading as absence.
+    wanted or not -- a fragment that cannot be read or validated refuses the
+    whole pass instead of reading as absent, and a withdrawn mover's fragment
+    retains like any other; live pins, claims in flight and promotion source
+    handoffs retain; and any census that cannot be read **refuses the pass**
+    rather than reading as absence.
 
     Originals are proven before anything is destroyed: every entry the window
-    names must still exist at its source path, and that path must resolve
-    outside the stage root, so a staged copy is never the last surviving
-    input.  Ambiguity retains, and any refused or unreadable entry fails the
-    whole pass -- over-retaining is a pass and over-removing is a failure.
+    names must still exist at its source path as a **regular file** that
+    holds at least the ``offset + bytes`` extent the manifest gives it, and
+    that path must resolve outside the stage root, so a staged copy is never
+    the last surviving input and a directory or a shrunken source is not an
+    input at all.  Ambiguity retains, and any refused or unreadable entry
+    fails the whole pass -- over-retaining is a pass and over-removing is a
+    failure.
 
     ``apply`` is false by default: the pass reports what it *would* retire and
     changes nothing.
@@ -1582,12 +1668,19 @@ def recover_orphaned_range(
                 f"the {label} receipt names stage root {named}, not {stage}")
     own_cas_early = (str(cas_root) if cas_root is not None
                      else str(queue.root.parent / "cas"))
-    for label, key in (("head", head_action_key),
-                       ("egress", egress_action_key)):
-        sealed = prewarm_loop.sealed_request(Path(own_cas_early), key)
-        if not isinstance(sealed, Mapping):
-            return refuse(f"the {label} request {key[:12]} is not sealed in "
-                          f"the CAS; its scope cannot be bound")
+    flags: dict[str, dict[str, str]] = {}
+    for label, key, want, deny in (
+            ("head", head_action_key,
+             ("--consumer-action-key", "--tier-id", "--stage-root",
+              "--range-start-bytes", "--range-end-bytes"),
+             ("--mover-action-key",)),
+            ("egress", egress_action_key,
+             ("--mover-action-key", "--consumer-action-key", "--stage-root"),
+             ("--tier-id", "--range-start-bytes", "--range-end-bytes"))):
+        sealed, why = _validated_sealed_request(own_cas_early, key)
+        if sealed is None:
+            return refuse(f"the {label} request {why}; its scope cannot "
+                          f"be bound")
         params = sealed.get("params")
         declared = (params.get("data_manifest")
                     if isinstance(params, Mapping) else None)
@@ -1599,6 +1692,50 @@ def recover_orphaned_range(
                 f"the sealed {label} request names manifest "
                 f"{str(digest)[:12]}, not the {manifest_sha256[:12]} its "
                 f"receipt recorded")
+        # Manifest equality is far too weak on its own.  Both phases of one
+        # campaign share a digest, so it would admit the whole manifest
+        # against authority for one phase's window.  The flags are what
+        # actually scope this.
+        got, why = _sealed_command_flags(sealed, required=want, forbidden=deny)
+        if got is None:
+            return refuse(f"the sealed {label} request {why}")
+        flags[label] = got
+
+    if flags["egress"]["--mover-action-key"] != head_action_key:
+        return refuse(
+            f"the sealed egress request retires mover "
+            f"{flags['egress']['--mover-action-key'][:12]}, not the head "
+            f"{head_action_key[:12]} this recovery is scoped to")
+    for label in ("head", "egress"):
+        if flags[label]["--consumer-action-key"] != consumer:
+            return refuse(
+                f"the sealed {label} request names consumer "
+                f"{flags[label]['--consumer-action-key'][:12]}, not the "
+                f"{consumer[:12]} its receipt recorded")
+        named = flags[label]["--stage-root"]
+        if os.path.normpath(named) != os.path.normpath(str(stage)):
+            return refuse(
+                f"the sealed {label} request names stage root {named}, "
+                f"not {stage}")
+    if flags["head"]["--tier-id"] != tier_id:
+        return refuse(
+            f"the sealed head request names tier {flags['head']['--tier-id']},"
+            f" not the {tier_id} its receipt recorded")
+    try:
+        sealed_start = int(flags["head"]["--range-start-bytes"])
+        sealed_end = int(flags["head"]["--range-end-bytes"])
+    except ValueError:
+        return refuse("the sealed head request names an unreadable range")
+    if sealed_start < 0 or sealed_end <= sealed_start:
+        return refuse("the sealed head request names no usable byte range")
+    if (sealed_start, sealed_end) != (start, end):
+        return refuse(
+            f"the head receipt claims {start}..{end} but its sealed request "
+            f"authorizes only {sealed_start}..{sealed_end}")
+    # Equal by the check above; take them from the sealed request anyway, so
+    # the authorized window is the one a filed receipt cannot widen.
+    start, end = sealed_start, sealed_end
+    receipt["scope_authority"] = "sealed_head_request"
     receipt["consumer_action_key"] = consumer
     receipt["tier_id"] = tier_id
     receipt["manifest_sha256"] = manifest_sha256
@@ -1672,32 +1809,70 @@ def recover_orphaned_range(
         receipt["scope_entries"] = len(names)
 
         # Originals first: nothing is destroyed before the inputs they stand
-        # for are proven to survive it.
+        # for are proven to survive it.  ``exists`` is not that proof -- a
+        # directory exists, and a source shrunken below the extent its window
+        # covers exists too -- so each original must be a regular file that
+        # still holds the whole extent ``offset + bytes`` the manifest names,
+        # resolved outside the stage root.  Size, never a digest: proving
+        # recapturability is a stat, not a model-sized hash.
         checked = present = 0
         for entry in window:
             source = str(entry.get("path") or "")
             if not source:
                 return refuse("a window entry names no source path")
+            offset = _bounded_int(entry.get("offset"))
+            span = _bounded_int(entry.get("bytes"))
+            if offset is None or span is None:
+                return refuse(
+                    f"{source}: window entry names an unusable extent")
             checked += 1
             try:
-                if not Path(source).exists():
+                original = Path(source)
+                if not original.exists():
                     return refuse(
                         f"original missing for {source}; the staged copy may "
                         f"be the last surviving input")
-                if stage_resolved in Path(source).resolve().parents:
+                if stage_resolved in original.resolve().parents:
                     return refuse(
                         f"original {source} resolves inside the stage root; "
                         f"it is not a separate input")
+                if not original.is_file():
+                    return refuse(
+                        f"original {source} is not a regular source file")
+                size = original.stat().st_size
             except OSError as exc:
                 return refuse(f"original {source} unreadable: {exc}")
+            if size < offset + span:
+                return refuse(
+                    f"original {source} holds {size} bytes, short of the "
+                    f"{offset + span} its window covers; the staged copy is "
+                    f"not proven recapturable")
             present += 1
         receipt["originals_checked"] = checked
         receipt["originals_present"] = present
 
         # Every fragment retains, wanted or not: the question here is not
         # whose bytes these are but whether anything at all still names them.
-        attributed = attributed_stage_paths(queue, wanted=None,
-                                            residency_root=residency_root)
+        # ``_fragment_owners`` -- not ``attributed_stage_paths`` -- because
+        # the repair's half of the question is answered against the exact
+        # staged-path set this scope derived, and because the map-composition
+        # reader deliberately skips a fragment that cannot be read or
+        # validated so a consumer still finds its other movers' copies.
+        # Readiness must not reuse that tolerance: skipped is how unknown
+        # collapses into unowned, and unowned is what deletes.  A taint
+        # refuses the whole pass, the same fail-closed rule the egress
+        # applies to its own fragment.  No mover is excepted, so a withdrawn
+        # mover's fragment retains too -- one more kept file is a pass.
+        fragment_root = Path(residency_root if residency_root is not None
+                             else queue.root / pool.RESIDENCY)
+        scope_paths = {os.path.normpath(str(stage / relative))
+                       for relative in names}
+        fragment_owners, fragment_taint = _fragment_owners(
+            fragment_root, scope_paths)
+        if fragment_taint:
+            return refuse(f"fragment census unreadable: "
+                          f"{'; '.join(fragment_taint[:3])}")
+        attributed = set(fragment_owners)
         pin_owners, pin_taint = reader_lease.live_for(
             queue, None, residency_root=residency_root)
         if pin_taint:
