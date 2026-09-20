@@ -57,6 +57,7 @@ def _ram_fragment_for(mapping: dict, base: dict, ram: Path, epoch: str,
     placed.write_bytes(staged.read_bytes())
     fragment = json.loads(json.dumps(base))
     fragment["tier_id"] = "ram:dl380g10"
+    fragment["stage_root"] = str(ram)
     fragment["epoch"] = epoch
     entry = dict(fragment["entries"][key])
     entry["sha256"] = digest
