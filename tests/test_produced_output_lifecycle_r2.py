@@ -417,7 +417,9 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         retired = po.retire_batch(queue, instance, template, "full",
                                   stage_root=str(stage),
                                   residency_root=str(out_base))
-        assert retired["ok"] is True, retired
+        assert retired["ok"] is True, json.dumps(
+            retired.get("receipt", retired), indent=1, sort_keys=True,
+            default=str)
         assert retired["receipt"]["complete"] is True
         # Durable quota still held with the origin file present.
         assert po.require_prewrite(
