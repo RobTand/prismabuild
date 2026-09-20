@@ -392,7 +392,9 @@ def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
 
 
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
-                   cas_root: str | Path | None = None) -> tuple[set[str], list[str]]:
+                   cas_root: str | Path | None = None,
+                   *, exclude: set[str] | frozenset[str] | None = None,
+                   ) -> tuple[set[str], list[str]]:
     """Staged paths a claimed copy may be writing, by sealed range.
 
     A copy in flight has no fragment yet, so fragments alone cannot attribute
@@ -406,6 +408,10 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     The CAS root comes from each sealed claim record's own ``cas_root`` where
     present (an explicit override wins for tests); the queue-sibling default
     applies only when no record names one.
+
+    ``exclude`` names claim keys that never count as another publisher --
+    the staged-path publication gate passes its own mover key, so a mover
+    never defers to itself.
     """
 
     paths: set[str] = set()
@@ -433,6 +439,8 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     default_cas = (str(cas_root) if cas_root is not None
                    else str(queue.root.parent / "cas"))
     for key, item in records:
+        if exclude and key in exclude:
+            continue    # this publisher's own claim: never another publisher
         # No first-record inheritance: each claim resolves its own CAS root --
         # the explicit override wins, else the record's own root, else the
         # queue-sibling default.  A rootless claim among rooted claims reads
