@@ -365,7 +365,13 @@ class _StagedPublisher:
             # A fragment vouches but the date is missing: a crash between
             # the fragment and its sidecar, or a publisher still running.
             # Defer to the stall policy's retry; never replace what
-            # another publication names.
+            # another publication names -- including after the grace.
+            if heal:
+                temp_note = ("still unproven after the grace, "
+                             "deferring to retry")
+                return ("refuse",
+                        f"shared staged name is published elsewhere, "
+                        f"{temp_note}: {destination}")
             return ("wait",
                     f"shared staged name is published elsewhere, "
                     f"deferring: {destination}")
@@ -376,7 +382,13 @@ class _StagedPublisher:
                     f"{cover_detail}; not replacing")
         if cover:
             # A live mover claim covers this name: its fragment may still
-            # land.  Defer; the retry adopts once it does.
+            # land.  Defer; the retry adopts once it does.  After the
+            # grace the answer is still refuse, never replace.
+            if heal:
+                return ("refuse",
+                        f"shared staged name still has a live publisher "
+                        f"after the grace, deferring to retry: "
+                        f"{destination}")
             return ("wait",
                     f"shared staged name has a live publisher, "
                     f"deferring: {destination}")
@@ -386,6 +398,11 @@ class _StagedPublisher:
                     f"staged copy census unreadable for {destination}; "
                     f"not replacing")
         if partials:
+            if heal:
+                return ("refuse",
+                        f"shared staged name still has a copy in flight "
+                        f"({partials}) after the grace, deferring to "
+                        f"retry: {destination}")
             return ("wait",
                     f"shared staged name has a copy in flight "
                     f"({partials}), deferring: {destination}")
