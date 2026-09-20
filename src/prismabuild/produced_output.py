@@ -1613,11 +1613,30 @@ def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
         raise ProducedOutputError("unknown batch_id for this instance")
     if entry.get("retired"):
         return
-    if entry.get("owner_action_key") != checked_instance["owner_action_key"]:
-        raise ProducedOutputError("retire owner must equal the instance owner")
-    if dict(entry.get("owner_attempt", {})) != dict(
-            checked_instance["owner_attempt"]):
-        raise ProducedOutputError("retire attempt must equal the instance attempt")
+    # Owner/attempt/manifest proof comes from the filed immutable batch
+    # record (exact sealed descriptors), cross-checked against both the
+    # commitments entry and this instance: neither a caller dict nor a
+    # bare commitments flag can retire another attempt's batch.
+    batch_file = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                  / instance_namespace(checked_instance)
+                  / f"{batch_id}.json")
+    try:
+        with open(batch_file, "rb") as handle:
+            filed = json.loads(handle.read(4 * 1024 * 1024 + 1).decode())
+    except FileNotFoundError:
+        raise ProducedOutputError(
+            "unknown-retain: batch-record-missing") from None
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    if not isinstance(filed, Mapping):
+        raise ProducedOutputError("unknown-retain: batch-record-missing")
+    if (str(filed.get("owner_action_key") or "")
+            != str(checked_instance["owner_action_key"])
+            or dict(filed.get("owner_attempt") or {}) != dict(
+                checked_instance["owner_attempt"])
+            or str(filed.get("manifest_digest") or "")
+            != str(entry.get("manifest_digest") or "")):
+        raise ProducedOutputError("retire owner/attempt/manifest mismatch")
     if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
         raise ProducedOutputError("retire needs a complete egress receipt")
     if receipt.get("errors"):
@@ -1676,8 +1695,6 @@ def retire_batch(queue, instance: Mapping[str, object],
         mover = str(entry.get("mover_key") or "")
         if len(consumer) != 64 or len(mover) != 64:
             return {"ok": False, "refusal": "bad-batch-namespace"}
-        if entry.get("owner_action_key") != checked_instance["owner_action_key"]:
-            return {"ok": False, "refusal": "retire-owner-mismatch"}
         # Capture the staged paths the egress is about to vouch while the
         # fragments still exist; after the delete only this record names
         # them for later live-path attribution.
