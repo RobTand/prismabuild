@@ -3770,6 +3770,12 @@ and does not satisfy the gate — the residency descriptor is deterministic on
 purpose, so that a consumer can bind it as a CAS dependency before the mover
 runs, which is exactly what makes a cached mover look finished.
 
+Target contract: [staged-read contract](staged_read_contract_2026-09-20.md)
+(requirement ledger `staged_read_requirements_2026-09-20.json`) names the
+allowed-tier, lease, and readiness rules this gate participates in, with
+honest per-requirement status. The PQ endgame is an application acceptance
+boundary referencing that contract, not a PB scheduler responsibility.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
