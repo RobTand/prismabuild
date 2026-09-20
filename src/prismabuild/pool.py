@@ -7926,6 +7926,7 @@ class PoolQueue:
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
         handles: dict[str, str], funded: dict[str, dict[str, object]],
+        cas_root: str | Path | None = None,
     ) -> dict[str, object] | None:
         """Take every tier's tokens, or say which tier stopped it.
 
@@ -7955,10 +7956,43 @@ class PoolQueue:
         # The sealed row funds at most once: its publication (including its
         # generation) is read once here and shared by every tier below, so a
         # republish between tiers cannot fund half a claim on stale credit.
+        # A failed reread is UNKNOWN evidence, never an empty row: the
+        # requiredness verdict below must not authorize fresh acquisition
+        # from an unreadable row.
         try:
             sealed = _read_json(self.item_path(READY, action_key))
+            sealed_read_error = False
         except (OSError, PoolContractError):
             sealed = None
+            sealed_read_error = True
+        # The immutable CAS-filed request is read ONCE for this action here
+        # (no history scan, no per-token lookup) and shared by every tier
+        # below: requiredness and the cover binding derive from it, and the
+        # READY projection must agree with it. An unreadable/invalid request
+        # is UNKNOWN evidence, never legacy. No request file is the narrow
+        # pre-existing direct-API compatibility path (kwarg-supplied
+        # reference, fully validated at publish); it never validates an
+        # ordinary production row.
+        try:
+            immutable_ref, immutable_present = _sealed_produced_output_batch(
+                cas_root if cas_root is not None else "", action_key)
+            immutable_error = False
+        except (OSError, PoolContractError, ValueError):
+            immutable_ref, immutable_present = None, False
+            immutable_error = True
+        sealed_has_key = (
+            isinstance(sealed, Mapping)
+            and "produced_output_batch" in sealed)
+        # Projection agreement, once per action: when the immutable request
+        # carries the reference, the READY projection must carry the same
+        # stable batch identity. Missing, malformed, or contradictory READY
+        # evidence never authorizes fresh tier acquisition.
+        projection_agrees: bool | None = None
+        if immutable_ref is not None:
+            projection_agrees = self._output_projection_matches_request(
+                sealed.get("produced_output_batch")
+                if isinstance(sealed, Mapping) else None,
+                immutable_ref)
         for tier_id, needs in sorted(tier_demand.items()):
             ledger = self.tier_ledger(tier_id)
             if not ledger.base.is_dir():
@@ -8015,6 +8049,15 @@ class PoolQueue:
                     names = sorted(str(name) for name in proof["tokens"])  # type: ignore[union-attr]
                 if not names:
                     covered = {}
+                elif (variant == "output" and immutable_ref is not None
+                        and not self._output_record_matches_request(
+                            proof, immutable_ref)):
+                    # R6: the cover must bind back to the immutable request
+                    # ref, not only to two mutable records that agree with
+                    # each other. A funding record that fails the immutable
+                    # binding authorizes no subtraction: drop the cover so
+                    # the gate below defers instead of paying fresh.
+                    covered = {}
                 else:
                     funded[tier_id] = {"kinds": dict(covered),
                                        "generation": generation,
@@ -8023,28 +8066,42 @@ class PoolQueue:
             remainder = {kind: int(need) - int(covered.get(kind, 0))
                          for kind, need in needs.items()}
             if not any(covered.values()):
-                # Output claim gate (R4): presence of the sealed
-                # `produced_output_batch` KEY is the positive required signal
-                # (valid or corrupt: a present-but-malformed projection is
-                # tampering, never legacy), with no history-wide admission
-                # scans. Required rows defer/refuse on absent/unknown/pending/
-                # invalid/terminal proof unless cover succeeded above; never
-                # fresh acquisition, even if every mutable output file is
-                # absent (precommit crash with sealed ref but no intent/commit
-                # yet defers). A funding file in any parsed state without a
-                # covering record is likewise never fresh credit (missing/
-                # corrupt projection with existing funding defers). Legacy
-                # movers (no sealed key, no funding file) retain existing
-                # admission behavior.
-                _sealed_has_key = (
-                    isinstance(sealed, Mapping)
-                    and "produced_output_batch" in sealed)
+                # Output claim gate (R6): requiredness derives from the
+                # immutable CAS request (read once above) OR the sealed READY
+                # projection KEY (valid or corrupt: a present-but-malformed
+                # projection is tampering, never legacy) OR a funding file in
+                # any state -- with no history-wide admission scans. Required
+                # rows defer/refuse on absent/unknown/pending/invalid/terminal
+                # proof unless cover succeeded above; never fresh acquisition,
+                # even if every mutable output file is absent (precommit crash
+                # with a sealed ref but no intent/commit yet defers, because
+                # the immutable request still says REQUIRED). Unknown READY
+                # or request evidence defers as well, never legacy fresh.
+                # Key ABSENCE alone (no request ref, no sealed key, no funding
+                # file) is legacy and retains existing admission behavior.
+                if sealed_read_error or immutable_error:
+                    return {"tier_id": tier_id,
+                            "reason": "output_funding_unknown",
+                            "demand": dict(needs)}
                 try:
                     _rec, _fstate = self.output_funding_file_state(
                         action_key, tier_id)
                 except (OSError, PoolContractError, ValueError):
                     _rec, _fstate = None, "corrupt"
-                if _sealed_has_key:
+                _required = (
+                    immutable_ref is not None
+                    or sealed_has_key
+                    or _fstate in ("ok", "corrupt"))
+                if not _required:
+                    # Legacy (or a vanished row with no other signal): the
+                    # rename below decides; existing admission behavior.
+                    pass
+                else:
+                    if (immutable_ref is not None
+                            and projection_agrees is not True):
+                        return {"tier_id": tier_id,
+                                "reason": "output_funding_unknown",
+                                "demand": dict(needs)}
                     if _fstate == "ok":
                         _st = str((_rec or {}).get("state"))
                         return {"tier_id": tier_id,
@@ -8059,17 +8116,6 @@ class PoolQueue:
                                 "demand": dict(needs)}
                     return {"tier_id": tier_id,
                             "reason": "output_funding_required_absent",
-                            "demand": dict(needs)}
-                if _fstate == "ok":
-                    _st = str((_rec or {}).get("state"))
-                    return {"tier_id": tier_id,
-                            "reason": ("output_funding_pending"
-                                       if _st in ("reserved", "transferring")
-                                       else "output_funding_terminal"),
-                            "demand": dict(needs)}
-                if _fstate == "corrupt":
-                    return {"tier_id": tier_id,
-                            "reason": "output_funding_unknown",
                             "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
@@ -8507,6 +8553,80 @@ class PoolQueue:
                 raise PoolContractError(
                     "batch reference residency mismatch")
         return dict(ref)
+
+    #: Stable batch-identity fields shared by the sealed reference, the READY
+    #: projection, and the funding record (R6). The funding record carries no
+    #: ``batch_namespace`` (checked separately at publication); the schemas
+    #: differ per carrier and are checked at their own validation sites.
+    _OUTPUT_BATCH_IDENTITY_FIELDS = (
+        "owner_action_key", "owner_nonce", "owner_scope_id", "template_id",
+        "template_sha256", "batch_id", "manifest_digest", "tier_id",
+        "range_start_bytes", "range_end_bytes",
+    )
+
+    @staticmethod
+    def _output_batch_identity_matches(candidate: object, ref: object) -> bool:
+        """Do the stable batch-identity fields of two carriers agree (R6)?
+
+        ``candidate`` is a READY projection (all fields incl. namespace) or
+        a funding record (no namespace); ``ref`` is the validated immutable
+        CAS request reference. Non-mapping, missing, or mistyped fields are
+        disagreement, never agreement; ranges compare as integers.
+        """
+
+        fields = PoolQueue._OUTPUT_BATCH_IDENTITY_FIELDS
+        if not isinstance(candidate, Mapping) or not isinstance(ref, Mapping):
+            return False
+        try:
+            for field in fields:
+                lhs = candidate.get(field)
+                rhs = ref.get(field)
+                if field in ("range_start_bytes", "range_end_bytes"):
+                    if int(lhs) != int(rhs):  # type: ignore[arg-type]
+                        return False
+                else:
+                    if (not isinstance(lhs, str) or not isinstance(rhs, str)
+                            or lhs != rhs):
+                        return False
+            if ("batch_namespace" in candidate or "batch_namespace" in ref):
+                lhs_ns = candidate.get("batch_namespace")
+                rhs_ns = ref.get("batch_namespace")
+                if (not isinstance(lhs_ns, str) or not isinstance(rhs_ns, str)
+                        or lhs_ns != rhs_ns):
+                    return False
+        except (TypeError, ValueError, AttributeError):
+            return False
+        return True
+
+    @staticmethod
+    def _output_projection_matches_request(projection: object,
+                                           ref: object) -> bool:
+        """Does the READY projection carry the immutable request identity (R6)?
+
+        Full stable identity incl. namespace; the schema is checked by the
+        caller alongside (projection schema constant). Explicit null,
+        non-mapping, missing, or contradictory values are disagreement.
+        """
+
+        if not isinstance(projection, Mapping) or not isinstance(ref, Mapping):
+            return False
+        if (projection.get("schema")
+                != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1):
+            return False
+        return PoolQueue._output_batch_identity_matches(projection, ref)
+
+    @staticmethod
+    def _output_record_matches_request(record: object, ref: object) -> bool:
+        """Does a funding record bind back to the immutable request ref (R6)?
+
+        Shared stable identity (the record carries no namespace and its own
+        schema); generation/publication stay mutable beside it and are
+        checked separately by the cover path.
+        """
+
+        if not isinstance(record, Mapping) or not isinstance(ref, Mapping):
+            return False
+        return PoolQueue._output_batch_identity_matches(record, ref)
 
     @staticmethod
     def _residency_manifest_of(record: Mapping[str, object] | None) -> str | None:
@@ -10857,7 +10977,8 @@ class PoolQueue:
                         # a shortage every box shares would idle it for nothing
                         # (Rob, #583: the box does other work meanwhile).
                         shortage = self._begin_tier_acquire(
-                            key, tier_demand, tier_handles, tier_funded)
+                            key, tier_demand, tier_handles, tier_funded,
+                            cas_root=item.get("cas_root"))
                         if shortage is not None:
                             self._abandon_tier_acquire(tier_handles)
                             tier_handles.clear()
@@ -11239,6 +11360,27 @@ class PoolQueue:
                                     != sorted(str(name)
                                               for name in bound_names)):
                                 ok = False
+                            elif variant == "output":
+                                # R6: carry the immutable requirement through
+                                # the rename: the funding record must bind
+                                # back to the CAS-filed request ref read here
+                                # for the renamed row (one read for this
+                                # phase; the begin phase read its own). A
+                                # direct-API row with no filed request keeps
+                                # the projection binding cover already proved;
+                                # unreadable request evidence fails closed.
+                                try:
+                                    _req_ref, _req_present = (
+                                        _sealed_produced_output_batch(
+                                            moved.get("cas_root"), key))
+                                except (OSError, PoolContractError, ValueError):
+                                    ok = False
+                                    _req_ref = None
+                                else:
+                                    if _req_ref is not None and not (
+                                            self._output_record_matches_request(
+                                                live, _req_ref)):
+                                        ok = False
                         if not ok:
                             funding_verified = False
                             break

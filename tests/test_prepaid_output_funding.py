@@ -17,6 +17,7 @@ Proves (R2):
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import threading
@@ -1172,7 +1173,7 @@ def test_sealed_corrupt_request_refuses_not_legacy(tmp_path: Path) -> None:
 
 
 def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> None:
-    """Stage + sealed publish, then lose intent with no commit: claim defers."""
+    """A real immutable request survives loss of BOTH mutable carriers."""
     owner = _hexkey("sq-crash-owner")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
@@ -1203,6 +1204,17 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> Non
     # Crash prefix: no filed commit exists for this mover, and the staged
     # intent is lost. No commitments scan is consulted: the sealed key alone
     # makes this row required.
+    # The immutable request created by _sealed_cas_with_ref still requires
+    # prepaid funding even after both disposable projections are lost.
+    request_path = cas.root / "requests" / mover[:2] / f"{mover}.json"
+    request = json.loads(request_path.read_text())
+    assert request["action_key"] == mover
+    assert request["params"]["produced_output_batch"] == ref
+    ready_path = q.item_path(pool.READY, mover)
+    ready = pool._read_json(ready_path)
+    assert isinstance(ready, dict) and "produced_output_batch" in ready
+    del ready["produced_output_batch"]
+    pool._write_json_atomic(ready_path, ready)
     q.funding_output_path(mover, TIER).unlink()
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-sq-crash") is None
@@ -1384,3 +1396,90 @@ def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path) -> Non
                              "range_end_bytes": total},
                   produced_output_batch=ref)
     assert pool._read_json(q.item_path(pool.READY, mover)) is None
+
+
+def test_ready_reread_failure_defers_at_claim_seam(
+        tmp_path: Path, monkeypatch) -> None:
+    """READY unreadable at the claim seam (listing saw it): defer, no fresh."""
+    owner = _hexkey("rr-owner")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "reread")
+    mover = action["action_key"]
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
+    q.publish(action_key=mover, cas_root=cas.root,
+              worker_script="/w.py", checkout_root=checkout,
+              resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": manifest, "manifest_bytes": total,
+                         "range_start_bytes": 0, "range_end_bytes": total})
+    target = str(q.item_path(pool.READY, mover))
+    real_read = pool._read_json
+    calls = {"n": 0}
+
+    def fail_reread(path, *a, **k):
+        if str(path) == target:
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise OSError("injected READY reread failure")
+        return real_read(path, *a, **k)
+
+    monkeypatch.setattr(pool, "_read_json", fail_reread)
+    free_before = ledger.available().get(KIND)
+    assert q.claim(owner="w-rr") is None
+    # Non-vacuous: the listing read succeeded, the seam reread failed.
+    assert calls["n"] >= 2
+    assert ledger.available().get(KIND) == free_before
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    monkeypatch.setattr(pool, "_read_json", real_read)
+    assert q.item_path(pool.READY, mover).exists()
+
+
+def test_transfer_tokens_concurrent_exclusion(tmp_path: Path) -> None:
+    """Concurrent disjoint transfer_tokens serialize: exact counts, sum kept."""
+    import threading as _threading
+    q = _queue(tmp_path, gib=6)
+    ledger = q.tier_ledger(TIER)
+    owner = _hexkey("conc-owner")
+    mover_a = _hexkey("conc-mover-a")
+    mover_b = _hexkey("conc-mover-b")
+    assert ledger.acquire(owner, {KIND: 4}) is True
+    names = sorted(p.name for p in (ledger.held_dir / owner).iterdir()
+                   if p.name.startswith(KIND))
+    assert len(names) == 4
+    cap = ledger.capacity().get(KIND)
+    barrier = _threading.Barrier(2)
+    results: dict = {}
+
+    def move_a():
+        barrier.wait(10)
+        results["a"] = ledger.transfer_tokens(owner, mover_a, names[:2])
+
+    def move_b():
+        barrier.wait(10)
+        results["b"] = ledger.transfer_tokens(owner, mover_b, names[2:])
+
+    ta = _threading.Thread(target=move_a)
+    tb = _threading.Thread(target=move_b)
+    ta.start()
+    tb.start()
+    ta.join(30)
+    tb.join(30)
+    assert not ta.is_alive() and not tb.is_alive()
+    # Blocking guard completed both transitions: exact counts, no loss.
+    assert results.get("a") == 2
+    assert results.get("b") == 2
+    assert ledger.holder_tokens(mover_a).get(KIND, 0) == 2
+    assert ledger.holder_tokens(mover_b).get(KIND, 0) == 2
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    assert (ledger.available().get(KIND, 0) + 4) == cap

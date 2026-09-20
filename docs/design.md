@@ -4086,7 +4086,7 @@ window also needs an exact-owner transfer extension; a second acquisition is
 not evidence that the same bytes have been accounted once. Component tests
 establish neither deployed support nor whole-fleet conformance.
 
-#### Prepaid-output funding from the admitted window (candidate, R5)
+#### Prepaid-output funding from the admitted window (candidate, R6)
 
 Funds one precommitted produced-output batch from the producer's existing
 window with an exact token-subset transfer (`ResourceLedger.transfer_tokens`),
@@ -4106,13 +4106,20 @@ the owner lock with fail-retain census: UNKNOWN retains all). Pending output
 intents refuse fresh-acquisition fallback in `_begin_tier_acquire`
 (`output_funding_pending`). Release proves mover nonexecution (no
 CLAIMED/DONE/FAILED/receipt/lease) before retiring credit. See
-`prepaid-output-pool-api-design.md` (R5) and
+`prepaid-output-pool-api-design.md` (R6) and
 `tests/test_prepaid_output_funding.py` (candidate-component scope; parent
 stack root-unaccepted). The sealed `produced_output_batch` reference in mover
 params (derived from the CAS-filed action request at publication, kwarg only
 for direct API) is the positive required signal; claim never scans output
-history. Writer (744) MUST include the reference for every output mover via
-`build_produced_output_batch_ref` (omission yields legacy treatment).
+history. At claim, `_begin_tier_acquire` reads the CAS-filed request ONCE per
+action (cas_root from the listing row): requiredness = immutable ref OR sealed
+projection key OR any funding-file state; the READY projection must agree
+with the immutable ref, and output cover must bind back to it; unknown READY
+or request evidence defers, never fresh (key ABSENCE alone is legacy).
+Transfer uses the accepted tier mutation guard (`_guarded_mutation`,
+blocking; host ledgers no-op). Writer (744) MUST include the reference for
+every output mover via `build_produced_output_batch_ref` (omission yields
+legacy treatment).
 Publication derives the projection from the CAS-filed request (contradictory
 kwarg and corrupt requests refuse) and requires staged-or-committed intent
 before READY exposure; claim derives requiredness from the filed request once
