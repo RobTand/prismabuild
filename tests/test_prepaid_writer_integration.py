@@ -412,7 +412,11 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
                                  batch_id=batch_id)["ok"] is True
     q.finish(owner, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
+    assert squatted > 0
+    # Everything except the squatters' tokens is back: the retired fences
+    # returned through the real egress, the window through owner finish.
+    assert (ledger.available().get(KIND, 0) + squatted
+            == ledger.capacity().get(KIND, 0))
 
 
 def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
@@ -630,6 +634,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
     _announce_tier(q, stage_root)
 
     results = []
+    squatted = 0
     for tag, batch_id, payload in (("n1", "b1", b"a" * 640),
                                    ("n2", "b2", b"b" * 768)):
         descs = _descriptors(tmp_path, template, inst, tag, payload,
@@ -654,6 +659,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         if free:
             assert ledger.acquire(_hexkey(f"null-squatter-{batch_id}"),
                                   {KIND: free}) is True
+            squatted += free
         claimed = q.claim(owner=f"w-null-{tag}")
         assert claimed is not None and claimed["action_key"] == mover
         funding = q.read_output_funding(mover, TIER)
@@ -691,4 +697,8 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
                                  batch_id=batch_id)["ok"] is True
     q.finish(owner, status="executed")
     assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
+    assert squatted > 0
+    # Everything except the squatters' tokens is back: the retired fences
+    # returned through the real egress, the window through owner finish.
+    assert (ledger.available().get(KIND, 0) + squatted
+            == ledger.capacity().get(KIND, 0))
