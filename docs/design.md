@@ -1992,6 +1992,60 @@ waits are capped by the remaining budget independently of lease-heartbeat cadenc
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
 
+### Declared container images (#714)
+
+An action may declare exact local container image references it needs on its
+claiming box: `pbrun --container-image REF`, sealed as
+`params.container_images` and copied to the queue item as the scheduling
+projection. The declaration exists because an action tagged for a class whose
+image existed on only one member of it was claimed by the other and failed
+inside its wrapper, spending its only attempt (2026-09-20, `gb10`).
+
+Contract:
+
+- **Reference forms.** `sha256:<64 hex>` names a local image ID;
+  `repository@sha256:<64 hex>` names a repository manifest digest, matched
+  only as that exact `repository@sha256:...` string. A bare RepoDigest is
+  never announced, so a hex collision cannot satisfy the other form. A
+  mutable tag is refused at declaration: it is not an identity and cannot be
+  sealed into an action key.
+- **Identity.** Present, the normalized references participate in the action
+  params (hence the key) and in `container_owner`'s pre-owner identity, so
+  two actions differing only in the image never share a Docker ownership
+  label or `<owner>.used` marker. Absent, the action, its owner and its queue
+  item are byte-for-byte what they were before the field existed.
+- **Capability.** A declaration requires the `container-image-v1` placement
+  tag, offered by loops whose code performs the claim check. A loop from
+  before the check cannot match image-pinned work; a loop that has the check
+  but no readable Docker still offers the tag and fails closed at claim.
+  `PoolQueue.publish` adds the tag with the references and refuses an item
+  that carries the tag without references.
+- **Placement evidence.** A worker announces the references its local Docker
+  positively holds (`container_images` on the offer). An offer with no field
+  is unknown, not empty, and matches no image-pinned item. `_matching_offers`
+  requires every declared reference, so `placeable`, `placeable_hosts`,
+  `placement_census` and the submit-time refusal all read one matcher. With
+  no offers on record at all, an image-declared submission is refused rather
+  than submitted unchecked.
+- **Claim evidence and staleness.** The worker's poll probes its local
+  Docker once per box per TTL through a shared, private, no-follow local
+  record; that record answers the offer. A claim reads it with a short
+  freshness bound (`CLAIM_FRESHNESS_S`), re-probing under the same lock while
+  image-pinned work waits, and the probe runs outside every pool lock. A
+  missing reference denies (`container_image_absent`, digest named) and an
+  unreadable inventory denies (`container_image_presence_unknown`); neither
+  records a pass, spends an attempt or takes a token, so the item stays
+  `ready` for a box that has the image. An image removed between the
+  observation and the container start is the residual race; the action's own
+  failure reports it.
+- **No transfer.** PB never pulls, loads or copies an image. Archive-backed
+  specs (`container.archive`) establish presence inside the action and must
+  not declare it: the claim check would refuse before the loader ran.
+- **Transport.** The check is a pull-queue claim decision over worker offers;
+  `--container-image` is refused on the SLURM lane, and so is a sealed
+  action that declares one when another producer submits it there, because
+  that lane has no inventory to verify.
+
 ### Progress-bounded execution
 
 An action may declare, in `params.progress`

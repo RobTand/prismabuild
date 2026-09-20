@@ -72,6 +72,16 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+A container image the action needs must already be local on the claiming box:
+declare it with `pbrun --container-image REF` (`container_images` on a campaign
+row), where `REF` is `sha256:<64 hex>` (image ID) or
+`repository@sha256:<64 hex>` (manifest digest). It is sealed into the action
+key, requires the `container-image-v1` worker capability, and a box that cannot
+positively show the reference denies the claim by name and leaves the item
+ready for a box that can. PB never pulls, loads or transfers images, and a
+workflow that loads its own image from an archive inside the action must not
+declare it (#714).
+
 When a test checkout has `tools/resolve_<module>_dev_pin.py`, `pbtest` runs
 each resolver inside the admitted shard and checks the target interpreter's
 installed dependency against its full Git commit before pytest starts. Missing

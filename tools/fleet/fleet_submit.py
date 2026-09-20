@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
+from prismabuild import container_images, core as pb, pool, slurm_lane  # noqa: E402
 
 TRANSPORTS = ("pool", "slurm")
 DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
@@ -374,6 +374,24 @@ def submit(
     if transport not in TRANSPORTS:
         raise SubmitRefused(f"unknown transport {transport!r}")
     key = str(action["action_key"])
+    # The sealed action is the authority for a declared image requirement; the
+    # queue row is its scheduling projection.  Derive it here so a producer
+    # that submits a compiled action without restating placement cannot drop
+    # the requirement -- and refuse it outright on a transport with no worker
+    # inventory to check it against (#714 review).
+    image_refs: list[str] = []
+    sealed_params = action.get("params")
+    if isinstance(sealed_params, Mapping) and sealed_params.get("container_images"):
+        try:
+            image_refs = list(container_images.normalize_refs(
+                sealed_params["container_images"]))
+        except ValueError as exc:
+            raise SubmitRefused(f"{key[:12]}: container_images: {exc}") from None
+    if image_refs and transport != "pool":
+        raise SubmitRefused(
+            f"{key[:12]}: this action declares container image "
+            f"{', '.join(image_refs)}; the SLURM lane cannot verify a node's "
+            "local Docker inventory, so it cannot honour the requirement")
     if queue_root is None:
         # Read when this runs, not when the module loaded.  A default built
         # from ``SH`` at definition time was bound to the live queue for good,
@@ -396,6 +414,7 @@ def submit(
             resources=dict(resources or {}),
             max_attempts=max_attempts,
             retry_safe=retry_safe,
+            container_images=image_refs or None,
         )
         return Submission(transport="pool", where=path, action_key=key)
 
