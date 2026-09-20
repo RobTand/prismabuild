@@ -303,6 +303,38 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: Where the fleet publishes immutable runtime generations. Read at call
+#: time rather than bound at import, for the same reason
+#: ``supervise.MIRROR`` is: it is the one name a test can repoint at a
+#: fixture store.
+RETAINED_GENERATION_STORE = Path(
+    "/mnt/shared/prismabuild-fleet/runtime-generations")
+
+#: The receipt every published generation carries. ``publish_runtime``,
+#: ``supervise`` and ``upgrade_client`` all enforce this schema; the checks
+#: below mirror ``supervise._published_generation`` (store child, receipt
+#: names generation, manifest-covered supervisor bytes) and
+#: ``publish_runtime._barrier_generation`` (sealed bits, commit shape,
+#: member path safety, no symlinks, digest match).
+RUNTIME_RECEIPT_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
+
+#: The worker entry point every sealed publication names
+#: (``seal_and_publish``, ``fleet_submit``, ``pbrun`` all publish
+#: ``RUNTIME_ROOT / "tools" / "prismabuild_worker.py"``). The
+#: ``tools/``-vs-``tools/fleet/`` layout rule mirrors
+#: ``runtime_paths.generation_root``.
+_WORKER_TAIL = ("tools", "prismabuild_worker.py")
+
+#: Proxy candidates in one runtime, in the order searched. Published
+#: generations carry both spellings with identical bytes (the
+#: ``_publication_manifest`` dual entry); a checkout carries only the
+#: ``tools/fleet/`` one. ``resource_exec`` imports its siblings lazily,
+#: so the broker scope helper and the layout helper in the same
+#: directory are proven with it.
+_PROXY_CANDIDATES = ("tools/resource_exec.py", "tools/fleet/resource_exec.py")
+_PROXY_DEPENDENCIES = ("resource_broker.py", "runtime_paths.py")
+
+
 class ResourceScope:
     """One exact key+nonce kernel slice; sampling never signals work.
 
@@ -393,60 +425,169 @@ class ResourceScope:
                 'memory_max_bytes': self.memory_max_bytes,
                 'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
 
-    def _sealed_worker_proxy(self, argv: list[str]) -> Path | None:
-        """The proxy from the wrapped worker's own sealed generation, if proven.
+    def _verified_member(self, root: Path, rel: str,
+                           files: dict) -> Path:
+        """One manifest-covered sealed member, or raise ``OSError``.
 
-        Retained actions name an earlier immutable runtime in argv[1]; the
-        proxy must come from that same runtime or the older core refuses
-        the newer helper root (and --as-sealed-by / missing-receipt
-        retries of post-repair actions would fail).  Returns None unless
-        argv has the canonical worker shape and names a file inside a
-        sealed generation whose receipt covers both the worker script and
-        the proxy member byte-for-byte.  Anything else (dev checkouts,
-        stubs, unresolvable or uncovered paths) keeps the existing
-        current-runtime proxy: established behavior, never a refusal
-        here.  No root is ever inferred from unvalidated command text.
+        Mirrors ``publish_runtime._barrier_generation``: the spelling must
+        be a safe relative path, the file must resolve to itself (no
+        symlink escape), must not be writable by anyone (sealed
+        generation), and its bytes must match the receipt's 64-hex
+        digest. Anything else is an unverified tree, refused here rather
+        than executed outside the action's contained slice.
         """
 
-        if len(argv) < 3 or argv[2] != "run-local":
+        if not rel or Path(rel).is_absolute() or any(
+                part in (".", "..") for part in Path(rel).parts):
+            raise OSError(f"unsafe generation member path: {rel!r}")
+        expected = files.get(rel)
+        if (not isinstance(expected, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected) is None):
+            raise OSError(f"generation receipt covers no sha256 for {rel}")
+        path = root / rel
+        try:
+            if path.resolve(strict=True) != path or not path.is_file():
+                raise OSError(f"generation member is a symlink: {rel}")
+            if path.stat().st_mode & 0o222:
+                raise OSError(f"generation member is not sealed: {rel}")
+        except OSError as exc:
+            raise OSError(f"unverified retained runtime member {rel}: "
+                          f"{exc}") from exc
+        if _sha256_file(path) != expected:
+            raise OSError(f"retained runtime hash mismatch: {rel}")
+        return path
+
+    def _sealed_generation_proxy(self, root: Path, worker: Path) -> Path:
+        """The proxy of a proven retained generation, or raise ``OSError``.
+
+        Trust rule mirrors ``supervise._proven_roots`` plus
+        ``supervise._published_generation``: the root must be a direct,
+        non-staging child of this fleet's generation store carrying a
+        receipt that names it, with a 40-hex commit and a manifest that
+        covers the sealed worker, the proxy, and the proxy's own imports
+        byte-for-byte. A directory that merely hashes its own files is
+        not this fleet's runtime, and choosing its proxy would execute
+        untrusted code outside the contained slice with the attempt's
+        broker token on its argv -- so unknown/unverified roots refuse
+        here instead of silently falling back to a mismatching proxy.
+        """
+
+        try:
+            store = RETAINED_GENERATION_STORE.resolve(strict=True)
+        except OSError as exc:
+            raise OSError("retained generation store is unavailable; "
+                          "refusing an unverifiable worker runtime") from exc
+        try:
+            resolved = root.resolve(strict=True)
+        except OSError as exc:
+            raise OSError("retained worker runtime is unavailable; "
+                          "refusing") from exc
+        if resolved != root:
+            raise OSError("retained worker runtime resolves outside itself; "
+                          "refusing a symlink escape")
+        if (resolved.parent != store or root.name in ("", ".", "..")
+                or root.name.startswith(".")):
+            raise OSError(f"worker runtime {root} is not an authorized "
+                          "sealed generation of this fleet; refusing")
+        try:
+            if root.stat().st_mode & 0o222:
+                raise OSError(f"generation {root.name} is not sealed")
+            receipt = json.loads(
+                (root / "RUNTIME_VERSION.json").read_text())
+        except (OSError, ValueError) as exc:
+            raise OSError(f"generation {root.name} receipt is not readable; "
+                          "this is not a generation to launch from") from exc
+        if not isinstance(receipt, dict):
+            raise OSError(f"generation {root.name} receipt is not an object; "
+                          "refusing")
+        files = receipt.get("files")
+        if (receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
+                or receipt.get("generation") != root.name
+                or re.fullmatch(r"[0-9a-f]{40}",
+                                str(receipt.get("commit", ""))) is None
+                or not isinstance(files, dict)):
+            raise OSError(f"generation {root.name} has an invalid published "
+                          "runtime receipt; refusing")
+        worker_rel = worker.relative_to(root).as_posix()
+        if worker_rel != _WORKER_TAIL[0] + "/" + _WORKER_TAIL[1]:
+            raise OSError(f"worker {worker} is not the generation's sealed "
+                          "entry point; refusing")
+        self._verified_member(root, worker_rel, files)
+        for proxy_rel in _PROXY_CANDIDATES:
+            if proxy_rel not in files:
+                continue  # this layout does not carry that spelling
+            # Present but unverifiable refuses the whole generation --
+            # falling through to another spelling would let one tampered
+            # member hide behind an intact one.
+            proxy = self._verified_member(root, proxy_rel, files)
+            directory = proxy.parent
+            for dependency in _PROXY_DEPENDENCIES:
+                self._verified_member(
+                    root,
+                    (directory.relative_to(root) / dependency).as_posix(),
+                    files)
+            return proxy
+        raise OSError(f"generation {root.name} carries no proven proxy with "
+                      "its broker and layout dependencies; refusing")
+
+    def _proven_retained_proxy(
+            self, worker_script: str | Path | None) -> Path | None:
+        """The proxy for the sealed worker runtime this launch executes.
+
+        The pool carries its already-known sealed ``worker_script``
+        explicitly -- ``_execute_in_checkout`` builds the worker argv from
+        it, then wraps that argv (affinity-prefixed or not) for the same
+        runtime -- so this never parses opaque command text for a root.
+        Returns the executing generation's own proxy when the worker is
+        this tree (the established contained path for dev checkouts), or
+        the proven retained generation's proxy. Returns ``None`` only
+        when ``worker_script`` names no runtime shape at all (dev stubs,
+        relative paths, missing files), which keeps the current-runtime
+        proxy. An unverified retained root raises ``OSError`` instead of
+        silently choosing a proxy its older core would refuse.
+        """
+
+        if worker_script is None:
+            return None
+        script = Path(worker_script)
+        if not script.is_absolute():
             return None
         try:
-            script = Path(argv[1])
-            if not script.is_absolute():
-                return None
-            resolved = script.resolve()
-            if (len(resolved.parts) < 3
-                    or resolved.parts[-2:] != ("tools", "prismabuild_worker.py")
-                    or not resolved.is_file()):
-                return None
-            root = resolved.parent.parent
-            receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
-            if (not isinstance(receipt, dict)
-                    or receipt.get("schema")
-                    != "prismaquant.prismabuild.runtime_version.v1"
-                    or receipt.get("generation") != root.name
-                    or not isinstance(receipt.get("files"), dict)):
-                return None
-            members = receipt["files"]
-            worker_rel = "tools/prismabuild_worker.py"
-            if (not isinstance(members.get(worker_rel), str)
-                    or _sha256_file(resolved) != members[worker_rel]):
-                return None
-            for candidate in ("tools/resource_exec.py",
-                              "tools/fleet/resource_exec.py"):
-                proxy = root / candidate
-                digest = members.get(candidate)
-                if (isinstance(digest, str) and proxy.is_file()
-                        and _sha256_file(proxy) == digest):
-                    return proxy
+            resolved = script.resolve(strict=True)
+        except OSError:
             return None
-        except (OSError, ValueError):
+        if (len(resolved.parts) < 3
+                or resolved.parts[-2:] != _WORKER_TAIL
+                or not resolved.is_file()
+                or resolved != script):
             return None
+        root = resolved.parent.parent
+        executing = Path(__file__).resolve().parents[2]
+        if root == executing:
+            proxy = executing / "tools" / "resource_exec.py"
+            if proxy.is_file():
+                return proxy
+            return executing / "tools" / "fleet" / "resource_exec.py"
+        return self._sealed_generation_proxy(root, resolved)
 
-    def wrap_argv(self, argv: list[str]) -> list[str]:
+    def wrap_argv(self, argv: list[str],
+                  *, worker_script: str | Path | None = None) -> list[str]:
+        """Wrap ``argv`` in the stdio proxy of the runtime being launched.
+
+        ``worker_script`` is the sealed worker this launch executes, as
+        the pool item records it. The proxy comes from that same proven
+        runtime -- retained or current -- so a later generation launching
+        an earlier post-repair action (``--as-sealed-by`` and
+        missing-receipt retries) no longer refuses on helper mismatch.
+        The CPU-affinity ``taskset`` prefix, when present, stays inside
+        the wrap untouched: the runtime is carried, never inferred from
+        the command text. Callers without a sealed worker (health probes,
+        qualification tools) keep the current-runtime proxy.
+        """
+
         if self.token is None:
             raise RuntimeError('create the resource scope before launching')
-        helper = self._sealed_worker_proxy(argv)
+        helper = self._proven_retained_proxy(worker_script)
         if helper is None:
             root = Path(__file__).resolve().parents[2]
             helper = root / 'tools/resource_exec.py'

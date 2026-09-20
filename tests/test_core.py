@@ -21,6 +21,26 @@ import pytest
 from prismabuild import core as pb
 
 
+@pytest.fixture(autouse=True)
+def _isolated_synthetic_launch_context(monkeypatch):
+    """Standalone synthetic unit contexts never inherit an outer attempt tuple.
+
+    Post-deploy harnesses and nested fleet runs export a complete
+    broker-owned tuple (nonce/scope/helper root) that production
+    ``_reader_identity_environment`` refuses rather than feeds into an
+    unrelated synthetic action. These unit tests seal and run their own
+    synthetic actions, so each one starts with that ambient identity
+    removed; the admitted-launch regression in
+    ``test_reader_launch_identity`` seeds and exercises the real proxy
+    context instead. Production validity checks are never weakened to
+    accommodate this contamination.
+    """
+
+    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
+                 "PRISMABUILD_READER_HELPER_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _body(
     checkout: Path,
     *,

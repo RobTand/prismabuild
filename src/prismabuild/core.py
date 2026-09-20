@@ -7956,14 +7956,19 @@ def _reader_identity_environment(action_key: str) -> dict[str, str]:
     * none present: the legacy path, forward nothing (established
       behavior for uncontained and pre-reader actions);
     * any present without all three: refuse, because a partial bundle is
-      a guessed identity -- no producer ever emits one;
-    * complete but unbound (nonce malformed, scope not exactly this
-      action's broker slice for it, helper not exactly this executing
-      generation's root): drop to legacy.  A foreign ambient tuple --
-      post-deploy test harnesses, nested local runs -- must never be fed
-      into an unrelated synthetic action, and refusing every such launch
-      would break them all; the strict reader still fails closed at use
-      because no live claim binds that nonce to this key.
+      a guessed identity;
+    * nonce must be 32-hex and scope must be exactly this action's broker
+      slice for it (wrong-action and wrong-nonce refuse);
+    * helper root must be exactly this executing generation's root
+      (canonical absolute path under the shared source/published layout
+      rule -- never a symlink, never an older or unrelated tree, never
+      a missing path).
+
+    A foreign ambient tuple (post-deploy harnesses, nested local runs)
+    therefore refuses rather than feeding an outer nonce into an
+    unrelated synthetic action; standalone synthetic unit contexts stay
+    isolated through their own test fixture, never through weakened
+    production checks.
 
     The broker token and socket never cross this boundary: only these
     three names are read, so only they can arrive.  Binding beyond shape
@@ -7985,21 +7990,30 @@ def _reader_identity_environment(action_key: str) -> dict[str, str]:
             "a strict identity from half of one")
     assert nonce is not None and scope is not None and helper is not None
     if _ATTEMPT_NONCE_RE.fullmatch(nonce) is None:
-        return {}
+        raise ActionContractError(
+            "launcher reader nonce is not a 32-character lowercase attempt "
+            "identity; refusing rather than forwarding it")
     expected_scope = ("prismabuild-job"
                       + hashlib.sha256(
                           (action_key + nonce).encode()).hexdigest()[:32]
                       + ".slice")
     if scope != expected_scope:
-        return {}
+        raise ActionContractError(
+            "launcher reader scope is not this action's broker slice for "
+            "its nonce; refusing rather than forwarding another attempt's "
+            "identity")
     if ("\x00" in helper or not helper.startswith("/")
             or posixpath.normpath(helper) != helper):
-        return {}
+        raise ActionContractError(
+            "launcher reader helper root is not a canonical absolute path; "
+            "refusing rather than binding a helper tree by a relative or "
+            "escaping spelling")
     expected = _executing_generation_root()
     if expected is None or helper != str(expected):
-        return {}
-    return {ACTION_NONCE_ENV: nonce, ACTION_SCOPE_ENV: scope,
-            READER_HELPER_ROOT_ENV: helper}
+        raise ActionContractError(
+            "launcher reader helper root is not this executing generation; "
+            "refusing rather than binding an older, unrelated, or missing "
+            "tree as sealed helpers")
     return {ACTION_NONCE_ENV: nonce, ACTION_SCOPE_ENV: scope,
             READER_HELPER_ROOT_ENV: helper}
 

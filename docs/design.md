@@ -696,22 +696,31 @@ broker-owned scope carries its attempt identity: `PRISMABUILD_ACTION_NONCE`
 and `PRISMABUILD_ACTION_SCOPE` (derived by the `resource_exec` proxy from
 the exact launch key and nonce, never the broker token) plus
 `PRISMABUILD_READER_HELPER_ROOT` (the immutable generation root the proxy
-resolves from its own sealed path). The scope wrapper selects that proxy
-from the wrapped worker's own sealed generation when argv names a
-canonical worker path whose receipt covers both the worker script and
-the proxy member byte-for-byte; anything else keeps the current-runtime
-proxy. `run_local_action` forwards exactly
+resolves from its own sealed path). The pool carries its already-known
+sealed `worker_script` explicitly into `scope.wrap_argv`, so the proxy
+comes from the runtime being launched -- retained or current -- however
+the argv is prefixed (the CPU-affinity `taskset` wrapper stays inside
+the wrap untouched; no root is ever inferred from command text). A
+retained root is trusted only as a direct non-staging child of the
+fleet's generation store whose receipt names it (40-hex commit) and
+whose manifest covers the sealed worker, the proxy, and the proxy's
+own broker/layout imports byte-for-byte over sealed non-symlink files
+(the `supervise._proven_roots` / `_published_generation` and
+`publish_runtime._barrier_generation` rule); anything else refuses
+rather than executing an untrusted proxy outside the contained slice.
+Dev stubs and missing shapes keep the current-runtime proxy.
+`run_local_action` forwards exactly
 these three from the launcher environment through the residency
 environment contract, so strict readers bind pins to the live claim and
 import sealed helpers. Sealed conflicts on any identity name refuse, as
 does a partial bundle (no producer ever emits half of one). A complete
 but unbound tuple -- malformed nonce, scope that is not this action's
-broker slice, helper that is not this executing generation -- is dropped
-to legacy rather than fed: post-deploy harnesses and nested local runs
-must never feed an outer nonce into an unrelated synthetic action, and
-the strict reader still fails closed at use because no live claim binds
-it. Absence forwards nothing (legacy behavior for uncontained and
-pre-reader actions). The broker token and socket never cross. These
+broker slice, helper that is not this executing generation -- refuses
+rather than feeding an outer nonce into an unrelated synthetic action:
+post-deploy harnesses and nested local runs isolate their synthetic
+unit contexts through their own fixture, never through weakened
+production checks. Absence forwards nothing (legacy behavior for
+uncontained and pre-reader actions). The broker token and socket never cross. These
 values are runtime authority bound to the attempt, not sealed request
 input, so forwarding them cannot change an action key.
 

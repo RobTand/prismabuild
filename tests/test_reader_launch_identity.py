@@ -110,54 +110,59 @@ def test_partial_identity_refuses_launch(tmp_path, monkeypatch, drop) -> None:
         pb._residency_environment(_action(), {})
 
 
-def test_wrong_scope_drops_to_legacy(tmp_path, monkeypatch) -> None:
-    """A scope bound to another action is never fed; legacy preserved."""
+def test_wrong_scope_refuses_launch(tmp_path, monkeypatch) -> None:
+    """A scope bound to another action is not this attempt's identity."""
 
     other = ("prismabuild-job"
              + hashlib.sha256(("d" * 64 + NONCE).encode()).hexdigest()[:32]
              + ".slice")
     _launch(monkeypatch, tmp_path, scope=other)
-    env = pb._residency_environment(_action(), {})
-    assert env["PRISMABUILD_ACTION_KEY"] == KEY
-    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
-                 "PRISMABUILD_READER_HELPER_ROOT"):
-        assert name not in env
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
 
 
-def test_wrong_nonce_drops_to_legacy(tmp_path, monkeypatch) -> None:
-    """A tampered nonce breaks the scope binding; nothing is fed."""
+def test_wrong_nonce_refuses_launch(tmp_path, monkeypatch) -> None:
+    """A tampered nonce breaks the scope binding and refuses."""
 
     _launch(monkeypatch, tmp_path, nonce="a" * 32)
-    env = pb._residency_environment(_action(), {})
-    assert env["PRISMABUILD_ACTION_KEY"] == KEY
-    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
-                 "PRISMABUILD_READER_HELPER_ROOT"):
-        assert name not in env
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
 
 
-def test_stale_helper_drops_to_legacy(tmp_path, monkeypatch) -> None:
+def test_malformed_nonce_refuses_launch(tmp_path, monkeypatch) -> None:
+    """A nonce that is not a 32-hex attempt identity refuses."""
+
+    _launch(monkeypatch, tmp_path, nonce="not-an-attempt-nonce")
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
+
+
+def test_stale_helper_refuses_launch(tmp_path, monkeypatch) -> None:
     """A helper root naming nothing on disk is not forwarded."""
 
     _launch(monkeypatch, tmp_path, helper=tmp_path / "no-such-generation")
-    env = pb._residency_environment(_action(), {})
-    assert "PRISMABUILD_READER_HELPER_ROOT" not in env
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
 
 
-def test_unrelated_existing_helper_drops_to_legacy(tmp_path, monkeypatch) -> None:
+def test_unrelated_existing_helper_refuses_launch(tmp_path, monkeypatch) -> None:
     """An older-but-existing (or merely unrelated) tree is not the helper."""
 
     _launch(monkeypatch, tmp_path, helper=tmp_path)
     assert Path(tmp_path).is_dir()
-    env = pb._residency_environment(_action(), {})
-    assert "PRISMABUILD_READER_HELPER_ROOT" not in env
+    with pytest.raises(pb.ActionContractError):
+        pb._residency_environment(_action(), {})
 
 
-def test_foreign_ambient_never_feeds_synthetic_action(
+def test_foreign_ambient_refuses_synthetic_action(
         tmp_path, monkeypatch) -> None:
-    """Post-deploy ambient (a complete foreign tuple) stays out of the run.
+    """Post-deploy ambient (a complete foreign tuple) refuses, never feeds.
 
-    The synthetic action still publishes under its own identity; the
-    strict reader fails closed at use because no claim binds it.
+    The outer nonce belongs to another attempt: forwarding it into this
+    synthetic action would bind strict readers to a claim that is not
+    theirs. Standalone synthetic unit contexts stay isolated through the
+    ambient-stripping fixture in ``test_core``; a test that deliberately
+    injects a foreign tuple sees the production refusal.
     """
 
     foreign_nonce = "a" * 32
@@ -175,12 +180,9 @@ def test_foreign_ambient_never_feeds_synthetic_action(
             "{k: os.environ.get(k) for k in "
             "('PRISMABUILD_ACTION_KEY', 'PRISMABUILD_ACTION_NONCE')}))")
     action = _seal(checkout, argv=[sys.executable, "-c", code])
-    result = pb.run_local_action(
-        action, cas_root=tmp_path / "cas", checkout_root=checkout)
-    assert result["status"] == "published"
-    seen = json.loads(Path(result["payload_path"]).read_text())
-    assert seen == {"PRISMABUILD_ACTION_KEY": str(action["action_key"]),
-                    "PRISMABUILD_ACTION_NONCE": None}
+    with pytest.raises(pb.ActionContractError):
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout)
 
 
 def test_run_local_action_forwards_production_identity(
