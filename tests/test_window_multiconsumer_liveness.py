@@ -11,7 +11,7 @@ What they prove (all green on current main):
   the two decisions jointly exceed that free snapshot;
 * the real coordinator (``residency_window``) publishes both consumers against
   one free snapshot, because a publish to ``ready/`` reserves no tokens --
-  tokens move only at mover claim time (``pool._acquire_tier_tokens``:
+  tokens move only at mover claim time (``pool._begin_tier_acquire``:
   ``never_fits_tier_capacity`` vs ``tier_reservation_unavailable``);
 * ``window_pressure`` reports the MAX next phase across consumers, not the
   SUM, so the sweep frees for one advance, never for the joint need;
