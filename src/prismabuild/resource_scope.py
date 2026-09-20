@@ -293,6 +293,16 @@ def _atomic_json(path: Path, record: dict) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _sha256_file(path: Path) -> str:
+    """Hex SHA-256 of one file, read in blocks."""
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class ResourceScope:
     """One exact key+nonce kernel slice; sampling never signals work.
 
@@ -383,13 +393,65 @@ class ResourceScope:
                 'memory_max_bytes': self.memory_max_bytes,
                 'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
 
+    def _sealed_worker_proxy(self, argv: list[str]) -> Path | None:
+        """The proxy from the wrapped worker's own sealed generation, if proven.
+
+        Retained actions name an earlier immutable runtime in argv[1]; the
+        proxy must come from that same runtime or the older core refuses
+        the newer helper root (and --as-sealed-by / missing-receipt
+        retries of post-repair actions would fail).  Returns None unless
+        argv has the canonical worker shape and names a file inside a
+        sealed generation whose receipt covers both the worker script and
+        the proxy member byte-for-byte.  Anything else (dev checkouts,
+        stubs, unresolvable or uncovered paths) keeps the existing
+        current-runtime proxy: established behavior, never a refusal
+        here.  No root is ever inferred from unvalidated command text.
+        """
+
+        if len(argv) < 3 or argv[2] != "run-local":
+            return None
+        try:
+            script = Path(argv[1])
+            if not script.is_absolute():
+                return None
+            resolved = script.resolve()
+            if (len(resolved.parts) < 3
+                    or resolved.parts[-2:] != ("tools", "prismabuild_worker.py")
+                    or not resolved.is_file()):
+                return None
+            root = resolved.parent.parent
+            receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
+            if (not isinstance(receipt, dict)
+                    or receipt.get("schema")
+                    != "prismaquant.prismabuild.runtime_version.v1"
+                    or receipt.get("generation") != root.name
+                    or not isinstance(receipt.get("files"), dict)):
+                return None
+            members = receipt["files"]
+            worker_rel = "tools/prismabuild_worker.py"
+            if (not isinstance(members.get(worker_rel), str)
+                    or _sha256_file(resolved) != members[worker_rel]):
+                return None
+            for candidate in ("tools/resource_exec.py",
+                              "tools/fleet/resource_exec.py"):
+                proxy = root / candidate
+                digest = members.get(candidate)
+                if (isinstance(digest, str) and proxy.is_file()
+                        and _sha256_file(proxy) == digest):
+                    return proxy
+            return None
+        except (OSError, ValueError):
+            return None
+
     def wrap_argv(self, argv: list[str]) -> list[str]:
         if self.token is None:
             raise RuntimeError('create the resource scope before launching')
-        root = Path(__file__).resolve().parents[2]
-        helper = root / 'tools/resource_exec.py'
-        if not helper.is_file():
-            helper = root / 'tools/fleet/resource_exec.py'
+        helper = self._sealed_worker_proxy(argv)
+        if helper is None:
+            root = Path(__file__).resolve().parents[2]
+            helper = root / 'tools/resource_exec.py'
+            if not helper.is_file():
+                helper = root / 'tools/fleet/resource_exec.py'
         return [sys.executable, str(helper), '--socket', str(self.socket_path),
                 '--action-key', self.action_key, '--nonce', self.nonce,
                 '--token', self.token, '--', *argv]

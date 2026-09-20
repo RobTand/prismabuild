@@ -696,7 +696,11 @@ broker-owned scope carries its attempt identity: `PRISMABUILD_ACTION_NONCE`
 and `PRISMABUILD_ACTION_SCOPE` (derived by the `resource_exec` proxy from
 the exact launch key and nonce, never the broker token) plus
 `PRISMABUILD_READER_HELPER_ROOT` (the immutable generation root the proxy
-resolves from its own sealed path). `run_local_action` forwards exactly
+resolves from its own sealed path). The scope wrapper selects that proxy
+from the wrapped worker's own sealed generation when argv names a
+canonical worker path whose receipt covers both the worker script and
+the proxy member byte-for-byte; anything else keeps the current-runtime
+proxy. `run_local_action` forwards exactly
 these three from the launcher environment through the residency
 environment contract, so strict readers bind pins to the live claim and
 import sealed helpers. Sealed conflicts on any identity name refuse, as
