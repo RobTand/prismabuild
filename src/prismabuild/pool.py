@@ -11880,7 +11880,20 @@ class PoolQueue:
                     # at which the payload is definitely not executing.
                     if ledger is not None:
                         ledger.release(key)
-                    self.release_tier_reservations(key)
+                    # The tier half goes through the one concluding-path
+                    # helper, not the blanket per-key release.  This claim
+                    # took tokens and never ran, so its own acquisition must
+                    # go back -- but the key may ALSO hold names an
+                    # outstanding output intent still owns (an owner that
+                    # concluded with a staged, unfunded batch keeps exactly
+                    # those, and the mover draws them at
+                    # ``fund_output_batch``).  ``release_tier_reservations``
+                    # cannot tell the two apart and frees both, which left
+                    # the intent citing a name the ledger reads as free.
+                    # ``_release_reservation`` is the selective release every
+                    # other concluding path already uses; ``host=None``
+                    # because the host tokens went back on the line above.
+                    self._release_reservation(key, host=None)
                     state, outcome = terminal
                     self._file_superseded(
                         moved, key=key, kind="terminal-claim", status="dropped",
@@ -11899,7 +11912,10 @@ class PoolQueue:
                     # action a full run before ``execute`` notices.
                     if ledger is not None:
                         ledger.release(key)
-                    self.release_tier_reservations(key)
+                    # Selective for the same reason as the terminal branch
+                    # above: a withdrawal cancels THIS claim, not an output
+                    # intent that another key is still going to draw from.
+                    self._release_reservation(key, host=None)
                     self._file_superseded(
                         moved, key=key, kind="dropped", status="dropped",
                         dropped_unix=_now(), dropped_host=socket.gethostname(),

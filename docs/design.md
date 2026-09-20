@@ -4650,6 +4650,27 @@ ENOSPCs. The window does republish that mover eventually, because
 consumer is not stuck for ever — it pays a second full copy of the range, and
 the over-admission happens first.
 
+**The claim races conclude selectively too.** `_claim` drops a committed claim
+at two post-acquisition points — a terminal for the same generation already
+filed when the row reached `ready` again, and a withdrawal that landed between
+the ready scan and the rename — and both used to release the tier half with the
+blanket `release_tier_reservations`. That freed names an outstanding output
+intent still owned under the same key: an owner that concluded with a staged,
+unfunded batch keeps exactly those names (`output_keep_names_for_owner`), and
+the blanket release cannot tell the claim's own acquisition from the intent's
+retained occupancy, so the intent went on citing names the ledger read as free.
+Both sites now take the same `_release_reservation(key, host=None)` every other
+concluding path takes — the host tokens went back on the line above — which
+releases the claim's acquisition and keeps the intent's names. An occupied
+mover never reaches either site: occupancy requires the mover to have run,
+running consumes its funding, and a consumed record covers nothing, so the R6
+output claim gate reads the row as REQUIRED and refuses
+`output_funding_terminal` before `ledger.begin_acquire` is ever called; cutting
+that gate is measured to open the claim again (fault-injection RED, 2026-09-20).
+`release_tier_reservations` remains only behind `pin_holds_tier_tokens` in
+`reclaim_terminal_reservation`, where an explicit `unpin=True` already names
+the release.
+
 ### Adopting a resident range, and when an orphan is evicted
 
 The campaign is one probe and many artifacts of one model, so every artifact

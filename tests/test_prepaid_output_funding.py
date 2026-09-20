@@ -1732,3 +1732,80 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path) -> None:
     assert ledger.available().get(KIND, 0) == free0
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
+
+
+def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other new state at the post-acquisition drop sites: an owner.
+
+    `_claim` blanket-releases every tier token under a key at
+    `pool.py:11883` (a terminal for this generation is already filed) and
+    `:11902` (withdrawn in the rename window). The R6 output claim gate
+    closes those sites to an occupied MOVER -- its funding reads
+    `consumed`, so it is refused before acquisition -- but the gate keys
+    off `produced_output_batch`, which only a mover carries, so it does
+    not apply to the OWNER key at all.
+
+    An owner CAN hold tier tokens that are not its own to give back: with
+    an output intent staged and not yet funded, `_release_reservation`
+    deliberately keeps exactly the names the intent still owns
+    (`output_keep_names_for_owner`), and the mover will draw them at
+    `fund_output_batch`. This drives the stale-reaper shape those sites
+    exist for -- concluded row back in `ready` with its terminal still
+    filed -- and measures whether those names survive the drop.
+    """
+
+    owner = _hexkey("prepaid-owner")
+    mover = _hexkey("prepaid-mover")
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst, claimed, _control, _env = _bind(q, template, owner)
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 2
+
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged.get("ok") is True, staged
+
+    # The owner concludes with the intent outstanding.  Its selective
+    # release keeps precisely the names the intent still owns.
+    q.finish(owner, status="executed", claim_snapshot=claimed)
+    keep, unknown = q.output_keep_names_for_owner(owner, TIER)
+    assert unknown is False and keep, (keep, unknown)
+    retained = ledger.holder_tokens(owner).get(KIND, 0)
+    assert retained == len(keep), (retained, keep)
+
+    # The stale-reaper shape: the concluded row is back in ``ready`` with
+    # its terminal still filed under the same generation.
+    done = pool._read_json(q.item_path(pool.DONE, owner))
+    assert isinstance(done, dict), done
+    pool._write_json_atomic(q.item_path(pool.READY, owner), done)
+
+    blanket: list[str] = []
+    released = pool.PoolQueue.release_tier_reservations
+    monkeypatch.setattr(
+        pool.PoolQueue, "release_tier_reservations",
+        lambda self, key: (blanket.append(str(key)), released(self, key))[1])
+    selective: list[str] = []
+    concluding = pool.PoolQueue._release_reservation
+
+    def _watch(self, action_key, *, host=None, keep_tier=False):
+        selective.append(str(action_key))
+        return concluding(self, action_key, host=host, keep_tier=keep_tier)
+
+    monkeypatch.setattr(pool.PoolQueue, "_release_reservation", _watch)
+
+    assert q.claim(owner="probe-drop") is None
+
+    # The drop site WAS reached -- this is not a vacuous pass -- and it
+    # concluded the claim through the selective release, not the blanket
+    # one.  Before the fix `blanket` was `[owner]` and the intent's name
+    # was gone: `(set(), False)` where the intent still cited
+    # `stage_gib-0000`.
+    assert selective == [owner], selective
+    assert blanket == [], blanket
+    assert q.output_keep_names_for_owner(owner, TIER) == (keep, False)
+    assert ledger.holder_tokens(owner).get(KIND, 0) == retained

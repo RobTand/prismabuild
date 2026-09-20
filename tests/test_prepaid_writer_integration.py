@@ -1886,3 +1886,96 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     # published, is still a proven-empty stage.
     q.record_move(mover, honest)
     assert q.output_partial_pin_holds(record, mover) is False
+
+
+def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The post-acquisition drop sites cannot see an occupied output mover.
+
+    `_claim` blanket-releases every tier token under a key at two places
+    where a committed claim turns out to be void: `pool.py:11883` when a
+    terminal for the same generation is already filed, and `:11902` when
+    the action was withdrawn between the ready scan and the rename. Both
+    predate produced output and neither consults
+    `output_keep_names_for_owner` or `pin_holds_tier_tokens`, so on their
+    face they would free retained occupancy. A site predating the feature
+    does not establish safety for the new state, so this drives the real
+    claim path with a mover that HAS occupancy and measures where it gets.
+
+    It gets nowhere near them. Occupancy under a mover key requires that
+    mover to have RUN -- bytes only land when the sealed argv executes --
+    and running consumes its funding. `output_funded_cover` covers only
+    `transferring`, so a consumed record covers nothing; the R6 output
+    claim gate then sees a filed funding record, reads the row as
+    REQUIRED, and refuses `output_funding_terminal` BEFORE
+    `ledger.begin_acquire` is ever called. The drop sites are downstream
+    of that acquisition, so the occupied state is unreachable at both.
+
+    Measured, not reasoned: the gate's own refusal is captured by name,
+    `release_tier_reservations` is watched and must not be called at all,
+    and the aggregate census plus the bytes on the stage are the same
+    before and after the attempt.
+    """
+
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    payload = b"f" * 700
+    descs = _descriptors(tmp_path, template, inst, "p1", payload)
+    descs = descs + _descriptors(tmp_path, template, inst, "s1", b"c" * 500)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+
+    # A real partial: the second origin is gone, so the sealed argv stages
+    # the first entry and then refuses.
+    Path(str(descs[1]["path"])).unlink()
+    claimed = _claim_mover(q, "w-partial")
+    assert claimed["action_key"] == mover
+    q.execute(claimed, timeout_s=240)
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+    q.finish(mover, status="failed")
+
+    # Occupied, charged, and back in the queue -- the state the drop sites
+    # would have to be safe for.
+    occupied = {"capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
+    assert _tier_census(ledger) == occupied
+    assert po._mover_live_state(q, mover) == "ready"
+    funding = q.read_output_funding(mover, TIER)
+    assert funding is not None and funding["state"] == "consumed"
+
+    blanket: list[str] = []
+    released = pool.PoolQueue.release_tier_reservations
+    monkeypatch.setattr(
+        pool.PoolQueue, "release_tier_reservations",
+        lambda self, key: (blanket.append(str(key)), released(self, key))[1])
+
+    refusals: list[dict] = []
+    acquire = pool.PoolQueue._begin_tier_acquire
+
+    def _record(self, *args, **kwargs):
+        shortage = acquire(self, *args, **kwargs)
+        if isinstance(shortage, dict):
+            refusals.append(dict(shortage))
+        return shortage
+
+    monkeypatch.setattr(pool.PoolQueue, "_begin_tier_acquire", _record)
+
+    assert q.claim(owner="probe-race", tags=[_tier_host(q)]) is None
+
+    # The gate names itself, and the claim path never reached a release.
+    assert [r.get("reason") for r in refusals] == ["output_funding_terminal"], (
+        refusals)
+    assert blanket == [], blanket
+    assert _tier_census(ledger) == occupied
+    assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
