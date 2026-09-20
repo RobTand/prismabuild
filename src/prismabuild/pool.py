@@ -1964,15 +1964,18 @@ class ResourceLedger:
         leaks the tier, freeing them mints a phantom.  Destroying them drops
         the holder and the total together, so free never moves.
 
-        Crash ordering mirrors ``retire_free_capacity``'s recoverable
-        direction: the mint marker goes FIRST, then the token.  Marker-first
-        leaves a token with no marker, which the next ``ensure_capacity``
-        adoption re-marks -- the decharge simply did not happen and the
-        caller's retry redoes it.  Token-first would leave a marker with no
-        token, which ``ensure_capacity`` skips forever: silently and
-        permanently lost capacity.  Missing tokens (an earlier decharge, a
-        raced release) count as already gone, so this is safe to call twice;
-        only actual destructions are returned.
+        The mint marker is deliberately KEPT while the token is unlinked.
+        A destroyed name with no marker would be re-minted into free by the
+        next ``ensure_capacity`` whose wanted range covers its index -- a
+        transient phantom a concurrent claimant could steal before the same
+        apply's retire removed it again.  A kept marker names a deliberately
+        retired index, which ``ensure_capacity`` skips forever: the name can
+        never reappear as writable free while the bytes remain.  There is no
+        marker/token ordering problem to solve -- a single unlink per token,
+        retried idempotently -- and no second state: the markers themselves
+        are the durable record.  Missing tokens (an earlier decharge, a raced
+        release) count as already gone, so this is safe to call twice; only
+        actual destructions are returned.
         """
 
         destroyed: dict[str, int] = {}
@@ -1989,8 +1992,6 @@ class ResourceLedger:
                     break
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                     continue
-                # Recoverable direction: marker first, token second.
-                (self.minted_dir / token.name).unlink(missing_ok=True)
                 try:
                     token.unlink()
                 except OSError:
@@ -1998,7 +1999,70 @@ class ResourceLedger:
                 taken += 1
             if taken:
                 destroyed[kind] = taken
+        self._drop_empty_holder(holder)
         return destroyed
+
+    def _drop_empty_holder(self, holder: Path) -> None:
+        """Remove a holder directory left with no token files, best-effort.
+
+        Mirrors :meth:`_empty_into_free`'s tail: readers like
+        :meth:`held_keys` list holder *directories*, so a dir emptied by a
+        count-capped settle must go, exactly as a full release removes it.
+        Adaptive metadata goes only once no token remains, so accounting
+        can never disappear while tokens do.
+        """
+
+        try:
+            remaining = [path for path in _scan(holder)
+                         if path.name not in (cpu_admission.METADATA,
+                                              gpu_admission.METADATA)]
+        except OSError:
+            return
+        if remaining:
+            return
+        for marker in (cpu_admission.METADATA, gpu_admission.METADATA):
+            try:
+                (holder / marker).unlink(missing_ok=True)
+            except OSError:
+                return
+        try:
+            holder.rmdir()
+        except OSError:
+            pass
+
+    def release_count(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
+        """Return up to ``counts`` held tokens per kind to free, counting actuals.
+
+        The count-capped sibling of :meth:`release`: an egress that must
+        retain a shortfall (a decharge that failed partway) keeps exactly
+        what it names and frees no more.  Missing tokens count as already
+        gone; only actual renames are returned.
+        """
+
+        released: dict[str, int] = {}
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return released
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        for kind, count in sorted(counts.items()):
+            want = int(count)
+            if want <= 0:
+                continue
+            taken = 0
+            for token in sorted(_glob(holder, f"{kind}-*")):
+                if taken >= want:
+                    break
+                if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                    continue
+                try:
+                    os.rename(token, self.free_dir / token.name)
+                except OSError:
+                    continue
+                taken += 1
+            if taken:
+                released[kind] = taken
+        self._drop_empty_holder(holder)
+        return released
 
     def capacity(self) -> dict[str, int]:
         """Total tokens of each kind, free or held."""
@@ -4628,31 +4692,39 @@ class PoolQueue:
 
     def release_tier_holder_for_egress(
         self, tier_id: str, action_key: str, *,
-        destroy: Mapping[str, int],
+        destroy: Mapping[str, int], free: Mapping[str, int],
     ) -> dict[str, object]:
-        """Settle one egressing mover's tier hold: decharge, then release.
+        """Settle one egressing mover's tier hold: decharge, then free.
 
         ``destroy`` names per-kind token counts whose bytes stay on the
         stage under a co-owner (the shared-egress duplicate): they are
         destroyed first via :meth:`ResourceLedger.retire_held`, and only
-        then is the holder's remainder returned to free with
-        :meth:`ResourceLedger.release`.  Destroy-before-release is what
-        makes an interrupted settle retry-safe: the retry recomputes both
-        counts from the fragment's stable byte buckets capped at the still-
-        held remainder, so a crash after the destroy frees exactly the freed
-        bytes' worth, and a crash before it leaves everything held.
+        then are up to ``free`` per-kind counts returned with
+        :meth:`ResourceLedger.release_count`.  Destroy-before-release is
+        what makes an interrupted settle retry-safe: the retry recomputes
+        both counts from the fragment's stable byte buckets capped at the
+        still-held remainder, so a crash after the destroy frees exactly
+        the freed bytes' worth, and a crash before it leaves everything
+        held.  A destroy shortfall (unlink failure) is reported and its
+        tokens stay held: a failed decharge must never be freed as the
+        duplicate it was meant to destroy.  Free-side rename failures
+        likewise stay held and converge on retry.
 
         No lock is taken here: the caller (the egress, under the mover
         transition lock, the stage ownership lock and the tier mint lock as
         its leaf) already excludes concurrent ownership decisions and
-        stale-snapshot mints.  Returns ``{"destroyed": {...},
-        "released": <int>}``; both count actual token files.
+        stale-snapshot mints.  Returns ``{"destroyed": {...}, "released":
+        {...}, "shortfall": {...}}``; all three count actual token files.
         """
 
         ledger = self.tier_ledger(tier_id)
         destroyed = ledger.retire_held(action_key, destroy)
-        released = ledger.release(action_key)
-        return {"destroyed": destroyed, "released": released}
+        shortfall = {kind: int(count) - int(destroyed.get(kind, 0))
+                     for kind, count in destroy.items()
+                     if int(count) - int(destroyed.get(kind, 0)) > 0}
+        released = ledger.release_count(action_key, free)
+        return {"destroyed": destroyed, "released": released,
+                "shortfall": shortfall}
 
     def tier_record_path(self, tier_id: str) -> Path:
         return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
@@ -5195,6 +5267,10 @@ class PoolQueue:
             shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
             **({"gpu_memory_max_bytes": control["gpu_memory_max_bytes"]}
                if control.get("gpu_memory_max_bytes") is not None else {}),
+            # The validated control value, not the module default: identical
+            # in production (the check above enforces it) and the only way
+            # a recovered scope reaches its own broker anywhere else.
+            socket_path=Path(control["socket_path"]),
         )
         scope.unit, scope.token = unit, control["token"]
         scope.cgroup_path = Path(control["cgroup_path"])
@@ -5376,6 +5452,154 @@ class PoolQueue:
         return scope
 
     @_serialized_key
+    def _persist_reader_scope_proof(self, record: Mapping[str, object],
+                                      nonce: str, scope_id: str,
+                                      export: object) -> bool:
+        """File the broker's export verdict for reader containment.
+
+        Called with the token-gated ``export_stopped`` verdict in hand
+        (pool resource-scope cleanup owns this hunk, not the membership
+        retry branch) -- never the release reply, which carries no proof
+        on first success.  ``scope_empty`` is True ONLY for a complete
+        authoritative proof under
+        :func:`reader_lease.export_verdict_proves_empty`: the verdict's
+        own scope id names this scope, stopped time is positive finite,
+        empty is exactly True, tickets_pending is exactly False (missing
+        is unknown, never proof of none), and release/retirement are
+        exact booleans proving a clean release or a settled retirement.
+        Anything else files False (retain) or nothing at all, storing
+        the verdict's raw fields so readers re-validate rather than
+        trusting the flag.  Never manufactures true from a helper's
+        return alone.  Host is the PB-qualified claim holder (fleet
+        alias, never the local hostname); worker and incarnation are the
+        claim's full ``claimed_by`` holder identity (repository
+        convention), matching what SDK refs record.  Best-effort:
+        returns whether a proof file was filed; the caller never fails a
+        cleanup over it.
+        """
+
+        from prismabuild import reader_lease
+
+        action_key = str(record.get("action_key") or "")
+        if len(action_key) != 64 or not nonce or not scope_id:
+            return False
+        verdict = export if isinstance(export, Mapping) else {}
+        proven, _reason = reader_lease.export_verdict_proves_empty(
+            verdict, scope_id=scope_id)
+        try:
+            host = self.resolve_claim_holder(action_key, record)
+        except (AttributeError, OSError, ValueError):
+            host = None
+        worker = record.get("claimed_by")
+        payload = {
+            "schema": reader_lease.ATTESTATION_SCHEMA_V1,
+            "action_key": action_key,
+            "nonce": nonce,
+            "scope_id": scope_id,
+            "host": host if isinstance(host, str) and host else "",
+            "worker": worker if isinstance(worker, str) else "",
+            "incarnation": worker if isinstance(worker, str) else "",
+            "scope_empty": bool(proven),
+            "released": verdict.get("released"),
+            "retired": verdict.get("retired"),
+            "settled": verdict.get("settled"),
+            "empty": verdict.get("empty"),
+            "tickets_pending": verdict.get("tickets_pending"),
+            "stopped_unix": verdict.get("stopped_unix"),
+            "termination_evidence": (
+                dict(verdict["termination_evidence"])
+                if isinstance(verdict.get("termination_evidence"), Mapping)
+                else None),
+            "unix": time.time(),
+        }
+        if not payload["host"] or not payload["worker"]:
+            return False
+        path = reader_lease.attestation_path(self, action_key, nonce)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(tmp, "w") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        return True
+
+    def _recover_reader_scope_proof(self, record: Mapping[str, object],
+                                      prior: Mapping[str, object]) -> None:
+        """Republish proof from broker export evidence for the exact attempt.
+
+        The ``prior.complete`` shortcut returns without touching the
+        broker, so a proof lost to a shared-mount blip while the CLAIMED
+        row still stands would stay lost until the row goes away.
+        Recovery republishes in two tiers, preferring no broker contact:
+
+        1. A validated-complete stored export -- the prior cleanup
+           persisted the token-gated verdict beside the release reply --
+           republishes with no broker RPC at all.  The repeat cleanup
+           stays effect-idempotent: no re-stop, no re-release, no new
+           nonce.
+        2. Otherwise a fresh token-gated export through the scope
+           reconstructed from this claim row (same as any cleanup),
+           covering a settlement that completed after the prior ran.
+
+        Never a replay of a possibly stale prior beyond its validated
+        export, and never anything involving capability tokens outside
+        the broker RPC itself.  An already-filed validated-complete
+        proof (exact attempt, exact export booleans, positive finite
+        stop -- not any dict reading ``scope_empty`` True) is left
+        alone; best-effort throughout: export failure retains silently.
+        Once ``finish`` files the terminal, this path has no row left
+        to run from, and the egress tick's terminal-export replay owns
+        recovery instead.
+        """
+
+        from prismabuild import reader_lease
+
+        action_key = str(record.get("action_key") or "")
+        nonce = str(prior.get("nonce") or "")
+        control = record.get("resource_scope")
+        unit = (control.get("scope_id") if isinstance(control, Mapping)
+                else None)
+        if len(action_key) != 64 or not nonce or not unit:
+            return
+        try:
+            ok, _proof = reader_lease.attestation_proves_empty(
+                self, action_key, nonce, str(unit))
+        except Exception:                                        # noqa: BLE001
+            ok = False
+        if ok:
+            return
+        stored = prior.get("export")
+        if isinstance(stored, Mapping):
+            try:
+                valid, _reason = reader_lease.export_verdict_proves_empty(
+                    stored, scope_id=str(unit))
+            except Exception:                                    # noqa: BLE001
+                valid = False
+            if valid:
+                try:
+                    self._persist_reader_scope_proof(
+                        record, nonce, str(unit), stored)
+                except Exception:                                # noqa: BLE001
+                    pass
+                return
+        try:
+            scope = self._scope_from_record(record)
+        except Exception:                                        # noqa: BLE001
+            return
+        if scope.nonce != nonce:
+            return
+        try:
+            export = scope.export_stopped_verdict()
+        except Exception:                                        # noqa: BLE001
+            return
+        try:
+            self._persist_reader_scope_proof(
+                record, nonce, str(unit), export)
+        except Exception:                                        # noqa: BLE001
+            pass
+
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion",
         scope_only: bool = False,
@@ -5424,6 +5648,15 @@ class PoolQueue:
             prior = record.get("resource_scope_cleanup")
             if (isinstance(prior, dict) and prior.get("complete") is True
                     and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                # The shortcut must not permanently bypass proof
+                # publication: if the shared mount blipped while filing,
+                # cleanup recorded complete and future calls return here.
+                # Recover from the prior's authoritative broker verdict
+                # for this exact attempt (no tokens involved anywhere).
+                try:
+                    self._recover_reader_scope_proof(record, prior)
+                except Exception:                                # noqa: BLE001
+                    pass
                 return {"complete": True, "used": True, "removed": [], "remaining": [],
                         "resource_scope": prior}
             scope = self._scope_from_record(record)
@@ -5466,13 +5699,58 @@ class PoolQueue:
                 except Exception as exc:                             # noqa: BLE001
                     settle_error = f"{type(exc).__name__}: {exc}"
             released = scope.release()
+            # The release reply is NOT the proof (the first successful
+            # release carries no released flag, and ticket retirement
+            # carries no stopped/settled fields): read the token-gated
+            # export verdict through the same scope and persist THAT.
+            # Best-effort and contained: proof persistence must never fail
+            # a cleanup that already proved emptiness -- a missing file
+            # retains, exactly as before.
+            try:
+                export = scope.export_stopped_verdict()
+            except Exception:
+                export = None
+            try:
+                self._persist_reader_scope_proof(
+                    record, scope.nonce, scope.unit, export)
+            except Exception as exc:                             # noqa: BLE001
+                telemetry = dict(telemetry) if isinstance(telemetry, Mapping) else {}
+                telemetry.setdefault(
+                    "proof_persistence_error",
+                    f"{type(exc).__name__}: {exc}")
+            # Reader-containment hold: an export that cannot prove this
+            # attempt contained must not conclude a claim whose readers
+            # still pin bytes.  Return incomplete so the claim -- with
+            # its finish_pending authority and its charge -- survives
+            # for the existing worker reaper to retry once settlement
+            # lands; only a proven export, or explicitly released refs,
+            # lets the terminal publish.  A positive export with a lost
+            # proof file still completes here (the egress tick replays
+            # the persisted export), so this holds exactly the unproven.
+            from prismabuild import reader_lease
+            proof_ok, proof_reason = (
+                reader_lease.export_verdict_proves_empty(
+                    export if isinstance(export, Mapping) else {},
+                    scope_id=scope.unit))
+            if not proof_ok:
+                held, hold_reason = reader_lease.attempt_refs_live(
+                    self, str(record.get("action_key") or ""),
+                    scope.nonce, scope.unit)
+                if held:
+                    return {"complete": False, "used": True,
+                            "removed": [], "remaining": [],
+                            "error": f"reader refs live, containment "
+                                     f"unproven ({proof_reason}; "
+                                     f"{hold_reason})",
+                            "nonce": scope.nonce, "export": export}
             if scope.authority_path is not None:
                 # The scope is empty: nothing will sample it again, and no
                 # holder remains for admission to attribute it to. The shared
                 # copy stays as the attempt's last observation.
                 scope.authority_path.unlink(missing_ok=True)
             cleanup = {"complete": True, "released": released, "telemetry": telemetry,
-                       "checked_unix": _now(), "nonce": scope.nonce}
+                       "checked_unix": _now(), "nonce": scope.nonce,
+                       "export": export}
             if settle_error is not None:
                 cleanup["settle_error"] = settle_error
             key = str(record["action_key"])

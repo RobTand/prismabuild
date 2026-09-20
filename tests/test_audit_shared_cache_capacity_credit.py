@@ -25,10 +25,17 @@ Runs under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
+import socket
+import threading
+import time
 from pathlib import Path
 import sys
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -88,15 +95,20 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _publish_mover(queue: pool.PoolQueue, key: str, start: int, end: int,
-                   manifest_sha: str, total: int, demand: int | None = None) -> None:
+                   manifest_sha: str, total: int, demand: int | None = None,
+                   fill: int | None = None) -> None:
     # Demand may exceed the range floor (chunked ranges ceil separately);
-    # the gate refuses only below-floor declarations.
+    # the gate refuses only below-floor declarations.  A sealed fill demand
+    # exercises the real probe rule (oldest ready demand prices the tier).
     tokens = demand if demand is not None else storage_tiers.stage_tokens_for_bytes(end - start)
+    resources = {"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": tokens}
+    if fill is not None:
+        resources[f"{storage_tiers.FILL_KIND}@{TIER}"] = fill
     queue.publish(
         action_key=key, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
         worker_script=str(queue.root / "worker.py"),
-        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": tokens},
+        resources=resources,
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": manifest_sha, "manifest_bytes": total,
                    "range_start_bytes": start, "range_end_bytes": end},
@@ -321,9 +333,12 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     assert (numbers["capacity"], numbers["held"], numbers["free"]) == (1, 1, 0)
 
 
-def test_retire_held_is_idempotent_and_remintable(tmp_path: Path) -> None:
-    """Ledger unit: destroying held tokens counts actuals, retries no-op,
-    and honest regrowth re-mints (no permanent leak)."""
+def test_retire_held_is_idempotent_and_never_reminted(tmp_path: Path) -> None:
+    """Ledger unit: destroying held tokens counts actuals, retries converge,
+    and a destroyed name never reappears as free -- its marker is kept, so
+    ``ensure_capacity`` skips the index forever.  Honest growth fills around
+    the dead indexes and settles exactly at wanted-minus-dead (safe
+    direction, stable across mints)."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.tier_ledger(TIER)
@@ -337,6 +352,313 @@ def test_retire_held_is_idempotent_and_remintable(tmp_path: Path) -> None:
     assert ledger.retire_held(MOVER_A, {KIND: 2}) == {KIND: 1}
     assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
     assert ledger.retire_held(MOVER_A, {KIND: 1}) == {}
+    # Honest regrowth to 6 fills around the 3 dead indexes and settles
+    # exact and stable: no dead name returns, no churn on repeat mints.
     queue.mint_tier_capacity(TIER, {KIND: 6})
-    assert ledger.capacity().get(KIND) == 6
-    assert ledger.available().get(KIND) == 6
+    assert ledger.capacity().get(KIND) == 3
+    assert ledger.available().get(KIND) == 3
+    queue.mint_tier_capacity(TIER, {KIND: 6})
+    assert ledger.capacity().get(KIND) == 3
+    assert ledger.available().get(KIND) == 3
+
+
+# -- R3: the actual cycle, fractional buckets, failed decharge -------------
+
+def _shield_consumer(queue: pool.PoolQueue) -> None:
+    """A live consumer naming A and B as leads, so the cycle's orphan sweep
+    spares their pinned ranges (production shielding, not a mint input)."""
+    queue.publish(
+        action_key="e" * 64, cas_root=str(queue.root / "cas"),
+        checkout_root=str(queue.root / "co"),
+        worker_script=str(queue.root / "worker.py"),
+        resources={"cpu": 1, "mem_gb": 1},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": "f" * 64, "manifest_bytes": 1 << 40,
+                   "leads": [MOVER_A, MOVER_B]})
+
+
+def _tiny_discover(stage: Path, capacity_bytes: int, fill: int):
+    def discover(*, host, source_pool, fill_records, now, ram_policy,
+                 worker_mem_gb):
+        return {TIER: {
+            "tier_id": TIER, "tier": "stage", "host": socket.gethostname(),
+            "mountpoint": str(stage), "dataset": "tank/stage",
+            "capacity_bytes": capacity_bytes,
+            "capacity_source": storage_tiers.WRITABLE_CAPACITY_SOURCE,
+            "primarycache": "all",
+            storage_tiers.FILL_RECORD_FIELD: fill,
+        }}
+    return discover
+
+
+def _run_cycle(queue: pool.PoolQueue, stage: Path, **kw) -> list[dict]:
+    return tier_loop.cycle(
+        queue, host=socket.gethostname(), source_pool="tank",
+        receipts=tier_loop.ReceiptCache(),
+        discover=_tiny_discover(stage, **kw))
+
+
+def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
+    """The ACTUAL tier_loop.cycle applies exactly one ledger write per tier:
+    no early partial-kind mint, no stale second write, rate kinds intact."""
+    queue = _fleet(tmp_path)
+    manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    total = 2 * MIB
+    _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
+    _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
+    _shield_consumer(queue)
+    # A ready row with sealed fill demand: the real probe rule (not the
+    # record's advisory fill field) prices the tier's rate kind.
+    _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total, fill=7)
+    ledger = queue.tier_ledger(TIER)
+
+    applies: list[dict] = []
+    real_apply = pool.PoolQueue._apply_tier_capacity
+
+    def counting(self, tier_id, tier_ledger, wanted):
+        if tier_id == TIER:
+            applies.append(dict(wanted))
+        return real_apply(self, tier_id, tier_ledger, wanted)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", counting)
+    try:
+        announced = _run_cycle(queue, tmp_path / "stage",
+                               capacity_bytes=1, fill=50)
+    finally:
+        monkey.undo()
+    assert len(applies) == 1, applies
+    assert set(applies[0]) == {KIND, storage_tiers.FILL_KIND}, applies
+    assert applies[0][KIND] == 0 + 2, applies  # writable + landed, once
+    assert applies[0][storage_tiers.FILL_KIND] == 7, applies  # real probe
+    (record,) = [r for r in announced if r["tier_id"] == TIER]
+    assert record["landed_gib"] == 2 and record["in_flight_gib"] == 0
+    assert record["capacity_basis"] == "zfs available + landed"
+    assert ledger.capacity().get(KIND) == 2
+    assert ledger.capacity().get(storage_tiers.FILL_KIND) == 7
+    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+
+
+def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> None:
+    """An inadmissible tier gets no momentary supply: one keep-mint, rate
+    and occupancy holds intact, never transiently zeroed."""
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    stage = tmp_path / "stage"
+    stage.mkdir(parents=True, exist_ok=True)
+    queue.mint_tier_capacity(TIER, {KIND: 3, storage_tiers.FILL_KIND: 50})
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.acquire("d" * 64, {KIND: 1}) is True
+    # A live (ready) consumer naming the holder, so the cycle's orphan
+    # sweep cannot mistake the pinned key for an orphan.
+    queue.publish(
+        action_key="e" * 64, cas_root=str(queue.root / "cas"),
+        checkout_root=str(queue.root / "co"),
+        worker_script=str(queue.root / "worker.py"),
+        resources={"cpu": 1, "mem_gb": 1},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": "f" * 64, "manifest_bytes": 1 << 40,
+                   "leads": ["d" * 64]})
+    other = pool.PoolQueue(tmp_path / "other-queue")
+    other.ensure_layout()
+    assert stage_release.register_stage_root(
+        other, tier_id=TIER, stage_root=stage) == "registered"
+    # A ready row with sealed fill demand, so the keep-mint must carry the
+    # rate kind through the refusal path as well.
+    queue.publish(
+        action_key=MOVER_C, cas_root=str(queue.root / "cas"),
+        checkout_root=str(queue.root / "co"),
+        worker_script=str(queue.root / "worker.py"),
+        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1,
+                   f"{storage_tiers.FILL_KIND}@{TIER}": 7},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": "f" * 64, "manifest_bytes": 1 << 40,
+                   "range_start_bytes": 0, "range_end_bytes": MIB},
+        max_attempts=1, retry_safe=False)
+
+    applies: list[dict] = []
+    real_apply = pool.PoolQueue._apply_tier_capacity
+
+    def counting(self, tier_id, tier_ledger, wanted):
+        if tier_id == TIER:
+            applies.append(dict(wanted))
+        return real_apply(self, tier_id, tier_ledger, wanted)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", counting)
+    try:
+        announced = tier_loop.cycle(
+            queue, host=socket.gethostname(), source_pool="tank",
+            receipts=tier_loop.ReceiptCache(),
+            discover=_tiny_discover(stage, capacity_bytes=1, fill=50))
+    finally:
+        monkey.undo()
+    (record,) = [r for r in announced if r["tier_id"] == TIER]
+    assert record.get("stage_root_admits") is False
+    assert len(applies) == 1, applies
+    assert ledger.holder_tokens("d" * 64).get(KIND) == 1
+    assert ledger.capacity().get(storage_tiers.FILL_KIND) == 7
+    assert ledger.capacity().get(KIND) == 1  # keep: held stays, free retired
+
+
+def _big_bytes(pool_dir: Path, name: str, size: int) -> bytes:
+    pool_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(f"audit-{name}".encode()).digest()
+    path = pool_dir / name
+    with open(path, "wb") as stream:
+        for _ in range(size // (1 << 20)):
+            stream.write(digest * ((1 << 20) // 32))
+    return path.read_bytes()
+
+
+def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> None:
+    """One token backs 0.6 GiB deleted + 0.4 GiB shared with zero writable:
+    freeing the ceil would hand a whole token for 0.6 GiB of new room, so
+    nothing returns and the duplicate decharges (600 + 400 MiB, real GiB
+    ceil math, labelled)."""
+    pool_dir = tmp_path / "pool"
+    excl = _big_bytes(pool_dir, "excl.bin", 600 * (1 << 20))
+    shared_blob = _big_bytes(pool_dir, "frac.bin", 400 * (1 << 20))
+    entries = [
+        {"path": str(pool_dir / "frac.bin"), "offset": 0,
+         "bytes": len(shared_blob),
+         "sha256": hashlib.sha256(shared_blob).hexdigest()},
+        {"path": str(pool_dir / "excl.bin"), "offset": 0, "bytes": len(excl),
+         "sha256": hashlib.sha256(excl).hexdigest()},
+    ]
+    total = sum(e["bytes"] for e in entries)
+    manifest = {
+        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "produced_by": {"tool": "audit-r3-fractional"},
+        "mount_prefix": str(pool_dir),
+        "entries": entries, "entry_count": 2, "total_bytes": total,
+        "annotations": {"phases": [
+            {"name": "shared", "cumulative_bytes": len(shared_blob)},
+            {"name": "all", "cumulative_bytes": total}]},
+    }
+    manifest_path = pool_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+    queue = _fleet(tmp_path)
+    # A holds exactly the 1 GiB floor for the whole range; B shares 0.4.
+    _publish_mover(queue, MOVER_A, 0, total, manifest_sha, total)
+    _publish_mover(queue, MOVER_B, 0, len(shared_blob), manifest_sha, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B,
+               0, len(shared_blob))
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    _supply(queue, W_MODEL_TIGHT)
+
+    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+                                stage_root=str(tmp_path / "stage"))
+    assert first["complete"] is True
+    assert first["entries_shared"] == 1 and first["entries_deleted"] == 1
+    assert first["tokens_released"] == 0, first
+    assert first.get("tokens_decharged") == 1, first
+    assert (tmp_path / "stage" / "frac.bin").exists()
+    assert not (tmp_path / "stage" / "excl.bin").exists()
+    numbers = _ledger_numbers(queue)
+    assert numbers["free"] == 0, numbers
+    _publish_mover(queue, MOVER_C, 0, MIB, manifest_sha, total)
+    assert _claim(queue) is None
+
+
+def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> None:
+    """An unlink failure mid-decharge keeps the duplicate held, reports
+    incomplete, refuses a claimant, and converges on retry."""
+    queue = _fleet(tmp_path)
+    manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    total = 2 * MIB
+    _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
+    _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
+    _supply(queue, W_MODEL_TIGHT)
+    ledger = queue.tier_ledger(TIER)
+    held_dir = str(ledger.held_dir / MOVER_A)
+
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def _fail_once(path, *args, **kwargs):
+        if (str(path).startswith(held_dir + "/")
+                and str(path).split("/")[-1].startswith(KIND) and calls["n"] == 0):
+            calls["n"] += 1
+            raise OSError(errno.EIO, "injected decharge failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr("os.unlink", _fail_once)
+    try:
+        failed = stage_release.evict(
+            queue, MOVER_A, consumer_action_key=CONSUMER_A,
+            stage_root=str(tmp_path / "stage"))
+    finally:
+        monkey.undo()
+    assert failed["complete"] is False
+    assert any("decharge-incomplete" in e for e in failed["errors"]), failed
+    assert failed.get("tokens_decharged", 0) == 0
+    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.available().get(KIND, 0) == 0
+    _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
+    assert _claim(queue) is None, "failed decharge must not free anything"
+
+    retry = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+                                stage_root=str(tmp_path / "stage"))
+    assert retry["complete"] is True
+    assert retry.get("tokens_decharged") == 1
+    assert retry["tokens_released"] == 0
+    numbers = _ledger_numbers(queue)
+    assert (numbers["capacity"], numbers["held"], numbers["free"]) == (1, 1, 0)
+
+
+def test_concurrent_egress_and_mint_never_shows_phantom(tmp_path: Path) -> None:
+    """Egress decharge racing cycle mints: sampled free never exceeds the
+    modelled physical free, and the end state is exact."""
+    queue = _fleet(tmp_path)
+    manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    total = 2 * MIB
+    _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
+    _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
+    _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
+    _supply(queue, W_MODEL_TIGHT)
+    ledger = queue.tier_ledger(TIER)
+    _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
+
+    samples: list[int] = []
+    stop = threading.Event()
+
+    def _mint_loop() -> None:
+        for _ in range(5):
+            tier_loop.mint_stage_supply(
+                queue, tier_id=TIER, kind=KIND, writable_tokens=W_MODEL_TIGHT)
+
+    def _egress() -> None:
+        stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+                            stage_root=str(tmp_path / "stage"))
+
+    mint_thread = threading.Thread(target=_mint_loop)
+    egress_thread = threading.Thread(target=_egress)
+    mint_thread.start()
+    egress_thread.start()
+    while mint_thread.is_alive() or egress_thread.is_alive():
+        samples.append(int(ledger.available().get(KIND, 0)))
+        time.sleep(0.001)
+    mint_thread.join()
+    egress_thread.join()
+    samples.append(int(ledger.available().get(KIND, 0)))
+    assert samples, "must have observed the race window"
+    assert max(samples) == 0, samples
+    assert _claim(queue) is None
+    numbers = _ledger_numbers(queue)
+    assert (numbers["capacity"], numbers["held"], numbers["free"]) == (1, 1, 0)

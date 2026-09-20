@@ -28,6 +28,41 @@ def process_umask() -> int:
     raise OSError('cannot read this launcher process umask')
 
 
+def payload_identity_env(env, *, action_key, nonce):
+    """Stamp public attempt identity plus the sealed helper root.
+
+    Pure and unit-testable: copies ``env`` and assigns
+    ``PRISMABUILD_ACTION_NONCE``/``PRISMABUILD_ACTION_SCOPE`` from the
+    exact launch identity (never the broker token) plus
+    ``PRISMABUILD_READER_HELPER_ROOT`` as the immutable generation ROOT
+    (consumers append ``/src`` themselves; this variable never names it,
+    so no layer can double it).  Assignment, not setdefault: an outer
+    attempt's variables must not leak into the inner payload -- and when
+    a derivation fails its keys are REMOVED, never left holding stale
+    outer values while documented as unset.
+    """
+
+    payload_env = dict(env)
+    try:
+        from resource_broker import scope_id as broker_scope_id
+    except ImportError:
+        broker_scope_id = None  # type: ignore[assignment]
+    if broker_scope_id is not None:
+        payload_env['PRISMABUILD_ACTION_NONCE'] = nonce
+        payload_env['PRISMABUILD_ACTION_SCOPE'] = broker_scope_id(
+            action_key, nonce)
+    else:
+        payload_env.pop('PRISMABUILD_ACTION_NONCE', None)
+        payload_env.pop('PRISMABUILD_ACTION_SCOPE', None)
+    try:
+        from runtime_paths import generation_root as sealed_root
+        payload_env['PRISMABUILD_READER_HELPER_ROOT'] = str(
+            sealed_root(__file__))
+    except (ImportError, OSError):
+        payload_env.pop('PRISMABUILD_READER_HELPER_ROOT', None)
+    return payload_env
+
+
 def main() -> int:
     # Resolve source versus published layout only when executing the proxy.
     source = Path(__file__).resolve().parents[1] / 'src'
@@ -64,8 +99,18 @@ def main() -> int:
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
     try:
+        # The payload's public attempt identity, from the exact launch
+        # identity this proxy was invoked with (never the broker token):
+        # readers downstream bind their pins to the attempt that launched
+        # them and compare it to the live claim, so a superseded process
+        # can never silently adopt its successor's attempt.  Names match
+        # core's protected residency forwarding, which refuses sealed
+        # spoofs of either variable.  The sealed helper root rides along
+        # so readers import from sealed bytes, never the mutable repo.
+        payload_env = payload_identity_env(
+            os.environ, action_key=args.action_key, nonce=args.nonce)
         request = {'op': 'run', **identity, 'argv': argv,
-                   'cwd': os.getcwd(), 'env': dict(os.environ),
+                   'cwd': os.getcwd(), 'env': payload_env,
                    'affinity': sorted(os.sched_getaffinity(0)), 'umask': process_umask()}
         message = json.dumps(request, separators=(',', ':')).encode() + b'\n'
         if len(message) > MAX_MESSAGE_BYTES:

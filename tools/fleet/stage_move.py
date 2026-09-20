@@ -65,6 +65,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 import prewarm_loop  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
@@ -177,6 +178,10 @@ class _Copier:
             None if source_stage_root is None else Path(source_stage_root))
         self.lock = threading.Lock()
         self.staged: dict[str, dict[str, object]] = {}
+        #: Publish-time identity per staged key, filed beside the fragment
+        #: as the material sidecar: the map entry stays schema-v1, and this
+        #: dates the vouching (see ``reader_lease.write_material``).
+        self.sidecar: dict[str, dict[str, object]] = {}
         self.bytes_staged = 0
         self.errors: list[str] = []
         #: Bumped under the lock on every landed entry, so a fragment written
@@ -289,7 +294,14 @@ class _Copier:
             raise OSError(f"digest mismatch on {source}: manifest says "
                           f"{declared[:12]}, the copy is {computed[:12]}")
         os.replace(temporary, destination)
-        return written, computed
+        try:
+            info = os.stat(destination)
+            identity = {"ino": info.st_ino, "size": info.st_size,
+                        "mtime_ns": info.st_mtime_ns,
+                        "ctime_ns": int(getattr(info, "st_ctime_ns", 0))}
+        except OSError:
+            identity = None
+        return written, computed, identity
 
     def run(self, entries: list[dict[str, object]], *, whole: set[str],
             stop: threading.Event, on_entry=None) -> None:
@@ -322,7 +334,7 @@ class _Copier:
                         staged_offset = 0
                     else:
                         staged_source, staged_offset = None, offset
-                    written, digest = self._copy_one(
+                    written, digest, identity = self._copy_one(
                         entry, destination, admission, stop,
                         source=staged_source, source_offset=staged_offset)
                 except (OSError, ValueError) as exc:
@@ -336,8 +348,16 @@ class _Copier:
                     "offset": offset,
                     "sha256": digest,
                 }
+                key = residency_map.residency_map_key(path, offset)
                 with self.lock:
-                    self.staged[residency_map.residency_map_key(path, offset)] = record
+                    self.staged[key] = record
+                    if identity is not None:
+                        self.sidecar[key] = {
+                            "stage_path": str(destination),
+                            "bytes": written,
+                            "sha256": digest,
+                            "file_id": identity,
+                        }
                     self.bytes_staged += written
                     self.generation += 1
                     # Snapshot under the lock, write outside it.  Holding the
@@ -345,7 +365,9 @@ class _Copier:
                     # behind one round trip; the generation is what keeps an
                     # older snapshot from landing on top of a newer one once
                     # they are no longer ordered by the lock.
-                    snapshot = (dict(self.staged), self.generation) if on_entry else None
+                    snapshot = ((dict(self.staged), dict(self.sidecar),
+                                 self.generation)
+                                if on_entry else None)
                 if snapshot is not None:
                     try:
                         on_entry(*snapshot)
@@ -636,8 +658,14 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     last_published = [0.0]
     last_generation = [0]
     publish_lock = threading.Lock()
+    # One publish run, one materialization generation: a retry republishes
+    # under the same mover key with a new generation, so the key alone never
+    # identifies the bytes (see ``reader_lease``).
+    material_generation = reader_lease.mint_generation()
 
-    def publish(staged: dict[str, dict[str, object]], generation: int = 0,
+    def publish(staged: dict[str, dict[str, object]],
+                identities: dict[str, dict[str, object]] | None = None,
+                generation: int = 0,
                 *, force: bool = False) -> None:
         """Republish the fragment as entries land, so a crash leaves a prefix.
 
@@ -652,6 +680,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         crash still leaves a valid prefix; it is at most a couple of seconds
         shorter than the one a per-entry publish would have left, and the
         entries it omits are re-staged by the rerun.
+
+        The fragment goes first, then the material sidecar that dates it: a
+        crash between them leaves a vouch without a date, which strict
+        readers refuse (safe) and legacy readers use (today's behavior),
+        and the rerun overwrites both.
         """
 
         with publish_lock:
@@ -674,6 +707,14 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                 "manifest_sha256": manifest_sha256,
                 "entries": staged,
             })
+            if identities:
+                reader_lease.write_material(
+                    residency_root,
+                    consumer_action_key=args.consumer_action_key,
+                    mover_action_key=args.action_key,
+                    tier_id=args.tier_id, stage_root=str(args.stage_root),
+                    manifest_sha256=manifest_sha256,
+                    generation=material_generation, entries=identities)
 
     served = served_for(args)
     if pacer is not None:
@@ -786,8 +827,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         residency_map.fragment_path(
             residency_root, args.consumer_action_key,
             args.action_key).unlink(missing_ok=True)
+        reader_lease.material_path(
+            residency_root, args.consumer_action_key,
+            args.action_key).unlink(missing_ok=True)
     elif copier.staged:
-        publish(copier.staged, force=True)
+        publish(copier.staged, copier.sidecar, force=True)
     # Layer 2, after every measurement of layer 1 has been taken.  The warm
     # reads the stage, not the pool, so folding it into ``seconds`` or the
     # pacer's window would price a copy by a read the pool never served --

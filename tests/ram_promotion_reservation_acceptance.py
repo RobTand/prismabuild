@@ -22,6 +22,7 @@ Run it with an honest reservation at least ``runtime + range``:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[0] / "src"))
 sys.path.insert(0, str(HERE.parents[0] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import storage_tiers  # noqa: E402
+from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
 import ram_promote  # noqa: E402
 
 STAGE_ROOT = Path("/stage/prewarm")
@@ -126,12 +127,15 @@ def run(scratch: Path) -> dict[str, object]:
         # one ``bytes`` object would charge the *generator* the range and
         # make the arm pass or die for a reason that is not the promotion.
         block = b"\x00" * (8 * 1024 * 1024)
+        source_hash = hashlib.sha256()
         with open(source, "wb") as sink:
             remaining = RANGE_BYTES
             while remaining > 0:
                 step = min(len(block), remaining)
                 sink.write(block[:step])
+                source_hash.update(block[:step])
                 remaining -= step
+        source_digest = source_hash.hexdigest()
         # Durable mid-phase checkpoint: if containment kills the promotion,
         # this file says the source phase's peak, so the OOM is attributable
         # to the promotion's destination rather than to building the source.
@@ -140,6 +144,32 @@ def run(scratch: Path) -> dict[str, object]:
             "source_bytes": RANGE_BYTES,
             "cgroup_peak_after_source_bytes": after_source,
         }) + "\n")
+        # What the stage mover filed before this promotion was ever
+        # published: the promotion proves its source window against
+        # published stage material, the way production ranges land.
+        # The digest comes from the bounded write above, not a second pass.
+        residency = scratch / "residency"
+        staged_key = f"0:/mnt/shared/{relative}"
+        residency_map.write_fragment(residency, {
+            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+            "consumer_action_key": CONSUMER, "mover_action_key": "b" * 64,
+            "tier_id": "prismabuild-stage:acceptance",
+            "stage_root": str(STAGE_ROOT),
+            "manifest_sha256": "0" * 64,
+            "entries": {staged_key: {
+                "stage_path": str(source), "bytes": RANGE_BYTES,
+                "sha256": source_digest, "offset": 0}}})
+        source_stat = reader_lease.stat_identity(str(source))
+        assert source_stat is not None
+        reader_lease.write_material(
+            residency, consumer_action_key=CONSUMER,
+            mover_action_key="b" * 64,
+            tier_id="prismabuild-stage:acceptance",
+            stage_root=str(STAGE_ROOT), manifest_sha256="0" * 64,
+            generation=reader_lease.mint_generation(),
+            entries={staged_key: {
+                "stage_path": str(source), "bytes": RANGE_BYTES,
+                "sha256": source_digest, "file_id": source_stat}})
         started = time.time()
         receipt = ram_promote.promote(args)
         elapsed = max(1e-9, time.time() - started)

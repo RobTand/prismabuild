@@ -24,13 +24,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
-from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 
 import ram_promote  # noqa: E402
 import stage_release  # noqa: E402
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
+STAGE_MOVER = "b" * 64
 MANIFEST_SHA = "9" * 64
 RAM_TIER = "ram:dl380g10"
 GIB = storage_tiers.GIB
@@ -80,6 +81,37 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, *, stage: Path,
     ])
 
 
+def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
+                   ) -> None:
+    """What the stage mover filed before this promotion was ever published.
+
+    A promotion proves its source window against published stage material;
+    bytes with no fragment and no sidecar are not a stage range, so the
+    tests file both, the way ``stage_move.move`` does in production.
+    """
+
+    root = queue.root / pool.RESIDENCY
+    staged = stage / "model" / "shard-0.bin"
+    key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
+    digest = hashlib.sha256(payload).hexdigest()
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": STAGE_MOVER,
+        "tier_id": "prismabuild-stage:dl380g10", "stage_root": str(stage),
+        "manifest_sha256": MANIFEST_SHA,
+        "entries": {key: {"stage_path": str(staged), "bytes": len(payload),
+                          "sha256": digest, "offset": 0}}})
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=STAGE_MOVER,
+        tier_id="prismabuild-stage:dl380g10", stage_root=str(stage),
+        manifest_sha256=MANIFEST_SHA,
+        generation=reader_lease.mint_generation(),
+        entries={key: {"stage_path": str(staged), "bytes": len(payload),
+                       "sha256": digest, "file_id": identity}})
+
+
 def _epoch(ram: Path) -> str:
     marker = storage_tiers.ensure_ram_epoch(ram, host="dl380g10")
     assert marker is not None
@@ -94,6 +126,7 @@ def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
     ram = tmp_path / "ram"
     ram.mkdir()
     epoch = _epoch(ram)
+    _publish_stage(queue, stage, payload)
 
     receipt = ram_promote.promote(_args(tmp_path, queue, stage=stage,
                                         manifest=manifest, ram=ram))
@@ -164,6 +197,7 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
     ram = tmp_path / "ram"
     ram.mkdir()
     _epoch(ram)
+    _publish_stage(queue, stage, payload)
     receipt = ram_promote.promote(_args(tmp_path, queue, stage=stage,
                                         manifest=manifest, ram=ram))
     queue.record_move(MOVER, receipt)
