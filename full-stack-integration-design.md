@@ -1,147 +1,63 @@
-# Full-stack integration harness — architecture and test plan
+# Staged-read integration tests: implemented components and remaining gates
 
-Owner: integration-harness lane (this branch). Production code owned by
-reader-lifetime, strict-reader, cost_streaming/844, and tier workers —
-this lane edits none of it without root coordination. New files only:
-this design doc, harness helpers, integration test files,
-the PQ bindings manifest mechanism, and the ACC01..06 acceptance mapping (§6). PR + issue required; root
-final review. Rob asked for an integration test spanning the entire
-functionality that protects future changes.
+The complete target is the [staged-read contract](docs/staged_read_contract_2026-09-20.md),
+including ACC-01 through ACC-06. This change adds PB component integration
+fixtures. Full campaign conformance remains open in
+[issue #725](https://github.com/RobTand/prismabuild/issues/725).
 
-## 1. What the harness proves (thin vertical slice)
+## Implemented coverage
 
-One bounded fixture corpus flows through real interfaces end to end:
+These tests run inside admitted PB CPU actions. Each uses an isolated queue
+and temporary directories; no live fleet queue or storage contents are mutated.
+The generated corpus contains a 1 MiB whole file and an 8 MiB file with a
+3 MiB declared range starting at a nonzero source offset.
 
-real producer (manifest bytes + `residency_stage_rows` + `residency_plan`
-freeze/validate) → published PB submission rows → HDD-source fixture →
-movers copy to SSD stage (whole file AND nonzero-offset `.pbrange`
-splits) → RAM promotion → map compose/lookup/`overlay_ram` → staged
-reads through the real open path → durable progress advancing the
-residency window (`residency_plan.remaining`) → retry/resume from
-journals → receipt/CAS publication → ownership-safe cleanup (exactly-once
-release) → deterministic join with coverage proof and gap refusal.
+| Test file | Production behavior checked |
+|---|---|
+| `test_fullstack_producer_rows.py` | Phase ranges cover the declared read order; inconsistent entry lengths refuse; a frozen plan rejects a different binding. |
+| `test_fullstack_stage_ram_chain.py` | Real SSD movers and RAM promotion preserve whole-file and nonzero-offset range bytes; composed and overlaid maps resolve both copies. |
+| `test_fullstack_reader_boundaries.py` | RAM and SSD digest agreement, unknown lookup, old-epoch overlay refusal, and charged egress returning its tokens exactly once. |
+| `test_fullstack_progress_retry.py` | Accepted phase accounting, frozen-plan conflict, and repeated cleanup of staged files. |
+| `test_fullstack_claim_retry_primitives.py` | Capability and image matching, unsafe retry declarations, terminal failure, spent acquisition handles, and idempotent ledger release. |
 
-Every arrow is a production function or a real OS/file boundary. No
-assertion merely restates harness code; no mock bypasses a cache or
-reader path; no second dispatcher, cache, or placement knob is built —
-PB owns placement throughout.
+Names containing `fullstack` identify the intended integration suite. These
+component fixtures do not establish an application read path, a live RAM
+filesystem, broker containment, a worker restart, or numerical GPU results.
+The phase-accounting tests do not execute a progress reporter. The ledger
+handle tests do not establish worker-incarnation fencing or JOIN/RESIGN.
 
-## 2. Two lanes, one suite
+## Remaining integration gates
 
-- **Local-CI lane (runs now):** inside one admitted PB CPU job, pytest
-  runs the suite against an isolated local queue (`PoolQueue(tmp_path)`)
-  with temporary tier dirs announced on it, plus small generated fixtures
-  (MiB scale, generated in-test, never committed binaries). All
-  production functions execute for real; the filesystem (permissions,
-  missing files, corrupted bytes, epoch bumps) provides the adversarial
-  half. Bounded: single-digit CPUs, a few GiB, minutes.
-- **Live-fleet lane (designed, gated):** the same suite via `pbtest`
-  with two independent consumer rows on the `gb10` class tag so PB
-  places across both Sparks — never manual host sharding. Blocked until
-  real PQ readers bind via the bindings manifest (§4): the live lane must read
-  through actual readers, so direct-RAM opens cannot fake a pass. Until
-  then the live lane is an unavailable target, stated not implied.
+| Contract gate | Required evidence beyond these fixtures |
+|---|---|
+| ACC-01 | Actual PQ producer output, wire/canonical bindings and CLI declarations accepted by PB without remapping fixtures. |
+| ACC-02 | Acquire/open/release races and copy/eviction interleavings with actual reader leases and authoritative containment. |
+| ACC-03 | Actual PQ source, rendered-weight, wire and activation readers consuming the real mover outputs, including forbidden-pool-open negatives. |
+| ACC-04 | Restart, retry and withdrawal with exact-attempt containment, retained charges and single durable-result adoption. |
+| ACC-05 | Concurrent useful results on both Sparks, with actual worker placement recorded. Two portable rows alone do not establish this. |
+| ACC-06 | Completed staged-only campaign output with read-path evidence and the final artifact gates. |
 
-## 3. PQ dependency pin (existing mechanism, pending commit)
+PQ integration tests live with PQ so its source is sealed into the test action.
+Their PB dependency must name an immutable generation or reviewed installed
+commit and verify the modules actually imported. Mutable per-host checkouts
+are unsuitable because the hosts can carry different source versions.
+Production readers, tier placement and recovery remain owned by their existing
+implementations; the harness introduces no dispatcher or cache.
 
-`pbtest` already enforces reviewed dependencies inside the admitted
-worker: when the checkout carries `tools/resolve_*_dev_pin.py`, the
-`pbtest_pins.py` guard checks the target interpreter's installed module
-against its full Git commit before pytest starts. The harness will carry
-`tools/resolve_pq_fixture_pin.py` following that exact pattern — but the
-file lands only with root's candidate-commit API bindings. Until then the
-harness is hermetic: fixtures generated in-test, zero PQ imports. No
-parallel reader implementation is vendored to fill the gap (§4).
+JOIN/RESIGN coverage must use the real membership workflow after its candidate
+is integrated. Capability matching in this patch is only a prerequisite.
+Likewise, generated boundary outputs need their real producer publication,
+staging and reader-lifetime contracts before the same-action path can qualify.
+A receipt's identity binding is not a storage lease.
 
-## 4. PQ wiring (no stubs; cross-repo tests requested)
+## Validation and interpretation
 
-The staged-only chain cannot be proven without the real PQ source,
-render, and activation readers plus the join — and no stub, fake parser,
-unavailable-assertion, or parallel reader is vendored to pretend
-otherwise. Attempted here and rejected with evidence: wiring PQ imports
-through box-local checkouts fails fleet-wide — sparky carries
-`22149e1a` but dl380g10 carries `3541205a`, which predates the joint API
-entirely, so no single checkout pin can hold across workers (proven by
-PB actions `b5256f8ea000` and the pin-mismatch setup error, not by
-reasoning). Mutable per-box checkouts are therefore not a dependency
-mechanism.
+Run these files through published `pbtest.py` at priority -10 with bounded
+aggregate CPU/memory and native threads. Keep command/result JSON outside the
+checkout and verify terminal status, logs and CAS receipts. PB owns sharding
+and placement. No test here requires model payloads or GPU computation.
 
-Resolution (bounded ownership requested via root): PQ-contract tests —
-`roster_digest` / `quantum_id` / `qname_layer` / `phase_ranges` /
-canonical-JSON compat against real PQ code, then reader and lease
-integration once the published candidate lands — belong in the PQ repo
-against declared published PB, where the source is the checkout under
-test. This lane keeps no fixture-conformance tests: invented payload/roster
-helpers and their sha tests are deleted. Real PQ-side join coverage uses
-actual roster/receipts when root's bindings land. Root reviews the API before
-any interface-rigid test is written. The approved follow-on is
-designing the source-snapshot/artifact dependency the bound readers run
-against.
-
-## 5. GPU path (deferred, bounded)
-
-No giant-model reruns, no synthetic burn. When the CPU chain is green,
-one tiny known-container fixture (MiB-scale tensor through the real
-reader inside the campaign container image) covers the CUDA open path.
-Design only until the CPU harness is accepted.
-
-## 6. Coverage matrix (contract ACC01..06 → harness files)
-
-| ID | Contract demand | Harness file | Status |
-|----|-----------------|--------------|--------|
-| ACC-01 | schema/parser fixtures: gzip, paths, serialization, tamper refusal | `test_fullstack_producer_rows.py` (phase tiling, freeze first-writer, wire/canonical split, empty-range refusal, class tags) | PB-side now |
-| ACC-02 | lifecycle/race incl. staged-lease races | `test_fullstack_reader_boundaries.py` (charged double-egress balances, cleanup orphans) + `test_fullstack_progress_retry.py` (freeze refusal) | implemented PB legs; staged-lease races await lease API |
-| ACC-03 | real-tier + real-reader chain with forbidden-open negatives | `test_fullstack_stage_ram_chain.py` (whole+split stage, whole+split RAM promotion, composed lookup byte equality) + `test_fullstack_reader_boundaries.py` (overlay mismatch/happy, epoch revalidation refusal) | PB legs now; PQ-reader legs requested PQ-side via root; reader/lease integration blocked on published candidate |
-| ACC-04 | restart/retry incl. lease-crash, single adoption | `test_fullstack_progress_retry.py` + `test_fullstack_claim_retry_primitives.py` (freeze/refusal/remaining/egress/attempt ledgers) | PB legs now; lease-crash blocked on lease API (single assertion, never blanket) |
-| ACC-05 | both-Spark concurrent independent results, PB-placed | live lane only (2× gb10 rows) | pending (needs runnable PQ work) |
-| ACC-06 | staged-only campaign output, bytes_from_pool==0 bulk legs | pending strict-reader enforcement + live lane | pending |
-
-## 7. Negative matrix (each a real boundary, not a mock)
-
-- (removed: chmod tripwire claimed a refusal policy its manual staged read
-  cannot prove; pool-touching reads belong to the PQ-reader lane.)
-- live hold beats egress: blocked on the lease API (single assertion when it lands);
-  today double-egress balances exactly once and cleanup leaves no orphans.
-- invalidated RAM serves only permitted SSD: reboot voids the epoch and the
-  old fragment refuses the new epoch in production overlay.
-- (removed: stdlib FileNotFoundError plus lookup-None proves no policy.)
-- epoch/restart: bumped epoch demands revalidation, never assumption.
-- ram copy disagreeing with stage-vouched bytes/digest: overlay refuses;
-  tampered map shapes refuse whole via validate.
-- resources reclaimed exactly once: double release balances the ledger.
-- unaccepted phases stay in the residency window (PB accounting only —
-  not a join verdict); full join refusal waits on the PQ join (§4).
-
-Failures, gzip/raw-canonical mismatches, required argv, placement tags,
-defaults, and container bindings are caught by real boundary tests
-(producer-row file), not by prose.
-
-## 8. Claim/retry primitives (no membership behavior asserted)
-
-Worker JOIN/RESIGN commands, supervision, and qualification belong to the
-membership worker and have not landed — this lane edits none of that
-production and asserts no membership behavior. `test_fullstack_claim_retry_primitives.py`
-pins real queue/ledger mechanics only, on an isolated local queue:
-tag/image conjunction gating before claim (both directions, unknown
-inventory never capable), handoff with containment before token return,
-retry-safe attempt-history preservation, explicit unsafe-retry
-interruption (publish-time contradiction; terminal, never requeued),
-incarnation-collision fail-closed, and charge retention. The
-mixed-capability matrix covers classes, not hosts — separate from
-both-Spark placement qualification, which stays in the live lane (§2).
-
-## 9. RED/GREEN and delivery
-
-- RED: first PB run of the new files (real failures from misused production
-  APIs); fix harness-only issues. The qualification gate stays RED until
-  root provides the bindings manifest.
-- GREEN: full suite green via `pbtest --priority -10 --json` (keys
-  filed outside the checkout); negatives that await strict-reader or
-  PQ-API land as explicit skips naming the blocker — visible, never
-  silent.
-- Deliver: test commands, fixture description (generated, bounded),
-  this matrix with per-ID status, issue + PR, RED and GREEN action keys
-  with logs/CAS receipts, manifest/generation/source identity of the
-  validation runs, limitations, and the unavailable live lane.
-- Launch is not completion. Subsequent live gates need root approval of
-  the concrete PQ-API implementation, not a permission loop.
+Early failures while constructing these fixtures were harness debugging,
+not demonstrations of production regressions. Each accepted test claims only
+its actual assertions. Missing full-chain gates remain incomplete; they are
+not replaced by placeholder tests that always fail or catch any exception.

@@ -1,17 +1,8 @@
-"""Shared deterministic fixtures for the full-stack integration harness.
-
-Pure data, stdlib only. Fixture payloads use sorted keys and sha256 naming
-so the future deterministic join is byte-stable; these shapes are the
-stable portion the PQ join will consume once root's API bindings land.
-Small by construction: MiB-scale payloads generated in-test, never
-committed binaries, never huge-payload hashes in the repo.
-"""
+"""Small deterministic source bytes for PB mover and map fixtures."""
 
 from __future__ import annotations
 
-import gzip
 import hashlib
-import json
 
 #: Whole-file shard: one entry, offset zero.
 WHOLE_BYTES = 1 << 20
@@ -37,8 +28,3 @@ def manifest_entry(path: str, offset: int, payload: bytes) -> dict[str, object]:
     return {"path": path, "offset": offset, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
 
-
-def gzip_member(payload: dict) -> tuple[bytes, str]:
-    """Deterministic gzip seal (mtime=0) plus wire digest."""
-    raw = gzip.compress(json.dumps(payload, sort_keys=True).encode(), mtime=0)
-    return raw, hashlib.sha256(raw).hexdigest()

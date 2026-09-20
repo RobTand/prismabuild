@@ -1,13 +1,8 @@
-"""Full-stack claim/retry primitives — queue and ledger mechanics.
+"""Queue capability matching and resource-ledger accounting fixtures.
 
-No membership commands are asserted here: worker JOIN/RESIGN supervision
-belongs to the membership worker and has not landed. These tests pin real
-queue/ledger primitives only, using real functions on an isolated local
-queue: tag/image conjunction gating before claim, handoff with containment
-before token return, retry-safe takeover preserving attempt history,
-explicit unsafe-retry interruption, incarnation-collision fail-closed, and
-charge retention. Both-Spark placement qualification is separate
-(live lane design doc).
+These tests cover tag/image matching, unsafe-retry declarations, terminal
+failure, spent acquisition handles, and idempotent token release. They do
+not exercise membership commands, attempt handoff, or broker containment.
 """
 from __future__ import annotations
 
@@ -94,8 +89,8 @@ def test_unsafe_work_ends_terminal_never_requeued(tmp_path: Path) -> None:
     assert queue.item_path(pool.FAILED, "d" * 64).exists()
 
 
-def test_stale_incarnation_cannot_take_a_replacement(tmp_path: Path) -> None:
-    """A second commit onto an owned key leaves existing tokens: short count."""
+def test_spent_acquisition_handle_cannot_return_committed_tokens(tmp_path: Path) -> None:
+    """A spent handle cannot release the tokens committed to its owner."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.ledger("worker-a")
@@ -104,17 +99,17 @@ def test_stale_incarnation_cannot_take_a_replacement(tmp_path: Path) -> None:
     first = ledger.begin_acquire("e" * 64, demand)
     assert first is not None
     assert ledger.commit_acquire("e" * 64, first) == 2
-    # No capacity remains: a stale incarnation takes no replacement.
+    # No capacity remains for another acquisition.
     assert ledger.begin_acquire("e" * 64, demand) is None
     assert ledger.held() == {"cpu": 1, "mem_gb": 1}
-    # The spent handle cannot resign the live replacement's tokens.
+    # Abandoning the old acquisition does not return committed tokens.
     assert ledger.abandon_acquire(first) == 0
     assert ledger.held() == {"cpu": 1, "mem_gb": 1}
     assert ledger.available() == {}
 
 
-def test_failed_containment_retains_charge(tmp_path: Path) -> None:
-    """Abandoning an unknown handle returns nothing; double release counts once."""
+def test_unknown_acquisition_and_double_release_preserve_capacity(tmp_path: Path) -> None:
+    """Unknown acquisitions return nothing; an owner's release counts once."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     ledger = queue.ledger("worker-a")

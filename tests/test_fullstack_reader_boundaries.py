@@ -1,13 +1,8 @@
-"""Full-stack 3/4 — reader boundaries: real refusals, no silent fallback.
+"""PB map compatibility, epoch refusal, and charged egress fixtures.
 
-Each negative is a real boundary: production `residency_map` lookup and
-validate functions plus OS enforcement (permissions, missing files,
-corrupted bytes, epoch markers). The pool tripwire pattern proves no
-silent fallback: after staging, the pool fixture is chmod-000, so any
-pool read surfaces as an OS error instead of quiet bytes. Where the
-current contract still falls back by design (`lookup` returning None),
-the test asserts the fallback is visible and recorded — never silent.
-ACC-02/ACC-03 (PB-side legs).
+Real movers supply the map fragments. These checks cover overlay digest
+agreement, unknown lookup, epoch changes, and exactly-once token return.
+Actual application-reader fallback and live-reader leases are separate gates.
 """
 from __future__ import annotations
 

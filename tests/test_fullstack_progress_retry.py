@@ -1,13 +1,7 @@
-"""Full-stack 4/4 — durable progress, retry/resume, receipts, cleanup, gaps.
+"""Residency-plan phase accounting, frozen identity, and file cleanup.
 
-Drives real production functions: `residency_plan.remaining` window
-advance over accepted chunk phases, `freeze` first-writer refusal on
-repartition, `queue.record_move` receipt filing with CAS retrieval, and
-ownership-safe cleanup via `stage_release.evict`. The gap assertion uses
-real `remaining()`: an unaccepted phase set stays in the window (never
-shrinks to fit survivors). Full deterministic join refusal waits on the
-PQ join API (§seam); this file proves the PB-side half. ACC-02/ACC-04
-(PB-side legs).
+These fixtures call remaining/accepted/freeze and stage_release.evict.
+They do not execute a progress reporter, restart a worker, or join results.
 """
 from __future__ import annotations
 
@@ -116,12 +110,12 @@ def test_repartition_after_freeze_refuses_with_both_bodies(tmp_path: Path) -> No
         {"name": "chunk-000", "start_bytes": 0, "end_bytes": 1 << 21,
          "stage_gib": 2,
          **_rows(queue, "two", 0, 1 << 21)}], **kw)
-    with pytest.raises(Exception):
+    with pytest.raises(residency_plan.ResidencyPlanError):
         residency_plan.freeze(queue, two)
 
 
 def test_cleanup_leaves_no_addressable_orphans(tmp_path: Path) -> None:
-    """Egress removes bytes and tokens together; re-egress is a clean no-op."""
+    """Egress removes its staged files; repeated egress is a clean no-op."""
     queue, _, _ = _staged_once(tmp_path)
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=tmp_path / "stage") == "registered"

@@ -1,15 +1,6 @@
-"""Full-stack 1/4 — real producer: manifest, phases, sealed rows, digests.
-
-Drives production code only: the data-manifest schema validator,
-``storage_tiers.manifest_phase_ranges``, and ``residency_plan``
-build/freeze/validate. Failures, gzip/raw-canonical mismatches, required
-argv-adjacent bindings (manifest sha, phase table), placement-tag
-conjunction inputs, and container bindings surface here as real refusals,
-not prose. ACC-01 (PB-side manifest/row shapes).
-"""
+"""PB phase-range validation and immutable residency-plan fixtures."""
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -23,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
-from fullstack_fixtures import corpus, gzip_member, manifest_entry  # noqa: E402
+from fullstack_fixtures import corpus, manifest_entry  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -127,24 +118,8 @@ def test_plan_freeze_is_first_writer_and_validates(tmp_path: Path) -> None:
     assert residency_plan.freeze(queue, plan)["manifest_sha256"] == sha
     other = dict(plan)
     other["manifest_sha256"] = "0" * 64
-    with pytest.raises(Exception):
+    with pytest.raises(residency_plan.ResidencyPlanError):
         residency_plan.freeze(queue, other)
-
-
-def test_gzip_wire_and_canonical_identities_stay_distinct() -> None:
-    """Wire digest (sealed bytes) and canonical digest never interchange."""
-    manifest = _manifest_body()
-    raw, wire = gzip_member(manifest)
-    canonical = hashlib.sha256(
-        json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-    assert wire != canonical
-    assert gzip.decompress(raw) == json.dumps(manifest, sort_keys=True).encode()
-
-
-def _manifest_body() -> dict[str, object]:
-    files = corpus()
-    whole = files["/pool/model/shard-0.bin"]
-    return {"entries": [manifest_entry("/pool/model/shard-0.bin", 0, whole)]}
 
 
 def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
@@ -152,10 +127,3 @@ def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path / "pool")
     manifest["entries"][1]["bytes"] = int(manifest["entries"][1]["bytes"]) + 1
     assert storage_tiers.manifest_phase_ranges(manifest) == []
-
-
-def test_placement_tags_are_conjoined_class_tags(tmp_path: Path) -> None:
-    """Rows carry the gb10 class tag; no host is named (ACC-01 placement input)."""
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    row = _row("d" * 64, {"cpu": 1, "mem_gb": 1}, queue)
-    assert row["tags"] == ["gb10"]
