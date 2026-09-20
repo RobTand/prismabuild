@@ -805,8 +805,13 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
                                q.root / pool.RESIDENCY))["ok"] is True
 
     # Above the ceiling still refuses: an actual exceeding the admitted
-    # bound can never reconcile.
+    # bound can never reconcile into that prewrite.
     (origin / "c2.bin").write_bytes(b"z" * 5000)
+    small_ceiling = {"payload": 512, "checkpoint": 0, "temp": 0}
+    assert po.require_prewrite(
+        q, inst, template, batch_id="b2", tier=TIER,
+        class_bytes=small_ceiling,
+        paths=[str(origin / "c2.bin")])["ok"] is True
     over = [po.validate_descriptor({
         "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(origin / "c2.bin"),
@@ -819,7 +824,5 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
         q, inst, template, over, batch_id="b2", tier=TIER,
         cas_root=cas_root, producer_action_key=owner,
         command_extra=["--unpaced"])
-    # b2 has no prewrite at all: the prewrite-reservation-missing refusal
-    # is the correct first answer; ceiling reconciliation governs b1's
-    # shape above.
     assert refused.get("ok") is False, refused
+    assert refused.get("refusal") == "prewrite-mismatch", refused
