@@ -3406,6 +3406,30 @@ second mint with the first. One tier's lock never blocks another's. Since
 far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
+Since #733 R6 the same per-tier mint lock is the cache-tier mutation
+exclusion, attached by the explicit `PoolQueue.tier_ledger` factory (host
+ledgers carry none): every token rename through a tier ledger -- claim
+begin (non-blocking, declining as `tier_reservation_unavailable`),
+commit/abandon/transfer/release (blocking, completing under the lock),
+mint grow/shrink, egress decharge, stale-handle sweep, and the grant
+`acquire` in fence reservation -- serializes against the dead-name
+reclaim headroom scan, so a held/private token renamed to free between
+the free listing and the holder listing cannot be missed by both and
+reissued as unbacked credit. Lock order is always parent (key
+transition, then stage ownership) into the mint leaf; the mint holder
+never acquires a parent lock, and nothing is held over payload I/O.
+The grow/reclaim census on a tier ledger is error-visible: an
+unreadable directory aborts the mint/reissue with everything retained
+for the next cycle, so capacity is never minted from a partial view;
+host ledgers keep their legacy scans.
+Mixed-version operation is NOT qualified -- a worker or storage role
+without the guard admits outside the exclusion -- so deploying the
+guarded generation requires a quiescent queue and reader state with no
+new tier-admitted workloads until worker AND storage roles converge
+(root reviews the actual publication). No bounded-overshoot exception:
+above-wanted credit from an unguarded interleaving is unbacked at every
+prefix even when a later retire would trim it.
+
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
 rate differ by whatever the ARC answered. One live receipt on dl380g10 records
@@ -3768,6 +3792,27 @@ published one more window every cycle while the first was still copying: ten
 82 GiB movers admitted against 275 GiB writable, all ten ENOSPC (#623). A
 record that does not name the writable source (a fake, a legacy tier) is
 minted as it was.
+
+Two owners of one staged file counted its bytes twice on both sides of the
+ledger: each complete holder's tokens read as landed, so the mint carried
+the duplicate, and the first owner's shared egress handed its tokens back
+as writable free while the bytes stayed -- a newcomer claimed the phantom
+before the next mint (#733). A shared egress now decharges instead of
+freeing: tokens for bytes staying under a co-owner are destroyed
+(`ResourceLedger.retire_held`, one atomic rename per token into the
+ledger's dead namespace -- held or dead, never half-moved) while only
+whole GiB actually leaving the stage return to free, so a fractional
+split can never free more room than was made. A destroyed name keeps
+its mint marker, which `ensure_capacity` skips forever, and its token
+file waits in the dead namespace until honest headroom reissues it with
+a second atomic rename: no name reappears except inside a backed wanted
+bound. A decharge that fails partway keeps its tokens and fails loudly
+instead of freeing the duplicate. The mint re-samples writable in-lock
+beside the landed snapshot and apply, and completions file under the
+same tier mint lock, so mixed-time pairs cannot overmint; the single
+authoritative per-tier mint covers the full token dict so rate kinds
+are never zeroed. The last owner to leave still deletes the file and
+frees its tokens.
 
 ### A copy has no result to replay
 
