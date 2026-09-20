@@ -3725,8 +3725,21 @@ leave deletes the file. Anything unreadable fails the pass closed with the reaso
 on the receipt. Limits, stated: the ownership scan parses every consumer's
 fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
 live corpus -- JSON parsing, linear in corpus size, no global map by design); a
-worker killed between rename and fragment publication still leaves the pre-existing
-`#620`/reconcile window, unchanged.
+worker killed between rename and fragment publication leaves a recovery interval.
+
+Stage and RAM movers also use this ownership lock when publishing a copied
+file (#751/#752). Copying stays outside the lock. Publication adopts an
+existing incarnation when its material record and file identity still match,
+replaces an absent name, and retains a divergent or ambiguously owned name.
+A slow live publisher remains an owner after the bounded wait expires;
+elapsed time alone never permits replacement. Residue can be replaced only
+after the fragment, pin, live-claim and partial-copy censuses show no owner.
+For dev manifests without content digests, unchanged origin metadata in the
+existing `user.pbstage.source` attribute permits reuse without another payload
+read. Otherwise a necessary private copy can be compared with the stored
+copy-time digest; the existing staged file is never rehashed for adoption.
+The same rule applies to retries by the original consumer. A changed origin
+cannot silently reuse its earlier bytes, and existing readers keep their file.
 
 **The window, the sweep, and the egress order.** Promotion scheduling is
 the stage window's own semantics, pointed at the ram ledger: admission
