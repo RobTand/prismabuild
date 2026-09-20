@@ -1946,7 +1946,7 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     # carries exactly one -- the batch's.
     batch_view = {"entries": [dict(d) for d in descriptors],
                   "batch_id": batch_id, "manifest_digest": manifest_digest}
-    mount_prefix = str(Path.commonpath(
+    mount_prefix = str(os.path.commonpath(
         [str(d["path"]) for d in descriptors]))
     try:
         manifest_body = build_stage_manifest(batch_view, mount_prefix)
