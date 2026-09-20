@@ -841,3 +841,136 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
         command_extra=["--unpaced"])
     assert refused.get("ok") is False, refused
     assert refused.get("refusal") == "prewrite-mismatch", refused
+
+
+def test_refill_respects_consumed_unretired_holdings(tmp_path: Path) -> None:
+    """Gap 1: a claimed-but-unretired batch still spends the window.
+
+    Ordinary pipelining: batch1 is claimed (its funding record is consumed)
+    and its staged bytes/tokens are still live on the mover. The producer
+    must NOT be able to refill the full window on top of that live batch:
+    owner holdings + still-live batch holdings never exceed window_gib.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=4)
+    ledger = q.tier_ledger(TIER)
+    inst = _bind(q, template, owner, cas_root)
+    stage_root = tmp_path / "stage"
+    _announce_tier(q, stage_root)
+
+    descs = _descriptors(tmp_path, template, inst, "p1", b"a" * 300)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    mover = str(res["mover_key"])
+    claimed = _claim_mover(q, "w-g1")
+    assert claimed["action_key"] == mover
+    # consumed, mover's fence still live, batch not retired.
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "consumed"
+    mover_live = ledger.holder_tokens(mover).get(KIND, 0)
+    assert mover_live == 1
+
+    refill = po.refill_window(q, inst, template, tier=TIER)
+    assert refill.get("ok") is True, refill
+    outstanding = (ledger.holder_tokens(owner).get(KIND, 0) + mover_live)
+    assert outstanding <= 2, (refill, outstanding)
+
+
+def test_planned_omitted_temp_must_be_absent(tmp_path: Path) -> None:
+    """Gap 2: an unwritten planned path that later EXISTS stays charged.
+
+    The conservative prewrite admits a planned superset; a path planned
+    but omitted from the commit descriptors must be proven ABSENT at
+    describe/commit (no payload read/hash). A present leftover refuses;
+    removing it through ordinary writer cleanup lets the same commit
+    succeed.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=4)
+    inst = _bind(q, template, owner, cas_root)
+    _announce_tier(q, tmp_path / "stage")
+
+    origin = Path(template["output_prefix"])
+    origin.mkdir(parents=True, exist_ok=True)
+    payload = b"t" * 256
+    (origin / "k1.bin").write_bytes(payload)
+    ceiling = {"payload": 1024, "checkpoint": 0, "temp": 512}
+    planned = sorted([str(origin / "k1.bin"), str(origin / "k2.tmp")])
+    assert po.require_prewrite(q, inst, template, batch_id="b1", tier=TIER,
+                               class_bytes=ceiling,
+                               paths=planned)["ok"] is True
+    descs = [po.validate_descriptor({
+        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+        "artifact_class": "payload", "path": str(origin / "k1.bin"),
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "producer_generation": po.mint_generation(),
+        "owner_action_key": inst["owner_action_key"],
+        "owner_attempt": dict(inst["owner_attempt"]),
+    }, template, inst)]
+
+    # The planned-but-omitted temp EXISTS: the commit must refuse and the
+    # charge must remain.
+    (origin / "k2.tmp").write_bytes(b"leftover" * 8)
+    refused = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                              tier=TIER, mover_key=_hexkey("g2-mover"))
+    assert refused.get("ok") is False, refused
+    assert refused.get("refusal") == "planned-path-present-retain", refused
+
+    # Writer cleanup (producer-side disposal) makes the same commit work.
+    (origin / "k2.tmp").unlink()
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+
+
+def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
+    """Gap 3: the mover row keeps the parent's priority and retry policy.
+
+    Ordinary publish semantics: an agent's -10 validation priority stays
+    -10 on the mover row, and the effective sealed retry policy rides the
+    row beside the correct worker/snapshot/tag context.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path, gib=4)
+    # Publish the producer row at the agent validation priority.
+    q.publish(action_key=owner, cas_root=str(cas_root),
+              worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
+              checkout_root=str(tmp_path / "mover-checkout"),
+              resources={"cpu": 1, "mem_gb": 1,
+                         **po.owner_demand_terms(template)},
+              produced_output_template=template, priority=-10,
+              max_attempts=5, retry_safe=True)
+    claimed = q.claim(owner="w-g3-owner")
+    assert claimed is not None and claimed["action_key"] == owner
+    control = _broker_control(q, owner)
+    env = {"PRISMABUILD_ACTION_KEY": owner,
+           "PRISMABUILD_ACTION_NONCE": control["nonce"],
+           "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
+    inst = po.bind_instance(q, template, owner_action_key=owner,
+                            claim_snapshot=claimed, env=env)
+    _announce_tier(q, tmp_path / "stage")
+    descs = _descriptors(tmp_path, template, inst, "p1", b"g" * 64)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    res = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="b1", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    assert res.get("ok") is True, res
+    row = pool._read_json(q.item_path(pool.READY, str(res["mover_key"])))
+    assert isinstance(row, dict)
+    assert row.get("priority") == -10
+    assert row.get("retry_safe") is True
+    assert int(row.get("max_attempts", 0)) >= 1
