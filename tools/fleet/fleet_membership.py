@@ -47,7 +47,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 TOOL_DIR = Path(__file__).resolve().parent
-REPO_ROOT = TOOL_DIR.parents[1]
+if str(TOOL_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOL_DIR))
+from runtime_paths import generation_root  # noqa: E402
+
+REPO_ROOT = generation_root(__file__)
 #: Layout root holding RUNTIME_VERSION.json: the published generation in
 #: production (``<root>/RUNTIME_VERSION.json`` beside ``<root>/tools``), the
 #: source checkout in development. Tests may point this at a private

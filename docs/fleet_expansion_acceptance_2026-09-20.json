@@ -7,14 +7,14 @@
     "status": "not-this-step"
   },
   "exceptions": [],
-  "ledger_commit": "f773c9e44cb8fe1daa1a5f573f156e15ad9248ef (validated production source; later acceptance metadata only)",
+  "ledger_commit": "2d425dd0a00b6c5708d7744994bf0d403b8f7b76 (R15 production source; root publication/layout repair follows in the same PR)",
   "merge": {
     "branch": "feat/worker-expansion-join-resign-20260920",
     "issue": "https://github.com/RobTand/prismabuild/issues/727",
     "note": "Root-reviewed join/resign implementation using existing roster, broker gate, pool claim/withdrawal lineage and worker reaper. Component qualification only; no live worker was joined or resigned by these fixtures, no runtime capability advertised.",
     "remaining_gaps": [
-      "Accepted PB730 reader cleanup integration and deployed native/container containment on both Sparks",
-      "Published fleet join/resign and heterogeneous runtime qualification beyond CPU capability fixtures",
+      "Deployed native/container worker JOIN/RESIGN and containment on both Sparks",
+      "Heterogeneous runtime qualification beyond CPU capability fixtures",
       "Cohort barrier #567, WSL-GPU limits and newly introduced execution backends"
     ],
     "validated_repairs": [
@@ -37,6 +37,19 @@
         ],
         "result": "92 passed, zero skips, exact committed production and docs source plus PB closure",
         "scope": "broker/park overlap"
+      },
+      {
+        "source": "2d425dd0a00b6c5708d7744994bf0d403b8f7b76",
+        "scope": "Exact-generation handoff carrier and all shared readers",
+        "actions": [
+          "3874d3f939d8",
+          "3bd4d8a94a69",
+          "c8b884777ab1",
+          "993739267331",
+          "dd264bf7cfb9",
+          "60ec29bb35fd"
+        ],
+        "result": "9 carrier passes plus198 overlapping integration passes; root verified actual source bundles (combined runs differ only by final29-line design appendix and PB closure). R15 RED ad3f2bf6d616 has3behavioral failures on842766 plus test-only delta."
       }
     ]
   },
@@ -67,6 +80,7 @@
     "limitations": "Controlled kernel/daemon peers and tiny data; no live JOIN/RESIGN, no GPU or campaign performance claim.",
     "overlap": "92 broker/park tests at exact f773 source, additional verification not unique coverage",
     "red_evidence": "c33766fa761da2a314d00e70464d8b451438643643dc03c10d7ecd0972852f51: actual unreadable withdrawal census returns empty on99b96d; 1failed/34passed, rc1. Fetched source delta is new test plus PB closure only.",
-    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb728-root-acceptance.json"
+    "root_evidence": "/home/rob/tmp/cache-takeover-20260920/pb728-root-acceptance.json",
+    "publication_layout": "Root added a published-command regression: missing publisher inclusion and flat-layout ModuleNotFoundError fail on R15; inclusion plus shared generation_root fixes both. Focused publication/join/busy-resign qualification55passes, zero skips; complete CPU regression gate pending before merge."
   }
 }
