@@ -199,7 +199,7 @@ def _evict(queue: pool.PoolQueue, key: str, consumer: str, stage: Path):
                                stage_root=str(stage))
 
 
-def _assert_deferred(queue: pool.PoolQueue, key: str,
+def _assert_deferred(queue: pool.PoolQueue, key: str, consumer: str,
                      staged: Path, receipt: dict, label: str = "") -> None:
     """A live own claim retains file, fragment, material and charge."""
 
@@ -212,7 +212,7 @@ def _assert_deferred(queue: pool.PoolQueue, key: str,
     assert receipt["tokens_decharged"] == 0, (label, receipt)
     assert staged.exists(), label
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, key).exists(), label
+        queue.root / pool.RESIDENCY, consumer, key).exists(), label
     assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
     assert _free(queue) == 0, label
 
@@ -231,7 +231,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     assert _free(queue) == 0
 
     during = _evict(queue, key, CONSUMER, stage)
-    _assert_deferred(queue, key, staged, during, "receipt filed")
+    _assert_deferred(queue, key, CONSUMER, staged, during, "receipt filed")
 
     # The worker's terminal transition: the claim row goes, the complete
     # receipt keeps the tier tokens pinned (residency_pin_holds).
@@ -283,7 +283,7 @@ def test_distinct_groups_run_through_one_token_without_loss(fleet,
         assert _free(queue) == 0, index
 
         during = _evict(queue, key, consumer, stage)
-        _assert_deferred(queue, key, staged, during, f"group{index}")
+        _assert_deferred(queue, key, consumer, staged, during, f"group{index}")
 
         queue.finish(key, status="executed")
         receipt = _evict(queue, key, consumer, stage)
@@ -377,7 +377,7 @@ def test_no_receipt_shape_settles_a_live_own_claim(fleet, tmp_path, name,
 
     receipt = _evict(queue, key, CONSUMER, stage)
 
-    _assert_deferred(queue, key, staged, receipt, name)
+    _assert_deferred(queue, key, CONSUMER, staged, receipt, name)
 
 
 # ------------------------------------------- what stays protected
@@ -423,7 +423,7 @@ def test_an_own_live_claim_outranks_a_foreign_one(fleet, tmp_path) -> None:
 
     receipt = _evict(queue, key, CONSUMER, stage)
 
-    _assert_deferred(queue, key, staged, receipt, "own and foreign")
+    _assert_deferred(queue, key, CONSUMER, staged, receipt, "own and foreign")
     assert receipt["shared_with"] == [], receipt
 
 
