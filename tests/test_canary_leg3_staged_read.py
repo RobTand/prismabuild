@@ -479,6 +479,7 @@ def test_leg3_waits_for_a_later_phase_instead_of_failing(
     assert completed.returncode == 0, (completed.returncode, stderr, envelope)
     assert envelope is not None and envelope.get("ok") is True, envelope
     assert envelope["combined"] == sha256_hex(b"".join(fleet.contents))
+    watch.sample(now=time.monotonic())  # the final record after the child exited
     assert watch.last_accepted["units_completed"] == 3
     assert fleet.tripwire_denials() == []
 
