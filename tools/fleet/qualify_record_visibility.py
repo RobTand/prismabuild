@@ -56,16 +56,25 @@ def _refuse_a_queue_root(root: Path, queue_states: tuple[str, ...]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--reader", choices=("plain", "fresh"), required=True)
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--reader", choices=("plain", "fresh"), required=True,
+        help="which read to measure: plain is the pre-#808 by-name read, "
+             "fresh is PoolQueue.move_record")
+    parser.add_argument(
+        "--runs", type=int, default=3,
+        help="how many receipts to file and poll for, one result line each")
     parser.add_argument(
         "--client-root", required=True,
         help="scratch directory on the shared mount, as this box sees it")
     parser.add_argument(
         "--server-root", required=True,
         help="the same directory as the file server sees it on its local pool")
-    parser.add_argument("--server", default="dl380g10")
-    parser.add_argument("--budget-s", type=float, default=90.0)
+    parser.add_argument(
+        "--server", default="dl380g10",
+        help="ssh host that writes each receipt on its local pool")
+    parser.add_argument(
+        "--budget-s", type=float, default=90.0,
+        help="how long each run polls for its receipt before reporting none")
     args = parser.parse_args()
 
     from prismabuild import pool
