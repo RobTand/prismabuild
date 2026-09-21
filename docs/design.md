@@ -4317,6 +4317,25 @@ transfer-short). `admit_funded_window` reports the delivered binding
 (`mode: prepaid-per-batch` + `owner_demand_terms`) once the funded-claim
 primitives are present.
 
+Every seal path (`publish_prepaid_batch`, `ensure_batch_materialized`) builds
+the mover through `_seal_output_mover`, and that child inherits the producer's
+own checkout addressing: the producer request's validated
+`params.checkout_snapshot` and the declared input it names ride the child's
+sealed params, exactly as `movement_actions.seal_movement_action` already
+carries them for pbrun's own movement nodes, while the row's addressing keeps
+coming from `_producer_launch_context`. The worker's `preflight_action` then
+proves the snapshot the row materializes -- the sealed commit, clean, with its
+sealed ancestry -- instead of falling through to the `fleet/pbrun` closure
+stamp, which describes the producer's pre-snapshot tree and that no
+materialized snapshot can satisfy (the 2026-09-21 Stage A launch blocker: the
+first produced mover was refused in 0.76 s before `stage_move` ran). A
+producer without a snapshot keeps its absence -- no snapshot param is
+invented, and the legacy stamp proof applies unchanged -- and a malformed
+record, or one whose declared input the child does not inherit, refuses at
+seal time (`producer-checkout-snapshot-invalid` /
+`producer-checkout-snapshot-input-missing`) rather than on a worker after a
+claim.
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.

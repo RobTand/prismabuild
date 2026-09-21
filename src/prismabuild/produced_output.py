@@ -2683,7 +2683,21 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     makes the successor's content-addressed action key -- which IS its funding
     key -- unique per generation, deterministic on replay, and impossible to
     supply as a nonce. `generation == 0` seals byte-for-byte what this lane
-    has always sealed.
+    has always sealed, once the producer's own record is carried: the child's
+    `params.checkout_snapshot` is the producer's validated sealed record when
+    the producer has one, and absent when it does not.
+
+    The producer's sealed checkout snapshot rides the child exactly as
+    ``movement_actions.seal_movement_action`` already carries it for pbrun's
+    own movement nodes: the row the mover is published under materializes that
+    snapshot (``_producer_launch_context``), so the sealed request has to say
+    which tree that is. A child that inherited the materialized snapshot
+    without inheriting the record was proved against the producer's
+    pre-snapshot closure stamp instead, which no materialized snapshot can
+    satisfy; the worker refused the row in ~0.8 s before any byte moved
+    (2026-09-21 Stage A live cycle). A malformed record, or one whose declared
+    input the child does not inherit, is refused here rather than sealed for a
+    worker to reject.
 
     Returns the sealed facts (`mover_key`, `action`, `host`, `kind`, `gib`,
     `total`, `manifest_digest`, `batch_namespace`, `retry_policy`, `cas`) with
@@ -2760,19 +2774,49 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     child_inputs = [entry for entry in parent_inputs
                     if str(entry.get("id"))
                     != core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
-    snapshot_id = next((str(entry.get("sha256"))
-                        for entry in child_inputs
-                        if entry.get("sha256")), producer)
+    # The producer's OWN sealed checkout addressing, carried into the child.
+    # The row already materializes the producer's snapshot; a sealed request
+    # that does not say so is proved against the producer's pre-snapshot
+    # closure stamp, which the materialized tree can never satisfy. Absent on
+    # a legitimate non-snapshot producer: the legacy stamp proof and the
+    # historical ownership digest are unchanged there.
+    request_params = request.get("params")
+    if not isinstance(request_params, Mapping):
+        request_params = {}
+    params: dict[str, object] = {
+        "cwd": str(request_params.get("cwd") or ".")}
+    raw_snapshot = request_params.get("checkout_snapshot")
+    snapshot_sha256 = ""
+    if raw_snapshot is not None:
+        try:
+            snapshot = core_mod.validate_pbrun_checkout_snapshot(raw_snapshot)
+        except core_mod.ActionContractError as exc:
+            return {"ok": False, "step": "parent-request",
+                    "refusal": f"producer-checkout-snapshot-invalid: {exc}"}
+        snapshot_input = snapshot["input"]
+        assert isinstance(snapshot_input, Mapping)
+        if snapshot_input not in child_inputs:
+            return {"ok": False, "step": "parent-request",
+                    "refusal": "producer-checkout-snapshot-input-missing: the "
+                               "producer's sealed snapshot input is not among "
+                               "the inputs the mover inherits"}
+        params["checkout_snapshot"] = snapshot
+        snapshot_sha256 = str(snapshot_input["sha256"])
+    if not snapshot_sha256:
+        # The ownership namespace keeps the historical digest over the first
+        # inherited input, else the producer's own key.
+        snapshot_sha256 = next((str(entry.get("sha256"))
+                                for entry in child_inputs
+                                if entry.get("sha256")), producer)
     mover_template = {
         "task": dict(request["task"]),
         "inputs": child_inputs + [manifest_input],
         "code_closure": request["code_closure"],
         "environment": request["environment"],
         "execution_scope": request["execution_scope"],
-        "params": {"cwd": str((request.get("params") or {}).get("cwd")
-                              or ".")},
+        "params": params,
         "marker_root": Path(queue.root) / pool_mod.CONTAINER_OWNERS,
-        "checkout_identity": {"checkout_snapshot": snapshot_id},
+        "checkout_identity": {"checkout_snapshot": snapshot_sha256},
     }
     # Movement-node resolution off the TIER RECORD (the ordinary path):
     # interpreter/tools/mountpoint/host are facts about the box that runs
