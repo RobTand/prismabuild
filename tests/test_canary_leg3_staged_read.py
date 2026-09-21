@@ -462,8 +462,9 @@ def test_leg3_refuses_an_unpublished_range_without_touching_origins(
     assert envelope is not None and envelope.get("ok") is False, envelope
     error = str(envelope.get("error") or "")
     assert "staged-read refusal" in error, error
-    for entry in fleet.entries:
-        assert entry["path"] not in error
+    # The refusal names the undeclared range but is not an OS denial of the
+    # origin: no origin open was attempted (the tripwire log stays empty).
+    assert "Permission denied" not in error, error
     assert fleet.tripwire_denials() == []
 
 
@@ -680,6 +681,15 @@ def _attempt_outcome(*, key: str, published_unix: float, attempt: int,
     }
 
 
+def _write_readonly(path: Path, data: bytes) -> None:
+    """Publish one immutable attempt file the way the pool does (mode 0444)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(data)
+    os.chmod(temporary, 0o444)
+    os.replace(temporary, path)
+
+
 def _write_terminal(queue, key: str, *, attempts: list[dict],
                     status: str = "executed") -> None:
     published_unix = 100.0
@@ -694,17 +704,16 @@ def _write_terminal(queue, key: str, *, attempts: list[dict],
             key=key, published_unix=published_unix, attempt=number,
             stdout=stdout, observation=_observation())
         path = queue.attempt_path(record, number)
-        path.parent.mkdir(parents=True, exist_ok=True)
         logs = {}
         for stream, text in (("stdout", stdout), ("stderr", "")):
             data = text.encode("utf-8")
             digest = hashlib.sha256(data).hexdigest()
             log_path = queue.attempt_log_path(record, number, stream, digest)
-            log_path.write_bytes(data)
+            _write_readonly(log_path, data)
             logs[stream] = {"bytes": len(data), "sha256": digest,
                             "path": str(log_path.relative_to(queue.root))}
         outcome["logs"] = logs
-        path.write_text(json.dumps(outcome), encoding="utf-8")
+        _write_readonly(path, json.dumps(outcome).encode("utf-8"))
         record["attempt_history"].append(
             {"attempt": number, "outcome": str(path.relative_to(queue.root))})
     terminal = queue.dir(pool.DONE)
