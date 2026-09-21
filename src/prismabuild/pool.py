@@ -6563,9 +6563,28 @@ class PoolQueue:
         if not isinstance(entry, dict):
             return False
         if (str(entry.get("manifest_digest")) != manifest
-                or str(entry.get("mover_key")) != mover_key
                 or str(entry.get("tier")) != tier_id):
             return False
+        # WHICH mover this committed batch authorizes. The batch's own first
+        # publication always does. A RE-materialization of the same batch
+        # (`produced_output.ensure_batch_materialized`) stages the identical
+        # manifest over the identical origins under a successor mover whose
+        # key PB sealed and filed on the batch's materialization list, so the
+        # committed batch authorizes that key too -- and ONLY while it is the
+        # single live row on that list, with the batch's own tier. A
+        # malformed list is unknown and authorizes nothing (no credit), never
+        # a downgrade to the prewrite path.
+        if str(entry.get("mover_key")) != mover_key:
+            try:
+                live = produced_mod._live_materialization(entry)
+            except produced_mod.ProducedOutputError:
+                return False
+            except (OSError, ValueError):
+                return False
+            if (live is None
+                    or str(live.get("mover_key")) != mover_key
+                    or str(live.get("tier")) != tier_id):
+                return False
         # Strict loader (R4): bounded, exact binding, re-validated entries,
         # recomputed manifest. Missing/empty entries refuse inside (never
         # vacuously True); corrupt/mismatched commitments never fall through
@@ -6578,9 +6597,19 @@ class PoolQueue:
         except (OSError, ValueError):
             return False
         if (str(filed.get("manifest_digest")) != manifest
-                or str(filed.get("mover_key")) != mover_key
                 or str(filed.get("tier")) != tier_id
                 or int(filed.get("total_bytes", -1)) != total):
+            return False
+        # The immutable record names the FIRST mover; a successor is
+        # authorized only through the filed materialization list checked
+        # above, and the record's own mover must still agree with the entry
+        # (a changed mover in commitments authorizes nothing).
+        if (str(filed.get("mover_key")) != str(entry.get("mover_key"))
+                or (str(filed.get("mover_key")) != mover_key
+                    and not any(
+                        str(item.get("mover_key")) == mover_key
+                        for item in (entry.get("materializations") or [])
+                        if isinstance(item, Mapping)))):
             return False
         return True
 
@@ -6716,6 +6745,13 @@ class PoolQueue:
                 return {"ok": False, "refusal": "prewrite-reservation-missing"}
             if "prewrite-mismatch" in text:
                 return {"ok": False, "refusal": "prewrite-mismatch"}
+            if text.startswith("restage-") or text.startswith(
+                    "materialization-"):
+                # A re-materialization whose origins no longer carry the
+                # identity the first commit recorded, or that never had that
+                # proof. Named, not collapsed to unknown: funding must refuse
+                # for the reason that refused it.
+                return {"ok": False, "refusal": text}
             if text.startswith("unknown-retain"):
                 return {"ok": False, "refusal": text}
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -6918,6 +6954,13 @@ class PoolQueue:
                 return {"ok": False, "refusal": "prewrite-reservation-missing"}
             if "prewrite-mismatch" in text:
                 return {"ok": False, "refusal": "prewrite-mismatch"}
+            if text.startswith("restage-") or text.startswith(
+                    "materialization-"):
+                # A re-materialization whose origins no longer carry the
+                # identity the first commit recorded, or that never had that
+                # proof. Named, not collapsed to unknown: funding must refuse
+                # for the reason that refused it.
+                return {"ok": False, "refusal": text}
             if text.startswith("unknown-retain"):
                 return {"ok": False, "refusal": text}
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}

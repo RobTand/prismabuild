@@ -52,6 +52,23 @@ authority). The `funding-primitive-pending` refusal remains only for a
 pool missing one of those primitives. No second ledger here, never
 subtracts unrelated holders' tokens.
 
+MATERIALIZATION (bounded-window restage): a committed BATCH is immutable and
+carries ONE durable origin charge; the stage copy under it is a window the
+fleet takes back at retirement. `ensure_batch_materialized` is the ONE
+transition this adds -- make an already committed batch resident again over
+the SAME origin files, under the same owner action and attempt, the same
+logical batch, manifest, descriptors, namespace and output prefix, and the
+same durable charge. It adds no origin-only commit, no v2 record, no parallel
+cache and no second dispatcher: it reuses the published first-publisher
+sealing (`_seal_output_mover`), `movement_actions`, exact prepaid funding, the
+strict SDK, the existing egress and the existing recovery. The caller chooses
+neither origins (they come from the immutable record), nor tokens (ordinary
+prepaid transfer), nor the successor id (the content-addressed key of a
+request PB seals over the filed materialization GENERATION). Safety for a DEV
+null-digest batch rests on the origin identity tuple captured at FIRST commit
+(`origin_identity`, via `reader_lease.portable_identity`) and rechecked before
+every re-materialization -- never an lstat size, and never a new payload hash.
+
 PB730 owns: corrected `pin_id_for` (canonical object set), the additive
 owner/material-namespace SDK contract, the containment writer, and the
 immutable helper-env injection. This lane does not edit `reader_lease.py`,
@@ -81,6 +98,12 @@ BATCH_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_manifest.v1"
 #: from this ref (filed body + live claim), never from a caller-supplied
 #: template object.
 PRODUCED_OUTPUT_REF_SCHEMA_V1 = "prismabuild.produced_output_ref.v1"
+#: The sealed params record that makes a RE-materialization's action key its
+#: own: the batch stays identical, so the PB-filed materialization generation
+#: is what distinguishes the successor's content-addressed mover/funding key
+#: from the spent one. Never a caller nonce; see `ensure_batch_materialized`.
+MATERIALIZATION_SCHEMA_V1 = (
+    "prismaquant.prismabuild.produced_output_materialization.v1")
 
 OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
@@ -1037,8 +1060,9 @@ def _live_path_owner(queue_root: str | Path,
 
     Two kinds of owner, both live:
 
-    * a committed batch that is not `retired` -- its staged copy stands
-      and its entries name the paths;
+    * a committed batch whose ACTIVE materialization is not retired -- its
+      staged copy stands (the first one, or a restaged successor) and its
+      entries name the paths;
     * an outstanding prewrite for another batch id -- it already holds
       permission to write those paths, whether or not it has committed.
 
@@ -1067,7 +1091,12 @@ def _live_path_owner(queue_root: str | Path,
         if not isinstance(entry, Mapping):
             raise ProducedOutputError(
                 f"unknown-retain: bad committed batch {owner_id!r}")
-        if entry.get("retired"):
+        # `retired` on the entry describes only the FIRST materialization. A
+        # batch that has been restaged has a LIVE stage copy under a successor
+        # mover reading these very origin files, so authorizing a second
+        # writer over them here would corrupt a copy in flight. Ownership
+        # follows the active materialization.
+        if _batch_stage_retired(entry):
             continue
         indexed = entry.get("paths")
         if isinstance(indexed, list):
@@ -1370,33 +1399,47 @@ def describe_output_precommit_for_funding(
             / f"{batch_id}.prewrite.json")
     except ProducedOutputError as exc:
         raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    if prewrite is None:
-        raise ProducedOutputError("prewrite-reservation-missing")
     sealed = [validate_descriptor(dict(d), checked_template,
                                   checked_instance)
               for d in descriptors]
     class_bytes: dict[str, int] = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
-    # Ceiling reconciliation (conservative prewrite -> actual): same tier,
-    # owner and attempt; actual paths are a SUBSET of the planned superset
-    # (unwritten planned paths stay absent, which abort already requires);
-    # actual per-class bytes land at or under the admitted ceiling.
-    if (prewrite.get("tier") != tier
-            or not _actual_within_ceiling(prewrite, sealed)
-            or not set(str(d["path"]) for d in sealed)
-            <= set(prewrite.get("paths", []))
-            or prewrite.get("owner_action_key")
-            != checked_instance["owner_action_key"]
-            or dict(prewrite.get("owner_attempt", {})) != dict(
-                checked_instance["owner_attempt"])):
-        raise ProducedOutputError("prewrite-mismatch")
-    if not _planned_omitted_absent(prewrite, sealed):
-        # A planned-but-omitted path still EXISTS (or is unstatable): the
-        # prewrite's charge for it must not vanish with the commit.
-        raise ProducedOutputError("planned-path-present-retain")
     manifest = output_manifest_sha256(sealed)
     total = sum(class_bytes.values())
+    if prewrite is None:
+        # RESTAGE authority (`ensure_batch_materialized`): the prewrite was
+        # consumed by the commit that made this batch durable, so a
+        # re-materialization has none to present and the only conformant
+        # authority is the COMMITTED record in its restageable state -- first
+        # copy stage-retired, origin charge intact, origins still carrying the
+        # identity that commit recorded, and PB's own filed materialization
+        # row naming exactly this mover key. Every OTHER absent-prewrite case
+        # -- an unretired committed batch (its own mover still owns the
+        # material), a reclaimed-origin batch, a caller-invented mover key --
+        # keeps today's `prewrite-reservation-missing` refusal unchanged.
+        if _committed_restage_authority(
+                queue, checked_instance, checked_template, batch_id,
+                manifest, mover_key) is None:
+            raise ProducedOutputError("prewrite-reservation-missing")
+    else:
+        # Ceiling reconciliation (conservative prewrite -> actual): same tier,
+        # owner and attempt; actual paths are a SUBSET of the planned superset
+        # (unwritten planned paths stay absent, which abort already requires);
+        # actual per-class bytes land at or under the admitted ceiling.
+        if (prewrite.get("tier") != tier
+                or not _actual_within_ceiling(prewrite, sealed)
+                or not set(str(d["path"]) for d in sealed)
+                <= set(prewrite.get("paths", []))
+                or prewrite.get("owner_action_key")
+                != checked_instance["owner_action_key"]
+                or dict(prewrite.get("owner_attempt", {})) != dict(
+                    checked_instance["owner_attempt"])):
+            raise ProducedOutputError("prewrite-mismatch")
+        if not _planned_omitted_absent(prewrite, sealed):
+            # A planned-but-omitted path still EXISTS (or is unstatable): the
+            # prewrite's charge for it must not vanish with the commit.
+            raise ProducedOutputError("planned-path-present-retain")
     if total <= 0:
         raise ProducedOutputError("unknown-retain: precommit-total")
     attempt = checked_instance["owner_attempt"]
@@ -1492,6 +1535,438 @@ def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
                 record.get("class_bytes"),
                 where=f"committed batch {batch_id!r}")[cls]
     return sums
+
+
+# --------------------------------------------------------------------------
+# Repeat materialization over one committed batch (bounded-window restage)
+# --------------------------------------------------------------------------
+#
+# A committed batch is an IMMUTABLE logical unit with ONE durable charge. The
+# stage copy under it is not: the bounded-window path stages a batch, lets a
+# reader consume it, retires the copy to give the window credit back, and --
+# when the same bytes are needed again -- stages the SAME batch a second time
+# over the SAME origin files. The batch, its manifest, its descriptors, its
+# namespace and its durable charge never move; only the materialization does.
+#
+# Everything below is that one transition. There is no second cache, no second
+# dispatcher, no origin-only commit and no v2 record: a materialization reuses
+# the published first-publisher helpers, the pool's prepaid funding, the
+# existing strict SDK, the existing egress and the existing recovery.
+
+
+def _portable_identity_of(info) -> dict[str, int]:
+    """The existing origin-identity tuple for one stat result.
+
+    `reader_lease.portable_identity` is the fleet's one spelling of server-side
+    file identity (`ino/size/mtime_ns/ctime_ns`, deliberately without st_dev,
+    which is per-client on NFS). This lane reads it; it never defines a second
+    identity and never edits that module.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    return lease_mod.portable_identity(info)
+
+
+def _origin_identity_at_commit(sealed: list[dict[str, object]]
+                               ) -> tuple[dict[str, dict[str, int]] | None,
+                                          dict[str, object] | None]:
+    """Capture each sealed origin's identity, one lstat per path.
+
+    ONE stat answers both questions the commit asks -- is this file the length
+    the descriptor claims, and what exactly is this file -- so the size that is
+    checked and the identity that is recorded can never be two different
+    moments. `os.lstat` (not `stat`) matches the check this path has always
+    made and is strictly stronger for the proof: replacing a regular file with
+    a symlink to identical bytes changes the recorded identity and refuses.
+    Returns `(identity_map, None)` or `(None, refusal)`.
+    """
+
+    identity: dict[str, dict[str, int]] = {}
+    for desc in sealed:
+        path = str(desc["path"])
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            return (None, {"ok": False,
+                           "refusal": f"descriptor-unstatable: {exc}"})
+        if int(info.st_size) != int(desc["bytes"]):
+            return (None, {"ok": False, "refusal": "descriptor-size-mismatch",
+                           "path": path})
+        identity[path] = _portable_identity_of(info)
+    return (identity, None)
+
+
+def _recheck_origin_identity(filed: Mapping[str, object],
+                             sealed: list[dict[str, object]]
+                             ) -> tuple[bool, str | None]:
+    """Do the sealed origins still have the identity the FIRST commit recorded?
+
+    This is the whole safety of restaging a DEV null-digest batch. The
+    descriptor carries no payload digest, so the only thing that can say the
+    bytes about to be copied a second time are the bytes the batch was
+    committed over is the file identity captured when it was committed --
+    `(ino, size, mtime_ns, ctime_ns)` through the same
+    `reader_lease.file_id_matches` every strict reader and every publication
+    proof uses. Size alone is NOT that proof: a rewritten file of identical
+    length passes an lstat size check and is a different artifact.
+    Deliberately NOT a rehash: the writer digest, where one exists, already
+    rides the manifest and the mover verifies it on copy; this path adds no
+    payload read.
+
+    A batch committed before the proof existed has no `origin_identity` and
+    refuses `restage-origin-proof-missing` -- the current bytes are never
+    retroactively blessed as the committed ones. An unstatable path is unknown
+    and refuses. Returns `(True, None)` or `(False, refusal)`.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    recorded = filed.get("origin_identity")
+    if not isinstance(recorded, Mapping) or not recorded:
+        return (False, "restage-origin-proof-missing")
+    if len(recorded) != len(sealed):
+        return (False, "restage-origin-proof-missing")
+    for desc in sealed:
+        path = str(desc["path"])
+        published = recorded.get(path)
+        if not isinstance(published, Mapping):
+            return (False, "restage-origin-proof-missing")
+        # A proof that disagrees with the manifest it is filed beside is not a
+        # proof of anything.
+        if published.get("size") != int(desc["bytes"]):
+            return (False, "restage-origin-proof-missing")
+        try:
+            live = _portable_identity_of(os.lstat(path))
+        except OSError as exc:
+            return (False, f"restage-origin-unstatable: {exc}")
+        if not lease_mod.file_id_matches(published, live):
+            return (False, "restage-origin-changed")
+    return (True, None)
+
+
+def _materializations(entry: Mapping[str, object]) -> list[dict[str, object]]:
+    """The entry's restage materializations, shape-checked, oldest first.
+
+    A malformed `materializations` list is unknown state and RAISES, never
+    reads as empty: retirement, the censuses and the successor gate all turn
+    on it, and an unreadable list that answered "none" would orphan a live
+    stage copy. An absent or empty list is a batch that was never restaged.
+    """
+
+    raw = entry.get("materializations")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ProducedOutputError("unknown-retain: materializations")
+    out: list[dict[str, object]] = []
+    for index, item in enumerate(raw):
+        if (not isinstance(item, Mapping)
+                or len(str(item.get("mover_key") or "")) != 64
+                or any(c not in _HEX for c in str(item.get("mover_key") or ""))
+                or not isinstance(item.get("tier"), str)
+                or not item.get("tier")
+                or type(item.get("generation")) is not int
+                or int(item["generation"]) != index + 1
+                or type(item.get("retired")) is not bool
+                or str(item.get("state") or "") not in ("intent", "funded")):
+            raise ProducedOutputError("unknown-retain: materializations")
+        out.append(dict(item))
+    return out
+
+
+def _live_materialization(entry: Mapping[str, object]
+                          ) -> dict[str, object] | None:
+    """The single live (unretired) restage materialization, or None.
+
+    The lane is a sequential writer (one producer action per instance), and
+    the bounded-window path stages one window at a time, so at most ONE
+    materialization may be live or pending per logical batch. More than one is
+    corrupt state and raises rather than guessing which one owns the material.
+    """
+
+    live = [item for item in _materializations(entry)
+            if not item.get("retired")]
+    if len(live) > 1:
+        raise ProducedOutputError("unknown-retain: materializations")
+    return live[0] if live else None
+
+
+def _active_materialization(entry: Mapping[str, object]) -> dict[str, object]:
+    """Which mover owns this batch's stage copy RIGHT NOW.
+
+    The one question every retire, census and row-preparation path must ask
+    instead of reading `entry["retired"]`, which only ever describes the FIRST
+    materialization. After a restage the first one is retired and a successor
+    owns the material; a path that kept reading the entry flag would call a
+    live stage copy retired and orphan it.
+
+    Returns the latest materialization: the last filed restage row when there
+    is one, else the batch's own first publication as generation 0. Raises on
+    a malformed list (unknown retains).
+    """
+
+    mats = _materializations(entry)
+    if mats:
+        latest = dict(mats[-1])
+        latest["source"] = "materialization"
+        return latest
+    return {"mover_key": str(entry.get("mover_key") or ""),
+            "tier": str(entry.get("tier") or ""),
+            "generation": 0,
+            "retired": bool(entry.get("retired")),
+            "state": "funded",
+            "staged_paths": list(entry.get("staged_paths") or []),
+            "source": "batch"}
+
+
+def _all_materialization_movers(entry: Mapping[str, object]) -> list[str]:
+    """Every mover key that has ever owned this batch's material, in order."""
+
+    keys = [str(entry.get("mover_key") or "")]
+    keys += [str(item.get("mover_key")) for item in _materializations(entry)]
+    return [key for key in keys if len(key) == 64]
+
+
+def _batch_stage_retired(entry: Mapping[str, object]) -> bool:
+    """Is NO stage copy of this batch live or pending right now?
+
+    The replacement for every `entry.get("retired")` test outside the commit
+    path. A restaged batch's own flag says only that its FIRST copy is gone;
+    what callers actually need is whether the LATEST materialization is
+    retired, which is what this answers. Raises on a malformed materialization
+    list, so unknown retains instead of reading as retired.
+    """
+
+    return bool(_active_materialization(entry).get("retired"))
+
+
+def _committed_restage_authority(queue, checked_instance, checked_template,
+                                 batch_id: str, manifest: str,
+                                 mover_key: str) -> dict[str, object] | None:
+    """The restageable committed batch as a funding authority, or None.
+
+    Read-only. The prewrite was consumed by the commit that made this batch
+    durable, so a re-materialization has no prewrite to present and must found
+    its funding on the immutable record itself -- and ONLY in the exact state
+    where restaging is the designed transition:
+
+    * the mutable commitments entry agrees with the immutable record on
+      mover/tier/namespace and the recomputed manifest digest equals the seal
+      (so caller descriptor drift refuses);
+    * the FIRST materialization is stage-retired -- its egress completed, so
+      no pin can be holding it -- and the origins were never reclaimed;
+    * exactly ONE live materialization is filed and it names THIS mover key.
+      The caller therefore cannot pick a successor id: only the key PB itself
+      sealed and filed under the ownership lock is fundable.
+    * the sealed origins still carry the identity the first commit recorded.
+
+    A damaged record or commitments file raises `unknown-retain` (fail
+    closed), and a changed or unprovable origin raises its own typed reason so
+    funding refuses by name; an absent entry, an unretired batch, a
+    reclaimed-origin batch, a digest disagreement or a mover key with no filed
+    materialization returns None and the caller keeps its ordinary refusal.
+    """
+
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    batches = commitments["batches"]
+    assert isinstance(batches, Mapping)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        return None
+    try:
+        filed, sealed = _load_batch_record(
+            queue.root, checked_instance, checked_template, entry, batch_id)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(str(exc)) from None
+    try:
+        namespace = batch_namespace(checked_instance, batch_id, manifest)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(str(exc)) from None
+    if (not entry.get("retired")
+            or entry.get("origin_reclaimed")
+            or str(entry.get("manifest_digest") or "") != manifest
+            or str(filed.get("manifest_digest") or "") != manifest
+            or str(entry.get("batch_namespace") or "") != namespace
+            or str(filed.get("batch_namespace") or "") != namespace):
+        return None
+    live = _live_materialization(entry)
+    if live is None or str(live.get("mover_key")) != str(mover_key):
+        return None
+    ok, refusal = _recheck_origin_identity(filed, sealed)
+    if not ok:
+        raise ProducedOutputError(str(refusal))
+    return dict(entry)
+
+
+def _append_materialization_locked(
+        queue, checked_instance, checked_template, batch_id: str, *,
+        mover_key: str, tier: str, generation: int, host: str) -> bool:
+    """File one restage INTENT under the caller's ownership lock.
+
+    This is the durable resumption point, and it is filed BEFORE any funding
+    or movement side effect reaches the pool: a crash at any later prefix
+    finds this row, re-drives the SAME sealed mover key, and allocates neither
+    a fresh generation nor a second credit.
+
+    Re-validates provenance exactly as the primary commit path does (the
+    immutable record loads; the entry still agrees on mover/tier/namespace;
+    the first materialization is stage-retired with its origin charge intact),
+    re-derives the generation from the record on disk, and appends
+    `{mover_key, tier, generation, retired: False, state: "intent", host}`.
+    Idempotent: a materialization already filed with this mover key returns
+    True without appending. Any provenance failure raises.
+    """
+
+    path = _commitments_path(queue.root, checked_instance)
+    try:
+        commitments = _read_commitments(path)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError("unknown batch_id for this instance")
+    try:
+        filed, _sealed = _load_batch_record(
+            queue.root, checked_instance, checked_template, entry, batch_id)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(str(exc)) from None
+    if (not entry.get("retired")
+            or entry.get("origin_reclaimed")
+            or str(entry.get("mover_key") or "")
+            != str(filed.get("mover_key") or "")
+            or str(entry.get("tier") or "") != str(filed.get("tier") or "")
+            or str(filed.get("tier") or "") != tier):
+        raise ProducedOutputError("unknown-retain: restage-target-mismatch")
+    existing = _materializations(entry)
+    for item in existing:
+        if str(item.get("mover_key")) == str(mover_key):
+            return True
+    if _live_materialization(entry) is not None:
+        raise ProducedOutputError("materialization-live-retain")
+    if len(existing) + 1 != generation:
+        # Another restage (or a crash-retry) advanced the list between this
+        # caller's read and this append; the sealed key it published belongs
+        # to the generation it read. Refuse rather than filing a
+        # generation-mismatched row: every step is idempotent, so the retry
+        # re-derives the current generation and heals by re-calling.
+        raise ProducedOutputError("restage-generation-changed")
+    updated = dict(entry)
+    updated["materializations"] = existing + [{
+        "mover_key": str(mover_key), "tier": tier,
+        "generation": int(generation), "retired": False,
+        "state": "intent", "host": str(host)}]
+    batches[batch_id] = updated
+    try:
+        _write_commitments(path, {"batches": batches})
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    return False
+
+
+def _mark_materialization_funded_locked(
+        queue, checked_instance, batch_id: str, *, mover_key: str) -> None:
+    """Advance one filed materialization intent to `funded` under the lock.
+
+    Bookkeeping only -- the authority is the pool's own funding record, which
+    this caller has just read as `transferring` with the tokens held under the
+    mover. Idempotent, and it never invents a row: a mover key with no filed
+    materialization raises rather than filing one late.
+    """
+
+    path = _commitments_path(queue.root, checked_instance)
+    try:
+        commitments = _read_commitments(path)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError("unknown batch_id for this instance")
+    items = _materializations(entry)
+    changed = False
+    for index, item in enumerate(items):
+        if str(item.get("mover_key")) == str(mover_key):
+            if item.get("retired"):
+                raise ProducedOutputError(
+                    "unknown-retain: materialization-retired")
+            if str(item.get("state")) != "funded":
+                item = dict(item)
+                item["state"] = "funded"
+                items[index] = item
+                changed = True
+            break
+    else:
+        raise ProducedOutputError("unknown-retain: materializations")
+    if not changed:
+        return
+    updated = dict(entry)
+    updated["materializations"] = items
+    batches[batch_id] = updated
+    try:
+        _write_commitments(path, {"batches": batches})
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+
+
+def _mark_materialization_retired_locked(
+        queue, checked_instance, batch_id: str, *, mover_key: str,
+        receipt: Mapping[str, object], canonical_ns: str,
+        staged_paths: list[str]) -> None:
+    """File one materialization's stage retirement under the caller's lock.
+
+    Proof-checked exactly like the primary retirement: the egress receipt must
+    be complete, error-free, and name THIS materialization's mover with the
+    batch's canonical namespace. The namespace is digest-derived and shared by
+    every materialization of one batch, so the reader contract is unchanged.
+    The durable charge is NOT touched -- retiring a materialization returns
+    window credit only, and the origin charge stays constant across forward
+    and reverse staging.
+    """
+
+    if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
+        raise ProducedOutputError("retire needs a complete egress receipt")
+    if receipt.get("errors"):
+        raise ProducedOutputError("retire needs an error-free egress receipt")
+    if (str(receipt.get("action_key") or "") != str(mover_key)
+            or str(receipt.get("consumer_action_key") or "") != canonical_ns):
+        raise ProducedOutputError("retire receipt names another materialization")
+    path = _commitments_path(queue.root, checked_instance)
+    try:
+        commitments = _read_commitments(path)
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError("unknown batch_id for this instance")
+    items = _materializations(entry)
+    for index, item in enumerate(items):
+        if str(item.get("mover_key")) == str(mover_key):
+            if item.get("retired"):
+                return
+            item = dict(item)
+            item["retired"] = True
+            item["staged_paths"] = sorted(set(staged_paths))
+            items[index] = item
+            break
+    else:
+        raise ProducedOutputError("unknown-retain: materializations")
+    updated = dict(entry)
+    updated["materializations"] = items
+    batches[batch_id] = updated
+    try:
+        _write_commitments(path, {"batches": batches})
+    except ProducedOutputError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
 
 
 # --------------------------------------------------------------------------
@@ -1856,15 +2331,18 @@ def commit_batch(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "tier-not-permitted"}
     sealed = [validate_descriptor(d, checked_template, checked_instance)
               for d in descriptors]
-    # lstat size check only (no payload reread; digests ride the writer receipt
-    # and the mover verifies on copy).
-    for desc in sealed:
-        try:
-            if os.lstat(desc["path"]).st_size != int(desc["bytes"]):
-                return {"ok": False, "refusal": "descriptor-size-mismatch",
-                        "path": desc["path"]}
-        except OSError as exc:
-            return {"ok": False, "refusal": f"descriptor-unstatable: {exc}"}
+    # One lstat per origin, answering both questions at the same instant: the
+    # size the descriptor claims, and the exact file identity this commit is
+    # over. No payload reread -- digests ride the writer receipt and the mover
+    # verifies on copy. The identity tuple is what lets the SAME batch be
+    # materialized again later over provably the same bytes (see
+    # `ensure_batch_materialized`): for a DEV null-digest descriptor it is the
+    # only such proof, and a size check alone would bless a rewritten file of
+    # equal length.
+    origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
+    if identity_refusal is not None:
+        return identity_refusal
+    assert origin_identity is not None
     class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
@@ -2042,6 +2520,13 @@ def commit_batch(queue, instance: Mapping[str, object],
             "template_sha256": template_sha256(checked_template),
             "owner_action_key": str(checked_instance["owner_action_key"]),
             "owner_attempt": dict(checked_instance["owner_attempt"]),
+            # The immutable producer record of what the origins WERE at the
+            # moment this batch became durable. Restage rechecks exactly this
+            # before every re-materialization and refuses a changed file; a
+            # batch filed before this field existed carries no proof and can
+            # never be restaged (its current bytes are never retroactively
+            # blessed).
+            "origin_identity": origin_identity,
             "object_set_id": manifest_object_set_id({
                 f"{d['bytes']}:{d['path']}": {"bytes": int(d["bytes"]),
                                              "sha256": (d["sha256"]
@@ -2096,65 +2581,83 @@ def commit_batch(queue, instance: Mapping[str, object],
             "funding": "prepaid" if prepaid is not None else "legacy"}
 
 
-def publish_prepaid_batch(queue, instance: Mapping[str, object],
-                          template: Mapping[str, object],
-                          descriptors: list[Mapping[str, object]], *,
-                          batch_id: str, tier: str, cas_root,
-                          producer_action_key: str | None = None,
-                          command_extra: Sequence[str] = (),
-                          retry_policy: Mapping[str, object] | None = None,
-                          ) -> dict[str, object]:
-    """The operational prepaid writer path for one finished batch (R7).
+def _producer_launch_context(queue, producer: str) -> dict[str, object]:
+    """The producer's FILED launch context, for a mover row of its own.
 
-    Callable INSIDE the admitted producer action: the movement template is
-    RECOVERED from the producer's own sealed request through the existing
-    CAS request interface (``producer_action_key``, defaulting to this
-    action's ``PRISMABUILD_ACTION_KEY``), never from submitter-local
-    state. The child inherits the parent request's inputs (checkout
-    snapshot), code closure, environment base, execution scope, task
-    identity and cwd exactly as pbrun's movement children inherit the
-    consumer's template; the parent's own data-manifest input is replaced
-    by the batch's; the marker namespace is the queue's container-owners
-    directory; the ownership identity is the parent's sealed checkout
-    snapshot id (content-addressed, stable, already in the request). No
-    checkout is rescanned or resealed per batch and no scratch directory
-    is created.
+    The mover row must be launched exactly like the producer action is:
+    `worker_script` is the PB worker launcher (whose run-local verb takes the
+    request/cas/checkout arguments Pool.execute builds), NEVER the stage tool
+    itself (stage_move is the action PAYLOAD that launcher executes), and the
+    row's checkout addressing is reused so the launcher materializes the same
+    tree the producer ran from. An agent's validation priority stays with the
+    row. Returns `{"ok": True, "worker_script", "addressing", "priority"}` or a
+    typed refusal; one spelling, shared by first publication and restage, so
+    the two can never drift.
+    """
 
-    Sequence, all existing mechanisms: build the sealed batch reference
-    (``PoolQueue.build_produced_output_batch_ref``) -> seal the movement
-    action through the ordinary ``movement_actions.seal_movement_action``
-    (the same construction pbrun's movement children use; the sealed
-    request carries the batch reference and the batch's data-manifest
-    input in its params) -> stage the funding intent (reserved, no tokens
-    moved) -> publish the mover READY row -> fund by exact transfer of
-    the producer's existing window (``fund_output_batch``) ->
-    ``commit_batch`` (files the immutable batch against the pool record;
-    no second acquisition from free). The fleet's ordinary claim then
-    admits the mover through the prepaid cover, and the worker executes
-    the sealed argv on the storage owner.
+    from prismabuild import pool as pool_mod
 
-    The mover ROW reuses the producer's FILED launch context: the
-    producer row's worker_script (the PB worker launcher whose run-local
-    verb Pool.execute builds the arguments for -- stage_move is the action
-    PAYLOAD that launcher executes, never the worker script) and its
-    checkout addressing and cas_root; placement tags come from the tier
-    record through ordinary publish semantics. The mover's interpreter,
-    tool paths and stage root come from the TIER RECORD the storage role
-    announced
-    (``movement_actions.movement_tools`` semantics); a tier announcing no
-    interpreter or tool root refuses rather than sealing this process's
-    paths onto a box that may not have them. The command is the ordinary
-    paced ``stage_move`` shape; ``command_extra`` exists ONLY so a fixture
-    can append explicit flags such as ``--unpaced`` (no ZFS pacer in a
-    sandbox) -- production passes nothing. ``retry_policy`` defaults to
-    the ordinary mover policy (bounded attempts, retry-safe copy).
+    try:
+        producer_row = pool_mod._read_json(
+            queue.item_path(pool_mod.CLAIMED, producer))
+    except (OSError, pool_mod.PoolContractError) as exc:
+        return {"ok": False, "step": "launch-context",
+                "refusal": f"producer-claim-unreadable: {exc}"}
+    if not isinstance(producer_row, Mapping):
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-not-claimed: the mover must be "
+                           "published from inside the admitted producer"}
+    worker_script = str(producer_row.get("worker_script") or "")
+    if not worker_script.startswith("/"):
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-launch-context-required: the producer "
+                           "row names no absolute worker script"}
+    addressing: dict[str, object] = {}
+    if isinstance(producer_row.get("checkout_snapshot"), Mapping):
+        addressing["checkout_snapshot"] = producer_row["checkout_snapshot"]
+    elif str(producer_row.get("checkout_root") or "").startswith("/"):
+        addressing["checkout_root"] = str(producer_row["checkout_root"])
+    else:
+        return {"ok": False, "step": "launch-context",
+                "refusal": "producer-launch-context-required: the producer "
+                           "row names no checkout addressing"}
+    return {"ok": True, "worker_script": worker_script,
+            "addressing": addressing,
+            "priority": int(producer_row.get("priority") or 0)}
 
-    The mover key is the content-addressed action key of the sealed
-    request: retrying with identical inputs re-derives the same key and
-    every step is idempotent (stage/publish/fund/commit duplicates are
-    typed successes; a fully committed batch short-circuits to the
-    duplicate), so a restart re-calls this method. Refusals return the
-    failing step's typed result under ``step``/``refusal``.
+
+def _seal_output_mover(queue, checked_instance: Mapping[str, object],
+                       checked_template: Mapping[str, object],
+                       descriptors: list[Mapping[str, object]], *,
+                       batch_id: str, tier: str, cas_root,
+                       producer_action_key: str | None,
+                       command_extra: Sequence[str] = (),
+                       retry_policy: Mapping[str, object] | None = None,
+                       generation: int = 0) -> dict[str, object]:
+    """Seal and file ONE output mover for this batch, and answer its facts.
+
+    The single sealing path for the produced-output lane: first publication
+    (`generation == 0`) and every later re-materialization
+    (`generation >= 1`, `ensure_batch_materialized`) construct the mover the
+    SAME way -- movement template recovered from the producer's own sealed
+    request through the existing CAS request interface, batch data manifest
+    sealed as that request's input, interpreter/tools/stage-root/placement off
+    the ANNOUNCED TIER RECORD, the ordinary paced `stage_move` command behind
+    `movement_actions.seal_movement_action`. Nothing here is a second sealing
+    scheme and nothing is copied from `publish`.
+
+    A re-materialization differs from first publication in exactly two sealed
+    fields, both derived from the PB-sealed materialization sequence and
+    neither chosen by a caller: the log name carries the generation, and the
+    params carry the `produced_output_materialization` record. That is what
+    makes the successor's content-addressed action key -- which IS its funding
+    key -- unique per generation, deterministic on replay, and impossible to
+    supply as a nonce. `generation == 0` seals byte-for-byte what this lane
+    has always sealed.
+
+    Returns the sealed facts (`mover_key`, `action`, `host`, `kind`, `gib`,
+    `total`, `manifest_digest`, `batch_namespace`, `retry_policy`, `cas`) with
+    the request already filed in CAS, or a typed `{"ok": False, "step", ...}`.
     """
 
     from prismabuild import core as core_mod
@@ -2163,54 +2666,14 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     from prismabuild import storage_tiers as tiers_mod
 
     try:
-        checked_template = validate_template(template)
-        checked_instance = validate_instance(instance)
-    except ProducedOutputError as exc:
-        return {"ok": False, "step": "validate", "refusal": str(exc)}
-    _name(batch_id, where="batch_id")
-    if tier not in checked_template["permitted_tiers"]:
-        return {"ok": False, "step": "validate", "refusal": "tier-not-permitted"}
-    try:
         ref = pool_mod.PoolQueue.build_produced_output_batch_ref(
             instance=checked_instance, template=checked_template,
-            batch_id=batch_id, descriptors=descriptors, tier_id=tier)
+            batch_id=batch_id, descriptors=list(descriptors), tier_id=tier)
     except pool_mod.PoolContractError as exc:
         return {"ok": False, "step": "build-ref", "refusal": str(exc)}
     manifest_digest = str(ref["manifest_digest"])
     total = int(ref["range_end_bytes"])
     batch_ns = str(ref["batch_namespace"])
-    # Retry after FULL success: the prewrite and the pool-side staging are
-    # consumed by design, so creation steps would refuse exactly what they
-    # finished. A filed commitments entry with the same manifest means the
-    # batch is complete -- replay the idempotent commit and answer the
-    # duplicate.
-    try:
-        commitments = _read_commitments(
-            _commitments_path(queue.root, checked_instance))
-    except ProducedOutputError as exc:
-        return {"ok": False, "step": "validate",
-                "refusal": f"unknown-retain: {exc}"}
-    existing = commitments["batches"].get(batch_id)
-    if isinstance(existing, Mapping):
-        if str(existing.get("manifest_digest")) != manifest_digest:
-            return {"ok": False, "step": "validate",
-                    "refusal": "batch-id-in-use"}
-        mover = str(existing.get("mover_key"))
-        committed = commit_batch(queue, checked_instance, checked_template,
-                                 descriptors, batch_id=batch_id, tier=tier,
-                                 mover_key=mover)
-        if not committed.get("ok"):
-            committed["step"] = "commit"
-            return committed
-        committed["mover_key"] = mover
-        record = queue.read_output_funding(mover, tier)
-        committed["generation"] = (str(record.get("generation"))
-                                   if record is not None else "")
-        committed["tokens"] = ([str(name) for name in record.get("tokens") or []]
-                               if record is not None else [])
-        committed["funding"] = "prepaid"
-        committed["duplicate"] = True
-        return committed
     # The producer's own sealed request, through the existing request
     # interface: this is the runtime parent context the mover inherits.
     producer = str(producer_action_key or
@@ -2249,8 +2712,7 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         [os.path.dirname(str(d["path"])) for d in descriptors]))
     try:
         manifest_body = build_stage_manifest(batch_view, mount_prefix)
-        import tempfile as _tempfile
-        handle, manifest_tmp = _tempfile.mkstemp(
+        handle, manifest_tmp = tempfile.mkstemp(
             prefix="produced-output-manifest-", suffix=".json")
         with os.fdopen(handle, "w") as stream:
             json.dump(manifest_body, stream, sort_keys=True)
@@ -2324,56 +2786,149 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     command += [str(flag) for flag in command_extra]
     mover_retry_policy = (dict(retry_policy) if retry_policy is not None
                           else {"max_attempts": 3, "retry_safe": True})
+    extra_params: dict[str, object] = {
+        "produced_output_batch": dict(ref),
+        "data_manifest": {"input": manifest_input},
+    }
+    log_name = f"produced-output-mover-{batch_id}.log"
+    if int(generation) > 0:
+        log_name = (f"produced-output-mover-{batch_id}"
+                    f"-m{int(generation)}.log")
+        extra_params["produced_output_materialization"] = {
+            "schema": MATERIALIZATION_SCHEMA_V1,
+            "batch_id": batch_id,
+            "manifest_digest": manifest_digest,
+            "batch_namespace": batch_ns,
+            "tier_id": tier,
+            "generation": int(generation),
+        }
     try:
         action = movement_actions.seal_movement_action(
             mover_template,
             command=command,
             demand={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
             tags=[host] if host else [],
-            log_name=f"produced-output-mover-{batch_id}.log",
+            log_name=log_name,
             retry_policy=mover_retry_policy,
-            extra_params={
-                "produced_output_batch": dict(ref),
-                "data_manifest": {"input": manifest_input},
-            })
+            extra_params=extra_params)
         cas.publish_action_request(action)
     except SystemExit as exc:
         return {"ok": False, "step": "seal", "refusal": str(exc)}
     except Exception as exc:
         return {"ok": False, "step": "seal", "refusal": str(exc)}
-    # The producer's FILED launch context (the claimed row): the mover row
-    # must be launched exactly like the producer action is -- worker_script
-    # is the PB worker launcher (prismabuild_worker.py, whose run-local verb
-    # takes the request/cas/checkout arguments Pool.execute builds), NEVER
-    # the stage tool itself (stage_move is the action payload the launcher
-    # executes). The row's checkout addressing is reused so the launcher
-    # materializes the same tree the producer ran from.
+    return {"ok": True, "action": action,
+            "mover_key": str(action["action_key"]),
+            "cas": cas, "cas_root": str(cas.root), "host": host,
+            "kind": kind, "gib": gib, "total": total,
+            "manifest_digest": manifest_digest, "batch_namespace": batch_ns,
+            "retry_policy": mover_retry_policy, "ref": dict(ref)}
+
+
+def publish_prepaid_batch(queue, instance: Mapping[str, object],
+                          template: Mapping[str, object],
+                          descriptors: list[Mapping[str, object]], *,
+                          batch_id: str, tier: str, cas_root,
+                          producer_action_key: str | None = None,
+                          command_extra: Sequence[str] = (),
+                          retry_policy: Mapping[str, object] | None = None,
+                          ) -> dict[str, object]:
+    """The operational prepaid writer path for one finished batch (R7).
+
+    Callable INSIDE the admitted producer action. The movement action is
+    sealed by `_seal_output_mover` (the shared first-publisher construction:
+    the movement template is RECOVERED from the producer's own sealed request
+    through the existing CAS request interface, never from submitter-local
+    state), and the launch context comes from the producer's FILED claimed row
+    through `_producer_launch_context`.
+
+    Sequence, all existing mechanisms: seal + file the mover request ->
+    stage the funding intent (reserved, no tokens moved) -> publish the mover
+    READY row -> fund by exact transfer of the producer's existing window
+    (``fund_output_batch``) -> ``commit_batch`` (files the immutable batch
+    against the pool record; no second acquisition from free). The fleet's
+    ordinary claim then admits the mover through the prepaid cover, and the
+    worker executes the sealed argv on the storage owner.
+
+    ``command_extra`` exists ONLY so a fixture can append explicit flags such
+    as ``--unpaced`` (no ZFS pacer in a sandbox) -- production passes nothing.
+    ``retry_policy`` defaults to the ordinary mover policy (bounded attempts,
+    retry-safe copy).
+
+    The mover key is the content-addressed action key of the sealed request:
+    retrying with identical inputs re-derives the same key and every step is
+    idempotent (stage/publish/fund/commit duplicates are typed successes; a
+    fully committed batch short-circuits to the duplicate), so a restart re-
+    calls this method. Refusals return the failing step's typed result under
+    ``step``/``refusal``. Re-STAGING an already retired batch is a different
+    transition and is NOT this function: see `ensure_batch_materialized`.
+    """
+
     try:
-        producer_row = pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, producer))
-    except (OSError, pool_mod.PoolContractError) as exc:
-        return {"ok": False, "step": "launch-context",
-                "refusal": f"producer-claim-unreadable: {exc}"}
-    if not isinstance(producer_row, Mapping):
-        return {"ok": False, "step": "launch-context",
-                "refusal": "producer-not-claimed: the mover must be "
-                           "published from inside the admitted producer"}
-    worker_script = str(producer_row.get("worker_script") or "")
-    if not worker_script.startswith("/"):
-        return {"ok": False, "step": "launch-context",
-                "refusal": "producer-launch-context-required: the producer "
-                           "row names no absolute worker script"}
-    addressing = {}
-    if isinstance(producer_row.get("checkout_snapshot"), Mapping):
-        addressing["checkout_snapshot"] = producer_row["checkout_snapshot"]
-    elif str(producer_row.get("checkout_root") or "").startswith("/"):
-        addressing["checkout_root"] = str(producer_row["checkout_root"])
-    else:
-        return {"ok": False, "step": "launch-context",
-                "refusal": "producer-launch-context-required: the producer "
-                           "row names no checkout addressing"}
-    mover = str(action["action_key"])
+        checked_template = validate_template(template)
+        checked_instance = validate_instance(instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "step": "validate", "refusal": str(exc)}
+    _name(batch_id, where="batch_id")
+    if tier not in checked_template["permitted_tiers"]:
+        return {"ok": False, "step": "validate", "refusal": "tier-not-permitted"}
+    try:
+        manifest_digest = output_manifest_sha256(
+            [validate_descriptor(dict(d), checked_template, checked_instance)
+             for d in descriptors])
+    except ProducedOutputError as exc:
+        return {"ok": False, "step": "build-ref", "refusal": str(exc)}
+    # Retry after FULL success: the prewrite and the pool-side staging are
+    # consumed by design, so creation steps would refuse exactly what they
+    # finished. A filed commitments entry with the same manifest means the
+    # batch is complete -- replay the idempotent commit and answer the
+    # duplicate.
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError as exc:
+        return {"ok": False, "step": "validate",
+                "refusal": f"unknown-retain: {exc}"}
+    existing = commitments["batches"].get(batch_id)
+    if isinstance(existing, Mapping):
+        if str(existing.get("manifest_digest")) != manifest_digest:
+            return {"ok": False, "step": "validate",
+                    "refusal": "batch-id-in-use"}
+        mover = str(existing.get("mover_key"))
+        committed = commit_batch(queue, checked_instance, checked_template,
+                                 descriptors, batch_id=batch_id, tier=tier,
+                                 mover_key=mover)
+        if not committed.get("ok"):
+            committed["step"] = "commit"
+            return committed
+        committed["mover_key"] = mover
+        record = queue.read_output_funding(mover, tier)
+        committed["generation"] = (str(record.get("generation"))
+                                   if record is not None else "")
+        committed["tokens"] = ([str(name) for name in record.get("tokens") or []]
+                               if record is not None else [])
+        committed["funding"] = "prepaid"
+        committed["duplicate"] = True
+        return committed
+    sealed_mover = _seal_output_mover(
+        queue, checked_instance, checked_template, list(descriptors),
+        batch_id=batch_id, tier=tier, cas_root=cas_root,
+        producer_action_key=producer_action_key,
+        command_extra=command_extra, retry_policy=retry_policy,
+        generation=0)
+    if not sealed_mover.get("ok"):
+        return sealed_mover
+    launch = _producer_launch_context(
+        queue, str(producer_action_key or
+                   os.environ.get(_ACTION_KEY_ENV_NAME()) or ""))
+    if not launch.get("ok"):
+        return launch
+    mover = str(sealed_mover["mover_key"])
     owner = str(checked_instance["owner_action_key"])
+    kind = str(sealed_mover["kind"])
+    gib = int(sealed_mover["gib"])
+    total = int(sealed_mover["total"])
+    host = str(sealed_mover["host"])
+    mover_retry_policy = dict(sealed_mover["retry_policy"])
     staged = queue.stage_output_intent(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
@@ -2381,26 +2936,13 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     if not staged.get("ok"):
         staged["step"] = "stage"
         return staged
-    try:
-        queue.publish(
-            action_key=mover, cas_root=str(cas.root),
-            worker_script=worker_script, tags=[host] if host else (),
-            # Ordinary semantics carried from the parent: an agent's
-            # validation priority stays with the row, and the effective
-            # sealed mover retry policy (bounded attempts, retry-safe
-            # copy) rides the row beside the worker/snapshot/tag context.
-            priority=int(producer_row.get("priority") or 0),
-            max_attempts=int(mover_retry_policy["max_attempts"]),
-            retry_safe=bool(mover_retry_policy.get("retry_safe", True)),
-            **addressing,
-            resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
-            residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
-                       "tier_id": tier,
-                       "manifest_sha256": manifest_digest,
-                       "manifest_bytes": total,
-                       "range_start_bytes": 0, "range_end_bytes": total})
-    except pool_mod.PoolContractError as exc:
-        return {"ok": False, "step": "publish", "refusal": str(exc)}
+    published = _publish_output_mover_row(
+        queue, mover_key=mover, cas_root=str(sealed_mover["cas_root"]),
+        launch=launch, host=host, tier=tier, kind=kind, gib=gib,
+        manifest_digest=manifest_digest, total=total,
+        retry_policy=mover_retry_policy)
+    if not published.get("ok"):
+        return published
     funded = queue.fund_output_batch(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
@@ -2419,6 +2961,396 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     committed["tokens"] = list(funded.get("tokens") or [])
     committed["funding"] = "prepaid"
     return committed
+
+
+def _ACTION_KEY_ENV_NAME() -> str:
+    from prismabuild import core as core_mod
+
+    return core_mod.ACTION_KEY_ENV
+
+
+def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
+                              launch: Mapping[str, object], host: str,
+                              tier: str, kind: str, gib: int,
+                              manifest_digest: str, total: int,
+                              retry_policy: Mapping[str, object]
+                              ) -> dict[str, object]:
+    """Publish one output mover's READY row through the EXISTING channel.
+
+    Ordinary `queue.publish` semantics carried from the parent: the producer's
+    worker script and checkout addressing, its validation priority, the
+    effective sealed mover retry policy, the tier's placement tag, qualified
+    tier demand, and the mover-variant residency block. One spelling for first
+    publication and restage. A row already published for this content-
+    addressed key is a typed duplicate, not a conflict: the sealed key IS the
+    identity, so republishing the same key is the resume path, never a second
+    unit of work.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    state = _mover_live_state(queue, mover_key)
+    if state == "unknown":
+        return {"ok": False, "step": "publish",
+                "refusal": "unknown-retain: mover-row-unreadable"}
+    if state != "absent":
+        return {"ok": True, "published": False, "state": state}
+    try:
+        queue.publish(
+            action_key=mover_key, cas_root=str(cas_root),
+            worker_script=str(launch["worker_script"]),
+            tags=[host] if host else (),
+            priority=int(launch["priority"]),
+            max_attempts=int(retry_policy["max_attempts"]),
+            retry_safe=bool(retry_policy.get("retry_safe", True)),
+            **dict(launch["addressing"]),
+            resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
+            residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
+                       "tier_id": tier,
+                       "manifest_sha256": manifest_digest,
+                       "manifest_bytes": total,
+                       "range_start_bytes": 0, "range_end_bytes": total})
+    except pool_mod.PoolContractError as exc:
+        return {"ok": False, "step": "publish", "refusal": str(exc)}
+    return {"ok": True, "published": True, "state": "ready"}
+
+
+def materialization_state(queue, instance: Mapping[str, object],
+                          template: Mapping[str, object], *, batch_id: str
+                          ) -> dict[str, object]:
+    """Read-only: which materialization of this batch is current, and where.
+
+    The question a bounded-window reader asks before deciding whether it needs
+    `ensure_batch_materialized`: is a stage copy of this batch live now, under
+    which mover, at which generation, and has its mover's receipt said the
+    bytes landed whole. Mutates nothing, takes no lock, and fails closed --
+    an unreadable record or a malformed materialization list answers
+    `unknown-retain`, never "nothing is staged".
+    """
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
+    _name(batch_id, where="batch_id")
+    try:
+        commitments = _read_commitments(
+            _commitments_path(queue.root, checked_instance))
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    batches = commitments["batches"]
+    assert isinstance(batches, dict)
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        return {"ok": False, "refusal": "unknown-batch"}
+    try:
+        filed, _sealed = _load_batch_record(
+            queue.root, checked_instance, checked_template, entry, batch_id)
+        active = _active_materialization(entry)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    mover = str(active.get("mover_key") or "")
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "tier": str(filed.get("tier") or ""),
+        "manifest_digest": str(filed.get("manifest_digest") or ""),
+        "batch_namespace": str(filed.get("batch_namespace") or ""),
+        "total_bytes": int(filed.get("total_bytes") or 0),
+        "mover_key": mover,
+        "generation": int(active.get("generation") or 0),
+        "source": str(active.get("source") or ""),
+        "funding_state": str(active.get("state") or ""),
+        "stage_retired": bool(active.get("retired")),
+        "origin_reclaimed": bool(entry.get("origin_reclaimed")),
+        "mover_receipt_complete": _mover_receipt_complete(queue, mover),
+        "mover_queue_state": _mover_live_state(queue, mover) if mover else "absent",
+    }
+
+
+def _reconcile_materialization_funding(queue, *, mover: str, tier: str,
+                                       kind: str, gib: int
+                                       ) -> dict[str, object]:
+    """Is this materialization's prepaid funding actually in hand?
+
+    The restage analogue of the reconciliation `commit_batch` performs against
+    the pool record: the filed funding must read `transferring` (driving a
+    publish-before-fund prefix through the SAME recovery API a restart would
+    use, never a second reservation), and the mover must actually hold the
+    batch's exact window price. A short transfer leaves the split intact and
+    retains -- the drive retries resume it; nothing here re-funds.
+    """
+
+    record = queue.read_output_funding(mover, tier)
+    if record is None or str(record.get("state")) != "transferring":
+        driven = queue.drive_output_funding(mover, tier)
+        if not driven.get("ok"):
+            return {"ok": False, "step": "reconcile",
+                    "refusal": f"prepaid-drive: {driven.get('refusal')}",
+                    "drive": driven}
+        record = queue.read_output_funding(mover, tier)
+    if record is None or str(record.get("state")) != "transferring":
+        return {"ok": False, "step": "reconcile",
+                "refusal": "prepaid-funding-terminal",
+                "state": (str(record.get("state"))
+                          if record is not None else "unknown")}
+    held = queue.tier_ledger(tier).holder_tokens(mover).get(kind, 0)
+    if held < gib:
+        return {"ok": False, "step": "reconcile", "refusal": "transfer-short",
+                "moved": held, "expected": gib}
+    return {"ok": True, "record": dict(record), "held": held}
+
+
+def ensure_batch_materialized(queue, instance: Mapping[str, object],
+                              template: Mapping[str, object], *,
+                              batch_id: str, cas_root,
+                              producer_action_key: str | None = None,
+                              command_extra: Sequence[str] = (),
+                              retry_policy: Mapping[str, object] | None = None,
+                              ) -> dict[str, object]:
+    """Make one ALREADY COMMITTED batch resident on its tier again.
+
+    The bounded-window transition, and the only one this lane adds. A produced
+    batch is an immutable logical unit with ONE durable origin charge; the
+    stage copy under it is a window the fleet gives back at retirement. When a
+    later read needs those bytes again, this re-materializes the SAME batch --
+    same owner action and attempt, same logical batch, manifest, descriptors,
+    namespace and output prefix, same durable charge -- by publishing a fresh
+    mover over the sealed origin files and funding it by exact transfer from
+    the producer's existing window, exactly as the first publication did.
+
+    There is no origin-only commit, no second schema, no parallel cache and no
+    second dispatcher: the caller supplies neither origins, nor tokens, nor a
+    successor id. The descriptors come from the immutable batch record, the
+    successor's mover/funding key is the content-addressed key of a request PB
+    seals over the filed materialization generation, and the credit is the
+    ordinary prepaid transfer.
+
+    States it answers:
+
+    * a live first materialization, or a live successor mid-flight, is
+      reported (`state: "live"`) and nothing is republished;
+    * a stage-retired batch with its origins intact and provably unchanged
+      gets a new materialization (`state: "materializing"`);
+    * an origin whose identity no longer matches what the first commit
+      recorded refuses `restage-origin-changed` BEFORE any funding, and a
+      batch with no such proof refuses `restage-origin-proof-missing` rather
+      than blessing whatever bytes are there now;
+    * a batch whose origins were reclaimed refuses: its durable charge is
+      gone and so are the only bytes that could be copied.
+
+    Crash-safe at every prefix, without a fresh epoch or a duplicated credit:
+    the materialization intent is filed under the output-prefix ownership lock
+    BEFORE any funding or movement side effect reaches the pool, and a restart
+    re-drives that exact row's sealed mover key through the same idempotent
+    stage/publish/fund steps. Two concurrent callers collapse onto one
+    generation (the lock serializes the append; the loser resumes the winner's
+    intent).
+
+    Window credit is NOT invented here: a producer whose window is spent must
+    call `refill_window` first, and an unfunded successor reports the ordinary
+    `tier-reservation-unavailable` with its intent standing, resumable.
+    """
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "step": "validate", "refusal": "template-mismatch"}
+    _name(batch_id, where="batch_id")
+    owner = str(checked_instance["owner_action_key"])
+    prefix = str(checked_instance["output_prefix"])
+
+    # ---- Phase 1: INTENT. Holds the output-prefix ownership lock ONLY. No
+    # ledger token, no funding record, no queue row is touched here; the one
+    # durable effect is the immutable CAS request (inert until a row names it)
+    # and the materialization row that makes every later step resumable.
+    with queue.stage_ownership_lock(prefix):
+        gated = _require_live_owner(queue, checked_instance)
+        if gated is not None:
+            return {**gated, "step": "owner"}
+        try:
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "step": "validate",
+                    "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "step": "validate", "refusal": "unknown-batch"}
+        try:
+            filed, sealed = _load_batch_record(
+                queue.root, checked_instance, checked_template, entry,
+                batch_id)
+            active = _active_materialization(entry)
+            mats = _materializations(entry)
+        except ProducedOutputError as exc:
+            return {"ok": False, "step": "validate", "refusal": str(exc)}
+        tier = str(filed.get("tier") or "")
+        manifest_digest = str(filed.get("manifest_digest") or "")
+        total = int(filed.get("total_bytes") or 0)
+        if tier not in checked_template["permitted_tiers"]:
+            return {"ok": False, "step": "validate",
+                    "refusal": "tier-not-permitted"}
+        try:
+            canonical_ns = batch_namespace(checked_instance, batch_id,
+                                           manifest_digest)
+        except ProducedOutputError as exc:
+            return {"ok": False, "step": "validate",
+                    "refusal": f"unknown-retain: {exc}"}
+        if (str(entry.get("batch_namespace") or "") != canonical_ns
+                or str(filed.get("batch_namespace") or "") != canonical_ns
+                or str(entry.get("mover_key") or "")
+                != str(filed.get("mover_key") or "")
+                or str(entry.get("tier") or "") != tier):
+            return {"ok": False, "step": "validate",
+                    "refusal": "unknown-retain: batch-target-mismatch"}
+        if not active.get("retired"):
+            # Something already owns this batch's material: the first
+            # publication, or a successor this call (or another) started.
+            # An ACTIVE copy is never replaced -- a pin on it blocks its
+            # retirement, and retirement is what makes a successor legal.
+            if str(active.get("source")) == "batch":
+                return {"ok": True, "state": "live", "step": "none",
+                        "batch_id": batch_id, "tier": tier,
+                        "mover_key": str(active.get("mover_key") or ""),
+                        "generation": 0, "batch_namespace": canonical_ns,
+                        "manifest_digest": manifest_digest,
+                        "total_bytes": total, "duplicate": True}
+            resume = dict(active)
+            if str(resume.get("state")) == "funded":
+                # A replay of a materialization that is already funded and
+                # published: its credit is transferred and its row is the
+                # fleet's to run. Re-driving the pool primitives would be
+                # idempotent but pointless, and "live" is the same answer the
+                # first publication's live copy gets. `materialization_state`
+                # is where a reader asks whether the bytes have landed.
+                return {"ok": True, "state": "live", "step": "none",
+                        "batch_id": batch_id, "tier": tier,
+                        "mover_key": str(resume.get("mover_key") or ""),
+                        "generation": int(resume.get("generation") or 0),
+                        "batch_namespace": canonical_ns,
+                        "manifest_digest": manifest_digest,
+                        "total_bytes": total, "duplicate": True}
+        elif entry.get("origin_reclaimed"):
+            # The durable charge was released on proven absence: there are no
+            # origin bytes left to copy, and nothing here re-creates them.
+            return {"ok": False, "step": "authority",
+                    "refusal": "origin-reclaimed-no-restage"}
+        else:
+            resume = None
+        if resume is None:
+            # A NEW materialization. Prove the origins are the committed ones
+            # BEFORE anything is funded or published.
+            ok, refusal = _recheck_origin_identity(filed, sealed)
+            if not ok:
+                return {"ok": False, "step": "origin", "refusal": str(refusal)}
+            generation = len(mats) + 1
+            sealed_mover = _seal_output_mover(
+                queue, checked_instance, checked_template, sealed,
+                batch_id=batch_id, tier=tier, cas_root=cas_root,
+                producer_action_key=producer_action_key,
+                command_extra=command_extra, retry_policy=retry_policy,
+                generation=generation)
+            if not sealed_mover.get("ok"):
+                return sealed_mover
+            mover = str(sealed_mover["mover_key"])
+            host = str(sealed_mover["host"])
+            kind = str(sealed_mover["kind"])
+            gib = int(sealed_mover["gib"])
+            mover_retry_policy = dict(sealed_mover["retry_policy"])
+            mover_cas_root = str(sealed_mover["cas_root"])
+            try:
+                _append_materialization_locked(
+                    queue, checked_instance, checked_template, batch_id,
+                    mover_key=mover, tier=tier, generation=generation,
+                    host=host)
+            except ProducedOutputError as exc:
+                return {"ok": False, "step": "intent", "refusal": str(exc)}
+        else:
+            # RESUME the filed intent. Deliberately no re-seal: the sealed key
+            # on the row is the funding key, and re-deriving it from a tier
+            # record that drifted since the crash would mint a second
+            # generation for work already funded under the first.
+            mover = str(resume.get("mover_key") or "")
+            generation = int(resume.get("generation") or 0)
+            host = str(resume.get("host") or "")
+            if str(resume.get("state")) != "funded":
+                ok, refusal = _recheck_origin_identity(filed, sealed)
+                if not ok:
+                    return {"ok": False, "step": "origin",
+                            "refusal": str(refusal)}
+            from prismabuild import core as _core_mod
+            from prismabuild import storage_tiers as _tiers_mod
+
+            kind = _tiers_mod.capacity_kind_of(tier)
+            gib = _tiers_mod.stage_tokens_for_bytes(total)
+            mover_retry_policy = (dict(retry_policy)
+                                  if retry_policy is not None
+                                  else {"max_attempts": 3, "retry_safe": True})
+            try:
+                mover_cas_root = str(_core_mod.PrismaBuildCAS(cas_root).root)
+            except Exception as exc:
+                return {"ok": False, "step": "resume",
+                        "refusal": f"unknown-retain: {exc}"}
+
+    # ---- Phase 2: SIDE EFFECTS. No ownership lock is held. Each step is the
+    # existing prepaid primitive and each is idempotent, so a crash between
+    # any two of them resumes from the filed intent rather than restarting.
+    launch = _producer_launch_context(
+        queue, str(producer_action_key
+                   or os.environ.get(_ACTION_KEY_ENV_NAME()) or ""))
+    if not launch.get("ok"):
+        return launch
+    staged = queue.stage_output_intent(
+        tier_id=tier, owner_key=owner, mover_key=mover,
+        instance=checked_instance, template=checked_template,
+        batch_id=batch_id, descriptors=sealed)
+    if not staged.get("ok"):
+        staged["step"] = "stage"
+        return staged
+    published = _publish_output_mover_row(
+        queue, mover_key=mover, cas_root=mover_cas_root, launch=launch,
+        host=host, tier=tier, kind=kind, gib=gib,
+        manifest_digest=manifest_digest, total=total,
+        retry_policy=mover_retry_policy)
+    if not published.get("ok"):
+        return published
+    funded = queue.fund_output_batch(
+        tier_id=tier, owner_key=owner, mover_key=mover,
+        instance=checked_instance, template=checked_template,
+        batch_id=batch_id, descriptors=sealed)
+    if not funded.get("ok"):
+        funded["step"] = "fund"
+        return funded
+
+    # ---- Phase 3: RECONCILE. The verification takes no ownership lock, and
+    # the ownership lock it then takes to file the flag holds only plain
+    # file/ledger reads underneath it -- no transition lock is ever taken
+    # under it, so this adds no lock order to the fleet.
+    reconciled = _reconcile_materialization_funding(
+        queue, mover=mover, tier=tier, kind=kind, gib=gib)
+    if not reconciled.get("ok"):
+        return reconciled
+    record = reconciled["record"]
+    assert isinstance(record, Mapping)
+    with queue.stage_ownership_lock(prefix):
+        try:
+            _mark_materialization_funded_locked(
+                queue, checked_instance, batch_id, mover_key=mover)
+        except ProducedOutputError as exc:
+            return {"ok": False, "step": "reconcile", "refusal": str(exc)}
+    return {"ok": True, "state": "materializing", "step": "done",
+            "batch_id": batch_id, "tier": tier, "mover_key": mover,
+            "generation": generation, "batch_namespace": canonical_ns,
+            "manifest_digest": manifest_digest, "total_bytes": total,
+            "funding": "prepaid",
+            "funding_generation": str(record.get("generation")),
+            "tokens": [str(name) for name in record.get("tokens") or []],
+            "resumed": resume is not None}
 
 
 def build_stage_manifest(batch: Mapping[str, object],
@@ -2609,13 +3541,26 @@ def retire_batch(queue, instance: Mapping[str, object],
     entries/manifest), the mutable commitments entry must agree with it
     on mover, tier, and the canonically derived namespace, and the
     egress target (mover/namespace) comes from that validated result --
-    never from unchecked entry fields. Then the staged paths are
-    captured from the live fragments before the delete, and `retired`
-    is filed under the output-prefix ownership lock only for a complete
-    error-free receipt naming this mover and namespace. Durable-origin
-    quota is NOT freed here -- origin files still exist; see
+    never from unchecked entry fields. WHICH copy is retired is the batch's
+    ACTIVE materialization: its first publication, or the successor a
+    `ensure_batch_materialized` restage put on the tier.
+
+    Three phases, and the ownership lock is held for only two of them:
+    select and capture under the output-prefix ownership lock; run the
+    existing egress with NO lock of this lane held; reacquire, revalidate
+    the exact same manifest/mover/generation, and file `retired` for a
+    complete error-free receipt naming that mover and namespace. The egress
+    takes the mover transition lock and then the stage root's ownership lock,
+    so running it underneath this instance's ownership lock would nest two
+    locks of one family with a blocking transition wait between them; nothing
+    needs that, because the materialization stays unretired for the whole
+    window and therefore keeps refusing both a second writer over its origins
+    and any successor materialization.
+
+    Durable-origin quota is NOT freed here -- origin files still exist; see
     `reclaim_origin`. Charge (durable) and window (tier) accounting
-    stay distinct at every step.
+    stay distinct at every step, and a failed or partial egress files
+    nothing and leaves the old materialization holding its own credit.
     """
 
     import stage_release
@@ -2639,8 +3584,6 @@ def retire_batch(queue, instance: Mapping[str, object],
         entry = batches.get(batch_id)
         if not isinstance(entry, Mapping):
             return {"ok": False, "refusal": "unknown-batch"}
-        if entry.get("retired"):
-            return {"ok": True, "batch_id": batch_id, "duplicate": True}
         # Provenance BEFORE any destructive call: the immutable record
         # validates (schema/binding/entries/manifest), and the mutable
         # commitments entry must agree with it on mover, tier, and the
@@ -2669,6 +3612,22 @@ def retire_batch(queue, instance: Mapping[str, object],
                 or str(entry.get("batch_namespace") or "") != canonical_ns
                 or str(filed.get("batch_namespace") or "") != canonical_ns):
             return {"ok": False, "refusal": "unknown-retain: batch-target-mismatch"}
+        # WHICH copy is being retired: the batch's first materialization, or
+        # a restaged successor that now owns the material under the same
+        # canonical namespace. `entry["retired"]` answers only for the first,
+        # so the active materialization is what selects the egress target --
+        # otherwise a restaged batch reports a duplicate retirement and
+        # orphans a live stage copy plus its window credit.
+        try:
+            active = _active_materialization(entry)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        if active.get("retired"):
+            return {"ok": True, "batch_id": batch_id, "duplicate": True}
+        target_mover = str(active.get("mover_key") or "")
+        if len(target_mover) != 64 or str(active.get("tier") or "") != tier:
+            return {"ok": False,
+                    "refusal": "unknown-retain: batch-target-mismatch"}
         consumer = canonical_ns
         # Capture the staged paths the egress is about to vouch while the
         # fragments still exist; after the delete only this record names
@@ -2695,19 +3654,75 @@ def retire_batch(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         except (OSError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        receipt = stage_release.evict(
-            queue, mover, consumer_action_key=consumer,
-            stage_root=str(stage_root), residency_root=str(residency_root))
-        if not receipt.get("complete"):
-            return {"ok": False, "refusal": "egress-incomplete",
-                    "receipt": receipt}
+        selected_manifest = str(filed.get("manifest_digest") or "")
+        selected_source = str(active.get("source") or "")
+        selected_generation = int(active.get("generation") or 0)
+    # --- The ownership lock is RELEASED here, before the egress runs. ---
+    # `stage_release.evict` takes the mover transition lock (blocking) and
+    # then the STAGE ROOT's ownership lock, and its containment reclamation
+    # reaches further locks below that. Holding this instance's output-prefix
+    # ownership lock across all of it nests two locks of the same family and
+    # parks a blocking transition wait underneath an ownership lock -- the
+    # shape the egress cross-root cycle came from. Nothing this lane needs is
+    # protected by holding it here: the materialization is still unretired
+    # for the whole window, so `_live_path_owner` keeps refusing a second
+    # writer over these origins and `ensure_batch_materialized` keeps
+    # refusing a successor, and a failed or partial egress files nothing and
+    # leaves the old materialization holding its own credit.
+    receipt = stage_release.evict(
+        queue, target_mover, consumer_action_key=consumer,
+        stage_root=str(stage_root), residency_root=str(residency_root))
+    if not receipt.get("complete"):
+        return {"ok": False, "refusal": "egress-incomplete",
+                "receipt": receipt}
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        # Revalidate the EXACT selection before filing anything: the record
+        # still loads, the batch still resolves to the same manifest, and the
+        # active materialization is still the generation whose copy this
+        # receipt just deleted. A selection that moved underneath the egress
+        # is unknown state and retains.
         try:
-            _mark_batch_retired_locked(
-                queue, checked_instance, checked_template, batch_id,
-                receipt, staged_paths)
+            commitments = _read_commitments(
+                _commitments_path(queue.root, checked_instance))
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "refusal": "unknown-retain: unknown-batch"}
+        try:
+            filed, _sealed = _load_batch_record(
+                queue.root, checked_instance, checked_template, entry,
+                batch_id)
+            active = _active_materialization(entry)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        if (str(filed.get("manifest_digest") or "") != selected_manifest
+                or str(active.get("mover_key") or "") != target_mover
+                or str(active.get("source") or "") != selected_source
+                or int(active.get("generation") or 0) != selected_generation):
+            return {"ok": False,
+                    "refusal": "unknown-retain: materialization-changed"}
+        if active.get("retired"):
+            return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                    "receipt": receipt, "mover_key": target_mover,
+                    "generation": selected_generation}
+        try:
+            if selected_source == "materialization":
+                _mark_materialization_retired_locked(
+                    queue, checked_instance, batch_id,
+                    mover_key=target_mover, receipt=receipt,
+                    canonical_ns=canonical_ns, staged_paths=staged_paths)
+            else:
+                _mark_batch_retired_locked(
+                    queue, checked_instance, checked_template, batch_id,
+                    receipt, staged_paths)
         except ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     return {"ok": True, "batch_id": batch_id, "receipt": receipt,
+            "mover_key": target_mover,
+            "generation": selected_generation,
             "staged_paths": sorted(set(staged_paths))}
 
 
@@ -2873,11 +3888,29 @@ def _live_output_paths(queue, lease_sdk: object,
     for batch_id, entry in batches.items():
         if not isinstance(entry, Mapping):
             continue
-        recorded = entry.get("staged_paths")
-        if isinstance(recorded, list):
-            for path in recorded:
-                if isinstance(path, str) and path:
-                    wanted.add(os.path.normpath(path))
+        # Every materialization this batch has had vouches staged paths: the
+        # first publication records them on the entry at retirement, each
+        # restage records its own on its materialization row. All of them are
+        # attributable to this instance, so all of them are wanted.
+        try:
+            active = _active_materialization(entry)
+            sources: list[Mapping[str, object]] = [entry]
+            sources += _materializations(entry)
+        except ProducedOutputError:
+            unrecorded.append(str(batch_id))
+            continue
+        for source in sources:
+            recorded = source.get("staged_paths")
+            if isinstance(recorded, list):
+                for path in recorded:
+                    if isinstance(path, str) and path:
+                        wanted.add(os.path.normpath(path))
+        if active.get("retired"):
+            # The copy is gone; only what its egress vouched can be pinned.
+            # A record that retired before staged paths were recorded leaves
+            # its paths unknowable, so live paths cannot be ruled out.
+            if not isinstance(active.get("staged_paths"), list):
+                unrecorded.append(str(batch_id))
             continue
         ns = entry.get("batch_namespace")
         if not isinstance(ns, str) or not ns:
@@ -2889,12 +3922,8 @@ def _live_output_paths(queue, lease_sdk: object,
             unrecorded.append(str(batch_id))
             continue
         if not fragments:
-            # No staged bytes vouched: nothing pinnable -- unless this
-            # record retired before staged paths were recorded, in which
-            # case its paths are unknowable and live paths can't be
-            # ruled out.
-            if entry.get("retired") and "staged_paths" not in entry:
-                unrecorded.append(str(batch_id))
+            # A live materialization that has vouched no bytes yet has
+            # nothing pinnable.
             continue
         try:
             composed = map_mod.compose(fragments)
@@ -2999,21 +4028,32 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         for batch_id, entry in batches.items():
             if not isinstance(entry, Mapping):
                 return {"ok": False, "refusal": "unknown-retain: bad-batch-entry"}
-            if entry.get("retired"):
-                continue
+            # The ACTIVE materialization decides, not the entry flag: a batch
+            # that was restaged has a live successor copy even though its own
+            # `retired` says the first one is gone.
+            try:
+                if _batch_stage_retired(entry):
+                    continue
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": str(exc)}
             return {"ok": False, "refusal": "active-batches-retain",
                     "batch_id": batch_id}
         for batch_id, entry in batches.items():
             assert isinstance(entry, Mapping)
-            mover = str(entry.get("mover_key") or "")
             tier = str(entry.get("tier") or "")
-            if mover and tier:
-                try:
-                    if queue.tier_ledger(tier).holder_tokens(mover):
-                        return {"ok": False, "refusal": "active-movers-retain",
-                                "batch_id": batch_id}
-                except Exception as exc:
-                    return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            try:
+                movers = _all_materialization_movers(entry)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": str(exc)}
+            for mover in movers:
+                if mover and tier:
+                    try:
+                        if queue.tier_ledger(tier).holder_tokens(mover):
+                            return {"ok": False,
+                                    "refusal": "active-movers-retain",
+                                    "batch_id": batch_id}
+                    except Exception as exc:
+                        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             ns = str(entry.get("batch_namespace") or "")
             if ns:
                 try:
@@ -3158,6 +4198,15 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             mover = str(filed.get("mover_key") or "")
             if len(mover) == 64:
                 holders.add(mover)
+            # Every restage materialization held the same window under its own
+            # sealed key; a leftover there is this instance's too.
+            try:
+                for extra in _materializations(entry):
+                    key = str(extra.get("mover_key") or "")
+                    if len(key) == 64:
+                        holders.add(key)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": str(exc)}
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
                 try:
@@ -3221,7 +4270,19 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
             batches = commitments["batches"]
             assert isinstance(batches, dict)
             for batch_id, entry in batches.items():
-                if not isinstance(entry, Mapping) or entry.get("retired"):
+                if not isinstance(entry, Mapping):
+                    continue
+                # The ACTIVE materialization owns the material: after a
+                # restage the entry flag describes a copy that is already
+                # gone, and reading it here would report a live successor as
+                # nothing to reconcile.
+                try:
+                    active = _active_materialization(entry)
+                except ProducedOutputError:
+                    events.append({"event": "output-recovery-unknown",
+                                   "batch_id": batch_id})
+                    continue
+                if active.get("retired"):
                     continue
                 ns = str(entry.get("batch_namespace") or "")
                 try:
@@ -3242,7 +4303,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                 # fragments prove bytes landed, not that the batch did, and
                 # two censuses of one lane may not disagree about which.
                 complete = _mover_receipt_complete(
-                    queue, str(entry.get("mover_key") or ""))
+                    queue, str(active.get("mover_key") or ""))
                 if complete is not True:
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id, "namespace": ns})
@@ -3252,6 +4313,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     "event": "output-batch-staged",
                     "batch_id": batch_id, "namespace": ns,
                     "manifest_digest": str(entry.get("manifest_digest")),
+                    "generation": int(active.get("generation") or 0),
                     "entries": len(entries) if isinstance(entries, Mapping) else 0,
                 })
     return events
@@ -3389,12 +4451,23 @@ def due_mover_rows(queue, instance: Mapping[str, object],
     rows: list[dict[str, object]] = []
     for batch_id in sorted(batches):
         entry = batches[batch_id]
-        if not isinstance(entry, Mapping) or entry.get("retired"):
+        if not isinstance(entry, Mapping):
+            continue
+        # The row a batch needs is its ACTIVE materialization's row. After a
+        # restage the entry's own mover is spent and terminal; publishing for
+        # it would be work no claim can admit, while the live successor --
+        # the one that actually needs a row -- would be skipped.
+        try:
+            active = _active_materialization(entry)
+        except ProducedOutputError:
+            continue
+        if active.get("retired"):
             continue
         ns = str(entry.get("batch_namespace") or "")
-        mover = str(entry.get("mover_key") or "")
-        tier = str(entry.get("tier") or "")
+        mover = str(active.get("mover_key") or "")
+        tier = str(active.get("tier") or "")
         manifest = str(entry.get("manifest_digest") or "")
+        generation = int(active.get("generation") or 0)
         if not ns or not mover or not tier or not manifest:
             continue
         try:
@@ -3443,6 +4516,7 @@ def due_mover_rows(queue, instance: Mapping[str, object],
                 "range_start_bytes": 0,
                 "range_end_bytes": total if total > 0 else 1,
             },
+            "generation": generation,
             "reason": ("retry-failed-mover" if state == "failed"
                        else "needs-publish"),
         })
@@ -3520,12 +4594,35 @@ def recover_batches(queue, instance: Mapping[str, object],
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id})
             continue
-        if entry.get("retired"):
+        # Which materialization is current. A restaged batch's own `retired`
+        # flag describes a copy that is already gone; reporting it as retired
+        # would orphan the live successor and its window credit, and a
+        # malformed materialization list is unknown, never "nothing here".
+        try:
+            active = _active_materialization(entry)
+        except ProducedOutputError as exc:
+            events.append({"event": "output-recovery-unknown",
+                           "batch_id": batch_id, "error": repr(exc)})
+            continue
+        if active.get("retired"):
             events.append({"event": "output-batch-retired",
-                           "batch_id": batch_id})
+                           "batch_id": batch_id,
+                           "generation": int(active.get("generation") or 0)})
             continue
         ns = str(entry.get("batch_namespace") or "")
-        mover = str(entry.get("mover_key") or "")
+        mover = str(active.get("mover_key") or "")
+        if (str(active.get("source")) == "materialization"
+                and str(active.get("state")) == "intent"
+                and _mover_live_state(queue, mover) == "absent"):
+            # A filed restage intent whose mover row was never published:
+            # the durable resumption point `ensure_batch_materialized` left
+            # behind. It is neither staged nor lost; re-calling ensure
+            # re-drives this exact sealed key.
+            events.append({"event": "output-materialization-intent-pending",
+                           "batch_id": batch_id, "mover": mover,
+                           "generation": int(active.get("generation") or 0),
+                           "action": "ensure-batch-materialized"})
+            continue
         try:
             fragments = map_mod.read_fragments(out_base, ns) if ns else []
             composed = bool(fragments) and bool(map_mod.compose(fragments))
@@ -3551,7 +4648,7 @@ def recover_batches(queue, instance: Mapping[str, object],
                            "batch_id": batch_id, "namespace": ns})
         elif state in ("failed", "ready"):
             verdict, reason = _output_funding_verdict(
-                queue, mover, str(entry.get("tier") or ""))
+                queue, mover, str(active.get("tier") or ""))
             if verdict == "unknown":
                 event = {"event": "output-recovery-unknown",
                          "batch_id": batch_id, "mover": mover}

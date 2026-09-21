@@ -4314,6 +4314,83 @@ transfer-short). `admit_funded_window` reports the delivered binding
 (`mode: prepaid-per-batch` + `owner_demand_terms`) once the funded-claim
 primitives are present.
 
+#### Repeat materialization: one batch, one charge, many windows
+
+A committed batch is an immutable logical unit with ONE durable origin charge.
+The stage copy under it is not: the bounded-window path stages a batch, lets a
+reader consume it, retires the copy to give the window credit back, and stages
+the SAME batch again when a later read needs those bytes.
+`produced_output.ensure_batch_materialized` is that one transition, and the
+only one this adds. `require_prewrite` already admits every initial write
+without a physical token, so first PUBLICATION is what the bounded window
+delays until an actual read -- there is no origin-only commit API and no v2
+record.
+
+Everything about the batch stays bound: same owner action and attempt, same
+logical batch, manifest, descriptors, digest-derived namespace and output
+prefix, same durable charge, same prepaid funding, same strict SDK, same
+egress, same recovery. The instance directory is metadata. The caller supplies
+neither origins (the descriptors come from the immutable batch record), nor
+tokens (ordinary exact transfer from the producer's window; `refill_window`
+remains the producer's own lifecycle call and `ensure` never acquires from
+free), nor the successor id.
+
+* **Successor identity.** The successor's mover key IS its funding key, and it
+  is the content-addressed key of a request PB seals over the filed
+  materialization GENERATION (`_seal_output_mover`, `log_name` plus
+  `params.produced_output_materialization`). It is deterministic on replay and
+  cannot be supplied as a nonce. The old terminal key and its fence stay
+  terminal and spent. At most ONE live or pending materialization exists per
+  logical batch (`_live_materialization`), and a malformed materialization
+  list is unknown state that raises rather than reading as empty.
+* **Origin proof.** `commit_batch` captures each origin's identity tuple in
+  the immutable batch record (`origin_identity`, one `os.lstat` feeding both
+  the size check and the record, through `reader_lease.portable_identity`),
+  and every re-materialization rechecks exactly that with
+  `reader_lease.file_id_matches` BEFORE any funding. An lstat size is not the
+  proof: a DEV null-digest descriptor carries no payload digest, so a
+  rewritten file of identical length would pass a size check and is refused
+  here as `restage-origin-changed`. A batch filed before the field existed has
+  no proof and refuses `restage-origin-proof-missing`; its current bytes are
+  never retroactively blessed. Nothing is rehashed -- the writer digest, where
+  one exists, still rides the manifest and the mover verifies it on copy.
+* **Crash safety.** The materialization intent is filed under the
+  output-prefix ownership lock BEFORE any funding or movement side effect
+  reaches the pool, so a crash at any prefix leaves a durable resumption point
+  naming the sealed key. A restart re-calls `ensure_batch_materialized`, which
+  re-drives that exact row -- never a fresh generation, never a second funding
+  record, never a second credit. It deliberately does NOT re-seal on resume: a
+  tier record that drifted between crash and restart would otherwise derive a
+  different key for work already funded under the first.
+* **Locks.** `ensure_batch_materialized` holds the output-prefix ownership
+  lock for the intent and for the final flag only, never across
+  `stage_output_intent`/`fund_output_batch` (owner -> mover transition locks)
+  and never across the reconcile's drive. `retire_batch` was changed the same
+  way: it selects and captures under the lock, releases it, runs
+  `stage_release.evict` (mover transition lock, then the STAGE ROOT's
+  ownership lock, then containment reclamation below that) with no lock of
+  this lane held, then reacquires and revalidates the exact
+  manifest/mover/generation before filing `retired`. Holding an output-prefix
+  ownership lock across the egress nests two locks of one family with a
+  blocking transition wait between them; nothing needs it, because the
+  materialization stays unretired for the whole window and therefore keeps
+  refusing both a second writer over its origins and any successor.
+* **Which copy is current.** `retire_batch`, `recover_batches`,
+  `due_mover_rows`, `output_scope_tick`, `safe_release_instance`,
+  `_live_output_paths` and `_live_path_owner` all read the ACTIVE
+  materialization (`_active_materialization`), never the entry's own
+  `retired` flag, which describes only the first copy. An intent whose mover
+  row was never published reports `output-materialization-intent-pending`
+  with the route back (`ensure-batch-materialized`) instead of being lost.
+  `PoolQueue._output_batch_authority` authorizes the successor's claim cover
+  through the same single live row, and only with the batch's own tier.
+* **Charge.** Unchanged across forward and reverse staging: the class sums a
+  batch contributes are fixed at commit, each materialization spends exactly
+  `ceil(batch bytes / GiB)` of window credit and returns it at its own
+  retirement, an ACTIVE pin blocks retirement and therefore the successor, and
+  `reclaim_origin` stays actual-absence-only -- a reclaimed batch can never be
+  restaged (`origin-reclaimed-no-restage`).
+
 #### Terminal occupancy: a batch stays charged until its bytes are gone
 
 The tier invariant is that held tokens equal bytes on the stage at every
