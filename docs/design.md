@@ -3921,6 +3921,36 @@ authoritative per-tier mint covers the full token dict so rate kinds
 are never zeroed. The last owner to leave still deletes the file and
 frees its tokens.
 
+**The mover being evicted's own live claim is not a distinct co-owner
+(#793).** A movement node files its final `record_move` receipt before the
+worker retires its `claimed/` row, so an egress can run in that gap and find
+the mover it is retiring still claimed. Reading that claim as another pending
+publisher skipped every entry as `in-flight-copy`, decharged the mover's own
+duplicate token, dropped its only fragment and reported `complete`: bytes
+nobody vouches for and a token destroyed, with the tier's free capacity still
+zero. The census now attributes the evicted mover's own claim separately
+(`_claimed_paths_attributed` with `own_key`) and a live own claim **defers**:
+the file, this mover's fragment, its material sidecar and its full occupancy
+charge stay, and the reason rides the additive egress-receipt
+`deferred_own` field (`["own-copy-in-flight"]`) with `complete: false`. It is
+never a shared skip: sharing would destroy this mover's own duplicate and
+drop its only same-path proof while the bytes remained behind nothing. The
+deferral is settled by the ordinary retry: once the worker's terminal
+transition has retired the claim row, the census no longer sees that key at
+all, and the next sweep deletes the bytes and returns the token exactly once.
+That is bookkeeping, not data readiness -- `residency_verdict` and the
+composed map still read the filed receipt and fragment the moment they land
+(PO-02), so a producer's own read of just-produced bytes is untouched; only
+retirement waits for the child mover's claim to conclude. A move receipt
+carries no immutable attempt identity (no nonce or scope on its wire), so a
+complete-looking one cannot be told from a previous attempt's while the same
+key is claimed again, and a wall-clock stamp is no substitute (2026-09-21
+root QA); the deferral needs no new field and no wire change. Foreign claims,
+co-owners, reader pins and pending promotion handoffs keep exactly the
+protection they had, and the census is still taken inside the mover's
+transition lock and the stage root's ownership lock, so the lock order is
+unchanged.
+
 ### A copy has no result to replay
 
 A mover's action key is a content hash and its receipt is filed in the CAS

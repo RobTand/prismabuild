@@ -38,6 +38,19 @@ promotion's ram fragment names another tier and path and can never prove the
 SSD incarnation it read, so retiring the source early would leave a surviving
 file nothing can prove and free capacity its bytes still occupy.
 
+**The mover's own live claim is not a co-owner (#793).**  A movement node
+files its final ``record_move`` receipt before the worker retires its
+``claimed/`` row, so an egress can run in that gap and find the mover being
+evicted still claimed.  The claim census attributes that one key's derived
+paths separately, and they **defer** --- the file, this mover's fragment,
+material and full charge stay, and the next sweep retries once the worker's
+terminal transition has retired the claim.  Sharing them instead would
+decharge this mover's own duplicate and drop its only vouch while the bytes
+stayed behind nothing.  The claim is not settled on its receipt: a move
+receipt carries no immutable attempt identity, so a complete-looking one
+cannot be told from a previous attempt's while the same key is claimed again,
+and a wall-clock stamp is not a substitute (2026-09-21 root QA).
+
 **Delete, then release, then drop the fragment.**  Each order is wrong in one
 direction and this one is wrong in none that matters: a crash after the deletes
 and before the release leaves tokens held for bytes that are gone, which costs
@@ -436,16 +449,48 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     ``exclude`` names claim keys that never count as another publisher --
     the staged-path publication gate passes its own mover key, so a mover
     never defers to itself.
+
+    The egress needs one more distinction -- the mover being evicted's own
+    claim against a foreign one -- and reads
+    :func:`_claimed_paths_attributed`; this wrapper is the two-value view the
+    publication gate and the focused tests already write against.
+    """
+
+    paths, tainted, _own = _claimed_paths_attributed(
+        queue, tier_id, cas_root, exclude=exclude)
+    return paths, tainted
+
+
+def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
+                              cas_root: str | Path | None = None, *,
+                              exclude: set[str] | frozenset[str] | None = None,
+                              own_key: str = "",
+                              ) -> tuple[set[str], list[str], set[str]]:
+    """:func:`_claimed_paths`, attributing one key's paths separately.
+
+    Everything above holds.  ``own_key`` is the key an egress is retiring: its
+    claim's derived paths come back as the third element instead of joining
+    the competing set, because the evicted mover's own claim is never a
+    distinct co-owner (#793).  A live own claim is still a *possible writer*,
+    though: it defers the retire rather than sharing it, and the claim stops
+    being visible at all once the worker's terminal transition retires it.
+    There is deliberately no receipt-based shortcut here.  A move receipt
+    carries no immutable attempt identity -- no nonce or scope -- so a
+    complete-looking one cannot be told from a previous attempt's while the
+    same key is claimed again, and wall-clock stamps are no substitute
+    (2026-09-21 root QA).  ``exclude`` keeps its unconditional meaning and is
+    checked first.
     """
 
     paths: set[str] = set()
+    own_paths: set[str] = set()
     tainted: list[str] = []
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
                       for path in pool._scan(queue.dir(pool.CLAIMED)))
     except OSError as exc:
-        return paths, [f"claimed: {exc}"]
+        return paths, [f"claimed: {exc}"], own_paths
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
@@ -465,6 +510,7 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     for key, item in records:
         if exclude and key in exclude:
             continue    # this publisher's own claim: never another publisher
+        own_claim = bool(own_key) and key == own_key
         # No first-record inheritance: each claim resolves its own CAS root --
         # the explicit override wins, else the record's own root, else the
         # queue-sibling default.  A rootless claim among rooted claims reads
@@ -561,6 +607,7 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
             # never unowned.
             tainted.append(f"{key[:12]}: range not cuttable: {exc}")
             continue
+        settled = own_paths if own_claim else paths
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])
             try:
@@ -572,8 +619,8 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
                 continue
             # Compared against fragment ``stage_path`` values, which join the
             # stage root with this same relative name.
-            paths.add(relative)
-    return paths, tainted
+            settled.add(relative)
+    return paths, tainted, own_paths
 
 
 def evict(queue: pool.PoolQueue, mover_action_key: str, *,
@@ -868,6 +915,15 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     ``auto_reclaimed``/``auto_retained`` are what containment reclamation did
     before this lock was taken (#780); nothing here reclaims, because
     reclamation takes other roots' locks and this one is already held.
+
+    The mover being retired's own live claim is never a distinct co-owner
+    (#793).  It is not settled on its receipt either: a move receipt carries
+    no immutable attempt identity, so a complete-looking one cannot be told
+    from a previous attempt's while the same key is claimed again (2026-09-21
+    root QA).  A live own claim therefore defers the retire -- file, fragment,
+    material and charge stay -- and the claim stops being visible at all once
+    the worker's terminal transition retires it; the next sweep then deletes
+    and releases exactly once.  Foreign claims keep the shared skip unchanged.
     """
 
     deleted = missing = shared = deferred = 0
@@ -875,6 +931,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     shared_with: list[str] = []
     live_pins: list[str] = []
     deferred_handoffs: list[str] = []
+    own_deferred = False
+    own_claimed: set[str] = set()
     retiring_written = False
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
@@ -887,7 +945,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # unlocked check: delete is blocked by ANY current ref, and the
         # check-and-act is one atomic unit with the unlink below.
         wanted = _wanted_stage_paths(entries)
-        claimed, claimed_taint = _claimed_paths(queue, tier_id)
+        claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
+            queue, tier_id, own_key=mover_action_key)
         owners, fragment_taint = _fragment_owners(
             root, wanted,
             except_consumer=consumer_action_key,
@@ -903,6 +962,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             errors.extend(f"ownership uncertain: {item}" for item in tainted)
             owners, claimed = {}, set()
             pins, source_paths = {}, set()
+            own_claimed = set()
             blind = True
         else:
             blind = False
@@ -986,6 +1046,17 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             deferred_handoffs.append("promotion-handoff")
             live_pins.extend(pinned)
             continue
+        if _relative_under(stage, resolved) in own_claimed:
+            # This mover's own copy is still live: its claim is not a
+            # distinct co-owner, so this is a deferral, not a shared skip.
+            # The file, this mover's fragment, its material and its full
+            # charge stay, and the next sweep retries once the worker's
+            # terminal transition has retired the claim.  Sharing here would
+            # decharge this mover's own duplicate and drop its only vouch
+            # while the bytes stayed behind nothing (#793).
+            deferred += 1
+            own_deferred = True
+            continue
         co_owners = sorted(owners.get(norm, set()))
         if co_owners or _relative_under(stage, resolved) in claimed:
             # Another live fragment vouches for these bytes, or a claimed
@@ -1023,12 +1094,16 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         _prune_empty(path.parent, stage)
 
     released = decharged = 0
-    if deferred and not deferred_handoffs and not errors and own_generation:
+    if (deferred and not deferred_handoffs and not errors and own_generation
+            and not own_deferred):
         # A handoff-deferred pass files nothing: closing this generation
         # would refuse the promotion's own cover acquire and strand the
         # handoff holding these bytes.  The next pass files the ordinary mark
         # once no handoff remains and only readers do; a mark already on disk
-        # is preserved, never cleared by a deferral.
+        # is preserved, never cleared by a deferral.  An own-copy deferral
+        # files nothing either, for the same shape of reason: the live copy
+        # is republishing this material and a mark would close the generation
+        # it is producing.
         reader_lease.write_retiring(
             reader_lease.leases_root(queue, root),
             consumer_action_key=consumer_action_key,
@@ -1131,6 +1206,9 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "entries_deferred": deferred,
         "live_pins": sorted(set(live_pins)),
         "deferred_handoffs": sorted(set(deferred_handoffs)),
+        # An own-copy deferral names itself, so the retry loop can tell a
+        # claim that was still writing from a reader pin or a promotion.
+        "deferred_own": ["own-copy-in-flight"] if own_deferred else [],
         "auto_reclaimed": sorted(set(auto_reclaimed)),
         "auto_retained": dict(sorted(auto_retained.items())),
         "retiring": retiring_written,

@@ -468,17 +468,17 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     consumer_c = "d" * 64
     _write_claimed_copy_shape(queue, cas, mover_c, manifest, 0, 4096)
 
-    real_claimed_paths = stage_release._claimed_paths
+    real_claimed_paths = stage_release._claimed_paths_attributed
     read_first = threading.Event()
     flipped = threading.Event()
 
-    def rendezvous(queue_arg, tier_id):
-        result = real_claimed_paths(queue_arg, tier_id)
+    def rendezvous(*args, **kwargs):
+        result = real_claimed_paths(*args, **kwargs)
         read_first.set()
         assert flipped.wait(timeout=60), "flip never ran: deadlock"
         return result
 
-    monkeypatch.setattr(stage_release, "_claimed_paths", rendezvous)
+    monkeypatch.setattr(stage_release, "_claimed_paths_attributed", rendezvous)
     outcome: list[dict] = []
 
     def egress() -> None:
