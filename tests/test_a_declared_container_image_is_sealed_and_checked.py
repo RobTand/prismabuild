@@ -18,12 +18,39 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import adaptive_cpu  # noqa: E402
+from prismabuild import container_images  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
 KEY_A, KEY_B = "a" * 64, "b" * 64
 ID_A = "sha256:" + "a" * 64
 ID_B = "sha256:" + "b" * 64
 REF_A = "ghcr.io/example/stage-a@sha256:" + "a" * 64
+
+#: What sparky and sparklina really answered on 2026-09-21 (#805): the same
+#: image under two image stores, plus one name each box built for itself.
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "container_images"
+GLM_TAG = "prismaquant-glm-derivative:causal-exp-v1-20260908"
+DIVERGENT_TAG = "prismabuild-slurm-smoke:25.11"
+
+
+def _store_probe(box):
+    """The bounded probe, answering one box's two recorded reads."""
+
+    listing = (FIXTURES / f"{box}_image_ls.txt").read_bytes()
+    inspected = (FIXTURES / f"{box}_image_inspect.jsonl").read_bytes()
+
+    def probe(argv, **kwargs):
+        return inspected if "inspect" in argv else listing
+
+    return probe
+
+
+def _row(box, tag):
+    for line in (FIXTURES / f"{box}_image_inspect.jsonl").read_text().splitlines():
+        if line and tag in (json.loads(line).get("RepoTags") or []):
+            return json.loads(line)
+    raise AssertionError(f"{tag} is not in the {box} fixture")
+
 
 CAPACITY = {"cpu": 4, "mem_gb": 16, "gpu": 1}
 #: The claim check rides the declared-image capability, so a worker that may
@@ -202,6 +229,71 @@ def test_a_missing_image_denies_by_name_and_leaves_the_item_ready(tmp_path):
     assert ledger.held() == {}
     assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
                        observed_images=[REF_A])["action_key"] == KEY_A
+
+
+def test_an_action_sealed_on_one_image_store_is_claimed_from_the_other(tmp_path):
+    """#805, end to end, on what the two Sparks really reported.
+
+    The campaign image is on both boxes.  sparky's containerd store and
+    sparklina's classic store name it differently, so an ID-sealed action is
+    claimable by one Spark only; sealed on the content reference, either
+    box's own inventory claims it and a box holding a *different* image of
+    the same name still denies.
+    """
+
+    sparky = container_images.observe(probe=_store_probe("sparky"))
+    sparklina = container_images.observe(probe=_store_probe("sparklina"))
+    assert sparky is not None and sparklina is not None
+
+    sparky_id = _row("sparky", GLM_TAG)["Id"]
+    portable = container_images.content_ref(_row("sparky", GLM_TAG))
+
+    # The reported failure, preserved: sealed on sparky's ID, sparklina
+    # denies although it holds the image.
+    queue = pool.PoolQueue(tmp_path / "by-id")
+    queue.ledger().ensure_capacity(CAPACITY)
+    publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
+            container_images=[sparky_id])
+    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+                       observed_images=sorted(sparklina)) is None
+    assert denials(queue)[-1]["reason"] == "container_image_absent"
+
+    # Sealed on the content reference, both boxes claim it.
+    for index, observed in enumerate((sparky, sparklina)):
+        portable_queue = pool.PoolQueue(tmp_path / f"by-content-{index}")
+        portable_queue.ledger().ensure_capacity(CAPACITY)
+        publish(portable_queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
+                container_images=[portable])
+        claimed = portable_queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+                                       observed_images=sorted(observed))
+        assert claimed is not None and claimed["action_key"] == KEY_A
+
+    # And it is still a requirement, not a wildcard: neither box holds the
+    # other's build of ``prismabuild-slurm-smoke:25.11``.
+    divergent = container_images.content_ref(_row("sparky", DIVERGENT_TAG))
+    refusing = pool.PoolQueue(tmp_path / "divergent")
+    refusing.ledger().ensure_capacity(CAPACITY)
+    publish(refusing, KEY_B, resources={"cpu": 1, "mem_gb": 1},
+            container_images=[divergent])
+    assert refusing.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+                          observed_images=sorted(sparklina)) is None
+    assert denials(refusing)[-1]["reason"] == "container_image_absent"
+    assert refusing.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+                          observed_images=sorted(sparky))["action_key"] == KEY_B
+
+
+def test_a_content_sealed_action_is_placeable_on_either_store(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    sparky = container_images.observe(probe=_store_probe("sparky"))
+    sparklina = container_images.observe(probe=_store_probe("sparklina"))
+    portable = container_images.content_ref(_row("sparky", GLM_TAG))
+    publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
+            container_images=[portable], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+    announce(queue, "sparky", observed_images=sorted(sparky))
+    announce(queue, "sparklina", observed_images=sorted(sparklina))
+    ready = queue.ready_items()[0]
+    assert queue.placeable(ready) is True
+    assert queue.placeable_hosts(ready) == ["sparklina", "sparky"]
 
 
 def test_an_unknown_inventory_denies_fail_closed(tmp_path):
