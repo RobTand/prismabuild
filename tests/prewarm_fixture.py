@@ -7,7 +7,6 @@ here asserts; every file that imports it states exactly one property.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -68,6 +67,12 @@ class Fleet:
         self.cas_root = root / "cas"
         self.cas = pb.PrismaBuildCAS(self.cas_root)
         self.warmed: list[str] = []
+        # A real closure over a real file, because the request this fixture
+        # files is read back through ``core.validate_action`` on the publish
+        # path and a closure is validated against its own digest.
+        worker = root / "worker.py"
+        worker.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        self.code_closure = pb.build_code_closure(root, ["worker.py"])
 
     def file(self, name: str, size: int) -> tuple[str, int]:
         path = self.mount / name
@@ -79,11 +84,25 @@ class Fleet:
                annotations: dict | None = None,
                progress_phases: list[str] | None = None,
                read_plan: dict | None = None) -> str:
-        """Seal a request carrying a manifest input and publish it ready."""
+        """Seal a request carrying a manifest input and publish it ready.
 
-        action_key = hashlib.sha256(key_seed.encode()).hexdigest()
+        Sealed rather than hand-written: since R4 the pool binds admission to
+        the CAS-filed request and reads it with the full
+        ``core.validate_action``, so a request carrying only the three fields
+        a prewarm test looks at refuses before the row is ever READY.  The key
+        is therefore the canonical hash of this body, and ``key_seed`` reaches
+        it through the command -- which is what makes two actions in one test
+        two actions.
+        """
+
         inputs: list[dict] = []
-        params: dict = {"command": ["true"]}
+        params: dict = {
+            "command": ["true", key_seed],
+            "cwd": str(self.root),
+            "demand": {"cpu": 1},
+            "placement": {"required_tags": []},
+            "retry_policy": {"max_attempts": 1},
+        }
         if progress_phases is not None:
             # The policy the action seals, in the shape ``core`` validates.
             # The loop reads records only where one of these exists, so a test
@@ -115,10 +134,24 @@ class Fleet:
                     "schema": pb.DATA_MANIFEST_SCHEMA_V2,
                     "read_bytes": manifest["read_plan"]["read_bytes"],
                 })
+        action = pb.seal_action({
+            "schema": pb.ACTION_SCHEMA_V2,
+            "task": {"definition_id": "fleet/tests", "definition_version": "v1",
+                     "task_class": "generation", "determinism": "stochastic",
+                     "artifact_family": "generic", "artifact_kind": "generic",
+                     "working_directory": "."},
+            "inputs": inputs,
+            "code_closure": self.code_closure,
+            "params": params,
+            "environment": {"variables": {"PATH": "/usr/bin"},
+                            "toolchain": {}},
+            "execution_scope": {"portability": "portable",
+                                "platform_key": None, "host_class": None},
+        })
+        action_key = str(action["action_key"])
         request = self.cas_root / "requests" / action_key[:2] / f"{action_key}.json"
         request.parent.mkdir(parents=True, exist_ok=True)
-        request.write_text(json.dumps(
-            {"action_key": action_key, "inputs": inputs, "params": params}))
+        request.write_text(json.dumps(action))
         self.queue.publish(
             action_key=action_key, cas_root=self.cas_root,
             worker_script=str(self.root / "worker.py"),
