@@ -97,7 +97,7 @@ class Fleet:
 
         inputs: list[dict] = []
         params: dict = {
-            "command": ["true", key_seed],
+            "command": ["/bin/true", key_seed],
             "cwd": str(self.root),
             "demand": {"cpu": 1},
             "placement": {"required_tags": []},
@@ -139,7 +139,7 @@ class Fleet:
             "task": {"definition_id": "fleet/tests", "definition_version": "v1",
                      "task_class": "generation", "determinism": "stochastic",
                      "artifact_family": "generic", "artifact_kind": "generic",
-                     "argv": ["true", key_seed], "working_directory": ".",
+                     "argv": ["/bin/true", key_seed], "working_directory": ".",
                      "result_path": "result"},
             "inputs": inputs,
             "code_closure": self.code_closure,
