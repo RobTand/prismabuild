@@ -4680,6 +4680,68 @@ on the next retry), the contradictory sidecar headers that refuse rather
 than republish corrected, and the two-worker per-landing publication
 regression.
 
+### The proof-lookup index retains the projection to its own root (#761, #778)
+
+The publisher's metadata index (PR #762) exists so a publisher re-decodes
+no unchanged publication document: fragments and sidecars are read and
+parsed once per `(size, mtime_ns)` version and retained under a measured
+192 MiB ceiling. Issue #778 measured, at a scaled budget, what happens
+when a publisher's proof forest also contains other roots' huge
+documents: the foreign document's unprojected path set cannot fit,
+retention refuses, and every destination re-decodes the whole forest
+(52.6× amplification). Whether the live Stage A forest actually overflowed
+the production ceiling is unmeasured — its shape (163 MB / 347 documents,
+several 22-26 MB proofs) makes it plausible, and the scaled case
+demonstrates the mechanism.
+
+**The retained record is a projection, decided by each entry's own path.**
+A publisher's destinations all live under *its* stage root, so a path
+under another root is a question this publisher can never ask: retaining
+it bought nothing but the overflow that uncached the record. After the
+whole document is read and parsed, a fragment's retained set — and a
+sidecar's retained mentions — are filtered to the paths under this
+publisher's root. Membership is by entry path, never by the document's
+header: the header is untrusted data on the read path. This reader never
+held a fragment to header-root containment (the writer's
+`validate_entry` does, but the reader cannot assume every document it
+meets was written by this writer), and a sidecar's mentions were never
+root-checked at all — so entry-path filtering is not an optimization over
+trusting the header, it is the only correct rule, and it keeps any
+own-root mention discoverable no matter what the header says. What each
+document was already held to is unchanged: malformed fragment JSON still
+taints, a document without the fragment schema still reads as no
+fragment, and sidecars still run the full `validate_material` before
+their mentions are projected. A foreign-root document is therefore
+retained as the (usually empty) set of paths it holds under this root —
+the scan is still paid in full, the index is not.
+
+**Capacity planning charges what retention would actually add.** The
+interning estimate counts only names not already interned — a name the
+table already holds costs nothing additional; the old code priced every
+path as new, charging names twice. And the estimate is recomputed after a
+reclaim rather than reused: a reclaim rebuilds the interned table from
+the records that survive, so a name whose sponsors were dropped is no
+longer free and can become newly charged — the recomputed figure can be
+higher or lower than the first, and only the fresh one decides. Both are
+accounting corrections; the ceiling itself is untouched.
+
+**Two limits stay stated rather than hidden.** Projection cannot shrink a
+same-root working set — every mention under this publisher's root *is* one
+it can query — so a working set that genuinely exceeds 192 MiB still
+refuses retention and still re-decodes; that is the honest bound, not a
+regression. And nothing here pre-validates outside the lookup's ownership:
+lock scope is unchanged, and moving expensive validation out of it would
+need its own freshness protocol. No persisted index exists before or after;
+no early first-proof return exists before or after.
+`tests/test_ram_adoption_projection.py` pins the contract at the
+production budget on a mixed forest shaped like the live one: one decode
+per document and zero reclaims after the fix (10 decodes, 6 reclaims,
+687 MB of re-read metadata before), foreign RAM co-owners still adopting,
+a corrupt other-root fragment still tainting, changed and removed versions
+still seen, own-root entries surviving a foreign header at the lookup and
+in the retained record, header-vs-path filtering decided by path, and the
+all-RAM over-ceiling refusal still refusing.
+
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
 A consumer that fails with movers published leaves them running for nobody.

@@ -205,6 +205,30 @@ _MENTION_OVERHEAD_BYTES = 512
 _IDENTITY_FIELD_BYTES = 152
 
 
+def _path_under_root(path: str, root: str) -> bool:
+    """Whether one normalized absolute path lives under ``root``."""
+
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _projected_paths(names, stage_root) -> frozenset[str]:
+    """The names a publisher rooted at ``stage_root`` can ever ask about.
+
+    Membership by each entry's OWN path, never by the document's header.
+    The header is untrusted data on this path: the reader does not hold a
+    fragment to header-root containment (the writer does, but the reader
+    cannot assume every document it meets was written by this writer), and
+    a material sidecar's mentions are not root-checked at all. Filtering by
+    entry path is therefore not an optimization over trusting the header --
+    it is the only correct rule, and it keeps any own-root mention
+    discoverable no matter what the header says.
+    """
+
+    root = os.path.normpath(str(stage_root))
+    return frozenset(
+        name for name in names if _path_under_root(name, root))
+
+
 def _string_bytes(value: object) -> int:
     """Conservative retained size of one string: header plus UCS-4 width."""
 
@@ -750,6 +774,33 @@ class _StagedPublisher:
         self._reclaim()
         return self._index_bytes() + cost <= _INDEX_BUDGET_BYTES
 
+    def _affords(self, charge: int, paths) -> bool:
+        """Whether the index can afford ``charge`` plus the NEW interning.
+
+        Two corrections to the old estimate, both capacity-planning only.
+        First, the interning cost counts only names not already interned:
+        a name the table already holds costs nothing additional, where the
+        old code priced every path as new, double-charging names the table
+        already held. Second, the estimate is recomputed after a reclaim
+        rather than reused: a reclaim rebuilds the interned table from the
+        records that survive, so a name whose sponsors were dropped is no
+        longer free and can become newly charged -- the recomputed figure
+        can be higher or lower than the first, and only the fresh one
+        decides. The 192 MiB ceiling itself is untouched: a same-root
+        working set that genuinely exceeds it still refuses retention and
+        re-decodes; what stops is calling affordable records unaffordable.
+        """
+
+        def additional() -> int:
+            return sum(_interned_bytes(path) for path in paths
+                       if path not in self._interned)
+
+        if self._index_bytes() + charge + additional() <= _INDEX_BUDGET_BYTES:
+            return True
+        self._reclaim()
+        return (self._index_bytes() + charge + additional()
+                <= _INDEX_BUDGET_BYTES)
+
     def _keep_fragment(self, key: str, version: tuple, record: object,
                        charge: int) -> None:
         """Retain one fragment entry, replacing and re-pricing any previous."""
@@ -836,22 +887,33 @@ class _StagedPublisher:
                 continue
             names.add(os.path.normpath(str(staged)))
         mover = str(fragment.get("mover_action_key") or "")
+        # Retained as the projection to THIS publisher's destination root,
+        # by each entry's own path: a publisher's destinations all live
+        # under its own stage root, so a foreign-root path can never be
+        # queried here and retaining it bought nothing but the overflow
+        # that uncached the record and re-decoded it per lookup. Everything
+        # this reader checks still happens above, unchanged: the whole
+        # document is read and parsed, malformed JSON still taints, and a
+        # document without the fragment schema still reads as no fragment.
+        # This reader never held a fragment to header-root containment --
+        # which is exactly why the projection filters by entry path and not
+        # by the header's declared root. Only what is RETAINED shrinks.
+        mine = _projected_paths(names, self.stage_root)
         # Priced from the real objects before anything is interned, so a
-        # record that will not be kept leaves nothing behind.  The interned
-        # share is priced as if every path were new, which it may be after a
-        # reclaim, so the estimate is never optimistic.
+        # record that will not be kept leaves nothing behind. The interned
+        # share is priced as the ADDITIONAL names only, inside
+        # ``_affords``, and re-evaluated after its reclaim.
         self._forget_fragment(key)
         charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(key)
                   + _string_bytes(mover)
-                  + len(names) * _SET_SLOT_BYTES)
-        interning = sum(_interned_bytes(name) for name in names)
-        if not self._room_for(charge + interning):
-            return mover, frozenset(names)
-        record = (mover, frozenset(self._intern(name) for name in names))
-        # Anchored on the version the read saw, not the version the stat saw:
-        # the content held is the content those bytes carried.
-        self._keep_fragment(key, version, record, charge)
-        return record
+                  + len(mine) * _SET_SLOT_BYTES)
+        if self._affords(charge, mine):
+            record = (mover, frozenset(self._intern(name) for name in mine))
+            # Anchored on the version the read saw, not the version the
+            # stat saw: the content held is the content those bytes carried.
+            self._keep_fragment(key, version, record, charge)
+            return record
+        return mover, frozenset(mine)
 
     def _material_record(self, consumer: str, mover: str) -> object:
         """One sidecar's reusable record, validated once per version.
@@ -905,23 +967,34 @@ class _StagedPublisher:
             mentions[normalized] = mentions.get(normalized, ()) + ((
                 mention.get("bytes"), mention.get("sha256"),
                 mention.get("file_id")),)
+        # Retained as the projection to THIS publisher's destination root,
+        # decided by each mention's own path AFTER the full
+        # ``validate_material`` above: the sidecar was read and held to its
+        # strictness in full, and a mention under another root can never be
+        # queried here (a publisher's destinations all live under its own
+        # stage root), so retaining it bought nothing but the overflow that
+        # uncached the record and re-decoded it per lookup.
+        mine = {path: carried for path, carried in mentions.items()
+                if _path_under_root(path,
+                                    os.path.normpath(str(self.stage_root)))}
         # Sidecar mentions are the heaviest thing the index holds -- a digest
         # string and an identity dict each -- so each one is charged what it
-        # actually retains rather than a flat figure.
+        # actually retains rather than a flat figure. The interned share is
+        # priced as the ADDITIONAL names only, inside ``_affords``, and
+        # re-evaluated after its reclaim.
         self._forget_material(cache_key)
         charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
                   + _string_bytes(mover)
-                  + len(mentions) * _DICT_SLOT_BYTES
+                  + len(mine) * _DICT_SLOT_BYTES
                   + sum(_mention_bytes(one)
-                        for carried in mentions.values() for one in carried))
-        interning = sum(_interned_bytes(path) for path in mentions)
-        if not self._room_for(charge + interning):
-            return mentions
-        mentions = {self._intern(path): carried
-                    for path, carried in mentions.items()}
-        self._materials[cache_key] = (version, mentions, charge)
-        self._material_cost += charge
-        return mentions
+                        for carried in mine.values() for one in carried))
+        if self._affords(charge, mine):
+            kept = {self._intern(path): carried
+                    for path, carried in mine.items()}
+            self._materials[cache_key] = (version, kept, charge)
+            self._material_cost += charge
+            return kept
+        return mine
 
     @staticmethod
     def _published_source_id(norm: str) -> str | None:
