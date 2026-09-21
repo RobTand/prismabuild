@@ -346,7 +346,8 @@ behavioral conformance: the PQ production constructor/SDK/template/lifetime
 wiring is incomplete, the PR792 snapshot-forwarding repair is merged
 (`aa03c0bde1b52138b02be2b13083bf3e8274d9ac`) but not in the active runtime,
 the own-copy egress repair had no accepted commit at this snapshot (PR795
-merged later at 2026-09-21T06:33:58Z; root acceptance and deployment pending),
+merged later at 2026-09-21T06:33:58Z; source-merge accepted, deployment and
+global behavior proof pending),
 and no successful global produced-output lifecycle has completed: the one
 global attempt failed at the mover preflight before any read, while library and
 component cycles did run. The rows below are normative requirements,
@@ -460,10 +461,12 @@ not deployed support; axis-qualified evidence is in
   retirement record, and that source is present in deployed generation
   `d794839c589d-1789966072-c66c7f0568d0`. That is source and code presence,
   not behavioral proof: no global produced-output retirement has been accepted
-  (library and component cycles did run; the one global attempt's retirement
-  path exposed the own-copy defect recorded in the addendum, issue 793, whose
-  repair PR795 merged later at 2026-09-21T06:33:58Z and awaits root acceptance
-  and deployment; PO-05/PO-07/ACC-07 obligations cover it), the PR792 repair
+  (library and component cycles did run; a separate admitted private-queue
+  diagnostic, action `83264d103a2a` iteration 1, exposed the own-copy defect
+  recorded in the addendum, issue 793, whose
+  repair PR795 merged later at 2026-09-21T06:33:58Z and is source-merge
+  accepted (`pb795-root-acceptance.json`); deployment and global behavior
+  proof pending; PO-05/PO-07/ACC-07 obligations cover it), the PR792 repair
   is not deployed, and the deployed lower edge alone does not discharge this
   row.
 
@@ -676,7 +679,8 @@ with the strict staged-read leg 3 on Sparky including independently observed
 accepted progress; it is not a produced-output or global-cycle acceptance. PR792
 (`aa03c0bde1b52138b02be2b13083bf3e8274d9ac`) is merged but not deployed; the
 own-copy egress repair had no accepted commit at this snapshot (PR795 merged
-later at 2026-09-21T06:33:58Z; root acceptance and deployment pending); the
+later at 2026-09-21T06:33:58Z; source-merge acceptance recorded, deployment
+and global behavior proof pending); the
 produced-output strict-read/progress gate is unqualified; PQ881 is unmerged and
 no upgraded Stage A has completed. Consequently no PO, BUD, or DUR
 requirement is deployed-with-behavior or workload-proven beyond the PB783

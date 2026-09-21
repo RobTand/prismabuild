@@ -193,15 +193,16 @@ read-only `pbmcp pb_runtime`.
   Sparks, and the original 8ca attempt and baseline canary action
   `e44c5a11db6a87dfa95c29425ef040e90f1c790370230e2a58cb5a2b3f74a299` are
   actual proof. No new tier, capacity, infrastructure or permission decision
-  is required; the tiny global Docker cycle waits only on accepted/deployed
-  PB792 and PB795 plus the bounded retirement adapter.
+  is required; the tiny global Docker cycle waits only on deployment of PB792
+  and PB795 (both source-merge accepted) plus the bounded retirement adapter.
 - Library and component produced-output cycles did run. What is missing is a
   successful global lifecycle and a global produced-retirement acceptance; the
   one global attempt failed at the mover preflight and is preserved as such.
 - After this snapshot: PR795 (own-copy egress, issue 793) merged
   2026-09-21T06:33:58Z (head `83e8d502ad9305177ee6e0501ff7c88ee036579d`,
-  merge `3641e29332bfd7a091f35b5bd3875b6de294c86e`); root acceptance and
-  deployment remain pending. PR794 (withdrawn-attempt
+  merge `3641e29332bfd7a091f35b5bd3875b6de294c86e`) with root source-merge
+  acceptance recorded (`pb795-root-acceptance.json`); deployment and global
+  behavior proof pending. PR794 (withdrawn-attempt
   readback, refs issue 790) had already merged 2026-09-21T06:04:03Z, before
   this snapshot, and is not in the active `d794` runtime.
 
@@ -318,10 +319,11 @@ read-only `pbmcp pb_runtime`.
   accepted but not exercised. The earlier reading that no GB10 worker
   advertises a stage tier was retracted by root review (see the corrections of
   record): the tier need not belong to the consumer host, and the existing
-  `prismabuild-stage:dl380g10` NFS tier serves the Sparks. The one-token
-  acceptance is not closed at candidate `42f2cfb8` and must be re-run against
-  the repaired PB candidate once PB792 and PB795 are accepted and deployed
-  (`pq-stagea-produced-boundaries-result.json`).
+  `prismabuild-stage:dl380g10` NFS tier serves the Sparks. The private
+  one-token library acceptance is not closed at candidate `42f2cfb8` and may
+  be re-run on the accepted immutable PR795 candidate (head `83e8d502`) before
+  deployment; only the tiny global Docker cycle waits on deployment of PB792
+  and PB795 (`pq-stagea-produced-boundaries-result.json`).
 - PQ885 is merged at `d5f844da9cddde3be70e328f0437f1ba40b068ae`
   (2026-09-21T05:33:19Z): metadata-generation seam with 127 PB checks plus two
   actual original-input check-only cases (45 quanta / 360 windows, no writes,
@@ -360,10 +362,11 @@ read-only `pbmcp pb_runtime`.
 
 ### Open at this snapshot (pending, not claims)
 
-- Root acceptance and deployment of PB792 (snapshot repair) and PB795
-  (own-copy egress, merged 2026-09-21T06:33:58Z after this snapshot); the
-  bounded retirement adapter; the one-token acceptance re-run on the repaired
-  candidate.
+- Deployment of PB792 (snapshot repair) and PB795 (own-copy egress, merged
+  2026-09-21T06:33:58Z after this snapshot, source-merge accepted) plus the
+  bounded retirement adapter, for the tiny global Docker cycle. The private
+  one-token library acceptance can run on the accepted immutable PR795
+  candidate (head `83e8d502`) before deployment.
 - A successful global produced-output lifecycle, including a same-action
   self-read and the ACC-07 origin-refusal negative control in the global PQ
   cycle; the PQ live lifecycle; full upgraded Stage A. No new stage tier,
