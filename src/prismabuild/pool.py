@@ -5076,6 +5076,16 @@ class PoolQueue:
         transition lock non-blocking (declining instead on contention, which
         costs a copy and never correctness).  Nothing takes them in the other
         order, and a mover's start gate holds nothing else, so no cycle.
+
+        **One root at a time.**  The ladder above orders the three lock
+        families; it says nothing about two locks from *this* family, and
+        that is where the cycle lives: a caller holding root A that asks for
+        root B deadlocks against one holding B that asks for A, and
+        ``posix_lock.held`` nests on the same path only, so same-root
+        reentrancy does not prevent it.  So no caller may hold one root's
+        lock while requesting another's.  ``reader_lease.release_refs`` takes
+        the root each pin names, which is why the egress reclaims before
+        taking this lock rather than under it (#780).
         """
 
         root = str(Path(stage_root).absolute())
