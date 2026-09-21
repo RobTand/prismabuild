@@ -342,7 +342,11 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
     root the census was asked about; the callers use it to scope
     self-exclusion to that root's own namespace domain.  A symlinked entry is
     taint without being followed: a link can leave the store or point back
-    into it, and neither is a fragment.
+    into it, and neither is a fragment.  The same rule covers a ``.json``
+    entry that is not a regular file -- a directory, fifo, socket or device
+    that has displaced a fragment file.  It hides the only document that
+    vouches for the mover's staged bytes, so it is unknown ownership, never a
+    skip: a caller that deletes would otherwise read the loss as "no owner".
     """
 
     try:
@@ -363,6 +367,8 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
             tainted.append(f"{namespace}/{entry.name}: {exc}")
             continue
         if not is_file:
+            tainted.append(
+                f"{namespace}/{entry.name}: not a regular file")
             continue
         document = _read_fragment(Path(entry.path))
         if isinstance(document, str):
@@ -401,6 +407,16 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
     symlink anywhere, is unknown ownership -- taint, never a walk.  ``skip``
     names children this call must not revisit -- the produced store itself
     when its own parent level is walked for co-owner domains.
+
+    A non-directory where the level expects a namespace is the other half of
+    the same rule: a 64-character name, or the ``produced-output-fragments``
+    container, standing as a regular file, fifo or socket hides every
+    fragment filed below it, so it is taint -- unknown ownership, never a
+    skip.  A composed ``<consumer>.map.json`` beside its namespace directory
+    (``residency_map.map_path``) is not such a name -- it is nine
+    characters longer than a namespace and is the document a reader reads --
+    so it keeps the old behaviour: a stray file that names no layout taints
+    nothing.
     """
 
     try:
@@ -421,6 +437,13 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
             tainted.append(f"{entry.name}: {exc}")
             continue
         if not is_directory:
+            if entry.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+                tainted.append(
+                    f"{entry.name}: produced namespace is not a directory")
+                continue
+            if _namespace_shaped(entry.name):
+                tainted.append(
+                    f"{entry.name}: namespace is not a directory")
             continue
         namespace = entry.name
         if namespace in RESERVED_RESIDENCY_SUBDIRS:
@@ -466,10 +489,12 @@ def _fragment_census(root: Path,
 
     Returns ``(fragments, tainted)``: each fragment as ``(namespace, mover,
     document, direct)``, each taint a bounded one-line reason.  A directory
-    that is neither reserved bookkeeping nor namespace-shaped, and a
-    ``.json`` file that cannot be read or does not validate, are taint --
-    never a silent skip, never a crash, never followed.  A caller that
-    deletes treats taint as unknown ownership and retains.
+    that is neither reserved bookkeeping nor namespace-shaped, a ``.json``
+    file that cannot be read or does not validate, a ``.json`` entry that is
+    not a regular file, and a namespace-shaped or produced-container name
+    that is not a directory, are taint -- never a silent skip, never a crash,
+    never followed.  A caller that deletes treats taint as unknown ownership
+    and retains.
     """
 
     fragments: list[tuple[str, str, dict[str, object], bool]] = []

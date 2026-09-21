@@ -15,8 +15,9 @@ killing the tier service every cycle before it published a lead.
 Skipping the produced namespaces wholesale is not the fix: produced
 fragments vouch for real staged bytes and must protect them from the global
 orphan reconciliation.  The census therefore traverses both layouts with
-one strict reader; a directory it cannot classify, or a fragment it cannot
-read or validate, is taint -- the pass deletes nothing and says why -- never
+one strict reader; a directory it cannot classify, a fragment it cannot
+read or validate, a ``.json`` fragment slot or namespace name held by a
+nonregular file, is taint -- the pass deletes nothing and says why -- never
 a crash and never an unowned file.
 
 Fixtures build a tiny real produced state through the supported API
@@ -28,6 +29,7 @@ next to a legacy flat consumer, and drive the actual
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 from types import SimpleNamespace
 
@@ -337,6 +339,47 @@ def test_a_nested_produced_container_is_unknown(world) -> None:
     assert receipt["entries_deleted"] == 0, receipt
     assert receipt["skipped"] == "attribution_unreadable", receipt
     assert orphan.exists()
+    assert world.produced_path.exists()
+
+
+def test_a_displaced_produced_container_retains(world) -> None:
+    """A file where the produced store belongs hides every produced fragment."""
+
+    orphan = _staged(world.stage, "orphan.bin", 128)
+    shutil.rmtree(world.out_base)
+    world.out_base.write_text("not a fragment store\n")
+
+    events = _sweep(world.queue, world.stage)
+
+    receipt = _reconcile_receipt(events)
+    assert receipt is not None, events
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_deleted"] == 0, receipt
+    assert receipt["skipped"] == "attribution_unreadable", receipt
+    assert "produced-output-fragments" in " ".join(receipt["errors"]), receipt
+    assert orphan.exists()
+    assert world.produced_path.exists()
+
+
+def test_a_composed_map_beside_the_fragments_is_not_a_taint(world) -> None:
+    """The map a reader reads sits beside its namespace; it is not ownership."""
+
+    orphan = _staged(world.stage, "orphan.bin", 128)
+    root = world.queue.root / pool.RESIDENCY
+    composed = residency_map.map_path(root, LEGACY_CONSUMER)
+    residency_map.write_map(composed, residency_map.compose(
+        residency_map.read_fragments(root, LEGACY_CONSUMER)))
+
+    events = _sweep(world.queue, world.stage)
+
+    receipt = _reconcile_receipt(events)
+    assert receipt is not None, events
+    assert receipt["complete"] is True, receipt
+    assert receipt["entries_deleted"] == 1, receipt
+    assert receipt["bytes_deleted"] == 128, receipt
+    assert not orphan.exists()
+    assert composed.exists()
+    assert world.legacy_path.exists()
     assert world.produced_path.exists()
 
 
