@@ -4313,12 +4313,19 @@ produced fragments are real ownership evidence one level deeper at
 `produced_output.output_fragment_root`). `stage_release._fragment_census`
 walks both layouts — legacy flat `<consumer>/<mover>.json` and the nested
 produced namespaces — and is strict on purpose: a directory that is neither
-reserved bookkeeping nor a 64-character namespace, and a `.json` document
-that cannot be read or validate, come back as taint rather than a skip. That
+reserved bookkeeping nor a 64-character namespace, a `.json` document
+that cannot be read or validate, a `.json` entry that is not a regular file
+(a displaced fragment directory, fifo, socket or device), and a
+64-character namespace name or `produced-output-fragments` container that is
+not a directory, come back as taint rather than a skip. That
 distinction is load-bearing because the census' consumers delete:
 `residency_map.read_fragments` skips a bad file so a consumer still finds
 its other copies, and reusing that tolerance for attribution is how
-corruption reads as "unowned" and staged bytes are lost. The reconciliation
+corruption reads as "unowned" and staged bytes are lost. A composed
+`<consumer>.map.json` is the one non-directory beside a namespace that is
+legitimate (`residency_map.map_path`); its name is nine characters longer
+than a namespace, so it names no layout and taints nothing, and the pass
+still cleans true orphans beside it. The reconciliation
 carries the taint into an incomplete receipt (`skipped:
 attribution_unreadable`, bounded reasons), deletes nothing, and the tier
 cycle continues; the next sweep retries. The walk is bounded to those two
