@@ -46,7 +46,6 @@ CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
 MOVER_A = "1" * 64
 MOVER_B = "2" * 64
-PROMO = "9" * 64
 MANIFEST_SHA = "0" * 64
 MIB = 1 << 20
 HOST_CAP = {"cpu": 8, "mem_gb": 16}
@@ -140,37 +139,57 @@ def _stage_mover(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
 
 
 def _promotion_claim(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
-                     key: str, consumer: str, size: int,
-                     *, command: list | None = None) -> str:
-    """A claimed RAM mover row whose sealed request names its source leg."""
+                     consumer: str, size: int,
+                     *, command: list | None = None) -> tuple[str, str]:
+    """A claimed RAM mover row whose sealed request names its source leg.
 
-    blob = manifest_path.read_bytes()
-    digest = hashlib.sha256(blob).hexdigest()
-    cas = queue.root / "cas"
-    shard = cas / "blobs" / digest[:2]
-    shard.mkdir(parents=True, exist_ok=True)
-    (shard / digest).write_bytes(blob)
+    The request is a REAL sealed v2 action filed through the CAS, not a
+    synthetic shape: ``publish`` reads the filed request through the
+    production loader, which refuses a present-but-invalid request, so the
+    row carries the content-addressed key the CAS derived. The key is
+    returned and used for the promotion's whole lifecycle here. The
+    malformed-range variant keeps its malformedness in the sealed command
+    (end precedes start), exactly where the egress reads and refuses it.
+    """
+
     if command is None:
         command = ["python3", "ram_promote.py",
                    "--source-stage-root", str(stage),
                    "--range-start-bytes", "0",
                    "--range-end-bytes", str(size)]
-    request = {
-        "action_key": key,
+    cas = pb.PrismaBuildCAS(queue.root / "cas")
+    manifest_input, _ = cas.ingest_input(
+        manifest_path, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    checkout = manifest_path.parent / "promotion-checkout"
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "task_code.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/promotion-handoff",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/bin/true"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [manifest_input],
+        "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
         "params": {"command": command},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
-                    "sha256": digest, "bytes": len(blob)}],
-    }
-    requests = cas / "requests" / key[:2]
-    requests.mkdir(parents=True, exist_ok=True)
-    (requests / f"{key}.json").write_text(json.dumps(request))
+        "environment": {"variables": {"PATH": "/usr/bin:/bin"},
+                        "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    key = str(action["action_key"])
+    cas.publish_action_request(action)
+    digest = str(manifest_input["sha256"])
     _publish(queue, key,
              {"cpu": 1, "mem_gb": 1, f"{RAM_KIND}@{RAM_TIER}": 1},
              {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
               "manifest_sha256": digest, "manifest_bytes": size,
               "range_start_bytes": 0, "range_end_bytes": size})
     _claim(queue, key)
-    return digest
+    return key, digest
 
 
 def _promote(queue: pool.PoolQueue, stage: Path, ram: Path,
@@ -217,8 +236,8 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     ram = tmp_path / "ram"
     ram.mkdir()
     assert storage_tiers.ensure_ram_epoch(ram, host="test") is not None
-    _promotion_claim(queue, stage, manifest_path, PROMO, CONSUMER_A, MIB)
-    _promote(queue, stage, ram, manifest_path, PROMO, CONSUMER_A, MIB)
+    promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
+    _promote(queue, stage, ram, manifest_path, promo, CONSUMER_A, MIB)
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / SOURCE_NAME
@@ -253,7 +272,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     # leaves no durable pin behind.
     proof = reader_lease.acquire(
         queue, consumer_action_key=CONSUMER_A,
-        attempt={"nonce": PROMO, "scope_id": "egress-handoff-test"},
+        attempt={"nonce": promo, "scope_id": "egress-handoff-test"},
         tier_id=TIER, epoch="",
         span={"start_bytes": 0, "end_bytes": MIB},
         holder={"host": socket.gethostname(), "pid": os.getpid()},
@@ -270,8 +289,8 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
         "a proof-only acquire must not leak a durable pin")
 
     # The promotion's action concludes: the claim goes, the handoff ends.
-    queue.finish(PROMO, status="executed")
-    assert not (queue.dir(pool.CLAIMED) / f"{PROMO}.json").exists()
+    queue.finish(promo, status="executed")
+    assert not (queue.dir(pool.CLAIMED) / f"{promo}.json").exists()
 
     second = stage_release.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
@@ -316,7 +335,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     ram = tmp_path / "ram"
     ram.mkdir()
     assert storage_tiers.ensure_ram_epoch(ram, host="test") is not None
-    _promotion_claim(queue, stage, manifest_path, PROMO, CONSUMER_A, MIB)
+    promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
 
     paths_a = _paths(queue, CONSUMER_A, MOVER_A)
     paths_b = _paths(queue, CONSUMER_B, MOVER_B)
@@ -343,14 +362,14 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     # The real promotion proves its own consumer's source cover before it
     # copies: with A's retained fragment it completes, and the cover names A
     # -- B's fragment alone would have left it a source-coverage-gap.
-    promotion = _promote(queue, stage, ram, manifest_path, PROMO,
+    promotion = _promote(queue, stage, ram, manifest_path, promo,
                          CONSUMER_A, MIB)
     assert [cover["mover_action_key"]
             for cover in promotion["source_covers"]] == [MOVER_A], promotion
     assert (ram / SOURCE_NAME).exists()
 
     # The handoff ends; now the ordinary shared settlement applies.
-    queue.finish(PROMO, status="executed")
+    queue.finish(promo, status="executed")
     shared = stage_release.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
@@ -385,7 +404,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     # An unqualifiable date is unknown, never a reason to drop the proof or
     # the charge while a live handoff still reads the bytes.
     paths["material"].unlink()
-    _promotion_claim(queue, stage, manifest_path, PROMO, CONSUMER_A, MIB)
+    promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
 
     staged = stage / SOURCE_NAME
     ledger = queue.tier_ledger(TIER)
@@ -399,7 +418,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     assert staged.exists() and paths["fragment"].exists()
     assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
 
-    (queue.dir(pool.CLAIMED) / f"{PROMO}.json").unlink()
+    (queue.dir(pool.CLAIMED) / f"{promo}.json").unlink()
     second = stage_release.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
@@ -414,7 +433,7 @@ def test_a_malformed_promotion_claim_taints_and_retains(
     queue, stage = fleet
     _, manifest_path = _manifest(tmp_path)
     _stage_mover(queue, stage, manifest_path, MOVER_A, CONSUMER_A, MIB)
-    _promotion_claim(queue, stage, manifest_path, PROMO, CONSUMER_A, MIB,
+    _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB,
                      command=["python3", "ram_promote.py",
                               "--source-stage-root", str(stage),
                               "--range-start-bytes", str(MIB),

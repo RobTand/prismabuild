@@ -249,6 +249,7 @@ _VALUE_FIELDS = (
     ("host_class", "--host-class"),
     ("max_attempts", "--max-attempts"),
     ("data_manifest", "--data-manifest"),
+    ("produced_output_template", "--produced-output-template"),
 )
 _SWITCH_FIELDS = (
     ("deterministic", "--deterministic"),
@@ -287,7 +288,8 @@ _INTEGER_FIELDS = (
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
-_TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest", "as_sealed_by")
+_TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest",
+                "produced_output_template", "as_sealed_by")
 
 #: An absolute path mention inside a command word or an environment value.  A
 #: mention starts where a path can start -- the beginning of the string, or a

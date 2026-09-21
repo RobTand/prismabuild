@@ -139,16 +139,38 @@ def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) 
     assert "tier_reservations" in pool.PoolQueue._CLAIM_SCOPED_FIELDS
 
 
-def test_finish_returns_tier_tokens_through_the_helper(
+def test_finish_returns_tier_tokens_through_the_output_aware_release(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutate the driver: with the helper cut, finish leaves tier tokens held."""
+    """Mutate the driver: with the tier release cut, finish holds the tokens.
+
+    Same proof, current driver. `_release_reservation` used to end by
+    calling `release_tier_reservations`, so cutting that helper was how
+    this showed the tier release in `finish` was load-bearing. The
+    prepaid-output lane made a concluding claim's tier release SELECTIVE
+    -- it has to keep the names an outstanding output intent still holds,
+    and it has to run under the owner transition lock so
+    `fund_output_batch` serializes against it -- and a blanket per-key
+    helper can express neither. The seam is now the per-tier census
+    inside `_release_reservation`, and that is what this cuts: an UNKNOWN
+    census retains every tier token (R2 fail-retain), while the host
+    tokens still go back, which is the same two-part shape as before.
+
+    `release_tier_reservations` is not dead and is not being replaced. It
+    still drives the ready-scan supersede and dropped races and an
+    operator's explicit `reclaim_terminal_reservation`. It is simply no
+    longer what concludes a claim. The unmutated behaviour --
+    claim takes, finish returns -- is
+    `test_claim_takes_tier_tokens_and_finish_returns_them`, unchanged.
+    """
 
     queue.mint_tier_capacity(TIER, {"stage_gib": 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
     claimed = queue.claim(owner="mover", capacity={"cpu": 1})
     assert claimed is not None
-    monkeypatch.setattr(pool.PoolQueue, "release_tier_reservations", lambda self, key: 0)
+    monkeypatch.setattr(
+        pool.PoolQueue, "output_keep_names_for_owner",
+        lambda self, owner_key, tier_id: (set(), True))
     queue.finish(KEY_A, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 1}}
