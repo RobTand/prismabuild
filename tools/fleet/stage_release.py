@@ -374,8 +374,16 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
             tainted.append(
                 f"{namespace}/{entry.name}: fragment is filed under another namespace")
             continue
-        fragments.append((namespace, str(document["mover_action_key"]),
-                          document, direct))
+        mover = str(document["mover_action_key"])
+        if entry.name != f"{mover}.json":
+            # The file name is the mover's identity in the directory, and the
+            # egress excludes its own document by the mover it carries.
+            # A name that disagrees could hide another owner's copy (or
+            # impersonate one): unknown ownership, never self.
+            tainted.append(
+                f"{namespace}/{entry.name}: fragment names another mover")
+            continue
+        fragments.append((namespace, mover, document, direct))
 
 
 def _census_level(directory: Path, *, direct: bool, allow_nested: bool,

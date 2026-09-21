@@ -340,6 +340,35 @@ def test_a_nested_produced_container_is_unknown(world) -> None:
     assert world.produced_path.exists()
 
 
+def test_a_misfiled_mover_cannot_vanish_as_self(world) -> None:
+    """A record whose name disagrees with its mover is unknown, never self."""
+
+    orphan = _staged(world.stage, "orphan.bin", 128)
+    source = world.ns_dir / f"{PRODUCED_MOVER}.json"
+    misfiled = world.ns_dir / f"{'0' * 64}.json"
+    misfiled.write_text(source.read_text())
+
+    # The valid record still vouches, and the mismatched duplicate is
+    # reported rather than dropped; naming the mover as the exception must
+    # not make the misfiled record vanish.
+    owners, taint = stage_release._fragment_owners(
+        world.out_base, {str(world.produced_path)},
+        except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
+    assert any("another mover" in item for item in taint), taint
+    assert owners == {}
+
+    events = _sweep(world.queue, world.stage)
+
+    receipt = _reconcile_receipt(events)
+    assert receipt is not None, events
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_deleted"] == 0, receipt
+    assert receipt["skipped"] == "attribution_unreadable", receipt
+    assert orphan.exists()
+    assert world.produced_path.exists()
+    assert misfiled.exists()
+
+
 def test_a_corrupt_legacy_fragment_is_not_read_as_unowned(legacy_only) -> None:
     """read_fragments' reader tolerance must not become a GC deletion."""
 
