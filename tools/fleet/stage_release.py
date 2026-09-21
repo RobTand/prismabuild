@@ -103,6 +103,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import produced_output  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
@@ -288,14 +289,201 @@ def _prune_empty(directory: Path, stop: Path) -> None:
 #: How many co-owners one egress receipt names before it counts the rest.
 SHARED_WITH_LIMIT = 5
 
-#: Residency namespaces that are never consumer fragment directories.  Pins,
+#: Residency subdirectories that hold records, never fragments.  Pins and
 #: retiring marks (``leases/``) and publish-time sidecars (``material/``)
-#: live beside the fragments in dedicated subdirectories; every fragment
-#: enumerator skips them, proved by
-#: ``test_legacy_enumerators_ignore_lease_namespaces`` -- a sidecar parsed
-#: as a fragment would taint every egress fail-closed on a healthy tier.
-RESERVED_RESIDENCY_SUBDIRS = frozenset(
-    {reader_lease.LEASES_SUBDIR, reader_lease.MATERIAL_SUBDIR})
+#: live beside the fragments in dedicated subdirectories, and the
+#: produced-output template, scope and batch records live under their own
+#: exported subdirectories.  Every fragment enumerator skips them: a record
+#: parsed as a fragment would taint -- or, before #798, crash -- every egress
+#: and sweep on a healthy tier.  The produced *fragments* are a real fragment
+#: namespace one level deeper (``OUTPUT_FRAGMENTS_SUBDIR``, reached through
+#: :func:`produced_output.output_fragment_root`) and are traversed by
+#: :func:`_fragment_census`, never skipped.
+RESERVED_RESIDENCY_SUBDIRS = frozenset({
+    reader_lease.LEASES_SUBDIR,
+    reader_lease.MATERIAL_SUBDIR,
+    produced_output.OUTPUT_TEMPLATES_SUBDIR,
+    produced_output.OUTPUT_SCOPES_SUBDIR,
+    produced_output.OUTPUT_BATCHES_SUBDIR,
+})
+
+
+def _namespace_shaped(name: str) -> bool:
+    """A 64-character lowercase-hex directory name: an action key or namespace."""
+
+    return (len(name) == 64
+            and all(character in "0123456789abcdef" for character in name))
+
+
+def _read_fragment(path: Path) -> dict[str, object] | str:
+    """One validated fragment, or the reason it is not one.  Never a skip.
+
+    Skipping is right for a consumer composing its own map
+    (``residency_map.read_fragments``) and wrong for every caller that
+    deletes: a document that cannot be read is unknown ownership, and
+    unknown ownership reported as "no owner" is exactly how staged bytes
+    are lost.
+    """
+
+    try:
+        with open(path) as stream:
+            return residency_map.validate_fragment(json.load(stream))
+    except (OSError, ValueError) as exc:
+        return str(exc)
+
+
+def _census_fragment_directory(directory: Path, namespace: str, *,
+                               direct: bool,
+                               fragments: list[tuple[str, str, dict[str, object], bool]],
+                               tainted: list[str]) -> None:
+    """Every valid fragment filed directly under one namespace directory.
+
+    ``direct`` is true only for a namespace that is an immediate child of the
+    root the census was asked about; the callers use it to scope
+    self-exclusion to that root's own namespace domain.  A symlinked entry is
+    taint without being followed: a link can leave the store or point back
+    into it, and neither is a fragment.
+    """
+
+    try:
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+    except OSError as exc:
+        tainted.append(f"{namespace}: {exc}")
+        return
+    for entry in entries:
+        if not entry.name.endswith(".json"):
+            continue
+        try:
+            if entry.is_symlink():
+                tainted.append(
+                    f"{namespace}/{entry.name}: symlink is not a fragment")
+                continue
+            is_file = entry.is_file()
+        except OSError as exc:
+            tainted.append(f"{namespace}/{entry.name}: {exc}")
+            continue
+        if not is_file:
+            continue
+        document = _read_fragment(Path(entry.path))
+        if isinstance(document, str):
+            tainted.append(f"{namespace}/{entry.name}: {document}")
+            continue
+        if str(document["consumer_action_key"]) != namespace:
+            # The directory is what attributes this document; a fragment
+            # filed under another namespace is malformed ownership.
+            tainted.append(
+                f"{namespace}/{entry.name}: fragment is filed under another namespace")
+            continue
+        mover = str(document["mover_action_key"])
+        if entry.name != f"{mover}.json":
+            # The file name is the mover's identity in the directory, and the
+            # egress excludes its own document by the mover it carries.
+            # A name that disagrees could hide another owner's copy (or
+            # impersonate one): unknown ownership, never self.
+            tainted.append(
+                f"{namespace}/{entry.name}: fragment names another mover")
+            continue
+        fragments.append((namespace, mover, document, direct))
+
+
+def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
+                  fragments: list[tuple[str, str, dict[str, object], bool]],
+                  tainted: list[str],
+                  skip: frozenset[str] = frozenset()) -> None:
+    """Classify one directory level of the fragment store.
+
+    One rule for both layouts: reserved bookkeeping is skipped, a
+    ``produced-output-fragments`` child is the nested produced namespace, a
+    64-character directory is a fragment namespace, and anything else is
+    taint.  The traversal is bounded to the two known layouts: the produced
+    container is descended **once**, only from the base store
+    (``allow_nested``), and a container name inside the produced store, or a
+    symlink anywhere, is unknown ownership -- taint, never a walk.  ``skip``
+    names children this call must not revisit -- the produced store itself
+    when its own parent level is walked for co-owner domains.
+    """
+
+    try:
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+    except OSError as exc:
+        tainted.append(f"{directory}: {exc}")
+        return
+    for entry in entries:
+        if entry.name in skip:
+            continue
+        try:
+            if entry.is_symlink():
+                tainted.append(
+                    f"{entry.name}: symlink is not a fragment namespace")
+                continue
+            is_directory = entry.is_dir()
+        except OSError as exc:
+            tainted.append(f"{entry.name}: {exc}")
+            continue
+        if not is_directory:
+            continue
+        namespace = entry.name
+        if namespace in RESERVED_RESIDENCY_SUBDIRS:
+            # Reader pins/retiring marks (``leases/``) and material sidecars
+            # (``material/``) live inside the produced store too, because
+            # reader_lease resolves them from the supplied residency root.
+            continue
+        if namespace == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+            if not allow_nested:
+                tainted.append(
+                    f"{namespace}: nested produced namespace is not a "
+                    f"fragment namespace")
+                continue
+            _census_level(Path(entry.path), direct=False, allow_nested=False,
+                          fragments=fragments, tainted=tainted)
+            continue
+        if not _namespace_shaped(namespace):
+            tainted.append(f"{namespace}: unknown residency directory")
+            continue
+        _census_fragment_directory(Path(entry.path), namespace, direct=direct,
+                                   fragments=fragments, tainted=tainted)
+
+
+def _fragment_census(root: Path,
+                     ) -> tuple[list[tuple[str, str, dict[str, object], bool]],
+                                list[str]]:
+    """Every fragment under one residency root, and what cannot be read.
+
+    Two layouts share the store.  Legacy flat fragments sit at
+    ``<root>/<consumer action key>/<mover>.json``.  Produced-output batches
+    file theirs at ``<root>/produced-output-fragments/<batch namespace>/
+    <mover>.json``; that namespace is a material namespace, not a queue
+    action.
+
+    A walk of the store descends into the produced subdirectory exactly
+    once; a walk of the produced store itself -- the root an egress or
+    retirement is given for a produced mover -- also walks the flat
+    namespaces beside it, because a legacy co-owner may vouch for the same
+    physical staged bytes.  Nothing else is a layout: a second container
+    name, or a symlink, is taint.  Self-exclusion is the caller's business
+    and is scoped to the root walked: only fragments found directly under it
+    carry ``direct=True``.
+
+    Returns ``(fragments, tainted)``: each fragment as ``(namespace, mover,
+    document, direct)``, each taint a bounded one-line reason.  A directory
+    that is neither reserved bookkeeping nor namespace-shaped, and a
+    ``.json`` file that cannot be read or does not validate, are taint --
+    never a silent skip, never a crash, never followed.  A caller that
+    deletes treats taint as unknown ownership and retains.
+    """
+
+    fragments: list[tuple[str, str, dict[str, object], bool]] = []
+    tainted: list[str] = []
+    if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+        _census_level(root, direct=True, allow_nested=False,
+                      fragments=fragments, tainted=tainted)
+        _census_level(root.parent, direct=False, allow_nested=False,
+                      fragments=fragments, tainted=tainted,
+                      skip=frozenset({root.name}))
+    else:
+        _census_level(root, direct=True, allow_nested=True,
+                      fragments=fragments, tainted=tainted)
+    return fragments, tainted
 
 
 def _fragment_owners(root: Path, wanted: set[str], *,
@@ -303,51 +491,36 @@ def _fragment_owners(root: Path, wanted: set[str], *,
                      except_mover: str = "") -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
     """Which of ``wanted`` paths are still vouched for, and by whom, in one walk.
 
-    A single scan of every consumer directory -- never per entry -- intersecting
-    validated ``stage_path`` strings against ``wanted`` before storing.  No
-    metadata walk per foreign entry: the fragment validator already guarantees
-    absolute, normalized paths, so string intersection is exact and only
-    matches are stored.  The egress keeps its own resolve-based containment
-    fence before any unlink.  A fragment that cannot be read or validated
-    taints the scan: its paths are unknowable, so nothing may be treated as
-    unowned on this pass.  Fail closed, the way an unreadable own fragment
-    keeps its tokens.
+    A single scan of every fragment namespace -- never per entry --
+    intersecting validated ``stage_path`` strings against ``wanted`` before
+    storing.  No metadata walk per foreign entry: the fragment validator
+    already guarantees absolute, normalized paths, so string intersection is
+    exact and only matches are stored.  The egress keeps its own resolve-based
+    containment fence before any unlink.  A fragment that cannot be read or
+    validated taints the scan: its paths are unknowable, so nothing may be
+    treated as unowned on this pass.  Fail closed, the way an unreadable own
+    fragment keeps its tokens.
+
+    The exclusion is scoped to the root being walked: only a fragment filed
+    directly under ``root`` -- legacy flat, or the produced store when that
+    is the root -- can be this caller's own.  A fragment carrying the same
+    key in a nested produced namespace is a *different* owner's copy and
+    keeps its protection; "same key" is never automatically self.
     """
 
     owners: dict[str, set[tuple[str, str]]] = {}
-    tainted: list[str] = []
-    try:
-        consumers = sorted(entry.name for entry in os.scandir(root)
-                           if entry.is_dir()
-                           and entry.name not in RESERVED_RESIDENCY_SUBDIRS)
-    except OSError as exc:
-        return owners, [f"{root}: {exc}"]
-    for consumer in consumers:
-        directory = root / consumer
-        try:
-            names = sorted(entry.name for entry in os.scandir(directory)
-                           if entry.is_file() and entry.name.endswith(".json"))
-        except OSError as exc:
-            tainted.append(f"{consumer}: {exc}")
+    fragments, tainted = _fragment_census(root)
+    for namespace, mover, fragment, direct in fragments:
+        if direct and namespace == except_consumer and mover == except_mover:
             continue
-        for name in names:
-            if consumer == except_consumer and name == f"{except_mover}.json":
+        for entry in dict(fragment["entries"]).values():
+            if not isinstance(entry, Mapping):
                 continue
-            try:
-                with open(directory / name) as stream:
-                    fragment = residency_map.validate_fragment(json.load(stream))
-            except (OSError, ValueError) as exc:
-                tainted.append(f"{consumer}/{name}: {exc}")
-                continue
-            mover = str(fragment["mover_action_key"])
-            for entry in dict(fragment["entries"]).values():
-                if not isinstance(entry, Mapping):
-                    continue
-                path = entry.get("stage_path")
-                # Validated absolute and normalized, so this comparison is
-                # exact with no metadata touch.
-                if isinstance(path, str) and path in wanted:
-                    owners.setdefault(path, set()).add((consumer, mover))
+            path = entry.get("stage_path")
+            # Validated absolute and normalized, so this comparison is
+            # exact with no metadata touch.
+            if isinstance(path, str) and path in wanted:
+                owners.setdefault(path, set()).add((namespace, mover))
     return owners, tainted
 
 
@@ -1442,6 +1615,32 @@ def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
     return True
 
 
+#: How many census taints one receipt names before it counts the rest.
+ATTRIBUTION_TAINT_LIMIT = 8
+
+
+def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
+                       residency_root: str | Path | None = None,
+                       ) -> tuple[set[str], list[str]]:
+    """The strict attribution census behind :func:`attributed_stage_paths`.
+
+    Same selection, with the taint channel a deletion pass needs: a caller
+    that deletes must retain when ownership is unknown, and a fragment the
+    reader tolerance skipped is unknown ownership, not an unowned file.
+    """
+
+    root = Path(residency_root if residency_root is not None
+                else queue.root / pool.RESIDENCY)
+    fragments, tainted = _fragment_census(root)
+    out: set[str] = set()
+    for _namespace, mover, fragment, _direct in fragments:
+        if wanted is not None and mover not in wanted:
+            continue
+        for entry in dict(fragment["entries"]).values():
+            out.add(os.path.normpath(str(entry["stage_path"])))
+    return out, tainted
+
+
 def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
                            residency_root: str | Path | None = None) -> set[str]:
     """Every stage path a mover the fleet still wants has vouched for.
@@ -1458,24 +1657,15 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
     fragments of ``wanted`` movers count.  A withdrawn mover's fragment is still
     on disk -- nothing deletes it, since no egress ran -- and treating it as
     attribution is exactly how its bytes became invisible.
+
+    Both fragment layouts count: legacy flat consumers and the nested
+    produced-output namespaces (see :func:`_fragment_census`).  This is the
+    paths-only view; a caller that deletes reads :func:`_attributed_census`
+    and retains on its taint instead.
     """
 
-    root = Path(residency_root if residency_root is not None
-                else queue.root / pool.RESIDENCY)
-    out: set[str] = set()
-    try:
-        consumers = sorted(entry.name for entry in os.scandir(root)
-                           if entry.is_dir()
-                           and entry.name not in RESERVED_RESIDENCY_SUBDIRS)
-    except OSError:
-        return out
-    for consumer in consumers:
-        for fragment in residency_map.read_fragments(root, consumer):
-            if (wanted is not None
-                    and str(fragment.get("mover_action_key") or "") not in wanted):
-                continue
-            for entry in dict(fragment["entries"]).values():
-                out.add(os.path.normpath(str(entry["stage_path"])))
+    out, _taint = _attributed_census(queue, wanted=wanted,
+                                     residency_root=residency_root)
     return out
 
 
@@ -1507,6 +1697,14 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
       an unmarked file that no wanted mover's fragment names is unowned.  Where
       the filesystem cannot answer the xattr question at all, "unmarked" means
       nothing, and the file is left alone with the reason in the receipt.
+
+    **Unknown ownership never deletes.**  The attribution census is strict
+    (see :func:`_fragment_census`): a fragment that cannot be read or
+    validated, or a residency directory that is neither reserved bookkeeping
+    nor a namespace shape, returns an incomplete receipt with bounded reasons
+    and no unlinks, and the tier cycle continues.  The reader tolerance that
+    skips a bad fragment is for a consumer composing its map, never for a
+    pass that deletes.
 
     Ownership is checked the way ``evict`` checks it: the resolved path must be
     under the resolved stage root.
@@ -1556,8 +1754,24 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
             receipt["skipped"] = f"stage_root_unreadable: {exc}"
             receipt["complete"] = False
             return receipt
-        attributed = attributed_stage_paths(queue, wanted=wanted,
-                                            residency_root=residency_root)
+        attributed, attribution_taint = _attributed_census(
+            queue, wanted=wanted, residency_root=residency_root)
+        if attribution_taint:
+            # A fragment that cannot be read, or a directory that cannot be
+            # classified, is unknown ownership -- never an unowned file.  The
+            # pass deletes nothing, says why with bounded reasons, and the
+            # tier cycle continues; the next sweep retries once the state is
+            # readable again.
+            receipt["skipped"] = "attribution_unreadable"
+            receipt["complete"] = False
+            receipt["errors"] = [
+                f"ownership uncertain: {item}"
+                for item in attribution_taint[:ATTRIBUTION_TAINT_LIMIT]]
+            if len(attribution_taint) > ATTRIBUTION_TAINT_LIMIT:
+                receipt["errors"].append(
+                    f"ownership uncertain: {len(attribution_taint)} entry(ies) "
+                    f"unreadable")
+            return receipt
         pin_owners, pin_taint = reader_lease.live_for(
             queue, None, residency_root=residency_root)
         if pin_taint:
