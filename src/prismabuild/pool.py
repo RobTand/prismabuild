@@ -14013,6 +14013,166 @@ class PoolQueue:
             outcomes.append(expanded)
         return outcomes
 
+    def _archived_attempt_identity(
+        self,
+        path: Path,
+        value: Mapping[str, object],
+        *,
+        action_key: str,
+        generation: object,
+    ) -> int:
+        """The attempt number this immutable outcome canonically addresses.
+
+        ``archive_attempt`` publishes one file per numbered attempt under
+        ``(action_key, published_unix)``.  A reader that reconstructs an
+        ending from that evidence must not be redirected to another action,
+        another generation or another attempt number by the file's own
+        claims, so the file's identity is checked against the directory it
+        was found in and against the canonical path its number derives.
+        """
+
+        if (
+            type(generation) not in (int, float)
+            or isinstance(generation, bool)
+            or not math.isfinite(float(generation))
+        ):
+            raise PoolContractError("archived attempt names no generation")
+        attempt = value.get("attempt")
+        published = value.get("published_unix")
+        limit = value.get("max_attempts")
+        retry_safe = value.get("retry_safe")
+        if (
+            value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
+            or value.get("action_key") != action_key
+            or type(published) not in (int, float)
+            or isinstance(published, bool)
+            or not math.isfinite(float(published))
+            or float(published) != float(generation)
+            or type(attempt) is not int
+            or attempt < 1
+            or type(limit) is not int
+            or limit < 1
+            or (retry_safe is not None and type(retry_safe) is not bool)
+            or path != self.attempt_path(
+                {"action_key": action_key, "published_unix": float(generation)},
+                attempt,
+            )
+        ):
+            raise PoolContractError(
+                f"archived attempt does not own its path and generation: {path}"
+            )
+        return attempt
+
+    def archived_generation_outcomes(
+        self, action_key: str, *, generation: float
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Recover one exact generation's ending from immutable attempts.
+
+        A waiter pinned to a generation reads the mutable terminal rows, and
+        those are one slot per action key: a later generation of the same
+        content-addressed key legitimately replaces the row (#817).  The
+        ending is not lost -- ``finish`` publishes each attempt under
+        ``attempts/<key>/<attempt_generation>/`` before the mutable row moves,
+        and nothing deletes it -- so this reader reconstructs the generation's
+        terminal attempt and verifies it exactly as the queue's own readers
+        do: canonical paths, log digests, byte counts, generation, action key
+        and the adopted first-writer summary.
+
+        Exact to the generation.  The directory is named by
+        ``(action_key, published_unix)``, every attempt in it must agree with
+        both, and no newer generation is ever consulted.  A generation with no
+        terminal attempt -- still queued, still running, or never started --
+        answers with no records rather than inventing a verdict.
+
+        Refusal is loud, not a silent skip: an attempt set that is not the
+        contiguous numbered run ending at its terminal attempt, an attempt
+        whose identity or canonical path disagrees with the directory, a
+        malformed record or a log that fails its recorded digest raises
+        ``PoolContractError``.  The path returned names the immutable attempt
+        that was read, never a mutable summary, and nothing is written.
+
+        An interrupted prefix -- the attempt numbers below the first file
+        present -- is reported as ``attempt_history_missing_before`` exactly
+        as the archived evidence implies it.  A preemption or resign handoff
+        successor is one shape of that: its attempt carries the handoff
+        context, which is validated against the withdrawal lineage before its
+        prefix is accepted.
+        """
+
+        key = str(action_key)
+        if (
+            type(generation) not in (int, float)
+            or isinstance(generation, bool)
+            or not math.isfinite(float(generation))
+        ):
+            raise PoolContractError("archived generation must be a finite timestamp")
+        identity = {"action_key": key, "published_unix": float(generation)}
+        generation_name = self.attempt_generation(identity)  # validates key and timestamp
+        base = self.root / ATTEMPTS / key / generation_name
+        present: dict[int, tuple[Path, dict[str, object]]] = {}
+        for path in _glob(base, "*.json"):
+            value = _read_json(path)
+            if value is None:
+                raise PoolContractError(f"archived attempt is unreadable: {path}")
+            attempt = self._archived_attempt_identity(
+                path, value, action_key=key, generation=identity["published_unix"])
+            present[attempt] = (path, value)
+        if not present:
+            return []
+        terminal = [
+            number for number, (_path, value) in present.items()
+            if value.get("disposition") in {DONE, FAILED}
+        ]
+        if not terminal:
+            # Every archived attempt is an intermediate requeue; the
+            # generation has no ending yet, and none is inferred.
+            return []
+        attempt = max(terminal)
+        if (
+            max(present) != attempt
+            or sorted(present) != list(range(min(present), attempt + 1))
+        ):
+            raise PoolContractError(
+                f"archived attempts for {key[:12]} are not a contiguous run "
+                f"ending at attempt {attempt}"
+            )
+        path, value = present[attempt]
+        missing = min(present) - 1
+        context = value.get("preemption_context")
+        record = {**value, "schema": POOL_OUTCOME_SCHEMA_V1}
+        if context is not None:
+            if not isinstance(context, Mapping):
+                raise PoolContractError(
+                    "immutable attempt preemption context must be an object")
+            context_missing = context.get("attempt_history_missing_before")
+            limit = value["max_attempts"]
+            if (
+                type(context_missing) is not int
+                or not 0 < context_missing < attempt <= limit
+                or value.get("retry_safe") is not True
+            ):
+                raise PoolContractError(
+                    "invalid archived preemption outcome identity")
+            missing = context_missing
+            record.update(context)
+            if not self._preemption_prefix_valid(record, missing, limit):
+                raise PoolContractError(
+                    "invalid archived preemption outcome identity")
+        record["attempts"] = attempt
+        record["attempt_history_missing_before"] = missing
+        record["attempt_history"] = [
+            {"attempt": number,
+             "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
+            for number in range(missing + 1, attempt + 1)
+        ]
+        adopted = self.adopted_attempt_summary(record)
+        if adopted["disposition"] != value.get("disposition"):
+            raise PoolContractError(
+                "archived generation outcome has conflicting disposition")
+        for field in ("status", "finished_unix", "finished_host", "detail"):
+            record[field] = adopted[field]
+        return [(path, record)]
+
     def archived_preemption_outcomes(
         self, action_key: str, *, generation: float | None = None
     ) -> list[tuple[Path, dict[str, object]]]:
@@ -14041,14 +14201,14 @@ class PoolQueue:
             if not isinstance(context, Mapping):
                 raise PoolContractError("immutable attempt preemption context must be an object")
             record = {**value, **context, "schema": POOL_OUTCOME_SCHEMA_V1}
-            attempt = value.get("attempt")
+            attempt = self._archived_attempt_identity(
+                path, value, action_key=action_key,
+                generation=value.get("published_unix"))
             missing = context.get("attempt_history_missing_before")
             limit = value.get("max_attempts")
-            if (value.get("action_key") != action_key
-                    or type(attempt) is not int or type(limit) is not int
-                    or type(missing) is not int or not 0 < missing < attempt <= limit
+            if (type(missing) is not int or type(limit) is not int
+                    or not 0 < missing < attempt <= limit
                     or value.get("retry_safe") is not True
-                    or path != self.attempt_path(record, attempt)
                     or not self._preemption_prefix_valid(record, missing, limit)):
                 raise PoolContractError("invalid archived preemption outcome identity")
             record["attempts"] = attempt

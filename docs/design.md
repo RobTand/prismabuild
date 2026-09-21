@@ -287,8 +287,10 @@ The existing immutable attempt outcome also retains the preemption handoff
 context and interrupted-attempt prefix. If a later same-status generation
 replaces the mutable terminal summary, the waiter reconstructs the original
 retry's ending from that attempt, revalidating canonical history, log digests
-and withdrawal lineage. Recovery writes no queue pointer and names the immutable
-attempt as its source. Attempts predating this context provide no inferred link.
+and withdrawal lineage. The same exact-generation reader serves an ordinary
+generation whose row a later run replaced, with no handoff context to follow.
+Recovery writes no queue pointer and names the immutable attempt as its source.
+Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
@@ -337,15 +339,26 @@ pre-check gives — the egress defers as in-flight, the output mover reports
 `published: false` — so the flag makes the existing decision exact rather than
 adding a new one.
 
-Known limit: a waiter is still pinned to a generation whose mutable
-`done`/`failed` row a later generation of the same key can replace, and a
-waiter that has not yet observed its own ending when that happens has no exact
-reader for it.
+A waiter pinned to a generation is not limited to the mutable terminal rows,
+which a later generation of the same key can replace. The immutable attempt
+outcome that `finish` publishes before the row moves is read back by
+`PoolQueue.archived_generation_outcomes`: exact to the generation, every
+attempt in its directory verified against the `(action_key, published_unix)`
+name and its canonical attempt path, the contiguous numbered run ending at its
+terminal attempt rebuilt as history, and the adopted first-writer summary,
+log digests and byte counts checked. Tampered, malformed or incomplete
+archive evidence refuses with `PoolContractError` instead of being read
+around; an archive with no terminal attempt answers nothing rather than
+inventing a verdict. The selection step `pbrun.outcome_poll` calls it beside
+the mutable rows for the same reason it follows a preemption successor: the
+waiter's generation is the one it submitted, and a newer generation's ending
+is never reported as this run's.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
-the three mutable terminal rows, immutable withdrawal decisions, archived
-preemption evidence, and the exact successor selection above; the selected
+the three mutable terminal rows, immutable withdrawal decisions, the archived
+endings of the exact generation (preemption successors included), and the
+exact successor selection above; the selected
 generation returns to the parent and is carried into the next snapshot.
 After an ending lands, its immutable attempt history and logs are verified in a
 second, separately bounded child before `pbrun` prints a result. The parent
