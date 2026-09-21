@@ -185,6 +185,25 @@ read-only `pbmcp pb_runtime`.
   adopted attempt, and `leg3._pb_commit`'s result gates each chunk.
 - None of these corrections makes a produced-output requirement deployed or
   workload-proven. The static-input baseline is not the produced-output case.
+- Root review retracted the GB10-local-tier blocker this snapshot recorded
+  (parent mailbox `1789971289963-fea9cee8`, after source review of
+  `pbrun.resolve_stage_tier` at `tools/fleet/pbrun.py:4949-4976`): a stage tier
+  need not belong to the consumer's host. The existing
+  `prismabuild-stage:dl380g10` tier is served over the shared NFS mount to the
+  Sparks, and the original 8ca attempt and baseline canary action
+  `e44c5a11db6a87dfa95c29425ef040e90f1c790370230e2a58cb5a2b3f74a299` are
+  actual proof. No new tier, capacity, infrastructure or permission decision
+  is required; the tiny global Docker cycle waits only on accepted/deployed
+  PB792 and PB795 plus the bounded retirement adapter.
+- Library and component produced-output cycles did run. What is missing is a
+  successful global lifecycle and a global produced-retirement acceptance; the
+  one global attempt failed at the mover preflight and is preserved as such.
+- After this snapshot: PR795 (own-copy egress, issue 793) merged
+  2026-09-21T06:33:58Z (head `83e8d502ad9305177ee6e0501ff7c88ee036579d`,
+  merge `3641e29332bfd7a091f35b5bd3875b6de294c86e`); root acceptance and
+  deployment remain pending. PR794 (withdrawn-attempt
+  readback, refs issue 790) had already merged 2026-09-21T06:04:03Z, before
+  this snapshot, and is not in the active `d794` runtime.
 
 ### Source and merge facts
 
@@ -220,16 +239,17 @@ read-only `pbmcp pb_runtime`.
   `a80eea97fe8f9ced1f3f2776188ee1f51a029c11`; rollout idle. The root acceptance
   adds the direct dl380g10 role census (supervisor 1, prewarm 1, tier 1,
   worker 16; all `d794`).
-- Baseline canary, root-verified: five actions executed rc 0 on both Sparks
-  (`e44c5a11db6a87dfa95c29425ef040e90f1c790370230e2a58cb5a2b3f74a299`
-  leg-3, `5d0a7b5fdd05086518a7192c97777739a9d66af7110c41bc5ddd87ce072af987`,
-  `859436101045acedd1a88173a96b0b5b6fd55d1873f9f37112044d916ece8f0e`,
-  `88a8cb00d119cc4b666ce4605a1dc111fc6d3ac335f481a5663421e866365e3a`,
-  `ac2f43ffdb749dd4176fa0e4326b893e5e5a72c29e02f3706f8f19dc0c095bd9`), with
-  leg-3 strict records (`reader-lease-v1`, tier
-  `prismabuild-stage:dl380g10`, three pin ids) and accepted progress
+- Baseline canary, root-verified: five actions executed rc 0 — four on Sparky
+  (legs 1, 2, 3 and the Sparky arm of leg 4) and one on Sparklina (the other
+  leg-4 arm). Leg 3 (`e44c5a11db6a87dfa95c29425ef040e90f1c790370230e2a58cb5a2b3f74a299`,
+  Sparky) is the strict staged read: `reader-lease-v1`, tier
+  `prismabuild-stage:dl380g10`, three pin ids, and accepted progress
   (`accepted_count` 2, phase `leg3-c2`, `units_completed` 3) read from the
-  terminal attempt (`runtime-781-canary-root-verification.json`).
+  terminal attempt. The both-Spark claim is the separate leg-4 payload
+  comparison (`859436101045acedd1a88173a96b0b5b6fd55d1873f9f37112044d916ece8f0e`
+  on Sparky, `ac2f43ffdb749dd4176fa0e4326b893e5e5a72c29e02f3706f8f19dc0c095bd9`
+  on Sparklina, bitwise equal envelopes), not the strict read
+  (`runtime-781-canary-root-verification.json`).
 - Limits, root-stated and unchanged: this is a static-input baseline. It is
   not produced-output or global-PQ-cycle acceptance; the new produced template,
   the PQ live cycle, and full Stage A are not claimed. No PO, BUD, DUR, or
@@ -249,7 +269,9 @@ read-only `pbmcp pb_runtime`.
   failed closed on its 600 s boundary-staging budget. No full Stage A
   launched. Preserved pre-withdrawal attempt history shows one actual failed
   attempt; the withdrawn-row view omitted it (`PBMCP attempts_detail=[]`,
-  issue 790), so current ready/withdrawn state must not be read as
+  issue 790; the readback surface was fixed in source by PR794, merged
+  2026-09-21T06:04:03Z before this snapshot and not in the active `d794`
+  runtime), so current ready/withdrawn state must not be read as
   "never claimed" (`produced-mover-snapshot-root-diagnosis.json`).
 - The old live attempt's recorded capability is host-venv SDK bootstrap on
   x86 (`argv[0]` `/home/rob/venvs/pq881-pb461728e4/bin/python`, no
@@ -293,9 +315,12 @@ read-only `pbmcp pb_runtime`.
   Stage A was not restarted or completed. Its prepared tiny staged input
   (4416 bytes, sha256
   `1013c15b67a2bae3b9fbe55b38d8c175f672e830bfe3d2c583ade2132d8db82e`) was
-  accepted but not exercised, because no GB10 worker advertises a stage tier;
-  the one-token acceptance is not closed at candidate `42f2cfb8` and must be
-  re-run against the repaired PB candidate
+  accepted but not exercised. The earlier reading that no GB10 worker
+  advertises a stage tier was retracted by root review (see the corrections of
+  record): the tier need not belong to the consumer host, and the existing
+  `prismabuild-stage:dl380g10` NFS tier serves the Sparks. The one-token
+  acceptance is not closed at candidate `42f2cfb8` and must be re-run against
+  the repaired PB candidate once PB792 and PB795 are accepted and deployed
   (`pq-stagea-produced-boundaries-result.json`).
 - PQ885 is merged at `d5f844da9cddde3be70e328f0437f1ba40b068ae`
   (2026-09-21T05:33:19Z): metadata-generation seam with 127 PB checks plus two
@@ -335,10 +360,14 @@ read-only `pbmcp pb_runtime`.
 
 ### Open at this snapshot (pending, not claims)
 
-- PR792 deployment; own-copy egress repair acceptance and deployment; one-token
-  acceptance re-run on the repaired candidate.
-- Produced-output lifecycle execution, including a same-action self-read and the
-  ACC-07 origin-refusal negative control in the global PQ cycle; the PQ live
-  lifecycle; full upgraded Stage A; the GB10 stage-tier decision.
+- Root acceptance and deployment of PB792 (snapshot repair) and PB795
+  (own-copy egress, merged 2026-09-21T06:33:58Z after this snapshot); the
+  bounded retirement adapter; the one-token acceptance re-run on the repaired
+  candidate.
+- A successful global produced-output lifecycle, including a same-action
+  self-read and the ACC-07 origin-refusal negative control in the global PQ
+  cycle; the PQ live lifecycle; full upgraded Stage A. No new stage tier,
+  capacity, infrastructure or permission decision is required for the tiny
+  global Docker cycle.
 - Whole-workload proof for every PO, BUD, and DUR row: all remain
   `unknown`/`partial`, never satisfied. This file is evidence, not acceptance.
