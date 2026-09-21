@@ -392,7 +392,9 @@ def test_the_ram_window_does_not_promote_after_the_parent_was_withdrawn(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The same boundary on the promotion leg: the parent owns its children."""
 
-    queue = ram_window._fixture(tmp_path, ram_capacity_gib=2, landed=1)
+    # Both 2 GiB phases must fit for the gate to admit the promotion (#745);
+    # the withdrawn parent is then what defers it.
+    queue = ram_window._fixture(tmp_path, ram_capacity_gib=4, landed=1)
     real_admits = tier_loop._tier_admits_movers
     withdrawn = {"done": False}
 

@@ -13,8 +13,10 @@ plan and its attempt-bound retry authorization through settlement, while
 an actual operator cancellation still retires it. Proven on a TWO-PHASE
 real plan: membership drain/withdraw, a normal tier-loop window tick
 while the withdrawal is still visible before requeue, settlement,
-requeue, new-worker claim, ordinary accepted progress of the window,
-and publication plus completion of the later mover. An operator
+requeue, new-worker claim, and the later mover's completion after
+settlement -- the corrected joint-fit policy (#745) queues the lead and
+its protected run-ahead together, so the later mover is already
+published when the handoff starts and must survive it. An operator
 cancellation of the same shape still stops publication.
 """
 
@@ -67,6 +69,18 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def _sealed_shape(monkeypatch) -> None:
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", False))
+
+
+def _ready_for(queue: pool.PoolQueue, key: str) -> list[dict[str, object]]:
+    """The ready snapshot naming one key, in the queue's own record shape.
+
+    The corrected joint-fit policy queues the lead and its protected run-ahead
+    together, so a bare ``claim`` may take either.  A test about one row asks
+    for that row the way a worker's prefetched snapshot does.
+    """
+
+    return [item for item in queue.ready_items()
+            if str(item.get("action_key")) == key]
 
 
 def _row(key: str, resources: dict[str, int],
@@ -140,7 +154,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -154,9 +168,10 @@ def test_consumer_handoff_keeps_later_phases_publishable(
                              "leads": residency_plan.leads_for(plan)})
     assert residency_plan.leads_for(plan) == [MOVER0]
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert MOVER0 in [e["action_key"] for e in tick0
-                      if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    assert [e["action_key"] for e in tick0
+            if e["event"] == "mover-published"] == [MOVER0, MOVER1], (
+        "the corrected joint-fit policy queues the lead and its protected "
+        "run-ahead together")
 
     _land(queue, tmp_path, MOVER0, host)
     assert tier_loop.compose_map(queue, CONSUMER) == queue.residency_map_path(
@@ -184,12 +199,13 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     queue.publish(**requeue["arguments"],
                   preempted_claim=requeue["snapshot"], handoff_by=owner)
 
-    # Fund and tick: the later mover must publish (never on a retired
-    # plan), then run to completion and hand the consumer back.
+    # Fund and tick: the later mover the run-ahead queued is still there --
+    # the handoff retires no plan -- and it runs to completion, handing the
+    # consumer back.
     queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert MOVER1 in [e["action_key"] for e in tick1
-                      if e["event"] == "mover-published"]
+    assert not [e for e in tick1 if e["event"] == "mover-published"], (
+        "the window republished a mover that is already queued")
     ready1 = json.loads(queue.item_path(pool.READY, MOVER1).read_text())
     assert ready1["residency"]["range_start_bytes"] == SPAN
     assert ready1["recompute"] is True
@@ -217,7 +233,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -230,9 +246,8 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
                              "manifest_bytes": 2 * SPAN,
                              "leads": residency_plan.leads_for(plan)})
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert MOVER0 in [e["action_key"] for e in tick0
-                      if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    assert [e["action_key"] for e in tick0
+            if e["event"] == "mover-published"] == [MOVER0, MOVER1]
 
     snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mm",
                          capacity={"cpu": 4, "mem_gb": 16})
@@ -253,7 +268,8 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     assert ready["residency"]["range_end_bytes"] == SPAN
     assert ready["recompute"] is True
     snap_b = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mb",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity={"cpu": 4, "mem_gb": 16},
+                         ready=_ready_for(queue, MOVER0))
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     assert residency_plan.superseded(queue, plan) is None
 
@@ -264,7 +280,7 @@ def test_operator_cancellation_still_stops_publication(
     """The control: an actual operator cancellation retires the window
     and later phases never publish."""
     _sealed_shape(monkeypatch)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -277,9 +293,8 @@ def test_operator_cancellation_still_stops_publication(
                              "manifest_bytes": 2 * SPAN,
                              "leads": residency_plan.leads_for(plan)})
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert MOVER0 in [e["action_key"] for e in tick0
-                      if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    assert [e["action_key"] for e in tick0
+            if e["event"] == "mover-published"] == [MOVER0, MOVER1]
     queue.withdraw(MOVER0, reason="operator asked", by="operator:test")
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert [e for e in tick1
@@ -287,5 +302,6 @@ def test_operator_cancellation_still_stops_publication(
     assert residency_plan.superseded(queue, plan) is not None
     queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     tick2 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    # The run-ahead queued before the cancellation is not republished and
+    # nothing new publishes: the retired window stages no more.
     assert not [e for e in tick2 if e["event"] == "mover-published"]
