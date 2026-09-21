@@ -111,9 +111,9 @@ movement action, although the action's payload never reads it:
   stamp, and `git_checkout_identity` (`src/prismabuild/core.py:1727`) walks the
   tree to re-prove it.
 
-So ~2.1 s of tier-host time per action (5.1 s under load) is spent unpacking,
-checking out and deleting a tree the action does not use — 7–9 hours over the
-512-sample Stage A estimate.
+So ~2.1 s of tier-host time per action (4.8 s under load) is spent unpacking,
+checking out and deleting a tree the action does not use — about 1.9 h of the
+issue's 7–9 h estimate over 3,240 groups, plus the file-server I/O.
 
 ## Why reuse is refused today
 
