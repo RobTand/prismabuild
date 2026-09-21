@@ -183,8 +183,11 @@ _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 #: 8-byte hash keys, and one fixed 72-byte record per validated ordered
 #: mention -- rather than the parsed Python object graph of #761, whose
 #: interned strings, set and dict slots, digest strings and identity dicts
-#: could refuse retention at live proof sizes and turn every later adoption
-#: back into a full document read (#778).
+#: can refuse retention once a document's object graph is oversized; every
+#: later adoption of a destination that document names then re-reads and
+#: re-decodes the whole document, which is the amplification #778
+#: reproduced at fixture scale (the live forest's exact size and multiplier
+#: were not measured).
 #:
 #: Each figure below is an over-estimate of the retained bytes on a 64-bit
 #: CPython build, so :meth:`_index_bytes` never reports under the truth.
@@ -192,13 +195,18 @@ _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 #: actually costs and four times what an ASCII one does: erring high is the
 #: point, and it means the few strings still retained whole -- a record's
 #: file key and its mover key -- are charged what they are rather than a flat
-#: guess.
+#: guess.  A packed table's own storage is measured with ``sys.getsizeof``,
+#: which reports the array's allocated capacity rather than only its used
+#: slots, so growth headroom is charged too; that is a real allocation and
+#: it scales with the path count, so it cannot be papered over with a larger
+#: constant.
 #:
 #: Path tables that carry the same paths are shared: one actual table is
 #: interned per packed identity ``(blob, ends)``, fragments and sidecars that
 #: name the same destinations reference that one table, and it is charged
 #: once.  ``_reclaim`` rebuilds the interned set from the live records and
-#: recomputes that charge from scratch, the one accounting that cannot drift.
+#: recomputes that charge from the real packed bytes, the one accounting that
+#: cannot drift.
 #:
 #: This prices the RETAINED index only.  The transient cost of decoding one
 #: 22 MB fragment is a peak that is freed before the next lookup; it belongs
@@ -212,15 +220,12 @@ _INDEX_BUDGET_BYTES = 192 << 20
 _STR_HEADER_BYTES = 64
 _STR_CHAR_BYTES = 4
 _RECORD_OVERHEAD_BYTES = 512
-#: One packed path table's fixed overhead: the bytes blob and the array and
-#: instance headers around it, plus the intern tuple and its dict slot.
-_PACKED_TABLE_OVERHEAD_BYTES = 256
-#: What one packed path costs beside its own bytes: an 8-byte end offset and
-#: an 8-byte hash key.
-_PACKED_PATH_INDEX_BYTES = 16
 #: One packed mention record: ``<Q32s4Q`` -- size, raw sha256, identity.
 _PACKED_MENTION_BYTES = 72
-_PACKED_VALUES_OVERHEAD_BYTES = 128
+#: What one retained table owns beyond its own components: the two-tuple it
+#: is keyed by and its slot in the interned dictionary.  Charged once per
+#: table and only in the interned charge, never again in a record's.
+_INTERN_TABLE_BYTES = 224
 #: The unsigned width the 64-bit path hash is normalized to before it is
 #: stored and bisected; the exact bytes comparison below decides membership.
 _HASH_MASK = (1 << 64) - 1
@@ -324,12 +329,20 @@ class _PackedPaths:
 
     @property
     def retained_bytes(self) -> int:
-        """Conservative retained size of this table."""
+        """Actual retained size of this table, allocated storage included.
+
+        ``sys.getsizeof`` of the key array reports its allocated capacity,
+        not only the slots in use, and the blob, offsets and instance headers
+        are measured the same way, so this is never under the bytes the table
+        holds.  The intern tuple and its dictionary slot are added once per
+        table, in the interned charge only -- never again in a record's.
+        """
 
         if not self.keys:
             return 0
-        return _PACKED_TABLE_OVERHEAD_BYTES + len(self.blob) + (
-            len(self.keys) * _PACKED_PATH_INDEX_BYTES)
+        return (sys.getsizeof(self) + sys.getsizeof(self.blob)
+                + sys.getsizeof(self.ends) + sys.getsizeof(self.keys)
+                + _INTERN_TABLE_BYTES)
 
     def intern_key(self) -> tuple[bytes, bytes]:
         """The exact identity one shared table is interned under."""
@@ -420,10 +433,10 @@ class _PackedMentions:
 
     @property
     def values_bytes(self) -> int:
-        """Conservative retained size of the values blob and its offsets."""
+        """Actual retained size of this record's values and its offsets."""
 
-        return (len(self.values) + len(self.ends)
-                + _PACKED_VALUES_OVERHEAD_BYTES)
+        return (sys.getsizeof(self) + sys.getsizeof(self.values)
+                + sys.getsizeof(self.ends))
 
     @classmethod
     def build(cls, mentions: Mapping[str, tuple]) -> "_PackedMentions | None":
@@ -888,17 +901,18 @@ class _StagedPublisher:
         if previous is not None:
             self._material_cost -= previous[2]
 
-    def _retain_table(self, table: _PackedPaths, base: int,
-                      ) -> tuple[_PackedPaths, int] | None:
-        """The one shared table this record references, and the record charge.
+    def _retain_table(self, table: _PackedPaths,
+                      base: int) -> _PackedPaths | None:
+        """The one shared table this record references, or ``None``.
 
         ``base`` is the record's own cost (file key, mover, per-record
-        overhead, and for a sidecar its mention values) before the table.  A
-        table that is already interned is shared: the record references that
-        actual object and pays nothing more for it.  A new table is charged
-        its packed bytes and inserted only after the ceiling admits it, so a
-        refusal leaves the index exactly as it was -- never half-inserted,
-        and never a duplicate blob beside an equal interned one.
+        overhead, and for a sidecar its mention values) and is the whole
+        charge the caller stores with the record.  A table's own bytes live
+        in the interned charge alone: a table already interned is shared and
+        costs nothing more, and a new one is charged and inserted only after
+        the ceiling admits ``base`` plus its storage -- so a refusal leaves
+        the index exactly as it was, never half-inserted, never a duplicate
+        blob beside an equal interned one, and never a table paid for twice.
 
         ``_room_for`` may reclaim unreferenced tables while deciding.  A
         reclaim can only drop tables no retained record names, so the lookup
@@ -909,22 +923,20 @@ class _StagedPublisher:
         key = table.intern_key()
         cached = self._interned.get(key)
         if cached is None:
-            charge = base + table.retained_bytes
-            if not self._room_for(charge):
+            if not self._room_for(base + table.retained_bytes):
                 return None
             self._interned[key] = table
             self._interned_cost += table.retained_bytes
-            return table, charge
+            return table
         if not self._room_for(base):
             return None
         if self._interned.get(key) is cached:
-            return cached, base
-        charge = base + cached.retained_bytes
-        if not self._room_for(charge):
+            return cached
+        if not self._room_for(base + cached.retained_bytes):
             return None
         self._interned[key] = cached
         self._interned_cost += cached.retained_bytes
-        return cached, charge
+        return cached
 
     def _reclaim(self) -> None:
         """Give back what the index holds for metadata that is no longer there.
@@ -1077,11 +1089,10 @@ class _StagedPublisher:
         retained = self._retain_table(table, base)
         if retained is None:
             return mover, table
-        table, charge = retained
-        record = (mover, table)
+        record = (mover, retained)
         # Anchored on the version the read saw, not the version the stat saw:
         # the content held is the content those bytes carried.
-        self._keep_fragment(key, version, record, charge)
+        self._keep_fragment(key, version, record, base)
         return record
 
     def _material_record(self, consumer: str, mover: str) -> object:
@@ -1147,14 +1158,13 @@ class _StagedPublisher:
             return mentions
         base = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
                 + _string_bytes(mover) + compact.values_bytes)
-        retained = self._retain_table(compact.paths, base)
-        if retained is None:
+        table = self._retain_table(compact.paths, base)
+        if table is None:
             return mentions
-        table, charge = retained
         if table is not compact.paths:
             compact = compact.shared_with(table)
-        self._materials[cache_key] = (version, compact, charge)
-        self._material_cost += charge
+        self._materials[cache_key] = (version, compact, base)
+        self._material_cost += base
         return compact
 
     @staticmethod

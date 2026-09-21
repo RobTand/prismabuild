@@ -3807,21 +3807,28 @@ keys, and one fixed 72-byte record per validated ordered mention (size, raw
 digest, four-field identity). Membership is exact byte comparison: a hash
 collision costs a comparison, never an answer. Tables naming the same paths
 are interned once per `(blob, ends)` identity and shared by every document
-that references them, charged once; `_reclaim` rebuilds the interned set from
-the live records and recomputes that charge from the real packed bytes. The
+that references them; a table's allocated storage is measured with
+`sys.getsizeof` (so array growth capacity is charged, not just used slots)
+plus its intern structures, lives in the interned charge alone, and is never
+also priced into a record. A record's own charge is its key, mover, mention
+values and per-record overhead. `_reclaim` rebuilds the interned set from the
+live records and recomputes that charge from those same measurements. The
 ceiling stays 192 MiB, priced in retained bytes, and a record that does not
 fit is decided uncached from the fresh parse — the same verdict, never a
-truncated or held one — so a truly oversized forest degrades to the pre-#761
-cost, not to a wrong answer, and a validated mention the fixed record cannot
-carry exactly (an arbitrary-size integer identity) takes the same uncached
-path. Every lookup still stats each metadata file first and compares its full
+truncated or held one — so a document whose packable content does not fit the
+budget degrades to the pre-#761 cost, not to a wrong answer, and a validated
+mention the fixed record cannot carry exactly (an arbitrary-size integer
+identity) takes the same uncached path. Every lookup still stats each
+metadata file first and compares its full
 dev/inode/size/mtime/ctime version, so an added, removed, rewritten,
 permission-changed or same-size-restored-mtime file is seen before the next
 decision; whole-document validation, taint and foreign-owner semantics, the
 live destination stat, the pin and handoff gates, and the ordered
 duplicate-mention reads are unchanged. This is a work bound, not a fairness
 or throughput claim: it removes repeated whole-document reads and decodes
-when the compact working set fits the fixed budget.
+when the compact working set fits the fixed budget. The #778 reproduction
+demonstrates the amplification mechanism at fixture scale; it does not
+measure the live forest's size or its exact decode multiplier.
 
 **The window, the sweep, and the egress order.** Promotion scheduling is
 the stage window's own semantics, pointed at the ram ledger: admission

@@ -3,13 +3,15 @@
 Derived from the PR #779 reproduction.  The live Stage A 8ca8952c incident
 (the RAM head promotion ``a201e161`` held the destination-root ownership lock
 with ~29 GB rchar over ~3,020 large reads, zero writes, 16 workers and ~527
-CPU-s, and was auto-withdrawn) was traced to ``_Copier._copy_one`` ->
-``_StagedPublisher.try_adopt`` -> ``_proof_search`` per entry: with the #761
-index unable to retain an owner's records, every attempted adoption re-read
-and re-decoded every fragment and sidecar, and each refusal first ran
-``_reclaim``.  At a 64 KiB scaled budget the reproduction measured 421 decodes
-and 420 reclaims for 60 destinations over an 8-document fixture, against 8
-decodes and 0 reclaims with room.
+CPU-s, and was auto-withdrawn) was attributed by a source-only audit to
+``_Copier._copy_one`` -> ``_StagedPublisher.try_adopt`` -> ``_proof_search``
+per entry.  What this file demonstrates is the mechanism at fixture scale:
+with the #761 index unable to retain an owner's records, every attempted
+adoption re-read and re-decoded every fragment and sidecar, and each refusal
+first ran ``_reclaim``.  At a 64 KiB scaled budget the reproduction measured
+421 decodes and 420 reclaims for 60 destinations over an 8-document fixture,
+against 8 decodes and 0 reclaims with room.  The live forest's exact size and
+decode multiplier were not measured, and this file claims neither.
 
 That file was reproduction-only.  This is the regression the fix must satisfy,
 and it is a work-count gate, never a wall-clock gate:
@@ -18,9 +20,10 @@ and it is a work-count gate, never a wall-clock gate:
   once and reclaim zero times, with every destination still adopting -- at
   the fixture scale and as fixture and cap shrink together;
 * a budget nothing fits in must still decide correctly and retain nothing;
-* real ``_Copier`` threads and a contending reader must complete with no lost
-  or duplicated work and no extra decodes, synchronized by events rather than
-  by an unisolated timing maximum;
+* real ``_Copier`` threads and a competing adoption caller -- not a reader
+  lease, and not a fairness or latency claim -- must complete with no lost or
+  duplicated work and no extra decodes, their overlap established by events
+  rather than by an unisolated timing maximum;
 * compact-retained verdicts must equal the same documents' uncached verdicts,
   and mutation, taint/heal and duplicate-sidecar-mention answers must be
   preserved.
@@ -460,23 +463,28 @@ def test_duplicate_sidecar_mentions_keep_their_order(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Real copier threads and a reader, synchronized by events
+# Real copier threads and a competing adoption caller, synchronized by events
 # --------------------------------------------------------------------------
 
-def test_copier_threads_and_a_reader_contend_without_losing_work(
+def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
         tmp_path, monkeypatch):
     """The production publication path under real threads, not a timer.
 
-    Four ``_Copier`` workers adopt all destinations while a reader thread
-    walks the same forest.  The first metadata decode is gated: it holds the
-    ownership lock until the reader has begun its own lock acquisition, so
-    the overlap is a happened-before relation rather than a race won by a
-    scheduler.  Every adoption must land exactly once, no thread may see a
-    wrong answer, and the cache must keep the work at one decode per stable
-    document.
+    Four ``_Copier`` workers adopt every destination under the constrained
+    budget while a second adoption caller -- an ordinary ``try_adopt``
+    caller on another thread, not a reader lease -- walks the same forest.
+    The first metadata decode is gated: it holds the ownership lock until
+    the competing caller has entered its own acquisition of that lock (a
+    wrapper around ``stage_ownership_lock`` records the attempt), so the
+    two are demonstrably overlapping rather than merely started together.
+    This is a correctness and work-bound regression under concurrency:
+    every adoption must land exactly once, no caller may see a wrong
+    answer, and the compact index must keep the work at one decode per
+    stable document.  It measures no fairness, latency or throughput, and
+    it proves no reader-lease interaction.
     """
     forest = _fixture(tmp_path)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", DEFAULT_BUDGET)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     counters = _Counters(monkeypatch)
     publisher = _publisher(forest, tmp_path)
     copier = stage_move._Copier(
@@ -488,7 +496,7 @@ def test_copier_threads_and_a_reader_contend_without_losing_work(
     whole = {entry["path"] for entry in forest["entries"]}
 
     first_decode = threading.Event()
-    reader_attempted = threading.Event()
+    competing_entered = threading.Event()
     gate = threading.Lock()
     counted_read = stage_move._read_metadata
 
@@ -497,39 +505,58 @@ def test_copier_threads_and_a_reader_contend_without_losing_work(
             if not first_decode.is_set():
                 first_decode.set()
                 # Hold the decode (and with it the ownership lock) until the
-                # reader has actually started its own acquisition.
-                assert reader_attempted.wait(30), (
-                    "the reader never reached the publisher")
+                # competing caller has entered its own acquisition of it.
+                assert competing_entered.wait(30), (
+                    "the competing adopter never reached the ownership lock")
         return counted_read(path)
 
     monkeypatch.setattr(stage_move, "_read_metadata", gated_read)
 
-    reader_results: list[bool] = []
-    reader_errors: list[BaseException] = []
+    real_lock = pool.PoolQueue.stage_ownership_lock
 
-    def reader() -> None:
+    def watched_lock(self, stage_root, *, blocking=True):
+        manager = real_lock(self, stage_root, blocking=blocking)
+        if threading.current_thread().name != "competing-adopter":
+            return manager
+
+        class _Watched:
+            def __enter__(self):
+                competing_entered.set()
+                return manager.__enter__()
+
+            def __exit__(self, *exc):
+                return manager.__exit__(*exc)
+
+        return _Watched()
+
+    monkeypatch.setattr(pool.PoolQueue, "stage_ownership_lock", watched_lock)
+
+    competing_results: list[bool] = []
+    competing_errors: list[BaseException] = []
+
+    def competing_adopter() -> None:
         try:
             assert first_decode.wait(30), "no copier decode was observed"
-            reader_attempted.set()
             for entry in forest["entries"]:
                 adopted = publisher.try_adopt(
                     entry, forest["ram_root"] / Path(entry["path"]).name,
                     stage_move._origin_id_of(entry["path"]))
-                reader_results.append(adopted is not None)
+                competing_results.append(adopted is not None)
         except BaseException as exc:            # surfaced, never swallowed
-            reader_errors.append(exc)
+            competing_errors.append(exc)
 
-    thread = threading.Thread(target=reader, name="reader", daemon=True)
+    thread = threading.Thread(target=competing_adopter,
+                              name="competing-adopter", daemon=True)
     thread.start()
     try:
         copier.run(forest["entries"], whole=whole, stop=threading.Event())
     finally:
         thread.join(60)
 
-    assert not thread.is_alive(), "the reader never finished"
-    assert reader_errors == [], reader_errors
-    assert reader_results == [True] * len(forest["entries"]), (
-        "the contending reader lost an adoption")
+    assert not thread.is_alive(), "the competing adopter never finished"
+    assert competing_errors == [], competing_errors
+    assert competing_results == [True] * len(forest["entries"]), (
+        "the competing adopter lost an adoption")
     assert copier.errors == [], copier.errors
     assert len(copier.staged) == len(forest["entries"]), (
         f"{len(copier.staged)} of {len(forest['entries'])} entries landed")
