@@ -5,6 +5,12 @@ slot counts. Host admission's existing lock serializes decisions and metadata;
 no process is stopped when load rises. Fresh evidence permits one bounded cold
 start; missing evidence refuses admission. Measurements, explicit exclusivity and ambiguous legacy requests stay
 exclusive. This controller currently qualifies single-device workers only.
+
+Every power ratio here divides a GPU-only reading by a GPU-only reference. A
+device that publishes no programmable power limit gets that reference from
+``admission_power_reference``: the highest draw this host has sampled from it,
+floored by a declared per-device capacity fact. The vendor SoC envelope stays
+in the sample for display and provenance and is never a denominator.
 """
 from __future__ import annotations
 
@@ -52,9 +58,81 @@ SW_CAP_OTHER_LIMITERS = ('hw_slowdown', 'hw_thermal_slowdown',
                          'hw_power_brake_slowdown', 'sw_thermal_slowdown',
                          'sync_boost')
 
+#: Declared GPU-only power capacity per device model, in watts.  It is the
+#: admission reference floor for a device whose driver publishes no
+#: programmable power limit, and it is a declared capacity fact: one value per
+#: device name, owned by the fleet owner, changed on this one line.  It is not
+#: a published vendor envelope and it is deliberately not derived from one:
+#: GB10's 140 W figure is the whole-SoC TDP and includes CPU power, so it
+#: cannot serve as the denominator of a GPU-only reading.  A device model with
+#: no entry here and no driver limit has no admission reference at all, and its
+#: sample stays invalid, which refuses.
+DECLARED_GPU_POWER_REFERENCE_W = {'NVIDIA GB10': 110.0}
+
+#: Where the declared numbers come from, carried into every decision record so
+#: a reader can tell which reference a refusal was made against.
+DECLARED_GPU_POWER_REFERENCE_SOURCE = (
+    'declared fleet capacity fact (PrismaBuild #806): Netdata '
+    'nvidia_smi.gpu_power_draw maxima over 2026-08-28..2026-09-21, '
+    'sparky 114 W and sparklina 106 W')
+MEASURED_GPU_POWER_REFERENCE_SOURCE = (
+    'highest GPU-only power.draw this host has sampled from this device, '
+    "ratcheted in the host-local gpu-state.json 'power_peaks' record")
+
+
+def admission_power_reference(device, state):
+    """Return ``(watts, scope, source)`` for the reference admission divides by.
+
+    The driver's own programmable power limit is admission grade and is used
+    unchanged.  GB10 publishes no such limit, and the 140 W figure it publishes
+    instead is the SoC TDP: a whole-module number that includes CPU power,
+    while ``power_w`` is a GPU-only reading.  Dividing one by the other is not
+    a saturation fraction, so that scope is kept for display and provenance and
+    is never the denominator here.  In its place admission reads the highest
+    GPU-only draw this host has actually sampled from this device, floored by
+    the declared capacity fact above so an idle history cannot authorize
+    anything.  ``(None, None, None)`` means there is no reference, which leaves
+    the sample invalid and refuses.
+    """
+    limit = device.get('power_limit_w')
+    if _number(limit) and limit:
+        return float(limit), 'gpu_power_limit', device.get('power_reference_source')
+    if device.get('power_reference_scope') != 'soc_tdp':
+        return None, None, None
+    declared = DECLARED_GPU_POWER_REFERENCE_W.get(device.get('name'))
+    if not _number(declared) or not declared:
+        return None, None, None
+    peak = (state.get('power_peaks') or {}).get(device.get('uuid'))
+    if _number(peak) and peak > declared:
+        return float(peak), 'measured_peak', MEASURED_GPU_POWER_REFERENCE_SOURCE
+    return float(declared), 'declared_fallback', DECLARED_GPU_POWER_REFERENCE_SOURCE
+
+
+def record_power_peak(state, device):
+    """Ratchet the highest GPU-only draw sampled from this device.
+
+    The published SoC envelope is a legitimate ceiling on a GPU-only reading,
+    so a sample above it is refused rather than ratcheted: one implausible
+    ``power.draw`` must not raise the admission reference permanently.  The
+    ratchet has no decay window; whether it should acquire one is an owner
+    decision and not invented here.  Recorded after the decision it could
+    otherwise have influenced, so a sample never widens its own headroom.
+    """
+    identity, power = device.get('uuid'), device.get('power_w')
+    if not isinstance(identity, str) or not identity or not _number(power):
+        return
+    ceiling = device.get('power_reference_w')
+    if _number(ceiling) and ceiling and power > ceiling:
+        return
+    peaks = state.get('power_peaks')
+    if not isinstance(peaks, dict):
+        peaks = state['power_peaks'] = {}
+    if not _number(peaks.get(identity)) or power > peaks[identity]:
+        peaks[identity] = float(power)
+
 
 def sw_cap_idle_first_job(sample, device, reference, *, holders, measurement,
-                          pressure):
+                          pressure, reference_scope=None, reference_source=None):
     """Whether an idle SW-capped GB10 may admit its first generation job.
 
     Returns ``(eligible, diagnosis)``.  ``diagnosis`` always carries the
@@ -73,6 +151,8 @@ def sw_cap_idle_first_job(sample, device, reference, *, holders, measurement,
         'power_reference_scope': device.get('power_reference_scope'),
         'power_w': device.get('power_w'),
         'power_reference_w': reference,
+        'admission_reference_scope': reference_scope,
+        'admission_reference_source': reference_source,
         'sm_clock_mhz': device.get('sm_clock_mhz'),
         'max_sm_clock_mhz': device.get('max_sm_clock_mhz'),
         'throttle_reasons': device.get('throttle_reasons'),
@@ -364,13 +444,13 @@ class Controller:
         valid = (valid and all(_number(sample.get(k)) for k in host_fields)
                  and 0 < sample['host_total_bytes'] >= sample['host_available_bytes']
                  and all(sample[k] <= 100 for k in host_fields if 'pressure' in k))
-        reference = device.get('power_limit_w')
-        if not _number(reference) or not reference:
-            # The GB10 reference is a SoC envelope, explicitly not a measured
-            # GPU-only limit. Low ratio is a probe permission, never saturation
-            # certification; CPU pressure and attribution remain independent.
-            reference = (device.get('power_reference_w')
-                         if device.get('power_reference_scope') == 'soc_tdp' else None)
+        # Probe state is read before the reference because the reference is
+        # derived from it: the published SoC envelope is display provenance,
+        # and admission divides by the measured peak or the declared floor.
+        # Low ratio is a probe permission, never saturation certification;
+        # CPU pressure and attribution remain independent.
+        state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
+        reference, reference_scope, reference_source = admission_power_reference(device, state)
         # A device that declares it has no saturation instrument is admitted on
         # the evidence it does carry -- identity, memory domain, free VRAM,
         # foreign holders and host pressure -- and is never granted the two
@@ -382,7 +462,6 @@ class Controller:
                  and device.get('memory_domain') in ('shared_system', 'discrete')
                  and (memory_only or (_number(device.get('power_w')) and _number(reference)
                                       and reference > 0)))
-        state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
         low = False
         feedback_allowed = False
         sw_cap_exception = None
@@ -414,6 +493,7 @@ class Controller:
                              or device['power_w'] >= .80 * reference or limited is True)
                 low = valid and not congested and device['power_w'] <= .65 * reference
                 feedback_allowed = observe_feedback(state, sample, members)
+                record_power_peak(state, device)
             if sample['sample_id'] != state.get('sample_id'):
                 continuous = 0 < sample['sampled_unix'] - state.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                 state.update(sample_id=sample['sample_id'], sampled_unix=sample['sampled_unix'],
@@ -422,7 +502,8 @@ class Controller:
             if congested and not memory_only:
                 eligible, sw_cap_exception = sw_cap_idle_first_job(
                     sample, device, reference, holders=holders,
-                    measurement=measurement, pressure=pressure)
+                    measurement=measurement, pressure=pressure,
+                    reference_scope=reference_scope, reference_source=reference_source)
                 if eligible:
                     # First generation job only: the SW cap is a clock policy
                     # at idle power, not saturation evidence.  ``low`` stays
@@ -436,6 +517,8 @@ class Controller:
                 return refuse("host_or_device_congested", pressure=pressure,
                               foreign_processes=sample['foreign_processes'],
                               power_w=device.get('power_w'), power_reference_w=reference,
+                              power_reference_scope=reference_scope,
+                              power_reference_source=reference_source,
                               limited=limited,
                               sw_cap_idle_exception=sw_cap_exception)
             if device.get('memory_domain') == 'discrete':
@@ -478,6 +561,9 @@ class Controller:
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
                     return refuse("holder_telemetry_unavailable", holder=holder.name)
         self.last_decision = {"reason": "admitted", "sample": sample,
+                                "power_reference_w": reference,
+                                "power_reference_scope": reference_scope,
+                                "power_reference_source": reference_source,
                                 "sw_cap_idle_exception": sw_cap_exception}
         return {'declared_gpu': int(demand['gpu']), 'exclusive': exclusive,
                 'action_key': str(item['action_key']), 'members_before': members,

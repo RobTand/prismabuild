@@ -126,7 +126,8 @@ def gpu_rig(tmp_path, monkeypatch):
         'cpu_count': 8, 'interval_s': 1.})
     sample = {'schema': 'prismabuild.gpu_capacity.v1', 'sample_id': '100',
               'sampled_unix': 100., 'complete': True, 'attributed': True,
-              'devices': [{'uuid': 'GPU-1', 'power_w': 15., 'power_limit_w': None,
+              'devices': [{'uuid': 'GPU-1', 'name': 'NVIDIA GB10', 'power_w': 15.,
+                           'power_limit_w': None,
                            'power_reference_w': 140., 'power_reference_scope': 'soc_tdp',
                            'memory_domain': 'shared_system', 'limited': False}],
               'host_total_bytes': 128 * adaptive_gpu.GIB,
