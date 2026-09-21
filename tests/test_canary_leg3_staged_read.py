@@ -729,14 +729,20 @@ def test_driver_binds_progress_to_the_receipt_attempt(tmp_path: Path) -> None:
     assert evidence["attempt"] == 1
     assert evidence["observation"]["last_accepted"]["units_completed"] == 3
 
-    # A superseding terminal attempt that did NOT produce this receipt must
-    # not lend its (or an older attempt's) observation to this artifact.
+    # A superseding terminal attempt must not lend its observation to an
+    # artifact another attempt produced: the binding follows the artifact to
+    # its own attempt, and an artifact no attempt's stdout carries proves
+    # nothing.
     superseding = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":false}\n'
     _write_terminal(queue, CONSUMER, attempts=[artifact, superseding])
+    bound = pbcanary.terminal_progress_observation(
+        _paths(queue, tmp_path), CONSUMER, artifact)
+    assert bound is not None and bound["attempt"] == 1
+    latest = pbcanary.terminal_progress_observation(
+        _paths(queue, tmp_path), CONSUMER, superseding)
+    assert latest is not None and latest["attempt"] == 2
     assert pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, artifact) is None
-    assert pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, superseding) is not None
+        _paths(queue, tmp_path), CONSUMER, "not in any attempt\n") is None
 
 
 def test_driver_attaches_the_observation_to_the_verify_envelope(
