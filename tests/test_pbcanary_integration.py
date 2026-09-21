@@ -75,19 +75,36 @@ def test_leg3_manifest_roundtrip_in_tmp(tmp_path: Path) -> None:
 
 def _leg3_ok_receipt() -> tuple[dict, dict]:
     spec = leg3.build()
+    chunks = []
+    for chunk in spec["expected"]["chunks"]:
+        path = f"/x/{chunk['name']}"
+        chunks.append({
+            "path": path, "offset": 0, "bytes": chunk["size"],
+            "sha256": chunk["sha256"],
+            "serving": {"tier_id": "prismabuild-stage:testbox", "epoch": "",
+                        "pin_id": "f" * 32, "range_ref": f"0:{path}",
+                        "path": f"/stage/{chunk['name']}"},
+        })
     envelope = {
         "schema": leg3.LEG3_SCHEMA,
         "leg": 3,
-        "chunks": [
-            {"path": f"/x/{c['name']}", "bytes": c["size"], "sha256": c["sha256"]}
-            for c in spec["expected"]["chunks"]
-        ],
+        "chunks": chunks,
         "combined": spec["expected"]["combined"],
         "ok": True,
     }
     raw = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    return spec["expected"], {"stdout": raw + "\n", "returncode": 0,
-                              "artifact": raw + "\n"}
+    receipt = {
+        "stdout": raw + "\n", "returncode": 0, "artifact": raw + "\n",
+        "progress_observation": {
+            "source": "action-progress", "accepted_count": 1,
+            "rejected_count": 0,
+            "phases_entered": len(leg3.LEG3_PHASES),
+            "last_accepted": {
+                "phase": leg3.LEG3_PHASES[-1], "units_completed": 3,
+                "unit": None, "reported_unix": 1.0},
+        },
+    }
+    return spec["expected"], receipt
 
 
 def test_leg3_verify_ok_and_corrupted_are_exit1_without_markers() -> None:
