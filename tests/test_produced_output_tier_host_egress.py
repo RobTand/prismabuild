@@ -7,8 +7,10 @@ window credit never comes back and the next window never funds.
 
 These tests put the owner on "another box" the only way a single-box fixture
 can do it honestly: the ANNOUNCED TIER RECORD names a host that is not this
-one, and the stage directory is made read-only for the owner's calls, which is
-the owner's real view of it. The egress then has to run as the queue action
+one, and the owner's calls are made from the owner's real view -- the stage
+directory read-only, and the fleet tools NOT importable, because a production
+owner loads `prismabuild` from `<generation>/src` and the generation's `tools/`
+is never on its import path. The egress then has to run as the queue action
 `retire_batch` publishes for the tier host, and it is executed for real through
 the same `Pool.execute` seam the movers use, with the directory writable again
 -- the tier host's real view.
@@ -51,18 +53,44 @@ def _isolated_synthetic_launch_context(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-class _ReadOnlyStage:
-    """The owner's view of the stage: mounted, readable, not writable."""
+_ABSENT = object()
+
+
+class _NoFleetTools:
+    """The owner's import path: `<generation>/src`, with no `tools/` beside it.
+
+    Every fixture in this tree puts `tools/fleet` on `sys.path`, so a bare
+    `import stage_release` inside the package always resolves in a test and
+    never resolves in production. `None` in `sys.modules` is what makes the
+    import fail here the way it fails there.
+    """
+
+    def __enter__(self):
+        self._saved = sys.modules.get("stage_release", _ABSENT)
+        sys.modules["stage_release"] = None  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, *exc):
+        if self._saved is _ABSENT:
+            sys.modules.pop("stage_release", None)
+        else:
+            sys.modules["stage_release"] = self._saved  # type: ignore[assignment]
+
+
+class _OwnersView(_NoFleetTools):
+    """A GPU host's view: the stage mounted read-only, no fleet tools."""
 
     def __init__(self, stage_root: Path):
         self.stage_root = stage_root
 
     def __enter__(self):
+        super().__enter__()
         os.chmod(self.stage_root, 0o555)
         return self
 
     def __exit__(self, *exc):
         os.chmod(self.stage_root, 0o755)
+        super().__exit__(*exc)
 
 
 def _world_with_the_stage_elsewhere(tmp_path: Path, **kwargs):
@@ -83,10 +111,11 @@ def _staged_batch(world, batch_id: str, tag: str, payload: bytes):
     return descs, first
 
 
-def _run_on_the_tier_host(world, action_key: str, worker: str) -> dict:
+def _run_on_the_tier_host(world, action_key: str, worker: str, *,
+                          host: str = ELSEWHERE) -> dict:
     """Claim and execute one row the way the tier host's worker would."""
 
-    claimed = world.q.claim(owner=worker, tags=[ELSEWHERE])
+    claimed = world.q.claim(owner=worker, tags=[host])
     assert claimed is not None, "the row must be claimable on the tier host"
     assert claimed["action_key"] == action_key, claimed["action_key"]
     row = pool._read_json(world.q.item_path(pool.CLAIMED, action_key))
@@ -114,7 +143,9 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     RED on the base: `retire_batch` runs `stage_release.evict` in the owner's
     process, whose `os.unlink` the read-only stage refuses, so the answer is
     `egress-incomplete` carrying a permission error, no action is published,
-    and no later call can ever do better.
+    and no later call can ever do better. With the owner's real import path
+    the base does not get that far: its unconditional `import stage_release`
+    raises before anything is read.
     """
 
     world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
@@ -127,7 +158,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     assert staged.read_bytes() == payload
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
 
-    with _ReadOnlyStage(world.stage_root):
+    with _OwnersView(world.stage_root):
         deferred = world.retire("b1")
         egress0 = _assert_own_egress_deferral(deferred)
         assert deferred["receipt"]["egress_state"] == "published"
@@ -167,7 +198,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
     assert map_mod.read_fragments(world.out_base, ns) == []
 
-    with _ReadOnlyStage(world.stage_root):
+    with _OwnersView(world.stage_root):
         retired = world.retire("b1")
         assert retired.get("ok") is True, retired
         assert str(retired["mover_key"]) == mover0
@@ -195,7 +226,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     world.run_mover(mover1, "w-rev")
     assert staged.read_bytes() == payload
 
-    with _ReadOnlyStage(world.stage_root):
+    with _OwnersView(world.stage_root):
         egress1 = _assert_own_egress_deferral(world.retire("b1"))
         assert egress1 not in (egress0, mover0, mover1)
         assert staged.read_bytes() == payload
@@ -203,7 +234,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     assert outcome.get("returncode") == 0, outcome
     world.q.finish(egress1, status="executed")
     assert not staged.exists()
-    with _ReadOnlyStage(world.stage_root):
+    with _OwnersView(world.stage_root):
         retired = world.retire("b1")
         assert retired.get("ok") is True, retired
         assert str(retired["mover_key"]) == mover1
@@ -255,7 +286,8 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     read = world.pin(mover0, manifest, len(payload))
     assert read.get("ok") is True, read
 
-    egress = _assert_own_egress_deferral(world.retire("b1"))
+    with _NoFleetTools():
+        egress = _assert_own_egress_deferral(world.retire("b1"))
     attempts = 0
     while po._mover_live_state(world.q, egress) == pool.READY:
         attempts += 1
@@ -267,7 +299,8 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     assert po._mover_live_state(world.q, egress) == pool.FAILED
     assert staged.read_bytes() == payload
 
-    blocked = world.retire("b1")
+    with _NoFleetTools():
+        blocked = world.retire("b1")
     assert blocked.get("ok") is False, blocked
     assert blocked.get("refusal") == "egress-incomplete", blocked
     assert blocked["egress_action_key"] == egress
@@ -285,7 +318,8 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     assert outcome.get("returncode") == 0, outcome
     world.q.finish(egress, status="executed")
     assert not staged.exists()
-    retired = world.retire("b1")
+    with _NoFleetTools():
+        retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
@@ -304,3 +338,39 @@ def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
     assert "egress_action_key" not in retired["receipt"]
     assert not (world.stage_root / "p1.bin").exists()
     assert list((Path(world.q.root) / pool.READY).glob("*.json")) == []
+
+
+def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
+        tmp_path: Path) -> None:
+    """The in-process egress needs the tool; an owner without it never raises.
+
+    `stage_release` is a fleet tool, and the package a production owner imports
+    does not carry it. On the tier host itself such an owner takes the same
+    tier-host route a GPU host takes -- placed on this box, because this box is
+    the one the tier record names -- instead of failing its first retirement on
+    an import.
+    """
+
+    here = socket.gethostname()
+    world = restage._World(tmp_path, window_gib=1, gib=4)
+    assert restage._tier_host(world.q) == here
+    payload = b"T" * 700
+    _descs, first = _staged_batch(world, "b1", "p1", payload)
+    mover0 = str(first["mover_key"])
+    world.run_mover(mover0, "w-fwd")
+    staged = world.stage_root / "p1.bin"
+
+    with _NoFleetTools():
+        egress = _assert_own_egress_deferral(world.retire("b1"))
+    assert staged.read_bytes() == payload
+    row = pool._read_json(world.q.item_path(pool.READY, egress))
+    assert isinstance(row, dict) and row["tags"] == [here], row
+    outcome = _run_on_the_tier_host(world, egress, "w-tier-here", host=here)
+    assert outcome.get("returncode") == 0, outcome
+    world.q.finish(egress, status="executed")
+    assert not staged.exists()
+    with _NoFleetTools():
+        retired = world.retire("b1")
+    assert retired.get("ok") is True, retired
+    assert retired["receipt"]["egress_action_key"] == egress
+    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0

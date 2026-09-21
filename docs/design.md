@@ -4560,6 +4560,15 @@ it and nothing records it. A process inside a container reads the container's
 name as its hostname and therefore always takes this route, which is the safe
 direction: the route works from any box, the tier host included.
 
+`stage_release` is a fleet tool, not part of the `prismabuild` package, and a
+production owner imports the package from `<generation>/src` with the
+generation's `tools/` off its import path. `retire_batch` therefore imports
+the tool only on the in-process route, and an owner that cannot import it takes
+the tier-host route even on the tier host. The package imports no other fleet
+tool by bare name; a test fixture that puts `tools/fleet` on `sys.path` hides
+such an import, so the tier-host tests make the owner's calls with
+`stage_release` unimportable.
+
 Three behaviours differ from the in-process route, all deliberate. The staged
 paths are filed on the still-live copy before the action is published, because
 the fragment is gone by the call that files the retirement. An attempt that
@@ -4568,7 +4577,10 @@ pin, never a deferral -- while the same key is published again for the next
 re-drive. A mover still `READY` or `CLAIMED` is answered `own-copy-in-flight`
 before any egress is published. A retirement the owner abandons leaves its
 egress action queued: if that action later completes, the next `retire_batch`
-files it, and a read before that finds no fragment and refuses.
+files it, and a read before that finds no fragment and refuses. Publishing the
+action needs the producer's claimed row for its launch context, as publishing a
+mover does, so a call made after the owner's claim has ended can file an egress
+that already completed and cannot start one.
 
 `produced_output.recover_batches` is the read-only census over the same
 evidence, and it may not turn unproven into a verdict. Fragments prove bytes

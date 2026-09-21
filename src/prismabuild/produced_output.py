@@ -3679,7 +3679,9 @@ def _egress_runs_in_process(record: Mapping[str, object] | None) -> bool:
     the box's, and the answer is "elsewhere": that is the safe direction, and
     it must not be "fixed" by resolving `record["host"]` some other way. A
     tier with no announced record or host keeps the in-process egress, whose
-    own stage-root check answers for it.
+    own stage-root check answers for it. `retire_batch` adds one condition:
+    the in-process egress also needs the fleet tool importable, and an owner
+    that cannot import it takes the tier-host route wherever it runs.
     """
 
     import socket
@@ -3959,8 +3961,6 @@ def retire_batch(queue, instance: Mapping[str, object],
     nothing and leaves the old materialization holding its own credit.
     """
 
-    import stage_release
-
     from prismabuild import core as core_mod
     from prismabuild import pool as pool_mod
 
@@ -4067,6 +4067,22 @@ def retire_batch(queue, instance: Mapping[str, object],
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         in_process = _egress_runs_in_process(tier_record)
+        stage_release = None
+        if in_process:
+            # `stage_release` is a FLEET TOOL, not part of this package: the
+            # published generation carries it under `tools/`, and an owner
+            # that loads `prismabuild` from `<generation>/src` -- which is
+            # how every production owner loads it -- cannot import it. The
+            # tier host's own action can, so an owner without the tool takes
+            # that route even on the tier host. Never imported on the
+            # tier-host route, which is the route a GPU host always takes.
+            try:
+                import stage_release  # type: ignore[no-redef]
+            except ImportError:
+                in_process = False
+        if not in_process and tier_record is None:
+            return {"ok": False,
+                    "refusal": f"unknown-retain: tier-not-announced: {tier}"}
         if not in_process and set(staged_paths) - recorded_paths:
             try:
                 _record_staged_paths(
@@ -4087,6 +4103,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     # refusing a successor, and a failed or partial egress files nothing and
     # leaves the old materialization holding its own credit.
     if in_process:
+        assert stage_release is not None
         receipt = stage_release.evict(
             queue, target_mover, consumer_action_key=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
