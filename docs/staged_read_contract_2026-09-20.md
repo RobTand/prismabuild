@@ -25,6 +25,14 @@ produced-output strict-read acceptance gate. The dated addendum
 this update does and does not provide. A specification update is not deployed
 conformance.
 
+Status corrected later on 2026-09-21 (docs-only reconciliation; no obligation
+weakened): PR781 is merged and its produced-output module and
+`pbrun --produced-output-template` are present in the deployed runtime
+generation `d794839c589d-1789966072-c66c7f0568d0`; the produced-output
+lifecycle, deployment of the PR792 repair, and every PO/BUD/DUR workload proof
+remain open. §7 and §11 state the corrected current status; the dated
+addendum carries the appended evidence and its snapshot time.
+
 ## 1. Scope and authority
 
 - SC-01: PB decides which action runs where and when (admission, placement,
@@ -327,10 +335,24 @@ wrote, uses the same staged RAM/SSD path and the same reader lease as any
 other bulk input. Write preauthorization precedes the write; committing the
 origin and creating its first staged materialization are separate steps, so
 the first copy may wait until a read needs it without reserving a full-corpus
-SSD window. The produced-output materialization API that this section names
-is unmerged target against PB main `f5b6bba0358` (PR781 lane). The rows below
-are normative requirements, not deployed support; axis-qualified evidence is
-in `staged_read_produced_output_addendum_2026-09-21.md`.
+SSD window. Current status, corrected later on 2026-09-21: the produced-output
+materialization API this section names is merged into PB main by PR781
+(`dd5523dd3ff66025170f1e2248d8b32d180d7a78`, head
+`42f2cfb874077da66c27401e718d3636903a8a40`), root-accepted for source merge
+only, and is present in the deployed runtime generation
+`d794839c589d-1789966072-c66c7f0568d0` (source
+`d794839c589dee8cc9427e10127f6381800eaa05`). Deployed code presence is not
+behavioral conformance: the PQ production constructor/SDK/template/lifetime
+wiring is incomplete, the PR792 snapshot-forwarding repair is merged
+(`aa03c0bde1b52138b02be2b13083bf3e8274d9ac`) but not in the active runtime,
+the own-copy egress repair had no accepted commit at this snapshot (PR795
+merged later at 2026-09-21T06:33:58Z; source-merge accepted, deployment and
+global behavior proof pending),
+and no successful global produced-output lifecycle has completed: the one
+global attempt failed at the mover preflight before any read, while library and
+component cycles did run. The rows below are normative requirements,
+not deployed support; axis-qualified evidence is in
+`staged_read_produced_output_addendum_2026-09-21.md`.
 
 - PO-01 origin publication and physical materialization are separate
   lifetimes. PB publishes and charges the immutable logical origin batch once,
@@ -360,10 +382,23 @@ in `staged_read_produced_output_addendum_2026-09-21.md`.
   PB stages successors through the ordinary pool; no new application
   dispatcher is created (SC-02). Existing records carry the edge, and no
   mandatory new wire schema or ready-record API is required. Recorded
-  implementation gap: the current strict reader rejects a newly produced
-  batch that is absent from the static input map
-  (`stage-a-8ca-attempt-review.json`); the PR781 and PQ881 lanes are
-  unaccepted.
+  implementation gap (historical, 8ca attempt): the strict reader rejected a
+  newly produced batch absent from the static input map
+  (`stage-a-8ca-attempt-review.json`); the current PQ881 branch carries bridge
+  component tests, and the global cycle is not qualified. PR781 is merged at
+  source level (`dd5523dd3ff66025170f1e2248d8b32d180d7a78`) and its acceptance
+  is not a live-cycle proof. The one actual global produced-output live
+  attempt failed before any read: the child mover request lost the producer's
+  sealed checkout
+  snapshot, the mover (`6fbc96301c6cc2ad245003a4866271288532dcde5ff37a324046e7004abd0846`)
+  was claimed and then refused in 0.76 s by core preflight, and its owner
+  (`0dedb066f8684fba56f388496089790b53a0b0658a4abe8d5945e75592178669`) failed
+  closed on its 600 s boundary-staging budget with no full Stage A launched
+  (`produced-mover-snapshot-root-diagnosis.json`). The child
+  snapshot-forwarding repair is merged as PR792
+  (`aa03c0bde1b52138b02be2b13083bf3e8274d9ac`) and is not in the active
+  runtime; retirement waits are a different edge and do not change this
+  anchor.
 - PO-03 repeat materialization. After a staged copy of an unchanged committed
   logical batch fully retires, the batch MAY be materialized again on demand
   (reverse reads, replay, restaged windows). One origin charge covers every
@@ -417,14 +452,23 @@ in `staged_read_produced_output_addendum_2026-09-21.md`.
   own root; it is activated at generation
   `43b790cce88c-1789962578-9e60f8c7ea49` (publication verified
   2026-09-21T04:07:13Z; three live nodes converged at 2026-09-21T04:09:13Z
-  with the rollout idle). The PB781 branch
-  `integrate/produced-output-current-20260921` head `73a39d498b6a` carries a
-  source fix with the same order for the outer-caller produced-output
-  `retire_batch`: it validates and selects under the output-prefix ownership
-  lock, releases that lock before `stage_release.evict`, and revalidates the
-  exact selection before filing the retirement record. That branch is
-  unaccepted and its tests are ongoing; the lower-edge proof does not prove
-  the unmerged stack.
+  with the rollout idle). The outer-caller produced-output `retire_batch`
+  source carries the same order and is merged by PR781
+  (`dd5523dd3ff66025170f1e2248d8b32d180d7a78`, head
+  `42f2cfb874077da66c27401e718d3636903a8a40`): it validates and selects under
+  the output-prefix ownership lock, releases that lock before
+  `stage_release.evict`, and revalidates the exact selection before filing the
+  retirement record, and that source is present in deployed generation
+  `d794839c589d-1789966072-c66c7f0568d0`. That is source and code presence,
+  not behavioral proof: no global produced-output retirement has been accepted
+  (library and component cycles did run; a separate admitted private-queue
+  diagnostic, action `83264d103a2a` iteration 1, exposed the own-copy defect
+  recorded in the addendum, issue 793, whose
+  repair PR795 merged later at 2026-09-21T06:33:58Z and is source-merge
+  accepted (`pb795-root-acceptance.json`); deployment and global behavior
+  proof pending; PO-05/PO-07/ACC-07 obligations cover it), the PR792 repair
+  is not deployed, and the deployed lower edge alone does not discharge this
+  row.
 
 Budget and durability requirements for produced workloads:
 
@@ -550,10 +594,22 @@ Budget and durability requirements for produced workloads:
   merely written; and attributable source, runtime, action, and CAS proof.
   These are insufficient alone: wrapper exit 0, reservations or occupancy,
   cache-hit counters, and digest equality of direct original-file reads.
-  Historical canary CPU, CUDA, and cross-Spark payload evidence survives; the
-  strict staged-only and accepted-progress qualification is unqualified
-  (#784, branch `fix/784-canary-staged-reader-20260921`). The correction of
-  record and the remaining gaps are in the dated addendum.
+  Historical canary CPU, CUDA, and cross-Spark payload evidence survives. The
+  #784 staged-reader stack is now merged (PR788, merge
+  `c9af82333eeb8900b139e6c593fa6258b0421d63`) and carried by deployed
+  generation `d794839c589d-1789966072-c66c7f0568d0`; the verified baseline
+  canary ran leg 3 — the strict staged read with pin/tier records and
+  independently observed accepted progress — on Sparky only, action
+  `e44c5a11db6a87dfa95c29425ef040e90f1c790370230e2a58cb5a2b3f74a299`, on
+  static inputs. The both-Spark part of the canary is the separate leg-4
+  payload comparison (action `859436101045acedd1a88173a96b0b5b6fd55d1873f9f37112044d916ece8f0e`
+  on Sparky and `ac2f43ffdb749dd4176fa0e4326b893e5e5a72c29e02f3706f8f19dc0c095bd9`
+  on Sparklina), not a strict-read claim.
+  That qualifies the reader gate on the baseline only: the produced-output
+  application of this row — a produced output read in the global PQ cycle
+  with the origin-refusal negative control — remains unqualified, as does the
+  PQ live lifecycle. The correction of record and the remaining gaps are in
+  the dated addendum.
 - No test merely restates prose: each asserts a state transition, a
   refusal, or a byte/tier equality. Lease and read lifetimes are covered
   across async prefetch, two consumers, eviction, and epoch restart.
@@ -608,17 +664,30 @@ no agent waiver; no performance/quality numbers set here):
   calibration item: engineering continues on evidence; Rob prices the
   tradeoff when evidence exists.
 
-Update of 2026-09-21. §7 and the dated addendum
+Update of 2026-09-21, revised later that day (current-status reconciliation;
+no obligation weakened). §7 and the dated addendum
 `staged_read_produced_output_addendum_2026-09-21.md` update this contract
-without proving runtime conformance. At PB main `f5b6bba0358`, the
-produced-output API is unmerged, the produced-output strict-read/progress gate
-is unqualified, and no PO, BUD, or DUR requirement is deployed except the
-PB783 lower-edge part of PO-07 (activation records in the addendum). Deployment
-facts stay on their own axes: PB782 deployed runtime generation
-`054d7f0b66c8-1789960683-23b36e18a4f6`; PB783 is merged and activated at
-generation `43b790cce88c-1789962578-9e60f8c7ea49` (publication verified
-2026-09-21T04:07:13Z; three live nodes converged and the rollout idle at
-2026-09-21T04:09:13Z); PR781, PQ881, and PQ882 remain unaccepted, in-flight
-work. None of those facts satisfies a PO, BUD, DUR, or ACC-07 requirement
-beyond that scoped lower edge: a source merge is not deployment (ID-08), and
-a staged generation becomes deployment only when activation is observed.
+without proving runtime conformance. At PB main `aa03c0bde1b5` (this docs
+snapshot's base), PR781 is merged
+(`dd5523dd3ff66025170f1e2248d8b32d180d7a78`, head
+`42f2cfb874077da66c27401e718d3636903a8a40`) and its produced-output module and
+`pbrun --produced-output-template` are present in the deployed runtime
+generation `d794839c589d-1789966072-c66c7f0568d0` (737 files; three live nodes
+converged; rollout idle). The baseline fleet canary passed on both Sparks as
+static-input evidence (the leg-4 payload comparison on Sparky and Sparklina),
+with the strict staged-read leg 3 on Sparky including independently observed
+accepted progress; it is not a produced-output or global-cycle acceptance. PR792
+(`aa03c0bde1b52138b02be2b13083bf3e8274d9ac`) is merged but not deployed; the
+own-copy egress repair had no accepted commit at this snapshot (PR795 merged
+later at 2026-09-21T06:33:58Z; source-merge acceptance recorded, deployment
+and global behavior proof pending); the
+produced-output strict-read/progress gate is unqualified; PQ881 is unmerged and
+no upgraded Stage A has completed. Consequently no PO, BUD, or DUR
+requirement is deployed-with-behavior or workload-proven beyond the PB783
+lower cross-root egress edge of PO-07 and the scoped PR781/PR792
+source-and-component acceptance records. Deployment facts stay on their own axes: PB782 deployed
+runtime generation `054d7f0b66c8-1789960683-23b36e18a4f6`; PB783 is merged and
+activated at generation `43b790cce88c-1789962578-9e60f8c7ea49` (publication
+verified 2026-09-21T04:07:13Z; three live nodes converged and the rollout idle
+at 2026-09-21T04:09:13Z). A source merge is not deployment (ID-08); a deployed
+generation is not workload proof.
