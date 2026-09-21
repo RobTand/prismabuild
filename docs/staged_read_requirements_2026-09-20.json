@@ -1,7 +1,7 @@
 {
  "contract": "docs/staged_read_contract_2026-09-20.md",
  "ledger_schema": "pb.staged_read_requirements.v3",
- "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation.",
+ "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation. Updated 2026-09-21: rows PO-01 through PO-07, BUD-01 through BUD-03, DUR-01, and ACC-07 carry the produced-output origin/materialization, budget, and durability requirements from contract section 7; dated evidence qualification is in docs/staged_read_produced_output_addendum_2026-09-21.md; the section 4 SM-03 prose was reconciled to the SM-03 row without promoting workload proof. New rows are unmerged target unless their detail says otherwise: no deployment and no workload proof.",
  "requirements": [
   {
    "acceptance_assertion": "Manual review: each lifecycle-affecting change names its PB decision point; no PQ-side placement knob lands.",
@@ -1489,7 +1489,369 @@
   },
   {
    "acceptance": [
-    "manual-review:\u00a710 applied per step with stated bounds"
+    "ACC-06",
+    "ACC-07",
+    "TIER-04"
+   ],
+   "acceptance_assertion": "Manual review plus later ACC-06/ACC-07: origin publication is charged once and separable from staged copies; every produced-byte bulk read opens only RAM or allowed SSD under a lease; no producer waiver or parallel cache path lands.",
+   "deployment": {
+    "detail": "produced_output.py is absent from PB main f5b6bba; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-01",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769); main src/prismabuild/reader_lease.py lease path",
+    "path": "target src/prismabuild/produced_output.py origin-batch split; src/prismabuild/reader_lease.py acquire/open_pinned; PQ writer prismaquant/perturbed_x_cache.py and cost_streaming.py (referenced, not re-read in this lane)",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py (branch integrate/produced-output-current-20260921, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "origin charge once; bounded leased staged copies; forbidden-tier refusal before payload bytes",
+   "text": "Origin publication/retention and physical SSD/RAM materialization are separate lifetimes. The logical origin batch is committed and charged once and may stay on its declared origin storage (the current shared ZFS output path is the observed example, not a requirement) without an SSD copy. Write preauthorization precedes the write; origin commit and first materialization are separate steps, so the first copy may wait until a read needs it. Every required bulk read of produced bytes, own or foreign, opens only RAM or explicitly-allowed SSD staged objects under an actual reader lease (INV-03/INV-04, TIER-01); no producer exception, HDD waiver (TIER-04 stays the only authorization shape), or new cache.",
+   "validation": {
+    "detail": "Source audit only (produced-output-restage-contract-audit-astra.md; zfs-output-path-root-review-20260921.json). No produced-output lifecycle validation executed in this lane; ACC-07 unqualified.",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Lifecycle acceptance shows a same-action self-read completing from the published batch rather than the action terminal record, and a phantom-output dependency refused.",
+   "deployment": {
+    "detail": "No runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-02",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769)",
+    "path": "target src/prismabuild/produced_output.py batch publication records plus pool movement/funding; dependency carried by existing records",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py; tests/test_prepaid_output_funding.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "publication-anchored dependency; phantom-hash refusal; no new mandatory wire schema",
+   "text": "Produced-byte readiness anchors on immutable data-ready proof, not on an ACTION terminal record. Existing first publication seals the immutable manifest, stages, publishes, and funds the mover, and records the batch accounting entry; a same-action self-read depends on the immutable published batch and its ready staged data, not on the whole action terminal, which cannot exist before the action finishes. Semantic dependency: immutable batch publication -> funded PB staging -> reader acquisition/use -> reader release -> cached-copy retirement. No phantom output hash, no rerun-the-producer to conjure inputs, no new application dispatcher, and no new mandatory wire schema or ready-record API. Recorded gap: the current strict reader rejects a newly produced batch absent from the static input map (stage-a-8ca-attempt-review.json); the PR781 and PQ881 lanes are unaccepted.",
+   "validation": {
+    "state": "unknown",
+    "detail": "Source audit plus the 8ca attempt review. Recorded gap: the strict reader refuses a newly produced batch missing from the static input map (stage-a-8ca-attempt-review.json); no same-action self-read lifecycle run in this lane."
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Repeat-materialization acceptance reads the same unchanged origin twice through fresh PB-derived movers, with one durable origin charge, one live-or-pending materialization, spent fences never reopened to authorize a fresh materialization, and an identical replay answering without new tokens or copy.",
+   "deployment": {
+    "detail": "Unmerged; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-03",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769; head commit 'Materialize a committed produced-output batch again')",
+    "path": "target src/prismabuild/produced_output.py ensure/restage transition; tools/fleet/stage_move.py movers; pool funding fences",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "one origin charge across generations; one pending/live materialization; PB-derived successor identity; spent fences never reopened to authorize a fresh materialization",
+   "text": "Repeat materialization: after a staged copy of an unchanged committed logical batch fully retires, the batch may be materialized again on demand. One origin charge covers every generation; at most one pending or live materialization exists per logical batch; each successor gets a PB-derived mover identity and sequence filed under the existing lifecycle state, never a caller- or random-nonce identity. A spent mover or funding fence is never reopened or reused to authorize a fresh materialization and never refunded, though an identical replay may answer from the recorded outcome without new tokens or a new copy. PB publishes no successor until the predecessor's retirement commits.",
+   "validation": {
+    "detail": "Source audit (produced-output-restage-contract-audit-astra.md) found the reviewed WIP snapshot 8e0d2f9e without restage; the branch advanced to 73a39d498b6 after that audit and is unaccepted. The restage lifecycle was not executed.",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Same-size changed origin is refused before funding; a batch without first-publication proof refuses; DEV reuse performs no additional full-payload hash pass.",
+   "deployment": {
+    "detail": "Unmerged; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-04",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769)",
+    "path": "target src/prismabuild/produced_output.py origin identity record; src/prismabuild/reader_lease.py stat_identity/file_id_matches",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "publisher-time identity recheck before funding; changed/same-size refusal; missing-proof refusal; DEV digest reuse without an extra payload pass",
+   "text": "Change detection on reuse: first publication captures the existing change-detection identity (origin stat identity on the normalized bound path plus the writer-provided digest/identity evidence already sealed with the batch) as an immutable producer record. Every materialization revalidates that exact identity before funding a copy and refuses a changed original, including a same-size mutation; a batch lacking the first-publication proof refuses instead of blessing the bytes it finds. DEV reuses existing producer digest/identity evidence and adds no separate full-payload hash pass (DEV-01/DEV-02).",
+   "validation": {
+    "detail": "Source audit only; changed-origin and missing-proof refusals were not executed in this lane.",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04",
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Crash prefixes before and after funding resume the exact intent without duplicate quota, and a partial retirement keeps the old materialization's credits until safe reclaim.",
+   "deployment": {
+    "detail": "Unmerged; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-05",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769)",
+    "path": "target src/prismabuild/produced_output.py materialization intent and recovery; tools/fleet/stage_release.py retirement",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py; tests/test_produced_output_lifecycle_r2.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "idempotent ensure/retry; intent survives interruption; no successor until retirement commits; partial retirement retains responsibility",
+   "text": "Interruption, idempotence, and retirement responsibility: materialization state and mutation intent are filed under the existing ownership lock before any funding or movement side effect and survive interruption; duplicate or replayed ensure/retry is idempotent with no fresh epoch, quota, or successor; a failed or partial retirement retains the old materialization's responsibility and credits until safe reclaim, and occupied/unknown fences keep retention. The shared validator refuses a shape-valid but inconsistent materialization history (an older unretired materialization beside a newer retired one, multiple live entries, or duplicate keys) and retains instead of hiding the older live copy; this is a source finding, not yet a reproduced RED.",
+   "validation": {
+    "detail": "Source audit and lock-order sketch only; crash-prefix and partial-retirement cases were not executed in this lane.",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-04",
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Cached-copy retirement leaves the origin charge intact; the origin charge clears only with proven authorized origin deletion.",
+   "deployment": {
+    "detail": "Unmerged; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "PO-06",
+   "implementation": {
+    "commit": "PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged, PR781/issue769)",
+    "path": "target src/prismabuild/produced_output.py class sums and reclaim_origin path; tools/fleet/stage_release.py egress",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "origin charge released only after proven authorized origin deletion; cached-copy retirement releases only the materialization",
+   "text": "Origin charge release follows proven origin deletion only. Retiring a cached copy releases that materialization's physical lifetime; it never releases the origin charge. The origin charge is released only after authorized origin deletion is proven absent, never by cached-copy eviction or a stale receipt.",
+   "validation": {
+    "detail": "Source audit only (produced-output-restage-contract-audit-astra.md: class sums charge origins until origin_reclaimed; reclaim_origin refuses while any origin remains). Not executed in this lane.",
+    "state": "unknown"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-02",
+    "ACC-07"
+   ],
+   "acceptance_assertion": "A targeted assertion shows produced retirement holds no output-prefix ownership while calling egress, plus a concurrent pin/retire/successor-retry fixture; unknown or corrupt ownership retains.",
+   "deployment": {
+    "state": "partial",
+    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The outer-caller ordering fix is unaccepted source on PB781 branch 73a39d498b6."
+   },
+   "id": "PO-07",
+   "implementation": {
+    "commit": "PB:main f5b6bba0358a684f96a44251b21c77f0aabf1784 (PB783 lower edge, merged); PB:branch integrate/produced-output-current-20260921 @ 73a39d498b6a7e1568169baca18c3a7e1e1b638d (unmerged outer-caller edge)",
+    "path": "tools/fleet/stage_release.py egress reclaim; target src/prismabuild/produced_output.py retire_batch ordering",
+    "state": "partial"
+   },
+   "owner": "PB:produced-output",
+   "planned_acceptance": [
+    "tests/test_output_lock_identity.py; tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "no ownership lock held across another mover transition lock; revalidate exact intent before commit; late-reader census; fail-closed unknown ownership",
+   "text": "Lock ordering for retirement and egress: no prefix/tier ownership lock is held across the acquisition of another mover transition lock. Validate and select the exact batch and materialization under ownership, release ownership, run the existing egress, then re-acquire and revalidate the exact batch/materialization/intent before committing the retirement record. Late-reader pin censuses stay authoritative, and unknown, corrupt, or mixed ownership fails closed (retain, never free). PB783 (merge f5b6bba) fixes and activates the lower cross-root egress edge; the PB781 branch 73a39d498b6 carries a source fix with the same order for the outer-caller retire_batch but is unaccepted with tests ongoing; the lower edge does not prove the unmerged stack.",
+   "validation": {
+    "state": "partial",
+    "detail": "PB783 merge f5b6bba is root-accepted as the lower cross-root egress edge (exact action keys and CAS in pb783-root-acceptance.json) and is activated: publication verified 2026-09-21T04:07:13.444848+00:00 over 725 members (pb783-publication-root-verification.json), and all three live nodes converged on generation 43b790cce88c-1789962578-9e60f8c7ea49 with the rollout idle at 2026-09-21T04:09:13.850343+00:00 (pb783-runtime-convergence.json). The PB781 outer-caller source fix at 73a39d498b6 is unaccepted; its tests are ongoing. No whole-stack claim."
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:four quantities kept separate in plan and receipt"
+   ],
+   "acceptance_assertion": "Manual review plus the PQ budget tests: plan and receipt keep the retained-artifact budget, tier windows, resident RAM, and serialization holds distinct.",
+   "deployment": {
+    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "BUD-01",
+   "implementation": {
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported); PB tier/window ledgers referenced",
+    "path": "prismaquant/joint_cost_stage_a.py budget seam; tools/dispatch_joint_quanta.py forwarding; PB residency_plan.py and tools/fleet/tier_loop.py ledgers",
+    "state": "partial"
+   },
+   "owner": "PQ:planner",
+   "planned_acceptance": [
+    "PQ tests/test_stage_a_artifact_budget.py (branch; executor-run, not re-run in this lane)"
+   ],
+   "target_enforcement": "the four quantities stay distinct in plan, override, and receipt",
+   "text": "Keep four quantities separate: the logical retained-artifact byte budget, the physical tier reservations/current windows (tokens charged at claim), the process/decoder resident RAM, and any per-entry serialization hold. Evidence for one is not evidence for another, and a resident-tier booking is neither free bytes nor residency (TIER-05).",
+   "validation": {
+    "detail": "Executor-recorded receipt-backed runs in pq-stagea-artifact-budget-result.json: sparky actions ad71976c7fa346ea (10 passed) and 0e62c1adb5021103 (55 passed); x86 dl380g10 action 2ddcf168d2c632a8 (74 passed at final ea65a52). Not independently re-run in this docs lane; no deployment.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:floor from actual geometry; allowances labeled assumptions"
+   ],
+   "acceptance_assertion": "The floor is computed from the actual remainder, retained boundaries, live planes, and checkpoint copies; planning allowances are labeled assumptions; the preflight refuses below the floor and the runtime reserve and commit guards stay authoritative.",
+   "deployment": {
+    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "BUD-02",
+   "implementation": {
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported)",
+    "path": "prismaquant/joint_cost_stage_a.py estimate_stage_a_artifact_demand/preflight; prismaquant core boundary_artifact_bytes guard and receipt stamp",
+    "state": "partial"
+   },
+   "owner": "PQ:planner",
+   "planned_acceptance": [
+    "PQ tests/test_stage_a_artifact_budget.py (branch; executor-run, not re-run in this lane)"
+   ],
+   "target_enforcement": "source-cited geometry floor; planning allowances labeled assumptions; preflight refuses below the floor and runtime reserve/commit guards stay authoritative",
+   "text": "Derive any mandatory floor from the actual geometry: actual last and remainder batch (not a full-batch ceiling), retained input boundary groups, live probe planes, and retained checkpoint copies. The floor counts only independently unavoidable or minimum bytes; headers and serialization that depend on implementation choices belong to named planning allowances. Keep the gates distinct: the preflight floor refusal before forward work; reserve before writing; and commit, which validates the actual serialized bytes. The runtime guards stay authoritative. A planning estimate includes named allowances and is an assumption, not a mathematical upper bound. Dimensions are producer-specific; no universal PB constant is set.",
+   "validation": {
+    "detail": "Executor-recorded geometry and arithmetic in pq-stagea-artifact-budget-result.json: sealed plan 446676598784 B (416 GiB); derived floor 627065225216 B (584 GiB); planning estimate 642441609216 B; proposed 687194767360 B with a floor-mandatory/planning-advisory split. Scoped to one PQ campaign geometry; not independently re-derived in this docs lane.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:override stamped with sealed limit and effective budget"
+   ],
+   "acceptance_assertion": "An override is recorded with the sealed limit and effective budget, the plan and calibration identities are unchanged, and the sealed plan is not rewritten.",
+   "deployment": {
+    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
+    "state": "no"
+   },
+   "id": "BUD-03",
+   "implementation": {
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported)",
+    "path": "prismaquant/joint_cost_stage_a.py resolve_artifact_budget_override and receipt stamp; tools/dispatch_joint_quanta.py --stage-a-artifact-budget-bytes",
+    "state": "partial"
+   },
+   "owner": "PQ:planner",
+   "planned_acceptance": [
+    "PQ tests/test_stage_a_artifact_budget.py (branch; executor-run, not re-run in this lane)"
+   ],
+   "target_enforcement": "explicit stamped override beside the sealed limit; plan/calibration identities preserved; no silent inflation",
+   "text": "An invocation-level budget override records the original sealed limit, the effective budget, and the override identity together in the run's effective configuration and receipt, and preserves the plan, prepared, and calibration identities. The original sealed plan is never rewritten, and silent budget inflation is refused.",
+   "validation": {
+    "detail": "Executor-recorded: strict positive-int override seam, plan 416 GiB retained as provenance, override threaded through dispatcher and stamped into receipt; sealed plan digest 0b2cc0066bb612e32af6d0c8c809912d325b2975583297eedeee97851ee545da unchanged. Not independently re-run in this docs lane.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:persistence assumptions stated; no receipt-as-power-loss claim"
+   ],
+   "acceptance_assertion": "Producer commit and recovery requirements are unchanged; any persistence-dependent claim states the observed storage policy; rename, fsync, digest, or CAS receipt is not claimed as power-loss durability, and sync=disabled does not satisfy a stable-storage durability requirement.",
+   "deployment": {
+    "detail": "Claim-discipline requirement; no code or dataset change.",
+    "state": "no"
+   },
+   "id": "DUR-01",
+   "implementation": {
+    "commit": null,
+    "path": null,
+    "state": "no"
+   },
+   "owner": "PB:tiers",
+   "target_enforcement": "contract prose plus review; no new sealing work authorized",
+   "text": "Producer commit boundaries and recovery requirements are unchanged; this row adds a persistence-assumption requirement and does not weaken them. Atomic rename places a record, and verified publication evidence (the published record read back and validated) establishes that it is present and re-readable. A rename, fsync, digest, or CAS receipt does not prove stronger persistence, and none proves power-loss durability when the backing dataset's sync policy is asynchronous or disabled. When stable-storage durability is required, sync=disabled does not satisfy it. State the persistence assumption wherever a claim depends on it. Observed for this campaign: storage_pool/shared has sync=disabled, so receipts, digests, and recovery on volatile writes confer no physical durability; an earlier reading of the parent storage_pool dataset as sync=standard was wrong and retracted. No durability sealing work and no automatic dataset policy change is authorized.",
+   "validation": {
+    "detail": "Observed dataset property storage_pool/shared sync=disabled in a read-only census (zfs-output-path-root-review-20260921.json); the parent sync=standard reading was corrected and retracted (pq-stagea-capacity-review-corrections.md). Manual review is the enforcement; no automated check exists, and no storage setting was changed.",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "ACC-07"
+   ],
+   "acceptance_assertion": "Real SDK opens a validated staged descriptor; the origin open is refused before payload bytes; the admitted action's accepted semantic progress is read independently; and source, runtime, action, and CAS records are named. Wrapper exit 0, reservations, cache counters, and original-file digest equality do not count.",
+   "deployment": {
+    "detail": "Main f5b6bba leg3 has no staged-only gate; no activation claims this row.",
+    "state": "no"
+   },
+   "id": "ACC-07",
+   "implementation": {
+    "commit": "PB:branch fix/784-canary-staged-reader-20260921 (tree /home/rob/tmp/pb-maintenance-784-fix-20260921 @ 53afbdb74546397df47c46e98642014f70407224, unmerged); main f5b6bba tools/fleet/pbcanary_legs/leg3.py reads declared origin paths",
+    "path": "tools/fleet/pbcanary_legs/leg3.py; tools/fleet/pbcanary_verdict.py; src/prismabuild/reader_lease.py",
+    "state": "partial"
+   },
+   "owner": "PB:canary",
+   "planned_acceptance": [
+    "tests/test_canary_leg3_staged_read.py (branch fix/784, unmerged; not run in this lane)"
+   ],
+   "target_enforcement": "real SDK staged-descriptor open; forbidden-origin negative; independently read accepted progress; attributable proof records",
+   "text": "Acceptance for a produced-output strict read: the real reader SDK opens the actual validated staged descriptor; a negative control refuses the declared origin path before payload bytes; an accepted terminal semantic progress counter is observed from the admitted action; and the proof names specific source, runtime, action, and CAS records. A wrapper exit 0, reservations or occupancy, cache-hit counters, and digest equality of direct original-file reads are insufficient alone.",
+   "validation": {
+    "detail": "Correction of record: main leg3._pb_commit already includes PRISMABUILD_ACTION_PROGRESS_TOKEN (leg3.py:277-315); the earlier missing-token subclaim was wrong. Historical admitted action 932316b609b2256ab3b17be21f7a4b5648cd903a852b098d4335f7c5c57d7322 ended executed rc0 with progress_observation source=action-progress, accepted_count=1, last leg3-c2 units_completed=3, rejected_count=0 (old-leg3-progress.json), yet it read declared origin paths and the driver checks no accepted progress; accepted progress alone is not staged-read proof. Strict staged-only plus independently read accepted progress is unqualified; #784 repair is active and unaccepted. Historical canary CPU, CUDA, and cross-Spark payload evidence remains valid as scoped (runtime-776-canary-root-verification.json; runtime-776-canary-actions.json).",
+    "state": "partial"
+   },
+   "workload_proof": {
+    "detail": "unknown",
+    "state": "unknown"
+   }
+  },
+  {
+   "acceptance": [
+    "manual-review:\u00a711 applied per step with stated bounds"
    ],
    "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
    "deployment": {

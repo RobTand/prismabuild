@@ -1,10 +1,18 @@
 # Staged-read acceptance record — template and worked example
 
 A scoped acceptance record is the machine-readable artifact the contract
-(§10) requires per merge, launch, deploy, and completion step. One record
+(§11) requires per merge, launch, deploy, and completion step. One record
 per step; fields differ per step (a future terminal receipt is never
 demanded before launch). Reasoned exceptions cite explicit user authority;
 no agent waiver exists. No performance or quality numbers are set here.
+
+A merge record is not a deployment record. A source merge, a staged runtime
+generation, and an activated generation are three distinct facts: record
+`deploy: pending` until activation is observed, and never cite a staged
+generation as deployed support (the PB783 case in the dated addendum is the
+worked example). Where a claim depends on persistence, state the observed
+storage policy and keep it separate from the producer commit boundary;
+records and receipts do not prove power-loss durability (contract DUR-01).
 
 ## Template (all fields required; `unknown` allowed only where noted)
 
