@@ -4886,15 +4886,22 @@ def _mover_live_state(queue, mover_key: str) -> str:
 
     from prismabuild import pool as pool_mod
 
+    # Every one of these rows is moved by the box that runs the mover while
+    # this one polls for it, so each read revalidates before answering no
+    # (#808).  That matters most for the live legs: `_publish_output_mover_row`
+    # republishes on "absent", and a stale miss on `claimed` would read a row
+    # that is being copied right now as absent.
     for state in (pool_mod.CLAIMED, pool_mod.READY):
         try:
-            if pool_mod._read_json(queue.item_path(state, mover_key)) is not None:
+            if pool_mod._read_json_fresh(
+                    queue.item_path(state, mover_key)) is not None:
                 return state
         except Exception:
             return "unknown"
     for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
         try:
-            record = pool_mod._read_json(queue.item_path(state, mover_key))
+            record = pool_mod._read_json_fresh(
+                queue.item_path(state, mover_key))
         except Exception:
             return "unknown"
         if isinstance(record, Mapping):

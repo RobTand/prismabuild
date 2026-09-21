@@ -1124,6 +1124,53 @@ def _read_json(
     return value
 
 
+def _read_json_fresh(path: Path) -> dict[str, object] | None:
+    """``_read_json`` for a record another box files under a key this one polls.
+
+    The queue is on NFS with default attribute caching.  A lookup of a name
+    that does not exist yet is cached as a negative entry, and the client keeps
+    answering ``ENOENT`` from it until the parent directory's attributes are
+    revalidated -- up to ``acdirmin``, 30 s here.  A poller always looks first,
+    so it always caches the miss.  On sparky, ``move_record`` saw a receipt
+    dl380g10 had already filed 26.3 s to 26.6 s late with a plain read, and
+    0.04 s to 0.25 s late with the parent opened first
+    (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
+    owner waited that out on every staged group, after a copy that took 4 s.
+
+    ``slurm_lane._read_json_object`` and ``pbrun.terminal_record`` follow the
+    same rule by listing the parent.  Opening it is used here because these
+    reads are polled several times a second and a listing costs what the
+    directory holds (``done`` held 17,117 names when this was written): an
+    open is one round trip, and close-to-open consistency makes it the
+    revalidation.
+
+    A stale "absent" is not only slow.  ``produced_output`` republishes a
+    mover row it reads as absent, and an egress whose row it does not read as
+    live and whose receipt it does not see.  In the 2026-09-21 live cycle
+    those stale misses republished each egress three times, so each ran four
+    times and each retirement took more than 20 s for a 4 s action.  The
+    re-runs were no-ops (``stage_release.evict`` is idempotent), and the last
+    one overwrote the receipt the retirement had been filed from.
+
+    Only a miss pays for the revalidation: a record that is there is one
+    read, as before.  It is best effort.  A parent that cannot be opened
+    leaves the answer what the first read said, which is what this function
+    answered before it revalidated anything, so no caller meets a failure it
+    did not meet before; that read can still be stale.
+    """
+
+    record = _read_json(path)
+    if record is not None:
+        return record
+    try:
+        descriptor = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    os.close(descriptor)
+    return _read_json(path)
+
+
 def worker_argv(
     *,
     worker_script: str | Path,
@@ -4643,9 +4690,15 @@ class PoolQueue:
         return self.root / MOVERS / f"{action_key}.json"
 
     def move_record(self, action_key: str) -> dict[str, object] | None:
-        """What one movement node staged, if it has finished and filed it."""
+        """What one movement node staged, if it has finished and filed it.
 
-        record = _read_json(self.move_path(action_key))
+        Every caller is asking whether a mover on another box has filed yet,
+        and most of them poll, so the read revalidates before answering no
+        (``_read_json_fresh``): a stale "not yet" held a produced-output owner
+        for 26 s after a 4 s copy (#808).
+        """
+
+        record = _read_json_fresh(self.move_path(action_key))
         if not isinstance(record, dict):
             return None
         if record.get("schema") != POOL_MOVE_SCHEMA_V1:

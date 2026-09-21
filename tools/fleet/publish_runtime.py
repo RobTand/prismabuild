@@ -167,6 +167,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "checkout through pbrun over a named data manifest; it carries the "
      "pre-#589 arithmetic as its before arm, so it is a record of one "
      "measurement rather than an operator command"),
+    ("qualify_record_visibility.py",
+     "a standalone timing of how late an NFS client of the queue sees a "
+     "record another box files, run from a checkout through pbrun against "
+     "a scratch queue root; it carries the pre-#808 by-name read as its "
+     "before arm, so it is a record of one measurement rather than an "
+     "operator command, and it must never be pointed at the live queue"),
     ("pbcanary.py",
      "the fleet canary driver (#688) runs from a checkout that has one: "
      "the GitHub runner on dl380 and the rollout gate both invoke the "
