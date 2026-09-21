@@ -102,7 +102,11 @@ static int tripwire_deny(const char *path) {
 
 static mode_t tripwire_mode(int flags, va_list ap) {
     mode_t mode = 0;
-    if (flags & (O_CREAT | O_TMPFILE)) mode = (mode_t)va_arg(ap, int);
+    /* O_TMPFILE already includes O_DIRECTORY, so a directory-only open must
+       not be read as a mode-carrying one. */
+    if ((flags & O_CREAT) || ((flags & O_TMPFILE) == O_TMPFILE)) {
+        mode = (mode_t)va_arg(ap, int);
+    }
     return mode;
 }
 
@@ -166,19 +170,24 @@ def _compile_tripwire(compiler: str, directory: Path) -> Path:
 def tripwire(tmp_path_factory) -> Path:
     """A compiled libc interposer that denies the declared origin tree.
 
-    OS-level, not a Python mock: the denial happens in the child's libc
-    ``open``/``openat`` before any byte is read, and every denial is logged
-    with the exact path for the test to inspect.  A missing compiler is a
-    concrete failure of the acceptance, never a silent skip.
+    Scope, stated honestly: this is libc-bound instrumentation of the test
+    child's absolute-path ``open``/``openat`` calls (Python's and every
+    other libc process's ordinary file opens), not a kernel security
+    boundary -- a static binary issuing raw syscalls would not see it.  It
+    is the right instrument for the claim it backs: the exercised
+    ``leg3.py --run-action`` child performs its opens through libc, so a
+    passing run under it proves the action served its bytes elsewhere.  A
+    missing compiler is a concrete failure of the acceptance, never a
+    silent skip.
     """
     compiler = next(
         (found for candidate in ("cc", "gcc", "clang")
          if (found := shutil.which(candidate))), None)
     if compiler is None:
         pytest.fail(
-            "no C compiler on this box: the forbidden-origin tripwire is an "
-            "OS-level denial and this acceptance is not reduced to a Python "
-            "mock; install cc/gcc/clang on the executing worker")
+            "no C compiler on this box: the forbidden-origin tripwire is "
+            "OS-level instrumentation and this acceptance is not reduced to "
+            "a Python mock; install cc/gcc/clang on the executing worker")
     return _compile_tripwire(
         compiler, tmp_path_factory.mktemp("leg3-tripwire"))
 
@@ -360,6 +369,7 @@ def test_tripwire_denies_an_actual_origin_open_before_bytes(
         ["/bin/cat", str(origin)], env=fleet.tripwire_env(tripwire),
         capture_output=True, text=True)
     assert control.returncode != 0
+    assert control.stdout == ""  # denied before a single byte
     assert fleet.tripwire_denials() == [f"deny {origin}"]
     # The originals remain readable: the tripwire is process-scoped, not a
     # deletion or a chmod, and an ordinary process reads them normally.
@@ -387,19 +397,39 @@ def test_leg3_reads_every_chunk_through_the_staged_reader(
     assert [chunk["sha256"] for chunk in envelope["chunks"]] == [
         entry["sha256"] for entry in fleet.entries]
     assert envelope["combined"] == sha256_hex(b"".join(fleet.contents))
-    for chunk, entry in zip(envelope["chunks"], fleet.entries):
+    for index, (chunk, entry) in enumerate(zip(envelope["chunks"],
+                                               fleet.entries)):
         serving = chunk["serving"]
         assert serving["tier_id"] == TIER
         assert serving["pin_id"]
         assert serving["range_ref"] == f"0:{entry['path']}"
         assert serving["path"] != entry["path"]
         assert serving["path"].startswith(str(fleet.stage))
+        checkpoint = Path(chunk["checkpoint"])
+        assert checkpoint == tmp_path / "checkpoints" / f"chunk-{index}.json"
+        record = json.loads(checkpoint.read_text())
+        assert record["schema"] == leg3.LEG3_CHECKPOINT_SCHEMA
+        assert record["action_key"] == CONSUMER
+        assert record["nonce"] == NONCE and record["scope_id"] == SCOPE
+        assert record["sha256"] == entry["sha256"]
+        assert record["units_completed"] == index + 1
+        assert record["manifest_sha256"] == hashlib.sha256(
+            manifest.read_bytes()).hexdigest()
+        assert record["serving"]["path"] == serving["path"]
+    assert envelope["checkpoints"] == [chunk["checkpoint"]
+                                       for chunk in envelope["chunks"]]
     assert fleet.tripwire_denials() == []
 
 
 def test_leg3_waits_for_a_later_phase_instead_of_failing(
         tripwire: Path, tmp_path: Path) -> None:
-    """The moving window: chunk 1 arrives mid-read, not before the claim."""
+    """The moving window: chunk 1 is published only after unit 1 is accepted.
+
+    The rendezvous is the launcher's accepted progress, not a sleep: the
+    next phase cannot exist before the child has durably read and reported
+    the previous chunk, so a passing run proves the reader waited for a
+    later phase rather than finding it already published.
+    """
     fleet = _build_fleet(tmp_path)
     fleet.file_claim()
     fleet.publish([0])
@@ -411,10 +441,32 @@ def test_leg3_waits_for_a_later_phase_instead_of_failing(
          "--run-action"],
         cwd=str(REPO), env=env, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True)
+    watch = _watch(fleet)
+    deadline = time.monotonic() + 120.0
+
+    def await_units(target: int) -> None:
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(
+                    f"leg3 exited before accepted unit {target}: "
+                    f"rc={process.returncode} stdout={stdout[-400:]!r} "
+                    f"stderr={stderr[-400:]!r}")
+            watch.sample(now=time.monotonic())
+            last = watch.last_accepted or {}
+            if last.get("units_completed", 0) >= target:
+                return
+            time.sleep(0.1)
+        process.kill()
+        _, stderr = process.communicate()
+        pytest.fail(
+            f"leg3 never reached accepted unit {target}: "
+            f"rejections={watch.rejected} stderr={stderr[-400:]!r}")
+
     try:
-        time.sleep(1.5)
+        await_units(1)
         fleet.publish([0, 1])
-        time.sleep(1.5)
+        await_units(2)
         fleet.publish([0, 1, 2])
         stdout, stderr = process.communicate(timeout=300.0)
     finally:
@@ -427,6 +479,7 @@ def test_leg3_waits_for_a_later_phase_instead_of_failing(
     assert completed.returncode == 0, (completed.returncode, stderr, envelope)
     assert envelope is not None and envelope.get("ok") is True, envelope
     assert envelope["combined"] == sha256_hex(b"".join(fleet.contents))
+    assert watch.last_accepted["units_completed"] == 3
     assert fleet.tripwire_denials() == []
 
 
@@ -488,6 +541,77 @@ def test_leg3_refuses_without_admitted_launch_identity(
     assert fleet.tripwire_denials() == []
 
 
+def test_leg3_stage_read_ignores_a_ram_overlay_epoch(tmp_path: Path) -> None:
+    """The selected tier's own epoch, never a RAM overlay's on an SSD pin."""
+    fleet = _build_fleet(tmp_path)
+    fleet.file_claim()
+    fleet.publish(range(3))
+    map_path = fleet.queue.residency_map_path(CONSUMER)
+    mapping = residency_map.read_map(map_path)
+    residency_map.write_map(map_path, {
+        **mapping, "ram_tier_id": "ram:testbox",
+        "ram_root": str(fleet.tmp / "ram"), "ram_epoch": "epoch-1"})
+    manifest = fleet.write_manifest()
+    env = _child_env(fleet, manifest)
+
+    completed = _run_action(env)
+    envelope = _envelope(completed)
+    assert completed.returncode == 0, (completed.returncode, envelope)
+    assert envelope is not None and envelope.get("ok") is True, envelope
+    assert envelope["strict"]["epoch"] == ""
+    assert all(chunk["serving"]["tier_id"] == TIER
+               for chunk in envelope["chunks"])
+
+
+def test_leg3_refuses_a_corrupt_staged_chunk_without_progress(
+        tmp_path: Path) -> None:
+    """A served read whose bytes do not verify is not durable work.
+
+    The published vouching claims the manifest's digest while the staged
+    bytes differ (a lying or damaged mover): only reading the served range
+    can discover it, and the refusal must leave neither a checkpoint nor an
+    accepted progress unit behind.
+    """
+    fleet = _build_fleet(tmp_path)
+    corrupt = bytes((byte + 1) % 256 for byte in fleet.contents[0])
+    staged = fleet.stage / "chunk-0.staged"
+    staged.write_bytes(corrupt)
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    fleet.materials[0]["file_id"] = identity
+    fleet.fragments[0]["bytes"] = len(corrupt)
+    fleet.materials[0]["bytes"] = len(corrupt)
+    fleet.file_claim()
+    fleet.publish(range(3))
+    manifest = fleet.write_manifest()
+    env = _child_env(fleet, manifest)
+
+    completed = _run_action(env)
+    envelope = _envelope(completed)
+    assert completed.returncode != 0
+    assert envelope is not None and envelope.get("ok") is False, envelope
+    error = str(envelope.get("error") or "")
+    assert "digest" in error and "chunk 0" in error, error
+    assert not (tmp_path / "checkpoints" / "chunk-0.json").exists()
+    assert not (fleet.tmp / "progress.json").exists()
+
+
+def test_leg3_refuses_a_nonfinite_or_excessive_stage_wait(
+        tmp_path: Path) -> None:
+    fleet = _build_fleet(tmp_path)
+    fleet.file_claim()
+    fleet.publish(range(3))
+    manifest = fleet.write_manifest()
+    for override in ("inf", "nan", str(leg3.LEG3_PROGRESS_ALLOWANCE_S + 1)):
+        env = _child_env(fleet, manifest)
+        env[leg3.LEG3_STAGE_WAIT_ENV] = override
+        completed = _run_action(env)
+        envelope = _envelope(completed)
+        assert completed.returncode != 0
+        assert envelope is not None and envelope.get("ok") is False, envelope
+        assert "staged-read refusal" in str(envelope.get("error") or "")
+
+
 def test_leg3_refuses_when_no_progress_channel_is_declared(
         tripwire: Path, tmp_path: Path) -> None:
     fleet = _build_fleet(tmp_path)
@@ -522,6 +646,10 @@ def test_leg3_refuses_when_a_progress_commit_is_refused(tmp_path: Path) -> None:
     assert envelope is not None and envelope.get("ok") is False, envelope
     error = str(envelope.get("error") or "")
     assert "progress" in error and leg3.LEG3_PHASES[1] in error, error
+    # The verified chunks stayed durable even though the later phase's
+    # commit was refused; the refusal is the missing proof, not missing work.
+    assert (tmp_path / "checkpoints" / "chunk-0.json").is_file()
+    assert (tmp_path / "checkpoints" / "chunk-1.json").is_file()
 
 
 def test_leg3_reports_accepted_cumulative_progress(tmp_path: Path) -> None:
@@ -541,6 +669,9 @@ def test_leg3_reports_accepted_cumulative_progress(tmp_path: Path) -> None:
     assert watch.last_accepted["units_completed"] == len(leg3.LEG3_PHASES)
     assert watch.last_accepted["phase"] == leg3.LEG3_PHASES[-1]
     assert watch.phase_index == len(leg3.LEG3_PHASES) - 1
+    # Every accepted unit had its verified result already durable on disk.
+    for index in range(len(leg3.LEG3_PHASES)):
+        assert (tmp_path / "checkpoints" / f"chunk-{index}.json").is_file()
 
 
 # --- canonical 6/8/10 MiB integrity still holds through the reader ----------
@@ -561,6 +692,8 @@ def test_canonical_chunks_hash_through_the_staged_reader(
     assert [chunk["sha256"] for chunk in envelope["chunks"]] == list(
         leg3.LEG3_EXPECTED_CHUNK_SHA256)
     assert envelope["combined"] == leg3.LEG3_EXPECTED_COMBINED
+    assert len(envelope["checkpoints"]) == len(leg3.LEG3_PHASES)
+    assert all(Path(path).is_file() for path in envelope["checkpoints"])
     assert fleet.tripwire_denials() == []
 
 
@@ -727,31 +860,45 @@ def _paths(queue, tmp_path: Path) -> dict:
             "cas_root": str(tmp_path / "cas")}
 
 
+def _cas_receipt(artifact: str) -> dict:
+    data = artifact.encode("utf-8")
+    return {"result": {"sha256": hashlib.sha256(data).hexdigest(),
+                       "bytes": len(data)}}
+
+
 def test_driver_binds_progress_to_the_receipt_attempt(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
+    paths = _paths(queue, tmp_path)
     artifact = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":true}\n'
     _write_terminal(queue, CONSUMER, attempts=[artifact])
     evidence = pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, artifact)
-    assert evidence is not None, "executed attempt carrying the artifact"
+        paths, CONSUMER, artifact, _cas_receipt(artifact))
+    assert evidence is not None, "adopted attempt carrying the artifact"
     assert evidence["attempt"] == 1
     assert evidence["observation"]["last_accepted"]["units_completed"] == 3
 
-    # A superseding terminal attempt must not lend its observation to an
-    # artifact another attempt produced: the binding follows the artifact to
-    # its own attempt, and an artifact no attempt's stdout carries proves
-    # nothing.
+    # The receipt's own result digest must name the artifact bytes: a
+    # mismatched digest is no producer evidence.
+    assert pbcanary.terminal_progress_observation(
+        paths, CONSUMER, artifact,
+        {"result": {"sha256": "0" * 64, "bytes": len(artifact)}}) is None
+
+    # A superseding adopted attempt must not lend its observation to an
+    # artifact it did not produce -- and an older attempt's observation is
+    # never searched for behind the adopted attempt's back.
     superseding = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":false}\n'
     _write_terminal(queue, CONSUMER, attempts=[artifact, superseding])
-    bound = pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, artifact)
-    assert bound is not None and bound["attempt"] == 1
-    latest = pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, superseding)
-    assert latest is not None and latest["attempt"] == 2
     assert pbcanary.terminal_progress_observation(
-        _paths(queue, tmp_path), CONSUMER, "not in any attempt\n") is None
+        paths, CONSUMER, artifact, _cas_receipt(artifact)) is None
+    latest = pbcanary.terminal_progress_observation(
+        paths, CONSUMER, superseding, _cas_receipt(superseding))
+    assert latest is not None and latest["attempt"] == 2
+
+    # A non-executed terminal is never accepted-progress evidence.
+    _write_terminal(queue, CONSUMER, attempts=[artifact], status="failed")
+    assert pbcanary.terminal_progress_observation(
+        paths, CONSUMER, artifact, _cas_receipt(artifact)) is None
 
 
 def test_driver_attaches_the_observation_to_the_verify_envelope(

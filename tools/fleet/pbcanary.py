@@ -398,21 +398,37 @@ def receipt_ref_for(fleet_root: Path, receipt_path: Path) -> str:
 
 
 def terminal_progress_observation(
-    paths: dict, action_key: str, artifact: str,
+    paths: dict, action_key: str, artifact: str, receipt: dict,
 ) -> dict | None:
     """Accepted progress from the terminal attempt that produced ``artifact``.
 
     Leg 3 declares progress phases, so qualification requires the worker's
     authenticated ``ProgressWatch`` observation, not the action's own
-    self-report.  The observation rides the attempt outcome the terminal
-    names; this reads the action's ``done/`` record, verifies its immutable
-    attempt history through the queue's own :meth:`attempt_outcomes` reader,
-    and takes the observation only from an executed attempt whose recorded
-    stdout actually carries this receipt's artifact.  A superseding terminal
-    (or an attempt that produced different bytes) therefore never lends its
-    observation to this receipt.  Returns ``None`` when no such evidence
-    exists; ``leg3.verify`` then refuses the leg.
+    self-report.  The binding is exact, and fails closed on anything less:
+
+    * the CAS receipt's own result digest and length must name exactly the
+      artifact bytes (the producer evidence);
+    * the action's ``done/`` record must be the executed terminal for this
+      action key;
+    * its immutable attempt history, read and verified by the queue's own
+      ``attempt_outcomes`` (canonical links, content-addressed logs), must
+      end at an executed ``done`` attempt -- the terminal's adopted attempt;
+    * that adopted attempt's recorded stdout must begin with exactly the
+      artifact bytes, and carry the observation.
+
+    An older attempt's stdout is never searched: a superseding terminal does
+    not lend its or an ancestor's observation to a receipt it did not
+    produce.  ``None`` means the proof is absent and the leg must refuse.
     """
+    result = receipt.get("result") if isinstance(receipt, dict) else None
+    result_sha = result.get("sha256") if isinstance(result, dict) else None
+    result_bytes = result.get("bytes") if isinstance(result, dict) else None
+    artifact_bytes = artifact.encode("utf-8")
+    if (not isinstance(result_sha, str) or len(result_sha) != 64
+            or type(result_bytes) is not int
+            or result_bytes != len(artifact_bytes)
+            or hashlib.sha256(artifact_bytes).hexdigest() != result_sha):
+        return None
     record_path = Path(paths["queue_root"]) / "done" / f"{action_key}.json"
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -434,21 +450,27 @@ def terminal_progress_observation(
         outcomes = queue.attempt_outcomes(record)
     except (OSError, ValueError):
         return None
-    for outcome in reversed(outcomes):
-        if (outcome.get("status") != "executed"
-                or outcome.get("disposition") != "done"):
-            continue
-        stdout = outcome.get("stdout")
-        if not isinstance(stdout, str) or artifact not in stdout:
-            continue
-        detail = outcome.get("detail")
-        observation = (
-            detail.get("progress_observation")
-            if isinstance(detail, dict) else None)
-        if isinstance(observation, dict):
-            return {"observation": observation,
-                    "attempt": outcome.get("attempt")}
-    return None
+    if not outcomes:
+        return None
+    adopted = outcomes[-1]
+    if (adopted.get("status") != "executed"
+            or adopted.get("disposition") != "done"):
+        return None
+    stdout = adopted.get("stdout")
+    if not isinstance(stdout, str):
+        return None
+    try:
+        stdout_bytes = stdout.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if not stdout_bytes.startswith(artifact_bytes):
+        return None
+    detail = adopted.get("detail")
+    observation = (
+        detail.get("progress_observation") if isinstance(detail, dict) else None)
+    if not isinstance(observation, dict):
+        return None
+    return {"observation": observation, "attempt": adopted.get("attempt")}
 
 
 def write_json(path: Path, value: object) -> None:
@@ -560,7 +582,8 @@ def _execute_side(
         ) from exc
     (leg_dir / f"artifact{file_tag}.txt").write_text(artifact, encoding="utf-8")
     write_json(leg_dir / f"receipt{file_tag}.json", receipt)
-    evidence = terminal_progress_observation(paths, action_key, artifact)
+    evidence = terminal_progress_observation(
+        paths, action_key, artifact, receipt)
     envelope = {"action_key": action_key, "receipt": receipt,
                 "artifact": artifact, "stdout": artifact,
                 "progress_observation": None, "progress_attempt": None}

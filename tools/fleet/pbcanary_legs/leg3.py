@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import posixpath
 import sys
@@ -84,6 +85,10 @@ LEG3_SCHEMA = "prismabuild.pbcanary.leg3.v1"
 #: v2 data-manifest schema id. Literal (no prismabuild import; see module
 #: docstring): must equal ``core.DATA_MANIFEST_SCHEMA_V2``.
 LEG3_MANIFEST_SCHEMA = "prismaquant.prismabuild.data_manifest.v2"
+
+#: One durable per-chunk verification checkpoint, written by the action
+#: beside its manifest before that chunk's progress unit is reported.
+LEG3_CHECKPOINT_SCHEMA = "prismabuild.pbcanary.leg3_checkpoint.v1"
 
 LEG3_WAIT_S = 900  # Issue #688 residency wait budget.
 LEG3_TIMEOUT_S = 600  # Execution deadline: read 24 MiB + hash takes seconds.
@@ -436,7 +441,8 @@ class _StagedWindow:
     """One chunk at a time: map-keyed cover lookup, pin, read, release."""
 
     def __init__(self, pool_mod, reader_lease, residency_map, ctx, root,
-                 tier_id, epoch, manifest_sha256, entries, wait_s) -> None:
+                 tier_id, epoch, manifest_sha256, entries, wait_s,
+                 manifest_path, manifest_file_sha256) -> None:
         self.pool_mod = pool_mod
         self.reader_lease = reader_lease
         self.residency_map = residency_map
@@ -448,10 +454,13 @@ class _StagedWindow:
         self.manifest_sha256 = manifest_sha256
         self.entries = entries
         self.wait_s = wait_s
+        self.manifest_path = manifest_path
+        self.manifest_file_sha256 = manifest_file_sha256
         self.consumer = str(ctx["action_key"])
 
     @classmethod
-    def open(cls, entries: list[dict]) -> "_StagedWindow":
+    def open(cls, entries: list[dict], *, manifest_path: str,
+             manifest_file_sha256: str) -> "_StagedWindow":
         pool_mod, reader_lease, residency_map = _load_reader_modules()
         context = reader_lease.injected_context(env=os.environ)
         if not isinstance(context, dict) or not context.get("ok"):
@@ -471,10 +480,40 @@ class _StagedWindow:
         if not tier_id or not manifest_sha256:
             raise _StagedReadRefusal(
                 "leg3 staged-read refusal: staged map names no tier or manifest")
+        # The epoch belongs to the tier actually selected.  This leg is
+        # stage-explicit (``--residency stage``): an SSD stage fragment
+        # carries no epoch, and a RAM overlay header must never lend its
+        # epoch to an SSD pin.
+        if tier_id.startswith("ram:"):
+            epoch = str(mapping.get("ram_epoch") or "")
+            if not epoch:
+                raise _StagedReadRefusal(
+                    "leg3 staged-read refusal: ram tier names no epoch")
+        else:
+            epoch = ""
         return cls(pool_mod, reader_lease, residency_map, ctx,
-                   os.path.dirname(map_path), tier_id,
-                   str(mapping.get("ram_epoch") or ""), manifest_sha256,
-                   entries, _stage_wait_s())
+                   os.path.dirname(map_path), tier_id, epoch,
+                   manifest_sha256, entries, _stage_wait_s(),
+                   manifest_path, manifest_file_sha256)
+
+    def write_checkpoint(self, index: int, payload: dict) -> str:
+        """Persist one verified chunk's result before its progress unit.
+
+        The manifest's own directory is this action's namespace, so the
+        checkpoint rides the canary's retention and never lands in the live
+        queue.  The repo's existing canonical atomic writer (fsync plus
+        rename) publishes it; a checkpoint that cannot be made durable
+        refuses the qualification instead of reporting progress without it.
+        """
+        directory = os.path.join(os.path.dirname(self.manifest_path),
+                                 "checkpoints")
+        path = os.path.join(directory, f"chunk-{index}.json")
+        try:
+            self.pool_mod._write_json_atomic(path, payload)
+        except OSError as exc:
+            raise _StagedReadRefusal(
+                f"leg3 staged-read refusal: checkpoint not durable: {exc}") from exc
+        return path
 
     def _prepare(self, key: str, entry: dict) -> dict:
         covers = None
@@ -553,13 +592,19 @@ class _StagedWindow:
 
 def _stage_wait_s() -> float:
     raw = os.environ.get(LEG3_STAGE_WAIT_ENV)
-    if raw:
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            raise _StagedReadRefusal(
-                f"leg3 staged-read refusal: malformed {LEG3_STAGE_WAIT_ENV}: {raw!r}")
-    return LEG3_CHUNK_WAIT_S
+    if not raw:
+        return LEG3_CHUNK_WAIT_S
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise _StagedReadRefusal(
+            f"leg3 staged-read refusal: malformed {LEG3_STAGE_WAIT_ENV}: {raw!r}") from exc
+    if (not math.isfinite(value) or value < 0
+            or value > LEG3_PROGRESS_ALLOWANCE_S):
+        raise _StagedReadRefusal(
+            f"leg3 staged-read refusal: {LEG3_STAGE_WAIT_ENV} must be a finite "
+            f"value in [0, {LEG3_PROGRESS_ALLOWANCE_S}], got {raw!r}")
+    return value
 
 
 def run_action() -> int:
@@ -576,22 +621,54 @@ def run_action() -> int:
     manifest_path = os.environ.get(_ACTION_ENV_MANIFEST, "")
     envelope: dict = {"schema": LEG3_SCHEMA, "leg": 3, "chunks": [], "ok": False}
     try:
-        with open(manifest_path, encoding="utf-8") as handle:
-            manifest = json.load(handle)
+        with open(manifest_path, "rb") as handle:
+            manifest_raw = handle.read()
+        manifest = json.loads(manifest_raw)
         entries = _validated_entries(manifest)
+        manifest_file_sha256 = hashlib.sha256(manifest_raw).hexdigest()
         helper = _progress_channel()
-        window = _StagedWindow.open(entries)
+        window = _StagedWindow.open(
+            entries, manifest_path=manifest_path,
+            manifest_file_sha256=manifest_file_sha256)
         combined = hashlib.sha256()
         observed = []
         progress = []
-        ok = True
         for index, entry in enumerate(entries):
             digest, stage_path, serving = window.read_chunk(index, combined)
+            if digest != entry["sha256"]:
+                # Corrupt staged bytes are never durable work: no checkpoint,
+                # no progress unit, no continuation.
+                raise _StagedReadRefusal(
+                    "leg3 staged-read refusal: chunk "
+                    f"{index} verified digest does not match the manifest")
+            checkpoint = window.write_checkpoint(index, {
+                "schema": LEG3_CHECKPOINT_SCHEMA,
+                "action_key": str(window.ctx.get("action_key") or ""),
+                "nonce": str(window.ctx.get("nonce") or ""),
+                "scope_id": str(window.ctx.get("scope_id") or ""),
+                "manifest_sha256": manifest_file_sha256,
+                "staged_manifest_sha256": window.manifest_sha256,
+                "chunk_index": index,
+                "chunk_path": entry["path"],
+                "chunk_offset": entry["offset"],
+                "bytes": entry["bytes"],
+                "sha256": digest,
+                "serving": {
+                    "tier_id": str(serving.get("tier_id") or ""),
+                    "epoch": str(serving.get("epoch") or ""),
+                    "pin_id": str(serving.get("pin_id") or ""),
+                    "range_ref": str(serving.get("range_ref") or ""),
+                    "path": stage_path,
+                },
+                "units_completed": index + 1,
+                "written_unix": time.time(),
+            })
             observed.append({
                 "path": entry["path"],
                 "offset": entry["offset"],
                 "bytes": entry["bytes"],
                 "sha256": digest,
+                "checkpoint": checkpoint,
                 "serving": {
                     "tier_id": str(serving.get("tier_id") or ""),
                     "epoch": str(serving.get("epoch") or ""),
@@ -603,23 +680,23 @@ def run_action() -> int:
             committed = _pb_commit(index + 1, LEG3_PHASES[index], helper)
             progress.append({"phase": LEG3_PHASES[index],
                              "units_completed": index + 1,
+                             "checkpoint": checkpoint,
                              "committed": bool(committed)})
             if not committed:
                 raise _StagedReadRefusal(
                     "leg3 staged-read refusal: progress commit refused for "
                     f"phase {LEG3_PHASES[index]}")
-            if digest != entry["sha256"]:
-                ok = False
         envelope["chunks"] = observed
         envelope["combined"] = combined.hexdigest()
         envelope["progress"] = progress
+        envelope["checkpoints"] = [chunk["checkpoint"] for chunk in observed]
         envelope["strict"] = {
             "reader": "reader-lease-v1",
             "tier_id": window.tier_id,
             "epoch": window.epoch,
             "pin_ids": [chunk["serving"]["pin_id"] for chunk in observed],
         }
-        envelope["ok"] = bool(ok)
+        envelope["ok"] = True
     except Exception as exc:  # Fail-closed: report, never traceback-only.
         envelope["error"] = f"{type(exc).__name__}: {exc}"
     sys.stdout.write(canonical_json(envelope) + "\n")
