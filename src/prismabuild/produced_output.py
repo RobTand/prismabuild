@@ -43,12 +43,14 @@ record (`admit_instance`) is binding metadata, NOT funding and NOT
 capacity. Physical tokens are held ONLY by batch movers, exact per range,
 acquired under the batch holder and TRANSFERRED whole to mover ownership
 with no free interval (existing `transfer_tier_reservation`). No standing
-ledger pool is held beside movers. The general funded-window admission
-(current+next need) is the liveness lane's funded-claim primitive:
-`admit_funded_window` validates the request fully, then refuses
-`funding-primitive-pending` naming that exact dependency until it is
-delivered. No second ledger here, never subtracts unrelated holders'
-tokens.
+ledger pool is held beside movers. The funded-claim primitive family
+(`reserve_fence` / `ResourceLedger.transfer_tokens` / `funded_cover`) is
+delivered by the prepaid-output lane, so `admit_funded_window` reports the
+delivered `prepaid-per-batch` binding (declaration-only: the owner action's
+own tier demand, reserved once at its claim; per-batch funding is the
+authority). The `funding-primitive-pending` refusal remains only for a
+pool missing one of those primitives. No second ledger here, never
+subtracts unrelated holders' tokens.
 
 PB730 owns: corrected `pin_id_for` (canonical object set), the additive
 owner/material-namespace SDK contract, the containment writer, and the
@@ -90,20 +92,21 @@ OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 #: `reader_lease.__file__` under it. Never a mutable `/repo` checkout.
 READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 
-#: Exact SDK + funding dependencies until their lanes land (not stubs).
+#: Delivered SDK + funding dependencies this lane binds to (not stubs).
 SDK_DEPENDENCY = (
-    "PB730 additive owner/material-namespace SDK contract "
-    "(acquire/open/release binding material under the batch namespace to "
-    "the registered OWNER attempt; pin files under the owner, proof "
+    "PB730 additive owner/material-namespace SDK contract (delivered on "
+    "main: acquire/open/release binding material under the batch namespace "
+    "to the registered OWNER attempt; pin files under the owner, proof "
     "resolves in the material namespace) + corrected pin_id_for including "
     "the canonical expected object set and material generations "
     "(candidate pin 2637a9d0f7, R7-returned: auto-cleanup paths excluded); "
-    "LIVENESS funded-claim primitive (funding record binding credit to "
-    "exact tier/plan-window/mover/range/generation, eligible-token "
-    "verification, serialized transfer without free interval, window "
-    "admission covering current+next need) for the general window path; "
-    "liveness `admit_funded_window` refuses funding-primitive-pending "
-    "until that API is delivered"
+    "LIVENESS funded-claim primitive family delivered by the prepaid-output "
+    "lane (funding record binding credit to exact tier/plan-window/mover/"
+    "range/generation, eligible-token verification, serialized transfer "
+    "without free interval via transfer_tokens, window admission covering "
+    "current+next need); `admit_funded_window` reports the delivered "
+    "prepaid-per-batch binding and keeps the funding-primitive-pending "
+    "refusal only for a pool missing a primitive"
 )
 
 ARTIFACT_CLASSES = frozenset({"payload", "checkpoint", "temp"})
