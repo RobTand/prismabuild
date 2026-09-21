@@ -23,10 +23,20 @@ when the tier needs its tokens, never because a clock said so.
 **A pending copy handoff defers the same way (#768).**  While a live ram
 promotion's sealed claim names a source leg, the egress keeps that leg's file,
 the stage mover's fragment, its material sidecar and its full occupancy charge,
-and retries after the claim ends.  The promotion's ram fragment names another
-tier and path and can never prove the SSD incarnation it read, so retiring the
-source early would leave a surviving file nothing can prove and free capacity
-its bytes still occupy.
+and retries after the claim ends.  The handoff outranks the generic co-owner
+and in-flight-destination shared skip: another owner's same-path fragment
+cannot stand in for the promotion's own consumer/manifest cover, so this
+owner's proof and charge stay while the claim lives, and the ordinary shared
+settlement resumes on the retry.  It files no retiring mark while any handoff
+in the document is deferred: a mark closes one material generation to new
+acquires, and the promotion takes its proof-only cover through
+``reader_lease.acquire`` after its claim row exists, so the mark would refuse
+the very handoff it is protecting.  The mark waits until no handoff remains,
+then the ordinary pinned retirement files it; deleting stays safe meanwhile
+because every pass re-reads claims and pins under the same ownership lock.  The
+promotion's ram fragment names another tier and path and can never prove the
+SSD incarnation it read, so retiring the source early would leave a surviving
+file nothing can prove and free capacity its bytes still occupy.
 
 **Delete, then release, then drop the fragment.**  Each order is wrong in one
 direction and this one is wrong in none that matters: a crash after the deletes
@@ -852,6 +862,38 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             errors.append(f"{key}: {exc}")
             continue
         norm = os.path.normpath(str(path))
+        pinned = pins.get(norm, [])
+        if os.path.normpath(resolved) in source_paths:
+            # A live promotion is reading this source leg into RAM: a pending
+            # copy handoff, deferred exactly like a live pin.  The file, this
+            # mover's fragment, its material sidecar and its full occupancy
+            # charge all stay until the handoff ends -- the promotion's ram
+            # fragment names another tier and path and can never prove this
+            # SSD incarnation, so dropping the same-path proof here is what
+            # left an unprovable surviving file behind.
+            #
+            # This check precedes the co-owner/in-flight skip.  Another
+            # consumer's same-path fragment proves the bytes for a general
+            # stage publisher, but a promotion resolves its source cover in
+            # its own consumer/manifest namespace (ram_promote's coverage
+            # loop and ``reader_lease.acquire``), so a co-owner cannot stand
+            # in for this owner's pending proof acquisition.  The handoff
+            # wins while it lives; the ordinary shared decharge or last-owner
+            # deletion settles on the retry after the claim is gone.
+            #
+            # No retiring mark is filed while any handoff in this mover's
+            # document is deferred.  A mark closes one material generation to
+            # new acquires, and ``ram_promote`` takes its proof-only cover
+            # through ``reader_lease.acquire`` *after* its claim row exists,
+            # so a mark filed here would refuse the very handoff this defers
+            # for.  The mark is per mover, not per entry, so a pinned entry
+            # on the same mover waits for the handoff to end before its own
+            # mark is filed; deleting stays safe meanwhile because every pass
+            # re-reads claims and pins under this same ownership lock.
+            deferred += 1
+            deferred_handoffs.append("promotion-handoff")
+            live_pins.extend(pinned)
+            continue
         co_owners = sorted(owners.get(norm, set()))
         if co_owners or _relative_under(stage, resolved) in claimed:
             # Another live fragment vouches for these bytes, or a claimed
@@ -864,21 +906,6 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 shared_with.append("in-flight-copy")
             bytes_shared += int(entry["bytes"])
             continue
-        if os.path.normpath(resolved) in source_paths:
-            # A live promotion is reading this source leg into RAM: a pending
-            # copy handoff, deferred exactly like a live pin.  The file, this
-            # mover's fragment, its material sidecar and its full occupancy
-            # charge all stay until the handoff ends -- the promotion's ram
-            # fragment names another tier and path and can never prove this
-            # SSD incarnation, so dropping the same-path proof here is what
-            # left an unprovable surviving file behind.  The next sweep
-            # deletes after the claim is gone, or decharges against a genuine
-            # same-path accounted co-owner; the retiring mark written below
-            # closes the material generation to new acquires.
-            deferred += 1
-            deferred_handoffs.append("promotion-handoff")
-            continue
-        pinned = pins.get(norm, [])
         if pinned:
             # A live reader holds these bytes (open FD, prefetch, mmap, or a
             # promotion source pin): defer, mark retiring for this material
@@ -904,7 +931,12 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         _prune_empty(path.parent, stage)
 
     released = decharged = 0
-    if deferred and not errors and own_generation:
+    if deferred and not deferred_handoffs and not errors and own_generation:
+        # A handoff-deferred pass files nothing: closing this generation
+        # would refuse the promotion's own cover acquire and strand the
+        # handoff holding these bytes.  The next pass files the ordinary mark
+        # once no handoff remains and only readers do; a mark already on disk
+        # is preserved, never cleared by a deferral.
         reader_lease.write_retiring(
             reader_lease.leases_root(queue, root),
             consumer_action_key=consumer_action_key,
