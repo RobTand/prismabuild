@@ -88,7 +88,7 @@ entry, not in this example.)
     "issue": "https://github.com/RobTand/prismabuild/issues/723",
     "validated_repairs": [],
     "remaining_gaps": ["all proposed enforcements: out of scope for a docs lane; see ledger axes"],
-    "note": "Checks performed: ledger JSON parses (56 requirements at this merge; 69 after the 2026-09-21 produced-output update, v3 schema); every ledger ID appears in the doc and vice versa; zero stale trust-mode enums across doc, ledger, and template. Claims nothing beyond documentation coherence."
+    "note": "Checks performed: ledger JSON parses (56 requirements, v3 schema); every ledger ID appears in the doc and vice versa; zero stale trust-mode enums across doc, ledger, and template. Claims nothing beyond documentation coherence."
   },
   "deploy": {"status": "not-this-step"},
   "complete": {"status": "not-this-step"},

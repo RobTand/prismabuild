@@ -1736,7 +1736,7 @@
    "acceptance": [
     "manual-review:floor from actual geometry; allowances labeled assumptions"
    ],
-   "acceptance_assertion": "The floor is computed from the actual remainder, retained boundaries, live planes, and checkpoint copies; planning allowances are labeled assumptions; the runtime guard refuses below the floor.",
+   "acceptance_assertion": "The floor is computed from the actual remainder, retained boundaries, live planes, and checkpoint copies; planning allowances are labeled assumptions; the preflight refuses below the floor and the runtime reserve and commit guards stay authoritative.",
    "deployment": {
     "detail": "Unmerged PQ branch; no runtime generation carries this row.",
     "state": "no"
@@ -1751,8 +1751,8 @@
    "planned_acceptance": [
     "PQ tests/test_stage_a_artifact_budget.py (branch; executor-run, not re-run in this lane)"
    ],
-   "target_enforcement": "source-cited geometry floor; planning allowances labeled assumptions; runtime guard refuses below the floor",
-   "text": "Derive any mandatory floor from the actual geometry: actual last and remainder batch (not a full-batch ceiling), retained input boundary groups, live probe planes, and retained checkpoint copies. The floor counts only independently unavoidable or minimum bytes; headers and serialization that depend on implementation choices belong to named planning allowances. Keep two gates distinct: the preflight floor refusal before forward work and the reserve/write/commit guards that run before writing and stay authoritative. A planning estimate includes named allowances and is an assumption, not a mathematical upper bound. Dimensions are producer-specific; no universal PB constant is set.",
+   "target_enforcement": "source-cited geometry floor; planning allowances labeled assumptions; preflight refuses below the floor and runtime reserve/commit guards stay authoritative",
+   "text": "Derive any mandatory floor from the actual geometry: actual last and remainder batch (not a full-batch ceiling), retained input boundary groups, live probe planes, and retained checkpoint copies. The floor counts only independently unavoidable or minimum bytes; headers and serialization that depend on implementation choices belong to named planning allowances. Keep the gates distinct: the preflight floor refusal before forward work; reserve before writing; and commit, which validates the actual serialized bytes. The runtime guards stay authoritative. A planning estimate includes named allowances and is an assumption, not a mathematical upper bound. Dimensions are producer-specific; no universal PB constant is set.",
    "validation": {
     "detail": "Executor-recorded geometry and arithmetic in pq-stagea-artifact-budget-result.json: sealed plan 446676598784 B (416 GiB); derived floor 627065225216 B (584 GiB); planning estimate 642441609216 B; proposed 687194767360 B with a floor-mandatory/planning-advisory split. Scoped to one PQ campaign geometry; not independently re-derived in this docs lane.",
     "state": "partial"

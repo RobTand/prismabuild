@@ -439,12 +439,12 @@ Budget and durability requirements for produced workloads:
   groups, live probe planes, and retained checkpoint copies. The floor counts
   only bytes that are independently unavoidable or minimum; headers and
   serialization that depend on implementation choices belong to named
-  planning allowances, not to the floor. Keep two gates distinct: the
-  preflight floor refusal, which runs before any forward work, and the
-  reserve, write, and commit guards, which run before writing and stay
-  authoritative. A planning estimate includes named allowances and is an
-  assumption, not a mathematical upper bound. Dimensions are producer-specific;
-  no universal PB constant is set here.
+  planning allowances, not to the floor. Keep the gates distinct: the
+  preflight floor refusal, which runs before any forward work; reserve, which
+  runs before writing; and commit, which validates the actual serialized
+  bytes. The runtime guards stay authoritative. A planning estimate includes
+  named allowances and is an assumption, not a mathematical upper bound.
+  Dimensions are producer-specific; no universal PB constant is set here.
 - BUD-03 override only as an explicit, stamped seam. An invocation-level
   budget override records the original sealed limit, the effective budget, and
   the override identity together in the run's effective configuration and
