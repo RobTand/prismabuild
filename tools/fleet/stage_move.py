@@ -570,14 +570,16 @@ class _StagedPublisher:
         # files, 334.6 MB, on the live root when this was measured) plus
         # every relevant sidecar.  Each file is now parsed once per version
         # and retained as a packed projection of exactly what a decision
-        # reads -- never the parsed object graph, whose bytes could refuse
-        # retention at live proof sizes and send every later lookup back
-        # through the whole document (#778).  The directory scans and the
-        # per-file stat that see additions, changes and removals still run
-        # before every decision, so nothing decides on evidence that moved.
-        # Process-local, nothing persisted, dropped with the publisher.  Its
-        # own lock because the stage ownership lock is a POSIX file lock,
-        # which does not exclude two threads of one process from each other.
+        # reads -- never the parsed object graph, whose bytes can refuse
+        # retention once a document's graph is oversized, after which every
+        # later lookup re-reads and re-decodes the whole document (the
+        # amplification #778 reproduced at fixture scale).  The directory
+        # scans and the per-file stat that see additions, changes and
+        # removals still run before every decision, so nothing decides on
+        # evidence that moved.  Process-local, nothing persisted, dropped
+        # with the publisher.  Its own lock because the stage ownership lock
+        # is a POSIX file lock, which does not exclude two threads of one
+        # process from each other.
         self._lookup_lock = threading.Lock()
         # Each entry is ``(version, record, charge)``: the charge is measured
         # from the real packed object at insert and travels with it, so
