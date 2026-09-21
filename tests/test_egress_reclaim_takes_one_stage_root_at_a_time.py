@@ -22,6 +22,13 @@ rendezvous at the first ``release_refs`` call in each child, which makes the
 interleaving deterministic: both children have read the shared pin document
 before either mutates it.  Fixture-owned children only, bounded cleanup.
 
+The cycle surfaces two ways and the two-process test asserts both: on a
+filesystem whose kernel detects it, one ``lockf`` returns ``EDEADLK`` and
+that child dies, which the exit-status assertion catches; where it is not
+detected -- an NFS mount does not track a cycle across hosts, and the fleet's
+queue is on one -- both children simply never finish, which the liveness
+assertion catches.
+
 This is a reachable-schedule regression, not the RAM-promotion contention
 observed on 2026-09-20; that lock was the ``/ram/prewarm`` destination root
 under head promotion adoption and is attributed elsewhere.
@@ -227,7 +234,6 @@ def test_egress_requests_no_second_stage_root_while_holding_one(
         consumer_action_key=str(first["consumer"]),
         stage_root=str(first["stage"]))
 
-    assert watched.cross_root == [], watched.cross_root
     # Reclamation still reaches both roots -- the correction moves it out of
     # exclusion, it does not narrow what it may free -- and takes exactly the
     # contained ref on each.
@@ -242,6 +248,13 @@ def test_egress_requests_no_second_stage_root_while_holding_one(
     assert receipt["retiring"] is True, receipt
     assert receipt["errors"] == [], receipt
     assert Path(str(first["staged"])).exists()
+    # The receipt still says what this pass was: the retained-ref loop used
+    # to rebind the egress ``reason`` parameter it was written beside, so a
+    # single retained ref renamed the pass after a containment verdict.
+    # Asserted before the lock-order line below so it is its own red.
+    assert receipt["reason"] == "egress", receipt
+
+    assert watched.cross_root == [], watched.cross_root
 
 
 def _child_egress(pool_root: str, stage_root: str, consumer: str, mover: str,
