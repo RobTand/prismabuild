@@ -2017,7 +2017,15 @@ The tools:
     every attempt with its log metadata, the ending and both return codes, the
     CAS receipt, the derived local-result claim, and a tail of the last
     attempt's stdout. A prefix that names more than one action comes back with
-    the candidates rather than a guess.
+    the candidates rather than a guess. A withdrawn action keeps `withdrawn`
+    as its state: the attempts its withdrawal preserved under
+    `attempt_history_before_withdrawal` are read as `attempts_detail`,
+    `attempts_history` names the source, reports `missing_before`,
+    `recorded_attempts`, the capped `unretained_attempts` with
+    `unretained_attempt_count` / `unretained_attempts_truncated`, and any
+    corrupt links, `adopted_attempt` stays null, and
+    `outcome_before_withdrawal` reports the preserved ending's returncode.
+    Preserved execution is history, never this record's ending.
 *   **`pb_actions(filter)`** — list by `states`, `tags`, `priority_min` /
     `priority_max`, `checkout_root`, `snapshot_parent`, `snapshot_commit`,
     `published_by`, `max_age_s` or explicit
@@ -2050,7 +2058,9 @@ The tools:
     NFS bandwidth.
 *   **`pb_log(key_prefix, tail_lines)`** — a bounded tail of one attempt's
     `stdout` or `stderr`. The log is never read whole: the reader seeks to the
-    end and reads at most `--log-tail-bytes`.
+    end and reads at most `--log-tail-bytes`. An attempt a withdrawal
+    preserved is readable too, and its answer names it with
+    `before_withdrawal: true`.
 *   **`pb_runtime()`** — the published generation, its manifest, which loops
     are announcing on it, and whether this server was started from it.
 *   **`pb_starvation()`** — what is waiting on data, as one census: claimed

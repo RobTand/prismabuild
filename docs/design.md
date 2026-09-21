@@ -5471,6 +5471,22 @@ action keys bypass that window. Git identity is not submitter identity: several
 agents can submit from the same parent, and a snapshot commit includes sealed
 changes. A missing or malformed snapshot never matches a requested Git field.
 
+`pb_action` reports a withdrawn action as withdrawn and reads the attempts its
+withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
+reads a record's own links: `attempts_history` names the source,
+`adopted_attempt` stays null, and `outcome_before_withdrawal` reports the
+preserved ending's returncode. Preserved execution is evidence, never the
+record's ending. The record's attempt count is untrusted input:
+`unretained_attempts` is capped at `UNRETAINED_ATTEMPT_LIST_CAP`, with
+`unretained_attempt_count` and `unretained_attempts_truncated` beside it, so a
+forged count cannot expand the reader's work. Every retained link is checked
+before its body is served -- canonical pathname, then the outcome's own schema,
+action key, generation, attempt number, attempt budget and retry contract --
+and a log is read only at the canonical address `attempt_log_path` derives for
+that attempt, stream and digest. A record that counts attempts but can link
+none is reported as missing or corrupt retained history, never as an action
+that never ran.
+
 Session construction also bounds the initial runtime-link read using the
 configured deadline. A failed startup read is retained as `startup-repo-link`
 in every tool response's timeout/error diagnostics, with `complete: false`.
