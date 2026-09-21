@@ -3492,8 +3492,9 @@ class PoolQueue:
             record["addresses"] = sorted({str(a) for a in addresses})
         if observed_images is not None:
             # The exact local references this box positively holds, as the
-            # inventory reports them: bare image IDs and repository-qualified
-            # RepoDigests.  Present-but-empty says the box looked and has
+            # inventory reports them: bare image IDs, repository-qualified
+            # RepoDigests and store-independent ``content:`` references
+            # (#805).  Present-but-empty says the box looked and has
             # none; absent says the box could not look, and an item that
             # declares images must read that absence as unknown (#714).
             record["container_images"] = sorted(

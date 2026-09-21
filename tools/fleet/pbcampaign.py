@@ -60,8 +60,9 @@ and each one is exactly one ``pbrun`` flag:
 ``progress_phases``  ``--progress-phase``, once per entry, ``"name=seconds"``
 ``progress_cycle``   ``--progress-cycle`` (boolean; requires phases)
 ``container_images`` ``--container-image``, once per entry: an exact local
-                     image reference (``sha256:<64 hex>`` or
-                     ``repository@sha256:<64 hex>``) the claiming box must
+                     image reference (``sha256:<64 hex>``,
+                     ``repository@sha256:<64 hex>`` or the portable
+                     ``content:sha256:<64 hex>``) the claiming box must
                      positively hold before the action runs. Mutable tags are
                      refused; PB never pulls or loads, so the image must
                      already be local. Pool transport only

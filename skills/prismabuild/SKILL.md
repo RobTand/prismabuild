@@ -74,13 +74,20 @@ for a real dependency or a controlled measurement.
 
 A container image the action needs must already be local on the claiming box:
 declare it with `pbrun --container-image REF` (`container_images` on a campaign
-row), where `REF` is `sha256:<64 hex>` (image ID) or
-`repository@sha256:<64 hex>` (manifest digest). It is sealed into the action
-key, requires the `container-image-v1` worker capability, and a box that cannot
-positively show the reference denies the claim by name and leaves the item
-ready for a box that can. PB never pulls, loads or transfers images, and a
-workflow that loads its own image from an archive inside the action must not
-declare it (#714).
+row), where `REF` is `sha256:<64 hex>` (image ID), `repository@sha256:<64 hex>`
+(manifest digest) or `content:sha256:<64 hex>` (store-independent content). It
+is sealed into the action key, requires the `container-image-v1` worker
+capability, and a box that cannot positively show the reference denies the
+claim by name and leaves the item ready for a box that can. PB never pulls,
+loads or transfers images, and a workflow that loads its own image from an
+archive inside the action must not declare it (#714).
+
+Prefer the content form for work that any box holding the image may run. An
+image ID is whatever the box's own Docker image store calls the image, and the
+two Sparks run different stores, so one image has two IDs and an ID-sealed
+action is claimable by one Spark only (#805). Read a portable reference off a
+box that holds the image with `python3 -m prismabuild.container_images
+<repo:tag>`.
 
 When a test checkout has `tools/resolve_<module>_dev_pin.py`, `pbtest` runs
 each resolver inside the admitted shard and checks the target interpreter's
