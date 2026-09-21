@@ -125,7 +125,7 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
 
 def test_the_first_phase_is_promoted_when_its_stage_range_has_landed(
         tmp_path: Path) -> None:
-    queue = _fixture(tmp_path, ram_capacity_gib=2, landed=1)
+    queue = _fixture(tmp_path, ram_capacity_gib=4, landed=1)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 
@@ -194,7 +194,7 @@ def test_nothing_is_promoted_against_a_root_that_refuses_admission(
     egress path below is untouched by it.
     """
 
-    queue = _fixture(tmp_path, ram_capacity_gib=2, landed=1)
+    queue = _fixture(tmp_path, ram_capacity_gib=4, landed=1)
     tiers = _tiers(tmp_path)
     tiers[RAM_TIER] = {**tiers[RAM_TIER],
                        "stage_root_owner": "stage_root_belongs_to_another_queue: /x",
