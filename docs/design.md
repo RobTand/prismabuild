@@ -4890,9 +4890,11 @@ newcomer on *current plus protected next* against held and queued bytes. A
 window that fits only after orphan reclamation therefore deadlocked beside
 reclaimable bytes: the sweep relieved one phase, the gate kept refusing on
 cur+next, and nothing re-pressured (2026-09-20, attributable pristine-main
-failure `44b15d345804`). `window_pressure` now probes each true newcomer —
-nothing published, landed or accepted — through `gate_newcomer` itself, with
-conservative obligations (full queued demand and a minimum next-step term
+failure `44b15d345804`). `window_pressure` probes each newcomer through
+`gate_newcomer` itself. A newcomer has an unpublished lead: adopted later
+ranges do not admit its missing head (#829). Both the pressure probe and
+the publication gate use that identity and the next still-unpublished legs,
+with conservative obligations (full queued demand and a minimum next-step term
 from progressing windows). The relief is stated as the free the sweep must reach
 (`free + shortfall`) and is bounded to the tier's orphans. A window that
 cannot fit even after every orphan returns — permanently oversize, or blocked
@@ -4902,11 +4904,14 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
-This repair is scoped to stage newcomer admission. It retains the previous
-RAM pressure calculation, and its full queued-demand estimate can defer
+Admission relief applies to both stage and RAM. RAM asks only when its normal
+bounded window has a promotion whose stage source is resident, preserving
+the existing rule against eviction for an unavailable source or a declined
+run-ahead phase. Its full queued-demand estimate can defer
 additional relief when some ready rows are already funded. It is not a
-complete liveness proof. The source, CPU results and outstanding live checks
-are recorded in `orphan_pressure_acceptance_2026-09-20.json`.
+complete liveness proof. Earlier acceptance is recorded in
+`orphan_pressure_acceptance_2026-09-20.json`; #829's repair has its own scoped
+acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`.
 
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on

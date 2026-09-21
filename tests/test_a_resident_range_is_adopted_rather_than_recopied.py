@@ -636,6 +636,46 @@ def test_a_direct_sweep_with_no_pressure_named_still_takes_every_orphan(
     assert_ledger_matches_the_stage(queue)
 
 
+def test_adopted_ahead_range_does_not_hide_missing_lead_admission_pressure(
+        tmp_path: Path) -> None:
+    """#829: the lead gate includes output plus the next unpublished leg."""
+
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.ensure_layout()
+    q.mint_tier_capacity(TIER, {"stage_gib": 10})
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(q, tier_id=TIER, stage_root=stage)
+    plan = _plan(q, SECOND, phases=3, label="retry")
+    live_files = _stage_range(
+        q, mover=_hexkey("retrymover1"), consumer=SECOND,
+        stage=stage, ordinal=1)
+    orphan_files = _stage_range(
+        q, mover=_hexkey("orphan"), consumer=FIRST, stage=stage,
+        manifest="e" * 64)
+    residency_plan.freeze(q, plan)
+    q.publish(**_row(q, SECOND, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 4}),
+              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                         "leads": residency_plan.leads_for(plan)})
+    tiers = {TIER: _tier_record(stage, gib=10)}
+    before = tier_loop.residency_window(q, tiers=tiers)
+    assert any(e.get("reason") == "joint-fit-stall" for e in before)
+    assert not q.item_path(pool.READY, _hexkey("retrymover0")).exists()
+
+    # Held 4 + queued output 4 + head 2 + next missing 2 = 12 > 10.
+    # Six free must become eight; the adopted middle range stays protected.
+    pressure = tier_loop.window_pressure(q, tiers=tiers)
+    assert pressure[TIER] == 8, pressure
+    stage_release.sweep(q, stage_roots={TIER: str(stage)}, pressure=pressure)
+    assert all(path.exists() for path in live_files)
+    assert not any(path.exists() for path in orphan_files)
+    assert q.tier_ledger(TIER).holder_tokens(_hexkey("retrymover1")) == {
+        "stage_gib": PHASE_GIB}
+    tier_loop.residency_window(q, tiers=tiers)
+    assert q.item_path(pool.READY, _hexkey("retrymover0")).exists()
+
+
 # --------------------------------- (d): the old key can no longer take it back
 
 
