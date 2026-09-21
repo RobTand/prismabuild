@@ -338,14 +338,26 @@ class _StagedPublisher:
 
     def __init__(self, *, queue, stage_root, residency_root,
                  mover_action_key: str,
-                 manifest_sha256: str, tier_id: str, cas_root) -> None:
+                 manifest_sha256: str, tier_id: str, cas_root,
+                 consumer_action_key: str = "") -> None:
         self.queue = queue
         self.stage_root = Path(stage_root)
         self.residency_root = Path(residency_root)
         self.mover = mover_action_key
+        self.consumer = str(consumer_action_key)
         self.manifest_sha256 = manifest_sha256
         self.tier_id = tier_id
         self.cas_root = cas_root
+        #: The generation this run's material sidecar carries.  A resumed
+        #: run starts from its prior own generation (stable reuse, the
+        #: ``reader_lease.adopted_generation`` rule: same bytes without
+        #: replacement keep their generation) and mints a fresh one only
+        #: when it first replaces actual bytes -- new material, new date.
+        #: A first-ever run mints once and never re-mints mid-run, exactly
+        #: as the single-per-run generation always did.
+        self._material_generation: str | None = None
+        self._generation_is_resumed = False
+        self._generation_bumped = False
         # Invocation-local reuse of parsed publication metadata (#761).
         # ``_proof_search`` runs once per destination -- tens of thousands
         # per mover -- and again on every publish poll, and before this it
@@ -368,6 +380,44 @@ class _StagedPublisher:
         self._interned_cost = 0
         self._fragment_cost = 0
         self._material_cost = 0
+
+    def begin_material(self, resumed: str | None = None) -> str:
+        """Start this run's material generation, optionally resuming one.
+
+        ``resumed`` is this mover's own prior generation, carried over when
+        the run preserves qualified prior coverage: unchanged bytes keep
+        their date, so a live pin's ``covers`` still match.  ``None`` is a
+        first publication, and mints.
+        """
+
+        if resumed is not None:
+            self._material_generation = resumed
+            self._generation_is_resumed = True
+        else:
+            self._material_generation = reader_lease.mint_generation()
+        return self._material_generation
+
+    def material_generation(self) -> str:
+        """The generation the sidecar should be written under right now."""
+
+        if self._material_generation is None:
+            self.begin_material()
+        return self._material_generation
+
+    def _note_replacement(self) -> None:
+        """Record that this run replaced actual bytes at a destination.
+
+        The one event that mints a new generation on a resumed run: the
+        sidecar is a single document with one generation, and once any
+        entry carries bytes this run wrote, the carried-over date no
+        longer describes the whole document.  Minted once -- the document
+        then keeps that generation for the rest of the run, the same
+        one-per-run stability a first publication always had.
+        """
+
+        if self._generation_is_resumed and not self._generation_bumped:
+            self._material_generation = reader_lease.mint_generation()
+            self._generation_bumped = True
 
     def try_adopt(self, entry: dict[str, object], destination: Path,
                   source_id: str | None = None,
@@ -419,6 +469,7 @@ class _StagedPublisher:
                     heal=now >= deadline)
                 if verdict[0] == "replace":
                     os.replace(temp_path, destination)
+                    self._note_replacement()
                     return want, computed, self._identity(destination)
                 if verdict[0] == "adopt":
                     temp_path.unlink(missing_ok=True)
@@ -1564,6 +1615,138 @@ def announced_pool_identity(pool_root: str | Path,
     return None
 
 
+def _resume_own_coverage(queue, *, consumer_action_key: str,
+                         mover_action_key: str, tier_id: str,
+                         stage_root: Path, manifest_sha256: str,
+                         residency_root: Path,
+                         window: list[dict[str, object]],
+                         whole: set[str], mount_prefix: str,
+                         ) -> tuple[dict[str, dict[str, object]],
+                                    dict[str, dict[str, object]], str | None]:
+    """This mover's own prior coverage, qualified for a same-key retry.
+
+    A retried mover starts every dictionary empty, and its first
+    incremental publication *replaces* the fragment and material it filed
+    under the same consumer and mover keys -- so the qualified suffix its
+    previous attempt published loses proof, is recopied, and pays the
+    publication grace per entry.  This is the narrow resume for exactly
+    that: the prior **own** records are read back under the stage
+    ownership lock, and the retry's publications are never smaller than
+    the coverage they inherited.
+
+    Two tiers, deliberately different.  The **vouch** (the fragment
+    record) is preserved for every prior entry this window derives whose
+    record is coherent with it: the file stays named, so a rerun that
+    reaches a changed entry still meets its own vouch at the publication
+    gate and is refused, exactly as ``#755`` refuses any vouched name --
+    dropping the vouch instead would turn that refuse into a
+    grace-then-heal replacement.  The **date** (the material sidecar
+    mention) is carried only where the existing proof standard still
+    holds: the manifest's declared digest agrees, and the sidecar's
+    ``file_id`` matches the live file (:func:`reader_lease.file_id_matches`
+    over :func:`stat_identity`).  No payload is hashed; an undated vouch is
+    preserved as exactly that, never upgraded.
+
+    Qualification of the records themselves is identity, nothing looser:
+    the fragment must be this invocation's own (same consumer, mover,
+    tier, stage root, manifest) or nothing at all is preserved.  Anything
+    unreadable, changed or conflicting simply keeps or drops its tier
+    above -- no coverage is fabricated, and the per-path gate decides the
+    rest fail-closed when the copier reaches it.
+
+    Returns ``(staged_seeds, sidecar_seeds, resumed_generation)``.  Empty
+    seeds with a ``None`` generation mean "nothing resumable", which is
+    today's behavior, not an error.
+    """
+
+    empty: tuple[dict[str, dict[str, object]], dict[str, dict[str, object]],
+                 str | None] = ({}, {}, None)
+    try:
+        with open(residency_map.fragment_path(
+                residency_root, consumer_action_key,
+                mover_action_key), "rb") as stream:
+            fragment = residency_map.validate_fragment(json.load(stream))
+    except (OSError, ValueError):
+        return empty
+    if (str(fragment["consumer_action_key"]) != consumer_action_key
+            or str(fragment["mover_action_key"]) != mover_action_key
+            or str(fragment["tier_id"]) != tier_id
+            or str(fragment["manifest_sha256"]) != manifest_sha256
+            or os.path.normpath(str(fragment["stage_root"]))
+            != os.path.normpath(str(stage_root))):
+        # Not this invocation's own record: another consumer, tier or
+        # manifest filed under these keys, and never coverage to keep.
+        return empty
+    material = reader_lease.read_material(
+        residency_root, consumer_action_key, mover_action_key)
+    if not isinstance(material, Mapping):
+        # Absent, unreadable or invalid sidecar: no date exists to carry
+        # and none is invented, but the vouches above still stand.
+        mentions: Mapping[str, Mapping[str, object]] = {}
+        generation: str | None = None
+    else:
+        mentions = material["entries"]
+        generation = str(material["generation"])
+
+    # The names this window derives, by the map key the fragment uses.
+    facts: dict[str, tuple[int, str, str, int]] = {}
+    for entry in window:
+        path, offset = str(entry["path"]), int(entry["offset"])
+        relative = stage_relative(
+            path, offset, int(entry["bytes"]),
+            mount_prefix=mount_prefix, whole_file=path in whole)
+        key = residency_map.residency_map_key(path, offset)
+        facts[key] = (int(entry["bytes"]), os.path.normpath(str(
+            Path(stage_root) / relative)), str(entry.get("sha256") or ""),
+            offset)
+
+    staged: dict[str, dict[str, object]] = {}
+    sidecar: dict[str, dict[str, object]] = {}
+    with queue.stage_ownership_lock(str(stage_root)):
+        for key, record in dict(fragment["entries"]).items():
+            fact = facts.get(str(key))
+            if fact is None:
+                continue          # not this window's scope
+            want, destination, declared, offset = fact
+            assert isinstance(record, Mapping)
+            stage_path = os.path.normpath(str(record["stage_path"]))
+            if stage_path != destination or int(record["bytes"]) != want:
+                continue          # a record about some other extent
+            digest = str(record["sha256"])
+            # The vouch survives: the name stays published, and the gate
+            # below refuses a changed incarnation instead of letting a
+            # dropped vouch turn refusal into replacement.
+            staged[str(key)] = {
+                "stage_path": stage_path, "bytes": want,
+                "offset": offset, "sha256": digest,
+            }
+            mention = mentions.get(str(key))
+            if not isinstance(mention, Mapping):
+                continue          # vouch without a date stays undated
+            try:
+                dated = (os.path.normpath(str(mention["stage_path"]))
+                         == destination and int(mention["bytes"]) == want)
+            except (TypeError, ValueError):
+                dated = False
+            if not dated or str(mention.get("sha256") or "") != digest:
+                continue          # the date disagrees with the vouch
+            if declared and digest != declared:
+                continue          # not the manifest's bytes: never re-dated
+            live = reader_lease.stat_identity(stage_path)
+            if live is None or not reader_lease.file_id_matches(
+                    mention.get("file_id"), live):
+                continue          # changed, replaced or unreadable
+            file_id = mention.get("file_id")
+            assert isinstance(file_id, Mapping)
+            sidecar[str(key)] = {
+                "stage_path": stage_path, "bytes": want,
+                "sha256": digest, "file_id": dict(file_id),
+            }
+    if not staged:
+        return empty
+    return staged, sidecar, generation
+
+
 def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     """Stage the declared range and return the receipt, refusing an overrun."""
 
@@ -1614,26 +1797,51 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     mounts = prewarm_loop.MountMap(args.mount or [])
     queue = pool.PoolQueue(Path(args.pool_root))
     residency_root = Path(args.residency_root)
+    publisher = _StagedPublisher(
+        queue=queue, stage_root=Path(args.stage_root),
+        residency_root=residency_root,
+        mover_action_key=str(args.action_key),
+        manifest_sha256=str(args.manifest_sha256),
+        tier_id=str(args.tier_id), cas_root=str(args.cas_root),
+        consumer_action_key=str(args.consumer_action_key))
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
-        owner=str(args.action_key),
-        publisher=_StagedPublisher(
-            queue=queue, stage_root=Path(args.stage_root),
-            residency_root=residency_root,
-            mover_action_key=str(args.action_key),
-            manifest_sha256=str(args.manifest_sha256),
-            tier_id=str(args.tier_id), cas_root=str(args.cas_root)))
+        owner=str(args.action_key), publisher=publisher)
 
     manifest_sha256 = args.manifest_sha256
+
+    # A same-key retry inherits its own qualified coverage before it
+    # publishes anything: without this, the first incremental publication
+    # replaces the fragment and material with the tiny fresh subset and
+    # every not-yet-reencountered entry loses proof, is recopied, and pays
+    # the publication grace per entry.  Seeded entries are coverage the
+    # previous attempt already proved and this one re-verifies per path as
+    # it reaches them; they add no staged bytes and cannot complete a
+    # receipt on their own.
+    staged_seeds, sidecar_seeds, resumed_generation = _resume_own_coverage(
+        queue, consumer_action_key=str(args.consumer_action_key),
+        mover_action_key=str(args.action_key), tier_id=str(args.tier_id),
+        stage_root=Path(args.stage_root),
+        manifest_sha256=str(manifest_sha256),
+        residency_root=residency_root, window=window, whole=whole,
+        mount_prefix=mount_prefix)
+    if staged_seeds:
+        copier.staged.update(staged_seeds)
+        copier.sidecar.update(sidecar_seeds)
+    entries_resumed = len(staged_seeds)
+    bytes_resumed = sum(int(record["bytes"])
+                        for record in staged_seeds.values())
 
     last_published = [0.0]
     last_generation = [0]
     publish_lock = threading.Lock()
-    # One publish run, one materialization generation: a retry republishes
-    # under the same mover key with a new generation, so the key alone never
-    # identifies the bytes (see ``reader_lease``).
-    material_generation = reader_lease.mint_generation()
+    # One publish run, one materialization generation -- unless the run
+    # resumed one: unchanged bytes keep their prior generation (stable
+    # reuse, the ``reader_lease.adopted_generation`` rule) and a fresh one
+    # is minted only when the run first replaces actual bytes, which the
+    # publisher notes at the gate.
+    publisher.begin_material(resumed_generation)
 
     def publish(staged: dict[str, dict[str, object]],
                 identities: dict[str, dict[str, object]] | None = None,
@@ -1686,7 +1894,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                     mover_action_key=args.action_key,
                     tier_id=args.tier_id, stage_root=str(args.stage_root),
                     manifest_sha256=manifest_sha256,
-                    generation=material_generation, entries=identities)
+                    generation=publisher.material_generation(),
+                    entries=identities)
 
     served = served_for(args)
     if pacer is not None:
@@ -1741,6 +1950,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "bytes_staged": copier.bytes_staged,
         "entries_declared": len(window),
         "entries_staged": len(copier.staged),
+        # What this invocation re-verified and carried over, not what it
+        # copied: resumed coverage adds no staged bytes and cannot make a
+        # receipt complete on its own -- only a landed entry does.
+        "entries_resumed": entries_resumed,
+        "bytes_resumed": bytes_resumed,
         "complete": copier.bytes_staged == declared and not copier.errors,
         "seconds": round(elapsed, 3),
         # File-side, and named so: what the copy saw, which the ARC can answer

@@ -4548,10 +4548,11 @@ same-path proof while the copy is pending leaves a surviving file no
 publisher can prove and frees capacity its bytes still occupy.
 
 Object identity is portable across clients: tier namespace, epoch, path,
-length, per-publish materialization generation (uuid4, so a same-key retry
-republishes as a new generation), content digest, and backend
-`(ino, size, mtime_ns, ctime_ns)` — never `st_dev`, which disagrees across
-NFS clients. Publish-time identity rides a mover-written sidecar
+length, per-publish materialization generation (uuid4; a resumed run
+carries its prior own generation and mints a fresh one only when it first
+replaces bytes, so unchanged coverage keeps its date), content digest, and
+backend `(ino, size, mtime_ns, ctime_ns)` — never `st_dev`, which disagrees
+across NFS clients. Publish-time identity rides a mover-written sidecar
 (`residency/material/`, schema `reader_material.v1`); the map fragment
 schema v1 is unchanged, and the fragment-owner scan skips the `leases/` and
 `material/` namespaces. A RAM promotion proves its source window across
@@ -4573,6 +4574,68 @@ The existing worker reaper retries normal cleanup after settlement; egress
 can then reclaim orphan refs. A lost attestation file can be reconstructed
 from a validated complete export stored in the terminal. Unknown scope or
 pin state retains ownership, and an old attempt cannot release a successor.
+
+### A same-key retry resumes its own qualified coverage
+
+A mover's action key is a content hash, so a retried mover — a timeout, a
+requeue — runs under the **same** consumer and mover identity, and
+everything it files is keyed by that identity: one fragment, one material
+sidecar, each *replaced* wholesale by every publication. A copier that
+starts every dictionary empty therefore publishes, on its first
+incremental snapshot, a fragment holding only the entries it has
+re-encountered so far — and the qualified suffix its previous attempt
+staged loses proof, is recopied, and pays the publication grace per entry.
+Head `5c46f93b…` did exactly this after its 3600 s deadline: 2,022 entries
+of proof fell to 1 and grew back at seconds per file, which is why the
+same-key retry is a relaunch blocker even after the bounded orphan
+recovery retires the unowned copies.
+
+`stage_move._resume_own_coverage` is the narrow resume, and it changes no
+lifecycle the loop owns. Before the copier runs — under the same stage
+ownership lock the publication gate holds — the mover reads back its **own**
+prior fragment and sidecar, and only when the fragment is this invocation's
+own (same consumer, mover, tier, stage root, manifest) does it preserve
+anything. Two tiers, deliberately different:
+
+* The **vouch** (the fragment record) is preserved for every prior entry
+  this window derives whose record is coherent with it. The name stays
+  published, so a rerun that reaches a *changed* entry still meets its own
+  vouch at the publication gate and is refused, exactly as any vouched
+  name is refused — dropping the vouch instead would turn that refusal
+  into a grace-then-heal replacement of bytes another publication once
+  named.
+* The **date** (the sidecar mention) is carried only where the existing
+  proof standard still holds: the manifest's declared digest agrees and
+  the sidecar's `file_id` matches the live file. No payload is rehashed;
+  an undated vouch is preserved as exactly that, never upgraded, and an
+  unreadable sidecar preserves vouches while dating nothing.
+
+A retry's publications are therefore never smaller than the coverage it
+inherited, in flight and at the final publish, and repeated interruptions
+only ever grow the published set. Re-encountered entries still go through
+`try_adopt`, so an unchanged suffix adopts with no repeat payload read,
+copy or hash; the receipt carries `entries_resumed`/`bytes_resumed` beside
+`entries_staged`/`bytes_staged`, and resumed coverage adds no staged bytes
+and cannot complete a receipt on its own — only a landed entry can.
+
+The generation follows the `adopted_generation` rule already used across
+key changes: a resumed run *carries* its prior own generation (same bytes
+without replacement keep their date, so a live pin's covers still match),
+and the publisher mints a fresh one exactly once — the first time the run
+replaces actual bytes, because from that moment the carried date no longer
+describes the whole document. A resumed run that replaces nothing rewrites
+its fragment and sidecar under the unchanged generation, so a reader
+re-acquiring over the same window gets its own pin back rather than a
+`generation-changed` refusal. Existing live pins are never invalidated,
+rewritten or treated as stale by a restart: an unchanged resumed entry
+keeps its inode, so `open_pinned` still verifies its descriptor while
+other entries land.
+`tests/test_a_same_key_retry_preserves_its_own_qualified_coverage.py`
+holds each rule as a focused case on tiny real files through the real
+tool: the never-smaller prefix, the repeated partial retry, the changed
+entry that refuses instead of being replaced, the corrupt sidecar that
+dates nothing, the live pin that stays valid as new material lands, and
+the all-adopted resume that keeps its generation.
 
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
