@@ -82,6 +82,26 @@ def channel(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def standalone_action_identity(monkeypatch):
+    """Each synthetic action runs as itself, not as the action that admitted it.
+
+    ``PoolQueue.execute`` launches its nested worker with this process's own
+    environment, so under an admitted PrismaBuild action the synthetic action
+    would inherit the outer attempt's broker-owned reader tuple.  That tuple
+    names another action, and the launcher refuses to forward it rather than
+    binding an outer identity to a local run (#786) -- correctly, because the
+    check is what keeps a nested action from borrowing the attempt it was
+    launched under.  Reader identity is not what this module tests, so its
+    synthetic actions run the way a standalone box runs them: no ambient tuple
+    at all, with the production check left strict.
+    """
+
+    for name in (pb.ACTION_NONCE_ENV, pb.ACTION_SCOPE_ENV,
+                 pb.READER_HELPER_ROOT_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+
 # -- one writer behind every spelling -------------------------------------
 
 def test_the_package_helper_writes_what_the_worker_accepts(channel):
