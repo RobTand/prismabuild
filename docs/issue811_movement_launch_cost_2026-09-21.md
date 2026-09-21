@@ -140,10 +140,11 @@ runtime-only closure must prove), and the `--checkout-root` cwd it passes.
 
 Measured effect of removing the term, as an upper bound: the contract-legal
 reuse arm (B) still runs the worker's identity and closure checks and costs
-1.007 s claim-to-terminal against arm A's 6.193 s under the same load. Scaled
-by the production records' own decomposition, a mover would fall from ~3.9 s
-to ~1.8 s and an egress from ~5.0 s to ~2.9 s. A "skip entirely" implementation
-would land below arm B, not above it.
+0.901 s claim-to-terminal against arm A's 5.952 s under the same load (the
+corroborating replay: 1.007 s against 6.193 s). Scaled by the production
+records' own decomposition, a mover would fall from ~3.9 s to ~1.8 s and an
+egress from ~5.0 s to ~2.9 s. A "skip entirely" implementation would land below
+arm B, not above it.
 
 The security-relevant half is a contract question, not a measurement one: the
 closure is what binds executed bytes, so accepting a runtime-only closure means
