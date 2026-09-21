@@ -482,8 +482,10 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
     tier_loop.withdraw_dead_consumer_movers(queue)
     events = tier_loop.residency_window(queue, tiers=tiers)
     # The mover-held fence came home exactly once through the terminal
-    # branch; the staged pin is untouched, the queued mover withdrawn.
-    assert ledger.available().get("stage_gib") == 2
+    # branch; the staged pin is untouched, the queued mover withdrawn. B is
+    # admitted in the same window and fences its own advance (#832), so one
+    # free token is B's legitimate reservation, not A's leaked fence.
+    assert ledger.available().get("stage_gib") == 1
     assert int(ledger.holder_tokens(p0).get("stage_gib", 0)) == 1
     assert int(ledger.holder_tokens(p1).get("stage_gib", 0)) == 0
     assert not queue.item_path(pool.READY, p1).exists()
@@ -491,6 +493,8 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
     assert record is not None and record["state"] == "released"
     assert sum(int(e.get("released_gib", 0)) for e in events
                if e.get("event") == "advance-released") == 1
+    assert ledger.holder_tokens(window_credit.grant_key(
+        CONSUMER_B, TIER, "mover_row", "phase-1", None)) == {"stage_gib": 1}
 
 
 def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
