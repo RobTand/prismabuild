@@ -3797,6 +3797,32 @@ for an older inode; those records do not describe the current file's bytes.
 An in-place modification of a dated inode remains a conflict. These checks use
 metadata and preserve valid zero-copy reuse; they do not rehash staged payloads.
 
+**The proof-lookup index is a bounded, exact projection.** A mover runs
+`_proof_search` once per destination and again on every publish poll, so the
+publisher keeps one invocation-local index of parsed publication metadata
+(#761/#778): each fragment and sidecar is read and validated once per version
+and retained as a packed projection of exactly what a decision reads —
+normalized paths in one bytes blob with 8-byte end offsets and 64-bit hash
+keys, and one fixed 72-byte record per validated ordered mention (size, raw
+digest, four-field identity). Membership is exact byte comparison: a hash
+collision costs a comparison, never an answer. Tables naming the same paths
+are interned once per `(blob, ends)` identity and shared by every document
+that references them, charged once; `_reclaim` rebuilds the interned set from
+the live records and recomputes that charge from the real packed bytes. The
+ceiling stays 192 MiB, priced in retained bytes, and a record that does not
+fit is decided uncached from the fresh parse — the same verdict, never a
+truncated or held one — so a truly oversized forest degrades to the pre-#761
+cost, not to a wrong answer, and a validated mention the fixed record cannot
+carry exactly (an arbitrary-size integer identity) takes the same uncached
+path. Every lookup still stats each metadata file first and compares its full
+dev/inode/size/mtime/ctime version, so an added, removed, rewritten,
+permission-changed or same-size-restored-mtime file is seen before the next
+decision; whole-document validation, taint and foreign-owner semantics, the
+live destination stat, the pin and handoff gates, and the ordered
+duplicate-mention reads are unchanged. This is a work bound, not a fairness
+or throughput claim: it removes repeated whole-document reads and decodes
+when the compact working set fits the fixed budget.
+
 **The window, the sweep, and the egress order.** Promotion scheduling is
 the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact

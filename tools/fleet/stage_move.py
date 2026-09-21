@@ -44,6 +44,8 @@ refuses its consumer rather than admitting it onto bytes nobody reserved.
 from __future__ import annotations
 
 import argparse
+import array
+import bisect
 from collections.abc import Mapping
 import hashlib
 import json
@@ -53,6 +55,7 @@ import queue as queuelib
 import resource
 import socket
 import stat as statmod
+import struct
 import sys
 import threading
 import time
@@ -166,67 +169,68 @@ _PUBLISH_POLL_S = 0.25
 #: Residency subdirectories that never hold consumer fragments.
 _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 
-#: Byte ceiling for one publisher's lookup reuse (#761), and the conservative
-#: retained sizes it is measured in.  A count of anything -- references,
+#: Byte ceiling for one publisher's lookup reuse (#761, #778), and the
+#: conservative sizes it is measured in.  A count of anything -- references,
 #: records, paths -- bounds only the thing it counts, so this is bytes, every
 #: retained row is priced, and each price is charged ONCE at insert from the
-#: actual object: the real string lengths, the real mention count, the real
-#: per-record overhead.  Nothing is free, including a malformed or empty
+#: actual object: the real packed path bytes, the real mention records, the
+#: real per-record overhead.  Nothing is free, including a malformed or empty
 #: record, because a row that costs nothing is a row that can be added
 #: without limit.
 #:
-#: Each constant is an over-estimate of CPython's real cost on a 64-bit
-#: build, so the figure :meth:`_index_bytes` reports is never under the
-#: truth.  ``_STR_CHAR_BYTES`` is the UCS-4 width, which is what a
-#: non-Latin-1 path actually costs and four times what an ASCII one does:
-#: erring high is the point, and it means a long or unicode path is charged
-#: what it is rather than a flat guess.
+#: What is retained is a packed projection of exactly what the decision
+#: reads -- normalized paths in one bytes blob with 8-byte end offsets and
+#: 8-byte hash keys, and one fixed 72-byte record per validated ordered
+#: mention -- rather than the parsed Python object graph of #761, whose
+#: interned strings, set and dict slots, digest strings and identity dicts
+#: could refuse retention at live proof sizes and turn every later adoption
+#: back into a full document read (#778).
+#:
+#: Each figure below is an over-estimate of the retained bytes on a 64-bit
+#: CPython build, so :meth:`_index_bytes` never reports under the truth.
+#: ``_STR_CHAR_BYTES`` is the UCS-4 width, which is what a non-Latin-1 path
+#: actually costs and four times what an ASCII one does: erring high is the
+#: point, and it means the few strings still retained whole -- a record's
+#: file key and its mover key -- are charged what they are rather than a flat
+#: guess.
+#:
+#: Path tables that carry the same paths are shared: one actual table is
+#: interned per packed identity ``(blob, ends)``, fragments and sidecars that
+#: name the same destinations reference that one table, and it is charged
+#: once.  ``_reclaim`` rebuilds the interned set from the live records and
+#: recomputes that charge from scratch, the one accounting that cannot drift.
 #:
 #: This prices the RETAINED index only.  The transient cost of decoding one
 #: 22 MB fragment is a peak that is freed before the next lookup; it belongs
 #: to the process's peak RSS, not here, and the two are reported separately.
 #:
-#: On the live forest measured for #761 -- 118 fragments, thirteen of them
-#: naming ~36k paths of about 100 ASCII characters, sidecars totalling 27 KB
-#: -- this prices the index near 40 MB against a measured peak RSS delta of
-#: 52 MB.  192 MiB is well clear of both and under a fifth of the mover's
-#: existing 1 GiB envelope.  Past the ceiling a record is not retained: that
-#: file answers uncached, which costs what it cost before this existed and
-#: is never a different answer.  Because every charge is exact and travels
-#: with its entry, a refusal is never permanent -- it lifts as soon as the
-#: index has room.
+#: Past the ceiling a record is not retained: that file answers uncached,
+#: which costs what it cost before this existed and is never a different
+#: answer.  Because every charge is exact and travels with its entry, a
+#: refusal is never permanent -- it lifts as soon as the index has room.
 _INDEX_BUDGET_BYTES = 192 << 20
 _STR_HEADER_BYTES = 64
 _STR_CHAR_BYTES = 4
-_DICT_SLOT_BYTES = 104
-_SET_SLOT_BYTES = 32
 _RECORD_OVERHEAD_BYTES = 512
-_MENTION_OVERHEAD_BYTES = 512
-_IDENTITY_FIELD_BYTES = 152
+#: One packed path table's fixed overhead: the bytes blob and the array and
+#: instance headers around it, plus the intern tuple and its dict slot.
+_PACKED_TABLE_OVERHEAD_BYTES = 256
+#: What one packed path costs beside its own bytes: an 8-byte end offset and
+#: an 8-byte hash key.
+_PACKED_PATH_INDEX_BYTES = 16
+#: One packed mention record: ``<Q32s4Q`` -- size, raw sha256, identity.
+_PACKED_MENTION_BYTES = 72
+_PACKED_VALUES_OVERHEAD_BYTES = 128
+#: The unsigned width the 64-bit path hash is normalized to before it is
+#: stored and bisected; the exact bytes comparison below decides membership.
+_HASH_MASK = (1 << 64) - 1
+_MENTION_STRUCT = struct.Struct("<Q32s4Q")
 
 
 def _string_bytes(value: object) -> int:
     """Conservative retained size of one string: header plus UCS-4 width."""
 
     return _STR_HEADER_BYTES + _STR_CHAR_BYTES * len(str(value))
-
-
-def _interned_bytes(path: str) -> int:
-    """What holding one path in the shared interned table costs."""
-
-    return _string_bytes(path) + _DICT_SLOT_BYTES
-
-
-def _mention_bytes(mention: tuple) -> int:
-    """What one retained sidecar mention costs: tuple, digest, identity."""
-
-    _size, digest, identity = mention
-    total = _MENTION_OVERHEAD_BYTES
-    if isinstance(digest, str):
-        total += _string_bytes(digest)
-    if isinstance(identity, dict):
-        total += len(identity) * _IDENTITY_FIELD_BYTES
-    return total
 
 
 def _metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
@@ -271,6 +275,194 @@ def _origin_id_of(path_str: str) -> str | None:
     if not statmod.S_ISREG(sample.st_mode):
         return None
     return f"{sample.st_size}:{sample.st_mtime_ns}:{sample.st_ino}"
+
+
+def _packed_order(names: "list[str] | set[str]") -> list[str]:
+    """One deterministic order for a path set, shared by every packer.
+
+    Ascending unsigned 64-bit ``hash`` of the name, then the encoded bytes as
+    the tie-break, so two documents that name the same paths build the same
+    packed identity and share one table.  The order is process-local (the
+    hash is salted) and never leaves the publisher.
+    """
+
+    return sorted(names, key=lambda name: (
+        hash(name) & _HASH_MASK, name.encode("utf-8", "surrogatepass")))
+
+
+class _PackedPaths:
+    """Exact membership over a packed, shareable set of normalized paths.
+
+    The paths are UTF-8 encoded (``surrogatepass``, so a lone surrogate from
+    JSON cannot compare equal to a real path -- the encoding stays injective
+    over Python strings) and packed into one bytes blob, with an 8-byte end
+    offset and an unsigned 64-bit ``hash`` key per path in the same order.
+    Lookup is a C-level ``bisect`` on the key array, followed by an exact
+    byte comparison of the blob slice for every candidate with an equal key:
+    a hash collision costs one comparison and never a different answer.
+
+    ``retained_bytes`` prices the blob, both arrays and fixed headers.  The
+    ``(blob, ends)`` pair is the table's exact identity -- ends fixes every
+    boundary, so equal pairs are equal path sequences -- and the one key the
+    publisher's intern table shares it under.
+    """
+
+    __slots__ = ("blob", "ends", "keys")
+
+    def __init__(self, names: "list[str] | set[str]") -> None:
+        ordered = _packed_order(list(names))
+        encoded = [name.encode("utf-8", "surrogatepass") for name in ordered]
+        self.blob = b"".join(encoded)
+        ends = bytearray()
+        total = 0
+        for item in encoded:
+            total += len(item)
+            ends += total.to_bytes(8, "little")
+        self.ends = bytes(ends)
+        self.keys = array.array("Q", (hash(name) & _HASH_MASK
+                                      for name in ordered))
+
+    @property
+    def retained_bytes(self) -> int:
+        """Conservative retained size of this table."""
+
+        if not self.keys:
+            return 0
+        return _PACKED_TABLE_OVERHEAD_BYTES + len(self.blob) + (
+            len(self.keys) * _PACKED_PATH_INDEX_BYTES)
+
+    def intern_key(self) -> tuple[bytes, bytes]:
+        """The exact identity one shared table is interned under."""
+
+        return (self.blob, self.ends)
+
+    def index(self, path: str) -> int:
+        """The path's position in the packed order, or -1 when absent."""
+
+        keys = self.keys
+        count = len(keys)
+        if not count:
+            return -1
+        needle_hash = hash(path) & _HASH_MASK
+        position = bisect.bisect_left(keys, needle_hash)
+        if position == count or keys[position] != needle_hash:
+            return -1
+        needle = path.encode("utf-8", "surrogatepass")
+        blob, ends = self.blob, self.ends
+        while position < count and keys[position] == needle_hash:
+            start = (int.from_bytes(ends[position * 8 - 8:position * 8],
+                                    "little") if position else 0)
+            end = int.from_bytes(ends[position * 8:position * 8 + 8], "little")
+            if blob[start:end] == needle:
+                return position
+            position += 1
+        return -1
+
+    def __contains__(self, path: object) -> bool:
+        return self.index(str(path)) >= 0
+
+
+#: One shared empty table for records that name no path; never interned and
+#: never charged a table cost (the per-record overhead already prices the
+#: row, and the one object is process-wide).
+_EMPTY_PATHS = _PackedPaths([])
+
+
+def _pack_mention(mention: tuple) -> bytes:
+    """One validated mention as its fixed binary record.
+
+    Raises for anything the fixed width cannot carry exactly --
+    ``validate_material`` accepts arbitrary-size non-negative integers -- so
+    the caller falls back to the uncached answer rather than truncate.
+    """
+
+    size, digest, identity = mention
+    if not isinstance(digest, str) or not isinstance(identity, Mapping):
+        raise ValueError("mention is not a validated (bytes, sha256, file_id)")
+    return _MENTION_STRUCT.pack(int(size), bytes.fromhex(digest),
+                                int(identity["ino"]), int(identity["size"]),
+                                int(identity["mtime_ns"]),
+                                int(identity["ctime_ns"]))
+
+
+def _decode_mentions(packed: bytes) -> tuple:
+    """The ``(size, sha256, file_id)`` triples one path's records decode to."""
+
+    out = []
+    for offset in range(0, len(packed), _PACKED_MENTION_BYTES):
+        size, digest, ino, size_bytes, mtime_ns, ctime_ns = (
+            _MENTION_STRUCT.unpack_from(packed, offset))
+        out.append((size, digest.hex(),
+                    {"ino": ino, "size": size_bytes,
+                     "mtime_ns": mtime_ns, "ctime_ns": ctime_ns}))
+    return tuple(out)
+
+
+class _PackedMentions:
+    """One sidecar's ordered per-path mentions, packed and shareable.
+
+    ``paths`` is a :class:`_PackedPaths` table (shared with every other
+    document naming the same paths); ``values`` is one bytes blob of fixed
+    72-byte mention records and ``ends`` the 8-byte end offsets into it, both
+    parallel to the table's packed order.  ``get`` reconstructs exactly the
+    triples the object representation returned, in the same order, because
+    the digest search and the identity search legitimately read different
+    mentions of one path.
+    """
+
+    __slots__ = ("paths", "values", "ends")
+
+    def __init__(self, paths: _PackedPaths, values: bytes,
+                 ends: bytes) -> None:
+        self.paths = paths
+        self.values = values
+        self.ends = ends
+
+    @property
+    def values_bytes(self) -> int:
+        """Conservative retained size of the values blob and its offsets."""
+
+        return (len(self.values) + len(self.ends)
+                + _PACKED_VALUES_OVERHEAD_BYTES)
+
+    @classmethod
+    def build(cls, mentions: Mapping[str, tuple]) -> "_PackedMentions | None":
+        """The packed projection of one validated sidecar, or ``None``.
+
+        ``None`` means some mention cannot be carried exactly by the fixed
+        record.  The caller then decides from the freshly parsed object,
+        uncached: the same verdict, never a truncated one.
+        """
+
+        try:
+            packed = {path: b"".join(_pack_mention(one) for one in carried)
+                      for path, carried in mentions.items()}
+        except (struct.error, OverflowError, ValueError, TypeError, KeyError):
+            return None
+        ordered = _packed_order(list(packed))
+        values = b"".join(packed[path] for path in ordered)
+        ends = bytearray()
+        total = 0
+        for path in ordered:
+            total += len(packed[path])
+            ends += total.to_bytes(8, "little")
+        return cls(_PackedPaths(ordered), values, bytes(ends))
+
+    def shared_with(self, paths: _PackedPaths) -> "_PackedMentions":
+        """The same values on the one actual interned table."""
+
+        return _PackedMentions(paths, self.values, self.ends)
+
+    def get(self, path: str, default: object = ()) -> object:
+        """The ordered triples this sidecar carries for ``path``."""
+
+        index = self.paths.index(path)
+        if index < 0:
+            return default
+        start = (int.from_bytes(self.ends[index * 8 - 8:index * 8], "little")
+                 if index else 0)
+        end = int.from_bytes(self.ends[index * 8:index * 8 + 8], "little")
+        return _decode_mentions(self.values[start:end])
 
 
 class _StagedPublisher:
@@ -358,25 +550,31 @@ class _StagedPublisher:
         self._material_generation: str | None = None
         self._generation_is_resumed = False
         self._generation_bumped = False
-        # Invocation-local reuse of parsed publication metadata (#761).
+        # Invocation-local reuse of parsed publication metadata (#761, #778).
         # ``_proof_search`` runs once per destination -- tens of thousands
         # per mover -- and again on every publish poll, and before this it
         # re-opened and re-parsed every consumer fragment on each run (118
         # files, 334.6 MB, on the live root when this was measured) plus
-        # every relevant sidecar.  Each file is now parsed once per version;
-        # the directory scans and the per-file stat that see additions,
-        # changes and removals still run before every decision, so nothing
-        # decides on evidence that moved.  Process-local, nothing persisted,
-        # dropped with the publisher.  Its own lock because the stage
-        # ownership lock is a POSIX file lock, which does not exclude two
-        # threads of one process from each other.
+        # every relevant sidecar.  Each file is now parsed once per version
+        # and retained as a packed projection of exactly what a decision
+        # reads -- never the parsed object graph, whose bytes could refuse
+        # retention at live proof sizes and send every later lookup back
+        # through the whole document (#778).  The directory scans and the
+        # per-file stat that see additions, changes and removals still run
+        # before every decision, so nothing decides on evidence that moved.
+        # Process-local, nothing persisted, dropped with the publisher.  Its
+        # own lock because the stage ownership lock is a POSIX file lock,
+        # which does not exclude two threads of one process from each other.
         self._lookup_lock = threading.Lock()
         # Each entry is ``(version, record, charge)``: the charge is measured
-        # from the real object at insert and travels with it, so dropping an
-        # entry cannot forget to discount it and no row is ever free.
+        # from the real packed object at insert and travels with it, so
+        # dropping an entry cannot forget to discount it and no row is ever
+        # free.
         self._fragments: dict[str, tuple[tuple, object, int]] = {}
         self._materials: dict[tuple[str, str], tuple[tuple, object, int]] = {}
-        self._interned: dict[str, str] = {}
+        #: One actual packed path table per exact identity, shared by every
+        #: fragment and sidecar that names those paths and charged once.
+        self._interned: dict[tuple[bytes, bytes], _PackedPaths] = {}
         self._interned_cost = 0
         self._fragment_cost = 0
         self._material_cost = 0
@@ -690,15 +888,43 @@ class _StagedPublisher:
         if previous is not None:
             self._material_cost -= previous[2]
 
-    def _intern(self, path: str) -> str:
-        """One shared copy of a staged path, charged the first time it lands."""
+    def _retain_table(self, table: _PackedPaths, base: int,
+                      ) -> tuple[_PackedPaths, int] | None:
+        """The one shared table this record references, and the record charge.
 
-        existing = self._interned.get(path)
-        if existing is not None:
-            return existing
-        self._interned[path] = path
-        self._interned_cost += _interned_bytes(path)
-        return path
+        ``base`` is the record's own cost (file key, mover, per-record
+        overhead, and for a sidecar its mention values) before the table.  A
+        table that is already interned is shared: the record references that
+        actual object and pays nothing more for it.  A new table is charged
+        its packed bytes and inserted only after the ceiling admits it, so a
+        refusal leaves the index exactly as it was -- never half-inserted,
+        and never a duplicate blob beside an equal interned one.
+
+        ``_room_for`` may reclaim unreferenced tables while deciding.  A
+        reclaim can only drop tables no retained record names, so the lookup
+        is repeated after the check and the table re-interned and charged if
+        the check removed the one it was about to share.
+        """
+
+        key = table.intern_key()
+        cached = self._interned.get(key)
+        if cached is None:
+            charge = base + table.retained_bytes
+            if not self._room_for(charge):
+                return None
+            self._interned[key] = table
+            self._interned_cost += table.retained_bytes
+            return table, charge
+        if not self._room_for(base):
+            return None
+        if self._interned.get(key) is cached:
+            return cached, base
+        charge = base + cached.retained_bytes
+        if not self._room_for(charge):
+            return None
+        self._interned[key] = cached
+        self._interned_cost += cached.retained_bytes
+        return cached, charge
 
     def _reclaim(self) -> None:
         """Give back what the index holds for metadata that is no longer there.
@@ -708,14 +934,12 @@ class _StagedPublisher:
         forest is never visited again -- the per-lookup drop paths only run
         on a file the directory scan still lists -- so its entry is dropped
         here, by the one authority that can say it is gone: a stat.  And a
-        dropped or replaced record leaves its paths interned but
-        unreferenced, so the interned table is rebuilt from what records
-        still name, and its charge recomputed from scratch rather than
-        adjusted -- the one accounting that cannot drift.
-
-        Run only when the ceiling is actually in the way, never on the hot
-        path: one stat per retained entry, and the retained set is bounded
-        by the forest.
+        dropped or replaced record leaves its packed path table interned but
+        unreferenced, so the interned set is rebuilt from the tables the
+        retained records still reference, and its charge recomputed from
+        their real packed bytes rather than adjusted -- the one accounting
+        that cannot drift.  One actual table stays per referenced identity,
+        however many records share it.
         """
 
         for key in [k for k in self._fragments if not os.path.exists(k)]:
@@ -724,25 +948,27 @@ class _StagedPublisher:
                     if not reader_lease.material_path(
                         self.residency_root, k[0], k[1]).exists()]:
             self._forget_material(key)
-        live: set[str] = set()
+        live: dict[tuple[bytes, bytes], _PackedPaths] = {}
         for _version, record, _charge in self._fragments.values():
-            if isinstance(record, tuple):
-                live.update(record[1])
+            if isinstance(record, tuple) and isinstance(record[1],
+                                                        _PackedPaths):
+                if record[1].keys:
+                    live[record[1].intern_key()] = record[1]
         for _version, record, _charge in self._materials.values():
-            if isinstance(record, dict):
-                live.update(record)
-        self._interned = {}
-        self._interned_cost = 0
-        for path in live:
-            self._intern(path)
+            if isinstance(record, _PackedMentions) and record.paths.keys:
+                live[record.paths.intern_key()] = record.paths
+        self._interned = live
+        self._interned_cost = sum(table.retained_bytes
+                                  for table in live.values())
 
     def _room_for(self, cost: int) -> bool:
         """Whether the index can hold ``cost`` more bytes, reclaiming first.
 
-        ``cost`` is an upper bound that assumes every path it names is new
-        to the interned table, so a yes here is never optimistic.  A refusal
-        only ever follows a reclaim, so it means the index is genuinely that
-        full -- never that its accounting drifted.
+        ``cost`` prices the record from the real packed object and charges a
+        new shared table only when it is genuinely new, so a yes here is
+        never optimistic.  A refusal only ever follows a reclaim, so it means
+        the index is genuinely that full -- never that its accounting
+        drifted.
         """
 
         if self._index_bytes() + cost <= _INDEX_BUDGET_BYTES:
@@ -781,10 +1007,11 @@ class _StagedPublisher:
 
         ``None`` for a file that is gone or is not a residency fragment,
         ``"tainted"`` for one that cannot be read or parsed, otherwise
-        ``(mover_action_key, frozenset of the normalized staged paths its
+        ``(mover_action_key, packed set of the normalized staged paths its
         entries name)`` -- everything :meth:`_proof_candidate` asks of a
-        fragment and nothing else, so a 22 MB fragment is retained as a set
-        of interned strings rather than as its parsed document.
+        fragment and nothing else, so a 22 MB fragment is retained as a
+        packed projection rather than as its parsed document or its object
+        graph.
 
         A ``ValueError`` verdict caches against the version that produced
         it: corrupt content cannot heal without the file changing.  An
@@ -836,18 +1063,22 @@ class _StagedPublisher:
                 continue
             names.add(os.path.normpath(str(staged)))
         mover = str(fragment.get("mover_action_key") or "")
-        # Priced from the real objects before anything is interned, so a
-        # record that will not be kept leaves nothing behind.  The interned
-        # share is priced as if every path were new, which it may be after a
-        # reclaim, so the estimate is never optimistic.
+        # Priced from the real packed object before anything is interned, so
+        # a record that will not be kept leaves nothing behind.
         self._forget_fragment(key)
-        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(key)
-                  + _string_bytes(mover)
-                  + len(names) * _SET_SLOT_BYTES)
-        interning = sum(_interned_bytes(name) for name in names)
-        if not self._room_for(charge + interning):
-            return mover, frozenset(names)
-        record = (mover, frozenset(self._intern(name) for name in names))
+        base = (_RECORD_OVERHEAD_BYTES + _string_bytes(key)
+                + _string_bytes(mover))
+        table = _PackedPaths(names)
+        if not names:
+            if not self._room_for(base):
+                return mover, _EMPTY_PATHS
+            self._keep_fragment(key, version, (mover, _EMPTY_PATHS), base)
+            return mover, _EMPTY_PATHS
+        retained = self._retain_table(table, base)
+        if retained is None:
+            return mover, table
+        table, charge = retained
+        record = (mover, table)
         # Anchored on the version the read saw, not the version the stat saw:
         # the content held is the content those bytes carried.
         self._keep_fragment(key, version, record, charge)
@@ -857,15 +1088,18 @@ class _StagedPublisher:
         """One sidecar's reusable record, validated once per version.
 
         ``None`` (absent -- an undated vouch), ``"tainted"`` (unreadable or
-        invalid), or ``{normalized staged path: the mentions that path
-        carries, in sidecar order}``, each mention a ``(bytes, sha256,
-        file_id)`` triple.  Ordered and complete per path because the digest
-        search and the identity search may legitimately land on different
-        mentions of one path, exactly as they could before.
+        invalid), or a packed projection whose ``get`` returns the ordered
+        ``(bytes, sha256, file_id)`` mentions one normalized staged path
+        carries, exactly as the parsed mapping did.  Ordered and complete
+        per path because the digest search and the identity search may
+        legitimately land on different mentions of one path.
 
         ``reader_lease.validate_material`` still runs, so the strictness a
         sidecar is held to is unchanged; only the repeated read is removed.
-        As with fragments, an ``OSError`` never caches.
+        A validated mention the fixed record cannot carry exactly -- an
+        arbitrary-size integer identity -- is decided from the freshly
+        parsed object, uncached and unretained, never truncated.  As with
+        fragments, an ``OSError`` never caches.
         """
 
         cache_key = (consumer, mover)
@@ -905,23 +1139,23 @@ class _StagedPublisher:
             mentions[normalized] = mentions.get(normalized, ()) + ((
                 mention.get("bytes"), mention.get("sha256"),
                 mention.get("file_id")),)
-        # Sidecar mentions are the heaviest thing the index holds -- a digest
-        # string and an identity dict each -- so each one is charged what it
-        # actually retains rather than a flat figure.
+        # Priced from the real packed object before anything is interned, so
+        # a record that will not be kept leaves nothing behind.
         self._forget_material(cache_key)
-        charge = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
-                  + _string_bytes(mover)
-                  + len(mentions) * _DICT_SLOT_BYTES
-                  + sum(_mention_bytes(one)
-                        for carried in mentions.values() for one in carried))
-        interning = sum(_interned_bytes(path) for path in mentions)
-        if not self._room_for(charge + interning):
+        compact = _PackedMentions.build(mentions)
+        if compact is None:
             return mentions
-        mentions = {self._intern(path): carried
-                    for path, carried in mentions.items()}
-        self._materials[cache_key] = (version, mentions, charge)
+        base = (_RECORD_OVERHEAD_BYTES + _string_bytes(consumer)
+                + _string_bytes(mover) + compact.values_bytes)
+        retained = self._retain_table(compact.paths, base)
+        if retained is None:
+            return mentions
+        table, charge = retained
+        if table is not compact.paths:
+            compact = compact.shared_with(table)
+        self._materials[cache_key] = (version, compact, charge)
         self._material_cost += charge
-        return mentions
+        return compact
 
     @staticmethod
     def _published_source_id(norm: str) -> str | None:
