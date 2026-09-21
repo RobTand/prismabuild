@@ -207,7 +207,7 @@ its existing limits. This is not a whole-submission timeout.
 | `--gpu-capacity N` | Explicit capacity override for `--exclusive`; normally leave it unset so worker offers supply the physical capacity. It does not set shared job concurrency. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
-| `--container-image REF` | Require the claiming box's local Docker to positively hold this exact image reference before the action is claimed. Repeatable. Accepts `sha256:<64 hex>` (local image ID) or `repository@sha256:<64 hex>` (manifest digest); a mutable tag is refused. **Part of the action identity**, and it moves the Docker ownership id. Pool only. | Refused: the lane has no worker inventory to check. |
+| `--container-image REF` | Require the claiming box's local Docker to positively hold this exact image reference before the action is claimed. Repeatable. Accepts `sha256:<64 hex>` (local image ID), `repository@sha256:<64 hex>` (manifest digest) or `content:sha256:<64 hex>` (store-independent content, and the portable one: #805). A mutable tag is refused. **Part of the action identity**, and it moves the Docker ownership id. Pool only. | Refused: the lane has no worker inventory to check. |
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
@@ -265,8 +265,16 @@ Practical rules:
 
 - Reference forms. `sha256:<64 hex>` matches the local image **ID**;
   `repository@sha256:<64 hex>` matches that exact **RepoDigest**, repository
-  context included. The two are not aliases. Mutable tags (`repo:tag`) are
-  refused; use a digest.
+  context included; `content:sha256:<64 hex>` matches the image's
+  store-independent **content**. The three are not aliases. Mutable tags
+  (`repo:tag`) are refused; use a digest.
+- Prefer the content form for work any box holding the image may run. An
+  image ID is what that box's own image store calls the image, and the two
+  Sparks run different stores, so an ID-sealed action is claimable by one
+  Spark only (#805); a locally built image has no RepoDigest on the classic
+  store, so the `repository@` form is not the answer either. Read a portable
+  reference off a box that holds the image with `python3 -m
+  prismabuild.container_images <repo:tag>`.
 - The image must be local *before* the action is claimed. A workflow that
   loads its image from an archive inside the action (PrismaQuant's
   `container.archive`) must **not** declare it: PB would deny the claim
