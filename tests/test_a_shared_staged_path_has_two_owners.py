@@ -575,7 +575,9 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     assert receipt["entries_deleted"] == 0
     assert queue.tier_ledger(TIER).holder_tokens(MOVER_A) == {"stage_gib": 2}
     assert any("malformed resources" in error for error in receipt["errors"])
-    assert any("invalid range" in error for error in receipt["errors"])
+    # An identified mover whose sealed argv carries no range flags is refused
+    # with the reason the pass files today; the pass still fails closed.
+    assert any("mover seals no range" in error for error in receipt["errors"])
     assert any("no command" in error for error in receipt["errors"])
 
 

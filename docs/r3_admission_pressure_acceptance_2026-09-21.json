@@ -1,0 +1,56 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "69098a80cebe44e17a1b6741cfddb6aa7326ba53",
+  "ledger_commit": "375b25c05968c2f9a4611539c921f677d6feb70d",
+  "scope": ["PRG-04", "SC-01", "SC-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "fix/r3-adopted-window-pressure-20260921",
+    "issue": "https://github.com/RobTand/prismabuild/issues/829",
+    "reviewed_base": "94fc96b6924b58f2ec1b923c918feb1d9a708c22",
+    "validated_repairs": [
+      {
+        "id": "PRG-04",
+        "actions": ["bffd981ecf4c59a45e64ee0f8c582b3e04d622ae6acfc7b7dfb218e2e754b142"],
+        "outcome": "RED: original source plus new regressions, sparky CPU, 2 failed at intended assertions: stage pressure 2 instead of 8; RAM pressure 2 instead of 10. Terminal return 1, no successful CAS receipt, zero skips."
+      },
+      {
+        "id": "PRG-04",
+        "actions": ["7053c1d9f918acdf54859a4e27bb329638731778d7de213605b15dcb0b411c08"],
+        "outcome": "Narrow GREEN: 2 passed, dl380g10 CPU, terminal return 0. Receipt c2ea22fd881f554ae44ec2af22ef950d6d93104ffcf64c691f7f127c362c3972 and result blob 76d5478b4e9f9190c5e9413f11d5f5f787c6ed269da6b5e87fe4006898fd179b verified. Zero skips."
+      },
+      {
+        "id": "PRG-04",
+        "actions": [
+          "091f9590d6c82618e552c46f8445e8c952c8a77081a6d5acefad3c5e52265e2d",
+          "45d67c17ad094142cd96c25c0cadd5ddd2f6319d7b460482bfaf037889f83c50",
+          "b14e17c8471814d290760a079662b6e47a382cfc743dfa14de48b5fe4a5422cf",
+          "9ce3d7f9d7f7b71ec2f3ca4065a5adbe7d1f91f0be9a837a7562e632b50f1c62"
+        ],
+        "outcome": "55 passed across six affected files, four PB-owned CPU shards on dl380g10; zero skips, one existing fork-from-multithreaded-process DeprecationWarning in pbstatus.py. All terminal records, successful CAS receipts, and result blob SHA-256/byte counts verified. Includes both new regressions, retained live data, withdrawal, run-ahead refusal, and multi-consumer cases. The narrow GREEN tests overlap this count."
+      },
+      {
+        "id": "SC-01",
+        "actions": [],
+        "outcome": "Source review: the existing tier loop computes pressure and the existing orphan sweep retains deletion authority. No queue mutation, scheduling, or cleanup policy is delegated to the application."
+      },
+      {
+        "id": "SC-02",
+        "actions": [],
+        "outcome": "Source review: shared unpublished-lead classification only; no second mover, cache, dispatcher, or forced eviction path. Existing owner/lease checks remain in stage_release."
+      }
+    ],
+    "remaining_gaps": [
+      "Root final review and merge acceptance remain separate from this contributor's verification.",
+      "The source repair is not deployed. The live R3 recovery used the prior generation's existing bounded orphan sweep and proves no patched-runtime behavior.",
+      "PRG-04 remains partial: full ready-demand accounting is conservative when ready rows are already funded; no complete fairness or liveness proof is claimed.",
+      "Separate P1 #832 concerns a missing nonfinal fence_target/fence_prior return and is not changed here.",
+      "Full campaign correctness, both-Spark qualification, and application completion are not established by these CPU fixtures."
+    ],
+    "note": "All tests used published PB clients, priority -10, bounded native threads, and honest aggregate demand. Broad fanout reserved 8 CPUs and 12 GiB total, completed concurrently in about 49 seconds per action, with about 23.4-23.8 CPU seconds and under 0.4 GiB cgroup peak per shard. The runtime launcher was d1c640e74d97-1790008584-459339399864; source under test was the sealed branch snapshot. No production sealed request or runtime was edited."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}

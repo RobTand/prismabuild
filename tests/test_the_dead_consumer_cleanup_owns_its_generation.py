@@ -48,19 +48,23 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """RED before the fix: the new consumer was published, its lead withdrawn."""
 
-    submitted = submission._prepare(tmp_path, monkeypatch)
+    # The submitter publishes the consumer alone; the loop publishes the lead
+    # and its protected run-ahead, so a test that needs a queued lead runs the
+    # cycle the fleet runs rather than expecting the submitter to queue one.
+    submitted = submission._submit_staged(tmp_path, monkeypatch)
     queue = submitted["queue"]
-    assert pbrun.main() == 0
     key = submission._detach_key(capsys)
     first = residency_plan.read(queue, key)
     assert first is not None
     lead = str(first["phases"][0]["mover_row"]["action_key"])
 
     # The generation ends the way the race finds it: a withdrawn terminal, a
-    # live marker on the plan, and the old lead already concluded.
+    # live marker on the plan, and the old generation's queued movers already
+    # concluded.
     withdrawal = queue.withdraw(key, reason="stale price", by="operator")
     assert withdrawal["residency_plan_superseded"] is True
-    queue.item_path(pool.READY, lead).unlink()
+    for mover_key in residency_plan.mover_keys(first):
+        queue.item_path(pool.READY, mover_key).unlink()
 
     real_read_filed = residency_plan.read_filed
     published = threading.Event()
@@ -69,6 +73,9 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
 
     def resubmit() -> None:
         results["returncode"] = pbrun.main()
+        # The submitter publishes the consumer alone; the loop publishes the
+        # resubmitted generation's lead, the same cycle the fleet runs.
+        submission._tier_cycle(queue, tmp_path / "stage")
         published.set()
 
     def observe_then_resubmit(q, consumer, **kwargs):

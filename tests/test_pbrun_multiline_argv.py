@@ -54,9 +54,13 @@ def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path) -> int:
     monkeypatch.setattr(pbrun, "SH", tmp_path)
     monkeypatch.setattr(pbrun, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
+    # ``--wait-s 0`` is one immediate observation with the standard bounded
+    # reader budget.  A subsecond caller deadline races bounded-reader startup
+    # and IPC under suite load, and the read timeout's exit (74) is not this
+    # test's subject (#822).
     monkeypatch.setattr(
         sys, "argv",
-        ["pbrun.py", "--cwd", str(work), "--wait-s", "0.01",
+        ["pbrun.py", "--cwd", str(work), "--wait-s", "0",
          "--", "/bin/bash", "-lc", SCRIPT],
     )
     return pbrun.main()
