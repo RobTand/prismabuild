@@ -111,8 +111,10 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, mover: str,
           host: str) -> None:
     """Stage one mover's range through the real records: claim, complete
     receipt, fragment, executed finish (tokens kept as the pin)."""
+    mover_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
+    assert mover_ready
     snap = queue.claim(tags=["dl380g10"], owner=f"{host}:1:stage",
-                       capacity={"cpu": 4, "mem_gb": 16})
+                       capacity={"cpu": 4, "mem_gb": 16}, ready=mover_ready)
     assert snap is not None and snap["action_key"] == mover
     start = 0 if mover == MOVER0 else SPAN
     queue.record_move(mover, {
@@ -140,7 +142,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -156,7 +158,9 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert MOVER0 in [e["action_key"] for e in tick0
                       if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    # Joint-fit admits cur plus protected next, so a 4 GiB tier publishes
+    # both 2 GiB phases at tick0; the handoff/cancellation assertions below
+    # are what this file proves.
 
     _land(queue, tmp_path, MOVER0, host)
     assert tier_loop.compose_map(queue, CONSUMER) == queue.residency_map_path(
@@ -188,13 +192,18 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     # plan), then run to completion and hand the consumer back.
     queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert MOVER1 in [e["action_key"] for e in tick1
-                      if e["event"] == "mover-published"]
+    # MOVER1 already published at tick0 under joint-fit; the handoff must
+    # keep it ready, not retire the plan.
+    assert queue.item_path(pool.READY, MOVER1).exists()
+    assert not [e for e in tick1
+                if e["event"] == "residency-plan-superseded"]
     ready1 = json.loads(queue.item_path(pool.READY, MOVER1).read_text())
     assert ready1["residency"]["range_start_bytes"] == SPAN
     assert ready1["recompute"] is True
+    mover1_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER1]
+    assert mover1_ready
     snap_m1 = queue.claim(tags=["dl380g10"], owner=f"{host}:1:m1",
-                          capacity={"cpu": 4, "mem_gb": 16})
+                          capacity={"cpu": 4, "mem_gb": 16}, ready=mover1_ready)
     assert snap_m1 is not None and snap_m1["action_key"] == MOVER1
     queue.record_move(MOVER1, {
         "tier_id": TIER, "manifest_sha256": MANIFEST,
@@ -217,7 +226,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -232,10 +241,14 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert MOVER0 in [e["action_key"] for e in tick0
                       if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    # Joint-fit admits cur plus protected next, so a 4 GiB tier publishes
+    # both 2 GiB phases at tick0; the handoff/cancellation assertions below
+    # are what this file proves.
 
+    mover0_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER0]
+    assert mover0_ready
     snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mm",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity={"cpu": 4, "mem_gb": 16}, ready=mover0_ready)
     assert snap_m is not None and snap_m["action_key"] == MOVER0
     requeue = queue.plan_requeue(dict(snap_m))
     queue.withdraw(MOVER0, reason=f"resign {owner}: test", by=owner,
@@ -252,9 +265,11 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     ready = json.loads(queue.item_path(pool.READY, MOVER0).read_text())
     assert ready["residency"]["range_end_bytes"] == SPAN
     assert ready["recompute"] is True
+    mover0_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER0]
+    assert mover0_ready
     snap_b = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mb",
-                         capacity={"cpu": 4, "mem_gb": 16})
-    assert snap_b is not None and int(snap_b["attempts"]) == 1
+                         capacity={"cpu": 4, "mem_gb": 16}, ready=mover0_ready)
+    assert snap_b is not None and snap_b["action_key"] == MOVER0 and int(snap_b["attempts"]) == 1
     assert residency_plan.superseded(queue, plan) is None
 
 
@@ -264,7 +279,7 @@ def test_operator_cancellation_still_stops_publication(
     """The control: an actual operator cancellation retires the window
     and later phases never publish."""
     _sealed_shape(monkeypatch)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -279,7 +294,9 @@ def test_operator_cancellation_still_stops_publication(
     tick0 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert MOVER0 in [e["action_key"] for e in tick0
                       if e["event"] == "mover-published"]
-    assert not queue.item_path(pool.READY, MOVER1).exists()
+    # Joint-fit admits cur plus protected next, so a 4 GiB tier publishes
+    # both 2 GiB phases at tick0; the handoff/cancellation assertions below
+    # are what this file proves.
     queue.withdraw(MOVER0, reason="operator asked", by="operator:test")
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert [e for e in tick1
@@ -287,5 +304,4 @@ def test_operator_cancellation_still_stops_publication(
     assert residency_plan.superseded(queue, plan) is not None
     queue.mint_tier_capacity(TIER, {"stage_gib": 4})
     tick2 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert not queue.item_path(pool.READY, MOVER1).exists()
     assert not [e for e in tick2 if e["event"] == "mover-published"]
