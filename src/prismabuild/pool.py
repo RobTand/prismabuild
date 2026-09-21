@@ -14065,6 +14065,88 @@ class PoolQueue:
             found.append((path, record))
         return found
 
+    def archived_ordinary_outcomes(
+        self, action_key: str, *, generation: float | None = None
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Recover an overwritten ordinary generation from its attempt evidence.
+
+        The mutable ``done``/``failed`` row is one slot per action key: a
+        later generation of the same key replaces it, and an exact-generation
+        reader then matches nothing for the generation a waiter is pinned to.
+        Each ``finish`` publishes its immutable terminal attempt first, under
+        ``attempts/<key>/<generation>/``, and nothing deletes it, so the
+        waited generation's own ending is still readable here.
+
+        No queue pointer is written.  The returned record is reconstructed
+        from the generation's highest terminal attempt and verified the same
+        way a live terminal is: canonical history links over every archived
+        attempt, per-attempt identity and budget binding, log digests and
+        byte counts, and the adopted disposition, through
+        ``adopted_attempt_summary``.  The path names that immutable source,
+        not the overwritten summary.
+
+        Exact to the generation, never newer and never timestamp-ordered: the
+        attempt's own ``published_unix`` must equal the waited generation,
+        and a file carrying another generation or a non-canonical path is
+        refused rather than followed.  Attempts carrying
+        ``preemption_context`` are left to ``archived_preemption_outcomes``,
+        whose lineage check is what makes a preemption successor
+        trustworthy; this reads only ordinary terminal attempts.  An
+        intermediate failed attempt is not an ending.
+        """
+        if generation is None:
+            return []
+        identity = {"action_key": action_key,
+                    "published_unix": generation}
+        generation_name = self.attempt_generation(identity)  # validates key and timestamp
+        base = self.root / ATTEMPTS / action_key / generation_name
+        attempts: dict[int, dict[str, object]] = {}
+        terminal: dict[int, tuple[Path, dict[str, object]]] = {}
+        for path in _glob(base, "*.json"):
+            value = _read_json(path)
+            if value is None:
+                continue
+            if "preemption_context" in value:
+                continue  # a preemption successor: the lineage-checked reader owns it
+            if value.get("schema") != POOL_ATTEMPT_SCHEMA_V1:
+                raise PoolContractError("archived ordinary outcome is not an attempt record")
+            attempt = value.get("attempt")
+            limit = value.get("max_attempts")
+            published = value.get("published_unix")
+            if (value.get("action_key") != action_key
+                    or type(attempt) is not int or attempt < 1
+                    or type(limit) is not int or not attempt <= limit
+                    or type(published) is bool
+                    or not isinstance(published, (int, float))
+                    or float(published) != float(generation)
+                    or path != self.attempt_path(identity, attempt)):
+                raise PoolContractError("invalid archived ordinary outcome identity")
+            attempts[attempt] = value
+            if value.get("disposition") in {DONE, FAILED}:
+                terminal[attempt] = (path, value)
+        if not terminal:
+            return []
+        terminal_attempt = max(terminal)
+        path, value = terminal[terminal_attempt]
+        missing = min(attempts) - 1
+        record: dict[str, object] = {
+            **value,
+            "schema": POOL_OUTCOME_SCHEMA_V1,
+            "attempts": terminal_attempt,
+            "attempt_history_missing_before": missing,
+            "attempt_history": [
+                {"attempt": number,
+                 "outcome": str(self.attempt_path(identity, number).relative_to(self.root))}
+                for number in range(missing + 1, terminal_attempt + 1)
+            ],
+        }
+        adopted = self.adopted_attempt_summary(record)
+        if adopted["disposition"] != value["disposition"]:
+            raise PoolContractError("archived ordinary outcome has conflicting disposition")
+        for field in ("status", "finished_unix", "finished_host", "detail"):
+            record[field] = adopted[field]
+        return [(path, record)]
+
     def adopted_attempt_summary(
         self, record: Mapping[str, object]
     ) -> dict[str, object]:

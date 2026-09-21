@@ -2484,9 +2484,12 @@ def outcome_poll(
     if generation is not None and not any(
             record.get("published_unix") == generation for _, record in found):
         # A later same-status generation may have replaced the only mutable
-        # terminal row. The preemption successor's immutable attempt still
-        # carries its generation link, complete history and original verdict.
+        # terminal row. The immutable terminal attempt still carries its
+        # generation link, complete history and original verdict -- through
+        # the lineage-checked preemption reader for a preemption successor,
+        # and through the ordinary generation reader otherwise.
         found.extend(q.archived_preemption_outcomes(key, generation=generation))
+        found.extend(q.archived_ordinary_outcomes(key, generation=generation))
     if generation is not None and found:
         # A legacy ending with no generation remains the fallback when it is
         # the only account of this run.  It must not outrank an exact ending
@@ -2771,8 +2774,13 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         adopted = q.adopted_attempt_summary(outcome)
         disposition = adopted["disposition"]
         archived_source = (
-            outcome.get("preemption_context") is not None
-            and Path(outcome_path) == q.attempt_path(outcome, outcome["attempts"]))
+            # An archived recovery names its immutable attempt as its source,
+            # whether the lineage-checked preemption reader or the ordinary
+            # generation reader rebuilt it. A live row never lives there --
+            # its path is done/<key>.json, never
+            # attempts/<key>/<generation>/ -- so this exempts only verified
+            # reconstructions, never a misfiled row.
+            Path(outcome_path) == q.attempt_path(outcome, outcome["attempts"]))
         if not archived_source and disposition != Path(outcome_path).parent.name:
             raise pool.PoolContractError(
                 "terminal queue directory disagrees with the adopted immutable "

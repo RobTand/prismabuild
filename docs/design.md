@@ -337,10 +337,19 @@ pre-check gives — the egress defers as in-flight, the output mover reports
 `published: false` — so the flag makes the existing decision exact rather than
 adding a new one.
 
-Known limit: a waiter is still pinned to a generation whose mutable
-`done`/`failed` row a later generation of the same key can replace, and a
-waiter that has not yet observed its own ending when that happens has no exact
-reader for it.
+A waiter pinned to a generation whose mutable `done`/`failed` row a later
+generation of the same key replaced still resolves its own ending. The
+immutable terminal attempt was published under `attempts/<key>/<generation>/`
+before the mutable pointer moved and nothing deletes it, so beside the
+lineage-checked preemption recovery the waiter reads that generation's own
+attempts: the highest attempt whose disposition is `done` or `failed`,
+rebuilt with its exact generation binding and full attempt history, then
+reverified through the same canonical history, log-digest and adopted-summary
+checks a live terminal passes. The recovery writes no queue pointer and names
+the immutable attempt as its source. It never substitutes a newer generation
+and never orders by timestamp; a file carrying another generation or a
+non-canonical path is refused, and attempts carrying `preemption_context`
+stay with the preemption reader whose lineage check makes them trustworthy.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
