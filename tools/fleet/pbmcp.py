@@ -121,6 +121,22 @@ DEFAULT_MOVER_RECEIPTS = 100
 #: re-submitted after an ending has both.
 STATES = (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED, pool.WITHDRAWN)
 
+#: The two names a record's attempt links can sit under.  A withdrawal is an
+#: operator's verb, not an attempt: ``pool.withdraw`` moves the links a requeue
+#: wrote to ``attempt_history_before_withdrawal`` so no reader of the terminal
+#: record adopts an inherited attempt as this record's ending (#790).
+ATTEMPT_HISTORY = "attempt_history"
+ATTEMPT_HISTORY_BEFORE_WITHDRAWAL = "attempt_history_before_withdrawal"
+ATTEMPT_HISTORY_MISSING_BEFORE = "attempt_history_missing_before"
+ATTEMPT_HISTORY_MISSING_BEFORE_WITHDRAWAL = (
+    "attempt_history_missing_before_withdrawal")
+
+#: How many unlinked attempt numbers one status answer lists before it stops
+#: and summarizes.  The record's own attempt count is untrusted JSON, and a
+#: corrupt or forged ``attempts`` must not make a reader walk or allocate
+#: proportional to it (review of #790).
+UNRETAINED_ATTEMPT_LIST_CAP = 64
+
 #: JSON-RPC codes, from the specification.
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -412,26 +428,102 @@ def _records_for(queue_root: Path, key: str) -> dict[str, dict]:
     return records
 
 
-def _attempt_records(queue_root: Path, record: Mapping[str, object]) -> list[dict]:
-    """The immutable attempt outcomes this record links, without their logs.
+def _attempt_identity_mismatch(
+    record: Mapping[str, object], outcome: Mapping[str, object], number: int
+) -> str | None:
+    """Why a loaded outcome is not the attempt this record links, or ``None``.
+
+    The canonical pathname says where a file is, not that its body belongs to
+    this action.  These are the cheap, log-free identity fields
+    ``pool.attempt_outcomes`` compares before it reads any log -- schema,
+    action key, generation, attempt number, attempt budget and retry contract
+    -- so a file copied from another action's history is reported unreadable
+    rather than served as this one's evidence.
+    """
+
+    if outcome.get("schema") != pool.POOL_ATTEMPT_SCHEMA_V1:
+        return "outcome is not an attempt record"
+    if outcome.get("action_key") != record.get("action_key"):
+        return "outcome belongs to another action"
+    if outcome.get("published_unix") != record.get("published_unix"):
+        return "outcome belongs to another generation"
+    if outcome.get("attempt") != number:
+        return "outcome names another attempt number"
+    if outcome.get("max_attempts") != record.get(
+            "max_attempts", pool.DEFAULT_MAX_ATTEMPTS):
+        return "outcome was published under another attempt budget"
+    if outcome.get("retry_safe") != record.get("retry_safe"):
+        return "outcome was published under another retry contract"
+    return None
+
+
+def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
+    """Every immutable attempt this record still links, and where they came from.
 
     ``pool.attempt_outcomes`` is the verifying reader and reads every log
     whole to check its digest.  A status call must not: an action that printed
     a gigabyte would cost a gigabyte to ask about.  The link's canonical path
-    is still checked against ``attempt_path``, so a record pointing somewhere
-    else is reported rather than followed.
+    is still checked against ``attempt_path`` -- which validates the record's
+    action key, generation and attempt number -- and the outcome's own cheap
+    identity fields are checked against the record before its body is served,
+    so a record pointing somewhere else or a file copied from another action's
+    history is reported rather than followed.
+
+    A withdrawn record keeps the links a requeue wrote under the preserved
+    name ``attempt_history_before_withdrawal``, because every reader of a
+    terminal record adopts ``attempt_history`` whenever it is present.  The
+    immutable outcomes still resolve, so they are read exactly as a record's
+    own links are, and ``source`` says which name answered.  ``outcomes`` is
+    evidence, not an ending: the caller decides what to adopt.
+
+    Missing and corrupt evidence is named, not dropped.  ``pool`` records the
+    count of attempts whose links it could not archive, and when the retained
+    links do not cover the record's own attempt count, the unlinked numbers
+    are summarized beside the disagreement in ``problems`` -- an absent list
+    must not read as "this action never ran".  The attempt count is untrusted:
+    ``unretained_attempts`` is capped and ``unretained_attempt_count`` is
+    computed arithmetically, so no answer allocates or walks in proportion to
+    a count the record merely claims.
     """
 
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    history = record.get("attempt_history")
-    if not isinstance(history, list):
-        return []
+    problems: list[dict] = []
+    if (ATTEMPT_HISTORY in record
+            or ATTEMPT_HISTORY_MISSING_BEFORE in record):
+        source_name = ATTEMPT_HISTORY
+        missing_name = ATTEMPT_HISTORY_MISSING_BEFORE
+    elif (ATTEMPT_HISTORY_BEFORE_WITHDRAWAL in record
+            or ATTEMPT_HISTORY_MISSING_BEFORE_WITHDRAWAL in record):
+        source_name = ATTEMPT_HISTORY_BEFORE_WITHDRAWAL
+        missing_name = ATTEMPT_HISTORY_MISSING_BEFORE_WITHDRAWAL
+    else:
+        source_name = ATTEMPT_HISTORY
+        missing_name = ATTEMPT_HISTORY_MISSING_BEFORE
+    raw = record.get(source_name)
+    if raw is not None and not isinstance(raw, list):
+        problems.append({"field": source_name, "value_type": type(raw).__name__,
+                         "reason": "attempt history must be a list of links"})
+    links = raw if isinstance(raw, list) else []
+    missing = record.get(missing_name, 0)
+    if missing_name not in record:
+        missing = 0
+    if type(missing) is not int or missing < 0:
+        problems.append({
+            "field": missing_name, "value": missing,
+            "reason": "the unretained-prefix count must be a non-negative "
+                      "integer"})
+        missing = 0
     outcomes: list[dict] = []
-    for link in history:
+    for index, link in enumerate(links):
         if not isinstance(link, Mapping):
+            problems.append({"field": source_name, "index": index,
+                             "reason": "attempt history link must be an object"})
             continue
         number = link.get("attempt")
         if type(number) is not int:
+            problems.append({
+                "field": source_name, "index": index,
+                "reason": "attempt history link must name its attempt number"})
             continue
         try:
             expected = queue.attempt_path(record, number)
@@ -449,9 +541,96 @@ def _attempt_records(queue_root: Path, record: Mapping[str, object]) -> list[dic
             outcomes.append({"attempt": number, "unreadable": "unreadable outcome",
                              "path": str(expected)})
             continue
+        mismatch = _attempt_identity_mismatch(record, value, number)
+        if mismatch is not None:
+            outcomes.append({"attempt": number, "unreadable": mismatch,
+                             "path": str(expected)})
+            continue
         outcomes.append({**value, "path": str(expected)})
     outcomes.sort(key=lambda one: one.get("attempt") or 0)
-    return outcomes
+    recorded = record.get("attempts")
+    if type(recorded) is not int or recorded < 0:
+        problems.append({"field": "attempts", "value": recorded,
+                         "reason": "the attempt count must be a non-negative "
+                                   "integer"})
+        recorded = None
+    unretained: list[int] = []
+    unretained_count = 0
+    unretained_truncated = False
+    if recorded is not None:
+        linked = {one.get("attempt") for one in outcomes
+                  if type(one.get("attempt")) is int}
+        retained = [number for number in linked if 1 <= number <= recorded]
+        unretained_count = recorded - len(retained)
+        candidate = 1
+        while (candidate <= recorded
+               and len(unretained) < UNRETAINED_ATTEMPT_LIST_CAP):
+            if candidate not in linked:
+                unretained.append(candidate)
+            candidate += 1
+        unretained_truncated = unretained_count > len(unretained)
+        if recorded != missing + len(links):
+            problems.append({
+                "field": source_name, "recorded_attempts": recorded,
+                "missing_before": missing, "retained_links": len(links),
+                "reason": "the record's attempt count does not match its "
+                          "unretained prefix plus retained links"})
+    return {
+        "source": source_name if isinstance(raw, list) else None,
+        "before_withdrawal": (
+            str(record.get("status") or "") == "withdrawn"
+            or ATTEMPT_HISTORY_BEFORE_WITHDRAWAL in record
+            or ATTEMPT_HISTORY_MISSING_BEFORE_WITHDRAWAL in record),
+        "missing_before": missing,
+        "recorded_attempts": recorded,
+        "unretained_attempts": unretained,
+        "unretained_attempt_count": unretained_count,
+        "unretained_attempts_truncated": unretained_truncated,
+        "problems": problems,
+        "outcomes": outcomes,
+    }
+
+
+def _history_view(evidence: Mapping[str, object]) -> dict:
+    """The ``attempts_history`` block both attempt readers report.
+
+    One projection, so ``pb_action`` and ``pb_log`` cannot disagree about what
+    a record's retained evidence is.
+    """
+
+    return {
+        "source": evidence["source"],
+        "before_withdrawal": evidence["before_withdrawal"],
+        "missing_before": evidence["missing_before"],
+        "recorded_attempts": evidence["recorded_attempts"],
+        "unretained_attempts": evidence["unretained_attempts"],
+        "unretained_attempt_count": evidence["unretained_attempt_count"],
+        "unretained_attempts_truncated":
+            evidence["unretained_attempts_truncated"],
+        "problems": evidence["problems"],
+    }
+
+
+def _preserved_ending(detail: Mapping[str, object]) -> dict:
+    """The execution a withdrawal preserved, as its own named ending.
+
+    ``pool.withdraw`` moves the failed attempt's ``detail`` to
+    ``detail_before_withdrawal`` so ``pbrun`` and ``pbstatus`` do not report
+    its returncode as the cancellation's.  The evidence is still the answer to
+    "did this ever run", so it is projected under a name that says it is
+    historical rather than adopted as this record's ending.
+    """
+
+    return {
+        "status": detail.get("status"),
+        "elapsed_s": detail.get("elapsed_s"),
+        "returncode": detail.get("returncode"),
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
+        "receipt_published": detail.get("receipt_published"),
+        "reason": detail.get("reason"),
+        "preserved_by": "withdrawal",
+    }
 
 
 def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
@@ -1193,9 +1372,18 @@ class Session:
             return payload
         detail = record.get("detail")
         detail = detail if isinstance(detail, Mapping) else {}
-        attempts = call.read("attempts",
-                             lambda: _attempt_records(self.queue_root, record))
-        adopted = attempts[-1] if attempts else None
+        evidence = call.read("attempts",
+                             lambda: _attempt_evidence(self.queue_root, record))
+        attempts = None if evidence is None else evidence["outcomes"]
+        # What this record adopts as its own ending is the last attempt its own
+        # links name.  A withdrawal's preserved links are history: reported,
+        # never adopted, so a cancelled action cannot read as one that ran.
+        adopted = (attempts[-1] if attempts
+                   and evidence["source"] == ATTEMPT_HISTORY else None)
+        preserved = (attempts[-1] if attempts
+                     and evidence["before_withdrawal"]
+                     and evidence["source"] != ATTEMPT_HISTORY else None)
+        preserved_detail = record.get("detail_before_withdrawal")
         payload.update(
             found=True,
             sealed=_sealed(record),
@@ -1225,7 +1413,15 @@ class Session:
             # keeps whatever a later branch files on them without this file
             # having to know the field names.
             attempts_detail=attempts,
+            # Where ``attempts_detail`` came from, what it cannot link, and
+            # what is wrong with it.  A preserved list is named as such here
+            # rather than left to be inferred from the state.
+            attempts_history=None if evidence is None else _history_view(evidence),
             adopted_attempt=None if adopted is None else adopted.get("attempt"),
+            preserved_attempt=None if preserved is None else preserved.get("attempt"),
+            outcome_before_withdrawal=(
+                None if not isinstance(preserved_detail, Mapping)
+                else _preserved_ending(preserved_detail)),
             preemption={
                 "preempted_by": record.get("preempted_by"),
                 "requeued_as": call.read(
@@ -1236,26 +1432,54 @@ class Session:
             receipt=call.read("receipt", lambda: _receipt_summary(record)),
             local_result_claim=call.read("claim", lambda: _derived_claim(record)),
         )
-        if adopted is not None:
+        logged = adopted if adopted is not None else preserved
+        if logged is not None:
             payload["log_tail"] = call.read(
                 "log",
-                lambda: self._adopted_log(adopted, tail_lines=tail_lines))
+                lambda: self._adopted_log(
+                    logged, tail_lines=tail_lines,
+                    before_withdrawal=bool(evidence["before_withdrawal"])))
         return payload
 
     def _adopted_log(self, attempt: Mapping[str, object], *, stream: str = "stdout",
-                     tail_lines: int = DEFAULT_TAIL_LINES) -> dict:
+                     tail_lines: int = DEFAULT_TAIL_LINES,
+                     before_withdrawal: bool = False) -> dict:
+        """A bounded tail of one attempt's log, at its canonical address.
+
+        The link is checked before anything is opened: ``attempt_log_path``
+        derives the one canonical path for this attempt, stream and digest, so
+        metadata naming another file, another action, or an absolute path that
+        would escape the queue is reported unreadable instead of served.  The
+        body is never hashed or read whole; the tail reader seeks to the end
+        and reads at most the configured cap.
+        """
+
+        number = attempt.get("attempt")
         logs = attempt.get("logs")
         logs = logs if isinstance(logs, Mapping) else {}
         metadata = logs.get(stream)
+        base = {"stream": stream, "attempt": number,
+                "before_withdrawal": before_withdrawal}
         if not isinstance(metadata, Mapping) or not metadata.get("path"):
-            return {"stream": stream, "present": False,
+            return {**base, "present": False,
                     "reason": "the attempt records no log for this stream"}
-        path = self.queue_root / str(metadata["path"])
-        tail = _log_tail(path, tail_lines=tail_lines, max_bytes=self.log_tail_bytes)
+        queue = pool.PoolQueue(self.queue_root.absolute())
+        try:
+            canonical = queue.attempt_log_path(
+                attempt, number, stream, str(metadata.get("sha256")))
+        except pool.PoolContractError as exc:
+            return {**base, "present": False,
+                    "reason": f"the attempt's log link is not addressable: {exc}"}
+        relative = str(canonical.relative_to(queue.root))
+        if metadata.get("path") != relative:
+            return {**base, "present": False,
+                    "path": metadata.get("path"), "canonical": relative,
+                    "reason": "the attempt's log link is not its canonical path"}
+        tail = _log_tail(canonical, tail_lines=tail_lines,
+                         max_bytes=self.log_tail_bytes)
         recorded = metadata.get("bytes")
         return {
-            "stream": stream,
-            "attempt": attempt.get("attempt"),
+            **base,
             "recorded_bytes": recorded,
             "recorded_sha256": metadata.get("sha256"),
             # Cheap honesty: the recorded length against the length on disk,
@@ -1703,16 +1927,32 @@ class Session:
         if record is None:
             return {"key_prefix": str(key_prefix), "action_key": key,
                     "found": None if records is None else False, "log": None}
-        attempts = call.read("attempts",
-                             lambda: _attempt_records(self.queue_root, record))
-        if not attempts:
+        evidence = call.read("attempts",
+                             lambda: _attempt_evidence(self.queue_root, record))
+        if evidence is None:
             return {
                 "key_prefix": str(key_prefix), "action_key": key, "found": True,
                 "state": state, "log": None,
-                "reason": ("the attempt records did not answer within the "
-                           "deadline" if attempts is None else
-                           "an attempt publishes its log when it finishes; this "
-                           "action has no published attempt yet"),
+                "reason": "the attempt records did not answer within the deadline",
+            }
+        attempts = evidence["outcomes"]
+        if not attempts:
+            # A record that counts attempts but cannot link one is not an
+            # action that never ran: say which of the two it is (#790 review).
+            if evidence["problems"]:
+                reason = ("the record's retained attempt history is corrupt; "
+                          "no attempt can be linked to read a log from")
+            elif evidence["recorded_attempts"]:
+                reason = ("the record's attempt history is not retained; it "
+                          "names no attempt whose log can be read")
+            else:
+                reason = ("an attempt publishes its log when it finishes; this "
+                          "action has no published attempt yet")
+            return {
+                "key_prefix": str(key_prefix), "action_key": key, "found": True,
+                "state": state, "log": None,
+                "attempts_history": _history_view(evidence),
+                "reason": reason,
             }
         chosen = (attempts[-1] if attempt is None else
                   next((one for one in attempts if one.get("attempt") == attempt), None))
@@ -1722,8 +1962,10 @@ class Session:
         return {
             "key_prefix": str(key_prefix), "action_key": key, "found": True,
             "state": state,
+            "before_withdrawal": evidence["before_withdrawal"],
             "log": call.read("log", lambda: self._adopted_log(
-                chosen, stream=stream, tail_lines=int(tail_lines))),
+                chosen, stream=stream, tail_lines=int(tail_lines),
+                before_withdrawal=evidence["before_withdrawal"])),
         }
 
     # -- pb_runtime --------------------------------------------------------
@@ -1981,7 +2223,13 @@ TOOLS: tuple[dict, ...] = (
                        "its state and host, every attempt with its log "
                        "metadata, the ending and its return codes, the CAS "
                        "receipt, the derived local-result claim, and a tail of "
-                       "the last attempt's stdout.",
+                       "the last attempt's stdout. A withdrawn action keeps "
+                       "`withdrawn` as its state: attempts its withdrawal "
+                       "preserved are read as attempts_detail and named in "
+                       "attempts_history, adopted_attempt stays null, and "
+                       "outcome_before_withdrawal reports the preserved "
+                       "ending. Preserved execution is history, never this "
+                       "record's ending.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2089,7 +2337,9 @@ TOOLS: tuple[dict, ...] = (
         "name": "pb_log",
         "description": "A bounded tail of one attempt's stdout or stderr. The "
                        "log is never read whole: the reader seeks to the end "
-                       "and reads a capped number of bytes.",
+                       "and reads a capped number of bytes. An attempt a "
+                       "withdrawal preserved is readable and marked "
+                       "before_withdrawal.",
         "inputSchema": {
             "type": "object",
             "properties": {
