@@ -1810,7 +1810,7 @@ def test_contradictory_covers_refuse(fleet) -> None:
 
 
 def test_cover_lookup_caches_valid_reuses_valid_only(fleet) -> None:
-    """Generation-keyed cache: repeats reuse, new material is seen, misses stick never."""
+    """Sidecar-keyed cache: repeats reuse, new material is seen, misses stick never."""
 
     queue, stage = fleet
     staged = stage / "model" / "v2.bin"
@@ -1834,6 +1834,82 @@ def test_cover_lookup_caches_valid_reuses_valid_only(fleet) -> None:
         root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
         epoch="", context=context)
     assert second == first
+
+
+def test_same_generation_republish_refreshes_the_cover_cache(fleet) -> None:
+    """One generation per mover run: a republish must invalidate the cache.
+
+    ``stage_move.publish`` rewrites the fragment and the material sidecar as
+    entries land, and ``begin_material`` keeps one generation for the whole
+    run, so a generation-keyed cache handed back the pair from before the new
+    entry and answered ``unpublished`` for bytes the mover had published
+    (#823).  Reuse stays allowed while the freshly read sidecar is the one
+    that was cached.
+    """
+
+    queue, stage = fleet
+    first = stage / "model" / "inc-a.bin"
+    second = stage / "model" / "inc-b.bin"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"\x71" * 512)
+    second.write_bytes(b"\x72" * 512)
+    root = queue.root / pool.RESIDENCY
+    key_a = residency_map.residency_map_key("/mnt/shared/inc-a.bin", 0)
+    key_b = residency_map.residency_map_key("/mnt/shared/inc-b.bin", 0)
+    generation = reader_lease.mint_generation()
+
+    def staged(path: Path, digest: str) -> dict:
+        return {"stage_path": str(path), "bytes": 512, "sha256": digest,
+                "offset": 0}
+
+    def dated(path: Path, digest: str) -> dict:
+        identity = reader_lease.stat_identity(str(path))
+        assert identity is not None
+        return {"stage_path": str(path), "bytes": 512, "sha256": digest,
+                "file_id": identity}
+
+    def republish(entries, mentions) -> None:
+        residency_map.write_fragment(root, {
+            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+            "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
+            "tier_id": TIER, "stage_root": str(stage),
+            "manifest_sha256": "a" * 64, "entries": entries})
+        reader_lease.write_material(
+            root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
+            tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+            generation=generation, entries=mentions)
+
+    def lookup(key: str) -> dict:
+        return reader_lease.covers_for_keys(
+            root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
+            epoch="", context=context)
+
+    context: dict = {}
+    cover_key = f"cover:{CONSUMER}:{MOVER}"
+    republish({key_a: staged(first, "b" * 64)},
+              {key_a: dated(first, "b" * 64)})
+    first_lookup = lookup(key_a)
+    assert first_lookup["ok"], first_lookup
+    cached = context[cover_key]["fragment"]
+    assert lookup(key_a) == first_lookup
+    assert context[cover_key]["fragment"] is cached, (
+        "an unchanged sidecar must still reuse the cached fragment")
+
+    # The mover lands B and republishes both documents under the same
+    # generation, exactly as stage_move.publish does mid-run.
+    republish({key_a: staged(first, "b" * 64),
+               key_b: staged(second, "c" * 64)},
+              {key_a: dated(first, "b" * 64),
+               key_b: dated(second, "c" * 64)})
+    second_lookup = lookup(key_b)
+    assert second_lookup["ok"], second_lookup
+    assert second_lookup["expected"] == {
+        key_b: {"bytes": 512, "sha256": "c" * 64}}
+    assert second_lookup["covers"] == [{"mover_action_key": MOVER,
+                                       "manifest_sha256": "a" * 64}]
+    assert context[cover_key]["fragment"] is not cached, (
+        "a republished sidecar must replace the cached pair")
+    assert key_b in context[cover_key]["material"]["entries"]
 
 
 def test_cleanup_persists_broker_proof_exactly(fleet) -> None:

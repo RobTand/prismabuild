@@ -1523,25 +1523,29 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
 
 def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
                        context: dict | None):
-    """Validated (material, fragment) for one mover, generation-cached.
+    """Validated (material, fragment) for one mover, cached on the sidecar.
 
-    The cache holds VALIDATED documents keyed by the sidecar's immutable
-    generation: a repeat lookup with the same generation reuses them
-    without re-reading the fragment, while a republish (new generation)
-    misses and re-reads.  Absence and malformation are NEVER cached, so
-    newly published material is always seen.  Selection only: acquire
-    revalidates under the ownership lock before anything pins.
+    The cache holds VALIDATED documents; the fragment is reused only while
+    the freshly read sidecar is still the one that was cached.  The sidecar
+    is read on every call anyway (it is what dates the fragment), so the
+    comparison is free, and it is the only sound guard: the stage mover
+    republishes fragment and sidecar incrementally as entries land and
+    keeps ONE generation for the whole run, so a same-generation republish
+    must miss and re-read the fragment -- keying on the generation alone
+    served the pair from before the new entries (#823).  Absence and
+    malformation are NEVER cached, so newly published material is always
+    seen.  Selection only: acquire revalidates under the ownership lock
+    before anything pins.
     """
 
     material = read_material(root, consumer_action_key, mover)
     if not isinstance(material, dict):
         return None, None
-    generation = str(material.get("generation") or "")
-    if not generation:
-        return None, None
     if context is not None:
         hit = context.get(f"cover:{consumer_action_key}:{mover}")
-        if (isinstance(hit, dict) and hit.get("generation") == generation):
+        if (isinstance(hit, Mapping)
+                and hit.get("material") == material
+                and isinstance(hit.get("fragment"), Mapping)):
             return hit.get("material"), hit.get("fragment")
     try:
         from prismabuild import residency_map as map_mod
@@ -1552,8 +1556,7 @@ def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
         return None, None
     if context is not None:
         context[f"cover:{consumer_action_key}:{mover}"] = {
-            "generation": generation, "material": material,
-            "fragment": fragment}
+            "material": material, "fragment": fragment}
     return material, fragment
 
 
