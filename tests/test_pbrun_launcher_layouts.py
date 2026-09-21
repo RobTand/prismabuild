@@ -36,7 +36,7 @@ import pool_reset  # noqa: E402
 import require_pool  # noqa: E402
 import runtime_paths  # noqa: E402
 
-from test_pool_reset_refusal import ACK, KEY, fleet  # noqa: E402,F401
+from test_pool_reset_refusal import ACK, fleet  # noqa: E402,F401
 
 _SPEC = importlib.util.spec_from_file_location(
     "pbtest", REPOSITORY / "tools" / "fleet" / "pbtest.py"
