@@ -171,3 +171,39 @@ def test_a_promotion_the_bound_covers_is_still_ram_pressure(
 
     assert tier_loop.window_pressure(
         queue, tiers=_tiers(tmp_path)) == {STAGE_TIER: 2, RAM_TIER: 8}
+
+
+def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
+        tmp_path: Path, monkeypatch) -> None:
+    """#829: a published tail is not admission of an absent RAM lead."""
+    import stage_release
+
+    queue = _fixture(tmp_path, landed=(0, 1, 2))
+    monkeypatch.setattr(tier_loop, "load_ram_policy",
+                        lambda: {"prefill_depth": None})
+    tiers = _tiers(tmp_path)
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    stage_release.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
+    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 20})
+    tiers[RAM_TIER].update(capacity_bytes=20 * GIB, window_gib=20)
+    ledger = queue.tier_ledger(RAM_TIER)
+    for key, consumer, start, end, name in (
+        (_hexkey("rampromote1"), CONSUMER, 2 * GIB, 10 * GIB, "adopted"),
+        (_hexkey("ramorphan"), "d" * 64, 0, 8 * GIB, "orphan"),
+    ):
+        assert ledger.acquire(key, {"ram_gib": 8})
+        residency_publication.vouch_landed(
+            queue, consumer_action_key=consumer, mover_action_key=key,
+            tier_id=RAM_TIER, stage_root=ram, manifest_sha256=MANIFEST,
+            range_start_bytes=start, range_end_bytes=end, epoch=EPOCH, name=name)
+    before = tier_loop.ram_residency_window(queue, tiers=tiers)
+    assert any(e.get("reason") == "joint-fit-stall" for e in before)
+    pressure = tier_loop.window_pressure(queue, tiers=tiers)
+    # 16 held + head 2 + next missing 8 = 26 > 20; ask for ten free.
+    assert pressure[RAM_TIER] == 10, pressure
+    stage_release.sweep(queue, stage_roots={RAM_TIER: str(ram)}, pressure=pressure)
+    assert ledger.holder_tokens(_hexkey("ramorphan")) == {}
+    assert ledger.holder_tokens(_hexkey("rampromote1")) == {"ram_gib": 8}
+    tier_loop.ram_residency_window(queue, tiers=tiers)
+    assert queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
