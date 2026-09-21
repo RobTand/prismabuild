@@ -4601,23 +4601,33 @@ free), nor the successor id.
 * **Origin reachability is typed at the mover (#804).** A produced-output
   prefix is validated as an absolute normalized path and nothing more, and
   the mover runs on the tier host, which is usually not the box that wrote
-  it. `stage_move` therefore classifies the distinct origin directories of
-  the declared window before the copy -- one stat each, through the same
-  mount map the copy reads through -- and files the result on every receipt
-  as `origin_preflight`: `unreachable` only for positive proof (a missing
+  it. The classification is a bounded POST-COPY diagnosis, not a census over
+  healthy work: only when the copy has staged nothing and did not overrun
+  does `stage_move.origin_reachability_diagnosis` stat the distinct origin
+  directories of the declared window -- one stat each, through the same
+  mount map the copy reads through -- and file the result on that receipt as
+  `origin_reachability`: `unreachable` only for positive proof (a missing
   component, a path that is not a directory, EACCES/EPERM), `unknown` for
-  every other stat failure, `partial` for a mixed window, `reachable` for
-  the happy path. A mover that staged nothing beside an `unreachable` window
-  refuses `origin_unreachable` instead of the ordinary
-  `residency_moved_nothing`, and `materialization_state` carries the filed
-  refusal as `mover_refusal` beside `mover_receipt_complete`, so the owner
-  stops waiting on the first attempt instead of reading the same symptom a
-  tier-loop or mover defect produces. Unknown I/O is never typed as an
-  origin refusal, and an absent or unreadable receipt leaves `mover_refusal`
-  None -- silence is not a named failure and not readiness. The preflight
-  deliberately does not veto the copy: adoption of an already-published
-  incarnation needs no origin read, so a mover whose origin root is gone can
-  still complete from staged coverage.
+  every other stat failure, `partial` for a mixed window, `reachable` for a
+  reachable root whose declared file is gone. A mover that staged nothing
+  beside an `unreachable` window refuses `origin_unreachable` instead of the
+  ordinary `residency_moved_nothing`. It never vetoes the copy, so adoption
+  of an already-published incarnation still completes a mover whose origin
+  root is gone, and a mover that stages any byte pays no directory stat at
+  all.
+  `materialization_state` reads the active mover's receipt ONCE and derives
+  `mover_receipt_complete` and `mover_refusal` from that exact observation,
+  so the two can never describe two generations of a rewritten record; a
+  typed `origin_unreachable` is returned through the failure contract every
+  caller already raises on, as `ok: False` with `refusal:
+  origin_unreachable` beside the retained mover/materialization identity
+  (`mover_key`, `generation`, `tier`, `mover_queue_state`). The owner
+  therefore stops on the FIRST failed attempt, with no consumer patch.
+  Unknown I/O is never typed as an origin refusal, and an absent or
+  unreadable receipt leaves both answers None -- silence is not a named
+  failure and not readiness. Only the ACTIVE materialization's own receipt
+  can answer this: a retired predecessor's refusal is history and never
+  poisons its successor.
 * **Successor identity (PO-03).** The successor's mover key IS its funding key, and it
   is the content-addressed key of a request PB seals over the filed
   materialization GENERATION (`_seal_output_mover`, `log_name` plus

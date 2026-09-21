@@ -143,18 +143,24 @@ def _deepest_existing(directory: str, stat) -> str | None:
         return parent
 
 
-def origin_preflight(entries: list[dict[str, object]], mounts, *,
-                     stat=None) -> dict[str, object]:
-    """Classify whether this host can reach the window's origin directories.
+def origin_reachability_diagnosis(entries: list[dict[str, object]], mounts, *,
+                                  stat=None) -> dict[str, object]:
+    """Why a copy that staged nothing could not reach its origin directories.
 
     A manifest names absolute origin paths, and a mover runs on the tier
     host, which need not be the box that produced them: a produced-output
     prefix that exists only on the owner's box is accepted at declaration,
     admission and publication, and then fails on the tier host with the same
-    untyped symptom a mover defect produces.  This is the bounded preflight
-    that separates the two: one stat per distinct origin directory of the
-    window, taken through the same mount map the copy reads through, with
-    three-valued results.
+    untyped symptom a mover defect produces.  This is the bounded reachability
+    diagnosis that separates the two -- one stat per distinct origin
+    directory of the window, taken through the same mount map the copy reads
+    through, with three-valued results.
+
+    It runs ONLY after the copy has staged nothing and did not overrun, which
+    is the one place the classification is needed: a healthy mover does no
+    directory census at all, and a mover that adopted already-published
+    coverage never asks.  It classifies; it never vetoes -- the copy has
+    already run, and the refusal it feeds is the mover's own zero-output one.
 
     ``unreachable`` is positive proof this host does not have the directory
     -- a missing component (ENOENT/ENOTDIR), a path that is not a directory,
@@ -162,13 +168,6 @@ def origin_preflight(entries: list[dict[str, object]], mounts, *,
     (EIO, ESTALE, ETIMEDOUT, a stat that fails without an errno) is
     ``unknown``: unknown is conservative and is never typed as an origin
     refusal.  Mixed results are ``partial``; an empty window is ``empty``.
-
-    This classifies directories only, and deliberately does not veto the
-    copy: an already-published incarnation can be adopted without reading
-    the origin, so a mover that finds the origin root gone may still
-    complete from staged coverage.  The refusal is filed when the copy
-    staged nothing (``move``), which is the point at which unreachable
-    origins are the proven cause.
     """
 
     stat = stat or _ORIGIN_STAT
@@ -2222,7 +2221,6 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     if not getattr(args, "unpaced", False):
         prewarm_loop.require_storage_pacing(pacer)
     mounts = prewarm_loop.MountMap(args.mount or [])
-    preflight = origin_preflight(window, mounts)
     queue = pool.PoolQueue(Path(args.pool_root))
     residency_root = Path(args.residency_root)
     publisher = _StagedPublisher(
@@ -2424,11 +2422,6 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
             getattr(args, "fill_mb_s_pool_side", 0) or 0),
         "host": socket.gethostname(),
         "errors": copier.errors,
-        # What the one stat per distinct origin directory saw before the
-        # copy ran: the typed evidence behind an ``origin_unreachable``
-        # refusal, and a ``reachable``/``unknown`` statement beside every
-        # other receipt (#804).
-        "origin_preflight": preflight,
         "unix": time.time(),
     }
     # Which pools this copy read off and wrote onto, for the receipt folds
@@ -2477,13 +2470,18 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         **outcome,
     }
     if not copier.staged and not overran:
-        # A mover that staged nothing because the origin directories are not
-        # on this host is a configuration refusal, not an ordinary empty
-        # move: name it so the owner reads a reachability failure instead of
-        # the same symptom a mover defect produces (#804).  Unknown I/O is
-        # never typed here; it keeps the ordinary empty-move refusal.
+        # The copy's own evidence cannot say WHY it staged nothing, so the
+        # bounded diagnosis runs here, on the empty path only: one stat per
+        # distinct origin directory.  A mover that staged nothing because
+        # the origin directories are not on this host is a configuration
+        # refusal, not an ordinary empty move, and naming it lets the owner
+        # read a reachability failure instead of the same symptom a mover
+        # defect produces (#804).  Unknown I/O is never typed here; it keeps
+        # the ordinary empty-move refusal.
+        diagnosis = origin_reachability_diagnosis(window, mounts)
+        receipt["origin_reachability"] = diagnosis
         empty = ("origin_unreachable"
-                 if preflight["state"] == "unreachable"
+                 if diagnosis["state"] == "unreachable"
                  else "residency_moved_nothing")
         receipt["refusal"] = receipt.get("refusal") or empty
     return receipt

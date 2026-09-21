@@ -104,6 +104,10 @@ PRODUCED_OUTPUT_REF_SCHEMA_V1 = "prismabuild.produced_output_ref.v1"
 #: from the spent one. Never a caller nonce; see `ensure_batch_materialized`.
 MATERIALIZATION_SCHEMA_V1 = (
     "prismaquant.prismabuild.produced_output_materialization.v1")
+#: The mover's typed refusal when a declared window's origin directories are
+#: not on the tier host (`stage_move.origin_reachability_diagnosis`). Spelled
+#: as data: this package imports no fleet tool.
+ORIGIN_UNREACHABLE_REFUSAL = "origin_unreachable"
 
 OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
@@ -3161,11 +3165,18 @@ def materialization_state(queue, instance: Mapping[str, object],
     an unreadable record or a malformed materialization list answers
     `unknown-retain`, never "nothing is staged".
 
-    `mover_refusal` is the mover's own typed verdict beside that completeness
-    answer (#804): `origin_unreachable` names a produced-output prefix the
-    tier host cannot reach, so an owner waits no further instead of reading
-    the same symptom a mover defect produces. An absent or unreadable
-    receipt leaves it None -- silence is never a named failure.
+    One receipt read answers both mover questions, so `mover_receipt_complete`
+    and `mover_refusal` can never describe two different observations of a
+    record the mover rewrites. A typed `origin_unreachable` -- the mover's
+    proof that a produced-output prefix is not on the tier host -- is
+    returned through the existing failure contract as `ok: False` with
+    `refusal` beside the retained mover/materialization identity, which is
+    the gate every caller already raises on; the owner therefore stops on
+    the first failed attempt instead of reading the same symptom a mover
+    defect produces. Only the ACTIVE materialization's own receipt can
+    answer this: a retired predecessor's refusal is history, not this
+    state. An absent or unreadable receipt leaves both answers None --
+    silence is never a named failure and never readiness.
     """
 
     try:
@@ -3191,7 +3202,10 @@ def materialization_state(queue, instance: Mapping[str, object],
     except ProducedOutputError as exc:
         return {"ok": False, "refusal": str(exc)}
     mover = str(active.get("mover_key") or "")
-    return {
+    receipt = _mover_receipt(queue, mover)
+    complete = _receipt_complete(receipt)
+    refusal = _receipt_refusal(receipt)
+    state = {
         "ok": True,
         "batch_id": batch_id,
         "tier": str(filed.get("tier") or ""),
@@ -3204,10 +3218,14 @@ def materialization_state(queue, instance: Mapping[str, object],
         "funding_state": str(active.get("state") or ""),
         "stage_retired": bool(active.get("retired")),
         "origin_reclaimed": bool(entry.get("origin_reclaimed")),
-        "mover_receipt_complete": _mover_receipt_complete(queue, mover),
-        "mover_refusal": _mover_refusal(queue, mover),
+        "mover_receipt_complete": complete,
+        "mover_refusal": refusal,
         "mover_queue_state": _mover_live_state(queue, mover) if mover else "absent",
     }
+    if refusal == ORIGIN_UNREACHABLE_REFUSAL:
+        state["ok"] = False
+        state["refusal"] = refusal
+    return state
 
 
 def _reconcile_materialization_funding(queue, *, mover: str, tier: str,
@@ -4896,18 +4914,18 @@ def _mover_receipt(queue, mover_key: str) -> Mapping[str, object] | None:
     return receipt
 
 
-def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
-    """Did this mover's own receipt say the batch landed whole? (3-valued)
+def _receipt_complete(receipt: Mapping[str, object] | None) -> bool | None:
+    """Did one already-read receipt say the batch landed whole? (3-valued)
 
     True/False from a filed, unrefused receipt; None when there is none to
     read or it cannot be read. Fragments cannot answer this: `stage_move`
     publishes one per entry as the bytes land and files its receipt once at
     the end, so a half-staged batch composes exactly like a whole one and a
     killed mover leaves fragments with no receipt at all. Every census in
-    this lane asks the same question the same way.
+    this lane asks the same question the same way, and a reader that needs
+    the refusal too derives both from ONE observation of the record.
     """
 
-    receipt = _mover_receipt(queue, mover_key)
     if receipt is None:
         return None
     if receipt.get("refusal"):
@@ -4916,23 +4934,27 @@ def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
     return receipt.get("complete") is True
 
 
-def _mover_refusal(queue, mover_key: str) -> str | None:
-    """The refusal this mover's receipt filed, or None when it filed none.
+def _receipt_refusal(receipt: Mapping[str, object] | None) -> str | None:
+    """The refusal one already-read receipt filed, or None when it filed none.
 
-    The mover's own typed verdict, read through the same receipt the
-    completeness question reads: `residency_moved_nothing` and
-    `residency_overran_reservation` are the mover's existing refusals, and
-    `origin_unreachable` is the one that says the origin directories are not
-    on the tier host (#804). An absent or unreadable receipt answers None,
-    never a refusal: absence is silence, and a reader must not turn it into
-    a named failure.
+    The mover's own typed verdict beside completeness: `residency_moved_nothing`
+    and `residency_overran_reservation` are the mover's existing refusals, and
+    `origin_unreachable` is the one that says the origin directories are not on
+    the tier host (#804). An absent or unreadable receipt answers None, never a
+    refusal: absence is silence, and a reader must not turn it into a named
+    failure.
     """
 
-    receipt = _mover_receipt(queue, mover_key)
     if receipt is None:
         return None
     refusal = receipt.get("refusal")
     return str(refusal) if refusal else None
+
+
+def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
+    """Read one mover's receipt and answer the completeness question."""
+
+    return _receipt_complete(_mover_receipt(queue, mover_key))
 
 
 def _mover_live_state(queue, mover_key: str) -> str:
