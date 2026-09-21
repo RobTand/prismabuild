@@ -4431,8 +4431,8 @@ tokens (ordinary exact transfer from the producer's window; `refill_window`
 remains the producer's own lifecycle call and `ensure` never acquires from
 free), nor the successor id.
 
-* **Readiness is read fresh (PO-02, #808).** An owner learns that a copy landed
-  from the mover's filed receipt (`materialization_state`,
+* **Readiness is read fresh (#808).** An owner learns that a copy landed from
+  the mover's filed receipt (`materialization_state`,
   `mover_receipt_complete`), and it polls for that receipt from another box
   than the one that files it. The queue is on NFS with default attribute
   caching, where a lookup made before the name existed is cached as absent
@@ -4440,12 +4440,20 @@ free), nor the successor id.
   26.3 s to 26.6 s after a 4 s copy, on every staged group; with the parent
   opened first the same read saw the receipt in 0.04 s to 0.25 s
   (`tools/fleet/qualify_record_visibility.py`, both arms run on the real
-  mount). `PoolQueue.move_record` and the terminal reads of
-  `_mover_live_state` therefore go through `pool._read_json_fresh`: a miss
-  opens and closes the parent, then reads once more. Opening is used rather
-  than the listing `slurm_lane._read_json_object` and `pbrun.terminal_record`
-  use, because these reads are polled several times a second and `done` holds
-  tens of thousands of names. A hit costs nothing extra.
+  mount). `PoolQueue.move_record` and every leg of `_mover_live_state`
+  therefore go through `pool._read_json_fresh`: a miss opens and closes the
+  parent, then reads once more. The live legs matter as much as the terminal
+  ones, because `_publish_output_mover_row` republishes on "absent" and
+  `_tier_host_egress` republishes an egress whose row it does not read as
+  live and whose receipt it does not see: in the 2026-09-21 live cycle stale
+  misses republished each egress three times with `recompute`, so each ran
+  four times (three no-op re-runs) and each retirement took more than 20 s.
+  Opening
+  is used rather than the listing `slurm_lane._read_json_object` and
+  `pbrun.terminal_record` use, because these reads are polled several times a
+  second and a listing costs what the directory holds (`done` held 17,117
+  names on 2026-09-21). A hit costs nothing extra, and the revalidation is
+  best effort: a parent that cannot be opened leaves the first answer.
 * **Successor identity (PO-03).** The successor's mover key IS its funding key, and it
   is the content-addressed key of a request PB seals over the filed
   materialization GENERATION (`_seal_output_mover`, `log_name` plus

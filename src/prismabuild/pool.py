@@ -1131,21 +1131,32 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     that does not exist yet is cached as a negative entry, and the client keeps
     answering ``ENOENT`` from it until the parent directory's attributes are
     revalidated -- up to ``acdirmin``, 30 s here.  A poller always looks first,
-    so it always caches the miss: on sparky a file dl380g10 had already created
-    was seen 26.3 s, 26.5 s and 26.6 s late by a plain read, and 0.23 s to
-    0.24 s late when the parent was opened first (#808).  A produced-output
+    so it always caches the miss.  On sparky, ``move_record`` saw a receipt
+    dl380g10 had already filed 26.3 s to 26.6 s late with a plain read, and
+    0.04 s to 0.25 s late with the parent opened first
+    (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
     owner waited that out on every staged group, after a copy that took 4 s.
 
     ``slurm_lane._read_json_object`` and ``pbrun.terminal_record`` follow the
     same rule by listing the parent.  Opening it is used here because these
-    reads are polled several times a second and ``done`` holds tens of
-    thousands of names: an open is one round trip whatever the directory
-    holds, and close-to-open consistency makes it the revalidation.
+    reads are polled several times a second and a listing costs what the
+    directory holds (``done`` held 17,117 names when this was written): an
+    open is one round trip, and close-to-open consistency makes it the
+    revalidation.
 
-    Only a miss pays for it.  A record that is there is one read, as before.
-    A parent that does not exist is an absent record.  Any other failure to
-    open it raises, as the same failure reading the record would: a caller
-    addressing one record by key must not be told "absent" by a broken mount.
+    A stale "absent" is not only slow.  ``produced_output`` republishes a
+    mover row it reads as absent, and an egress whose row it does not read as
+    live and whose receipt it does not see.  In the 2026-09-21 live cycle
+    those stale misses republished each egress three times, so each ran four
+    times and each retirement took more than 20 s for a 4 s action.  The
+    re-runs were no-ops (``stage_release.evict`` is idempotent), and the last
+    one overwrote the receipt the retirement had been filed from.
+
+    Only a miss pays for the revalidation: a record that is there is one
+    read, as before.  It is best effort.  A parent that cannot be opened
+    leaves the answer what the first read said, which is what this function
+    answered before it revalidated anything, so no caller meets a failure it
+    did not meet before; that read can still be stale.
     """
 
     record = _read_json(path)
@@ -1154,7 +1165,7 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     try:
         descriptor = os.open(
             path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except (FileNotFoundError, NotADirectoryError):
+    except OSError:
         return None
     os.close(descriptor)
     return _read_json(path)
