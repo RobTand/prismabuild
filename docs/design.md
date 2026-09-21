@@ -4591,32 +4591,59 @@ same-key retry is a relaunch blocker even after the bounded orphan
 recovery retires the unowned copies.
 
 `stage_move._resume_own_coverage` is the narrow resume, and it changes no
-lifecycle the loop owns. Before the copier runs — under the same stage
-ownership lock the publication gate holds — the mover reads back its **own**
-prior fragment and sidecar, and only when the fragment is this invocation's
-own (same consumer, mover, tier, stage root, manifest) does it preserve
-anything. Two tiers, deliberately different:
+lifecycle the loop owns. Inside the same stage ownership lock the
+publication gate holds — document reads, header checks and the per-entry
+file stats together, so the qualification cannot act on a snapshot that a
+retirement or rewrite has already superseded — the mover reads back its
+**own** prior fragment and sidecar, and only when the fragment is this
+invocation's own does it preserve anything. Unknown or contradictory
+ownership refuses the whole invocation before any copy or publication:
+a fragment that exists but cannot be read or validated, one whose headers
+disagree with the invocation (consumer, mover, tier, stage root, manifest,
+or an epoch on the SSD tier), an entry it names outside the window this
+command derives, or a record at a different extent than the manifest
+derives, each raise a typed refusal and leave the record exactly as it
+was. The causal case is the one that must not silently converge: a
+tainted prior fragment, old destinations still holding bytes, and one
+declared destination that never landed — without the refusal the absent
+destination replaces cleanly and its publication overwrites the tainted
+fragment, converting unknown ownership into apparent absence; with it,
+the retry (and the next) keeps meeting the same refusal until an owner
+resolves the record. Confirmed absence of the own fragment is the one
+non-conflict: nothing is preserved and nothing that says anything is
+overwritten, so a first publication initializes empty through the
+ordinary machinery. Two tiers, deliberately different:
 
 * The **vouch** (the fragment record) is preserved for every prior entry
-  this window derives whose record is coherent with it. The name stays
-  published, so a rerun that reaches a *changed* entry still meets its own
-  vouch at the publication gate and is refused, exactly as any vouched
-  name is refused — dropping the vouch instead would turn that refusal
-  into a grace-then-heal replacement of bytes another publication once
-  named.
-* The **date** (the sidecar mention) is carried only where the existing
-  proof standard still holds: the manifest's declared digest agrees and
-  the sidecar's `file_id` matches the live file. No payload is rehashed;
-  an undated vouch is preserved as exactly that, never upgraded, and an
-  unreadable sidecar preserves vouches while dating nothing.
+  this window derives whose record agrees with the window's own
+  derivation. The name stays published, so a rerun that reaches a
+  *changed* entry still meets its own vouch at the publication gate and
+  is refused, exactly as any vouched name is refused — dropping the
+  vouch instead would turn that refusal into a grace-then-heal
+  replacement of bytes another publication once named.
+* The **date** (the material sidecar mention) is carried only where the
+  sidecar's headers qualify against this invocation and the fragment
+  (consumer, mover, tier, stage root, manifest, and the SSD no-epoch
+  convention) *and* the existing proof standard still holds per entry:
+  the manifest's declared digest agrees, and the sidecar's `file_id`
+  matches the live file. A readable sidecar with contradictory headers
+  is conflicting state and refuses — it must never be carried and
+  republished under corrected headers — while an absent or unparseable
+  sidecar is the documented crash window (a vouch without a date):
+  vouches are kept, no date is invented, and the rerun overwrites both
+  as it always has. No payload is hashed.
 
 A retry's publications are therefore never smaller than the coverage it
 inherited, in flight and at the final publish, and repeated interruptions
 only ever grow the published set. Re-encountered entries still go through
 `try_adopt`, so an unchanged suffix adopts with no repeat payload read,
-copy or hash; the receipt carries `entries_resumed`/`bytes_resumed` beside
-`entries_staged`/`bytes_staged`, and resumed coverage adds no staged bytes
-and cannot complete a receipt on its own — only a landed entry can.
+copy or hash. The receipt's `entries_resumed`/`bytes_resumed` report
+**preserved coverage** — a kept vouch is not necessarily a requalified
+date and not committed progress — beside `entries_staged`/`bytes_staged`;
+resumed coverage adds no staged bytes and cannot complete a receipt on
+its own, and no second progress counter exists. A controlled
+two-worker regression (per-landing publication, zero rate limit) holds
+every published snapshot at or above the preserved prefix.
 
 The generation follows the `adopted_generation` rule already used across
 key changes: a resumed run *carries* its prior own generation (same bytes
@@ -4634,8 +4661,13 @@ other entries land.
 holds each rule as a focused case on tiny real files through the real
 tool: the never-smaller prefix, the repeated partial retry, the changed
 entry that refuses instead of being replaced, the corrupt sidecar that
-dates nothing, the live pin that stays valid as new material lands, and
-the all-adopted resume that keeps its generation.
+dates nothing, the live pin that stays valid as new material lands, the
+all-adopted resume that keeps its generation, the corrupt or conflicting
+prior fragment that refuses before any copy leaves the record untouched
+(including the new-destination causal shape, and the same refusal again
+on the next retry), the contradictory sidecar headers that refuse rather
+than republish corrected, and the two-worker per-landing publication
+regression.
 
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 

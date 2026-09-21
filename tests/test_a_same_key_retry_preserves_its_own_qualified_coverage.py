@@ -291,6 +291,155 @@ def test_a_corrupt_prior_sidecar_preserves_vouches_but_dates_nothing(
         "an unreadable prior date was carried or invented")
 
 
+# --- unknown or contradictory ownership refuses the invocation ----------
+
+
+def _corrupt(fragment_or_sidecar: Path, payload: bytes) -> None:
+    """Leave real corrupt bytes where authoritative metadata was."""
+
+    fragment_or_sidecar.write_bytes(payload)
+
+
+def test_a_corrupt_own_fragment_with_a_new_destination_refuses_everything(
+        fleet, monkeypatch) -> None:
+    """Unknown ownership is refused, not overwritten into absence.
+
+    The causal shape from review: the prior fragment is corrupt, old
+    destinations still hold bytes, and one declared destination never
+    landed.  Without the refusal the absent destination replaces cleanly
+    and its publication erases the tainted fragment -- converting unknown
+    ownership into apparent absence.
+    """
+
+    _tmp, args, _mount, _entries, _keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    fragment = residency_map.fragment_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+    corrupt_bytes = b'{"schema": "prismaquant.prismabuild.resi'
+    _corrupt(fragment, corrupt_bytes)
+    stage = Path(args.stage_root)
+    landed = {name: (stage / name).read_bytes()
+              for name in ("shard-1.bin", "sub/shard-2.bin")}
+
+    with pytest.raises(SystemExit, match="residency_prior_fragment_unreadable"):
+        stage_move.move(args)
+
+    # Nothing was copied, nothing was published, nothing was altered.
+    assert fragment.read_bytes() == corrupt_bytes, (
+        "the tainted ownership record was overwritten")
+    assert not (stage / "shard-3.bin").exists(), (
+        "the refusal did not precede the copy")
+    for name, payload in landed.items():
+        assert (stage / name).read_bytes() == payload
+    # And a subsequent retry meets the same refusal, not an erased state.
+    with pytest.raises(SystemExit, match="residency_prior_fragment_unreadable"):
+        stage_move.move(args)
+    assert fragment.read_bytes() == corrupt_bytes
+
+
+def test_a_conflicting_own_fragment_refuses_and_keeps_the_record(
+        fleet, monkeypatch) -> None:
+    """A readable fragment with foreign headers is contradiction, not
+    coverage to republish around."""
+
+    _tmp, args, _mount, _entries, _keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    fragment = residency_map.fragment_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+    document = json.loads(fragment.read_bytes())
+    document["manifest_sha256"] = "8" * 64
+    conflicting = json.dumps(document, sort_keys=True).encode()
+    _corrupt(fragment, conflicting)
+
+    with pytest.raises(SystemExit, match="residency_prior_fragment_conflict"):
+        stage_move.move(args)
+    assert fragment.read_bytes() == conflicting, (
+        "the conflicting ownership record was overwritten")
+
+
+@pytest.mark.parametrize("poison", ["outside_window", "other_extent"])
+def test_a_conflicting_extent_in_the_own_fragment_refuses(
+        fleet, monkeypatch, poison: str) -> None:
+    """Contradictory extents are never silently pruned into coverage."""
+
+    _tmp, args, _mount, entries, keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    fragment = residency_map.fragment_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+    document = json.loads(fragment.read_bytes())
+    if poison == "outside_window":
+        document["entries"]["0:/mnt/never-declared.bin"] = {
+            "stage_path": str(Path(args.stage_root) / "never-declared.bin"),
+            "bytes": 8, "offset": 0, "sha256": "7" * 64}
+    else:
+        document["entries"][keys[1]]["bytes"] = SIZES[1] + 1
+    conflicting = json.dumps(document, sort_keys=True).encode()
+    _corrupt(fragment, conflicting)
+
+    with pytest.raises(SystemExit, match="residency_prior_fragment_conflict"):
+        stage_move.move(args)
+    assert fragment.read_bytes() == conflicting
+
+
+@pytest.mark.parametrize("header", [
+    "manifest", "epoch", "consumer", "tier", "stage_root"])
+def test_conflicting_own_material_headers_refuse(
+        fleet, monkeypatch, header: str) -> None:
+    """A readable sidecar with contradictory headers is never carried and
+    republished under corrected headers."""
+
+    _tmp, args, _mount, _entries, _keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    sidecar = reader_lease.material_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+    document = json.loads(sidecar.read_bytes())
+    document[{"manifest": "manifest_sha256", "consumer": "consumer_action_key",
+              "tier": "tier_id", "stage_root": "stage_root",
+              "epoch": "epoch"}[header]] = {
+        "manifest": "8" * 64, "consumer": "d" * 64,
+        "tier": "prismabuild-stage:other",
+        "stage_root": str(Path(args.stage_root).parent / "elsewhere"),
+        "epoch": "some-epoch"}[header]
+    conflicting = json.dumps(document, sort_keys=True).encode()
+    _corrupt(sidecar, conflicting)
+
+    with pytest.raises(SystemExit,
+                       match="residency_prior_material_conflicting"):
+        stage_move.move(args)
+    assert sidecar.read_bytes() == conflicting, (
+        "the contradictory sidecar was rewritten under corrected headers")
+
+
+def test_concurrent_publications_keep_the_preserved_prefix(
+        fleet, monkeypatch) -> None:
+    """Two workers publishing per landing never drop preserved coverage.
+
+    One controlled concurrency regression, per review: the snapshot guard
+    and the publish lock must keep every out-of-order snapshot at or above
+    the coverage this invocation inherited.
+    """
+
+    _tmp, args, _mount, _entries, keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", 0.0)
+    args.max_readers = 2
+    documents = _Recorder(monkeypatch, residency_map, "write_fragment")
+
+    second = stage_move.move(args)
+
+    assert second["complete"] is True and second["errors"] == []
+    assert documents.documents, "per-landing publications were recorded"
+    assert all(keys[1] in document["entries"]
+               for document in documents.documents), (
+        "a concurrent publication dropped preserved coverage")
+    assert set(documents.documents[-1]["entries"]) == set(keys)
+
+
 # --- generations and live pins ----------------------------------------------
 
 def _pin(fleet, **overrides):

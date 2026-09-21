@@ -1630,65 +1630,53 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     under the same consumer and mover keys -- so the qualified suffix its
     previous attempt published loses proof, is recopied, and pays the
     publication grace per entry.  This is the narrow resume for exactly
-    that: the prior **own** records are read back under the stage
-    ownership lock, and the retry's publications are never smaller than
-    the coverage they inherited.
+    that: the prior **own** records are read and qualified -- document
+    reads, header checks and the per-entry file stats together -- inside
+    the stage ownership lock, and the retry's publications are never
+    smaller than the coverage it inherited.
+
+    Unknown or contradictory ownership refuses the whole invocation
+    (``SystemExit``) before any copy or publication.  The causal case:
+    the prior own fragment is corrupt or conflicting, old destinations
+    still hold bytes, and one declared destination has never landed --
+    without the refusal the absent destination replaces cleanly, its
+    publication overwrites the tainted fragment, and this or the next
+    retry reads the erased evidence as absence.  Confirmed absence of the
+    own fragment (``FileNotFoundError``) is the one non-conflict: nothing
+    is preserved and nothing that says anything is overwritten, so a
+    first publication initializes empty through the ordinary machinery.
 
     Two tiers, deliberately different.  The **vouch** (the fragment
     record) is preserved for every prior entry this window derives whose
-    record is coherent with it: the file stays named, so a rerun that
-    reaches a changed entry still meets its own vouch at the publication
-    gate and is refused, exactly as ``#755`` refuses any vouched name --
-    dropping the vouch instead would turn that refuse into a
-    grace-then-heal replacement.  The **date** (the material sidecar
-    mention) is carried only where the existing proof standard still
-    holds: the manifest's declared digest agrees, and the sidecar's
-    ``file_id`` matches the live file (:func:`reader_lease.file_id_matches`
-    over :func:`stat_identity`).  No payload is hashed; an undated vouch is
-    preserved as exactly that, never upgraded.
-
-    Qualification of the records themselves is identity, nothing looser:
-    the fragment must be this invocation's own (same consumer, mover,
-    tier, stage root, manifest) or nothing at all is preserved.  Anything
-    unreadable, changed or conflicting simply keeps or drops its tier
-    above -- no coverage is fabricated, and the per-path gate decides the
-    rest fail-closed when the copier reaches it.
+    record agrees with the window's own derivation -- an entry named
+    outside this window, or a record at a different extent than the
+    manifest derives for a key inside it, is conflicting ownership and
+    refuses, never a silent prune into smaller coverage.  The **date**
+    (the material sidecar mention) is carried only where the sidecar's
+    headers qualify against this invocation and the fragment (consumer,
+    mover, tier, stage root, manifest, and the SSD no-epoch convention)
+    *and* the existing proof standard still holds per entry: the
+    manifest's declared digest agrees, and the sidecar's ``file_id``
+    matches the live file (:func:`reader_lease.file_id_matches` over
+    :func:`stat_identity`).  A readable sidecar with contradictory
+    headers is conflicting state and refuses -- it must never be carried
+    and republished under corrected headers -- while an absent or
+    unparseable sidecar is the documented crash window (a vouch without a
+    date): vouches are kept, no date is invented, and the rerun
+    overwrites both as it always has.  No payload is hashed; an undated
+    vouch is preserved as exactly that, never upgraded.
 
     Returns ``(staged_seeds, sidecar_seeds, resumed_generation)``.  Empty
     seeds with a ``None`` generation mean "nothing resumable", which is
     today's behavior, not an error.
     """
 
-    empty: tuple[dict[str, dict[str, object]], dict[str, dict[str, object]],
-                 str | None] = ({}, {}, None)
-    try:
-        with open(residency_map.fragment_path(
-                residency_root, consumer_action_key,
-                mover_action_key), "rb") as stream:
-            fragment = residency_map.validate_fragment(json.load(stream))
-    except (OSError, ValueError):
-        return empty
-    if (str(fragment["consumer_action_key"]) != consumer_action_key
-            or str(fragment["mover_action_key"]) != mover_action_key
-            or str(fragment["tier_id"]) != tier_id
-            or str(fragment["manifest_sha256"]) != manifest_sha256
-            or os.path.normpath(str(fragment["stage_root"]))
-            != os.path.normpath(str(stage_root))):
-        # Not this invocation's own record: another consumer, tier or
-        # manifest filed under these keys, and never coverage to keep.
-        return empty
-    material = reader_lease.read_material(
-        residency_root, consumer_action_key, mover_action_key)
-    if not isinstance(material, Mapping):
-        # Absent, unreadable or invalid sidecar: no date exists to carry
-        # and none is invented, but the vouches above still stand.
-        mentions: Mapping[str, Mapping[str, object]] = {}
-        generation: str | None = None
-    else:
-        mentions = material["entries"]
-        generation = str(material["generation"])
+    staged: dict[str, dict[str, object]] = {}
+    sidecar: dict[str, dict[str, object]] = {}
 
     # The names this window derives, by the map key the fragment uses.
+    # Pure derivation from the sealed inputs -- no state is read -- so it
+    # runs before the lock without widening the transaction.
     facts: dict[str, tuple[int, str, str, int]] = {}
     for entry in window:
         path, offset = str(entry["path"]), int(entry["offset"])
@@ -1700,18 +1688,99 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
             Path(stage_root) / relative)), str(entry.get("sha256") or ""),
             offset)
 
-    staged: dict[str, dict[str, object]] = {}
-    sidecar: dict[str, dict[str, object]] = {}
+    fragment_path = residency_map.fragment_path(
+        residency_root, consumer_action_key, mover_action_key)
     with queue.stage_ownership_lock(str(stage_root)):
+        try:
+            with open(fragment_path, "rb") as stream:
+                fragment = residency_map.validate_fragment(json.load(stream))
+        except FileNotFoundError:
+            # Confirmed absence: a first publication, or everything this
+            # key ever staged was retired.  Not conflict -- there is no
+            # ownership document to preserve or contradict.
+            return {}, {}, None
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"residency_prior_fragment_unreadable: this mover's own "
+                f"fragment exists but is neither readable nor valid, and "
+                f"refusing is what preserves it -- one landed destination "
+                f"would otherwise overwrite it as apparent absence: {exc}")
+        conflicts = [
+            name for name, bad in (
+                ("consumer", str(fragment["consumer_action_key"])
+                 != consumer_action_key),
+                ("mover", str(fragment["mover_action_key"])
+                 != mover_action_key),
+                ("tier", str(fragment["tier_id"]) != tier_id),
+                ("manifest", str(fragment["manifest_sha256"])
+                 != manifest_sha256),
+                ("stage_root", os.path.normpath(str(fragment["stage_root"]))
+                 != os.path.normpath(str(stage_root))),
+                # The SSD stage never dates its fragments: an epoch on a
+                # non-ram tier is convention-conflicting state, the same
+                # refusal a sidecar epoch draws below.
+                ("epoch", bool(fragment.get("epoch"))
+                 and not tier_id.startswith(storage_tiers.RAM_TIER_PREFIX)),
+            ) if bad]
+        if conflicts:
+            raise SystemExit(
+                f"residency_prior_fragment_conflicting: this mover's own "
+                f"fragment disagrees with the invocation on "
+                f"{', '.join(conflicts)}; refusing keeps the record rather "
+                f"than republishing around it")
+
+        material = reader_lease.read_material(
+            residency_root, consumer_action_key, mover_action_key)
+        mentions: Mapping[str, Mapping[str, object]] = {}
+        generation: str | None = None
+        if isinstance(material, Mapping):
+            conflicts = [
+                name for name, bad in (
+                    ("consumer", str(material["consumer_action_key"])
+                     != consumer_action_key),
+                    ("mover", str(material["mover_action_key"])
+                     != mover_action_key),
+                    ("tier", str(material["tier_id"]) != tier_id),
+                    ("manifest", str(material["manifest_sha256"])
+                     != manifest_sha256),
+                    ("stage_root",
+                     os.path.normpath(str(material["stage_root"]))
+                     != os.path.normpath(str(stage_root))),
+                    ("epoch", bool(material.get("epoch"))
+                     and not tier_id.startswith(
+                         storage_tiers.RAM_TIER_PREFIX)),
+                ) if bad]
+            if conflicts:
+                raise SystemExit(
+                    f"residency_prior_material_conflicting: this mover's "
+                    f"own material sidecar disagrees with the invocation "
+                    f"on {', '.join(conflicts)}; carrying its dates would "
+                    f"republish contradictory ownership under corrected "
+                    f"headers")
+            mentions = material["entries"]
+            generation = str(material["generation"])
+        # An absent or unparseable sidecar is the documented crash window:
+        # the vouches stand, no date is invented, the rerun overwrites
+        # both as it always has.
+
         for key, record in dict(fragment["entries"]).items():
             fact = facts.get(str(key))
             if fact is None:
-                continue          # not this window's scope
+                raise SystemExit(
+                    f"residency_prior_fragment_conflicting: this mover's "
+                    f"own fragment names {key} outside the window this "
+                    f"invocation derives; a same-key fragment is the same "
+                    f"command, so this is conflicting ownership, not scope "
+                    f"to prune")
             want, destination, declared, offset = fact
             assert isinstance(record, Mapping)
             stage_path = os.path.normpath(str(record["stage_path"]))
             if stage_path != destination or int(record["bytes"]) != want:
-                continue          # a record about some other extent
+                raise SystemExit(
+                    f"residency_prior_fragment_conflicting: this mover's "
+                    f"own fragment records {key} at a different extent "
+                    f"than the manifest derives; refusing keeps the record "
+                    f"rather than pruning it into smaller coverage")
             digest = str(record["sha256"])
             # The vouch survives: the name stays published, and the gate
             # below refuses a changed incarnation instead of letting a
@@ -1743,7 +1812,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                 "sha256": digest, "file_id": dict(file_id),
             }
     if not staged:
-        return empty
+        return {}, {}, None
     return staged, sidecar, generation
 
 
@@ -1816,9 +1885,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     # replaces the fragment and material with the tiny fresh subset and
     # every not-yet-reencountered entry loses proof, is recopied, and pays
     # the publication grace per entry.  Seeded entries are coverage the
-    # previous attempt already proved and this one re-verifies per path as
-    # it reaches them; they add no staged bytes and cannot complete a
-    # receipt on their own.
+    # previous attempt published and this invocation *preserves* -- a kept
+    # vouch is not a requalified date and not committed progress; each
+    # path is still decided by the ordinary gate as the copier reaches
+    # it.  Seeds add no staged bytes and cannot complete a receipt on
+    # their own.
     staged_seeds, sidecar_seeds, resumed_generation = _resume_own_coverage(
         queue, consumer_action_key=str(args.consumer_action_key),
         mover_action_key=str(args.action_key), tier_id=str(args.tier_id),
@@ -1950,9 +2021,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "bytes_staged": copier.bytes_staged,
         "entries_declared": len(window),
         "entries_staged": len(copier.staged),
-        # What this invocation re-verified and carried over, not what it
-        # copied: resumed coverage adds no staged bytes and cannot make a
-        # receipt complete on its own -- only a landed entry does.
+        # Preserved coverage, not copied bytes and not verified progress:
+        # a kept vouch has not necessarily been re-dated, and only a
+        # landed entry counts toward staged bytes or completeness.
         "entries_resumed": entries_resumed,
         "bytes_resumed": bytes_resumed,
         "complete": copier.bytes_staged == declared and not copier.errors,
