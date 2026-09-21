@@ -63,6 +63,25 @@ mocked. Files are 16 KiB. Executed through PrismaBuild at
 | fail-before | `5ef95bc8ab826f4ef7c4c3f7d5c915bb74fd56ae8c069efcc76613ded7f773f9` | 7 failed, 1 passed; record in `pb-queue/failed/` |
 | pass-after | `2878ec3f63f2e9c3451a1766f7a5923b8ae4ec8ff63f4a86159c351c2de8e076` | 8 passed; CAS receipt `cas/actions/v3/28/2878ec3f63f2….json` |
 
+### Targeted regressions, after the repair
+
+Eight shards, 237 tests, no skips, all green (`dl380g10`, same PB
+options). Ordinary reader pins, two-owner sharing and its decharge
+accounting, dev/staged-only reuse and stale-donor refusal, adoption
+without recopy, the orphan recovery's originals checks, and the design
+doc checks are all covered by existing cases:
+
+| Shard | Action key | Files |
+|---|---|---|
+| 0 | `d842c34aa8dd5b128389669f03462330a07873df805f01c9f1c296680bfe266f` | promotion handoff (this branch), orphaned-cache recovery by identity, two-tier relay design |
+| 1 | `7704e106d5ad533e3c382d9ec9365d4b661b4ddecadd816e70304804aa9cfd0a` | shared staged path / two owners, shared-cache capacity credit |
+| 2 | `3c66430e56ef9ed2f5c11b7115315464b7c8cead7ff147bf9293ec23cba02001` | reader lease lifetime, settled consumed pin |
+| 3 | `b59bfafa2279c6d863ce19870bb7cf6caaddc0f906678625d59bcd29bb2c9e01` | promotion holds tokens until egress, stale donor declines |
+| 4 | `1373089b30823f7c7e3cc3be2a0a2e7c99e6f3edd96cbb7dc05777b6ac6febf5` | ram shared source, resident range adopted not recopied |
+| 5 | `7a20b360055493b44129536c90bb2e7b6fcfa6d203a9efd293d8bdbd6524093a` | ram own-consumer change, incomplete promotions release tokens |
+| 6 | `464be6cf5a420fc7b287316257f757f5a41cb3e3cbf2f77380d35e65934dfc6b` | staged range holds tokens until an egress deletes it, full stage/ram chain |
+| 7 | `2bf0bb8d7eb123ef1e87142a172abcf3104f91f09d5208e7ebf6db0896481827` | ram egress ordering, design doc line references |
+
 The fail-before run names the harm per axis: with the staged file still
 present, `residency/<consumer>/<mover>.json` was gone ("the surviving
 bytes lost their fragment: nothing can prove them"), and
@@ -86,3 +105,9 @@ case that passed before the repair is the fixture check that
 - Concurrency between a handoff deferral and a simultaneous second
   egress is covered only by the existing ownership-lock cases, not by a
   new race case of its own.
+- A promotion claim that lingers (a crashed promotion whose row has not
+  yet been reaped) now holds the stage charge until PB's ordinary claim
+  recovery clears it, where before the egress freed that charge while
+  the bytes stayed. That is the intended direction -- occupancy follows
+  the bytes -- but it does make stale-claim recovery the thing that
+  releases those tokens.
