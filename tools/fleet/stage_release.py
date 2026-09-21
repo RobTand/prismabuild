@@ -340,42 +340,59 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
 
     ``direct`` is true only for a namespace that is an immediate child of the
     root the census was asked about; the callers use it to scope
-    self-exclusion to that root's own namespace domain.
+    self-exclusion to that root's own namespace domain.  A symlinked entry is
+    taint without being followed: a link can leave the store or point back
+    into it, and neither is a fragment.
     """
 
     try:
-        names = sorted(entry.name for entry in os.scandir(directory)
-                       if entry.is_file() and entry.name.endswith(".json"))
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
     except OSError as exc:
         tainted.append(f"{namespace}: {exc}")
         return
-    for name in names:
-        document = _read_fragment(directory / name)
+    for entry in entries:
+        if not entry.name.endswith(".json"):
+            continue
+        try:
+            if entry.is_symlink():
+                tainted.append(
+                    f"{namespace}/{entry.name}: symlink is not a fragment")
+                continue
+            is_file = entry.is_file()
+        except OSError as exc:
+            tainted.append(f"{namespace}/{entry.name}: {exc}")
+            continue
+        if not is_file:
+            continue
+        document = _read_fragment(Path(entry.path))
         if isinstance(document, str):
-            tainted.append(f"{namespace}/{name}: {document}")
+            tainted.append(f"{namespace}/{entry.name}: {document}")
             continue
         if str(document["consumer_action_key"]) != namespace:
             # The directory is what attributes this document; a fragment
             # filed under another namespace is malformed ownership.
             tainted.append(
-                f"{namespace}/{name}: fragment is filed under another namespace")
+                f"{namespace}/{entry.name}: fragment is filed under another namespace")
             continue
         fragments.append((namespace, str(document["mover_action_key"]),
                           document, direct))
 
 
-def _census_level(directory: Path, *, direct: bool,
+def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                   fragments: list[tuple[str, str, dict[str, object], bool]],
                   tainted: list[str],
                   skip: frozenset[str] = frozenset()) -> None:
     """Classify one directory level of the fragment store.
 
     One rule for both layouts: reserved bookkeeping is skipped, a
-    ``produced-output-fragments`` child is the nested produced namespace
-    (walked one level down, in a foreign domain), a 64-character directory is
-    a fragment namespace, and anything else is taint.  ``skip`` names
-    children this call must not revisit -- the produced store itself when its
-    own parent level is walked for co-owner domains.
+    ``produced-output-fragments`` child is the nested produced namespace, a
+    64-character directory is a fragment namespace, and anything else is
+    taint.  The traversal is bounded to the two known layouts: the produced
+    container is descended **once**, only from the base store
+    (``allow_nested``), and a container name inside the produced store, or a
+    symlink anywhere, is unknown ownership -- taint, never a walk.  ``skip``
+    names children this call must not revisit -- the produced store itself
+    when its own parent level is walked for co-owner domains.
     """
 
     try:
@@ -387,6 +404,10 @@ def _census_level(directory: Path, *, direct: bool,
         if entry.name in skip:
             continue
         try:
+            if entry.is_symlink():
+                tainted.append(
+                    f"{entry.name}: symlink is not a fragment namespace")
+                continue
             is_directory = entry.is_dir()
         except OSError as exc:
             tainted.append(f"{entry.name}: {exc}")
@@ -400,7 +421,12 @@ def _census_level(directory: Path, *, direct: bool,
             # reader_lease resolves them from the supplied residency root.
             continue
         if namespace == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
-            _census_level(Path(entry.path), direct=False,
+            if not allow_nested:
+                tainted.append(
+                    f"{namespace}: nested produced namespace is not a "
+                    f"fragment namespace")
+                continue
+            _census_level(Path(entry.path), direct=False, allow_nested=False,
                           fragments=fragments, tainted=tainted)
             continue
         if not _namespace_shaped(namespace):
@@ -421,30 +447,34 @@ def _fragment_census(root: Path,
     <mover>.json``; that namespace is a material namespace, not a queue
     action.
 
-    A walk of the store sees the produced namespaces nested under the
-    produced subdirectory; a walk of the produced store itself -- the root an
-    egress or retirement is given for a produced mover -- also walks the flat
+    A walk of the store descends into the produced subdirectory exactly
+    once; a walk of the produced store itself -- the root an egress or
+    retirement is given for a produced mover -- also walks the flat
     namespaces beside it, because a legacy co-owner may vouch for the same
-    physical staged bytes.  Self-exclusion is the caller's business and is
-    scoped to the root walked: only fragments found directly under it carry
-    ``direct=True``.
+    physical staged bytes.  Nothing else is a layout: a second container
+    name, or a symlink, is taint.  Self-exclusion is the caller's business
+    and is scoped to the root walked: only fragments found directly under it
+    carry ``direct=True``.
 
     Returns ``(fragments, tainted)``: each fragment as ``(namespace, mover,
     document, direct)``, each taint a bounded one-line reason.  A directory
     that is neither reserved bookkeeping nor namespace-shaped, and a
     ``.json`` file that cannot be read or does not validate, are taint --
-    never a silent skip, never a crash.  A caller that deletes treats taint
-    as unknown ownership and retains.
+    never a silent skip, never a crash, never followed.  A caller that
+    deletes treats taint as unknown ownership and retains.
     """
 
     fragments: list[tuple[str, str, dict[str, object], bool]] = []
     tainted: list[str] = []
     if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
-        _census_level(root, direct=True, fragments=fragments, tainted=tainted)
-        _census_level(root.parent, direct=False, fragments=fragments,
-                      tainted=tainted, skip=frozenset({root.name}))
+        _census_level(root, direct=True, allow_nested=False,
+                      fragments=fragments, tainted=tainted)
+        _census_level(root.parent, direct=False, allow_nested=False,
+                      fragments=fragments, tainted=tainted,
+                      skip=frozenset({root.name}))
     else:
-        _census_level(root, direct=True, fragments=fragments, tainted=tainted)
+        _census_level(root, direct=True, allow_nested=True,
+                      fragments=fragments, tainted=tainted)
     return fragments, tainted
 
 

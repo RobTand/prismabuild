@@ -159,15 +159,19 @@ def world(tmp_path: Path):
 def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
     """The real cycle boundary: no raise, nothing deleted, nothing unknown."""
 
+    legacy_held = world.queue.tier_ledger(TIER).holder_tokens(LEGACY_MOVER)
+    produced_held = world.queue.tier_ledger(TIER).holder_tokens(PRODUCED_MOVER)
+    assert legacy_held and produced_held
+
     events = _sweep(world.queue, world.stage)
 
     assert events == [], events
     assert world.legacy_path.exists()
     assert world.produced_path.exists()
-    assert world.queue.tier_ledger(TIER).holder_tokens(LEGACY_MOVER) == {
-        KIND: 1}
-    assert world.queue.tier_ledger(TIER).holder_tokens(PRODUCED_MOVER) == {
-        KIND: 1}
+    assert world.queue.tier_ledger(TIER).holder_tokens(
+        LEGACY_MOVER) == legacy_held
+    assert world.queue.tier_ledger(TIER).holder_tokens(
+        PRODUCED_MOVER) == produced_held
 
 
 def test_both_fragment_layouts_are_attributed(world) -> None:
@@ -298,6 +302,41 @@ def test_an_unknown_residency_directory_retains(world) -> None:
     assert "not-a-namespace" in " ".join(receipt["errors"]), receipt
     assert orphan.exists()
     assert world.legacy_path.exists()
+    assert world.produced_path.exists()
+
+
+def test_a_symlinked_produced_container_taints_instead_of_recursing(world) -> None:
+    """A link back into the store is unknown ownership, never a walk."""
+
+    orphan = _staged(world.stage, "orphan.bin", 128)
+    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
+        "..", target_is_directory=True)
+
+    events = _sweep(world.queue, world.stage)
+
+    receipt = _reconcile_receipt(events)
+    assert receipt is not None, events
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_deleted"] == 0, receipt
+    assert receipt["skipped"] == "attribution_unreadable", receipt
+    assert orphan.exists()
+    assert world.produced_path.exists()
+
+
+def test_a_nested_produced_container_is_unknown(world) -> None:
+    """One produced container, at the base store; a second is not a layout."""
+
+    orphan = _staged(world.stage, "orphan.bin", 128)
+    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
+
+    events = _sweep(world.queue, world.stage)
+
+    receipt = _reconcile_receipt(events)
+    assert receipt is not None, events
+    assert receipt["complete"] is False, receipt
+    assert receipt["entries_deleted"] == 0, receipt
+    assert receipt["skipped"] == "attribution_unreadable", receipt
+    assert orphan.exists()
     assert world.produced_path.exists()
 
 

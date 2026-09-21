@@ -4184,7 +4184,11 @@ its other copies, and reusing that tolerance for attribution is how
 corruption reads as "unowned" and staged bytes are lost. The reconciliation
 carries the taint into an incomplete receipt (`skipped:
 attribution_unreadable`, bounded reasons), deletes nothing, and the tier
-cycle continues; the next sweep retries. Self-exclusion is scoped to the
+cycle continues; the next sweep retries. The walk is bounded to those two
+layouts: the produced container is descended once from the base store, and a
+second container name or any symlink in the store is unknown ownership —
+taint, never a walk — so a link back into the store cannot recurse the
+daemon to death. Self-exclusion is scoped to the
 root being walked — only a fragment filed directly under that root can be
 the caller's own document — so a fragment carrying the same key in a foreign
 namespace stays protected. The tier-loop crash this closes (runtime
