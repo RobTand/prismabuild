@@ -739,7 +739,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  reason: str) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock."""
 
-    deleted = missing = shared = deferred = 0
+    deleted = missing = shared = deferred = handoff_deferred = 0
     bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
@@ -855,14 +855,34 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 shared_with.append("in-flight-copy")
             bytes_shared += int(entry["bytes"])
             continue
-        if os.path.normpath(resolved) in source_paths:
-            # A live promotion is reading this source leg into RAM: the file
-            # stays, this mover's own vouching goes, exactly like a shared
-            # skip.  The promotion's ram fragment vouches once it lands.
-            shared += 1
-            shared_with.append("promotion-handoff")
-            continue
         pinned = pins.get(norm, [])
+        if os.path.normpath(resolved) in source_paths:
+            # A live promotion is reading this source leg into RAM: defer,
+            # exactly like the live reader below -- keep the file, the
+            # fragment, the material sidecar and the charge.  The
+            # promotion's ram fragment names another tier and another path,
+            # so it can never vouch for this SSD incarnation, while a stage
+            # publisher needs a same-path fragment PLUS its sidecar PLUS
+            # current file identity before it will adopt
+            # (``stage_move._StagedPublisher._proof_search``).  A shared
+            # skip kept the bytes and dropped both: the surviving copy went
+            # unprovable and, carrying no ``bytes_shared``, its whole charge
+            # came back as free for bytes that never left (#768).
+            #
+            # No retiring mark, and so no generation needed for one: a mark
+            # closes one material GENERATION to new acquires, and
+            # ``ram_promote`` takes its proof-only cover through
+            # ``reader_lease.acquire`` AFTER its claim row exists, so a mark
+            # filed here would refuse the very handoff this defers for.  The
+            # mark is per mover, not per entry, which is why a pinned entry
+            # on the same mover waits for the handoff to end before its own
+            # mark is filed.  Deleting stays safe without it: every pass
+            # re-reads claims and pins under this same ownership lock, so a
+            # delete still happens only with no live ref present.
+            deferred += 1
+            handoff_deferred += 1
+            live_pins.extend(pinned)
+            continue
         if pinned:
             # A live reader holds these bytes (open FD, prefetch, mmap, or a
             # promotion source pin): defer, mark retiring for this material
@@ -888,7 +908,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         _prune_empty(path.parent, stage)
 
     released = decharged = 0
-    if deferred and not errors and own_generation:
+    if deferred and not handoff_deferred and not errors and own_generation:
+        # Handoff-deferred passes file nothing: closing this generation
+        # would refuse the promotion's own cover acquire and strand the
+        # handoff that is holding these bytes.  The mark is filed by the
+        # next pass, once the claim is gone and only readers remain.
         reader_lease.write_retiring(
             reader_lease.leases_root(queue, root),
             consumer_action_key=consumer_action_key,
@@ -989,6 +1013,10 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         "entries_shared": shared,
         "shared_with": sorted(set(shared_with))[:SHARED_WITH_LIMIT],
         "entries_deferred": deferred,
+        # How many of those deferrals are a live promotion holding this
+        # path as its copy source rather than a reader pin: the pass
+        # that files no retiring mark says which entries made it so.
+        "handoff_deferred": handoff_deferred,
         "live_pins": sorted(set(live_pins)),
         "auto_reclaimed": sorted(set(auto_reclaimed)),
         "auto_retained": dict(sorted(auto_retained.items())),
