@@ -9,26 +9,53 @@ what lets a claim refuse a box that cannot positively show the reference.
 existed on one Spark was claimed by the other, and died inside its wrapper
 after the attempt was already spent.
 
-Two reference forms are accepted, and they are deliberately not aliases:
+Three reference forms are accepted, and they are deliberately not aliases:
 
-* ``sha256:<64 hex>`` names the local **image ID** (Docker's config digest).
-  It is satisfied only by an image the inventory reports by that ID.
+* ``sha256:<64 hex>`` names the local **image ID**: whatever the box's own
+  image store calls the image.  It is satisfied only by an image the inventory
+  reports by that ID, and it **is not portable between stores**.  Docker's
+  classic store reports the config digest; Docker's containerd store reports
+  the digest of the image's top-level descriptor -- an OCI index for 16 of
+  sparky's 27 images and a manifest for the rest, so it varies with how the
+  image arrived.  One image therefore has two IDs on two boxes running the
+  same engine (#805, measured 2026-09-21 on sparky and sparklina, both
+  Engine 29.6.2).
 * ``repository@sha256:<64 hex>`` names a repository **manifest digest**.  It is
   satisfied only by that exact ``repository@sha256:...`` string among the
   box's RepoDigests.  A bare digest from a RepoDigest is never presented, so a
   manifest digest cannot accidentally satisfy an ID requirement (or the
-  reverse) merely because the hex matches.
+  reverse) merely because the hex matches.  It exists only for an image that
+  was pulled: 18 of 32 images on sparklina's classic store carry an empty
+  RepoDigests list, the campaign image among them, so this form does not
+  rescue a locally built or ``docker load``-ed image.
+* ``content:sha256:<64 hex>`` names the image's **store-independent content**
+  (#805): :func:`content_ref` over the ordered ``RootFS.Layers`` diff ids and
+  the execution-bearing fields of the OCI image config.  Two daemons holding
+  the same image publish the same string whatever their store calls its ID,
+  and an image with any different layer or config field publishes a different
+  one.  This is the form to seal into an action that must be claimable by
+  every box that holds the image.
 
 A mutable tag (``repo:tag``) is refused at declaration time: it is not an
 identity, so it cannot be sealed into an action key, and it would let the
 requirement move under the receipt it was admitted against.
 
-The inventory is one ``docker image ls`` read, pinned to the local Unix daemon
-socket, bounded by :data:`INVENTORY_TIMEOUT_S` and by
+The inventory is one ``docker image ls`` read followed by one
+``docker image inspect`` of exactly the IDs that listing reported, both pinned
+to the local Unix daemon socket and both spent from a single
+:data:`INVENTORY_TIMEOUT_S` budget, each bounded by
 :data:`MAX_INVENTORY_BYTES` -- the output is read through a capped,
 deadline-bound stream, never accumulated and then measured.  A failure, a
 timeout, an unexpected listing shape or an oversized answer is **unknown**,
-never empty.  An unknown inventory satisfies no requirement.
+never empty.  An unknown inventory satisfies no requirement.  In particular a
+failed or unparseable inspect makes the whole inventory unknown rather than
+publishing the IDs alone: an inventory that silently dropped its content
+references would deny content-form work with ``container_image_absent``, which
+is the misleading refusal #805 exists to end.
+
+``docker image inspect`` exits nonzero when any named ID is gone, so an image
+removed between the two reads makes one refresh unknown.  That is bounded by
+the refresh interval and heals on the next one; no claim is admitted from it.
 
 Two staleness bounds, deliberately different:
 
@@ -56,6 +83,7 @@ Declare only images that are already local when the action is claimed.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -95,21 +123,66 @@ MAX_INVENTORY_ENTRIES = 4096
 #: large object -- so this is the most a single read can allocate.
 PROBE_CHUNK_BYTES = 64 * 1024
 
-INVENTORY_SCHEMA = "prismabuild.container_image_inventory.v1"
+INVENTORY_SCHEMA = "prismabuild.container_image_inventory.v2"
+
+#: Bound into the hashed payload, so the covered set is part of the identity.
+#: Widening or narrowing that set changes every digest, which is the intended
+#: failure: an already-sealed ``content:`` reference stops matching and the
+#: item stays ready rather than being satisfied under a different rule.
+CONTENT_SCHEMA = "prismabuild.container_image_content.v1"
+
+#: The whole covered set beside ``Config``: the platform an image declares.
+#: Docker refuses or warns on a mismatch, so both are execution-bearing, and
+#: both stores project them straight from the image's own config blob.
+#:
+#: Excluded, deliberately.  *Store bookkeeping*, which differs by
+#: construction: ``Id``, ``RepoTags``, ``RepoDigests``, ``Metadata``,
+#: ``Parent``, ``Size`` (measured to disagree on every shared image --
+#: 9736792922 on the containerd store against 20742216431 on the classic
+#: one), and the store-exclusive ``GraphDriver``, ``Descriptor``,
+#: ``Identity`` and ``DockerVersion``.  *Metadata that does not reach the
+#: container*: ``Created``, ``Author``, ``Comment``, ``Variant``.  Those four
+#: agreed on all 17 shared images, but they are rendered strings that a
+#: client formats (``Created`` appears in more than one format across rows),
+#: and a rendering difference between two daemons would refuse a box that
+#: holds the image -- the exact defect this form exists to end.  They cannot
+#: buy safety in exchange, because the requirement asks whether the box can
+#: run what the action runs, and none of the four changes that.
+CONTENT_PLATFORM_FIELDS = ("Architecture", "Os")
+
+#: The image-config keys the digest covers, by the type each must hold.
+#: This is the OCI image-spec config plus Docker's own extensions, not
+#: "whatever the daemon printed": a daemon that pads the object with
+#: container-config keys of its own would otherwise make two boxes disagree
+#: about one image.  A key outside this set is refused rather than ignored
+#: when it carries a value -- see :func:`_canonical_config`.
+_CONFIG_STRINGS = ("StopSignal", "User", "WorkingDir")
+_CONFIG_STRING_LISTS = ("Cmd", "Entrypoint", "Env", "OnBuild", "Shell")
+_CONFIG_KEY_SETS = ("ExposedPorts", "Volumes")
+_CONFIG_BOOLS = ("ArgsEscaped",)
+_CONFIG_INTS = ("StopTimeout",)
+_HEALTHCHECK_LISTS = ("Test",)
+_HEALTHCHECK_INTS = ("Interval", "Retries", "StartInterval", "StartPeriod",
+                     "Timeout")
 
 _DIGEST = r"sha256:[0-9a-f]{64}"
 _IMAGE_ID = re.compile(rf"{_DIGEST}\Z")
 _REPO_DIGEST = re.compile(rf"[a-zA-Z0-9][a-zA-Z0-9._:/-]*@{_DIGEST}\Z")
+_CONTENT_REF = re.compile(rf"content:{_DIGEST}\Z")
 
 #: ID, repository and digest per image, tab-separated: one listing covers both
-#: reference forms, and ``--all`` keeps dangling images visible.
+#: name-bearing reference forms, and ``--all`` keeps dangling images visible.
 _LIST_FORMAT = "{{.ID}}\t{{.Repository}}\t{{.Digest}}"
+
+#: One JSON object per line, so the inspect answer is read and parsed as a
+#: bounded stream of rows rather than one array that must be whole first.
+_INSPECT_FORMAT = "{{json .}}"
 
 
 def validate_ref(value: object) -> str:
     """Return ``value`` if it is an immutable image reference, else raise.
 
-    The refusal names both accepted forms and says why a tag cannot be one:
+    The refusal names the accepted forms and says why a tag cannot be one:
     an action's image requirement is sealed into its key, so it has to be an
     identity the receipt can be held against.
     """
@@ -117,14 +190,186 @@ def validate_ref(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(
             "container image must be a nonempty string: sha256:<64 hex> for a "
-            "local image ID, or repository@sha256:<64 hex> for a manifest "
-            "digest")
-    if _IMAGE_ID.fullmatch(value) or _REPO_DIGEST.fullmatch(value):
+            "local image ID, repository@sha256:<64 hex> for a manifest "
+            "digest, or content:sha256:<64 hex> for a store-independent "
+            "content reference")
+    if (_IMAGE_ID.fullmatch(value) or _REPO_DIGEST.fullmatch(value)
+            or _CONTENT_REF.fullmatch(value)):
         return value
     raise ValueError(
         f"{value!r} is not an immutable container image reference; use "
-        "sha256:<64 hex> or repository@sha256:<64 hex>. A mutable tag cannot "
-        "be part of an action's identity")
+        "sha256:<64 hex>, repository@sha256:<64 hex> or "
+        "content:sha256:<64 hex>. A mutable tag cannot be part of an "
+        "action's identity")
+
+
+def _is_zero(value) -> bool:
+    """Whether Go's ``omitempty`` would have dropped this value.
+
+    Docker serializes the image config with ``omitempty``, so a field at its
+    zero value and a field that is absent are the same statement about the
+    image: ``"Cmd": null``, ``"Cmd": []`` and no ``Cmd`` key all say "this
+    image sets no command".  Treating them as one makes two daemons agree by
+    construction rather than by luck, and it cannot admit a different image,
+    because an omission and a zero value are identical to a container
+    runtime.  The test is by type, never ``==``: ``0 == False`` in Python and
+    these are not the same value.
+    """
+
+    if value is None or value is False:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == 0
+    if isinstance(value, (str, list, dict)):
+        return len(value) == 0
+    return False
+
+
+def _drop_zero(mapping: dict) -> dict:
+    return {key: value for key, value in mapping.items()
+            if not _is_zero(value)}
+
+
+def _string_list(value, *, where: str) -> list:
+    if not isinstance(value, list) or not all(
+            isinstance(entry, str) for entry in value):
+        raise ValueError(f"container image {where} is not a list of strings")
+    return list(value)                  # order is content: later Env wins
+
+
+def _canonical_config(config: dict) -> dict:
+    """The covered image config, typed and canonicalized.
+
+    Keys outside the covered set are refused when they carry a value and
+    ignored when they are at their zero: a daemon that pads the object with
+    zero-valued container-config keys is saying nothing, but one that puts a
+    *value* somewhere this does not model is saying something this cannot
+    price, and pricing it wrong is the one failure that must not happen.
+    """
+
+    canonical: dict = {}
+    for key, value in config.items():
+        if not isinstance(key, str):
+            raise ValueError("container image config has a foreign key")
+        if _is_zero(value):
+            continue
+        if key in _CONFIG_STRINGS:
+            if not isinstance(value, str):
+                raise ValueError(f"container image config {key} is not a string")
+            canonical[key] = value
+        elif key in _CONFIG_STRING_LISTS:
+            canonical[key] = _string_list(value, where=f"config {key}")
+        elif key in _CONFIG_KEY_SETS:
+            # The set of keys is the content; the values are ``{}`` on one
+            # store and ``null`` on another and mean nothing either way.
+            if not isinstance(value, dict) or not all(
+                    isinstance(entry, str) for entry in value):
+                raise ValueError(f"container image config {key} is not a set")
+            canonical[key] = sorted(value)
+        elif key == "Labels":
+            # Kept whole, empty values included: 10 of 27 images on sparky
+            # and 12 of 32 on sparklina carry a label with an empty value,
+            # and an empty label is still a label the image declares.
+            if not isinstance(value, dict) or not all(
+                    isinstance(name, str) and isinstance(entry, str)
+                    for name, entry in value.items()):
+                raise ValueError("container image config Labels is not a map")
+            canonical[key] = dict(sorted(value.items()))
+        elif key in _CONFIG_BOOLS:
+            if not isinstance(value, bool):
+                raise ValueError(f"container image config {key} is not a bool")
+            canonical[key] = value
+        elif key in _CONFIG_INTS:
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"container image config {key} is not an int")
+            canonical[key] = value
+        elif key == "Healthcheck":
+            if not isinstance(value, dict):
+                raise ValueError("container image Healthcheck is not an object")
+            check: dict = {}
+            for name, entry in _drop_zero(value).items():
+                if name in _HEALTHCHECK_LISTS:
+                    check[name] = _string_list(entry, where=f"Healthcheck {name}")
+                elif name in _HEALTHCHECK_INTS:
+                    if not isinstance(entry, int) or isinstance(entry, bool):
+                        raise ValueError(
+                            f"container image Healthcheck {name} is not an int")
+                    check[name] = entry
+                else:
+                    raise ValueError(
+                        f"container image Healthcheck carries {name!r}, which "
+                        "this identity does not cover")
+            if check:
+                canonical[key] = check
+        else:
+            raise ValueError(
+                f"container image config carries {key!r} with a value, which "
+                "this identity does not cover")
+    return canonical
+
+
+def content_ref(payload) -> str:
+    """The store-independent ``content:sha256:...`` reference for one image.
+
+    ``payload`` is one ``docker image inspect`` row.  The digest covers the
+    ordered ``RootFS.Layers`` diff ids, :data:`CONTENT_PLATFORM_FIELDS` and
+    the covered image config, under :data:`CONTENT_SCHEMA`.
+
+    Why it cannot admit a different image.  What a container does is its root
+    filesystem plus its process spec.  Each diff id is the sha256 of one
+    layer's uncompressed changeset tar -- bytes, modes, owners, xattrs and
+    whiteouts -- and the filesystem is those tars applied in order, so an
+    equal ordered list is an equal filesystem; the list is hashed as a JSON
+    array, so a permutation, a prefix or an extension all differ, which is
+    right because the order whiteouts apply in matters.  Every build step
+    that adds no layer (``ENV``, ``CMD``, ``USER``, ``EXPOSE``) lands
+    entirely in the config, which is covered.  What it deliberately does not
+    distinguish is an image from a rebuild of itself that changed only
+    ``Created``, ``Author`` or ``Comment``: those images run identically.
+
+    The residuals it does not close, named rather than claimed away: a future
+    config key that changes execution (refused, not ignored -- see
+    :func:`_canonical_config`); the action's own ``docker run`` flags, which
+    are sealed elsewhere in the action; the box's runtime, driver and kernel,
+    which are not properties of the image; and the fact that this proves the
+    *content* is present, not that the name the action runs resolves to it.
+
+    Anything this cannot read raises, and :func:`observe` turns that into an
+    unknown inventory.
+    """
+
+    if not isinstance(payload, dict):
+        raise ValueError("container image inspect row is not an object")
+    rootfs = payload.get("RootFS")
+    if not isinstance(rootfs, dict) or rootfs.get("Type") != "layers":
+        # Asserted, not hashed: one accepted value carries no information.
+        raise ValueError("container image inspect row has no layer rootfs")
+    layers = rootfs.get("Layers")
+    if not isinstance(layers, list) or not layers:
+        raise ValueError("container image inspect row lists no layers")
+    for layer in layers:
+        if not isinstance(layer, str) or not _IMAGE_ID.fullmatch(layer):
+            raise ValueError("container image layer is not a sha256 diff id")
+    config = payload.get("Config")
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError("container image inspect row has no config")
+    covered = {"schema": CONTENT_SCHEMA, "layers": list(layers),
+               "config": _canonical_config(config)}
+    for field in CONTENT_PLATFORM_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"container image inspect row has no {field}")
+        covered[field.lower()] = value
+    # ``sort_keys`` is code-point order, not RFC 8785's UTF-16 order, and the
+    # parsed object is hashed rather than the daemon's bytes, so one store's
+    # ``<`` escaping cannot change the digest.
+    blob = json.dumps(covered, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True, allow_nan=False).encode("ascii")
+    return "content:sha256:" + hashlib.sha256(blob).hexdigest()
 
 
 def normalize_refs(values) -> tuple[str, ...]:
@@ -174,6 +419,53 @@ def parse_inventory(text: str) -> frozenset[str]:
                 raise ValueError("docker image listing row carries a foreign digest")
             entries.add(f"{repository}@{digest}")
     return frozenset(entries)
+
+
+def parse_inspect(text: str) -> frozenset[str]:
+    """Every ``content:sha256:...`` reference one inspect answer shows.
+
+    One JSON object per line.  A line this cannot read raises, for the same
+    reason :func:`parse_inventory` does: an answer whose shape changed under
+    us is unknown evidence, and unknown must never become a confident partial
+    inventory.  A box that published its IDs but silently dropped its content
+    references would deny content-form work as *absent*, which is the
+    misleading refusal this form exists to end.
+    """
+
+    entries: set[str] = set()
+    for line in text.splitlines():
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as error:
+            raise ValueError("docker image inspect row is not JSON") from error
+        entries.add(content_ref(row))
+    return frozenset(entries)
+
+
+def image_ids(text: str) -> tuple[str, ...]:
+    """The distinct image IDs one ``docker image ls`` listing reports.
+
+    In listing order, deduplicated: a listing names one image once per tag,
+    and the inspect that follows must ask for each image once.
+    """
+
+    seen: list[str] = []
+    known: set[str] = set()
+    for line in text.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError("unexpected docker image listing row shape")
+        image_id = fields[0]
+        if not _IMAGE_ID.fullmatch(image_id):
+            raise ValueError("docker image listing row does not start with an ID")
+        if image_id not in known:
+            known.add(image_id)
+            seen.append(image_id)
+    return tuple(seen)
 
 
 def missing(required, present) -> tuple[str, ...]:
@@ -344,33 +636,72 @@ def observe(
     daemon, a timeout, a foreign endpoint, a malformed or oversized answer --
     because they all mean the same thing to a claim: this box cannot show the
     image, so it must not take the work.
+
+    Two reads, one budget.  The listing answers the ID and manifest-digest
+    forms; an inspect of exactly the IDs it named answers the content form
+    (#805).  ``timeout_s`` bounds the pair, not each, so a slow daemon cannot
+    hold a worker's poll for twice the ceiling.  A failed inspect makes the
+    whole inventory unknown rather than publishing the listing alone: an
+    inventory carrying IDs but no content references would answer a
+    content-form requirement with ``container_image_absent``, and that is the
+    misleading refusal #805 is about.
     """
 
     binary = docker or shutil.which("docker") or "/usr/bin/docker"
     environment = dict(os.environ)
     environment.pop("DOCKER_HOST", None)
     environment.pop("DOCKER_CONTEXT", None)
-    argv = [
+    deadline = time.monotonic() + timeout_s
+    read = _run_bounded if probe is None else probe
+
+    def _take(argv):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            data = read(argv, env=environment, timeout_s=remaining,
+                        limit=MAX_INVENTORY_BYTES)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if not isinstance(data, bytes):
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    listing = _take([
         binary, "--host", LOCAL_ENDPOINT,
         "image", "ls", "--all", "--no-trunc", "--digests",
         "--format", _LIST_FORMAT,
-    ]
-    read = _run_bounded if probe is None else probe
-    try:
-        data = read(argv, env=environment, timeout_s=timeout_s,
-                    limit=MAX_INVENTORY_BYTES)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if not isinstance(data, bytes):
+    ])
+    if listing is None:
         return None
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    try:
-        return parse_inventory(text)
+        entries = set(parse_inventory(listing))
+        identifiers = image_ids(listing)
     except ValueError:
         return None
+    if not identifiers:
+        return frozenset(entries)
+    if len(identifiers) > MAX_INVENTORY_ENTRIES:
+        # More images than a record may hold; the record would be refused
+        # anyway, and this keeps the inspect argv bounded with it.
+        return None
+    inspected = _take([
+        binary, "--host", LOCAL_ENDPOINT,
+        "image", "inspect", "--format", _INSPECT_FORMAT, *identifiers,
+    ])
+    if inspected is None:
+        # ``docker image inspect`` exits nonzero when any named ID is gone,
+        # so an image removed between the two reads lands here.  Unknown for
+        # this refresh, healed by the next one; no claim comes out of it.
+        return None
+    try:
+        entries |= parse_inspect(inspected)
+    except ValueError:
+        return None
+    return frozenset(entries)
 
 
 def _open_private_directory(path: Path) -> int | None:
@@ -622,3 +953,69 @@ class InventoryCache:
                 os.close(directory)
             except OSError:
                 pass
+
+
+def local_content_ref(
+    name: str,
+    *,
+    probe=None,
+    timeout_s: float = INVENTORY_TIMEOUT_S,
+    docker: str | None = None,
+) -> str | None:
+    """The ``content:sha256:...`` reference for one locally named image.
+
+    This is how a submitter gets a reference to seal: name the image the way
+    a human has it (``repo:tag``, an ID, anything the local daemon resolves)
+    and read back the portable form.  The same bounded, endpoint-pinned,
+    environment-scrubbed read the inventory uses; ``None`` on any failure.
+    """
+
+    binary = docker or shutil.which("docker") or "/usr/bin/docker"
+    environment = dict(os.environ)
+    environment.pop("DOCKER_HOST", None)
+    environment.pop("DOCKER_CONTEXT", None)
+    read = _run_bounded if probe is None else probe
+    try:
+        data = read([binary, "--host", LOCAL_ENDPOINT, "image", "inspect",
+                     "--format", _INSPECT_FORMAT, name],
+                    env=environment, timeout_s=timeout_s,
+                    limit=MAX_INVENTORY_BYTES)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(data, bytes):
+        return None
+    try:
+        refs = parse_inspect(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return next(iter(refs)) if len(refs) == 1 else None
+
+
+def main(argv=None) -> int:
+    """``python3 -m prismabuild.container_images REF [REF ...]``.
+
+    Prints ``<name>\\t<content reference>`` for each image, so a submitter can
+    read a portable reference off the box that holds the image and hand it to
+    ``pbrun --container-image``.
+    """
+
+    import sys
+
+    names = list(sys.argv[1:] if argv is None else argv)
+    if not names:
+        print("usage: python3 -m prismabuild.container_images REF [REF ...]",
+              file=sys.stderr)
+        return 2
+    status = 0
+    for name in names:
+        reference = local_content_ref(name)
+        if reference is None:
+            print(f"{name}\tunreadable", file=sys.stderr)
+            status = 1
+        else:
+            print(f"{name}\t{reference}")
+    return status
+
+
+if __name__ == "__main__":       # pragma: no cover - a submitter's helper
+    raise SystemExit(main())

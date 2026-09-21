@@ -2042,10 +2042,56 @@ Contract:
 
 - **Reference forms.** `sha256:<64 hex>` names a local image ID;
   `repository@sha256:<64 hex>` names a repository manifest digest, matched
-  only as that exact `repository@sha256:...` string. A bare RepoDigest is
-  never announced, so a hex collision cannot satisfy the other form. A
-  mutable tag is refused at declaration: it is not an identity and cannot be
-  sealed into an action key.
+  only as that exact `repository@sha256:...` string; `content:sha256:<64
+  hex>` names the image's store-independent content (#805, below). A bare
+  RepoDigest is never announced, so a hex collision cannot satisfy another
+  form. A mutable tag is refused at declaration: it is not an identity and
+  cannot be sealed into an action key.
+- **Store-independent content identity (#805).** An image ID is what the
+  box's own image store calls the image, and the two Sparks do not agree.
+  Measured 2026-09-21, both on Docker Engine 29.6.2: sparky runs the
+  containerd image store and reports the image's top-level descriptor digest
+  (an OCI index for 16 of its 27 images), sparklina runs the classic store
+  and reports the config digest. The GLM campaign image is
+  `sha256:c0e532d2…` on sparky and `sha256:9195c23f…` on sparklina with the
+  same 36 `RootFS.Layers`, so an action sealed with either ID was claimable
+  by one Spark only, and the denial read as "the image is missing". The
+  `repository@` form does not rescue it: 18 of sparklina's 32 images carry
+  an empty `RepoDigests`, the campaign image among them, because a locally
+  built or loaded image has no repository digest.
+
+  `container_images.content_ref` computes one string from what the image
+  *is*: the ordered `RootFS.Layers` diff ids, `Architecture`, `Os` and the
+  covered image-config keys (`Cmd`, `Entrypoint`, `Env`, `ExposedPorts`,
+  `Healthcheck`, `Labels`, `OnBuild`, `Shell`, `StopSignal`, `StopTimeout`,
+  `User`, `Volumes`, `ArgsEscaped`), canonically serialized under a schema
+  string that is part of the digest. Zero-valued and absent config keys are
+  one statement, because Docker writes the config with Go's `omitempty`;
+  `Labels` keeps empty values, which 10 of sparky's and 12 of sparklina's
+  images carry. A config key outside the covered set is **refused when it
+  carries a value**, never ignored: a daemon saying something this cannot
+  price must not have it priced wrong. Excluded: `Id`, `RepoTags`,
+  `RepoDigests`, `Size` (measured to disagree on every shared image),
+  `Metadata`, `Parent`, `DockerVersion`, and the store-exclusive
+  `GraphDriver`, `Descriptor` and `Identity`; also `Created`, `Author`,
+  `Comment` and `Variant`, which are client-rendered strings that do not
+  reach the container, so covering them could only refuse a box that holds
+  the image. Measured over 72 images on three boxes and two stores: every
+  one hashed, and all 17 images the two Sparks share produced one reference
+  on both.
+
+  What it proves and does not. Equal ordered diff ids are an equal
+  filesystem, and every build step that adds no layer lands in the covered
+  config, so two images with one reference run identically. It does not
+  prove that the *name* the action's own `docker run` uses resolves to that
+  content on the claiming box; a content-sealed action still names an image
+  itself, exactly as an ID-sealed one does. Changing the covered set changes
+  every digest, which fails closed: an already-sealed reference stops
+  matching and its item stays ready.
+- **Discovering a reference.** `python3 -m prismabuild.container_images
+  <local ref>` prints the content reference for an image the local daemon
+  resolves, through the same bounded, endpoint-pinned, environment-scrubbed
+  read the inventory uses.
 - **Identity.** Present, the normalized references participate in the action
   params (hence the key) and in `container_owner`'s pre-owner identity, so
   two actions differing only in the image never share a Docker ownership
@@ -2083,6 +2129,30 @@ Contract:
   `ready` for a box that has the image. An image removed between the
   observation and the container start is the residual race; the action's own
   failure reports it.
+- **The probe is two bounded reads.** One `docker image ls` answers the ID
+  and `repository@` forms; one `docker image inspect` of exactly the IDs
+  that listing named answers the content form. Both spend a single
+  `INVENTORY_TIMEOUT_S` budget, so the pair cannot hold a worker's poll for
+  twice the ceiling. Anything unreadable in either read makes the whole
+  inventory unknown, never the listing alone: an inventory holding IDs but
+  no content references would answer a content-form requirement with
+  `container_image_absent` on a box that holds the image, which is the
+  misleading refusal #805 is about. `docker image inspect` exits nonzero
+  when a named ID is gone, so an image removed between the two reads makes
+  one refresh unknown and the next one heals it.
+
+  Cost and ceilings, measured 2026-09-21: the listing takes 0.25 s for 27
+  images on the containerd store and 0.03 s for 32 on the classic store; the
+  inspect takes 1.0 s and 0.06 s for the same sets, returning 206 KB and
+  347 KB. At roughly 10 KB per image, `MAX_INVENTORY_BYTES` (8 MB) is the
+  binding limit at about 800 images, and the record's
+  `MAX_INVENTORY_ENTRIES` (4096) now holds up to three entries per image
+  rather than two. A box past either ceiling reports unknown by design.
+- **Rollout.** The inventory record schema is
+  `prismabuild.container_image_inventory.v2`. A loop of the earlier
+  generation reads a v2 record as foreign and answers unknown, so it refuses
+  image-pinned work and leaves ordinary work untouched; the new form reaches
+  the fleet only when a runtime generation carrying it is published.
 - **No transfer.** PB never pulls, loads or copies an image. Archive-backed
   specs (`container.archive`) establish presence inside the action and must
   not declare it: the claim check would refuse before the loader ran.
