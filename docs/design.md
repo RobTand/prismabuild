@@ -4526,6 +4526,21 @@ The reconciliation holds the same ownership lock across query and delete,
 and treats a live pin as attribution. Lock order is transition, then
 ownership, then rename/unlink on every path; acquire takes ownership only.
 
+One stage root at a time (#780). That ladder orders the three lock families
+and says nothing about two locks from the ownership family, which is where a
+cycle fits: `release_refs` settles each ref under the ownership lock of the
+root that ref's own pin names, so an egress holding root A that reclaims an
+unscoped census asks for root B, while an egress holding B asks for A.
+`posix_lock.held` nests on the same path only, so same-root reentrancy does
+not prevent it. The rule is that no caller holds one root's ownership lock
+while requesting another's: the egress runs containment reclamation between
+its transition lock and its ownership lock, and the pin census the delete
+decision reads is taken inside the ownership lock, after it. That census,
+not the reclaim, is what makes check-and-act atomic, so moving the reclaim
+out changes no delete decision; a ref whose containment evidence lands
+between the two defers to the next sweep, the direction the egress already
+fails in.
+
 A pending copy handoff defers the same way (#768). While a live ram
 promotion's sealed claim names a stage source leg, the egress keeps that
 leg's file, the stage mover's fragment and material sidecar, and the

@@ -538,6 +538,14 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
     a failure --- which matters, because the tier loop may publish one while a
     sweep is doing the same work.
 
+    Containment reclamation happens between the two locks (#780): after the
+    transition lock, which makes the fragment this reads stable, and before
+    the ownership lock, because reclamation takes the ownership lock of every
+    root its pins name and a second root requested under the first is a
+    cycle.  The egress can wait on another root there, but it waits holding
+    only this mover's own transition lock, which is strictly less than the
+    root it used to hold while waiting.
+
     Held under the mover's transition lock since #598, because a second party
     can now decide the same range's ownership: an adoption hands these tokens
     to a successor's mover and re-issues the fragment under it.  Read-delete-
@@ -574,7 +582,10 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     the stage root's ownership lock (taken here, inside the transition lock --
     adoption takes them in the same order), so two concurrent egresses order
     instead of both concluding "unshared", and the tier mint lock is taken
-    last, as a leaf, around the settle alone.
+    last, as a leaf, around the settle alone.  Exactly one stage root is held
+    at a time: anything that would take a second one -- containment
+    reclamation is the only such thing here -- runs before this lock, never
+    inside it (#780).
     """
 
     refusal = stage_root_refusal(queue, stage_root)
@@ -613,12 +624,43 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         # that is occupied, so the tokens stay and the next sweep retries.
         errors.append(f"{fragment_path.name}: {exc}")
     stage = Path(stage_root)
+    auto_reclaimed: list[str] = []
+    auto_retained: dict[str, str] = {}
+    if entries and tier_id is not None:
+        # Containment reclamation runs here, holding no stage ownership lock
+        # (#780).  ``auto_reclaim`` walks every pin owner and ``release_refs``
+        # takes the root each pin names -- root B for a pin filed on another
+        # stage -- so called from inside this root's exclusion it is an A->B
+        # request, while a second egress holding B walking the same lease tree
+        # asks for A.  ``posix_lock.held`` nests on the same path only, so
+        # same-root reentrancy does not prevent that cycle.
+        #
+        # It needs no exclusion of ours to be correct: each release takes its
+        # own pin's root lock around its own check-and-act, and the delete
+        # decision below is still one atomic unit, because the census it acts
+        # on is taken under the lock -- after this, never before it.
+        #
+        # This census only decides whether to reclaim at all: the same
+        # question the in-lock pass asked, asked without the lock.  It is a
+        # hint and is allowed to be stale in both directions.  A ref whose
+        # containment evidence lands between it and the lock is not freed on
+        # this pass; the entry defers and the next sweep retries, which is the
+        # direction this node already fails in.
+        hint, hint_tainted = reader_lease.live_for(
+            queue, _wanted_stage_paths(entries), residency_root=root)
+        if hint or hint_tainted:
+            reclaimed = reader_lease.auto_reclaim(queue, residency_root=root)
+            auto_reclaimed.extend(reclaimed["released"])
+            for ref_id, why in reclaimed["retained"].items():
+                auto_retained.setdefault(ref_id, why)
     with queue.stage_ownership_lock(str(stage)):
         return _evict_owned(queue, mover_action_key,
                             consumer_action_key=consumer_action_key,
                             stage=stage, tier_id=tier_id, root=root,
                             fragment_path=fragment_path, entries=entries,
-                            errors=errors, reason=reason)
+                            errors=errors, reason=reason,
+                            auto_reclaimed=auto_reclaimed,
+                            auto_retained=auto_retained)
 
 
 def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
@@ -750,20 +792,36 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     return paths, tainted
 
 
+def _wanted_stage_paths(entries: dict[str, object]) -> set[str]:
+    """The staged paths one fragment's entries name, normalized.
+
+    The same set the pin census is asked about inside the ownership lock and
+    outside it, so the hint that decides whether to reclaim and the census
+    that decides what to delete are asking about the same bytes.
+    """
+
+    return {os.path.normpath(str(entry.get("stage_path", "")))
+            for entry in entries.values() if isinstance(entry, Mapping)}
+
+
 def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  consumer_action_key: str, stage: Path, tier_id: str | None,
                  root: Path, fragment_path: Path,
                  entries: dict[str, object], errors: list[str],
-                 reason: str) -> dict[str, object]:
-    """Unlink what is exclusively this mover's, under the ownership lock."""
+                 reason: str, auto_reclaimed: list[str],
+                 auto_retained: dict[str, str]) -> dict[str, object]:
+    """Unlink what is exclusively this mover's, under the ownership lock.
+
+    ``auto_reclaimed``/``auto_retained`` are what containment reclamation did
+    before this lock was taken (#780); nothing here reclaims, because
+    reclamation takes other roots' locks and this one is already held.
+    """
 
     deleted = missing = shared = deferred = 0
     bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
     deferred_handoffs: list[str] = []
-    auto_reclaimed: list[str] = []
-    auto_retained: dict[str, str] = {}
     retiring_written = False
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
@@ -775,9 +833,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # Pins join the same snapshot (same lock) rather than a second
         # unlocked check: delete is blocked by ANY current ref, and the
         # check-and-act is one atomic unit with the unlink below.
-        wanted = {os.path.normpath(str(entry.get("stage_path", "")))
-                  for entry in entries.values()
-                  if isinstance(entry, Mapping)}
+        wanted = _wanted_stage_paths(entries)
         claimed, claimed_taint = _claimed_paths(queue, tier_id)
         owners, fragment_taint = _fragment_owners(
             root, wanted,
@@ -799,46 +855,29 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             blind = False
         own_generation: str | None = None
         if not blind:
-            # Automatic reclamation first: refs whose attempts are
-            # provably contained (terminal broker telemetry plus
-            # broker-persisted proof) retire here, so ordinary
-            # completion, crash/withdrawal cleanup and old-attempt drains
-            # free their pins without an operator.  Whatever stays is a
-            # genuinely live reader, and only that defers.
-            if pins:
-                reclaimed = reader_lease.auto_reclaim(
-                    queue, residency_root=root)
-                auto_reclaimed.extend(reclaimed["released"])
-                for ref_id, reason in reclaimed["retained"].items():
-                    auto_retained.setdefault(ref_id, reason)
-                if reclaimed["released"]:
-                    pins, pin_taint_again = reader_lease.live_for(
-                        queue, wanted, residency_root=root)
-                    if pin_taint_again:
-                        errors.extend(
-                            f"ownership uncertain: {item}"
-                            for item in pin_taint_again)
-                        owners, claimed = {}, set()
-                        pins, source_paths = {}, set()
-                        blind = True
+            # The pins above are the post-reclamation census: refs whose
+            # attempts are provably contained (terminal broker telemetry plus
+            # broker-persisted proof) were retired before this lock was taken,
+            # so ordinary completion, crash/withdrawal cleanup and old-attempt
+            # drains free their pins without an operator.  Whatever this
+            # snapshot still shows is a genuinely live reader, and only that
+            # defers.
+            #
             # The retiring mark this deferral may file binds the material
             # generation, never the path: without a sidecar the generation
             # is unknowable, so a pinned legacy range taints instead of
             # filing a mark that could wedge the path's future generations.
-            # Skipped when the reclaim re-read already went blind: the
-            # pass is fail-closed and needs no further evidence.
-            if not blind:
-                material = reader_lease.read_material(
-                    root, consumer_action_key, mover_action_key)
-                if isinstance(material, dict):
-                    own_generation = str(material.get("generation") or "")
-                elif material is not None:
-                    errors.append(
-                        f"ownership uncertain: material unreadable for "
-                        f"{mover_action_key[:12]}")
-                    owners, claimed = {}, set()
-                    pins, source_paths = {}, set()
-                    blind = True
+            material = reader_lease.read_material(
+                root, consumer_action_key, mover_action_key)
+            if isinstance(material, dict):
+                own_generation = str(material.get("generation") or "")
+            elif material is not None:
+                errors.append(
+                    f"ownership uncertain: material unreadable for "
+                    f"{mover_action_key[:12]}")
+                owners, claimed = {}, set()
+                pins, source_paths = {}, set()
+                blind = True
     else:
         owners, claimed = {}, set()
         pins, source_paths = {}, set()
