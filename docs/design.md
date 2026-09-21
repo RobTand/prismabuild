@@ -4343,6 +4343,18 @@ free), nor the successor id.
   terminal and spent. At most ONE live or pending materialization exists per
   logical batch (`_live_materialization`), and a malformed materialization
   list is unknown state that raises rather than reading as empty.
+* **Legal history, checked whole.** Per-row shape is not enough, because the
+  dangerous histories are the internally inconsistent ones: `[gen1 live, gen2
+  retired]` passes every row check, yet reading the latest row alone would
+  answer "retired" and authorize a reclaim over a live earlier mover. So
+  `_materializations` is THE validator -- one place every caller reads
+  through, including `_active_materialization`, `_batch_stage_retired`, the
+  censuses and the retain paths. A legal history has generations 1..N in
+  order, every generation before the last retired, the batch's own first copy
+  retired whenever any successor exists, and no repeated mover key (the
+  batch's own spent key included). None of those are reachable transitions;
+  each is corruption, and corruption fails RETAIN everywhere rather than
+  reading as ordinary staged state.
 * **Origin proof.** `commit_batch` captures each origin's identity tuple in
   the immutable batch record (`origin_identity`, one `os.lstat` feeding both
   the size check and the record, through `reader_lease.portable_identity`),

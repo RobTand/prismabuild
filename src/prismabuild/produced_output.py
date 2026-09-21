@@ -1646,12 +1646,31 @@ def _recheck_origin_identity(filed: Mapping[str, object],
 
 
 def _materializations(entry: Mapping[str, object]) -> list[dict[str, object]]:
-    """The entry's restage materializations, shape-checked, oldest first.
+    """The entry's restage materializations, checked whole, oldest first.
 
     A malformed `materializations` list is unknown state and RAISES, never
     reads as empty: retirement, the censuses and the successor gate all turn
     on it, and an unreadable list that answered "none" would orphan a live
     stage copy. An absent or empty list is a batch that was never restaged.
+
+    THE ONE validator. Per-row shape is not enough, because the dangerous
+    histories are the internally inconsistent ones rather than the malformed
+    ones: `[gen1 live, gen2 retired]` passes every row check, yet
+    `_active_materialization` would read the last row, answer "retired", and
+    authorize a reclaim over a live earlier mover. So the legal sequential
+    history is enforced HERE, once, for every caller -- `_active_*`,
+    `_live_*`, `_batch_stage_retired`, the censuses and the retain paths all
+    read through this function and inherit it:
+
+    * generations are 1..N in order (the per-row check above);
+    * every generation before the last is retired -- only the LATEST may be
+      live, so no earlier stage copy can be forgotten;
+    * the batch's own first copy is retired whenever any successor exists;
+    * no mover key repeats, including the batch's own first mover key, so a
+      spent terminal key can never be read as a live successor.
+
+    None of these are transitions the lane can reach: each one is corruption,
+    and corruption fails RETAIN.
     """
 
     raw = entry.get("materializations")
@@ -1672,6 +1691,17 @@ def _materializations(entry: Mapping[str, object]) -> list[dict[str, object]]:
                 or str(item.get("state") or "") not in ("intent", "funded")):
             raise ProducedOutputError("unknown-retain: materializations")
         out.append(dict(item))
+    if out:
+        if not bool(entry.get("retired")):
+            raise ProducedOutputError("unknown-retain: materializations")
+        seen = {str(entry.get("mover_key") or "")}
+        for index, item in enumerate(out):
+            key = str(item["mover_key"])
+            if key in seen:
+                raise ProducedOutputError("unknown-retain: materializations")
+            seen.add(key)
+            if index < len(out) - 1 and not item["retired"]:
+                raise ProducedOutputError("unknown-retain: materializations")
     return out
 
 

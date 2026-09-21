@@ -1078,3 +1078,112 @@ def test_a_malformed_materialization_list_retains_everywhere(
             world.q, world.inst, world.template, lease_sdk=rlc)
         assert released.get("ok") is False
         assert str(released.get("refusal")).startswith("unknown-retain")
+
+
+def _two_real_generations(tmp_path: Path) -> tuple[_World, str, str]:
+    """A real batch carrying two real, PB-sealed materialization rows.
+
+    Generation 1 staged, read and retired; generation 2 staged and live. Every
+    key, tier and staged path below comes from that real history -- the
+    corruption tests permute a genuine record rather than inventing one.
+    """
+
+    world, _descs = _staged_world(tmp_path)
+    one = world.ensure("b1")
+    assert one.get("ok") is True, one
+    world.run_mover(str(one["mover_key"]), "w-m1")
+    assert world.retire("b1").get("ok") is True
+    assert po.refill_window(world.q, world.inst, world.template,
+                            tier=TIER).get("ok") is True
+    two = world.ensure("b1")
+    assert two.get("ok") is True, two
+    world.run_mover(str(two["mover_key"]), "w-m2")
+    return world, str(one["mover_key"]), str(two["mover_key"])
+
+
+def _assert_retains(world: _World) -> None:
+    """Every census and every reclaim path refuses this batch."""
+
+    assert [e["event"] for e in po.recover_batches(
+        world.q, world.inst, world.template)] == ["output-recovery-unknown"]
+    assert po.due_mover_rows(world.q, world.inst, world.template) == []
+    assert [e["event"] for e in po.output_scope_tick(world.q, {})] == [
+        "output-recovery-unknown"]
+    retired = world.retire("b1")
+    assert retired.get("ok") is False, retired
+    assert str(retired.get("refusal")).startswith("unknown-retain"), retired
+    state = po.materialization_state(world.q, world.inst, world.template,
+                                     batch_id="b1")
+    assert state.get("ok") is False, state
+    ensured = world.ensure("b1")
+    assert ensured.get("ok") is False, ensured
+    if HAS_SDK:
+        released = po.safe_release_instance(
+            world.q, world.inst, world.template, lease_sdk=rlc)
+        assert released.get("ok") is False, released
+        assert str(released.get("refusal")).startswith("unknown-retain")
+
+
+def _install(world: _World, rows: list[dict], *,
+             batch_retired: bool = True) -> None:
+    """Write a permuted history back over the real commitments record."""
+
+    path = po._commitments_path(world.q.root, world.inst)
+    record = json.loads(path.read_text())
+    record["batches"]["b1"]["materializations"] = rows
+    record["batches"]["b1"]["retired"] = batch_retired
+    path.write_text(json.dumps(record, sort_keys=True) + "\n")
+
+
+def test_a_live_earlier_generation_under_a_retired_latest_retains(
+        tmp_path: Path) -> None:
+    """[gen1 live, gen2 retired] is shape-valid and must still fail RETAIN.
+
+    Every row passes the per-row check, so nothing local objects; reading the
+    LAST row alone would answer "retired" and authorize a reclaim while
+    generation 1 still owns a stage copy. The history is illegal as a whole.
+    """
+
+    world, _m1, _m2 = _two_real_generations(tmp_path)
+    rows = world.entry("b1")["materializations"]
+    assert len(rows) == 2, rows
+    assert rows[0]["retired"] is True and rows[1]["retired"] is False
+    _install(world, [{**rows[0], "retired": False},
+                     {**rows[1], "retired": True}])
+    _assert_retains(world)
+
+
+def test_two_live_generations_retain(tmp_path: Path) -> None:
+    """Two live rows reach the active read the same way. They must not."""
+
+    world, _m1, _m2 = _two_real_generations(tmp_path)
+    rows = world.entry("b1")["materializations"]
+    _install(world, [{**rows[0], "retired": False}, dict(rows[1])])
+    _assert_retains(world)
+
+
+def test_a_successor_over_an_unretired_first_copy_retains(
+        tmp_path: Path) -> None:
+    """A successor cannot exist while the batch's own first copy is live."""
+
+    world, _m1, _m2 = _two_real_generations(tmp_path)
+    rows = world.entry("b1")["materializations"]
+    _install(world, [dict(rows[0]), dict(rows[1])], batch_retired=False)
+    _assert_retains(world)
+
+
+def test_a_successor_repeating_a_spent_mover_key_retains(
+        tmp_path: Path) -> None:
+    """The old terminal key stays terminal: it can never name a successor."""
+
+    world, _m1, _m2 = _two_real_generations(tmp_path)
+    entry = world.entry("b1")
+    rows = entry["materializations"]
+    first_key = str(entry["mover_key"])
+    assert len(first_key) == 64
+    _install(world, [dict(rows[0]),
+                     {**rows[1], "mover_key": first_key}])
+    _assert_retains(world)
+    _install(world, [dict(rows[0]),
+                     {**rows[1], "mover_key": str(rows[0]["mover_key"])}])
+    _assert_retains(world)
