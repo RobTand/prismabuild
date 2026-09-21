@@ -1,10 +1,18 @@
 # Staged-read acceptance record — template and worked example
 
 A scoped acceptance record is the machine-readable artifact the contract
-(§10) requires per merge, launch, deploy, and completion step. One record
+(§11) requires per merge, launch, deploy, and completion step. One record
 per step; fields differ per step (a future terminal receipt is never
 demanded before launch). Reasoned exceptions cite explicit user authority;
 no agent waiver exists. No performance or quality numbers are set here.
+
+A merge record is not a deployment record. A source merge, a staged runtime
+generation, and an activated generation are three distinct facts: record
+`deploy: pending` until activation is observed, and never cite a staged
+generation as deployed support (the PB783 case in the dated addendum is the
+worked example). Where a claim depends on persistence, state the observed
+storage policy; `durable` records are re-readable, not power-loss durable
+(contract DUR-01).
 
 ## Template (all fields required; `unknown` allowed only where noted)
 
@@ -80,7 +88,7 @@ entry, not in this example.)
     "issue": "https://github.com/RobTand/prismabuild/issues/723",
     "validated_repairs": [],
     "remaining_gaps": ["all proposed enforcements: out of scope for a docs lane; see ledger axes"],
-    "note": "Checks performed: ledger JSON parses (56 requirements, v3 schema); every ledger ID appears in the doc and vice versa; zero stale trust-mode enums across doc, ledger, and template. Claims nothing beyond documentation coherence."
+    "note": "Checks performed: ledger JSON parses (56 requirements at this merge; 69 after the 2026-09-21 produced-output update, v3 schema); every ledger ID appears in the doc and vice versa; zero stale trust-mode enums across doc, ledger, and template. Claims nothing beyond documentation coherence."
   },
   "deploy": {"status": "not-this-step"},
   "complete": {"status": "not-this-step"},
