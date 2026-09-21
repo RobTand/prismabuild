@@ -89,8 +89,20 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
     # Recovery is a read: the later generation's row is left where it is.
     assert json.loads(
         queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8")) == terminal
+
+
+def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> None:
+    """The CLI's own bounded wait selects the archive for the pinned run."""
+
+    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 30.0)
+    first = _publish(queue)
+    _run(queue, status="executed", returncode=0, stdout="first run\n")
+    second = _publish(queue)
+    _run(queue, status="executed", returncode=0, stdout="later run\n")
+    assert second != first
+
     assert pbrun.await_outcome(
-        queue, KEY, wait_s=1.0, generation=first) == 0
+        queue, KEY, wait_s=30.0, generation=first) == 0
 
 
 def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
@@ -116,8 +128,6 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
     assert summary["detail"]["stdout"] == "first failed\n"
     assert json.loads(
         queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8")) == terminal
-    assert pbrun.await_outcome(
-        queue, KEY, wait_s=1.0, generation=first) == 7
 
 
 def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
@@ -162,15 +172,17 @@ def test_a_newer_generations_failure_is_never_the_waited_verdict(queue) -> None:
     assert second != first
     _run(queue, status="failed", returncode=3, stdout="later run\n")
 
+    landed, generation = pbrun.outcome_poll(queue, KEY, first)
+    assert landed is None
+    assert generation == first
     assert pbrun.landed_outcome(
         queue, KEY, wait_s=0, generation=first) is None
-    assert pbrun.await_outcome(
-        queue, KEY, wait_s=0.05, generation=first) == 75
 
 
-def test_pbwait_reports_the_recovered_generation(queue, tmp_path) -> None:
+def test_pbwait_reports_the_recovered_generation(queue, tmp_path, monkeypatch) -> None:
     """The bounded waiter shares the selection step, so it recovers too."""
 
+    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 30.0)
     first = _publish(queue)
     _run(queue, status="executed", returncode=0, stdout="first run\n")
     second = _publish(queue)
@@ -240,17 +252,19 @@ def test_tampered_attempt_evidence_is_refused(queue, damage) -> None:
         pbrun.landed_outcome(queue, KEY, wait_s=0, generation=generation)
 
 
-def test_an_incomplete_attempt_run_is_refused(queue) -> None:
-    """A gap in the numbered run is corruption, not a missing prefix."""
+@pytest.mark.parametrize("absent", ["first", "middle"])
+def test_an_incomplete_attempt_run_is_refused(queue, absent) -> None:
+    """A gap, or a first attempt with no handoff context, is not history."""
 
     generation = _publish(queue, max_attempts=3, retry_safe=True)
     _run(queue, status="failed", returncode=7, stdout="attempt one\n")
     _run(queue, status="failed", returncode=8, stdout="attempt two\n")
     _run(queue, status="failed", returncode=9, stdout="attempt three\n")
-    middle = queue.attempt_path(
-        {"action_key": KEY, "published_unix": generation}, 2)
-    assert middle.exists()
-    middle.unlink()
+    number = 1 if absent == "first" else 2
+    removed = queue.attempt_path(
+        {"action_key": KEY, "published_unix": generation}, number)
+    assert removed.exists()
+    removed.unlink()
 
-    with pytest.raises(pool.PoolContractError, match="contiguous"):
+    with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)

@@ -346,7 +346,11 @@ outcome that `finish` publishes before the row moves is read back by
 attempt in its directory verified against the `(action_key, published_unix)`
 name and its canonical attempt path, the contiguous numbered run ending at its
 terminal attempt rebuilt as history, and the adopted first-writer summary,
-log digests and byte counts checked. Tampered, malformed or incomplete
+log digests and byte counts checked. A numbered run must begin at attempt 1
+unless the attempt's immutable handoff context proves the interrupted prefix;
+a missing prefix with no context refuses rather than being reported as
+authorized history, and the `<number>.receipt-reconciliation.json` sidecars
+filed beside the attempts are not attempts. Tampered, malformed or incomplete
 archive evidence refuses with `PoolContractError` instead of being read
 around; an archive with no terminal attempt answers nothing rather than
 inventing a verdict. The selection step `pbrun.outcome_poll` calls it beside

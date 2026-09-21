@@ -14091,12 +14091,15 @@ class PoolQueue:
         ``PoolContractError``.  The path returned names the immutable attempt
         that was read, never a mutable summary, and nothing is written.
 
-        An interrupted prefix -- the attempt numbers below the first file
-        present -- is reported as ``attempt_history_missing_before`` exactly
-        as the archived evidence implies it.  A preemption or resign handoff
-        successor is one shape of that: its attempt carries the handoff
-        context, which is validated against the withdrawal lineage before its
-        prefix is accepted.
+        A missing prefix is never inferred.  An ordinary generation's archive
+        begins at attempt 1, and a run whose first attempt is absent refuses
+        rather than reporting the gap as authorized history.  Only the
+        immutable handoff context proves an interrupted prefix: a preemption
+        or resign successor carries it, is validated against its withdrawal
+        lineage, and is the one shape whose ``attempt_history_missing_before``
+        may be above zero.  The ``<number>.receipt-reconciliation.json``
+        sidecars ``pool_reconcile`` files beside the attempts are not attempts
+        and are ignored, exactly as the other terminal readers ignore them.
         """
 
         key = str(action_key)
@@ -14109,8 +14112,23 @@ class PoolQueue:
         identity = {"action_key": key, "published_unix": float(generation)}
         generation_name = self.attempt_generation(identity)  # validates key and timestamp
         base = self.root / ATTEMPTS / key / generation_name
+        try:
+            entries = _scan_visible(base)
+        except (FileNotFoundError, NotADirectoryError):
+            # A generation that has not archived an attempt is an ordinary
+            # wait.  Every other enumeration failure stays loud: a reader
+            # that cannot see the directory must not answer "no ending".
+            return []
         present: dict[int, tuple[Path, dict[str, object]]] = {}
-        for path in _glob(base, "*.json"):
+        for path in entries:
+            name = path.name
+            stem = name[:-5] if name.endswith(".json") else ""
+            if not stem or not stem.isascii() or not stem.isdigit():
+                # ``pool_reconcile`` writes ``<number>.receipt-reconciliation
+                # .json`` beside the attempt it supplements; a numbered
+                # attempt is exactly ``<digits>.json`` and nothing else here
+                # is one.
+                continue
             value = _read_json(path)
             if value is None:
                 raise PoolContractError(f"archived attempt is unreadable: {path}")
@@ -14137,7 +14155,6 @@ class PoolQueue:
                 f"ending at attempt {attempt}"
             )
         path, value = present[attempt]
-        missing = min(present) - 1
         context = value.get("preemption_context")
         record = {**value, "schema": POOL_OUTCOME_SCHEMA_V1}
         if context is not None:
@@ -14158,6 +14175,16 @@ class PoolQueue:
             if not self._preemption_prefix_valid(record, missing, limit):
                 raise PoolContractError(
                     "invalid archived preemption outcome identity")
+        else:
+            # An ordinary generation's archive begins at its first attempt.
+            # A prefix absent with no handoff context to prove it is
+            # incomplete evidence, not a legacy or interrupted run: reading
+            # around it would certify a history whose cause was deleted.
+            if min(present) != 1:
+                raise PoolContractError(
+                    f"archived attempts for {key[:12]} begin at attempt "
+                    f"{min(present)} with no handoff context proving the prefix")
+            missing = 0
         record["attempts"] = attempt
         record["attempt_history_missing_before"] = missing
         record["attempt_history"] = [
