@@ -98,6 +98,37 @@ so the sidecar is never mistaken for a generation.
     is a separate operator decision, never automatic. It leaves the
     failed record in place as history.
 
+## Leg 3's staged-read gate (issue #784)
+
+Leg 3 is the canary's staged-read proof, so its verdict is not "the
+digests matched" but "the digests matched through the reader lease".
+The action resolves every manifest entry's residency-map key against the
+map the launcher injected, acquires one reader-lease pin per chunk in
+read order, serves the bytes through `open_pinned`, hashes chunk and
+combined digest in the same read, releases the exact ref, and writes a
+small durable per-chunk checkpoint beside its manifest *before* reporting
+that chunk's cumulative progress unit through the launcher's canonical
+helper.  A missing map or material, absent launch identity, a refused
+progress commit, or a verified-digest mismatch refuses with no passing
+envelope.  A later phase of the moving window is waited for inside the
+declared per-phase allowance and published as the earlier unit's accepted
+progress reaches the storage role.
+
+`leg3.verify` fails closed without per-chunk staged-serving evidence
+(a `range_ref` binding the manifest entry, a staged serving tier, an
+opened path that is not the origin) and without the worker's accepted
+cumulative progress.  The driver binds that observation to the terminal's
+adopted attempt: the executed terminal record's verified attempt history
+must end at an attempt whose recorded stdout begins with exactly the CAS
+receipt's result bytes.  An older or superseding attempt never lends its
+observation to another receipt.
+
+Status: implemented and validated in source (issue #784, branch
+`fix/784-canary-staged-reader-20260921`; RED/GREEN action keys are in the
+maintenance record).  The running fleet generation predates the fix, so
+no deployed staged-read claim rides this section until a generation
+carrying it is published and re-canaried.
+
 ## Driver entry contract (confirmed at #688 integration; crew A owns it)
 
 `publish_runtime` imports the driver from the publishing checkout at

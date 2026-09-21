@@ -14,7 +14,16 @@ residency, or scheduler is created here; no application steering of
 placement. The PQ endgame (Stage A → quanta → equality gate → join →
 allocation → export → served) is an application acceptance boundary that
 consumes this contract; it is referenced, not re-specified, and it imposes
-no new PB scheduler responsibility.
+no new PB scheduler responsibility. Existing worker join/resign and endgame
+support stays in scope and is unchanged by this update.
+
+Updated 2026-09-21: §7 separates immutable origin publication from physical
+staged-copy lifetimes and adds the produced-output, budget, and durability
+requirements PO-01–PO-07, BUD-01–BUD-03, and DUR-01; ACC-07 defines the
+produced-output strict-read acceptance gate. The dated addendum
+`staged_read_produced_output_addendum_2026-09-21.md` qualifies the evidence
+this update does and does not provide. A specification update is not deployed
+conformance.
 
 ## 1. Scope and authority
 
@@ -127,11 +136,14 @@ Three coordinates, defined separately; conflating them is refused.
 
 ## 4. State machines
 
-States map to existing PB fields or are named as missing features; lease
-states below are abstract mappings onto pins/fragments where those exist
-(SM-03 notes each gap). No lease-intent files or stale-lease records are
-pretended to exist. Any transition without its named durable record is
-refused.
+States map to existing PB fields or are named as missing features. Lease
+states below map onto the existing `reader_lease` pins/fragments: the lease
+path is implemented in part (`reader_lease.acquire`, `open_pinned`,
+`release`; ledger SM-03), and SM-03 names each remaining gap. No lease-intent
+files or stale-lease records are pretended to exist. Any transition without
+its named durable record is refused. DUR-01 states what the named records and
+receipts do and do not prove about persistence; it does not weaken the commit
+or recovery requirements.
 
 ### SM-01 action lifecycle
 
@@ -180,9 +192,9 @@ row above.
 
 | From → to | Actor | Precondition | Effect | Durable record | Failure |
 |---|---|---|---|---|---|
-| — → acquisition | consumer | range published under current epoch; request names RNG-02 + epoch | lease issued, pin held (MISSING: no lease-issue path exists today — gap) | lease intent beside holder record (MISSING — gap) | unpublished/stale-epoch → bounded wait with reason or clear fail; never pool fallback for bulk input |
+| — → acquisition | consumer | range published under current epoch; request names RNG-02 + epoch | lease issued, pin held through the existing `reader_lease.acquire`/`open_pinned` path (implementation partial per ledger SM-03; no deployment or workload proof) | holder/pin records exist; a distinct lease-intent file remains MISSING — gap | unpublished/stale-epoch → bounded wait with reason or clear fail (the bounded wait lives in the claim path, not in `acquire`); never pool fallback for bulk input |
 | acquisition → use | consumer | lease held | actual reads instrumented per tier (ID-07 recorded at open) | per-tier byte counters + serving-tier record | forbidden-tier open → fail before payload bytes |
-| use → release | consumer | reads complete | pin released; range becomes evictable | progress/lease release record (MISSING as distinct record — gap; progress channel exists) | crash → reaper path above; bytes never trusted without re-verify |
+| use → release | consumer | reads complete | pin released (`reader_lease.release` drops exactly its ref); range becomes evictable | a distinct durable lease-release record remains MISSING — gap; the progress channel exists | crash → reaper path above; bytes never trusted without re-verify |
 
 ## 5. Invariants (MUST, stable IDs)
 
@@ -304,7 +316,158 @@ row above.
   `prismabuild_residency_unstaged_*` therefore counts KNOWN backlog only,
   and unknown bytes are not yet exported as a family of their own.
 
-## 7. Progress, frontier, and liveness
+## 7. Produced outputs: origins, materialization, budget, and durability
+
+A processed output is an immutable logical origin batch retained on its
+declared origin storage; the current shared ZFS output path is the observed
+example, not a requirement that origin storage be ZFS. Producing output
+creates no producer read exemption, no mandatory SSD writeback, and no second
+cache: reading a produced artifact, including one that the same action just
+wrote, uses the same staged RAM/SSD path and the same reader lease as any
+other bulk input. Write preauthorization precedes the write; committing the
+origin and creating its first staged materialization are separate steps, so
+the first copy may wait until a read needs it without reserving a full-corpus
+SSD window. The produced-output materialization API that this section names
+is unmerged target against PB main `f5b6bba0358` (PR781 lane). The rows below
+are normative requirements, not deployed support; axis-qualified evidence is
+in `staged_read_produced_output_addendum_2026-09-21.md`.
+
+- PO-01 origin publication and physical materialization are separate
+  lifetimes. PB publishes and charges the immutable logical origin batch once,
+  and the origin MAY stay on its declared origin storage with no SSD copy at
+  any moment. SSD/RAM materializations are bounded, leased, and retired
+  separately. Every required bulk read of produced bytes, own or foreign,
+  opens only RAM or explicitly-allowed SSD staged objects under an actual
+  reader lease (INV-03/INV-04, TIER-01). No producer exception, HDD waiver
+  (TIER-04 stays the only authorization shape), or parallel cache/preload
+  path (SC-02). Evidence scoped to one producer: the PQ Stage A writer writes
+  boundary artifacts to the current shared ZFS path, and its strict reader
+  rejects outputs missing from the input residency map
+  (`zfs-output-path-root-review-20260921.json`). That is one campaign's
+  source fact about its origin storage, not a PB requirement to write ZFS.
+- PO-02 produced-byte readiness anchors on immutable data-ready proof, not on
+  an ACTION terminal record. Existing first publication seals the immutable
+  manifest, stages, publishes, and funds the mover, and records the batch
+  accounting entry (`publish_prepaid_batch` then `commit_batch` in the PR781
+  lane). A same-action self-read depends on the immutable published batch and
+  its ready staged data, not on the whole action's terminal record, which
+  cannot exist before the action finishes; depending on that terminal record
+  self-deadlocks the producer, and this contract refuses that edge. The
+  semantic dependency is: immutable batch publication → funded PB staging →
+  reader acquisition/use → reader release → cached-copy retirement. A
+  declared dependency with no publication record (phantom output hash) is
+  refused, and rerunning a producer to conjure inputs is refused (TIER-03).
+  PB stages successors through the ordinary pool; no new application
+  dispatcher is created (SC-02). Existing records carry the edge, and no
+  mandatory new wire schema or ready-record API is required. Recorded
+  implementation gap: the current strict reader rejects a newly produced
+  batch that is absent from the static input map
+  (`stage-a-8ca-attempt-review.json`); the PR781 and PQ881 lanes are
+  unaccepted.
+- PO-03 repeat materialization. After a staged copy of an unchanged committed
+  logical batch fully retires, the batch MAY be materialized again on demand
+  (reverse reads, replay, restaged windows). One origin charge covers every
+  generation; at most one pending or live materialization exists per logical
+  batch; each successor gets a PB-derived mover identity and sequence filed
+  under the existing lifecycle state, never a caller- or random-nonce
+  identity. A spent mover or funding fence is never reopened or reused to
+  authorize a fresh materialization, and never refunded; an identical replay
+  may answer from the recorded outcome without new tokens or a new copy. PB
+  publishes no successor until the predecessor's retirement commits, and
+  origin bytes are neither rewritten nor charged twice.
+- PO-04 change detection on reuse. First publication captures the existing
+  change-detection identity as an immutable producer record: the origin file
+  identity (the existing stat-identity tuple on the normalized bound path)
+  plus the writer-provided digest/identity evidence already sealed with the
+  batch. Every materialization revalidates that exact identity before funding
+  a copy and refuses a changed original, including a same-size mutation
+  (`restage-origin-changed`, target label). A batch that lacks the
+  first-publication proof refuses with `restage-origin-proof-missing` (target
+  label) instead of blessing the bytes it finds. DEV reuses existing producer
+  digest/identity evidence and adds no separate full-payload hash pass
+  (DEV-01/DEV-02); the copy that must happen anyway may verify content in
+  passing.
+- PO-05 interruption, idempotence, and retirement responsibility.
+  Materialization state and mutation intent are filed under the existing
+  ownership lock before any funding or movement side effect, and they survive
+  interruption. Duplicate or replayed `ensure` and retry are idempotent and
+  resume the exact intent with no fresh epoch, quota, or successor. A failed
+  or partial retirement retains the old materialization's responsibility and
+  credits until safe reclaim, and occupied/unknown fences keep retention
+  (SM-02; no refund from a missing record). The shared validator refuses a
+  shape-valid but inconsistent materialization history — an older unretired
+  materialization beside a newer retired one, multiple live entries, or
+  duplicate keys — and retains instead of hiding the older live copy. This is
+  a source finding, not yet a reproduced RED.
+- PO-06 origin charge release follows proven origin deletion only. Retiring a
+  cached copy releases that materialization's physical lifetime; it never
+  releases the origin charge. The origin charge is released only after
+  authorized origin deletion is proven absent, never by cached-copy eviction
+  or a stale receipt.
+- PO-07 lock ordering for retirement and egress. No prefix/tier ownership lock
+  is held across the acquisition of another mover transition lock. The order
+  is: validate and select the exact batch and materialization under ownership,
+  release ownership, run the existing egress, then re-acquire ownership and
+  revalidate the exact batch/materialization/intent before committing the
+  retirement record. Late-reader pin censuses stay authoritative (a reader
+  that arrives after the egress decision is still found by the locked census),
+  and unknown, corrupt, or mixed ownership fails closed: retain, never free.
+  Evidence of record: PB783 (merge `f5b6bba0358`) moves reclamation outside
+  the stage ownership lock, and each certificate-bound release takes only its
+  own root; it is activated at generation
+  `43b790cce88c-1789962578-9e60f8c7ea49` (publication verified
+  2026-09-21T04:07:13Z; three live nodes converged at 2026-09-21T04:09:13Z
+  with the rollout idle). The PB781 branch
+  `integrate/produced-output-current-20260921` head `73a39d498b6a` carries a
+  source fix with the same order for the outer-caller produced-output
+  `retire_batch`: it validates and selects under the output-prefix ownership
+  lock, releases that lock before `stage_release.evict`, and revalidates the
+  exact selection before filing the retirement record. That branch is
+  unaccepted and its tests are ongoing; the lower-edge proof does not prove
+  the unmerged stack.
+
+Budget and durability requirements for produced workloads:
+
+- BUD-01 keep four quantities separate. The logical retained-artifact byte
+  budget (what the plan must keep addressable), the physical tier
+  reservations/current windows (SSD/RAM tokens charged at claim), the
+  process/decoder resident RAM, and any per-entry serialization hold are
+  distinct. Evidence for one is not evidence for another, and a resident-tier
+  booking is neither free bytes nor residency (TIER-05).
+- BUD-02 derive any mandatory floor from the actual geometry: the actual last
+  and remainder batch (not a full-batch ceiling), retained input boundary
+  groups, live probe planes, and retained checkpoint copies. The floor counts
+  only bytes that are independently unavoidable or minimum; headers and
+  serialization that depend on implementation choices belong to named
+  planning allowances, not to the floor. Keep the gates distinct: the
+  preflight floor refusal, which runs before any forward work; reserve, which
+  runs before writing; and commit, which validates the actual serialized
+  bytes. The runtime guards stay authoritative. A planning estimate includes
+  named allowances and is an assumption, not a mathematical upper bound.
+  Dimensions are producer-specific; no universal PB constant is set here.
+- BUD-03 override only as an explicit, stamped seam. An invocation-level
+  budget override records the original sealed limit, the effective budget, and
+  the override identity together in the run's effective configuration and
+  receipt, and preserves the plan, prepared, and calibration identities. The
+  original sealed plan is never rewritten, and silent budget inflation is
+  refused.
+- DUR-01 producer commit boundaries and recovery requirements are unchanged;
+  this row adds a persistence-assumption requirement, it does not weaken or
+  redefine them. Atomic rename places a record, and verified publication
+  evidence (the published record is read back and validated) establishes that
+  the record is present and re-readable. A rename, fsync, digest, or CAS
+  receipt does not prove stronger persistence, and none of them proves
+  power-loss durability when the backing dataset's sync policy is
+  asynchronous or disabled. When stable-storage durability is required,
+  `sync=disabled` does not satisfy it. State the persistence assumption
+  wherever a claim depends on it. Observed for this campaign: the shared
+  output dataset `storage_pool/shared` has `sync=disabled`, so receipts,
+  digests, and recovery on volatile writes confer no physical durability; an
+  earlier reading of the parent `storage_pool` dataset as `sync=standard` was
+  wrong and retracted. This contract authorizes no durability sealing work and
+  no automatic dataset policy change.
+
+## 8. Progress, frontier, and liveness
 
 - PRG-01 durable compute progress is NOT proof of reader release. A
   consumer's releasable safe frontier (leases it can drop without
@@ -336,7 +499,7 @@ row above.
   limitation are stated honestly wherever liveness is claimed; unknown
   or unreadable telemetry is never read as zero.
 
-## 8. Dev mode and reuse without recompute
+## 9. Dev mode and reuse without recompute
 
 - DEV-01 giant input/output resealing and per-unit source walks are
   disabled in dev mode. Existing identity/change-detection evidence is
@@ -355,7 +518,7 @@ row above.
   review — not proven. Until proven, posture is same-host
   re-verification, stated as incomplete rather than implied as sufficient.
 
-## 9. Acceptance ladder (executable; every test maps an ID with an assertion)
+## 10. Acceptance ladder (executable; every test maps an ID with an assertion)
 
 - ACC-01 schema plus real-producer parser fixtures including gzip
   members, path shapes, and writer serialization variants: parse valid,
@@ -379,6 +542,18 @@ row above.
   placement. "Either box" placement that lets one GPU idle does not pass.
 - ACC-06 real campaign output staged-only with `bytes_from_pool == 0` on
   bulk legs plus the application gates green.
+- ACC-07 produced-output strict read and accepted progress. A produced-output
+  read path passes only with: the real reader SDK (pinned immutable module)
+  opening the actual validated staged descriptor; a negative control showing
+  the declared origin path is refused before payload bytes; an accepted
+  terminal semantic progress counter observed from the admitted action, not
+  merely written; and attributable source, runtime, action, and CAS proof.
+  These are insufficient alone: wrapper exit 0, reservations or occupancy,
+  cache-hit counters, and digest equality of direct original-file reads.
+  Historical canary CPU, CUDA, and cross-Spark payload evidence survives; the
+  strict staged-only and accepted-progress qualification is unqualified
+  (#784, branch `fix/784-canary-staged-reader-20260921`). The correction of
+  record and the remaining gaps are in the dated addendum.
 - No test merely restates prose: each asserts a state transition, a
   refusal, or a byte/tier equality. Lease and read lifetimes are covered
   across async prefetch, two consumers, eviction, and epoch restart.
@@ -393,7 +568,7 @@ Safety invariants, aligned with the ledger:
   application consumer's gate, never attested by terminal success, and
   wrapper exit or shard counts alone complete nothing.
 
-## 10. Delivery evidence levels; root operating checklists
+## 11. Delivery evidence levels; root operating checklists
 
 Levels are distinct axes, never one YES: `proposed` → `implemented`
 (commit) → `validated` (exact action keys, terminal status, logs, CAS
@@ -432,3 +607,18 @@ no agent waiver; no performance/quality numbers set here):
   proves and its open unknowns. Numeric tradeoff thresholds stay an open
   calibration item: engineering continues on evidence; Rob prices the
   tradeoff when evidence exists.
+
+Update of 2026-09-21. §7 and the dated addendum
+`staged_read_produced_output_addendum_2026-09-21.md` update this contract
+without proving runtime conformance. At PB main `f5b6bba0358`, the
+produced-output API is unmerged, the produced-output strict-read/progress gate
+is unqualified, and no PO, BUD, or DUR requirement is deployed except the
+PB783 lower-edge part of PO-07 (activation records in the addendum). Deployment
+facts stay on their own axes: PB782 deployed runtime generation
+`054d7f0b66c8-1789960683-23b36e18a4f6`; PB783 is merged and activated at
+generation `43b790cce88c-1789962578-9e60f8c7ea49` (publication verified
+2026-09-21T04:07:13Z; three live nodes converged and the rollout idle at
+2026-09-21T04:09:13Z); PR781, PQ881, and PQ882 remain unaccepted, in-flight
+work. None of those facts satisfies a PO, BUD, DUR, or ACC-07 requirement
+beyond that scoped lower edge: a source merge is not deployment (ID-08), and
+a staged generation becomes deployment only when activation is observed.

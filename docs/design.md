@@ -2498,6 +2498,9 @@ default. `CANARY_DEFAULT_ENABLED` is a versioned source constant, `True` since
 2026-09-19 (phase 2) after the first verified live 4-leg run
 (`pb-canary/20260919T173543Z`, exit 0, leg-4 envelopes bitwise-equal across
 sparky+sparklina); phase 1 landed default-OFF with `--canary` as the opt-in.
+A leg-3 verdict additionally requires staged reader-lease routing and the
+worker's accepted cumulative progress (issue #784), not digest equality on
+originally opened paths; see the rollout runbook's leg-3 gate section.
 `--no-canary` is the skip, and the outcome lands in the generation's sibling
 rollout record (`verified`/`failed`/`not_run`). A failed canary marks `failed`
 and exits nonzero; it never rolls back the activation or touches admission. The
