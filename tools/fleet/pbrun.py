@@ -2874,12 +2874,58 @@ def publish_or_refuse(q, publication: Mapping[str, object]):
     being stopped.  That refusal is the caller's to read -- the submitter is
     the one who can resubmit through SLURM or wait -- so it arrives as a line
     rather than as a traceback.
+
+    ``ActionAlreadyLiveError`` is not such a refusal and is re-raised
+    unchanged: the queue is already carrying this key, which is an answer the
+    caller acts on by attaching to the live generation (``publish_or_attach``
+    below), not a reason to stop.
     """
 
     try:
         return q.publish(**publication)
+    except pool.ActionAlreadyLiveError:
+        raise
     except pool.PoolContractError as exc:
         raise SystemExit(f"pbrun: {exc}") from exc
+
+
+def publish_or_attach(q, publication: Mapping[str, object], *, key: str):
+    """Submit this key, or report the live generation already running it.
+
+    Returns ``(queued_path, generation)``.  ``queued_path`` is ``None`` when
+    the queue refused the publication because it is already carrying the key;
+    the caller then waits on ``generation`` rather than submitting a second
+    copy of the same content-addressed work.
+
+    This is the whole of the duplicate-submission answer, and it is the pool's
+    to give.  ``live_submission``/``bounded_attachment`` ask the same question
+    from outside the queue, which is right for ``--detach`` -- it has to decide
+    what to print without publishing anything -- but between that read and the
+    publication the state can change, and for identical submissions made at
+    the same moment it reliably does (#812).  ``PoolQueue.publish`` reads and
+    writes inside the key's transition lock, so its answer cannot be stale.
+
+    ``generation`` may be ``None`` when the queue's own read-back finds no
+    stamp, which keeps its historical meaning: wait for any ending for the
+    key rather than pretend to know which run it belongs to.
+
+    A queue from a runtime generation that predates ``refuse_if_live`` is
+    asked in the way it understands, for the same reason ``publication_row``
+    feature-detects ``retry_safe``: a checkout can advance just before the
+    atomic runtime generation rolls, and the older behaviour -- restamp, then
+    wait on whatever the read-back says -- is what this client had before.
+    """
+
+    if "refuse_if_live" in inspect.signature(q.publish).parameters:
+        publication = {**publication, "refuse_if_live": True}
+    try:
+        queued_path = publish_or_refuse(q, publication)
+    except pool.ActionAlreadyLiveError as exc:
+        print(f"pbrun: {key[:12]} is already {exc.state} on the pool; "
+              f"attaching to that run rather than submitting a second copy",
+              file=sys.stderr, flush=True)
+        return None, exc.generation
+    return queued_path, published_generation(q, key, queued_path)
 
 
 def live_submission(q, key: str, *, lane_root=None, **lane_commands):
@@ -6668,7 +6714,12 @@ def main() -> int:
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
                     "produced_output_template"]
+            # Not ``publish_or_attach``: a staged submission has already
+            # frozen its window plan, which is first-writer and has its own
+            # answer for a second seal of the same body, and the duplicate
+            # #812 describes is a plain shard submission.
             queued_path = publish_or_refuse(q, publication)
+            generation = published_generation(q, key, queued_path)
             # The consumer's row and nothing else.  Every phase of the
             # frozen plan is the tiers loop's to publish, the first included:
             # the loop adopts before it publishes, and its adoption pass skips
@@ -6688,35 +6739,50 @@ def main() -> int:
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
-        queued_path = publish_or_refuse(q, publication)
+        queued_path, generation = publish_or_attach(q, publication, key=key)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
-    if superseding is not None:
+    if superseding is not None and queued_path is not None:
+        # Only a publication retires a marker.  An attached duplicate
+        # published nothing, so it superseded nothing.
         who = superseding.get("withdrawn_by") or "an operator"
         why = str(superseding.get("reason") or "").strip()
         print(f"pbrun: {key[:12]} had been withdrawn by {who}"
               f"{' -- ' + why if why else ''}; this submission supersedes that "
               f"decision", file=sys.stderr, flush=True)
     masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
-    print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
+    verb = "queued" if queued_path is not None else "attached to"
+    print(f"pbrun: {verb} {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
     if args.detach:
+        if queued_path is None:
+            # The same display path ``_attachment_value`` names, read once:
+            # this process started nothing, so it reports where the run it
+            # joined lives rather than a submission of its own.
+            ready = q.item_path(pool.READY, key)
+            print(detach_line(
+                key,
+                transport="pool",
+                status="attached",
+                queue_root=q.root,
+                published_unix=generation,
+                submission=ready if ready.exists() else q.item_path(
+                    pool.CLAIMED, key),
+            ), flush=True)
+            return 0
         print(detach_line(
             key,
             transport="pool",
             status="submitted",
             queue_root=q.root,
-            published_unix=published_generation(q, key, queued_path),
+            published_unix=generation,
             submission=queued_path,
         ), flush=True)
         return 0
 
-    return await_outcome(
-        q, key, wait_s=args.wait_s,
-        generation=published_generation(q, key, queued_path),
-    )
+    return await_outcome(q, key, wait_s=args.wait_s, generation=generation)
 
 
 if __name__ == "__main__":

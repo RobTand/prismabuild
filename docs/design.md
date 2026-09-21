@@ -293,6 +293,55 @@ The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
 
+**A publisher that must not duplicate says so, like `refuse_withdrawn`.**
+`publish` overwrites `ready/<key>` whatever state the key is in, and a fresh
+generation over a live key stays the default: that is how an operator asks for
+the same work again, and `_claim` treats the new generation as uncovered by the
+old cancellation for exactly that reason. `refuse_if_live` is the declaration a
+publisher makes when a second row would be a duplicate rather than a new
+generation. Under it, a key readable in `ready/` or `claimed/` refuses with
+`ActionAlreadyLiveError` naming that state and the live row's `published_unix`.
+The check runs inside the key's transition lock, which `claim`, `finish`,
+`withdraw` and the reapers all take, so it is exact rather than advisory. A
+live cancellation skips it — the marker is what makes the submission a
+replacement — and so does a publication carrying `preempted_claim`, which the
+preemption and resign handoff rules above already judge. A name that is present
+but unreadable (a truncated write, a tombstone or late-finish sidecar) is not a
+generation anybody waits on, and republishing repairs such a key, so it stays
+publishable.
+
+Two kinds of publisher opt in. `pbrun` and `pbcampaign` do, and turn the
+refusal into an attachment: the waiting pool path waits on the generation the
+refusal names, and the detached path prints `attached` rather than `submitted`.
+Identical submissions seal one content-addressed key, so three `pbtest` shards
+started at the same moment each stamped their own generation over one `ready`
+row; the worker ran the survivor once and filed one terminal, and every client
+pinned to a superseded generation polled an empty queue until its wait budget
+expired (#812). `live_submission`/`bounded_attachment` still answer the
+`--detach` question from outside the queue, because that path has to decide
+what to print without publishing anything; the publication's own refusal is
+what closes the window between that read and the write. The live row's
+priority, tags and demand are what the attached submitter gets — a republication
+under `refuse_if_live` changes none of them. `pbrun --residency stage` does not
+opt in: it has already frozen a window plan, which is first-writer and has its
+own answer for a second seal of the same body.
+
+The automatic republishers in `tier_loop` and `produced_output` opt in too.
+Each already looked at `ready/` and `claimed/` before publishing; outside the
+lock that look could not be atomic, and on NFS its answer could be stale. In
+the 2026-09-21 Stage A cycle it was: each egress was republished three times
+and ran four, separated by timing and refused by nothing, and because a
+movement node carries `recompute` the duplicates were not answered from the
+receipt (#810). The refusal returns each caller to the answer its own
+pre-check gives — the egress defers as in-flight, the output mover reports
+`published: false` — so the flag makes the existing decision exact rather than
+adding a new one.
+
+Known limit: a waiter is still pinned to a generation whose mutable
+`done`/`failed` row a later generation of the same key can replace, and a
+waiter that has not yet observed its own ending when that happens has no exact
+reader for it.
+
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
 the three mutable terminal rows, immutable withdrawal decisions, archived
@@ -4884,7 +4933,9 @@ transition lock* before it retires anything: the cancellation either wins
 outright (the publication refuses, the plan is marked) or loses outright (the
 withdrawal runs after and cancels the fresh row). Explicit submissions keep
 their own semantics -- re-submitting a key is how a person asks for the work
-again, and the marker is retired as evidence. A deliberately requested fresh
+again, and the marker is retired as evidence. A live marker also skips the
+`refuse_if_live` duplicate check described above, for the same reason: the
+submission is the replacement the cancellation asked for. A deliberately requested fresh
 plan seals its price through the same `pbrun --residency stage` path: the
 tier's **current announced offer** caps the measured single-reader share, so
 a window sealed after the offer sank is admissible without any sealed row

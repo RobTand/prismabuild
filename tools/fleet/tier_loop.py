@@ -909,7 +909,10 @@ def ram_residency_window(
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             try:
-                queue.publish(**row, recompute=True)   # a deletion, likewise
+                # And the same question again under the queue's lock, so the
+                # look above and this publication are one decision (#810).
+                queue.publish(**row, recompute=True,   # a deletion, likewise
+                              refuse_if_live=True)
             except (pool.PoolContractError, OSError) as exc:
                 events.append({"event": "ram-egress-publish-failed",
                                "consumer": key, "phase": entry["phase"],
@@ -1973,7 +1976,11 @@ def reclaim_failed_mover_partials(
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
                 try:
-                    queue.publish(**dict(egress_row), recompute=True)
+                    # And the same question again under the queue's lock, so
+                    # the look above and this publication are one decision
+                    # (#810).
+                    queue.publish(**dict(egress_row), recompute=True,
+                                  refuse_if_live=True)
                 except (pool.PoolContractError, OSError) as exc:
                     events.append({
                         "event": "failed-mover-egress-publish-failed",
@@ -3429,7 +3436,10 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             try:
-                queue.publish(**row, recompute=True)   # a deletion, likewise
+                # And the same question again under the queue's lock, so the
+                # look above and this publication are one decision (#810).
+                queue.publish(**row, recompute=True,   # a deletion, likewise
+                              refuse_if_live=True)
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "egress-publish-failed", "consumer": key,
                                   "phase": entry["phase"],

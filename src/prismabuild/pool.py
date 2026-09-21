@@ -611,6 +611,46 @@ class WithdrawnActionError(PoolContractError):
     """
 
 
+class ActionAlreadyLiveError(PoolContractError):
+    """A ``refuse_if_live`` publication refused: the queue already has the key.
+
+    ``publish`` overwrites ``ready/<key>`` whatever state the key is in, which
+    for a publisher that did not mean to duplicate costs twice: it loses the
+    first submission's ``published_unix``, so every waiter pinned to that
+    generation is left with no ending to find (#812), and after a claim it
+    queues a second run of an action that is still going, which ``recompute``
+    then executes rather than answering from the receipt (#810).
+
+    Raised only when the publisher passed ``refuse_if_live``.  A fresh
+    generation over a live key stays the default, because that is how an
+    operator asks for the same work again.
+
+    The refusal carries what a duplicate submitter needs in order to stop
+    being one: ``state`` is ``ready`` or ``claimed``, and ``generation`` is
+    the live row's ``published_unix`` -- the generation to wait on -- or
+    ``None`` when that row states no readable one.  ``pbrun`` turns the
+    refusal into an attachment rather than a second copy.
+
+    It is a ``PoolContractError`` so the automatic republishers that already
+    catch one (``tier_loop``, ``produced_output``) keep the handling they
+    have.  The preemption requeue and the resign handoff never meet it: both
+    name the claim they revive through ``preempted_claim``.
+    """
+
+    def __init__(
+        self, action_key: str, *, state: str, generation: float | None,
+    ) -> None:
+        self.action_key = action_key
+        self.state = state
+        self.generation = generation
+        super().__init__(
+            f"{action_key[:12]} is already live in {state}"
+            f"{f' as generation {generation}' if generation is not None else ''}"
+            "; wait on that generation, or withdraw it before publishing "
+            "again. A republication that revives an interrupted claim names "
+            "it with preempted_claim.")
+
+
 class ExecutionBudget(NamedTuple):
     """How long this action may run, and why that is the number.
 
@@ -3870,6 +3910,7 @@ class PoolQueue:
         produced_output_batch: Mapping[str, object] | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
+        refuse_if_live: bool = False,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -3891,6 +3932,23 @@ class PoolQueue:
         An explicit submission leaves it False -- re-submitting a key is how
         a person asks for the same work again, and the marker is retired as
         evidence either way.
+
+        ``refuse_if_live`` is the same shape of declaration for a publisher
+        that must not duplicate: inside the same lock, a key this queue is
+        already carrying in ``ready`` or ``claimed`` refuses with
+        :class:`ActionAlreadyLiveError` naming the generation to wait on,
+        instead of replacing it.  It is False by default because a fresh
+        generation over a live key is a designed operation -- it is how an
+        operator asks for the same work again, and ``_claim`` treats the new
+        generation as uncovered by the old cancellation on purpose.  The
+        publishers that know a second row would be a duplicate say so here:
+        ``pbrun``/``pbcampaign``, which attach to the refused generation
+        rather than submit a second copy (#812), and the automatic
+        republishers in ``tier_loop`` and ``produced_output``, whose own
+        look-before-publishing was not, and outside this lock could not be,
+        atomic (#810).  A live cancellation still wins: the marker means the
+        submission was asked for as a replacement, so the check is skipped and
+        the ordinary supersession runs.
         """
 
         self._refuse_if_fenced()
@@ -4123,6 +4181,69 @@ class PoolQueue:
                     f"{action_key[:12]} carries a live withdrawal"
                     f"{' (' + str(cancellation.get('reason')) + ')' if cancellation.get('reason') else ''}"
                     "; an automatic publication does not supersede one")
+        if (refuse_if_live and preempted_claim is None
+                and self.live_withdrawal(action_key) is None):
+            # This publisher says a second row for a key the queue is already
+            # carrying would be a duplicate, not a new generation.  Both
+            # halves of the defect it closes are one fact: ``publish``
+            # overwrites ``ready/<key>`` whatever state the key is in.
+            #
+            # Overwrite before the claim (#812): identical submissions seal
+            # one content-addressed key, so three ``pbtest`` shards published
+            # the same row three times.  Each client read back a different
+            # ``published_unix`` and waited pinned to it, the worker ran the
+            # surviving row once and filed one terminal, and every client
+            # holding a superseded generation polled an empty queue until its
+            # wait budget expired.
+            #
+            # Overwrite after the claim (#810): a caller whose view of the row
+            # was stale republished a key that was live in ``claimed``.  With
+            # ``recompute`` the duplicate is not answered from the receipt, so
+            # the action really ran again -- four times per egress key in the
+            # 2026-09-21 Stage A cycle, ordered by timing and refused by
+            # nothing.
+            #
+            # The check is exact rather than advisory: ``claim``, ``finish``,
+            # ``withdraw`` and the reapers all take this key's transition
+            # lock, which this method already holds, so nothing can move the
+            # key between the reads below and the write at the end.  The
+            # automatic republishers already look before they publish; what
+            # they could not do outside this lock is look atomically.
+            #
+            # Not the default, and not a rule about the key.  An explicit
+            # submission that lands on a live key is publishing a NEW
+            # generation on purpose -- ``_requeue_arguments`` depends on it,
+            # a resubmission while a stop is in flight depends on it, and
+            # ``_claim`` treats the new generation as uncovered by the old
+            # cancellation for exactly that reason.  Only a publisher that
+            # knows its second row would be a duplicate asks for this.
+            #
+            # A live cancellation skips the check: the marker is what makes
+            # the submission a replacement rather than a duplicate, so it
+            # falls through to the supersession below.  (``refuse_withdrawn``
+            # ran first, so an automatic republisher never reaches here with
+            # one.)
+            #
+            # Live means a row this queue can read.  A name that is present
+            # but unreadable -- a truncated write, a tombstone or late-finish
+            # sidecar -- is not a generation anybody is waiting on, and
+            # republishing is how such a key is repaired, so it stays
+            # publishable.  ``_read_json_fresh`` is used because a stale
+            # negative lookup on NFS is what produced #810's republications in
+            # the first place.
+            for state in (READY, CLAIMED):
+                live = _read_json_fresh(self.item_path(state, action_key))
+                if live is None:
+                    continue
+                stamped = live.get("published_unix")
+                generation = (
+                    float(stamped)
+                    if isinstance(stamped, (int, float))
+                    and not isinstance(stamped, bool)
+                    else None
+                )
+                raise ActionAlreadyLiveError(
+                    action_key, state=state, generation=generation)
         # A submission is what retires a withdrawal.  The key is a content
         # hash -- ``result_and_stamp_names`` says so: *"the same command at the
         # same commit still fingerprints identically"* -- so re-submitting one
@@ -4134,7 +4255,9 @@ class PoolQueue:
         # only remedy was ``rm withdrawn/<key>.json`` on the live queue, which
         # is the hand edit this whole verb exists to remove.  The decision is
         # kept -- moved to ``superseded/``, not deleted -- and the new item
-        # carries what it revived.
+        # carries what it revived.  ``refuse_if_live`` never stands in the way
+        # of this: a live marker means the submission was asked for as a
+        # replacement, so the duplicate check above skips it.
         if preempted_claim is not None:
             # Only a handoff that can name the cancellation it revives may
             # carry an interrupted attempt into a new generation: the

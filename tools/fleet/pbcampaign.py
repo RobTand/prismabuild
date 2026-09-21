@@ -1119,11 +1119,23 @@ def child_record(child, *, args, queue, cas) -> dict:
             queue_root=queue.root, published_unix=live["generation"],
             submission=live["submission"],
         ))
-    queued = pbrun.publish_or_refuse(
-        queue, pbrun.publication_row(child, args=args, queue=queue))
+    # The attachment read above answers before the publication, which is what
+    # ``--detach`` needs, but the queue can take the key between the two.  The
+    # publication's own refusal is the exact answer, so a child that lost that
+    # race reports the same attachment rather than a second copy (#812).
+    queued, generation = pbrun.publish_or_attach(
+        queue, pbrun.publication_row(child, args=args, queue=queue), key=key)
+    if queued is None:
+        ready = queue.item_path(pool.READY, key)
+        return json.loads(pbrun.detach_line(
+            key, transport="pool", status="attached", queue_root=queue.root,
+            published_unix=generation,
+            submission=ready if ready.exists() else queue.item_path(
+                pool.CLAIMED, key),
+        ))
     return json.loads(pbrun.detach_line(
         key, transport="pool", status="submitted", queue_root=queue.root,
-        published_unix=pbrun.published_generation(queue, key, queued),
+        published_unix=generation,
         submission=queued,
     ))
 
