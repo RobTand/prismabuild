@@ -4526,6 +4526,30 @@ The reconciliation holds the same ownership lock across query and delete,
 and treats a live pin as attribution. Lock order is transition, then
 ownership, then rename/unlink on every path; acquire takes ownership only.
 
+A live promotion's **source leg** defers on the same terms, and the
+receipt counts those entries under `handoff_deferred`: while the
+promotion's claim is in the queue the egress keeps the file, the
+fragment, the material sidecar and the charge. It files **no** retiring
+mark for them, because a mark closes one material generation to new
+acquires and `ram_promote` takes its proof-only cover through
+`reader_lease.acquire` *after* its claim row exists — the mark would
+refuse the handoff it is protecting. Marks are per mover, not per entry,
+so a reader-pinned entry of the same mover waits for the handoff to end
+before its own mark is filed; deleting stays safe meanwhile because
+every pass re-reads claims and pins under this one ownership lock, and a
+delete still needs the census to show no live ref. Treating the handoff
+as a *shared* skip (before #768) kept the bytes and retired the records
+that proved and paid for them: the surviving SSD copy stopped being
+adoptable — `_proof_search` wants a same-path fragment plus its sidecar
+plus current file identity, and the promotion's RAM fragment names
+another tier and another path — and, since that branch added no
+`bytes_shared`, the settle returned the whole charge as free for bytes
+that had not left. A deferred pass is not `complete`, so it is also not
+evidence for the orphan recovery, whose `_move_receipt` demands a
+complete egress; the retry after the handoff is what completes, deleting
+and releasing once or retaining and decharging against a real same-path
+co-owner.
+
 Object identity is portable across clients: tier namespace, epoch, path,
 length, per-publish materialization generation (uuid4, so a same-key retry
 republishes as a new generation), content digest, and backend

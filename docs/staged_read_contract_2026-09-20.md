@@ -151,7 +151,7 @@ refused.
 |---|---|---|---|---|---|
 | absent → copying | mover | tokens reserved for range ceiling; source readable | bytes copy to temp beside final name | mover row receipt (started) | overrun vs reservation → `residency_overran_reservation`, refused before copy |
 | copying → published | mover | tokens reserved for range ceiling; source readable; length == range length; integrity computed during the necessary copy | atomic rename into place; map names it under epoch with the recorded actual digest plus source change-detection evidence | `movers/` receipt via `record_move` + map fragment | expected digest null → the actual digest is recorded, never claimed as "matches known expected". Mismatch against a present expectation → delete temp, range unpublished. Dev certification unchanged (DEV-04) |
-| published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
+| published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge; a pending copy handoff defers with its fragment, sidecar and charge retained and files **no** mark, since a mark would refuse the handoff's own cover acquire (`handoff_deferred` on the egress receipt) | new lease during retiring → refused |
 | retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
 | copying → absent (failed copy) | mover / reaper | temp and any published orphans safely reclaimed; charge retained until then | range unstaged, tokens released exactly once | reclaim record + single release | charge released before reclaim forbidden; orphan bytes left addressable forbidden |
 | published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
@@ -210,7 +210,9 @@ row above.
 - INV-07 copy/publish/lease/release serialize safely: rename-before-
   fragment (temp beside final name, atomic rename); claim handoff ordered;
   simultaneous egress serialized with shared-path ownership; last reader
-  including pending copy handoff blocks eviction; retiring retains charge
+  including pending copy handoff blocks eviction, keeping that range's
+  fragment, sidecar and charge rather than only its bytes; retiring
+  retains charge
   until actual delete with the last live lease already absent, released
   exactly once (§4 SM-02 ordering; a transfer moves only the logical
   owner release while the object stays published).
