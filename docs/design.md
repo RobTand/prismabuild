@@ -343,13 +343,18 @@ immutable terminal attempt was published under `attempts/<key>/<generation>/`
 before the mutable pointer moved and nothing deletes it, so beside the
 lineage-checked preemption recovery the waiter reads that generation's own
 attempts: the highest attempt whose disposition is `done` or `failed`,
-rebuilt with its exact generation binding and full attempt history, then
+rebuilt with its exact generation binding and complete history from attempt 1, then
 reverified through the same canonical history, log-digest and adopted-summary
 checks a live terminal passes. The recovery writes no queue pointer and names
 the immutable attempt as its source. It never substitutes a newer generation
 and never orders by timestamp; a file carrying another generation or a
-non-canonical path is refused, and attempts carrying `preemption_context`
-stay with the preemption reader whose lineage check makes them trustworthy.
+non-canonical path is refused, as is an empty or unparseable file, an
+incomplete earliest-attempt prefix, or a file numbered past the adopted
+terminal -- absence cannot prove a permitted legacy prefix, and the schema
+records that authority nowhere for ordinary attempts, so a generation whose
+earliest attempts were never archived stays unrecoverable. Attempts carrying
+`preemption_context` stay with the preemption reader whose lineage check
+makes them trustworthy.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers

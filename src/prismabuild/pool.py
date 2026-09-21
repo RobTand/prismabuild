@@ -14088,11 +14088,16 @@ class PoolQueue:
         Exact to the generation, never newer and never timestamp-ordered: the
         attempt's own ``published_unix`` must equal the waited generation,
         and a file carrying another generation or a non-canonical path is
-        refused rather than followed.  Attempts carrying
-        ``preemption_context`` are left to ``archived_preemption_outcomes``,
-        whose lineage check is what makes a preemption successor
-        trustworthy; this reads only ordinary terminal attempts.  An
-        intermediate failed attempt is not an ending.
+        refused rather than followed.  History must be complete from attempt
+        1: a missing earliest attempt is refused, never read as an authorized
+        legacy prefix, because directory absence cannot prove one -- the
+        schema records that authority nowhere for ordinary attempts, so a
+        generation with an honestly unrecorded prefix stays unrecoverable.
+        A file numbered past the adopted terminal is refused for the same
+        reason.  Attempts carrying ``preemption_context`` are left to
+        ``archived_preemption_outcomes``, whose lineage check is what makes
+        a preemption successor trustworthy; this reads only ordinary terminal
+        attempts.  An intermediate failed attempt is not an ending.
         """
         if generation is None:
             return []
@@ -14103,9 +14108,18 @@ class PoolQueue:
         attempts: dict[int, dict[str, object]] = {}
         terminal: dict[int, tuple[Path, dict[str, object]]] = {}
         for path in _glob(base, "*.json"):
-            value = _read_json(path)
-            if value is None:
-                continue
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                continue  # vanished between the glob and the read; a poll retries
+            if not raw:
+                raise PoolContractError("archived ordinary outcome is empty")
+            try:
+                value = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise PoolContractError("archived ordinary outcome is not valid JSON") from exc
+            if not isinstance(value, dict):
+                raise PoolContractError("archived ordinary outcome is not an object")
             if "preemption_context" in value:
                 continue  # a preemption successor: the lineage-checked reader owns it
             if value.get("schema") != POOL_ATTEMPT_SCHEMA_V1:
@@ -14127,17 +14141,21 @@ class PoolQueue:
         if not terminal:
             return []
         terminal_attempt = max(terminal)
+        if max(attempts) > terminal_attempt:
+            raise PoolContractError(
+                "archived ordinary outcome has an attempt past its terminal")
+        if min(attempts) != 1:
+            raise PoolContractError(
+                "archived ordinary outcome has an incomplete attempt prefix")
         path, value = terminal[terminal_attempt]
-        missing = min(attempts) - 1
         record: dict[str, object] = {
             **value,
             "schema": POOL_OUTCOME_SCHEMA_V1,
             "attempts": terminal_attempt,
-            "attempt_history_missing_before": missing,
             "attempt_history": [
                 {"attempt": number,
                  "outcome": str(self.attempt_path(identity, number).relative_to(self.root))}
-                for number in range(missing + 1, terminal_attempt + 1)
+                for number in range(1, terminal_attempt + 1)
             ],
         }
         adopted = self.adopted_attempt_summary(record)

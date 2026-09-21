@@ -240,3 +240,134 @@ def test_overwritten_recovery_refuses_a_tampered_log(
     log_path.chmod(0o444)
     with pytest.raises(pool.PoolContractError):
         pbrun.outcome_poll(queue, key, g1)
+
+
+def test_missing_earliest_attempt_is_refused_not_adopted(
+    queue: pool.PoolQueue,
+) -> None:
+    """A deleted earliest attempt must refuse recovery, never adopt the rest.
+
+    Directory absence proves nothing about a permitted legacy prefix: attempt
+    1 deleted out of a two-attempt G1 must not read as one unrecorded attempt
+    before attempt 2. The waiter must raise rather than report G1 done on
+    attempt 2's evidence alone.
+    """
+    key = _key()
+    holder = _publish(queue, key, max_attempts=2, retry_safe=True)
+    g1 = float(holder["published_unix"])
+    queue.finish(key, status="failed",
+                 detail={"returncode": 1, "stdout": "g1 first", "stderr": ""})
+    retry = queue.claim(capacity={"cpu": 4})
+    assert retry is not None and float(retry["published_unix"]) == g1
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "g1 second", "stderr": ""})
+    state, record = _terminal(queue, key)
+    assert state == pool.DONE and record["attempts"] == 2
+    time.sleep(0.01)
+    holder2 = _publish(queue, key, max_attempts=1)
+    assert float(holder2["published_unix"]) != g1
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "unrelated", "stderr": ""})
+    generation_name = queue.attempt_generation(
+        {"action_key": key, "published_unix": g1})
+    first = queue.root / pool.ATTEMPTS / key / generation_name / "00000001.json"
+    assert first.exists()
+    first.chmod(0o644)
+    first.unlink()
+    with pytest.raises(pool.PoolContractError):
+        pbrun.outcome_poll(queue, key, g1)
+
+
+@pytest.mark.parametrize("damage", ["invalid-json", "empty"])
+def test_malformed_attempt_is_refused_not_skipped(
+    queue: pool.PoolQueue, damage: str,
+) -> None:
+    """A corrupt attempt file must raise, even when the directory exists.
+
+    An unreadable-but-present file is damaged evidence, not an absent one:
+    neither invalid JSON nor an empty file may read as just another reason to
+    keep polling or to adopt what remains.
+    """
+    key = _key()
+    holder = _publish(queue, key, max_attempts=1)
+    g1 = float(holder["published_unix"])
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "g1 causal", "stderr": ""})
+    time.sleep(0.01)
+    holder2 = _publish(queue, key, max_attempts=1)
+    assert float(holder2["published_unix"]) != g1
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "unrelated", "stderr": ""})
+    generation_name = queue.attempt_generation(
+        {"action_key": key, "published_unix": g1})
+    target = (queue.root / pool.ATTEMPTS / key / generation_name
+              / "00000001.json")
+    target.chmod(0o644)
+    target.write_bytes(b"" if damage == "empty" else b"{not json")
+    target.chmod(0o444)
+    with pytest.raises(pool.PoolContractError):
+        pbrun.outcome_poll(queue, key, g1)
+
+
+def test_wrong_generation_file_is_refused(
+    queue: pool.PoolQueue,
+) -> None:
+    """A file carrying another generation's identity must raise.
+
+    Same key, same filename, G2's body planted in G1's directory: the reader
+    must refuse the wrong-identity record rather than adopt it as G1's ending
+    or fall through to G2's row.
+    """
+    key = _key()
+    holder = _publish(queue, key, max_attempts=1)
+    g1 = float(holder["published_unix"])
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "g1 causal", "stderr": ""})
+    time.sleep(0.01)
+    holder2 = _publish(queue, key, max_attempts=1)
+    g2 = float(holder2["published_unix"])
+    assert g2 != g1
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "unrelated", "stderr": ""})
+    g1_name = queue.attempt_generation(
+        {"action_key": key, "published_unix": g1})
+    g2_name = queue.attempt_generation(
+        {"action_key": key, "published_unix": g2})
+    planted = (queue.root / pool.ATTEMPTS / key / g2_name / "00000001.json"
+               ).read_bytes()
+    target = queue.root / pool.ATTEMPTS / key / g1_name / "00000001.json"
+    target.chmod(0o644)
+    target.write_bytes(planted)
+    target.chmod(0o444)
+    with pytest.raises(pool.PoolContractError):
+        pbrun.outcome_poll(queue, key, g1)
+
+
+def test_failed_g1_is_not_replaced_by_later_success(
+    queue: pool.PoolQueue,
+) -> None:
+    """G1 failed beside a later G2 success still reports G1's failure.
+
+    Cross-status generations occupy different terminal slots, so the live
+    FAILED row already answers exactly; the archived fallback must not divert
+    the waiter to the newer success.
+    """
+    key = _key()
+    holder = _publish(queue, key, max_attempts=1)
+    g1 = float(holder["published_unix"])
+    queue.finish(key, status="failed",
+                 detail={"returncode": 3, "stdout": "g1 failed", "stderr": ""})
+    time.sleep(0.01)
+    holder2 = _publish(queue, key, max_attempts=1)
+    g2 = float(holder2["published_unix"])
+    assert g2 != g1
+    queue.finish(key, status="executed",
+                 detail={"returncode": 0, "stdout": "g2 success", "stderr": ""})
+    assert queue.item_path(pool.FAILED, key).exists()
+    assert queue.item_path(pool.DONE, key).exists()
+    landed, _ = pbrun.outcome_poll(queue, key, g1)
+    assert landed is not None
+    assert float(landed[1]["published_unix"]) == g1
+    summary = pbrun.outcome_summary(queue, *landed)
+    assert summary["returncode"] == 3
+    assert summary["detail"]["stdout"] == "g1 failed"
