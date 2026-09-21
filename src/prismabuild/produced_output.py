@@ -4892,9 +4892,12 @@ def _mover_live_state(queue, mover_key: str) -> str:
                 return state
         except Exception:
             return "unknown"
+    # A terminal row is filed by the box that ran the mover while this one
+    # polls for it, so these reads revalidate before answering no (#808).
     for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
         try:
-            record = pool_mod._read_json(queue.item_path(state, mover_key))
+            record = pool_mod._read_json_fresh(
+                queue.item_path(state, mover_key))
         except Exception:
             return "unknown"
         if isinstance(record, Mapping):

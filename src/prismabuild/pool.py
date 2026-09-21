@@ -1124,6 +1124,42 @@ def _read_json(
     return value
 
 
+def _read_json_fresh(path: Path) -> dict[str, object] | None:
+    """``_read_json`` for a record another box files under a key this one polls.
+
+    The queue is on NFS with default attribute caching.  A lookup of a name
+    that does not exist yet is cached as a negative entry, and the client keeps
+    answering ``ENOENT`` from it until the parent directory's attributes are
+    revalidated -- up to ``acdirmin``, 30 s here.  A poller always looks first,
+    so it always caches the miss: on sparky a file dl380g10 had already created
+    was seen 26.3 s, 26.5 s and 26.6 s late by a plain read, and 0.23 s to
+    0.24 s late when the parent was opened first (#808).  A produced-output
+    owner waited that out on every staged group, after a copy that took 4 s.
+
+    ``slurm_lane._read_json_object`` and ``pbrun.terminal_record`` follow the
+    same rule by listing the parent.  Opening it is used here because these
+    reads are polled several times a second and ``done`` holds tens of
+    thousands of names: an open is one round trip whatever the directory
+    holds, and close-to-open consistency makes it the revalidation.
+
+    Only a miss pays for it.  A record that is there is one read, as before.
+    A parent that does not exist is an absent record.  Any other failure to
+    open it raises, as the same failure reading the record would: a caller
+    addressing one record by key must not be told "absent" by a broken mount.
+    """
+
+    record = _read_json(path)
+    if record is not None:
+        return record
+    try:
+        descriptor = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    os.close(descriptor)
+    return _read_json(path)
+
+
 def worker_argv(
     *,
     worker_script: str | Path,
@@ -4643,9 +4679,15 @@ class PoolQueue:
         return self.root / MOVERS / f"{action_key}.json"
 
     def move_record(self, action_key: str) -> dict[str, object] | None:
-        """What one movement node staged, if it has finished and filed it."""
+        """What one movement node staged, if it has finished and filed it.
 
-        record = _read_json(self.move_path(action_key))
+        Every caller is asking whether a mover on another box has filed yet,
+        and most of them poll, so the read revalidates before answering no
+        (``_read_json_fresh``): a stale "not yet" held a produced-output owner
+        for 26 s after a 4 s copy (#808).
+        """
+
+        record = _read_json_fresh(self.move_path(action_key))
         if not isinstance(record, dict):
             return None
         if record.get("schema") != POOL_MOVE_SCHEMA_V1:

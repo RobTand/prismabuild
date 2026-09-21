@@ -4431,6 +4431,21 @@ tokens (ordinary exact transfer from the producer's window; `refill_window`
 remains the producer's own lifecycle call and `ensure` never acquires from
 free), nor the successor id.
 
+* **Readiness is read fresh (PO-02, #808).** An owner learns that a copy landed
+  from the mover's filed receipt (`materialization_state`,
+  `mover_receipt_complete`), and it polls for that receipt from another box
+  than the one that files it. The queue is on NFS with default attribute
+  caching, where a lookup made before the name existed is cached as absent
+  until the parent directory is revalidated. On sparky that held an owner for
+  26.3 s to 26.6 s after a 4 s copy, on every staged group; with the parent
+  opened first the same read saw the receipt in 0.04 s to 0.25 s
+  (`tools/fleet/qualify_record_visibility.py`, both arms run on the real
+  mount). `PoolQueue.move_record` and the terminal reads of
+  `_mover_live_state` therefore go through `pool._read_json_fresh`: a miss
+  opens and closes the parent, then reads once more. Opening is used rather
+  than the listing `slurm_lane._read_json_object` and `pbrun.terminal_record`
+  use, because these reads are polled several times a second and `done` holds
+  tens of thousands of names. A hit costs nothing extra.
 * **Successor identity (PO-03).** The successor's mover key IS its funding key, and it
   is the content-addressed key of a request PB seals over the filed
   materialization GENERATION (`_seal_output_mover`, `log_name` plus
