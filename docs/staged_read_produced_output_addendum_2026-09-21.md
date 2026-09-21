@@ -374,3 +374,22 @@ read-only `pbmcp pb_runtime`.
   global Docker cycle.
 - Whole-workload proof for every PO, BUD, and DUR row: all remain
   `unknown`/`partial`, never satisfied. This file is evidence, not acceptance.
+
+
+## Snapshot 2026-09-21T07:11:10Z — runtime 8990 adopted; full canary failed on tier_loop
+
+Runtime generation `8990d78df216-1789973005-61019ac13024` (source
+`8990d78df216731b445ca515d925b4e61739987c`, parent `0506b7ec`) was activated and
+adopted by all three live workers by 06:47; it contains PR792/794/795/797. Root
+verified 741 files (`pb795-publication-root-verification.json`), and the fresh
+PBMCP retained-attempt-history fix for issue 790 was verified with issue 790
+closed.
+
+The full canary `20260921T064733Z` failed: leg 3 did not start, its owner
+`509f41258e1a1036cad9a2179b1e74f9da17a347e706e3c14e8201bf3fe392b2` awaiting an
+unpublished lead, and `tier_loop.cycle` crashed in `residency_map.read_fragments`
+because valid produced-metadata namespace directories were mistaken for a 64-hex
+consumer key. Full key and trace: `runtime795-tierloop-root-diagnosis.json` (raw
+log `runtime795-tierloop-crash.log`); the issue 798 repair is not accepted or
+deployed. No first-error UTC is asserted. Adoption is not functional health, and
+no whole Stage A or global produced-output acceptance follows from it.
