@@ -27,24 +27,39 @@ otherwise.
   or DUR row.
 - PB783 merged at `f5b6bba0358a684f96a44251b21c77f0aabf1784` (PR783, issue780).
   The acceptance record
-  `/home/rob/tmp/cache-takeover-20260920/pb783-root-acceptance.json` says
-  deploy pending. The staged generation
-  `43b790cce88c-1789962578-9e60f8c7ea49` reports `activated: false` (stage
-  action `a9afda9560e7b95d8a7d89564d8bab50ef0af408997e6c2bb3c3fb259373c0b6`,
-  receipt `de1d2f7807eede98e626dffd2734d122dfc61982e8fb732f14af9f55a8533fc6`,
-  result CAS blob
-  `c5dbf053593fb88332ac161c946b8e32f76a043a44a4177ce13bc7d9836c3afd`; log
-  `/home/rob/tmp/cache-takeover-20260920/runtime-783-stage.log`). Activation
-  is under Astra review, and the published symlink still pointed at the 054
-  generation at observation. Merged, staged, and activated are three facts.
-- In-flight and unaccepted work: PB781/issue769 tree
-  `/home/rob/tmp/pb-produced-output-current-20260921` head
-  `73a39d498b6a7e1568169baca18c3a7e1e1b638d`; PQ881/issue880 tree
+  `/home/rob/tmp/cache-takeover-20260920/pb783-root-acceptance.json` records
+  the merge with deploy pending at acceptance. The stage action
+  `a9afda9560e7b95d8a7d89564d8bab50ef0af408997e6c2bb3c3fb259373c0b6` produced
+  generation `43b790cce88c-1789962578-9e60f8c7ea49` (receipt
+  `de1d2f7807eede98e626dffd2734d122dfc61982e8fb732f14af9f55a8533fc6`, result
+  CAS blob
+  `c5dbf053593fb88332ac161c946b8e32f76a043a44a4177ce13bc7d9836c3afd`, log
+  `/home/rob/tmp/cache-takeover-20260920/runtime-783-stage.log`); at 04:07 UTC
+  it was staged, and its 725 publication members were root-verified against
+  source `43b790cce88c8fc5a70610b5d3270185c829960f` with parent `f5b6bba0358`
+  (`pb783-publication-root-verification.json`,
+  `2026-09-21T04:07:13.444848+00:00`). The published symlink then switched to
+  that generation (observed at 04:08 UTC), and role convergence at
+  `2026-09-21T04:09:13.850343+00:00` shows all three live nodes on that source
+  with the rollout idle (`pb783-runtime-convergence.json`). Merged, staged,
+  and activated are three separate facts, and this activation proves the lower
+  cross-root egress edge only.
+- PB781 outer-caller lock ordering: the branch
+  `/home/rob/tmp/pb-produced-output-current-20260921` at head
+  `73a39d498b6a7e1568169baca18c3a7e1e1b638d` now has source that validates
+  and selects the exact materialization under the output-prefix ownership
+  lock, releases that lock before `stage_release.evict`, and reacquires it to
+  revalidate the exact selection before filing the retirement record
+  (`src/prismabuild/produced_output.py`, `retire_batch`). The branch is
+  unaccepted and its tests are ongoing; this source inspection proves no
+  behavior and no deployment.
+- In-flight and unaccepted work: PQ881/issue880 tree
   `/home/rob/tmp/pq-stagea-produced-boundaries-20260921` head
   `9bcc65414536038b05f476da4090a2d40fdbb322`; PQ882 tree
   `/home/rob/tmp/pq-stagea-artifact-budget-20260921` head
   `ea65a52736a714c04e2a13859bdf4107a3d123ca` (PR883 executor-reported, marked
-  tentative in the campaign handover). None is merged, deployed, or accepted.
+  tentative in the campaign handover); PB781 is described above. None of this
+  work is merged, deployed, or accepted.
 - Full upgraded Stage A is not proven. The last attempt, action
   `8ca8952cc651d09c5235e2c20b71f987bf396afa67848396f54fb5681166318c` on PQ
   snapshot `7638bf8bc864c0109a81a2c35e48428c30ce4cd6`, exited 1 after writing
@@ -134,9 +149,10 @@ contract update authorizes no sealing work.
 - No produced-output API conformance: `src/prismabuild/produced_output.py` is
   absent from PB main `f5b6bba0358`; the PR781 lane is unmerged and
   unaccepted.
-- No deployment of PO-01–PO-07, BUD-01–BUD-03, DUR-01, or ACC-07. The 054
-  runtime and the staged 43b790 generation are evidence about their own
-  merges only.
+- No deployment of PO-01–PO-06, BUD-01–BUD-03, DUR-01, or ACC-07; PO-07 has
+  only its lower cross-root egress edge deployed, in the activated 43b790
+  generation. Activation of PB783 does not prove the unmerged produced-output
+  stack or the unaccepted PB781 source fix.
 - No workload proof: no completed upgraded Stage A, no both-Spark strict-read
   campaign, and no qualified accepted-progress gate.
 - No change to worker join/resign support or to the endgame acceptance

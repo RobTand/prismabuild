@@ -1509,7 +1509,7 @@
     "tests/test_produced_output_restage.py (branch integrate/produced-output-current-20260921, unmerged; not run in this lane)"
    ],
    "target_enforcement": "origin charge once; bounded leased staged copies; forbidden-tier refusal before payload bytes",
-   "text": "Origin publication/retention and physical SSD/RAM materialization are separate lifetimes. The logical origin batch is committed and charged once and may stay on shared ZFS without an SSD copy. Every required bulk read of produced bytes, own or foreign, opens only RAM or explicitly-allowed SSD staged objects under an actual reader lease (INV-03/INV-04, TIER-01); no producer exception, HDD waiver (TIER-04 stays the only authorization shape), or new cache.",
+   "text": "Origin publication/retention and physical SSD/RAM materialization are separate lifetimes. The logical origin batch is committed and charged once and may stay on its declared origin storage (the current shared ZFS output path is the observed example, not a requirement) without an SSD copy. Write preauthorization precedes the write; origin commit and first materialization are separate steps, so the first copy may wait until a read needs it. Every required bulk read of produced bytes, own or foreign, opens only RAM or explicitly-allowed SSD staged objects under an actual reader lease (INV-03/INV-04, TIER-01); no producer exception, HDD waiver (TIER-04 stays the only authorization shape), or new cache.",
    "validation": {
     "detail": "Source audit only (produced-output-restage-contract-audit-astra.md; zfs-output-path-root-review-20260921.json). No produced-output lifecycle validation executed in this lane; ACC-07 unqualified.",
     "state": "unknown"
@@ -1539,10 +1539,10 @@
     "tests/test_produced_output_restage.py; tests/test_prepaid_output_funding.py (branch, unmerged; not run in this lane)"
    ],
    "target_enforcement": "publication-anchored dependency; phantom-hash refusal; no new mandatory wire schema",
-   "text": "Produced-byte readiness depends on immutable batch publication, not on an ACTION terminal record: batch publication -> funded PB staging -> reader acquisition/use -> reader release -> cached-copy retirement. A same-action self-read depends on the published batch; depending on the producer ACTION terminal would self-deadlock. No phantom output hash, no new application dispatcher, and no newly invented mandatory v2 wire schema: existing batch-publication and movement records carry the edge.",
+   "text": "Produced-byte readiness anchors on immutable data-ready proof, not on an ACTION terminal record. Existing first publication seals the immutable manifest, stages, publishes, and funds the mover, and records the batch accounting entry; a same-action self-read depends on the immutable published batch and its ready staged data, not on the whole action terminal, which cannot exist before the action finishes. Semantic dependency: immutable batch publication -> funded PB staging -> reader acquisition/use -> reader release -> cached-copy retirement. No phantom output hash, no rerun-the-producer to conjure inputs, no new application dispatcher, and no new mandatory wire schema or ready-record API. Recorded gap: the current strict reader rejects a newly produced batch absent from the static input map (stage-a-8ca-attempt-review.json); the PR781 and PQ881 lanes are unaccepted.",
    "validation": {
-    "detail": "Source audit only; no same-action self-read lifecycle run in this lane.",
-    "state": "unknown"
+    "state": "unknown",
+    "detail": "Source audit plus the 8ca attempt review. Recorded gap: the strict reader refuses a newly produced batch missing from the static input map (stage-a-8ca-attempt-review.json); no same-action self-read lifecycle run in this lane."
    },
    "workload_proof": {
     "detail": "unknown",
@@ -1553,7 +1553,7 @@
    "acceptance": [
     "ACC-07"
    ],
-   "acceptance_assertion": "Repeat-materialization acceptance reads the same unchanged origin twice through fresh PB-derived movers, with one durable origin charge, one live-or-pending materialization, and spent fences never replayed.",
+   "acceptance_assertion": "Repeat-materialization acceptance reads the same unchanged origin twice through fresh PB-derived movers, with one durable origin charge, one live-or-pending materialization, spent fences never reopened to authorize a fresh materialization, and an identical replay answering without new tokens or copy.",
    "deployment": {
     "detail": "Unmerged; no runtime generation carries this row.",
     "state": "no"
@@ -1568,8 +1568,8 @@
    "planned_acceptance": [
     "tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
    ],
-   "target_enforcement": "one origin charge across generations; one pending/live materialization; PB-derived successor identity; spent fences stay spent",
-   "text": "Repeat materialization: after a staged copy of an unchanged committed logical batch fully retires, the batch may be materialized again on demand. One origin charge covers every generation; at most one pending or live materialization exists per logical batch; each successor gets a PB-derived mover identity and sequence filed under the existing lifecycle state, never a caller- or random-nonce identity; spent movers and funding fences stay spent. PB publishes no successor until the predecessor's retirement commits.",
+   "target_enforcement": "one origin charge across generations; one pending/live materialization; PB-derived successor identity; spent fences never reopened to authorize a fresh materialization",
+   "text": "Repeat materialization: after a staged copy of an unchanged committed logical batch fully retires, the batch may be materialized again on demand. One origin charge covers every generation; at most one pending or live materialization exists per logical batch; each successor gets a PB-derived mover identity and sequence filed under the existing lifecycle state, never a caller- or random-nonce identity. A spent mover or funding fence is never reopened or reused to authorize a fresh materialization and never refunded, though an identical replay may answer from the recorded outcome without new tokens or a new copy. PB publishes no successor until the predecessor's retirement commits.",
    "validation": {
     "detail": "Source audit (produced-output-restage-contract-audit-astra.md) found the reviewed WIP snapshot 8e0d2f9e without restage; the branch advanced to 73a39d498b6 after that audit and is unaccepted. The restage lifecycle was not executed.",
     "state": "unknown"
@@ -1630,7 +1630,7 @@
     "tests/test_produced_output_restage.py; tests/test_produced_output_lifecycle_r2.py (branch, unmerged; not run in this lane)"
    ],
    "target_enforcement": "idempotent ensure/retry; intent survives interruption; no successor until retirement commits; partial retirement retains responsibility",
-   "text": "Interruption, idempotence, and retirement responsibility: materialization state and mutation intent are filed under the existing ownership lock before any funding or movement side effect and survive interruption; duplicate or replayed ensure/retry is idempotent with no fresh epoch, quota, or successor; a failed or partial retirement retains the old materialization's responsibility and credits until safe reclaim, and occupied/unknown fences keep retention.",
+   "text": "Interruption, idempotence, and retirement responsibility: materialization state and mutation intent are filed under the existing ownership lock before any funding or movement side effect and survive interruption; duplicate or replayed ensure/retry is idempotent with no fresh epoch, quota, or successor; a failed or partial retirement retains the old materialization's responsibility and credits until safe reclaim, and occupied/unknown fences keep retention. The shared validator refuses a shape-valid but inconsistent materialization history (an older unretired materialization beside a newer retired one, multiple live entries, or duplicate keys) and retains instead of hiding the older live copy; this is a source finding, not yet a reproduced RED.",
    "validation": {
     "detail": "Source audit and lock-order sketch only; crash-prefix and partial-retirement cases were not executed in this lane.",
     "state": "unknown"
@@ -1678,8 +1678,8 @@
    ],
    "acceptance_assertion": "A targeted assertion shows produced retirement holds no output-prefix ownership while calling egress, plus a concurrent pin/retire/successor-retry fixture; unknown or corrupt ownership retains.",
    "deployment": {
-    "detail": "PB783 merge f5b6bba is not in the published runtime at observation (symlink points to generation 054d7f0b66c8-1789960683-23b36e18a4f6); staged generation 43b790cce88c-1789962578-9e60f8c7ea49 was not activated.",
-    "state": "no"
+    "state": "partial",
+    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The outer-caller ordering fix is unaccepted source on PB781 branch 73a39d498b6."
    },
    "id": "PO-07",
    "implementation": {
@@ -1692,10 +1692,10 @@
     "tests/test_output_lock_identity.py; tests/test_produced_output_restage.py (branch, unmerged; not run in this lane)"
    ],
    "target_enforcement": "no ownership lock held across another mover transition lock; revalidate exact intent before commit; late-reader census; fail-closed unknown ownership",
-   "text": "Lock ordering for retirement and egress: no prefix/tier ownership lock is held across the acquisition of another mover transition lock. Validate and select the exact batch and materialization under ownership, release ownership, run the existing egress, then re-acquire and revalidate the exact batch/materialization/intent before committing the retirement record. Late-reader pin censuses stay authoritative, and unknown, corrupt, or mixed ownership fails closed (retain, never free). PB783 fixes the lower cross-root egress edge only; the unmerged produced-output retire_batch still has the outer-caller edge.",
+   "text": "Lock ordering for retirement and egress: no prefix/tier ownership lock is held across the acquisition of another mover transition lock. Validate and select the exact batch and materialization under ownership, release ownership, run the existing egress, then re-acquire and revalidate the exact batch/materialization/intent before committing the retirement record. Late-reader pin censuses stay authoritative, and unknown, corrupt, or mixed ownership fails closed (retain, never free). PB783 (merge f5b6bba) fixes and activates the lower cross-root egress edge; the PB781 branch 73a39d498b6 carries a source fix with the same order for the outer-caller retire_batch but is unaccepted with tests ongoing; the lower edge does not prove the unmerged stack.",
    "validation": {
-    "detail": "PB783 merge f5b6bba is root-accepted as the lower cross-root egress edge with exact action keys and CAS receipts (pb783-root-acceptance.json; deploy pending). The outer-caller produced-output edge remains unmerged and unrepaired at branch head 73a39d498b6 (claude-output-early-lock-review-20260921.md); no whole-stack fix is claimed.",
-    "state": "partial"
+    "state": "partial",
+    "detail": "PB783 merge f5b6bba is root-accepted as the lower cross-root egress edge (exact action keys and CAS in pb783-root-acceptance.json) and is activated: publication verified 2026-09-21T04:07:13.444848+00:00 over 725 members (pb783-publication-root-verification.json), and all three live nodes converged on generation 43b790cce88c-1789962578-9e60f8c7ea49 with the rollout idle at 2026-09-21T04:09:13.850343+00:00 (pb783-runtime-convergence.json). The PB781 outer-caller source fix at 73a39d498b6 is unaccepted; its tests are ongoing. No whole-stack claim."
    },
    "workload_proof": {
     "detail": "unknown",
@@ -1752,7 +1752,7 @@
     "PQ tests/test_stage_a_artifact_budget.py (branch; executor-run, not re-run in this lane)"
    ],
    "target_enforcement": "source-cited geometry floor; planning allowances labeled assumptions; runtime guard refuses below the floor",
-   "text": "Derive any geometry-derived unavoidable lower bound from the actual geometry: the actual last and remainder batch (not a full-batch ceiling), retained input boundary groups, live probe planes, and retained checkpoint copies, with headers and serialization as stated allowances. A planning allowance is an assumption, not a mathematical upper bound; runtime byte guards stay authoritative and refuse before forward work when the floor cannot be met. Dimensions are producer-specific; no universal PB constant is set.",
+   "text": "Derive any mandatory floor from the actual geometry: actual last and remainder batch (not a full-batch ceiling), retained input boundary groups, live probe planes, and retained checkpoint copies. The floor counts only independently unavoidable or minimum bytes; headers and serialization that depend on implementation choices belong to named planning allowances. Keep two gates distinct: the preflight floor refusal before forward work and the reserve/write/commit guards that run before writing and stay authoritative. A planning estimate includes named allowances and is an assumption, not a mathematical upper bound. Dimensions are producer-specific; no universal PB constant is set.",
    "validation": {
     "detail": "Executor-recorded geometry and arithmetic in pq-stagea-artifact-budget-result.json: sealed plan 446676598784 B (416 GiB); derived floor 627065225216 B (584 GiB); planning estimate 642441609216 B; proposed 687194767360 B with a floor-mandatory/planning-advisory split. Scoped to one PQ campaign geometry; not independently re-derived in this docs lane.",
     "state": "partial"
@@ -1796,7 +1796,7 @@
    "acceptance": [
     "manual-review:persistence assumptions stated; no receipt-as-power-loss claim"
    ],
-   "acceptance_assertion": "Any claim that relies on persistence states the observed storage policy, and no prose treats rename, fsync, hash, or CAS receipt as power-loss durability.",
+   "acceptance_assertion": "Producer commit and recovery requirements are unchanged; any persistence-dependent claim states the observed storage policy; rename, fsync, digest, or CAS receipt is not claimed as power-loss durability, and sync=disabled does not satisfy a stable-storage durability requirement.",
    "deployment": {
     "detail": "Claim-discipline requirement; no code or dataset change.",
     "state": "no"
@@ -1809,7 +1809,7 @@
    },
    "owner": "PB:tiers",
    "target_enforcement": "contract prose plus review; no new sealing work authorized",
-   "text": "durable means recorded and re-readable, not power-loss durable. Atomic rename, fsync, digest, and CAS receipt attest that a record was written and can be re-read under the observed storage policy; they do not by themselves establish power-loss durability when the backing dataset's sync policy is unchecked or asynchronous. State the persistence assumption wherever a claim depends on it. Observed for this campaign: storage_pool/shared has sync=disabled, so receipts, digests, and recovery on volatile writes confer no physical durability; an earlier reading of the parent storage_pool dataset as sync=standard was wrong and retracted. No durability sealing work and no automatic dataset policy change is authorized.",
+   "text": "Producer commit boundaries and recovery requirements are unchanged; this row adds a persistence-assumption requirement and does not weaken them. Atomic rename places a record, and verified publication evidence (the published record read back and validated) establishes that it is present and re-readable. A rename, fsync, digest, or CAS receipt does not prove stronger persistence, and none proves power-loss durability when the backing dataset's sync policy is asynchronous or disabled. When stable-storage durability is required, sync=disabled does not satisfy it. State the persistence assumption wherever a claim depends on it. Observed for this campaign: storage_pool/shared has sync=disabled, so receipts, digests, and recovery on volatile writes confer no physical durability; an earlier reading of the parent storage_pool dataset as sync=standard was wrong and retracted. No durability sealing work and no automatic dataset policy change is authorized.",
    "validation": {
     "detail": "Observed dataset property storage_pool/shared sync=disabled in a read-only census (zfs-output-path-root-review-20260921.json); the parent sync=standard reading was corrected and retracted (pq-stagea-capacity-review-corrections.md). Manual review is the enforcement; no automated check exists, and no storage setting was changed.",
     "state": "partial"

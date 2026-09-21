@@ -11,8 +11,8 @@ generation, and an activated generation are three distinct facts: record
 `deploy: pending` until activation is observed, and never cite a staged
 generation as deployed support (the PB783 case in the dated addendum is the
 worked example). Where a claim depends on persistence, state the observed
-storage policy; `durable` records are re-readable, not power-loss durable
-(contract DUR-01).
+storage policy and keep it separate from the producer commit boundary;
+records and receipts do not prove power-loss durability (contract DUR-01).
 
 ## Template (all fields required; `unknown` allowed only where noted)
 
