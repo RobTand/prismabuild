@@ -32,10 +32,13 @@ the bucket's stage ownership lock.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
 import threading
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -70,14 +73,22 @@ def _hex64(seed: str) -> str:
 
 
 class _Counters:
-    """Read/decode/reclaim counters around the publisher's metadata I/O."""
+    """Read/decode/reclaim counters around the publisher's metadata I/O.
+
+    Two independent views of the same work: ``_read_metadata`` byte reads
+    (the reader the publisher uses) and every ``json.loads`` decode.  A
+    reader rewritten onto another IO door would keep the second honest, and a
+    representation that stopped decoding documents would show in both.
+    """
 
     def __init__(self, monkeypatch):
         self.decodes: dict[str, int] = {}
         self.decode_bytes = 0
         self.reclaims = 0
+        self.parses = 0
         real_read = stage_move._read_metadata
         real_reclaim = stage_move._StagedPublisher._reclaim
+        real_loads = json.loads
 
         def counted_read(path):
             version, raw = real_read(path)
@@ -89,9 +100,14 @@ class _Counters:
             self.reclaims += 1
             return real_reclaim(self_pub)
 
+        def counted_loads(raw, **kwargs):
+            self.parses += 1
+            return real_loads(raw, **kwargs)
+
         monkeypatch.setattr(stage_move, "_read_metadata", counted_read)
         monkeypatch.setattr(stage_move._StagedPublisher, "_reclaim",
                             counted_reclaim)
+        monkeypatch.setattr(json, "loads", counted_loads)
 
     def total_decodes(self) -> int:
         return sum(self.decodes.values())
@@ -209,6 +225,7 @@ def _sweep(tmp_path: Path, monkeypatch, *, budget: int,
         "entries": len(forest["entries"]),
         "adopted": adopted,
         "total_decodes": counters.total_decodes(),
+        "parses": counters.parses,
         "documents": counters.documents(),
         "metadata_bytes_read": counters.decode_bytes,
         "reclaims": counters.reclaims,
@@ -249,6 +266,7 @@ def test_each_stable_document_decides_once_under_a_constrained_budget(
     assert ample["adopted"] == [True] * ample["entries"], ample
     assert ample["total_decodes"] <= 2 * OWNERS, (
         f"ample budget still re-decodes: {ample['total_decodes']}")
+    assert ample["parses"] <= 2 * OWNERS, ample
     assert ample["reclaims"] == 0, ample
 
     constrained = _sweep(tmp_path / "capped", monkeypatch,
@@ -260,6 +278,9 @@ def test_each_stable_document_decides_once_under_a_constrained_budget(
         f"under a {CONSTRAINED_BUDGET} byte budget; each of the "
         f"{2 * OWNERS} stable documents must decode at most once, not once "
         f"per adoption ({constrained['metadata_bytes_read']} metadata bytes)")
+    assert constrained["parses"] <= 2 * OWNERS, (
+        f"{constrained['parses']} JSON decodes for {2 * OWNERS} stable "
+        f"documents: the reader is re-decoding documents")
     assert constrained["reclaims"] == 0, (
         f"{constrained['reclaims']} reclaims under a budget the compact "
         f"projections fit: retention was declined")
@@ -281,6 +302,7 @@ def test_work_stays_bounded_as_the_fixture_and_cap_shrink(tmp_path,
         f"{arm['entries']} destinations decoded {arm['total_decodes']} "
         f"documents under a {SMALL_BUDGET} byte budget with "
         f"{SMALL_DESTS} paths per record")
+    assert arm["parses"] <= 2 * SMALL_OWNERS, arm
     assert arm["reclaims"] == 0, arm
 
 
@@ -369,6 +391,10 @@ def test_a_mutated_sidecar_and_a_corrupt_fragment_are_seen_after_retention(
     assert standing == "divergent", (
         "a digest that contradicts the manifest must refuse")
 
+    # Restore the dated record before the taint case, so the healed fragment
+    # is judged on its own evidence.
+    _write_material(forest["residence"], consumer, mover,
+                    forest["material_entries"])
     fragment = residency_map.fragment_path(forest["residence"], consumer,
                                            mover)
     good = fragment.read_bytes()
@@ -519,32 +545,160 @@ def test_copier_threads_and_a_reader_contend_without_losing_work(
 # Fail-closed beside the counters
 # --------------------------------------------------------------------------
 
-def test_a_corrupt_foreign_fragment_refuses_unknown_not_silent(
-        tmp_path, monkeypatch):
-    """The taint contract beside the counters: unknown, never a silent skip.
+def test_a_late_tainted_fragment_defeats_an_earlier_proof(tmp_path,
+                                                          monkeypatch):
+    """The taint contract: unknown wins even after a valid proof is found.
 
-    A foreign fragment that cannot be parsed must fail the lookup closed even
-    when another record could prove the destination.
+    The corrupt file lives in a consumer directory the scan visits *after*
+    every proving one, so the lookup meets proof first and must still refuse:
+    an unreadable record might name this very path, and the safe answer is
+    unknown, never a silent skip into adoption.
     """
 
     forest = _fixture(tmp_path)
     monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
-    consumer_dirs = sorted(
-        path for path in forest["residence"].iterdir()
-        if path.is_dir() and path.name not in ("leases", "material"))
-    fragment = next(name for name in sorted(os.listdir(consumer_dirs[0]))
-                    if name.endswith(".json"))
-    (consumer_dirs[0] / fragment).write_text("{not json")
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
     destination = forest["ram_root"] / Path(entry["path"]).name
-    adopted = publisher.try_adopt(
-        entry, destination, stage_move._origin_id_of(entry["path"]))
-    assert adopted is None, "a corrupt proof must not adopt"
+    assert publisher.try_adopt(
+        entry, destination,
+        stage_move._origin_id_of(entry["path"])) is not None
+
+    last = max(path.name for path in forest["residence"].iterdir()
+               if path.is_dir() and path.name not in ("leases", "material"))
+    late = forest["residence"] / (last + "z")
+    late.mkdir()
+    (late / (("e" * 64) + ".json")).write_text("{malformed")
+
     proof, standing, detail = publisher._proof_search(
         os.path.normpath(str(destination)), entry["bytes"], entry["sha256"])
-    assert standing == "unknown", (
-        f"corrupt fragment must read unknown, saw {standing}: {detail}")
+    assert proof is None and standing == "unknown" and detail, (
+        f"a late corrupt fragment must defeat the found proof, saw "
+        f"{standing!r}: {detail!r}")
+    assert publisher.try_adopt(
+        entry, destination,
+        stage_move._origin_id_of(entry["path"])) is None, (
+        "a late corrupt fragment must not adopt")
+
+
+def test_a_late_divergent_sidecar_defeats_an_earlier_proof(tmp_path,
+                                                           monkeypatch):
+    """A later record dating the live inode with other bytes refuses at once.
+
+    The rewritten sidecar is the last one the scan visits, so earlier owners
+    have already proved the destination; divergence is still the verdict.
+    """
+
+    forest = _fixture(tmp_path, destinations=SMALL_DESTS)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    publisher = _publisher(forest, tmp_path)
+    entry = forest["entries"][0]
+    norm = os.path.normpath(str(forest["ram_root"] /
+                                 Path(entry["path"]).name))
+    assert publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])[1] == "proof"
+
+    consumer, mover = max(forest["owners"], key=lambda pair: pair[0])
+    entries = {key: dict(record) for key, record in
+               forest["material_entries"].items()}
+    key = str(residency_map.residency_map_key(entry["path"], 0))
+    entries[key] = {
+        **entries[key], "sha256": "b" * 64,
+        "file_id": reader_lease.stat_identity(norm),
+    }
+    _write_material(forest["residence"], consumer, mover, entries)
+
+    proof, standing, detail = publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])
+    assert proof is None and standing == "divergent" and detail, (
+        f"a late record rejecting the live inode's digest must refuse, saw "
+        f"{standing!r}: {detail!r}")
+    with pytest.raises(OSError):
+        publisher.try_adopt(
+            entry, forest["ram_root"] / Path(entry["path"]).name,
+            stage_move._origin_id_of(entry["path"]))
+
+
+def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
+        tmp_path, monkeypatch):
+    """#755 beside the compact index: a new inode needs a new date.
+
+    No prior record of the old incarnation may adopt the replacement; once
+    one legitimate owner is re-dated to the new identity (with the
+    manifest's bytes), adoption resumes through the ordinary gate.
+    """
+
+    forest = _fixture(tmp_path, destinations=1, owners=1)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    publisher = _publisher(forest, tmp_path)
+    entry = forest["entries"][0]
+    destination = forest["ram_root"] / Path(entry["path"]).name
+    norm = os.path.normpath(str(destination))
+    assert publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])[1] == "proof"
+
+    replacement = destination.with_name(destination.name + ".new")
+    replacement.write_bytes(PAYLOAD)
+    os.replace(replacement, destination)
+    proof, standing, _ = publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])
+    assert proof is None and standing == "owned", (
+        f"a superseded incarnation must defer, saw {standing!r}")
+    assert publisher.try_adopt(
+        entry, destination,
+        stage_move._origin_id_of(entry["path"])) is None
+
+    consumer, mover = forest["owners"][0]
+    dated = {key: dict(record) for key, record in
+             forest["material_entries"].items()}
+    key = str(residency_map.residency_map_key(entry["path"], 0))
+    dated[key] = {**dated[key], "file_id": reader_lease.stat_identity(norm)}
+    _write_material(forest["residence"], consumer, mover, dated)
+
+    proof, standing, _ = publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])
+    assert standing == "proof" and proof is not None, (
+        "a record dating the new incarnation must prove it again")
+    assert publisher.try_adopt(
+        entry, destination,
+        stage_move._origin_id_of(entry["path"])) is not None
+
+
+def test_a_same_size_rewrite_with_restored_mtime_is_seen(tmp_path,
+                                                         monkeypatch):
+    """Size and mtime restored, ctime not: the version fence catches it.
+
+    A writer that restores the visible size and mtime still cannot restore
+    ctime, so the per-file version differs and the new bytes are parsed
+    before the next decision -- the compact record is never a held verdict.
+    """
+
+    forest = _fixture(tmp_path, destinations=1, owners=1)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    publisher = _publisher(forest, tmp_path)
+    entry = forest["entries"][0]
+    norm = os.path.normpath(str(forest["ram_root"] /
+                                 Path(entry["path"]).name))
+    assert publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])[1] == "proof"
+
+    consumer, mover = forest["owners"][0]
+    material = reader_lease.material_path(forest["residence"], consumer, mover)
+    before = material.stat()
+    old = material.read_bytes()
+    assert entry["sha256"].encode() in old
+    material.write_bytes(old.replace(entry["sha256"].encode(), b"b" * 64))
+    os.utime(material, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = material.stat()
+    assert after.st_size == before.st_size, "the rewrite must be same-size"
+    assert after.st_mtime_ns == before.st_mtime_ns, "mtime must be restored"
+    assert after.st_ctime_ns != before.st_ctime_ns, "ctime must have moved"
+
+    proof, standing, _ = publisher._proof_search(
+        norm, entry["bytes"], entry["sha256"])
+    assert proof is None and standing == "divergent", (
+        f"a same-size restored-mtime rewrite must still be seen, saw "
+        f"{standing!r}")
 
 
 def test_the_instrument_counts_real_decodes(tmp_path, monkeypatch):
@@ -558,4 +712,7 @@ def test_the_instrument_counts_real_decodes(tmp_path, monkeypatch):
     assert arm["total_decodes"] >= 2 * OWNERS, (
         f"the decode counter saw {arm['total_decodes']} reads over an "
         f"uncached sweep; the instrument is not measuring the reader")
+    assert arm["parses"] >= 2 * OWNERS, (
+        f"the JSON decode counter saw {arm['parses']} decodes over an "
+        f"uncached sweep")
     assert arm["adopted"] == [True] * arm["entries"]
