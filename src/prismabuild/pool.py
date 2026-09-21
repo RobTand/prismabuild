@@ -14028,7 +14028,11 @@ class PoolQueue:
         ending from that evidence must not be redirected to another action,
         another generation or another attempt number by the file's own
         claims, so the file's identity is checked against the directory it
-        was found in and against the canonical path its number derives.
+        was found in and against the canonical path its number derives.  The
+        number must also lie within the budget the attempt itself records: an
+        attempt above its own ``max_attempts`` is inconsistent identity, not
+        an ending, whatever its status says.  A legacy ``retry_safe`` of
+        ``None`` remains valid; only the handoff context requires it.
         """
 
         if (
@@ -14052,6 +14056,7 @@ class PoolQueue:
             or attempt < 1
             or type(limit) is not int
             or limit < 1
+            or attempt > limit
             or (retry_safe is not None and type(retry_safe) is not bool)
             or path != self.attempt_path(
                 {"action_key": action_key, "published_unix": float(generation)},

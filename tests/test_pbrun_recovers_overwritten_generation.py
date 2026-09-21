@@ -268,3 +268,26 @@ def test_an_incomplete_attempt_run_is_refused(queue, absent) -> None:
 
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)
+
+
+def test_an_attempt_beyond_its_recorded_budget_is_refused(queue) -> None:
+    """An attempt number above its own max_attempts is inconsistent identity."""
+
+    generation = _publish(queue, max_attempts=2, retry_safe=True)
+    _run(queue, status="failed", returncode=7, stdout="first attempt\n")
+    _run(queue, status="executed", returncode=0, stdout="retry completed\n")
+    assert queue.item_path(pool.DONE, KEY).exists()
+    for number in (1, 2):
+        _rewrite(
+            queue.attempt_path(
+                {"action_key": KEY, "published_unix": generation}, number),
+            lambda value: value.__setitem__("max_attempts", 1),
+        )
+    # The mutable row is the one a later generation replaces; with it gone the
+    # waiter has only the archive to read.
+    queue.item_path(pool.DONE, KEY).unlink()
+
+    with pytest.raises(pool.PoolContractError):
+        queue.archived_generation_outcomes(KEY, generation=generation)
+    with pytest.raises(pool.PoolContractError):
+        pbrun.landed_outcome(queue, KEY, wait_s=0, generation=generation)
