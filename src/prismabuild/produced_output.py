@@ -3160,6 +3160,12 @@ def materialization_state(queue, instance: Mapping[str, object],
     bytes landed whole. Mutates nothing, takes no lock, and fails closed --
     an unreadable record or a malformed materialization list answers
     `unknown-retain`, never "nothing is staged".
+
+    `mover_refusal` is the mover's own typed verdict beside that completeness
+    answer (#804): `origin_unreachable` names a produced-output prefix the
+    tier host cannot reach, so an owner waits no further instead of reading
+    the same symptom a mover defect produces. An absent or unreadable
+    receipt leaves it None -- silence is never a named failure.
     """
 
     try:
@@ -3199,6 +3205,7 @@ def materialization_state(queue, instance: Mapping[str, object],
         "stage_retired": bool(active.get("retired")),
         "origin_reclaimed": bool(entry.get("origin_reclaimed")),
         "mover_receipt_complete": _mover_receipt_complete(queue, mover),
+        "mover_refusal": _mover_refusal(queue, mover),
         "mover_queue_state": _mover_live_state(queue, mover) if mover else "absent",
     }
 
@@ -4875,6 +4882,20 @@ def _output_funding_verdict(queue, mover_key: str,
     return ("unknown", f"funding state {state!r} on a live batch")
 
 
+def _mover_receipt(queue, mover_key: str) -> Mapping[str, object] | None:
+    """One mover's filed receipt, or None when there is none to read."""
+
+    if not mover_key:
+        return None
+    try:
+        receipt = queue.move_record(mover_key)
+    except Exception:
+        return None
+    if not isinstance(receipt, Mapping):
+        return None
+    return receipt
+
+
 def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
     """Did this mover's own receipt say the batch landed whole? (3-valued)
 
@@ -4886,18 +4907,32 @@ def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
     this lane asks the same question the same way.
     """
 
-    if not mover_key:
-        return None
-    try:
-        receipt = queue.move_record(mover_key)
-    except Exception:
-        return None
-    if not isinstance(receipt, Mapping):
+    receipt = _mover_receipt(queue, mover_key)
+    if receipt is None:
         return None
     if receipt.get("refusal"):
         # A filed refusal is evidence, and it is not "complete".
         return False
     return receipt.get("complete") is True
+
+
+def _mover_refusal(queue, mover_key: str) -> str | None:
+    """The refusal this mover's receipt filed, or None when it filed none.
+
+    The mover's own typed verdict, read through the same receipt the
+    completeness question reads: `residency_moved_nothing` and
+    `residency_overran_reservation` are the mover's existing refusals, and
+    `origin_unreachable` is the one that says the origin directories are not
+    on the tier host (#804). An absent or unreadable receipt answers None,
+    never a refusal: absence is silence, and a reader must not turn it into
+    a named failure.
+    """
+
+    receipt = _mover_receipt(queue, mover_key)
+    if receipt is None:
+        return None
+    refusal = receipt.get("refusal")
+    return str(refusal) if refusal else None
 
 
 def _mover_live_state(queue, mover_key: str) -> str:

@@ -4598,6 +4598,26 @@ free), nor the successor id.
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
+* **Origin reachability is typed at the mover (#804).** A produced-output
+  prefix is validated as an absolute normalized path and nothing more, and
+  the mover runs on the tier host, which is usually not the box that wrote
+  it. `stage_move` therefore classifies the distinct origin directories of
+  the declared window before the copy -- one stat each, through the same
+  mount map the copy reads through -- and files the result on every receipt
+  as `origin_preflight`: `unreachable` only for positive proof (a missing
+  component, a path that is not a directory, EACCES/EPERM), `unknown` for
+  every other stat failure, `partial` for a mixed window, `reachable` for
+  the happy path. A mover that staged nothing beside an `unreachable` window
+  refuses `origin_unreachable` instead of the ordinary
+  `residency_moved_nothing`, and `materialization_state` carries the filed
+  refusal as `mover_refusal` beside `mover_receipt_complete`, so the owner
+  stops waiting on the first attempt instead of reading the same symptom a
+  tier-loop or mover defect produces. Unknown I/O is never typed as an
+  origin refusal, and an absent or unreadable receipt leaves `mover_refusal`
+  None -- silence is not a named failure and not readiness. The preflight
+  deliberately does not veto the copy: adoption of an already-published
+  incarnation needs no origin read, so a mover whose origin root is gone can
+  still complete from staged coverage.
 * **Successor identity (PO-03).** The successor's mover key IS its funding key, and it
   is the content-addressed key of a request PB seals over the filed
   materialization GENERATION (`_seal_output_mover`, `log_name` plus
@@ -4684,10 +4704,11 @@ The contract is three-valued, never two:
   partial batch is occupancy: half a batch on the stage is half a stage spent.
   An overrun is occupancy too -- it refused for staging MORE than it declared.
 * **Proven empty — release.** A mover that filed a refusal receipt
-  (`residency_moved_nothing`) naming this tier, reporting `bytes_staged` as
-  EXACT non-boolean integer zero, and published no fragment. All three, as a
-  conjunction. A zero-output failure frees its reservation because nothing is
-  occupying anything.
+  (`residency_moved_nothing`, or `origin_unreachable` for a window whose
+  origin directories are not on the tier host) naming this tier, reporting
+  `bytes_staged` as EXACT non-boolean integer zero, and published no
+  fragment. All three, as a conjunction. A zero-output failure frees its
+  reservation because nothing is occupying anything.
 * **Unknown — retain.** Anything else, including a MISSING move receipt and a
   malformed count. `stage_move` publishes a fragment per entry as the bytes
   land and calls `record_move` once, last, so a kill in that window leaves
