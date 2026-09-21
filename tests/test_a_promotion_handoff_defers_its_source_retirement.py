@@ -239,28 +239,35 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert first["bytes_shared"] == 0, first
     assert first["tokens_released"] == 0, first
     assert first["tokens_decharged"] == 0, first
-    assert first["retiring"] is True, first
+    assert first["retiring"] is False, first
     assert staged.exists(), "the handoff's source bytes must survive"
     assert paths["fragment"].exists(), "its same-path proof must survive"
     assert paths["material"].exists(), "its material date must survive"
-    assert paths["retiring"].exists()
+    assert not paths["retiring"].exists(), (
+        "no retiring mark while the handoff still has to prove its source")
     assert ledger.holder_tokens(MOVER_A).get(KIND) == 1, (
         "no early free credit while the handoff still holds the source")
 
-    # The retiring mark closes the material generation to new acquires; an
-    # already-proven in-flight promotion uses its retained proof and is
-    # unaffected (it never acquires again).
+    # No mark closes the generation, so the proof-only acquire the promotion
+    # itself uses before its copy still proves the pending source -- and
+    # leaves no durable pin behind.
     proof = reader_lease.acquire(
         queue, consumer_action_key=CONSUMER_A,
         attempt={"nonce": PROMO, "scope_id": "egress-handoff-test"},
         tier_id=TIER, epoch="",
         span={"start_bytes": 0, "end_bytes": MIB},
         holder={"host": socket.gethostname(), "pid": os.getpid()},
-        acquire_token="egress-handoff-test:new-reader",
+        acquire_token="egress-handoff-test:proof-only",
         covers=[{"mover_action_key": MOVER_A,
                  "manifest_sha256": MANIFEST_SHA}],
-        expected=None, residency_root=paths["residency"], file_pin=True)
-    assert proof.get("ok") is False and proof.get("refusal") == "retiring", proof
+        expected=None, residency_root=paths["residency"], file_pin=False)
+    assert proof.get("ok") is True, proof
+    assert [entry["stage_path"] for entry in proof["entries"]] == [str(staged)]
+    owners, taint = reader_lease.live_for(
+        queue, {os.path.normpath(str(staged))},
+        residency_root=paths["residency"])
+    assert taint == [] and owners == {}, (
+        "a proof-only acquire must not leak a durable pin")
 
     # The promotion's action concludes: the claim goes, the handoff ends.
     queue.finish(PROMO, status="executed")
@@ -290,8 +297,18 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
 
 
-def test_a_same_path_co_owner_still_decharges_during_a_promotion_handoff(
+def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
         fleet, tmp_path: Path) -> None:
+    """A co-owner proves the bytes for a publisher, never for the promotion.
+
+    Promotion cover resolves in its own consumer/manifest namespace
+    (``ram_promote``'s coverage loop and ``reader_lease.acquire``), so B's
+    same-path fragment cannot substitute for A's pending proof acquisition.
+    While the claim is live A's document and full charge stay even though B
+    also vouches; only after the handoff ends does the ordinary shared
+    decharge settle.
+    """
+
     queue, stage = fleet
     _, manifest_path = _manifest(tmp_path)
     _stage_mover(queue, stage, manifest_path, MOVER_A, CONSUMER_A, MIB)
@@ -300,37 +317,61 @@ def test_a_same_path_co_owner_still_decharges_during_a_promotion_handoff(
     ram.mkdir()
     assert storage_tiers.ensure_ram_epoch(ram, host="test") is not None
     _promotion_claim(queue, stage, manifest_path, PROMO, CONSUMER_A, MIB)
-    _promote(queue, stage, ram, manifest_path, PROMO, CONSUMER_A, MIB)
 
     paths_a = _paths(queue, CONSUMER_A, MOVER_A)
     paths_b = _paths(queue, CONSUMER_B, MOVER_B)
     staged = stage / SOURCE_NAME
     ledger = queue.tier_ledger(TIER)
 
-    # B's fragment is a genuine same-path accounted co-owner: A may leave,
-    # its duplicate charge is decharged, and the file stays proven by B.
-    first = stage_release.evict(queue, MOVER_A,
-                                consumer_action_key=CONSUMER_A,
-                                stage_root=str(stage))
-    assert first["complete"] is True, first
-    assert first["entries_shared"] == 1, first
-    assert first["entries_deleted"] == 0, first
-    assert first["bytes_shared"] == MIB, first
-    assert first["tokens_released"] == 0, first
-    assert first["tokens_decharged"] == 1, first
+    # The claim is live and the promotion has not acquired yet: the handoff
+    # outranks B's shared skip, so A keeps its own proof and full charge.
+    during = stage_release.evict(queue, MOVER_A,
+                                 consumer_action_key=CONSUMER_A,
+                                 stage_root=str(stage))
+    assert during["complete"] is False, during
+    assert during["entries_deferred"] == 1, during
+    assert during["deferred_handoffs"] == ["promotion-handoff"], during
+    assert during["entries_shared"] == 0, during
+    assert during["tokens_released"] == 0, during
+    assert during["tokens_decharged"] == 0, during
     assert staged.exists()
+    assert paths_a["fragment"].exists() and paths_a["material"].exists()
     assert paths_b["fragment"].exists() and paths_b["material"].exists()
+    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+
+    # The real promotion proves its own consumer's source cover before it
+    # copies: with A's retained fragment it completes, and the cover names A
+    # -- B's fragment alone would have left it a source-coverage-gap.
+    promotion = _promote(queue, stage, ram, manifest_path, PROMO,
+                         CONSUMER_A, MIB)
+    assert [cover["mover_action_key"]
+            for cover in promotion["source_covers"]] == [MOVER_A], promotion
+    assert (ram / SOURCE_NAME).exists()
+
+    # The handoff ends; now the ordinary shared settlement applies.
+    queue.finish(PROMO, status="executed")
+    shared = stage_release.evict(queue, MOVER_A,
+                                 consumer_action_key=CONSUMER_A,
+                                 stage_root=str(stage))
+    assert shared["complete"] is True, shared
+    assert shared["entries_shared"] == 1, shared
+    assert shared["entries_deleted"] == 0, shared
+    assert shared["bytes_shared"] == MIB, shared
+    assert shared["tokens_released"] == 0, shared
+    assert shared["tokens_decharged"] == 1, shared
+    assert staged.exists()
+    assert paths_b["fragment"].exists()
     assert not paths_a["fragment"].exists()
     assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
     assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
 
-    queue.finish(PROMO, status="executed")
-    second = stage_release.evict(queue, MOVER_B,
-                                 consumer_action_key=CONSUMER_B,
-                                 stage_root=str(stage))
-    assert second["complete"] is True, second
-    assert second["entries_deleted"] == 1, second
-    assert second["tokens_released"] == 1, second
+    last = stage_release.evict(queue, MOVER_B,
+                               consumer_action_key=CONSUMER_B,
+                               stage_root=str(stage))
+    assert last["complete"] is True, last
+    assert last["entries_deleted"] == 1, last
+    assert last["tokens_released"] == 1, last
     assert not staged.exists()
     assert ledger.holder_tokens(MOVER_B).get(KIND, 0) == 0
 

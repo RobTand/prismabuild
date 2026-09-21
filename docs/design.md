@@ -4529,23 +4529,34 @@ ownership, then rename/unlink on every path; acquire takes ownership only.
 A pending copy handoff defers the same way (#768). While a live ram
 promotion's sealed claim names a stage source leg, the egress keeps that
 leg's file, the stage mover's fragment and material sidecar, and the
-mover's full occupancy charge, and files the same generation-bound retiring
-mark; the reason rides the additive egress-receipt `deferred_handoffs`
-field (`["promotion-handoff"]`). It retries after the claim ends, then
-deletes the last owner's source or decharges against a genuine same-path
-accounted co-owner. A genuine same-path accounted co-owner takes
-precedence: its fragment proves the surviving incarnation, so the leaving
-owner's duplicate charge is decharged immediately and only a lone
-promotion handoff defers. Without a material sidecar no generation mark can
-be filed (`retiring` stays false), but the deferral still retains the file,
-the fragment and the full charge until the claim ends. The deferral is
-whole-document, as every deferred retirement is: an entry another owner has
-already deleted is not recreated, but one deferred entry retains this
-mover's fragment, material and full holder charge until a retry settles the
-document exactly once. The promotion's ram fragment names another tier and
-path and cannot prove the SSD incarnation it read, so dropping the source's
-same-path proof while the copy is pending leaves a surviving file no
-publisher can prove and frees capacity its bytes still occupy.
+mover's full occupancy charge; the reason rides the additive egress-receipt
+`deferred_handoffs` field (`["promotion-handoff"]`). The handoff outranks
+the generic co-owner and in-flight-destination shared skip: another
+consumer's same-path fragment proves the bytes for a general stage
+publisher, but a promotion resolves its source cover in its own
+consumer/manifest namespace, so a co-owner cannot stand in for this owner's
+pending proof acquisition. The source owner's proof and full charge are
+therefore retained while the handoff lives, even when another owner exists;
+it retries after the claim ends, and only then does the ordinary shared
+decharge settle against a genuine same-path accounted co-owner, or the
+last owner's source delete. No retiring mark is filed while any
+handoff in this mover's document is deferred: a mark closes one material
+generation to new acquires, and the promotion takes its proof-only cover
+through `reader_lease.acquire` after its claim row exists, so the mark
+would refuse the very handoff it is protecting. Retirement marking waits
+until no handoff remains across the whole document; a pinned entry on the
+same mover then files the ordinary mark, and a mark already on disk is
+preserved, never cleared by a deferral. Without a material sidecar no
+generation mark can be filed (`retiring` stays false), but the deferral
+still retains the file, the fragment and the full charge until the claim
+ends. The deferral is whole-document, as every deferred retirement is: an
+entry another owner has already deleted is not recreated, but one deferred
+entry retains this mover's fragment, material and full holder charge until
+a retry settles the document exactly once. The promotion's ram fragment
+names another tier and path and cannot prove the SSD incarnation it read,
+so dropping the source's same-path proof while the copy is pending leaves
+a surviving file no publisher can prove and frees capacity its bytes still
+occupy.
 
 Object identity is portable across clients: tier namespace, epoch, path,
 length, per-publish materialization generation (uuid4, so a same-key retry
