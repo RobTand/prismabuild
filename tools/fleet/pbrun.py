@@ -82,8 +82,8 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    adaptive_gpu, container_images, core as pb, decomposition as dc, pool,
-    residency_plan, slurm_lane, storage_tiers,
+    adaptive_gpu, container_images, core as pb, decomposition as dc,
+    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -1313,46 +1313,20 @@ def container_owner(
     placement=None,
     container_images=(),
 ) -> str:
-    """Stable ownership id sealed before the action key exists.
+    """The submitter's ownership hash: git identity stays with pbrun.
 
-    The action key includes the environment, and the environment needs this id,
-    so using the final key would be recursive.  Hash the complete pre-lifecycle
-    submission identity, including task and retry policy, normalized effective
-    placement, normalized declared images, the pre-owner environment, and the
-    marker namespace, instead.  Adding the owner and marker variables
-    afterwards is deterministic and leaves no caller-chosen ownership
-    namespace.
-
-    ``container_images`` belongs to that identity even though it is not part
-    of the command: two actions differing only in which image they require
-    must not share a Docker ownership label and ``<owner>.used`` marker, or
-    one action's cleanup can remove the other's live container.  It is
-    included only when nonempty, so a submission without a declaration is
-    byte-for-byte what it was before the field existed.
+    The construction lives in ``prismabuild.movement_actions.container_owner``
+    (the one implementation, shared with the produced-output writer lane);
+    this wrapper injects pbrun's ``_git_identity`` so a template without an
+    explicit identity keeps its exact historical digest.
     """
 
-    identity = _git_identity(Path(cwd)) if identity is None else identity
-    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
-    params = {
-        "command": command,
-        "cwd": cwd_identity,
-        "demand": demand,
-        "placement": placement or {"required_tags": []},
-        "retry_policy": retry_policy,
-    }
-    if container_images:
-        params["container_images"] = list(container_images)
-    pre_owner_identity = {
-        "schema": "prismaquant.prismabuild.container_owner_identity.v1",
-        "task": {"determinism": determinism},
-        "checkout": identity,
-        "params": params,
-        "environment": {"variables": variables},
-        "container_lifecycle": {"marker_root": str(marker_root)},
-    }
-    return hashlib.sha256(
-        json.dumps(pre_owner_identity, sort_keys=True).encode()
-    ).hexdigest()
+    return movement_actions.container_owner(
+        command, cwd, demand, variables,
+        determinism=determinism, retry_policy=retry_policy,
+        marker_root=marker_root, identity=identity,
+        logical_cwd=logical_cwd, placement=placement,
+        container_images=container_images, identity_fn=_git_identity)
 
 
 def keep_droppings_out_of_git(cwd: Path) -> Path | None:
@@ -3380,7 +3354,7 @@ _RESUME_COMMANDS = frozenset({
 
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
-SEALED_ARGV0 = "/bin/bash"
+SEALED_ARGV0 = movement_actions.SEALED_ARGV0
 
 
 def detached_attempts_refusal(max_attempts: int) -> str:
@@ -4513,6 +4487,7 @@ def freeze_action_template(
     transport: str,
     pool_measurement_class: bool,
     data_manifest_path: str | None,
+    produced_output_template_path: str | None = None,
     checkout_snapshot_max_bytes: int,
     snapshot_refs: Sequence[str],
     exclusive: bool,
@@ -4643,6 +4618,71 @@ def freeze_action_template(
             data_manifest_summary["content_encoding"] = manifest_encoding
     else:
         data_manifest_summary = None
+    produced_declaration = None
+    produced_validated = None
+    if produced_output_template_path is not None:
+        from prismabuild import produced_output as produced_mod
+
+        # Single bounded capture: read at most MAX+1 once, publish those
+        # exact bytes to the CAS, then validate the captured blob. A second
+        # read of the path could bind OLD bytes in params while the CAS
+        # captures changed NEW bytes; ingesting the held bytes closes it.
+        # Reuses the existing CAS staging/hard-link machinery via
+        # ingest_bytes (indistinguishable blob, same race handling).
+        try:
+            with open(produced_output_template_path, "rb") as handle:
+                raw_template = handle.read(
+                    pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_template) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SystemExit(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes: "
+                "templates are envelopes, not payloads")
+        try:
+            template_input, _ = cas.ingest_bytes(
+                raw_template,
+                input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+            )
+        except pb.ActionContractError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template ingest: {exc}") from None
+        try:
+            candidate = json.loads(raw_template.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            produced_validated = produced_mod.validate_template(candidate)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # Derive the qualified tier demand from the bounded working window
+        # here (never the durable corpus), so the sealed demand and the
+        # sealed declaration cannot drift apart between prepare and freeze.
+        try:
+            window_terms = produced_mod.owner_demand_terms(produced_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template demand: {exc}") from None
+        for qualified, need in window_terms.items():
+            if demand.get(qualified, 0) != int(need):
+                raise SystemExit(
+                    "pbrun: --produced-output-template window demand "
+                    f"{qualified}={need} disagrees with the sealed demand; "
+                    "the template is the only source of tier demand")
+        # The CAS digest covers the captured bytes; the declaration below
+        # binds the canonical template identity to that input row, so the
+        # key moves with the template and a post-seal edit changes nothing.
+        try:
+            produced_declaration = produced_mod.build_declaration(
+                produced_validated, template_input)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template declaration: {exc}") from None
+        inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
         host_class, measurement=measurement, transport=transport)
     if pool_measurement_class and demand.get("gpu", 0) and (
@@ -4664,6 +4704,12 @@ def freeze_action_template(
         # 200 KB blob to learn a byte count would put the manifest on the
         # scheduler's hot path. The list itself stays in the CAS.
         params["data_manifest"] = data_manifest_summary
+    if produced_declaration is not None:
+        # Sealed like the data manifest: the input row carries the bytes,
+        # this declaration binds the canonical template identity to it, so
+        # the action key covers both. Absent, the key is byte-identical to
+        # before this flag existed.
+        params[pb.PRODUCED_OUTPUT_TEMPLATE_PARAM] = produced_declaration
     if demand.get("gpu"):
         params["gpu_exclusive"] = bool(exclusive)
         if gpu_memory_gb is not None:
@@ -4697,6 +4743,7 @@ def freeze_action_template(
         "checkout_identity": identity,
         "log_name": log_name,
         "stamp_name": stamp_name,
+        "produced_output_template": produced_validated,
         "task": {
             "definition_id": "fleet/pbrun",
             "definition_version": "v1",
@@ -4869,13 +4916,11 @@ def seal_action_from_template(
 
 
 #: The params a movement node keeps from the template it was cut off.  The
-#: rest are the consumer's own question -- its progress policy bounds its
-#: work and not a copy, its profiler mode profiles it and not a copy, its GPU
-#: fields describe a device no mover touches -- and a mover that carried them
-#: would be admitted against reservations it does not use.
-_MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "retry_policy", "data_manifest")
-
-
+#: construction itself now lives in ``prismabuild.movement_actions`` (the
+#: one ordinary movement path, shared verbatim with the produced-output
+#: writer lane); pbrun keeps its surface and injects its own
+#: ``container_owner``, whose definition stays with the submission
+#: machinery that owns git identity and stamp names.
 def seal_movement_action(
     template: Mapping[str, object],
     *,
@@ -4887,77 +4932,18 @@ def seal_movement_action(
 ) -> dict[str, object]:
     """Seal one movement or egress node off the submission that needs it.
 
-    Not ``seal_action_from_template``: that function's refusal to let a child
-    restate the template's ``demand`` or ``placement`` is deliberate and
-    right, because a decomposed child measures a slice of the *same* work
-    under the *same* reservation.  A movement node is not that.  It is a
-    sibling that shares a checkout snapshot and a data manifest and nothing
-    else: its command is a fleet tool rather than the submitter's, its demand
-    is tier tokens rather than CPU and GPU, and it is placed on the box that
-    owns the stage rather than on the box that will compute.  Bending the
-    child path to carry that would mean a child whose demand no longer
-    describes it -- which is the failure the refusal exists to prevent.
-
-    What it does keep is everything an action's identity is made of and a
-    mover does not vary: the same ``inputs[0]`` checkout snapshot, the same
-    code closure, the same execution scope, the same environment.  So a mover
-    is an ordinary sealed action with an ordinary key, and the data manifest
-    stays in its inputs -- which is how ``stage_move`` finds the list its
-    range refers to without being handed a path.
+    See ``prismabuild.movement_actions.seal_movement_action`` for the
+    construction: a movement node is a sibling that shares the submission's
+    checkout snapshot, code closure, execution scope and environment base,
+    while its command is a fleet tool, its demand is tier tokens, and it is
+    placed on the box that owns the stage. The submitter's
+    ``container_owner`` settles ownership here, exactly as before.
     """
 
-    params: dict[str, object] = {
-        name: template["params"][name]                    # type: ignore[index]
-        for name in _MOVEMENT_PARAM_KEYS
-        if name in template["params"]                     # type: ignore[operator]
-    }
-    params["command"] = list(command)
-    params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
-    params["placement"] = {"required_tags": list(tags)}
-    if retry_policy is not None:
-        # A mover's retry policy is its own, not the consumer's (#603).  The
-        # template's belongs to work that may not be safe to run twice; a mover
-        # copies into a temporary, verifies the digest against the manifest
-        # entry and then ``os.replace``s, so a second attempt either finds the
-        # bytes already right or redoes the copy that failed.  Inheriting a
-        # single-attempt policy makes one transient read error cost the whole
-        # staged range, and the window behind it.
-        params["retry_policy"] = dict(retry_policy)
-    variables = dict(template["environment"]["variables"])  # type: ignore[index]
-    variables.pop(CONTAINER_OWNER_ENV, None)
-    variables.pop(CONTAINER_MARKER_ENV, None)
-    marker_root = template["marker_root"]
-    owner = container_owner(
-        params["command"], params["cwd"], params["demand"], variables,
-        determinism=template["task"]["determinism"],      # type: ignore[index]
-        retry_policy=params["retry_policy"],
-        marker_root=marker_root,
-        identity=template["checkout_identity"],
-        logical_cwd=params["cwd"],
-        placement=params["placement"],
-    )
-    variables[CONTAINER_OWNER_ENV] = owner
-    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
-    body = {
-        "schema": pb.ACTION_SCHEMA_V2,
-        "task": {
-            **template["task"],                           # type: ignore[dict-item]
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
-                     f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
-            "result_path": log_name,
-        },
-        "inputs": template["inputs"],
-        "code_closure": template["code_closure"],
-        "params": params,
-        "environment": {**template["environment"], "variables": variables},
-        "execution_scope": template["execution_scope"],
-    }
-    try:
-        return pb.seal_action(body)
-    except pb.ActionContractError as exc:
-        raise SystemExit(f"pbrun: refusing to seal a movement action: {exc}") from None
+    return movement_actions.seal_movement_action(
+        template, command=command, demand=demand, tags=tags,
+        log_name=log_name, retry_policy=retry_policy,
+        container_owner_fn=container_owner)
 
 
 def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
@@ -5023,39 +5009,13 @@ def movement_tools(tier: Mapping[str, object], *,
                    mover: str = "stage_move.py") -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.
 
-    ``mover`` names the movement node's script -- ``stage_move.py`` for a
-    stage tier's pool-to-stage copy, ``ram_promote.py`` for the ram tier's
-    stage-to-tmpfs promotion (#640); the egress node is ``stage_release.py``
-    for both, pointed at whichever root the row names.
-
-    Off the tier record, never off this process.  A mover runs on the box that
-    owns the stage, and the box that seals it is very often a different one of
-    a different architecture: PrismaQuant's dispatcher submits from an aarch64
-    Spark while the stage is dl380g10's.  ``sys.executable`` here names a venv
-    that does not exist there, and ``RUNTIME_ROOT`` is this process's view of
-    the generation; sealing either produces an action whose argv cannot start
-    on the only box it can be placed on -- and it would fail at exec time,
-    after the tier has already reserved its capacity.
-
-    ``tier_loop.py`` discovers both on that box and announces them beside
-    ``mountpoint``, which is the same kind of fact.  A tier that carries
-    neither is a tier announced by a generation older than this, and the
-    refusal says so rather than guessing.
+    The construction lives in ``prismabuild.movement_actions`` (the one
+    ordinary movement path, shared verbatim with the produced-output
+    writer lane); see there for why the answer comes off the tier record
+    and never off this process.
     """
 
-    tier_id = str(tier.get("tier_id") or "?")
-    python = str(tier.get("mover_python") or "")
-    root = str(tier.get("mover_tools_root") or "")
-    if not python.startswith("/") or not root.startswith("/"):
-        raise SystemExit(
-            f"pbrun: stage tier {tier_id} announces no interpreter or tool "
-            f"root for its movement nodes (mover_python={python!r}, "
-            f"mover_tools_root={root!r}).  tier_loop.py discovers both on the "
-            f"box that runs the movers; a tier last announced by a generation "
-            f"older than this one is the usual cause, and publishing the "
-            f"runtime again fixes it.  Filling them in from this process "
-            f"would seal an argv naming a python that is not on that box")
-    return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
+    return movement_actions.movement_tools(tier, mover=mover)
 
 
 def current_fill_offer(tier: Mapping[str, object],
@@ -5725,6 +5685,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "one, and from the same command with a different manifest",
     )
     ap.add_argument(
+        "--produced-output-template", default=None, metavar="PATH",
+        help="path to a tiny validated produced-output template JSON "
+             "(at most 64 KiB) declaring the bounded working window this "
+             "action will stage for bytes it produces itself. Captured as an "
+             "ordinary CAS declared input plus action params, so changing the "
+             "template changes the action key and editing the file after seal "
+             "changes nothing the worker reads. The qualified tier demand is "
+             "derived from the window (never the durable corpus) and added "
+             "to the explicit CPU/memory/GPU reservation; the claim holds "
+             "all of it before the producer starts. Pool transport only.",
+    )
+    ap.add_argument(
         "--residency", choices=("none", "stage"), default="none",
         help="stage this action's declared bytes onto a storage tier before it "
              "runs (#583).  'stage' seals one movement node per phase of the "
@@ -6154,6 +6126,48 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             offer_queue(), tags)
         demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
 
+    produced_template_opt = getattr(args, "produced_output_template", None)
+    if produced_template_opt is not None:
+        if args.transport != "pool":
+            raise SystemExit(
+                "pbrun: --produced-output-template needs the pull queue: "
+                "tier working-window reservations live in the pool ledgers")
+        from prismabuild import produced_output as produced_mod
+
+        # Bounded pre-read for demand derivation only; freeze captures once
+        # and cross-checks, so a file swapped between here and there fails
+        # closed there rather than sealing drifted demand.
+        try:
+            with open(produced_template_opt, "rb") as handle:
+                raw_pre = handle.read(pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_pre) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SystemExit(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes")
+        try:
+            pre_body = json.loads(raw_pre.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            pre_validated = produced_mod.validate_template(pre_body)
+            pre_terms = produced_mod.owner_demand_terms(pre_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # The explicit user reservation (CPU/memory/GPU) is preserved; the
+        # qualified tier demand is derived from the bounded working window,
+        # never typed by hand and never the durable corpus.
+        for qualified, need in pre_terms.items():
+            if qualified in demand:
+                raise SystemExit(
+                    f"pbrun: --demand must not name tier demand {qualified!r}: "
+                    "the produced-output template derives it")
+            demand[qualified] = int(need)
+
     if portable_checkout:
         require_relocatable_checkout(
             command, variables, cwd, repository_root=repository_root
@@ -6213,6 +6227,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
         data_manifest_path=args.data_manifest,
+        produced_output_template_path=produced_template_opt,
         checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
         snapshot_refs=args.snapshot_ref,
         exclusive=args.exclusive,
@@ -6641,6 +6656,9 @@ def main() -> int:
             residency_plan.freeze(q, staged["plan"])
             publication = publication_row(action, args=args, queue=q)
             publication["residency"] = staged["residency"]
+            if template.get("produced_output_template") is not None:
+                publication["produced_output_template"] = template[
+                    "produced_output_template"]
             queued_path = publish_or_refuse(q, publication)
             # The consumer's row and nothing else.  Every phase of the
             # frozen plan is the tiers loop's to publish, the first included:
@@ -6658,6 +6676,9 @@ def main() -> int:
                   file=sys.stderr, flush=True)
     else:
         publication = publication_row(action, args=args, queue=q)
+        if template.get("produced_output_template") is not None:
+            publication["produced_output_template"] = template[
+                "produced_output_template"]
         queued_path = publish_or_refuse(q, publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now

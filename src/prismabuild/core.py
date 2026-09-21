@@ -195,6 +195,19 @@ PBRUN_CHECKOUT_SNAPSHOT_REF_NAME = "prismabuild-snapshot"
 #: action key covers it -- attaching a manifest to an otherwise identical
 #: submission produces a different action.
 PBCAMPAIGN_DATA_MANIFEST_INPUT_ID = "pbcampaign.data-manifest"
+#: A tiny validated immutable produced-output template, captured as an
+#: ordinary CAS declared input so the action key covers it. Changing the
+#: template changes the key; modifying the source file after seal changes
+#: nothing the worker reads.
+PRODUCED_OUTPUT_TEMPLATE_INPUT_ID = "prismabuild.produced-output-template"
+PRODUCED_OUTPUT_TEMPLATE_PARAM = "produced_output_template"
+PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1 = (
+    "prismabuild.produced_output_declaration.v1"
+)
+#: Templates are envelopes, not payloads: a bound that keeps the declaration
+#: tiny, validated and immutable. Larger files are a submitter error, not a
+#: working window.
+PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES = 64 * 1024
 DATA_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.data_manifest.v1"
 DATA_MANIFEST_SCHEMA_V2 = "prismaquant.prismabuild.data_manifest.v2"
 #: Stored bytes retain the original ceiling. Gzip permits larger read lists
@@ -2468,6 +2481,101 @@ def load_data_manifest(path: str | Path) -> dict[str, object]:
     return read_data_manifest(path)[0]
 
 
+def validate_produced_output_declaration(
+    value: object, inputs: Sequence[Mapping[str, object]] | None = None,
+) -> dict[str, object]:
+    """Check the sealed produced-output template declaration in action params.
+
+    The declaration names the immutable template bytes already carried as an
+    ordinary CAS input: ``template_id`` + canonical ``template_sha256`` plus
+    the input row ``{id, sha256, bytes}`` whose ``id`` is
+    :data:`PRODUCED_OUTPUT_TEMPLATE_INPUT_ID`. The template body itself is
+    validated by the produced-output owner (``produced_output.
+    validate_template``); this checks the sealed binding only: closed field
+    set, digest shapes, and -- when ``inputs`` is given -- that the named row
+    is present in ``action.inputs`` with identical bytes. A declaration whose
+    input row is missing or mismatched is a tampered seal, not a different
+    template.
+    """
+
+    declaration = _exact_mapping(
+        value,
+        keys=frozenset({"schema", "template_id", "template_sha256", "input"}),
+        where="action.params.produced_output_template",
+    )
+    if declaration["schema"] != PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1:
+        _fail(
+            "action.params.produced_output_template.schema must be "
+            f"{PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1!r}"
+        )
+    template_id = _text(
+        declaration["template_id"],
+        where="action.params.produced_output_template.template_id",
+    )
+    if not template_id or "/" in template_id:
+        _fail(
+            "action.params.produced_output_template.template_id must be a "
+            "non-empty name with no '/'"
+        )
+    template_sha = _sha256(
+        declaration["template_sha256"],
+        where="action.params.produced_output_template.template_sha256",
+    )
+    input_ref = _exact_mapping(
+        declaration["input"],
+        keys=_INPUT_KEYS,
+        where="action.params.produced_output_template.input",
+    )
+    input_id = _text(
+        input_ref["id"],
+        where="action.params.produced_output_template.input.id",
+        pattern=_ID_RE,
+    )
+    if input_id != PRODUCED_OUTPUT_TEMPLATE_INPUT_ID:
+        _fail(
+            "action.params.produced_output_template.input.id must be "
+            f"{PRODUCED_OUTPUT_TEMPLATE_INPUT_ID!r}"
+        )
+    input_sha = _sha256(
+        input_ref["sha256"],
+        where="action.params.produced_output_template.input.sha256",
+    )
+    input_bytes = _nonnegative_integer(
+        input_ref["bytes"],
+        where="action.params.produced_output_template.input.bytes",
+    )
+    # The declaration binds a tiny envelope, never a payload: empty and
+    # oversized inputs refuse here rather than becoming action keys no
+    # worker can honestly execute.
+    if input_bytes <= 0 or input_bytes > PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+        _fail(
+            "action.params.produced_output_template.input.bytes must be "
+            f"within 1..{PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES}")
+    if inputs is not None:
+        matches = [
+            entry for entry in inputs
+            if isinstance(entry, Mapping)
+            and entry.get("id") == PRODUCED_OUTPUT_TEMPLATE_INPUT_ID
+            and entry.get("sha256") == input_sha
+            and entry.get("bytes") == input_bytes
+        ]
+        if not matches:
+            _fail(
+                "action.params.produced_output_template.input names no row "
+                "in action.inputs: the declaration is tampered"
+            )
+    return {
+        "schema": PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
+        "template_id": template_id,
+        "template_sha256": template_sha,
+        "input": {
+            "id": PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+            "sha256": input_sha,
+            "bytes": input_bytes,
+        },
+    }
+
+
 #: What a movement node produces: a statement that one byte range of one
 #: manifest's read order is resident on one tier.  Deterministic from the plan,
 #: so a consumer can bind it as a CAS dependency *before* the mover runs, which
@@ -2658,6 +2766,19 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         declared = validate_progress_policy(normalized_params[PROGRESS_PARAM])
         if declared != normalized_params[PROGRESS_PARAM]:
             _fail("action.params.progress is valid but not in normalized form")
+    normalized_inputs = _normalize_inputs(body["inputs"])
+    if PRODUCED_OUTPUT_TEMPLATE_PARAM in normalized_params:
+        # A tampered binding (declaration without its input row, or with a
+        # mismatched digest) is a submitter error here, before it becomes an
+        # action key no worker can honestly execute.
+        declared_template = validate_produced_output_declaration(
+            normalized_params[PRODUCED_OUTPUT_TEMPLATE_PARAM], normalized_inputs
+        )
+        if declared_template != normalized_params[PRODUCED_OUTPUT_TEMPLATE_PARAM]:
+            _fail(
+                "action.params.produced_output_template is valid but not in "
+                "normalized contract form"
+            )
     environment = _normalize_environment(body["environment"])
     toolchain = environment["toolchain"]
     assert isinstance(toolchain, Mapping)
@@ -2706,7 +2827,7 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     return {
         "schema": ACTION_SCHEMA_V2,
         "task": task,
-        "inputs": _normalize_inputs(body["inputs"]),
+        "inputs": normalized_inputs,
         "code_closure": validate_code_closure(body["code_closure"]),
         "params": normalized_params,
         "environment": environment,
@@ -8240,6 +8361,11 @@ __all__ = [
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
     "PBCAMPAIGN_DATA_MANIFEST_INPUT_ID",
+    "PRODUCED_OUTPUT_TEMPLATE_INPUT_ID",
+    "PRODUCED_OUTPUT_TEMPLATE_PARAM",
+    "PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1",
+    "PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES",
+    "validate_produced_output_declaration",
     "PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID",
     "PBRUN_CHECKOUT_SNAPSHOT_REF_NAME",
     "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1",

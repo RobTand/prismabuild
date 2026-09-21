@@ -374,6 +374,47 @@ def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[
     return layout
 
 
+def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
+    """Whether a tier-demand claim is a verified producer reservation.
+
+    Shape alone is not verification: the mutable queue projection could
+    name any template id and digest. The sealed request carries the
+    authoritative declaration (`params.produced_output_template`,
+    validated here through the existing core seam against the request's
+    own inputs), and it must equal the item's projected ref exactly --
+    same template id and digest. A substituted claim ref, or a request
+    whose declaration disagrees or is absent, is not a verified hold
+    and stays on the taint path. Callers additionally require the
+    sealed command to carry no movement range flags (mover/non-mover
+    classification unchanged); no separate receipt protocol exists.
+    """
+
+    ref = item.get("produced_output")
+    if not isinstance(ref, Mapping):
+        return False
+    try:
+        from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
+    except ImportError:
+        return False
+    if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
+        return False
+    params = request.get("params")
+    if not isinstance(params, Mapping):
+        return False
+    declaration = params.get(pb.PRODUCED_OUTPUT_TEMPLATE_PARAM)
+    if not isinstance(declaration, Mapping):
+        return False
+    inputs = request.get("inputs")
+    if not isinstance(inputs, list):
+        return False
+    try:
+        checked = pb.validate_produced_output_declaration(declaration, inputs)
+    except (pb.ActionContractError, ValueError, TypeError):
+        return False
+    return (checked.get("template_id") == ref.get("template_id")
+            and checked.get("template_sha256") == ref.get("template_sha256"))
+
+
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
                    cas_root: str | Path | None = None,
                    *, exclude: set[str] | frozenset[str] | None = None,
@@ -464,6 +505,18 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
             # Identified as a mover by its tier demand, but seals no argv:
             # corrupt, not a consumer -- consumers never reach this branch.
             tainted.append(f"{key[:12]}: mover seals no command")
+            continue
+        if "--range-start-bytes" not in command:
+            # A verified produced-output producer reservation, not a copy:
+            # the item's projected ref must equal the sealed request's
+            # own validated declaration (template id + digest bound to
+            # its inputs). A substituted ref, or a request whose
+            # declaration disagrees or is absent, stays unknown and
+            # taints below. Unknown rows are never skipped, and an
+            # active copy's protection is untouched.
+            if _produced_hold_verified(item, request):
+                continue
+            tainted.append(f"{key[:12]}: mover seals no range")
             continue
         try:
             start = command[command.index("--range-start-bytes") + 1]

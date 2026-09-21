@@ -21,11 +21,9 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import core, pool  # noqa: E402
 import pool_reset  # noqa: E402
 
-
-KEY = "b" * 64
 
 REFUSES = """import sys
 sys.stderr.write("pbrun: live code closure differs from the action-pinned closure\\n")
@@ -46,18 +44,36 @@ def fleet(tmp_path: Path) -> dict:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
 
-    request = cas_root / "requests" / KEY[:2] / f"{KEY}.json"
-    request.parent.mkdir(parents=True, exist_ok=True)
-    request.write_text(json.dumps({
-        "action_key": KEY,
+    # A real sealed v2 action, not a synthetic shape: ``publish`` reads the
+    # filed request through the production loader (R4/R5), and ``pool_reset``
+    # re-reads it to rebuild the submission, so the fixture files what the
+    # CAS would file -- ``seal_action``'s content-addressed key, derived here
+    # and used consistently for the request path, the queue row, and the
+    # finish. The refusal/containment assertions below are unchanged.
+    (checkout / "task_code.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8")
+    action = core.seal_action({
+        "schema": core.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/pool-reset-refusal",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/usr/bin/true"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [],
+        "code_closure": core.build_code_closure(checkout, ["task_code.py"]),
         "params": {"command": ["/usr/bin/true"]},
-        "task": {"working_directory": "."},
-    }), encoding="utf-8")
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    key = str(action["action_key"])
+    core.PrismaBuildCAS(cas_root).publish_action_request(action)
 
     queue = pool.PoolQueue(queue_root)
     queue.ensure_layout()
     queue.publish(
-        action_key=KEY,
+        action_key=key,
         cas_root=str(cas_root),
         checkout_root=str(checkout),
         worker_script=str(tmp_path / "worker.py"),
@@ -65,10 +81,10 @@ def fleet(tmp_path: Path) -> dict:
     )
     assert queue.claim() is not None
     failed = queue.finish(
-        KEY, status="failed",
+        key, status="failed",
         detail={"returncode": 1, "stdout": "", "stderr": "boom\n"},
     )
-    assert failed == queue.item_path(pool.FAILED, KEY)
+    assert failed == queue.item_path(pool.FAILED, key)
     return {"queue": queue, "queue_root": queue_root, "cas_root": cas_root,
             "failed": failed, "tmp_path": tmp_path}
 
