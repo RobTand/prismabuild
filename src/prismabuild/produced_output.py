@@ -3678,10 +3678,13 @@ def _egress_runs_in_process(record: Mapping[str, object] | None) -> bool:
     Inside a container `socket.gethostname()` is the container's name, never
     the box's, and the answer is "elsewhere": that is the safe direction, and
     it must not be "fixed" by resolving `record["host"]` some other way. A
-    tier with no announced record or host keeps the in-process egress, whose
-    own stage-root check answers for it. `retire_batch` adds one condition:
-    the in-process egress also needs the fleet tool importable, and an owner
-    that cannot import it takes the tier-host route wherever it runs.
+    tier with no announced record or host keeps the in-process egress. No
+    mover can be sealed without the record, so its absence is a fixture or a
+    tier that has gone away, and the in-process egress fails safe there: an
+    unlink the mount refuses is an `errors` entry that keeps the bytes, the
+    fragment and the tokens. `retire_batch` adds one condition: the
+    in-process egress also needs the fleet tool importable, and an owner that
+    cannot import it takes the tier-host route wherever it runs.
     """
 
     import socket
@@ -3692,8 +3695,7 @@ def _egress_runs_in_process(record: Mapping[str, object] | None) -> bool:
 
 def _seal_output_egress(queue, *, record: Mapping[str, object],
                         producer: str, cas_root, batch_id: str,
-                        generation: int, target_mover: str, consumer: str,
-                        stage_root: str, residency_root: str
+                        generation: int, target_mover: str, consumer: str
                         ) -> dict[str, object]:
     """Seal (never file) the egress action for one materialization.
 
@@ -3704,12 +3706,24 @@ def _seal_output_egress(queue, *, record: Mapping[str, object],
     some before giving any back would deadlock exactly when the stage is full.
     It carries no data manifest, so nothing prewarms for it.
 
-    The key is content-addressed over a command naming the materialization's
-    mover and the batch's namespace, so it is unique per materialization and
-    is re-derived by every call instead of being recorded anywhere.
+    Both roots are the ones the MOVER was sealed with -- the tier's announced
+    mountpoint and the produced-output fragment root under this pool -- and
+    never the calling process's own spelling of them: the action runs on
+    another box, where a wrong stage root reads as an unregistered stage and
+    a wrong fragment root reads as "nothing staged", which is a complete
+    receipt that deleted nothing. The answer carries both so the caller can
+    refuse a retirement whose own arguments name different ones.
+
+    The key is content-addressed over the whole sealed action: this command,
+    the tier's announced interpreter and tools, the placement tag and the
+    producer's request. It is unique per materialization, and every call
+    re-derives it instead of recording it; it moves only when one of those
+    facts does, and an egress under the earlier key is then an idempotent
+    no-op beside this one.
     """
 
     from prismabuild import movement_actions
+    from prismabuild import pool as pool_mod
 
     parent = _read_producer_request(cas_root, producer)
     if isinstance(parent, Mapping):
@@ -3724,12 +3738,19 @@ def _seal_output_egress(queue, *, record: Mapping[str, object],
     except SystemExit as exc:
         return {"ok": False, "step": "resolve", "refusal": str(exc)}
     host = str(record.get("host") or "")
+    stage_root = str(record.get("mountpoint") or "")
+    if not stage_root.startswith("/"):
+        return {"ok": False, "step": "resolve",
+                "refusal": "the stage tier announces no mountpoint to "
+                           "release from"}
+    residency_root = str(output_fragment_root(
+        Path(queue.root) / pool_mod.RESIDENCY))
     command = [mover_python, egress_tool,
                "--pool-root", str(queue.root),
                "--mover-action-key", target_mover,
                "--consumer-action-key", consumer,
-               "--stage-root", str(stage_root),
-               "--residency-root", str(residency_root)]
+               "--stage-root", stage_root,
+               "--residency-root", residency_root]
     retry_policy = {"max_attempts": 3, "retry_safe": True}
     log_name = f"produced-output-egress-{batch_id}.log"
     if int(generation) > 0:
@@ -3747,6 +3768,7 @@ def _seal_output_egress(queue, *, record: Mapping[str, object],
         return {"ok": False, "step": "seal", "refusal": str(exc)}
     return {"ok": True, "action": action, "cas": cas,
             "egress_key": str(action["action_key"]), "host": host,
+            "stage_root": stage_root, "residency_root": residency_root,
             "retry_policy": retry_policy}
 
 
@@ -3770,6 +3792,10 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
     `stage_release.evict` is idempotent, so an egress that runs twice -- a
     queue retry, or a key that moved because the tier announced other tools --
     is a no-op receipt, never a second delete.
+
+    `stage_root` and `residency_root` are the CALLER's; the action is sealed
+    with the tier's (`_seal_output_egress`), and a caller naming different
+    ones is refused before anything is published.
     """
 
     from prismabuild import pool as pool_mod
@@ -3810,12 +3836,19 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
     sealed = _seal_output_egress(
         queue, record=record, producer=producer, cas_root=cas_root,
         batch_id=batch_id, generation=generation, target_mover=target_mover,
-        consumer=consumer, stage_root=stage_root,
-        residency_root=residency_root)
+        consumer=consumer)
     if not sealed.get("ok"):
         return {"answer": {"ok": False, "step": sealed.get("step"),
                            "refusal": "unknown-retain: egress-seal: "
                                       f"{sealed.get('refusal')}"}}
+    for name, mine, sealed_root in (
+            ("stage-root", stage_root, sealed["stage_root"]),
+            ("residency-root", residency_root, sealed["residency_root"])):
+        if os.path.normpath(str(mine)) != os.path.normpath(str(sealed_root)):
+            return {"answer": {
+                "ok": False,
+                "refusal": f"unknown-retain: {name}-mismatch: the tier's is "
+                           f"{sealed_root}, this retirement named {mine}"}}
     egress_key = str(sealed["egress_key"])
     state = _mover_live_state(queue, egress_key)
     if state == "unknown":
@@ -3823,24 +3856,25 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
                            "refusal": "unknown-retain: egress-row-unreadable"}}
     if state in (pool_mod.READY, pool_mod.CLAIMED):
         return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, state)
+    # `Pool._file_move` files a node's receipt under the node's OWN key, so an
+    # egress receipt is read by the egress key and names it; the mover it
+    # retired is bound by that key, which hashes a command naming it. The
+    # namespace must still be this batch's. Read whatever the row's state:
+    # the tool files its receipt before it exits, and `finish` takes the
+    # claim away before it writes the terminal, so a finished egress is
+    # briefly in NO state directory with its complete receipt already filed.
     filed: dict[str, object] | None = None
-    if state != "absent":
-        # `Pool._file_move` files a node's receipt under the node's OWN key,
-        # so an egress receipt is read by the egress key and names it; the
-        # mover it retired is bound by that key, which hashes a command
-        # naming it. The namespace must still be this batch's.
-        try:
-            candidate = queue.move_record(egress_key)
-        except Exception:
-            candidate = None
-        if (isinstance(candidate, Mapping)
-                and str(candidate.get("action_key") or "") == egress_key
-                and str(candidate.get("consumer_action_key") or "")
-                == consumer):
-            filed = dict(candidate)
-            filed["schema"] = pool_mod.POOL_EGRESS_SCHEMA_V1
-            filed["action_key"] = target_mover
-            filed["egress_action_key"] = egress_key
+    try:
+        candidate = queue.move_record(egress_key)
+    except Exception:
+        candidate = None
+    if (isinstance(candidate, Mapping)
+            and str(candidate.get("action_key") or "") == egress_key
+            and str(candidate.get("consumer_action_key") or "") == consumer):
+        filed = dict(candidate)
+        filed["schema"] = pool_mod.POOL_EGRESS_SCHEMA_V1
+        filed["action_key"] = target_mover
+        filed["egress_action_key"] = egress_key
     if (filed is not None and filed.get("complete") is True
             and not filed.get("errors")):
         return {"receipt": filed}
@@ -3870,7 +3904,16 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
             # No tier demand, no residency block and no batch reference: the
             # row `pbrun` publishes for a consumer's egress, for its reasons.
             resources={"cpu": 1, "mem_gb": 1},
-            recompute=True)
+            recompute=True,
+            # A re-driven retirement is an AUTOMATIC republication: it never
+            # retires an operator's withdrawal of this egress by writing over
+            # it.
+            refuse_withdrawn=True)
+    except pool_mod.WithdrawnActionError as exc:
+        # No `deferred_own`: a caller polling a deferral must stop here.
+        return {"answer": {"ok": False, "step": "egress-publish",
+                           "egress_action_key": egress_key,
+                           "refusal": f"egress-withdrawn: {exc}"}}
     except Exception as exc:
         return {"answer": {"ok": False, "step": "egress-publish",
                            "egress_action_key": egress_key,

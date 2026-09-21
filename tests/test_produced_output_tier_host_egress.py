@@ -254,7 +254,8 @@ def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
     mover0 = str(first["mover_key"])
     assert po._mover_live_state(world.q, mover0) == pool.READY
 
-    outcome = world.retire("b1")
+    with _NoFleetTools():
+        outcome = world.retire("b1")
     assert outcome.get("ok") is False, outcome
     assert outcome.get("refusal") == "egress-incomplete", outcome
     assert outcome["receipt"]["deferred_own"] == ["own-copy-in-flight"]
@@ -374,3 +375,104 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+
+
+def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
+        tmp_path: Path) -> None:
+    """The action runs on another box, so it names that box's roots.
+
+    A wrong stage root reads there as an unregistered stage, and a wrong
+    fragment root reads as "nothing staged" -- a complete receipt that deleted
+    nothing. The egress is sealed with the roots the mover was sealed with,
+    and a retirement whose own arguments name others publishes nothing.
+    """
+
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
+    payload = b"R" * 600
+    _descs, first = _staged_batch(world, "b1", "p1", payload)
+    mover0 = str(first["mover_key"])
+    world.run_mover(mover0, "w-fwd")
+    staged = world.stage_root / "p1.bin"
+
+    def retire(**roots) -> dict:
+        arguments = {"stage_root": str(world.stage_root),
+                     "residency_root": str(world.out_base), **roots}
+        with _OwnersView(world.stage_root):
+            return po.retire_batch(world.q, world.inst, world.template, "b1",
+                                   **arguments)
+
+    for roots in ({"stage_root": str(tmp_path / "not-the-stage")},
+                  {"residency_root": str(tmp_path / "not-the-fragments")}):
+        refused = retire(**roots)
+        assert refused.get("ok") is False, refused
+        assert str(refused.get("refusal")).startswith("unknown-retain: "), refused
+        assert "-root-mismatch" in str(refused["refusal"]), refused
+        assert "receipt" not in refused, refused
+    assert list((Path(world.q.root) / pool.READY).glob("*.json")) == []
+    assert staged.read_bytes() == payload
+
+    # A trailing separator is the same root, and the sealed command names the
+    # tier's mountpoint and this pool's produced-output fragment root.
+    egress = _assert_own_egress_deferral(
+        retire(stage_root=str(world.stage_root) + os.sep))
+    request = json.loads(
+        (Path(world.cas_root) / "requests" / egress[:2]
+         / f"{egress}.json").read_text())
+    command = [str(part) for part in request["params"]["command"]]
+    assert command[command.index("--stage-root") + 1] == str(world.stage_root)
+    assert command[command.index("--residency-root") + 1] == str(
+        po.output_fragment_root(Path(world.q.root) / pool.RESIDENCY))
+
+
+def test_a_finished_egress_is_read_by_its_receipt_whatever_the_rows_state(
+        tmp_path: Path) -> None:
+    """`finish` takes the claim away before it writes the terminal.
+
+    In that window the egress key is in no state directory, and its complete
+    receipt is already filed: the tool files it before it exits. A re-drive
+    landing there files the retirement and publishes nothing.
+    """
+
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
+    _descs, first = _staged_batch(world, "b1", "p1", b"W" * 500)
+    mover0 = str(first["mover_key"])
+    world.run_mover(mover0, "w-fwd")
+    with _OwnersView(world.stage_root):
+        egress = _assert_own_egress_deferral(world.retire("b1"))
+    outcome = _run_on_the_tier_host(world, egress, "w-tier-egress")
+    assert outcome.get("returncode") == 0, outcome
+    # The window itself: the claim is gone and no terminal has landed.
+    os.unlink(world.q.item_path(pool.CLAIMED, egress))
+    assert po._mover_live_state(world.q, egress) == "absent"
+
+    with _OwnersView(world.stage_root):
+        retired = world.retire("b1")
+    assert retired.get("ok") is True, retired
+    assert retired["receipt"]["egress_action_key"] == egress
+    assert po._mover_live_state(world.q, egress) == "absent", (
+        "nothing was published for an egress that had already completed")
+
+
+def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
+        tmp_path: Path) -> None:
+    """A re-driven retirement is an automatic republication (#708 review)."""
+
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
+    payload = b"X" * 400
+    _descs, first = _staged_batch(world, "b1", "p1", payload)
+    mover0 = str(first["mover_key"])
+    world.run_mover(mover0, "w-fwd")
+    with _OwnersView(world.stage_root):
+        egress = _assert_own_egress_deferral(world.retire("b1"))
+    withdrawn = world.q.withdraw(egress, reason="operator stop", by="test")
+    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN, withdrawn
+
+    with _OwnersView(world.stage_root):
+        stopped = world.retire("b1")
+    assert stopped.get("ok") is False, stopped
+    assert str(stopped.get("refusal")).startswith("egress-withdrawn: "), stopped
+    assert "receipt" not in stopped, "no deferral for a poller to wait on"
+    assert stopped["egress_action_key"] == egress
+    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN
+    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert not world.entry("b1").get("retired")
