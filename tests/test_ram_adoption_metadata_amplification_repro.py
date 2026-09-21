@@ -232,6 +232,8 @@ def _sweep(tmp_path: Path, monkeypatch, *, budget: int,
         "documents": counters.documents(),
         "metadata_bytes_read": counters.decode_bytes,
         "reclaims": counters.reclaims,
+        "index_bytes": publisher._index_bytes(),
+        "interned_tables": len(publisher._interned),
         "publisher": publisher,
         "forest": forest,
     }
@@ -287,6 +289,13 @@ def test_each_stable_document_decides_once_under_a_constrained_budget(
     assert constrained["reclaims"] == 0, (
         f"{constrained['reclaims']} reclaims under a budget the compact "
         f"projections fit: retention was declined")
+    assert 0 < constrained["index_bytes"] <= CONSTRAINED_BUDGET, (
+        f"the retained index is {constrained['index_bytes']} bytes against a "
+        f"{CONSTRAINED_BUDGET} byte budget: nothing retained, or past the cap")
+    assert constrained["interned_tables"] == 1, (
+        f"{constrained['interned_tables']} interned path tables for one "
+        f"shared path set: the four owners' fragments and sidecars must "
+        f"reference one actual table")
 
 
 def test_work_stays_bounded_as_the_fixture_and_cap_shrink(tmp_path,
@@ -307,6 +316,9 @@ def test_work_stays_bounded_as_the_fixture_and_cap_shrink(tmp_path,
         f"{SMALL_DESTS} paths per record")
     assert arm["parses"] <= 2 * SMALL_OWNERS, arm
     assert arm["reclaims"] == 0, arm
+    assert 0 < arm["index_bytes"] <= SMALL_BUDGET, (
+        f"the retained index is {arm['index_bytes']} bytes against a "
+        f"{SMALL_BUDGET} byte budget")
 
 
 def test_a_budget_nothing_fits_decides_correctly_and_retains_nothing(
