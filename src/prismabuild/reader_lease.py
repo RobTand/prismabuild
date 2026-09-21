@@ -1523,14 +1523,17 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
 
 def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
                        context: dict | None):
-    """Validated (material, fragment) for one mover, generation-cached.
+    """Validated (material, fragment) for one mover, sidecar-checked cache.
 
-    The cache holds VALIDATED documents keyed by the sidecar's immutable
-    generation: a repeat lookup with the same generation reuses them
-    without re-reading the fragment, while a republish (new generation)
-    misses and re-reads.  Absence and malformation are NEVER cached, so
-    newly published material is always seen.  Selection only: acquire
-    revalidates under the ownership lock before anything pins.
+    The cache holds VALIDATED documents.  The sidecar is re-read on every
+    call; a repeat lookup reuses the cached fragment only while the fresh
+    sidecar equals the cached one.  The stage mover republishes both
+    documents incrementally as entries land under ONE generation per run
+    (stage_move.publish / begin_material), so the generation alone cannot
+    date the pair: a republished sidecar re-reads the fragment and replaces
+    the cache entry.  Absence and malformation are NEVER cached, so newly
+    published material is always seen.  Selection only: acquire revalidates
+    under the ownership lock before anything pins.
     """
 
     material = read_material(root, consumer_action_key, mover)
@@ -1541,7 +1544,8 @@ def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
         return None, None
     if context is not None:
         hit = context.get(f"cover:{consumer_action_key}:{mover}")
-        if (isinstance(hit, dict) and hit.get("generation") == generation):
+        if (isinstance(hit, dict) and hit.get("generation") == generation
+                and hit.get("material") == material):
             return hit.get("material"), hit.get("fragment")
     try:
         from prismabuild import residency_map as map_mod
@@ -1832,10 +1836,28 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                     "refusal": f"ownership-uncertain: {tainted[0]}"}
         context[f"retiring:{mover}"] = [str(mark["generation"]) for mark in marks]
 
-    def cached_fragment(mover: str):
+    def cached_material(mover: str):
         # Successes cache; misses never stick: a cached absence would blind
         # later acquires in this context to newly published material, while
-        # the lock re-reads fresh before anything pins.
+        # the lock re-reads fresh before anything pins.  The sidecar is
+        # re-read on every call and dates the cached fragment: the stage
+        # mover republishes both documents incrementally as entries land
+        # under ONE generation per run, so a changed sidecar drops the
+        # fragment cache even when the generation is unchanged (#823).
+        key = f"material:{consumer_action_key}:{mover}"
+        fkey = f"fragment:{consumer_action_key}:{mover}"
+        fresh = read_material(root, consumer_action_key, mover)
+        if fresh is None or isinstance(fresh, Exception):
+            return fresh
+        if context.get(key) != fresh:
+            context[key] = fresh
+            context.pop(fkey, None)
+        return context[key]
+
+    def cached_fragment(mover: str):
+        # Fragment reuse is valid only for the sidecar that was cached with
+        # it: cached_material (always called first per mover) already
+        # dropped this entry when the live sidecar changed.
         key = f"fragment:{consumer_action_key}:{mover}"
         if key not in context:
             try:
@@ -1848,21 +1870,15 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
                 return exc
         return context[key]
 
-    def cached_material(mover: str):
-        key = f"material:{consumer_action_key}:{mover}"
-        if key not in context:
-            material = read_material(root, consumer_action_key, mover)
-            if material is None or isinstance(material, Exception):
-                return material
-            context[key] = material
-        return context[key]
-
     stage_root = ""
     union: dict[str, dict[str, object]] = {}
     generations: dict[str, str] = {}
     for cover in covers:
         mover = str(cover.get("mover_action_key") or "")
         manifest = str(cover.get("manifest_sha256") or "")
+        # Material first: a republished sidecar invalidates the fragment
+        # cache before it is read (#823).  Check order below is unchanged.
+        material = cached_material(mover)
         fragment = cached_fragment(mover)
         if fragment is None:
             return {"ok": False, "refusal": "unpublished"}
@@ -1879,7 +1895,6 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
             live = _announced_epoch(queue, tier_id)
             if live is None or fragment_epoch != live:
                 return {"ok": False, "refusal": "stale-epoch"}
-        material = cached_material(mover)
         if material is None:
             # Staged before publish-time identity existed: unqualifiable.
             return {"ok": False, "refusal": "no-file-identity"}
