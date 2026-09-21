@@ -371,6 +371,9 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     reader_lease.write_retiring(
         leases, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_A,
         generation=str(material["generation"]))
+    second_ram = tmp_path / "ram-two"
+    second_ram.mkdir()
+    assert storage_tiers.ensure_ram_epoch(second_ram, host="testbox") is not None
     refused = ram_promote.promote(ram_promote.build_parser().parse_args([
         "--pool-root", str(queue.root),
         "--cas-root", str(tmp_path / "cas"),
