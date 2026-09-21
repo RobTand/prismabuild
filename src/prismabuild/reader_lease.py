@@ -1294,6 +1294,12 @@ def release_refs(queue, refs: list[dict[str, str]],
     :func:`release` for their own refs; this path is for RESIGN/withdrawal
     containment after proven stop, and for the PB crash reaper for its own
     attempt.  There is no other release path.
+
+    Each ref is settled under the ownership lock of **the root its own pin
+    names**, taken before the owner/attempt/host checks -- so a caller that
+    already holds one stage root and hands this refs from another is asking
+    for a second root inside the first (#780).  Callers hold no stage
+    ownership lock, or only the root every ref named.
     """
 
     ok, reason = containment_certificate_ok(queue, certificate)
@@ -1417,6 +1423,15 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
     exists.  Missing evidence retains with reasons, per attempt, exactly
     as manual containment would.
     Returns ``{"released": [...], "retained": {ref_id: reason}}``.
+
+    **Never call this while holding a stage ownership lock (#780).**  It is
+    unscoped by design -- every owner, every root -- and :func:`release_refs`
+    takes the ownership lock of the root each pin names.  Under one root's
+    lock that is a second root requested inside the first, which deadlocks
+    against an egress doing the same from the other side.  The caller takes
+    its own root's lock *after* this returns and re-censuses pins there; the
+    check-and-act stays atomic because the census, not the reclaim, is what
+    the delete decision reads.
     """
 
     root = leases_root(queue, residency_root)
