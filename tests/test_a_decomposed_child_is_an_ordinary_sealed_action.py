@@ -109,35 +109,48 @@ def _ingest(cas, root: Path, name: str, value: object, *, input_id: str):
     return row
 
 
+def _freeze_template(
+    root: Path, monkeypatch: pytest.MonkeyPatch, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Stage A's own template, off a real checkout under ``root``.
+
+    Separate from :class:`Decomposed` because the partition between the shared
+    half and the submitter's handles is a property of the template alone, and a
+    test of it must not have to get past the freeze that reads the partition.
+    """
+
+    work = _checkout(root)
+    monkeypatch.setattr(pbrun, "SH", root)
+    return pbrun.freeze_action_template(
+        command=request["common"]["argv"],
+        cwd=work,
+        logical_cwd=".",
+        demand=dict(request["common"]["demand"]),
+        placement={"required_tags": ["sparky"]},
+        variables={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+        determinism="stochastic",
+        retry_policy={"max_attempts": 1, "retry_safe": False},
+        host_class=None,
+        measurement=False,
+        transport="pool",
+        pool_measurement_class=False,
+        data_manifest_path=None,
+        checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        snapshot_refs=[],
+        exclusive=False,
+        gpu_memory_gb=None,
+        execution_timeout_s=None,
+        progress=None,
+        profile=None,
+    )
+
+
 class Decomposed:
     """One frozen template, one plan, and the children sealed from them."""
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        work = _checkout(root)
-        monkeypatch.setattr(pbrun, "SH", root)
         self.request = dc.validate_logical_request(_request())
-        self.template = pbrun.freeze_action_template(
-            command=self.request["common"]["argv"],
-            cwd=work,
-            logical_cwd=".",
-            demand=dict(self.request["common"]["demand"]),
-            placement={"required_tags": ["sparky"]},
-            variables={"PATH": "/usr/local/bin:/usr/bin:/bin"},
-            determinism="stochastic",
-            retry_policy={"max_attempts": 1, "retry_safe": False},
-            host_class=None,
-            measurement=False,
-            transport="pool",
-            pool_measurement_class=False,
-            data_manifest_path=None,
-            checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
-            snapshot_refs=[],
-            exclusive=False,
-            gpu_memory_gb=None,
-            execution_timeout_s=None,
-            progress=None,
-            profile=None,
-        )
+        self.template = _freeze_template(root, monkeypatch, self.request)
         self.cas = self.template["cas"]
         self.frozen = dc.freeze_common(
             self.request["common"],
@@ -175,6 +188,55 @@ def decomposed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Decomposed:
     plan = Decomposed(tmp_path, monkeypatch)
     assert len(plan.plan["partitions"]) >= 3, "fixture needs several children"
     return plan
+
+
+def test_every_template_key_is_shared_or_the_submitters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The template's keys partition; nothing falls between the two halves.
+
+    ``template_action_common`` subtracts the submitter's handles rather than
+    enumerating the shared half, so a section added to the template joins every
+    parent's identity by default.  ``validate_action_common`` then refuses the
+    record, and the refusal names the key rather than the decision nobody made.
+    Stating the partition here means the next key added is refused by this test
+    -- where the two sets are -- instead of by a campaign's Stage A freeze.
+    """
+
+    template = _freeze_template(
+        tmp_path, monkeypatch, dc.validate_logical_request(_request()))
+    assert set(template) - pbrun._TEMPLATE_SUBMITTER_KEYS == set(
+        dc._ACTION_COMMON_KEYS
+    ), (
+        "a template key is either the half every child shares or a handle of "
+        "the submitter's own; one that is neither refuses every decomposition"
+    )
+
+
+def test_stage_a_freezes_a_template_that_declares_no_produced_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary campaign: no ``--produced-output-template``, still frozen.
+
+    ``freeze_action_template`` carries the top-level ``produced_output_template``
+    entry unconditionally, ``None`` when the flag is absent, so a refusal over
+    that key is not confined to producers that use the flag: it is every
+    ``pbcampaign`` Stage A decomposition.
+    """
+
+    request = dc.validate_logical_request(_request())
+    template = _freeze_template(tmp_path, monkeypatch, request)
+    assert "produced_output_template" in template, (
+        "the template carries the entry whether or not the flag was given"
+    )
+    frozen = dc.freeze_common(
+        request["common"],
+        action_common=pbrun.template_action_common(template),
+    )
+    assert "produced_output_template" not in frozen["action_common"], (
+        "the sealed declaration lives in params; the top-level copy is the "
+        "submitter's own projection into its queue row"
+    )
 
 
 def test_a_childs_key_is_the_ordinary_hash_of_its_own_body(decomposed) -> None:

@@ -4048,6 +4048,13 @@ protected live claim + launch halves). The template carries no action key or
 nonce; the instance binds the real protected attempt later. `pbcampaign`
 list rows forward the option (`produced_output_template` row field to
 `--produced-output-template`); decomposed logical children are out of scope.
+The frozen template's top-level `produced_output_template` entry is a
+submitter handle (`pbrun._TEMPLATE_SUBMITTER_KEYS`), not part of the shared
+half a decomposition parent is keyed on: the binding declaration is the sealed
+`params` copy, and the top-level one is what the submitter projects into its
+own queue row. The template carries the entry whether or not the flag was
+given, so naming it in neither key set refused every Stage A freeze, not only
+a producer's.
 
 Release (`produced_output.safe_release_instance`) requires the coherent
 accepted `prismabuild.reader_lease` package (same file the fleet imports;
