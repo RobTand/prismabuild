@@ -151,8 +151,14 @@ same authority path. Nothing is imported from the shared copies: the #355 rule
 that cold local state trusts no diagnostic copy applies to both records.
 
 **Cold host after reboot.** `gpu-state.json` is absent, so
-`low_samples` restarts at one, there is no `power_feedback`, and the consumed
-sample markers are gone. Probing a non-empty GPU needs two continuous fresh
+`low_samples` restarts at one, there is no `power_feedback`, the consumed
+sample markers are gone, and `power_peaks` -- the per-device ratchet of the
+highest GPU-only draw this host has sampled, which is the admission power
+reference for a device with no driver power limit -- is empty. The reference
+then falls back to the declared per-device capacity fact
+(`adaptive_gpu.DECLARED_GPU_POWER_REFERENCE_W`), which is its floor, so a cold
+host admits on less headroom than a warm one and relearns the peak from its own
+samples. Nothing is imported from the shared copy. Probing a non-empty GPU needs two continuous fresh
 samples again, which costs one extra admission pass. The consumed-sample
 markers guard against re-spending one broker sample; a reboot also restarts the
 broker, whose sample ids are new, so the guard's absence cannot be exploited by

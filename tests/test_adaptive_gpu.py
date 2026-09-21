@@ -50,7 +50,8 @@ def gpu_rig(tmp_path, monkeypatch):
         'cpu_count': 8, 'interval_s': 1.})
     sample = {'schema': 'prismabuild.gpu_capacity.v1', 'sample_id': '100',
               'sampled_unix': 100., 'complete': True, 'attributed': True,
-              'devices': [{'uuid': 'GPU-1', 'power_w': 15., 'power_limit_w': None,
+              'devices': [{'uuid': 'GPU-1', 'name': 'NVIDIA GB10', 'power_w': 15.,
+                           'power_limit_w': None,
                            'power_reference_w': 140., 'power_reference_scope': 'soc_tdp',
                            'memory_domain': 'shared_system', 'limited': False}],
               'host_total_bytes': 128 * adaptive_gpu.GIB,
@@ -546,21 +547,21 @@ def test_concurrent_claimants_share_one_probe_credit(gpu_rig):
 
 
 def test_power_plateau_closes_below_soc_fraction_and_survives_departure(gpu_rig):
-    """Extra contexts at an 81 W plateau must not keep spending a 140 W TDP."""
+    """Extra contexts at a 60 W plateau must not keep spending the reference."""
     from prismabuild import adaptive_gpu
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     for index in range(4): publish(index)
-    sample['devices'][0]['power_w'] = 81.
+    sample['devices'][0]['power_w'] = 60.
     first = claim(); assert first
     tick(); second = claim(); assert second
-    for watts in (80.5, 81., 81.5):
+    for watts in (59.5, 60., 60.5):
         sample['devices'][0]['power_w'] = watts
         tick(); assert claim() is None
     state = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'gpu-state.json')
     assert state['power_feedback']['status'] == 'plateau'
     # A fresh Controller instance and a holder exit must not forget saturation.
     queue.finish(first['action_key'], status='executed', detail={})
-    sample['devices'][0]['power_w'] = 81.
+    sample['devices'][0]['power_w'] = 60.
     for _ in range(3):
         tick(); assert claim() is None
     assert len(queue.ledger().held_keys()) == 1
@@ -629,7 +630,7 @@ def test_noisy_power_response_does_not_authorize_an_unbounded_probe(gpu_rig):
 def test_a_telemetry_gap_cannot_reuse_old_plateau_recovery_samples(gpu_rig):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     for index in range(3): publish(index)
-    sample['devices'][0]['power_w']=80
+    sample['devices'][0]['power_w']=60
     assert claim(); tick(); assert claim()
     for _ in range(3):
         tick(); assert claim() is None
@@ -775,7 +776,10 @@ def test_sw_cap_idle_admits_first_job_with_exception_recorded(gpu_rig):
     assert exception['clock_threshold_fraction'] == 0.10
     assert exception['power_gate_fraction'] == 0.65
     assert exception['clock_ratio'] == 208.0 / 3003.0
-    assert exception['power_ratio'] == 4.32 / 140.0
+    # The SoC TDP stays on the device for display; the gate divides by the
+    # declared GPU capacity fact.
+    assert exception['power_ratio'] == 4.32 / 100.0
+    assert exception['admission_reference_scope'] == 'declared_fallback'
 
 
 def test_sw_cap_idle_second_job_still_needs_free_samples(gpu_rig):
@@ -867,3 +871,84 @@ def test_sw_cap_idle_pressure_refuses(gpu_rig):
     sample['cpu_pressure_some'] = 10.0
     tick()
     assert claim() is None
+
+
+def _gpu_state_path(queue):
+    return adaptive_cpu.local_state_base(queue.ledger().base) / 'gpu-state.json'
+
+
+def test_admission_reference_is_a_gpu_capacity_fact_never_the_soc_tdp():
+    """The denominator of a GPU-only reading is a GPU-only number (#806)."""
+    from prismabuild import adaptive_gpu
+    device = _sw_cap_idle_device(power_w=100.0)
+    reference, scope, source = adaptive_gpu.admission_power_reference(device, {})
+    assert reference == adaptive_gpu.DECLARED_GPU_POWER_REFERENCE_W['NVIDIA GB10']
+    assert reference != device['power_reference_w']
+    assert scope == 'declared_fallback'
+    assert source == adaptive_gpu.DECLARED_GPU_POWER_REFERENCE_SOURCE
+    # A measurement above the declared floor raises it; one below never lowers
+    # it, so an idle history cannot authorize anything.
+    state = {'power_peaks': {device['uuid']: 114.0}}
+    assert adaptive_gpu.admission_power_reference(device, state)[:2] == (114.0, 'measured_peak')
+    state = {'power_peaks': {device['uuid']: 9.0}}
+    assert adaptive_gpu.admission_power_reference(device, state)[1] == 'declared_fallback'
+    # A driver-published GPU-only limit stays admission grade and is preferred.
+    limited = _sw_cap_idle_device(power_limit_w=450.0, power_reference_scope='gpu_power_limit')
+    assert adaptive_gpu.admission_power_reference(limited, {})[:2] == (450.0, 'gpu_power_limit')
+    # No driver limit and no declared entry is no reference at all.
+    unknown = _sw_cap_idle_device(name='NVIDIA GB99')
+    assert adaptive_gpu.admission_power_reference(unknown, {}) == (None, None, None)
+
+
+def test_power_peak_ratchets_but_never_past_the_published_envelope():
+    """One implausible sample must not raise the reference permanently."""
+    from prismabuild import adaptive_gpu
+    state = {}
+    adaptive_gpu.record_power_peak(state, _sw_cap_idle_device(power_w=97.0))
+    adaptive_gpu.record_power_peak(state, _sw_cap_idle_device(power_w=40.0))
+    assert state['power_peaks'] == {_sw_cap_idle_device()['uuid']: 97.0}
+    adaptive_gpu.record_power_peak(state, _sw_cap_idle_device(power_w=999.0))
+    assert state['power_peaks'] == {_sw_cap_idle_device()['uuid']: 97.0}
+
+
+def test_first_job_at_the_real_gpu_ceiling_is_congested(gpu_rig):
+    """100 W is 0.71 of the SoC TDP and 0.91 of the GPU's own capacity."""
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    sample['devices'][0]['power_w'] = 100.
+    tick()
+    assert claim() is None, 'a GPU near its measured ceiling must not admit work'
+
+
+def test_measurement_idleness_is_judged_against_the_gpu_capacity_fact(gpu_rig, monkeypatch):
+    """75 W is below 0.65 x 140 W but above 0.65 x the GPU's own capacity."""
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    monkeypatch.setattr(adaptive_gpu, 'action_contract', lambda item, demand:
+                        ('shape', True, False, demand['mem_gb'] * adaptive_gpu.GIB))
+    publish(0)
+    sample['devices'][0]['power_w'] = 75.
+    tick()
+    assert claim() is None, 'a measurement admitted a GPU drawing 75 W as idle'
+
+
+def test_a_measured_peak_raises_the_reference_above_the_declared_floor(gpu_rig):
+    """The floor is a floor: a box that has drawn more admits on what it drew."""
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    sample['devices'][0]['power_w'] = 90.
+    tick()
+    assert claim() is None, '90 W is congested against the declared 100 W floor'
+    adaptive_cpu.write_json(_gpu_state_path(queue), {'power_peaks': {'GPU-1': 114.0}})
+    tick()
+    admitted = claim()
+    assert admitted, '90 W is not congested against a measured 114 W peak'
+
+
+def test_sampled_power_is_recorded_as_the_device_peak(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(0)
+    sample['devices'][0]['power_w'] = 62.
+    tick()
+    assert claim()
+    assert adaptive_cpu.read_json(_gpu_state_path(queue))['power_peaks'] == {'GPU-1': 62.}

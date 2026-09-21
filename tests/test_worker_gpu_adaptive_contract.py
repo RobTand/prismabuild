@@ -28,6 +28,7 @@ def _sample(*, foreign=(), domain="shared_system", age=0.0):
         "attributed": True,
         "devices": [{
             "uuid": "GPU-physical-0",
+            "name": "NVIDIA GB10",
             "memory_domain": domain,
             "memory_total_bytes": 120 * 1024**3,
             "memory_free_bytes": 80 * 1024**3,

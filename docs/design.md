@@ -2814,9 +2814,18 @@ one `nvidia-smi` process per loop.
 Missing, malformed, stale, incomplete or unattributed GPU evidence offers zero
 GPU capacity and must refuse a GPU claim. A fresh snapshot with one known
 device and no foreign work may admit the first action even when GB10 exposes no
-programmable GPU-only power limit: its actual draw and explicitly scoped 140 W
-SoC reference remain evidence, while utilization percentage is not treated as
-a saturation measure. Any foreign GPU process closes admission on these
+programmable GPU-only power limit. Its actual draw is GPU-only, so the number
+admission divides it by is GPU-only too: `adaptive_gpu.admission_power_reference`
+returns the driver's programmable limit when there is one, and otherwise the
+highest draw this host has sampled from that device, floored by the declared
+per-device capacity fact `DECLARED_GPU_POWER_REFERENCE_W`. The published 140 W
+SoC TDP stays on the sample as `power_reference_w` with scope `soc_tdp` for
+display and provenance, and is never a denominator: it covers CPU power, and
+the measured GPU peak on these boxes is 106 W to 114 W (#806). The ratchet is
+capped by that published envelope, so one implausible `power.draw` cannot raise
+the reference. A device with neither a driver limit nor a declared entry has no
+reference, which leaves its sample invalid and refuses. Utilization percentage
+is not treated as a saturation measure. Any foreign GPU process closes admission on these
 single-device hosts. Processes attributed to one broker attempt do not consume
 extra capacity when that attempt opens multiple CUDA contexts or uses a daemon
 container.
@@ -3363,8 +3372,10 @@ limits remain the execution boundaries. Rising load closes new admission and
 does not stop running work. Thermal/power limiting, foreign GPU processes, host
 memory pressure and CPU pressure close admission. Low power permits a probe;
 it does not certify hardware saturation or useful throughput. GB10's 140 W SoC
-design envelope is explicitly a reference, not an NVML GPU power limit, and
-GPU utilization percentage does not drive admission. Performance claims require
+design envelope is published for display and provenance, not as the admission
+denominator: admission divides by the measured GPU peak or the declared
+per-device capacity floor. GPU utilization percentage does not drive
+admission. Performance claims require
 useful work, elapsed time, energy and the relevant host observations.
 
 Idle SW-cap first-job exception (narrow, Sep-20): a GB10 (`NVIDIA GB10`,
