@@ -778,7 +778,7 @@ def test_sw_cap_idle_admits_first_job_with_exception_recorded(gpu_rig):
     assert exception['clock_ratio'] == 208.0 / 3003.0
     # The SoC TDP stays on the device for display; the gate divides by the
     # declared GPU capacity fact.
-    assert exception['power_ratio'] == 4.32 / 110.0
+    assert exception['power_ratio'] == 4.32 / 100.0
     assert exception['admission_reference_scope'] == 'declared_fallback'
 
 
@@ -938,7 +938,7 @@ def test_a_measured_peak_raises_the_reference_above_the_declared_floor(gpu_rig):
     publish(0)
     sample['devices'][0]['power_w'] = 90.
     tick()
-    assert claim() is None, '90 W is congested against the declared 110 W floor'
+    assert claim() is None, '90 W is congested against the declared 100 W floor'
     adaptive_cpu.write_json(_gpu_state_path(queue), {'power_peaks': {'GPU-1': 114.0}})
     tick()
     admitted = claim()

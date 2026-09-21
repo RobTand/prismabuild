@@ -67,14 +67,16 @@ SW_CAP_OTHER_LIMITERS = ('hw_slowdown', 'hw_thermal_slowdown',
 #: cannot serve as the denominator of a GPU-only reading.  A device model with
 #: no entry here and no driver limit has no admission reference at all, and its
 #: sample stays invalid, which refuses.
-DECLARED_GPU_POWER_REFERENCE_W = {'NVIDIA GB10': 110.0}
+DECLARED_GPU_POWER_REFERENCE_W = {'NVIDIA GB10': 100.0}
 
 #: Where the declared numbers come from, carried into every decision record so
 #: a reader can tell which reference a refusal was made against.
 DECLARED_GPU_POWER_REFERENCE_SOURCE = (
-    'declared fleet capacity fact (PrismaBuild #806): Netdata '
-    'nvidia_smi.gpu_power_draw maxima over 2026-08-28..2026-09-21, '
-    'sparky 114 W and sparklina 106 W')
+    'declared fleet capacity fact (PrismaBuild #806): the fleet owner\'s '
+    'observed GB10 GPU ceiling, 100 W (2026-09-21). A floor only: Netdata '
+    'nvidia_smi.gpu_power_draw maxima over 2026-08-28..2026-09-21 were '
+    'sparky 114 W and sparklina 106 W, and a measured peak above the floor '
+    'replaces it')
 MEASURED_GPU_POWER_REFERENCE_SOURCE = (
     'highest GPU-only power.draw this host has sampled from this device, '
     "ratcheted in the host-local gpu-state.json 'power_peaks' record")
