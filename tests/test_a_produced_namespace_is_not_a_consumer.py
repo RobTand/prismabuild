@@ -135,6 +135,13 @@ def world(tmp_path: Path):
     produced_path = Path(str(next(
         iter(fragments[0]["entries"].values()))["stage_path"]))
     assert produced_path.exists()
+    # The produced store carries reader_lease bookkeeping too: the mover's
+    # material sidecar (real, written by the copy) and, when a pin is taken
+    # with this root, a leases directory.  Neither is a fragment namespace.
+    assert (out_base / "material").is_dir()
+    leases = out_base / "leases"
+    leases.mkdir(exist_ok=True)
+    (leases / "not-a-fragment.json").write_text("{}\n")
     # Both movers are resident: their tier tokens are what makes their
     # fragments attribution in the sweep's ``wanted`` set.
     assert queue.tier_ledger(TIER).acquire(LEGACY_MOVER, {KIND: 1}) is True
@@ -217,6 +224,40 @@ def test_the_walked_root_is_the_exclusion_namespace(world) -> None:
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
     assert owners == {}
+
+
+def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
+    """The reverse direction: produced-root caller, foreign legacy co-owner."""
+
+    co_consumer = "7" * 64
+    co_mover = "8" * 64
+    residency_map.write_fragment(world.queue.root / pool.RESIDENCY, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": co_consumer, "mover_action_key": co_mover,
+        "tier_id": TIER, "stage_root": str(world.stage),
+        "manifest_sha256": "5" * 64,
+        "entries": {
+            residency_map.residency_map_key(LEGACY_SOURCE, 0): {
+                "stage_path": str(world.produced_path), "bytes": LEGACY_BYTES,
+                "offset": 0, "sha256": "6" * 64}}})
+
+    # Excluding the produced mover's own key leaves the legacy co-owner of
+    # the same physical staged path fully protected.
+    owners, taint = stage_release._fragment_owners(
+        world.out_base, {str(world.produced_path)},
+        except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
+    assert taint == []
+    assert owners == {str(world.produced_path): {(co_consumer, co_mover)}}
+
+    # And naming the legacy key as the exception from the produced root does
+    # not drop it either: it is not filed in the walked root's namespace.
+    owners, taint = stage_release._fragment_owners(
+        world.out_base, {str(world.produced_path)},
+        except_consumer=co_consumer, except_mover=co_mover)
+    assert taint == []
+    assert owners == {
+        str(world.produced_path): {
+            (world.namespace, PRODUCED_MOVER), (co_consumer, co_mover)}}
 
 
 # ------------------------------------------------------- unclean states

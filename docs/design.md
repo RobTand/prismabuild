@@ -4167,6 +4167,33 @@ merge. Fragments that disagree about the consumer, tier, stage root or manifest
 refuse rather than merge, and so do two movers that staged one range
 differently.
 
+**Two fragment layouts, one strict census (#798).** The store holds records
+and fragments together: `leases/` (pins and retiring marks), `material/`
+(publish-time sidecars) and the produced-output template, scope and batch
+directories are bookkeeping, and are never parsed as namespaces, while the
+produced fragments are real ownership evidence one level deeper at
+`produced-output-fragments/<batch namespace>/<mover>.json` (reached through
+`produced_output.output_fragment_root`). `stage_release._fragment_census`
+walks both layouts — legacy flat `<consumer>/<mover>.json` and the nested
+produced namespaces — and is strict on purpose: a directory that is neither
+reserved bookkeeping nor a 64-character namespace, and a `.json` document
+that cannot be read or validate, come back as taint rather than a skip. That
+distinction is load-bearing because the census' consumers delete:
+`residency_map.read_fragments` skips a bad file so a consumer still finds
+its other copies, and reusing that tolerance for attribution is how
+corruption reads as "unowned" and staged bytes are lost. The reconciliation
+carries the taint into an incomplete receipt (`skipped:
+attribution_unreadable`, bounded reasons), deletes nothing, and the tier
+cycle continues; the next sweep retries. Self-exclusion is scoped to the
+root being walked — only a fragment filed directly under that root can be
+the caller's own document — so a fragment carrying the same key in a foreign
+namespace stays protected. The tier-loop crash this closes (runtime
+`8990d78df216`, 2026-09-21) was a name, not a byte: the census called
+`read_fragments` with the produced bookkeeping directories as consumer keys,
+and `cycle -> sweep_orphans -> sweep -> reconcile -> attributed_stage_paths`
+raised `ResidencyMapError` every cycle before the service could publish a
+lead.
+
 ### Where stage capacity comes from
 
 A stage tier's capacity is `available` on its dataset (`<pool>/prewarm`, or the
