@@ -2651,9 +2651,129 @@ def _producer_launch_context(queue, producer: str) -> dict[str, object]:
         return {"ok": False, "step": "launch-context",
                 "refusal": "producer-launch-context-required: the producer "
                            "row names no checkout addressing"}
+    # The row's own CAS root, then the queue-sibling default: the same
+    # precedence `stage_release` resolves a claim's CAS root with.
+    row_cas = producer_row.get("cas_root")
+    cas_root = (str(row_cas) if isinstance(row_cas, str) and row_cas
+                else str(Path(queue.root).parent / "cas"))
     return {"ok": True, "worker_script": worker_script,
             "addressing": addressing,
-            "priority": int(producer_row.get("priority") or 0)}
+            "priority": int(producer_row.get("priority") or 0),
+            "cas_root": cas_root}
+
+
+def _read_producer_request(cas_root, producer: str):
+    """The producer's own sealed request, through the existing CAS interface.
+
+    Returns `(cas, request)`, or a typed `{"ok": False, "step", ...}` refusal.
+    The runtime parent context every node of this lane inherits: the output
+    mover and the tier-host egress both seal off it.
+    """
+
+    from prismabuild import core as core_mod
+
+    if len(producer) != 64:
+        return {"ok": False, "step": "parent-request",
+                "refusal": "producer-request-required: pass "
+                           "producer_action_key or run under a launcher "
+                           "that sets PRISMABUILD_ACTION_KEY"}
+    request_path = None
+    try:
+        cas = core_mod.PrismaBuildCAS(cas_root)
+        request_path = (Path(cas.root) / "requests" / producer[:2]
+                        / f"{producer}.json")
+        with open(request_path, "rb") as handle:
+            raw = handle.read(8 * 1024 * 1024 + 1)
+        if len(raw) > 8 * 1024 * 1024:
+            raise ProducedOutputError("producer request oversize")
+        request = core_mod.validate_action(core_mod._decode_strict_json(
+            raw, where="producer action request"))
+        if str(request.get("action_key")) != producer:
+            raise ProducedOutputError("producer request key mismatch")
+    except FileNotFoundError:
+        return {"ok": False, "step": "parent-request",
+                "refusal": f"producer-request-missing: {request_path}"}
+    except Exception as exc:
+        return {"ok": False, "step": "parent-request",
+                "refusal": f"producer-request-unreadable: {exc}"}
+    return cas, request
+
+
+def _producer_movement_template(queue, request: Mapping[str, object],
+                                producer: str, *,
+                                extra_inputs: Sequence[Mapping[str, object]] = ()
+                                ) -> dict[str, object]:
+    """The movement template a node of this lane seals off its producer.
+
+    The producer's task, code closure, environment and execution scope, its
+    inputs minus its own data manifest, and its OWN sealed checkout addressing
+    carried into the child. `extra_inputs` follow the inherited ones: the
+    output mover appends the batch's data manifest, an egress appends nothing.
+    Returns `{"ok": True, "template"}` or a typed refusal.
+    """
+
+    from prismabuild import core as core_mod
+    from prismabuild import pool as pool_mod
+
+    parent_inputs = [dict(entry) for entry in request.get("inputs") or ()
+                     if isinstance(entry, Mapping)]
+    child_inputs = [entry for entry in parent_inputs
+                    if str(entry.get("id"))
+                    != core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
+    # The producer's OWN sealed checkout addressing, carried into the child.
+    # The row already materializes the producer's snapshot; a sealed request
+    # that does not say so is proved against the producer's pre-snapshot
+    # closure stamp, which the materialized tree can never satisfy. Absent on
+    # a legitimate non-snapshot producer: the legacy stamp proof and the
+    # historical ownership digest are unchanged there.
+    request_params = request.get("params")
+    if not isinstance(request_params, Mapping):
+        request_params = {}
+    params: dict[str, object] = {
+        "cwd": str(request_params.get("cwd") or ".")}
+    raw_snapshot = request_params.get("checkout_snapshot")
+    snapshot_sha256 = ""
+    if raw_snapshot is not None:
+        try:
+            snapshot = core_mod.validate_pbrun_checkout_snapshot(raw_snapshot)
+        except core_mod.ActionContractError as exc:
+            return {"ok": False, "step": "parent-request",
+                    "refusal": f"producer-checkout-snapshot-invalid: {exc}"}
+        snapshot_input = snapshot["input"]
+        assert isinstance(snapshot_input, Mapping)
+        if snapshot_input not in child_inputs:
+            return {"ok": False, "step": "parent-request",
+                    "refusal": "producer-checkout-snapshot-input-missing: the "
+                               "producer's sealed snapshot input is not among "
+                               "the inputs the mover inherits"}
+        params["checkout_snapshot"] = snapshot
+        snapshot_sha256 = str(snapshot_input["sha256"])
+    if not snapshot_sha256:
+        # The ownership namespace keeps the historical digest over the first
+        # inherited input, else the producer's own key.
+        snapshot_sha256 = next((str(entry.get("sha256"))
+                                for entry in child_inputs
+                                if entry.get("sha256")), producer)
+    return {"ok": True, "template": {
+        "task": dict(request["task"]),
+        "inputs": child_inputs + [dict(entry) for entry in extra_inputs],
+        "code_closure": request["code_closure"],
+        "environment": request["environment"],
+        "execution_scope": request["execution_scope"],
+        "params": params,
+        "marker_root": Path(queue.root) / pool_mod.CONTAINER_OWNERS,
+        "checkout_identity": {"checkout_snapshot": snapshot_sha256},
+    }}
+
+
+def _announced_tier_record(queue, tier: str) -> Mapping[str, object] | None:
+    """The tier's announced record (`tier_loop.py` writes it), or None."""
+
+    for candidate in queue.tiers():
+        if isinstance(candidate, Mapping) and str(
+                candidate.get("tier_id")) == tier:
+            return candidate
+    return None
 
 
 def _seal_output_mover(queue, checked_instance: Mapping[str, object],
@@ -2722,29 +2842,10 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     # interface: this is the runtime parent context the mover inherits.
     producer = str(producer_action_key or
                    os.environ.get(core_mod.ACTION_KEY_ENV) or "")
-    if len(producer) != 64:
-        return {"ok": False, "step": "parent-request",
-                "refusal": "producer-request-required: pass "
-                           "producer_action_key or run under a launcher "
-                           "that sets PRISMABUILD_ACTION_KEY"}
-    try:
-        cas = core_mod.PrismaBuildCAS(cas_root)
-        request_path = (Path(cas.root) / "requests" / producer[:2]
-                        / f"{producer}.json")
-        with open(request_path, "rb") as handle:
-            raw = handle.read(8 * 1024 * 1024 + 1)
-        if len(raw) > 8 * 1024 * 1024:
-            raise ProducedOutputError("producer request oversize")
-        request = core_mod.validate_action(core_mod._decode_strict_json(
-            raw, where="producer action request"))
-        if str(request.get("action_key")) != producer:
-            raise ProducedOutputError("producer request key mismatch")
-    except FileNotFoundError:
-        return {"ok": False, "step": "parent-request",
-                "refusal": f"producer-request-missing: {request_path}"}
-    except Exception as exc:
-        return {"ok": False, "step": "parent-request",
-                "refusal": f"producer-request-unreadable: {exc}"}
+    parent = _read_producer_request(cas_root, producer)
+    if isinstance(parent, Mapping):
+        return dict(parent)
+    cas, request = parent
     # The batch's stage data manifest, sealed as the request's data-manifest
     # input exactly as a consumer submission's is: the mover finds it in its
     # own sealed request, never on a caller's filesystem. The parent's own
@@ -2769,64 +2870,15 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
             os.unlink(manifest_tmp)
     except Exception as exc:
         return {"ok": False, "step": "manifest", "refusal": str(exc)}
-    parent_inputs = [dict(entry) for entry in request.get("inputs") or ()
-                     if isinstance(entry, Mapping)]
-    child_inputs = [entry for entry in parent_inputs
-                    if str(entry.get("id"))
-                    != core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
-    # The producer's OWN sealed checkout addressing, carried into the child.
-    # The row already materializes the producer's snapshot; a sealed request
-    # that does not say so is proved against the producer's pre-snapshot
-    # closure stamp, which the materialized tree can never satisfy. Absent on
-    # a legitimate non-snapshot producer: the legacy stamp proof and the
-    # historical ownership digest are unchanged there.
-    request_params = request.get("params")
-    if not isinstance(request_params, Mapping):
-        request_params = {}
-    params: dict[str, object] = {
-        "cwd": str(request_params.get("cwd") or ".")}
-    raw_snapshot = request_params.get("checkout_snapshot")
-    snapshot_sha256 = ""
-    if raw_snapshot is not None:
-        try:
-            snapshot = core_mod.validate_pbrun_checkout_snapshot(raw_snapshot)
-        except core_mod.ActionContractError as exc:
-            return {"ok": False, "step": "parent-request",
-                    "refusal": f"producer-checkout-snapshot-invalid: {exc}"}
-        snapshot_input = snapshot["input"]
-        assert isinstance(snapshot_input, Mapping)
-        if snapshot_input not in child_inputs:
-            return {"ok": False, "step": "parent-request",
-                    "refusal": "producer-checkout-snapshot-input-missing: the "
-                               "producer's sealed snapshot input is not among "
-                               "the inputs the mover inherits"}
-        params["checkout_snapshot"] = snapshot
-        snapshot_sha256 = str(snapshot_input["sha256"])
-    if not snapshot_sha256:
-        # The ownership namespace keeps the historical digest over the first
-        # inherited input, else the producer's own key.
-        snapshot_sha256 = next((str(entry.get("sha256"))
-                                for entry in child_inputs
-                                if entry.get("sha256")), producer)
-    mover_template = {
-        "task": dict(request["task"]),
-        "inputs": child_inputs + [manifest_input],
-        "code_closure": request["code_closure"],
-        "environment": request["environment"],
-        "execution_scope": request["execution_scope"],
-        "params": params,
-        "marker_root": Path(queue.root) / pool_mod.CONTAINER_OWNERS,
-        "checkout_identity": {"checkout_snapshot": snapshot_sha256},
-    }
+    templated = _producer_movement_template(
+        queue, request, producer, extra_inputs=[manifest_input])
+    if not templated.get("ok"):
+        return templated
+    mover_template = templated["template"]
     # Movement-node resolution off the TIER RECORD (the ordinary path):
     # interpreter/tools/mountpoint/host are facts about the box that runs
     # the movers, announced beside the tier by tier_loop.py.
-    record = None
-    for candidate in queue.tiers():
-        if isinstance(candidate, Mapping) and str(
-                candidate.get("tier_id")) == tier:
-            record = candidate
-            break
+    record = _announced_tier_record(queue, tier)
     if record is None:
         return {"ok": False, "step": "resolve",
                 "refusal": f"tier-not-announced: {tier}"}
@@ -3604,11 +3656,281 @@ def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
     _write_commitments(path, {"batches": batches})
 
 
+#: The deferral `retire_batch` reports while the retirement's OWN egress action
+#: is queued or running on the tier host. It rides the egress receipt's
+#: `deferred_own` list beside `own-copy-in-flight` because it is the same kind
+#: of answer: bytes, proof and full credit are kept, and an ordinary retry
+#: completes the retirement once that action has ended.
+OWN_EGRESS_IN_FLIGHT = "own-egress-in-flight"
+
+
+def _egress_runs_in_process(record: Mapping[str, object] | None) -> bool:
+    """Does THIS process sit on the box that owns the stage?
+
+    The egress unlinks staged files, and only the tier host mounts the stage
+    read-write: the GPU hosts mount it read-only, so an egress run in a
+    producer there cannot delete anything (#801). The tier record's `host` is
+    the fact `tier_loop.py` announces for exactly this purpose, and it is the
+    same fact the movers are placed by.
+
+    A wrong "elsewhere" is always safe -- the tier-host route works from any
+    box, including the tier host itself -- so nothing here tries to be clever.
+    Inside a container `socket.gethostname()` is the container's name, never
+    the box's, and the answer is "elsewhere": that is the safe direction, and
+    it must not be "fixed" by resolving `record["host"]` some other way. A
+    tier with no announced record or host keeps the in-process egress, whose
+    own stage-root check answers for it.
+    """
+
+    import socket
+
+    host = str(record.get("host") or "") if isinstance(record, Mapping) else ""
+    return not host or host == socket.gethostname()
+
+
+def _seal_output_egress(queue, *, record: Mapping[str, object],
+                        producer: str, cas_root, batch_id: str,
+                        generation: int, target_mover: str, consumer: str,
+                        stage_root: str, residency_root: str
+                        ) -> dict[str, object]:
+    """Seal (never file) the egress action for one materialization.
+
+    The egress node `pbrun` seals for a consumer's staged range, sealed the
+    same way for a produced batch: `stage_release.py` off the ANNOUNCED TIER
+    RECORD, placed on the box that owns the stage, one CPU and one GiB, and no
+    tier demand -- an egress returns capacity, and one that had to reserve
+    some before giving any back would deadlock exactly when the stage is full.
+    It carries no data manifest, so nothing prewarms for it.
+
+    The key is content-addressed over a command naming the materialization's
+    mover and the batch's namespace, so it is unique per materialization and
+    is re-derived by every call instead of being recorded anywhere.
+    """
+
+    from prismabuild import movement_actions
+
+    parent = _read_producer_request(cas_root, producer)
+    if isinstance(parent, Mapping):
+        return dict(parent)
+    cas, request = parent
+    templated = _producer_movement_template(queue, request, producer)
+    if not templated.get("ok"):
+        return templated
+    try:
+        mover_python, _mover_tool, egress_tool = (
+            movement_actions.movement_tools(record))
+    except SystemExit as exc:
+        return {"ok": False, "step": "resolve", "refusal": str(exc)}
+    host = str(record.get("host") or "")
+    command = [mover_python, egress_tool,
+               "--pool-root", str(queue.root),
+               "--mover-action-key", target_mover,
+               "--consumer-action-key", consumer,
+               "--stage-root", str(stage_root),
+               "--residency-root", str(residency_root)]
+    retry_policy = {"max_attempts": 3, "retry_safe": True}
+    log_name = f"produced-output-egress-{batch_id}.log"
+    if int(generation) > 0:
+        log_name = (f"produced-output-egress-{batch_id}"
+                    f"-m{int(generation)}.log")
+    try:
+        action = movement_actions.seal_movement_action(
+            templated["template"], command=command,
+            demand={"cpu": 1, "mem_gb": 1},
+            tags=[host] if host else [],
+            log_name=log_name, retry_policy=retry_policy)
+    except SystemExit as exc:
+        return {"ok": False, "step": "seal", "refusal": str(exc)}
+    except Exception as exc:
+        return {"ok": False, "step": "seal", "refusal": str(exc)}
+    return {"ok": True, "action": action, "cas": cas,
+            "egress_key": str(action["action_key"]), "host": host,
+            "retry_policy": retry_policy}
+
+
+def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
+                      cas_root, batch_id: str, generation: int,
+                      target_mover: str, consumer: str, stage_root: str,
+                      residency_root: str) -> dict[str, object]:
+    """Run one materialization's egress ON THE TIER HOST, across calls.
+
+    Returns `{"receipt"}` -- a complete, error-free egress receipt, ready for
+    the caller's filing phase -- or `{"answer"}`, the caller's whole answer.
+
+    One `retire_batch` call cannot wait for another box, so the egress is an
+    ordinary queue action and the retirement is a re-driven call: the first
+    call publishes the action and answers the typed `egress-incomplete`
+    deferral `own-egress-in-flight`; a later call finds the action ended,
+    reads the receipt it filed, and files the retirement. Nothing is decided
+    from silence: only a filed receipt naming this egress key and this batch's
+    namespace, complete and error-free, retires anything.
+
+    `stage_release.evict` is idempotent, so an egress that runs twice -- a
+    queue retry, or a key that moved because the tier announced other tools --
+    is a no-op receipt, never a second delete.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    def incomplete(receipt: Mapping[str, object], key: str | None
+                   ) -> dict[str, object]:
+        answer: dict[str, object] = {
+            "ok": False, "refusal": "egress-incomplete",
+            "receipt": dict(receipt)}
+        if key:
+            answer["egress_action_key"] = key
+        return {"answer": answer}
+
+    def deferred(reason: str, key: str | None = None,
+                 state: str | None = None) -> dict[str, object]:
+        receipt: dict[str, object] = {
+            "schema": pool_mod.POOL_EGRESS_SCHEMA_V1,
+            "action_key": target_mover,
+            "consumer_action_key": consumer,
+            "stage_root": str(stage_root),
+            "complete": False, "errors": [],
+            "live_pins": [], "deferred_handoffs": [],
+            "deferred_own": [reason]}
+        if key:
+            receipt["egress_action_key"] = key
+        if state:
+            receipt["egress_state"] = state
+        return incomplete(receipt, key)
+
+    # The mover's OWN copy first, exactly as the egress itself would answer
+    # (#795): a copy still queued or running is never raced by its egress.
+    mover_state = _mover_live_state(queue, target_mover)
+    if mover_state == "unknown":
+        return {"answer": {"ok": False,
+                           "refusal": "unknown-retain: mover-row-unreadable"}}
+    if mover_state in (pool_mod.READY, pool_mod.CLAIMED):
+        return deferred("own-copy-in-flight")
+    sealed = _seal_output_egress(
+        queue, record=record, producer=producer, cas_root=cas_root,
+        batch_id=batch_id, generation=generation, target_mover=target_mover,
+        consumer=consumer, stage_root=stage_root,
+        residency_root=residency_root)
+    if not sealed.get("ok"):
+        return {"answer": {"ok": False, "step": sealed.get("step"),
+                           "refusal": "unknown-retain: egress-seal: "
+                                      f"{sealed.get('refusal')}"}}
+    egress_key = str(sealed["egress_key"])
+    state = _mover_live_state(queue, egress_key)
+    if state == "unknown":
+        return {"answer": {"ok": False, "egress_action_key": egress_key,
+                           "refusal": "unknown-retain: egress-row-unreadable"}}
+    if state in (pool_mod.READY, pool_mod.CLAIMED):
+        return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, state)
+    filed: dict[str, object] | None = None
+    if state != "absent":
+        # `Pool._file_move` files a node's receipt under the node's OWN key,
+        # so an egress receipt is read by the egress key and names it; the
+        # mover it retired is bound by that key, which hashes a command
+        # naming it. The namespace must still be this batch's.
+        try:
+            candidate = queue.move_record(egress_key)
+        except Exception:
+            candidate = None
+        if (isinstance(candidate, Mapping)
+                and str(candidate.get("action_key") or "") == egress_key
+                and str(candidate.get("consumer_action_key") or "")
+                == consumer):
+            filed = dict(candidate)
+            filed["schema"] = pool_mod.POOL_EGRESS_SCHEMA_V1
+            filed["action_key"] = target_mover
+            filed["egress_action_key"] = egress_key
+    if (filed is not None and filed.get("complete") is True
+            and not filed.get("errors")):
+        return {"receipt": filed}
+    # Nothing has completed this egress: publish it, or publish it AGAIN --
+    # `recompute` is what makes a republished movement key run instead of
+    # being answered from its old receipt.
+    launch = _producer_launch_context(queue, producer)
+    if not launch.get("ok"):
+        return {"answer": {"ok": False, "step": launch.get("step"),
+                           "egress_action_key": egress_key,
+                           "refusal": "unknown-retain: egress-launch: "
+                                      f"{launch.get('refusal')}"}}
+    retry_policy = sealed["retry_policy"]
+    assert isinstance(retry_policy, Mapping)
+    host = str(sealed["host"])
+    try:
+        sealed["cas"].publish_action_request(sealed["action"])
+        queue.publish(
+            action_key=egress_key,
+            cas_root=str(sealed["cas"].root),
+            worker_script=str(launch["worker_script"]),
+            tags=[host] if host else (),
+            priority=int(launch["priority"]),
+            max_attempts=int(retry_policy["max_attempts"]),
+            retry_safe=bool(retry_policy["retry_safe"]),
+            **dict(launch["addressing"]),
+            # No tier demand, no residency block and no batch reference: the
+            # row `pbrun` publishes for a consumer's egress, for its reasons.
+            resources={"cpu": 1, "mem_gb": 1},
+            recompute=True)
+    except Exception as exc:
+        return {"answer": {"ok": False, "step": "egress-publish",
+                           "egress_action_key": egress_key,
+                           "refusal": f"unknown-retain: egress-publish: {exc}"}}
+    if filed is not None:
+        # An attempt ended without completing, and its receipt is the cause:
+        # a live pin, a handoff, an error. Answered as the in-process egress
+        # answers it; the attempt just published is the next re-drive's.
+        return incomplete(filed, egress_key)
+    return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, "published")
+
+
+def _record_staged_paths(queue, checked_instance: Mapping[str, object],
+                         batches: dict, batch_id: str,
+                         entry: Mapping[str, object], source: str,
+                         mover_key: str, staged_paths: list[str]) -> None:
+    """File the staged paths BEFORE a tier-host egress can drop the fragment.
+
+    Caller holds the output-prefix ownership lock. The in-process egress reads
+    the fragment and deletes in one call, so the paths it vouched are in hand
+    when the retirement is filed. A tier-host egress ends between two calls,
+    and the call that files the retirement finds the fragment already gone:
+    without this, a retired batch would record NO staged paths, and a live pin
+    over one of them could never be attributed to it again. `retired` is not
+    touched -- the same field, written early, on a copy that is still live.
+    """
+
+    paths = sorted(set(staged_paths))
+    updated = dict(entry)
+    if source == "materialization":
+        items = _materializations(entry)
+        for index, item in enumerate(items):
+            if str(item.get("mover_key")) == str(mover_key):
+                item = dict(item)
+                item["staged_paths"] = paths
+                items[index] = item
+                break
+        else:
+            raise ProducedOutputError("unknown-retain: materializations")
+        updated["materializations"] = items
+    else:
+        updated["staged_paths"] = paths
+    batches[batch_id] = updated
+    _write_commitments(_commitments_path(queue.root, checked_instance),
+                       {"batches": batches})
+
+
 def retire_batch(queue, instance: Mapping[str, object],
                  template: Mapping[str, object], batch_id: str, *,
-                 stage_root: str, residency_root: str | Path
-                 ) -> dict[str, object]:
+                 stage_root: str, residency_root: str | Path,
+                 cas_root=None) -> dict[str, object]:
     """Evict one batch's staged files, then retire its stage window.
+
+    WHERE the egress runs follows the tier record. On the box that owns the
+    stage it runs in this process, as it always has. Anywhere else it runs as
+    a queue action placed on that box (`_tier_host_egress`), because only the
+    tier host mounts the stage read-write (#801): the first call publishes
+    the action and answers `egress-incomplete` with the receipt's
+    `deferred_own` naming `own-egress-in-flight`, and the caller re-drives
+    this call -- exactly as it already does for `own-copy-in-flight` -- until
+    the action has ended and the retirement files. `cas_root` is where that
+    action's request is filed; it defaults to the producer row's own root.
 
     Provenance is validated BEFORE anything destructive: the immutable
     batch record loads through the single loader (schema/binding/
@@ -3639,6 +3961,7 @@ def retire_batch(queue, instance: Mapping[str, object],
 
     import stage_release
 
+    from prismabuild import core as core_mod
     from prismabuild import pool as pool_mod
 
     try:
@@ -3731,6 +4054,26 @@ def retire_batch(queue, instance: Mapping[str, object],
         selected_manifest = str(filed.get("manifest_digest") or "")
         selected_source = str(active.get("source") or "")
         selected_generation = int(active.get("generation") or 0)
+        # Paths an earlier call of this retirement filed for this same copy:
+        # a tier-host egress drops the fragment between two calls, so the
+        # call that files the retirement may find nothing left to read.
+        recorded = active.get("staged_paths")
+        recorded_paths = {os.path.normpath(path) for path in recorded
+                          if isinstance(path, str) and path} if isinstance(
+                              recorded, list) else set()
+        staged_paths = sorted(set(staged_paths) | recorded_paths)
+        try:
+            tier_record = _announced_tier_record(queue, tier)
+        except Exception as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        in_process = _egress_runs_in_process(tier_record)
+        if not in_process and set(staged_paths) - recorded_paths:
+            try:
+                _record_staged_paths(
+                    queue, checked_instance, batches, batch_id, entry,
+                    selected_source, target_mover, staged_paths)
+            except (ProducedOutputError, OSError) as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     # --- The ownership lock is RELEASED here, before the egress runs. ---
     # `stage_release.evict` takes the mover transition lock (blocking) and
     # then the STAGE ROOT's ownership lock, and its containment reclamation
@@ -3743,12 +4086,33 @@ def retire_batch(queue, instance: Mapping[str, object],
     # writer over these origins and `ensure_batch_materialized` keeps
     # refusing a successor, and a failed or partial egress files nothing and
     # leaves the old materialization holding its own credit.
-    receipt = stage_release.evict(
-        queue, target_mover, consumer_action_key=consumer,
-        stage_root=str(stage_root), residency_root=str(residency_root))
-    if not receipt.get("complete"):
-        return {"ok": False, "refusal": "egress-incomplete",
-                "receipt": receipt}
+    if in_process:
+        receipt = stage_release.evict(
+            queue, target_mover, consumer_action_key=consumer,
+            stage_root=str(stage_root), residency_root=str(residency_root))
+        if not receipt.get("complete"):
+            return {"ok": False, "refusal": "egress-incomplete",
+                    "receipt": receipt}
+    else:
+        # The same egress, on the box that can delete: see `_tier_host_egress`.
+        assert tier_record is not None
+        producer = str(checked_instance.get("owner_action_key")
+                       or os.environ.get(core_mod.ACTION_KEY_ENV) or "")
+        if cas_root is None:
+            launch = _producer_launch_context(queue, producer)
+            cas_root = (str(launch["cas_root"]) if launch.get("ok")
+                        else str(Path(queue.root).parent / "cas"))
+        routed = _tier_host_egress(
+            queue, record=tier_record, producer=producer, cas_root=cas_root,
+            batch_id=batch_id, generation=selected_generation,
+            target_mover=target_mover, consumer=consumer,
+            stage_root=str(stage_root), residency_root=str(residency_root))
+        if "answer" in routed:
+            answer = routed["answer"]
+            assert isinstance(answer, dict)
+            return answer
+        receipt = routed["receipt"]
+        assert isinstance(receipt, dict)
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         # Revalidate the EXACT selection before filing anything: the record
         # still loads, the batch still resolves to the same manifest, and the

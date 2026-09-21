@@ -4544,6 +4544,32 @@ further. The consumer window's twin (#627: a failed mover's partials, held by
 nobody) has no such owner and keeps the tier loop's eviction-candidate sweep
 instead; nothing in this contract changes it.
 
+Where that egress runs follows the tier record (#801). Only the tier host
+mounts the stage read-write -- the GPU hosts mount it read-only -- so
+`retire_batch` runs `stage_release.evict` in its own process only when the
+announced tier `host` is the box it is on. Anywhere else it seals the egress
+node `pbrun` seals for a consumer's staged range (`stage_release.py` off the
+tier record, one CPU and one GiB, no tier demand, no residency block, no data
+manifest), publishes it placed on the tier host with `recompute`, and answers
+`egress-incomplete` with `deferred_own: ["own-egress-in-flight"]`. The owner
+re-drives the call exactly as it does for `own-copy-in-flight`; the call that
+finds the action ended reads the receipt the action filed under its own key and
+files the retirement. The egress key is content-addressed over a command naming
+the materialization's mover and the batch namespace, so every call re-derives
+it and nothing records it. A process inside a container reads the container's
+name as its hostname and therefore always takes this route, which is the safe
+direction: the route works from any box, the tier host included.
+
+Three behaviours differ from the in-process route, all deliberate. The staged
+paths are filed on the still-live copy before the action is published, because
+the fragment is gone by the call that files the retirement. An attempt that
+ended incomplete is answered with its own receipt -- a live pin stays a live
+pin, never a deferral -- while the same key is published again for the next
+re-drive. A mover still `READY` or `CLAIMED` is answered `own-copy-in-flight`
+before any egress is published. A retirement the owner abandons leaves its
+egress action queued: if that action later completes, the next `retire_batch`
+files it, and a read before that finds no fragment and refuses.
+
 `produced_output.recover_batches` is the read-only census over the same
 evidence, and it may not turn unproven into a verdict. Fragments prove bytes
 landed, not that the batch landed, so `output-batch-staged` requires the
