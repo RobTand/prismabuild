@@ -3135,7 +3135,15 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
                        "tier_id": tier,
                        "manifest_sha256": manifest_digest,
                        "manifest_bytes": total,
-                       "range_start_bytes": 0, "range_end_bytes": total})
+                       "range_start_bytes": 0, "range_end_bytes": total},
+            # The same question the state read above asked, asked again under
+            # the queue's own transition lock.  The read can be stale on NFS
+            # -- that is how the 2026-09-21 cycle republished live rows -- and
+            # only the lock makes look-then-publish one decision (#810).
+            refuse_if_live=True)
+    except pool_mod.ActionAlreadyLiveError as exc:
+        # The answer the state read would have given: the row is there.
+        return {"ok": True, "published": False, "state": exc.state}
     except pool_mod.PoolContractError as exc:
         return {"ok": False, "step": "publish", "refusal": str(exc)}
     return {"ok": True, "published": True, "state": "ready"}
@@ -3908,7 +3916,18 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
             # A re-driven retirement is an AUTOMATIC republication: it never
             # retires an operator's withdrawal of this egress by writing over
             # it.
-            refuse_withdrawn=True)
+            refuse_withdrawn=True,
+            # And it never queues a second copy of an egress this queue is
+            # already carrying.  The state read at the top of this function
+            # asks the same question; on NFS its answer can be stale, and in
+            # the 2026-09-21 cycle it was -- each egress was republished three
+            # times and ran four. Only the queue's own transition lock makes
+            # look-then-publish one decision (#810).
+            refuse_if_live=True)
+    except pool_mod.ActionAlreadyLiveError as exc:
+        # Exactly what the state read above answers when it sees the row: this
+        # egress is in flight, so the caller polls rather than publishes.
+        return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, exc.state)
     except pool_mod.WithdrawnActionError as exc:
         # No `deferred_own`: a caller polling a deferral must stop here.
         return {"answer": {"ok": False, "step": "egress-publish",
