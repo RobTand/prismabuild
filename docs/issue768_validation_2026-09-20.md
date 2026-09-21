@@ -111,3 +111,12 @@ case that passed before the repair is the fixture check that
   the bytes stayed. That is the intended direction -- occupancy follows
   the bytes -- but it does make stale-claim recovery the thing that
   releases those tokens.
+- What re-drives a deferred egress is the pre-existing mechanism, read
+  but not exercised end to end here: `stage_release.sweep` enumerates
+  movers from the tier ledger's `held_keys()`, and a deferral retains
+  those tokens, so the mover is revisited on a later cycle and its paths
+  stay attributed through `wanted | owners | still_held` in the
+  reconciliation. Retiring marks are never an enumeration key -- they
+  are read only inside `reader_lease.acquire` -- so filing none does not
+  hide a handoff deferral from the retry. A handoff-deferring egress
+  action exits 1 exactly as a pin-deferring one already does.
