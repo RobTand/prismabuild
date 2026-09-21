@@ -1,46 +1,41 @@
-"""Measure metadata amplification in RAM-destination adoption (repro, no fix).
+"""Bounded work for RAM-destination adoption: a stable document decides once.
 
-The live Stage A 8ca8952c incident: the RAM head promotion (a201e161) held
-the /ram/prewarm ownership lock while showing ~29 GB rchar over ~3,020
-large reads with zero writes, 16 worker threads and ~527 CPU-s, and was
-auto-withdrawn after the consumer failed. Native audit
-(stage-ownership-lock-liveness-audit-astra.md) traced the source path --
-``_Copier._copy_one`` -> ``_StagedPublisher.try_adopt`` -> ``_proof_search``
-per entry under the destination-root ownership lock -- and named the
-publisher's bounded metadata index (192 MiB, #761) as the concrete possible
-amplification path: on a retention miss every lookup re-reads and re-decodes
-an entire fragment or sidecar, and each miss first runs ``_reclaim``. That
-audit is source-only; this file makes the mechanism measurable on a tiny
-real fixture.
+Derived from the PR #779 reproduction.  The live Stage A 8ca8952c incident
+(the RAM head promotion ``a201e161`` held the destination-root ownership lock
+with ~29 GB rchar over ~3,020 large reads, zero writes, 16 workers and ~527
+CPU-s, and was auto-withdrawn) was traced to ``_Copier._copy_one`` ->
+``_StagedPublisher.try_adopt`` -> ``_proof_search`` per entry: with the #761
+index unable to retain an owner's records, every attempted adoption re-read
+and re-decoded every fragment and sidecar, and each refusal first ran
+``_reclaim``.  At a 64 KiB scaled budget the reproduction measured 421 decodes
+and 420 reclaims for 60 destinations over an 8-document fixture, against 8
+decodes and 0 reclaims with room.
 
-No production behavior changes here. The test pins today's threshold
-behavior from both sides so the number, not the narrative, is the artifact:
+That file was reproduction-only.  This is the regression the fix must satisfy,
+and it is a work-count gate, never a wall-clock gate:
 
-* with an ample budget, each document is decoded once for the whole sweep
-  and nothing is reclaimed -- the cache does its job;
-* with a budget that cannot retain even one owner's records (the live
-  forest shape: several prior consumers whose fragments/sidecars each name
-  every destination), decodes and reclaims grow per attempted adoption --
-  deterministic, bounded-payload proof of the amplification, scaled far
-  below the live 192 MiB ceiling by the only lever that is pure fixture
-  size (the budget constant), with real writers, real documents, real
-  identities and the real copier and publisher.
+* a budget that fits the compact projections must decode each stable document
+  once and reclaim zero times, with every destination still adopting -- at
+  the fixture scale and as fixture and cap shrink together;
+* a budget nothing fits in must still decide correctly and retain nothing;
+* real ``_Copier`` threads and a contending reader must complete with no lost
+  or duplicated work and no extra decodes, synchronized by events rather than
+  by an unisolated timing maximum;
+* compact-retained verdicts must equal the same documents' uncached verdicts,
+  and mutation, taint/heal and duplicate-sidecar-mention answers must be
+  preserved.
 
-The fail-closed contract is asserted alongside: cross-consumer owners
-adopt legitimately (the ownership contract), and a corrupt fragment makes
-every affected lookup refuse unknown -- never a silent skip into success.
+The fixture is real: real writers, real identities, the real publisher and
+copier, adoption through the real ``try_adopt``/``_proof_search`` path under
+the bucket's stage ownership lock.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 import sys
 import threading
-import time
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -55,6 +50,19 @@ MANIFEST = "5" * 64
 N_DESTS = 60
 OWNERS = 4           # prior consumers whose fragments+sidecars name every dest
 PAYLOAD = b"repro-payload\x00\x01\x02" * 64
+
+#: The scaled fixture-size lever PR #779 used: far below the production 192
+#: MiB ceiling, and small enough that the packed projections of the whole
+#: 60-destination/two-per-owner forest fit, while the pre-fix object graph
+#: does not.
+CONSTRAINED_BUDGET = 64 << 10
+SMALL_DESTS = 15
+SMALL_OWNERS = 2
+SMALL_BUDGET = 16 << 10
+
+#: The production default captured before any test patches it, so an arm that
+#: asks for "no lever" is not silently handed a previous arm's budget.
+DEFAULT_BUDGET = int(stage_move._INDEX_BUDGET_BYTES)
 
 
 def _hex64(seed: str) -> str:
@@ -92,8 +100,9 @@ class _Counters:
         return len(self.decodes)
 
 
-def _fixture(tmp_path: Path):
-    """A real RAM-destination forest: OWNERS prior consumers, N_DESTS files.
+def _fixture(tmp_path: Path, *, destinations: int = N_DESTS,
+             owners: int = OWNERS) -> dict[str, object]:
+    """A real RAM-destination forest: ``owners`` prior consumers.
 
     Every owner's fragment and sidecar legitimately vouch for every
     destination (identical bytes, identical identities), exactly the live
@@ -109,158 +118,444 @@ def _fixture(tmp_path: Path):
     src_root.mkdir()
     entries = []
     digest = hashlib.sha256(PAYLOAD).hexdigest()
-    for index in range(N_DESTS):
-        name = f"model-{index:05d}-of-{N_DESTS:05d}.safetensors"
+    for index in range(destinations):
+        name = f"model-{index:05d}-of-{destinations:05d}.safetensors"
         source = src_root / name
         source.write_bytes(PAYLOAD)
-        dest = ram_root / name
-        dest.write_bytes(PAYLOAD)
+        (ram_root / name).write_bytes(PAYLOAD)
         entries.append({"path": str(source), "offset": 0,
                         "bytes": len(PAYLOAD), "sha256": digest})
-    for owner_index in range(OWNERS):
+
+    fragment_entries: dict[str, dict[str, object]] = {}
+    material_entries: dict[str, dict[str, object]] = {}
+    for entry in entries:
+        key = residency_map.residency_map_key(entry["path"], 0)
+        destination = str(ram_root / Path(entry["path"]).name)
+        identity = reader_lease.stat_identity(destination)
+        assert identity is not None
+        fragment_entries[key] = {
+            "stage_path": destination, "bytes": entry["bytes"],
+            "offset": 0, "sha256": entry["sha256"]}
+        material_entries[key] = {
+            "stage_path": destination, "bytes": entry["bytes"],
+            "sha256": entry["sha256"], "file_id": identity}
+
+    owner_keys: list[tuple[str, str]] = []
+    for owner_index in range(owners):
         consumer = _hex64(f"prior-consumer-{owner_index}")
         mover = _hex64(f"prior-mover-{owner_index}")
-        frag_entries, mat_entries = {}, {}
-        for entry, source in zip(entries, sorted(src_root.iterdir())):
-            key = residency_map.residency_map_key(entry["path"], 0)
-            identity = reader_lease.stat_identity(str(ram_root / source.name))
-            assert identity is not None
-            frag_entries[key] = {
-                "stage_path": str(ram_root / source.name),
-                "bytes": entry["bytes"], "offset": 0,
-                "sha256": entry["sha256"]}
-            mat_entries[key] = {
-                "stage_path": str(ram_root / source.name),
-                "bytes": entry["bytes"], "sha256": entry["sha256"],
-                "file_id": identity}
-        residency_map.write_fragment(residence, {
-            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
-            "consumer_action_key": consumer, "mover_action_key": mover,
-            "tier_id": TIER, "stage_root": str(ram_root), "epoch": EPOCH,
-            "manifest_sha256": MANIFEST, "entries": frag_entries})
-        reader_lease.write_material(
-            residence, consumer_action_key=consumer,
-            mover_action_key=mover, tier_id=TIER, stage_root=str(ram_root),
-            manifest_sha256=MANIFEST,
-            generation=reader_lease.mint_generation(),
-            entries=mat_entries, epoch=EPOCH)
-    return queue, residence, ram_root, src_root, entries
+        owner_keys.append((consumer, mover))
+        _write_fragment(residence, consumer, mover, fragment_entries)
+        _write_material(residence, consumer, mover, material_entries)
 
-
-def _adopt_all(tmp_path, monkeypatch, *, budget: int | None):
-    """One promotion-shaped sweep: try_adopt every destination, no copying.
-
-    Returns (counters, wall_seconds, per-entry adopt timings, copier). With
-    ``budget`` the #761 ceiling is scaled (fixture-size lever only); with
-    ``None`` the production 192 MiB default governs.
-    """
-    queue, residence, ram_root, src_root, entries = _fixture(tmp_path)
-    if budget is not None:
-        monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
-    counters = _Counters(monkeypatch)
-    publisher = stage_move._StagedPublisher(
-        queue=queue, stage_root=ram_root, residency_root=residence,
-        mover_action_key=_hex64("promoting-mover"), manifest_sha256=MANIFEST,
-        tier_id=TIER, cas_root=str(tmp_path / "cas"))
-    copier = stage_move._Copier(
-        mounts=prewarm_loop.MountMap([f"{src_root}={src_root}"]),
-        pacer=None, stage_root=ram_root, mount_prefix=str(src_root),
-        block=1 << 16, workers=1, owner=_hex64("promoting-mover"),
-        publisher=publisher)
-    whole = {entry["path"] for entry in entries}
-    adopt_seconds = []
-    started = time.monotonic()
-    for entry in entries:
-        destination = ram_root / Path(entry["path"]).name
-        before = time.monotonic()
-        adopted = publisher.try_adopt(
-            entry, destination, stage_move._origin_id_of(entry["path"]))
-        adopt_seconds.append(time.monotonic() - before)
-        assert adopted is not None, f"destination lost proof: {destination}"
-    wall = time.monotonic() - started
     return {
-        "budget": budget if budget is not None else stage_move._INDEX_BUDGET_BYTES,
-        "entries": len(entries),
-        "documents_decoded_once_each": counters.documents(),
-        "total_decodes": counters.total_decodes(),
-        "metadata_bytes_read": counters.decode_bytes,
-        "reclaims": counters.reclaims,
-        "adopt_mean_ms": round(1000 * sum(adopt_seconds) / len(adopt_seconds), 3),
-        "adopt_max_ms": round(1000 * max(adopt_seconds), 3),
-        "wall_s": round(wall, 3),
+        "queue": queue, "residence": residence, "ram_root": ram_root,
+        "src_root": src_root, "entries": entries,
+        "fragment_entries": fragment_entries,
+        "material_entries": material_entries,
+        "owners": owner_keys,
     }
 
 
-def test_adoption_decode_amplification_under_a_retention_refusing_budget(
-        tmp_path, monkeypatch):
-    """Today's threshold behavior, measured from both sides of the ceiling.
+def _write_fragment(residence: Path, consumer: str, mover: str,
+                    entries: dict[str, dict[str, object]]) -> Path:
+    return residency_map.write_fragment(residence, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(residence.parent.parent /
+                                           "ram" / "prewarm"),
+        "epoch": EPOCH,
+        "manifest_sha256": MANIFEST, "entries": entries})
 
-    Ample budget: one decode per document for the whole sweep, no reclaim.
-    A budget below one owner's retained records: every lookup re-decodes the
-    whole forest and reclaims -- the amplification the live run showed at
-    the 192 MiB ceiling, demonstrated deterministically at fixture scale.
+
+def _write_material(residence: Path, consumer: str, mover: str,
+                    entries: dict[str, dict[str, object]]) -> Path:
+    return reader_lease.write_material(
+        residence, consumer_action_key=consumer, mover_action_key=mover,
+        tier_id=TIER, stage_root=str(residence.parent.parent / "ram" /
+                                     "prewarm"),
+        manifest_sha256=MANIFEST,
+        generation=reader_lease.mint_generation(),
+        entries=entries, epoch=EPOCH)
+
+
+def _publisher(forest: dict[str, object], tmp_path: Path):
+    return stage_move._StagedPublisher(
+        queue=forest["queue"], stage_root=forest["ram_root"],
+        residency_root=forest["residence"],
+        mover_action_key=_hex64("promoting-mover"), manifest_sha256=MANIFEST,
+        tier_id=TIER, cas_root=str(tmp_path / "cas"))
+
+
+def _sweep(tmp_path: Path, monkeypatch, *, budget: int,
+           destinations: int = N_DESTS, owners: int = OWNERS
+           ) -> dict[str, object]:
+    """One promotion-shaped adoption sweep, under an explicit budget lever.
+
+    Every destination is adopted through the real ``try_adopt`` path a RAM
+    promotion drives, with counters around the metadata reads and reclaims.
     """
-    ample = _adopt_all(tmp_path / "ample", monkeypatch, budget=None)
-    print("AMPLE", json.dumps(ample, sort_keys=True))
-    # 4 owners x (fragment + sidecar) documents, decoded once each.
+    forest = _fixture(tmp_path, destinations=destinations, owners=owners)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+    counters = _Counters(monkeypatch)
+    publisher = _publisher(forest, tmp_path)
+    adopted = []
+    for entry in forest["entries"]:
+        destination = forest["ram_root"] / Path(entry["path"]).name
+        result = publisher.try_adopt(
+            entry, destination, stage_move._origin_id_of(entry["path"]))
+        adopted.append(result is not None)
+    return {
+        "entries": len(forest["entries"]),
+        "adopted": adopted,
+        "total_decodes": counters.total_decodes(),
+        "documents": counters.documents(),
+        "metadata_bytes_read": counters.decode_bytes,
+        "reclaims": counters.reclaims,
+        "publisher": publisher,
+        "forest": forest,
+    }
+
+
+def _verdicts(publisher, forest: dict[str, object]) -> list[tuple]:
+    """Every destination's full ``_proof_search`` verdict, in order."""
+
+    out = []
+    for entry in forest["entries"]:
+        norm = os.path.normpath(
+            str(forest["ram_root"] / Path(entry["path"]).name))
+        proof, standing, detail = publisher._proof_search(
+            norm, int(entry["bytes"]), entry.get("sha256"))
+        out.append((proof is not None, standing, detail))
+    return out
+
+
+# --------------------------------------------------------------------------
+# Bounded work: one decode per stable document, none per destination
+# --------------------------------------------------------------------------
+
+def test_each_stable_document_decides_once_under_a_constrained_budget(
+        tmp_path, monkeypatch):
+    """The RED case: a refusal may cost one parse, never one per adoption.
+
+    Ample budget: the whole forest is retained and every document is decoded
+    once.  The constrained budget is far below the 192 MiB production ceiling
+    but fits the packed projections, so it must behave the same way.  Before
+    the fix the constrained arm re-decoded the whole forest per destination
+    (421 decodes / 420 reclaims measured for this fixture); the fix retains a
+    compact projection instead of declining retention.
+    """
+    ample = _sweep(tmp_path / "ample", monkeypatch, budget=DEFAULT_BUDGET)
+    assert ample["adopted"] == [True] * ample["entries"], ample
     assert ample["total_decodes"] <= 2 * OWNERS, (
-        f"ample budget still re-decodes: {ample}")
-    assert ample["reclaims"] == 0
+        f"ample budget still re-decodes: {ample['total_decodes']}")
+    assert ample["reclaims"] == 0, ample
 
-    # One owner's fragment+sidecar retain cost is ~150 KB at this fixture
-    # size (see stage_move charge constants); 64 KiB refuses every record.
-    constrained = _adopt_all(tmp_path / "capped", monkeypatch, budget=64 << 10)
-    print("CONSTRAINED", json.dumps(constrained, sort_keys=True))
-    assert constrained["total_decodes"] >= 3 * ample["total_decodes"], (
-        f"no amplification demonstrated: {constrained} vs {ample}")
-    assert constrained["reclaims"] >= 1
-    # The proof answers stay correct in both arms: every destination
-    # adopted, byte counts exact, nothing copied (adoption is metadata).
-    for arm in (ample, constrained):
-        assert arm["entries"] == N_DESTS
+    constrained = _sweep(tmp_path / "capped", monkeypatch,
+                         budget=CONSTRAINED_BUDGET)
+    assert constrained["adopted"] == [True] * constrained["entries"], (
+        "a constrained budget changed an adoption answer")
+    assert constrained["total_decodes"] <= 2 * OWNERS, (
+        f"60 destinations decoded {constrained['total_decodes']} documents "
+        f"under a {CONSTRAINED_BUDGET} byte budget; each of the "
+        f"{2 * OWNERS} stable documents must decode at most once, not once "
+        f"per adoption ({constrained['metadata_bytes_read']} metadata bytes)")
+    assert constrained["reclaims"] == 0, (
+        f"{constrained['reclaims']} reclaims under a budget the compact "
+        f"projections fit: retention was declined")
 
+
+def test_work_stays_bounded_as_the_fixture_and_cap_shrink(tmp_path,
+                                                          monkeypatch):
+    """The same bound holds when records and cap scale down together.
+
+    A smaller forest under a smaller cap is the other side of the lever: the
+    budget -- not the fixture -- must decide whether the projection is
+    retained, and when it fits, duplicate work stays at one decode per
+    stable document.
+    """
+    arm = _sweep(tmp_path / "small", monkeypatch, budget=SMALL_BUDGET,
+                 destinations=SMALL_DESTS, owners=SMALL_OWNERS)
+    assert arm["adopted"] == [True] * arm["entries"], arm
+    assert arm["total_decodes"] <= 2 * SMALL_OWNERS, (
+        f"{arm['entries']} destinations decoded {arm['total_decodes']} "
+        f"documents under a {SMALL_BUDGET} byte budget with "
+        f"{SMALL_DESTS} paths per record")
+    assert arm["reclaims"] == 0, arm
+
+
+def test_a_budget_nothing_fits_decides_correctly_and_retains_nothing(
+        tmp_path, monkeypatch):
+    """Cache inability is safe: uncached answers, nothing retained."""
+
+    arm = _sweep(tmp_path / "tiny", monkeypatch, budget=1)
+    assert arm["adopted"] == [True] * arm["entries"], (
+        "a budget nothing fits in changed an adoption answer")
+    publisher = arm["publisher"]
+    assert publisher._index_bytes() == 0, (
+        "a record survived a one-byte ceiling")
+    assert publisher._interned == {}, (
+        "a table survived a one-byte ceiling as a back door")
+
+
+# --------------------------------------------------------------------------
+# The compact representation must answer exactly as the object path did
+# --------------------------------------------------------------------------
+
+def test_compact_retained_verdicts_match_uncached_verdicts(tmp_path,
+                                                           monkeypatch):
+    """Differential: same forest, one budget that retains and one that cannot.
+
+    The compact projection is a representation of the parsed document, not a
+    different reading of it.  Every destination's full verdict -- adoption,
+    standing and refusal detail -- must be identical whichever way the record
+    was held.
+    """
+    forest = _fixture(tmp_path)
+    answers = {}
+    for label, budget in (("retained", CONSTRAINED_BUDGET), ("uncached", 1)):
+        monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+        answers[label] = _verdicts(_publisher(forest, tmp_path / label),
+                                   forest)
+    assert answers["retained"] == answers["uncached"], (
+        "the compact projection changed a verdict")
+    assert all(row[1] == "proof" for row in answers["retained"])
+
+
+def test_a_mutated_sidecar_and_a_corrupt_fragment_are_seen_after_retention(
+        tmp_path, monkeypatch):
+    """Invalidation survives compaction: a decision never uses moved evidence.
+
+    One prior owner, so a rewrite is decisive.  After the compact records are
+    retained: a sidecar that stops dating the current incarnation defers as
+    ``owned``; a sidecar whose digest contradicts the manifest refuses as
+    ``divergent``; a fragment that becomes corrupt reads ``unknown`` and a
+    repaired fragment proves again -- all on the very next lookup.
+    """
+    forest = _fixture(tmp_path, destinations=SMALL_DESTS, owners=1)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", SMALL_BUDGET)
+    counters = _Counters(monkeypatch)
+    publisher = _publisher(forest, tmp_path)
+    consumer, mover = forest["owners"][0]
+    entries = forest["entries"]
+    target = entries[0]
+    norm = os.path.normpath(str(forest["ram_root"] /
+                                 Path(target["path"]).name))
+
+    assert _verdicts(publisher, forest) == [
+        (True, "proof", None)] * len(entries)
+    assert counters.total_decodes() == 2, (
+        "the fixture did not retain its two stable documents compactly")
+
+    stale = {key: dict(record)
+             for key, record in forest["material_entries"].items()}
+    stale_key = str(residency_map.residency_map_key(target["path"], 0))
+    stale[stale_key] = {
+        **stale[stale_key],
+        "file_id": {"ino": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1},
+    }
+    _write_material(forest["residence"], consumer, mover, stale)
+    _, standing, _ = publisher._proof_search(
+        norm, int(target["bytes"]), target["sha256"])
+    assert standing == "owned", (
+        "a record dating a superseded incarnation must defer, not adopt")
+
+    wrong = {key: dict(record)
+             for key, record in forest["material_entries"].items()}
+    wrong[stale_key] = {**wrong[stale_key], "sha256": "b" * 64}
+    _write_material(forest["residence"], consumer, mover, wrong)
+    _, standing, _ = publisher._proof_search(
+        norm, int(target["bytes"]), target["sha256"])
+    assert standing == "divergent", (
+        "a digest that contradicts the manifest must refuse")
+
+    fragment = residency_map.fragment_path(forest["residence"], consumer,
+                                           mover)
+    good = fragment.read_bytes()
+    fragment.write_bytes(b"{not json")
+    _, standing, detail = publisher._proof_search(
+        norm, int(target["bytes"]), target["sha256"])
+    assert standing == "unknown" and detail, (
+        "a corrupt fragment must read unknown, never skip into success")
+
+    fragment.write_bytes(good)
+    _, standing, _ = publisher._proof_search(
+        norm, int(target["bytes"]), target["sha256"])
+    assert standing == "proof", "a repaired fragment must prove again"
+
+
+def test_duplicate_sidecar_mentions_keep_their_order(tmp_path, monkeypatch):
+    """Two mentions of one path: order selects the identity and the digest.
+
+    A sidecar can name one staged path under two map keys (two extents of one
+    file), and ``_proof_candidate`` legitimately reads the *first* size-
+    matching mention for the digest and the *first* mention with an identity
+    for the incarnation.  The packed projection must keep that order.  The
+    uncached and compact-retained publishers must answer the same, and the
+    answers must be the documented ones -- not merely self-consistent.
+    """
+    forest = _fixture(tmp_path, destinations=1, owners=1)
+    consumer, mover = forest["owners"][0]
+    entry = forest["entries"][0]
+    norm = os.path.normpath(str(forest["ram_root"] / Path(entry["path"]).name))
+    live = forest["material_entries"][
+        str(residency_map.residency_map_key(entry["path"], 0))]["file_id"]
+    stale = {"ino": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
+    digest = entry["sha256"]
+
+    def sidecar(first_identity, first_digest, second_identity, second_digest):
+        return {
+            "a" * 64: {"stage_path": norm, "bytes": int(entry["bytes"]),
+                       "sha256": first_digest, "file_id": first_identity},
+            "b" * 64: {"stage_path": norm, "bytes": int(entry["bytes"]),
+                       "sha256": second_digest, "file_id": second_identity},
+        }
+
+    cases = [
+        # The first mention's stale identity decides ("stale" -> owned), even
+        # though the second mention dates the live incarnation.
+        ("owned", sidecar(stale, digest, live, "c" * 64)),
+        # Reversed: the live identity is first and its digest matches.
+        ("proof", sidecar(live, digest, stale, "c" * 64)),
+    ]
+    for expected, material in cases:
+        _write_material(forest["residence"], consumer, mover, material)
+        answers = {}
+        for label, budget in (("retained", CONSTRAINED_BUDGET),
+                              ("uncached", 1)):
+            monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+            publisher = _publisher(forest, tmp_path / label)
+            answers[label] = publisher._proof_search(
+                norm, int(entry["bytes"]), digest)[1]
+        assert answers["retained"] == answers["uncached"], (
+            "the compact projection reordered the mentions")
+        assert answers["retained"] == expected, (
+            f"duplicate-mention order changed the answer: {answers}")
+
+
+# --------------------------------------------------------------------------
+# Real copier threads and a reader, synchronized by events
+# --------------------------------------------------------------------------
+
+def test_copier_threads_and_a_reader_contend_without_losing_work(
+        tmp_path, monkeypatch):
+    """The production publication path under real threads, not a timer.
+
+    Four ``_Copier`` workers adopt all destinations while a reader thread
+    walks the same forest.  The first metadata decode is gated: it holds the
+    ownership lock until the reader has begun its own lock acquisition, so
+    the overlap is a happened-before relation rather than a race won by a
+    scheduler.  Every adoption must land exactly once, no thread may see a
+    wrong answer, and the cache must keep the work at one decode per stable
+    document.
+    """
+    forest = _fixture(tmp_path)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", DEFAULT_BUDGET)
+    counters = _Counters(monkeypatch)
+    publisher = _publisher(forest, tmp_path)
+    copier = stage_move._Copier(
+        mounts=prewarm_loop.MountMap([f"{forest['src_root']}="
+                                      f"{forest['src_root']}"]),
+        pacer=None, stage_root=forest["ram_root"],
+        mount_prefix=str(forest["src_root"]), block=1 << 16, workers=4,
+        owner=_hex64("promoting-mover"), publisher=publisher)
+    whole = {entry["path"] for entry in forest["entries"]}
+
+    first_decode = threading.Event()
+    reader_attempted = threading.Event()
+    gate = threading.Lock()
+    counted_read = stage_move._read_metadata
+
+    def gated_read(path):
+        with gate:
+            if not first_decode.is_set():
+                first_decode.set()
+                # Hold the decode (and with it the ownership lock) until the
+                # reader has actually started its own acquisition.
+                assert reader_attempted.wait(30), (
+                    "the reader never reached the publisher")
+        return counted_read(path)
+
+    monkeypatch.setattr(stage_move, "_read_metadata", gated_read)
+
+    reader_results: list[bool] = []
+    reader_errors: list[BaseException] = []
+
+    def reader() -> None:
+        try:
+            assert first_decode.wait(30), "no copier decode was observed"
+            reader_attempted.set()
+            for entry in forest["entries"]:
+                adopted = publisher.try_adopt(
+                    entry, forest["ram_root"] / Path(entry["path"]).name,
+                    stage_move._origin_id_of(entry["path"]))
+                reader_results.append(adopted is not None)
+        except BaseException as exc:            # surfaced, never swallowed
+            reader_errors.append(exc)
+
+    thread = threading.Thread(target=reader, name="reader", daemon=True)
+    thread.start()
+    try:
+        copier.run(forest["entries"], whole=whole, stop=threading.Event())
+    finally:
+        thread.join(60)
+
+    assert not thread.is_alive(), "the reader never finished"
+    assert reader_errors == [], reader_errors
+    assert reader_results == [True] * len(forest["entries"]), (
+        "the contending reader lost an adoption")
+    assert copier.errors == [], copier.errors
+    assert len(copier.staged) == len(forest["entries"]), (
+        f"{len(copier.staged)} of {len(forest['entries'])} entries landed")
+    assert copier.bytes_staged == sum(int(entry["bytes"])
+                                      for entry in forest["entries"])
+    assert counters.total_decodes() <= 2 * OWNERS, (
+        f"concurrent adoption decoded {counters.total_decodes()} documents "
+        f"for {2 * OWNERS} stable documents")
+    assert counters.reclaims == 0, counters.reclaims
+
+
+# --------------------------------------------------------------------------
+# Fail-closed beside the counters
+# --------------------------------------------------------------------------
 
 def test_a_corrupt_foreign_fragment_refuses_unknown_not_silent(
         tmp_path, monkeypatch):
-    """The fail-closed contract beside the counters: taint, never skip."""
+    """The taint contract beside the counters: unknown, never a silent skip.
 
-    queue, residence, ram_root, _src, entries = _fixture(tmp_path)
+    A foreign fragment that cannot be parsed must fail the lookup closed even
+    when another record could prove the destination.
+    """
+
+    forest = _fixture(tmp_path)
+    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     consumer_dirs = sorted(
-        path for path in residence.iterdir()
+        path for path in forest["residence"].iterdir()
         if path.is_dir() and path.name not in ("leases", "material"))
     fragment = next(name for name in sorted(os.listdir(consumer_dirs[0]))
                     if name.endswith(".json"))
     (consumer_dirs[0] / fragment).write_text("{not json")
-    publisher = stage_move._StagedPublisher(
-        queue=queue, stage_root=ram_root, residency_root=residence,
-        mover_action_key=_hex64("promoting-mover"), manifest_sha256=MANIFEST,
-        tier_id=TIER, cas_root=str(tmp_path / "cas"))
-    destination = ram_root / Path(entries[0]["path"]).name
+    publisher = _publisher(forest, tmp_path)
+    entry = forest["entries"][0]
+    destination = forest["ram_root"] / Path(entry["path"]).name
     adopted = publisher.try_adopt(
-        entries[0], destination,
-        stage_move._origin_id_of(entries[0]["path"]))
+        entry, destination, stage_move._origin_id_of(entry["path"]))
     assert adopted is None, "a corrupt proof must not adopt"
-    norm = os.path.normpath(str(destination))
     proof, standing, detail = publisher._proof_search(
-        norm, entries[0]["bytes"], entries[0]["sha256"])
+        os.path.normpath(str(destination)), entry["bytes"], entry["sha256"])
     assert standing == "unknown", (
         f"corrupt fragment must read unknown, saw {standing}: {detail}")
 
 
-def test_adoption_lock_hold_is_the_metadata_scan(tmp_path, monkeypatch):
-    """Per-entry lock-held time scales with the metadata work, not bytes.
+def test_the_instrument_counts_real_decodes(tmp_path, monkeypatch):
+    """A counter that stopped seeing the reader must fail, not pass.
 
-    try_adopt holds the destination-root ownership lock across the whole
-    _proof_search. Under the ample budget the per-entry hold is the cached
-    path-set lookups; under a refusing budget it includes the full forest
-    decode. The ratio between the arms is the reader-visible contention a
-    same-root reader would queue behind, at fixture scale.
+    One uncached sweep must show at least one decode per document, so a green
+    bounded-work case cannot be green because instrumentation silently went
+    dark.
     """
-    ample = _adopt_all(tmp_path / "ample", monkeypatch, budget=None)
-    constrained = _adopt_all(tmp_path / "capped", monkeypatch, budget=64 << 10)
-    print("LOCK_RATIO", json.dumps({
-        "ample_adopt_max_ms": ample["adopt_max_ms"],
-        "constrained_adopt_max_ms": constrained["adopt_max_ms"],
-        "decode_ratio": round(constrained["total_decodes"]
-                              / max(1, ample["total_decodes"]), 1)}, sort_keys=True))
-    assert constrained["adopt_max_ms"] >= ample["adopt_max_ms"]
+    arm = _sweep(tmp_path / "uncached", monkeypatch, budget=1)
+    assert arm["total_decodes"] >= 2 * OWNERS, (
+        f"the decode counter saw {arm['total_decodes']} reads over an "
+        f"uncached sweep; the instrument is not measuring the reader")
+    assert arm["adopted"] == [True] * arm["entries"]
