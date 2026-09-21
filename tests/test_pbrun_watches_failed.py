@@ -86,7 +86,11 @@ def test_a_worker_exception_still_exits_non_zero(monkeypatch, capsys, tmp_path):
 
 def test_nothing_filed_still_times_out(monkeypatch, capsys, tmp_path):
     q = _Queue(tmp_path)
-    assert _wait(monkeypatch, capsys, q, "abc", wait_s=0.01) == 75
+    # ``wait_s=0`` is one immediate observation with the standard bounded
+    # reader budget.  A subsecond caller deadline races bounded-reader startup
+    # and IPC under suite load, and the read timeout's exit (74) is not this
+    # test's subject (#822).
+    assert _wait(monkeypatch, capsys, q, "abc", wait_s=0) == 75
     assert "gave up waiting" in capsys.readouterr().err
 
 
