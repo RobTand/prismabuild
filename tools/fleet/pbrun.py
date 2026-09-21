@@ -4776,8 +4776,17 @@ def freeze_action_template(
 #: handle and belongs here.  Named in neither, ``validate_action_common``
 #: refuses the record -- which is the right answer, because nobody has yet
 #: decided which of the two it is.
+#:
+#: ``produced_output_template`` is a handle: the binding declaration is sealed
+#: in ``params`` (``pb.PRODUCED_OUTPUT_TEMPLATE_PARAM``) and so is already in
+#: the shared half, and this top-level entry is the validated template the
+#: submitter projects into its own queue row.  Counting it twice would put the
+#: same declaration in the parent key under two spellings; leaving it unnamed
+#: refused every Stage A freeze, because the template carries the entry --
+#: ``None`` when no template was declared -- whether or not the flag was given.
 _TEMPLATE_SUBMITTER_KEYS = frozenset(
-    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name"}
+    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name",
+     "produced_output_template"}
 )
 
 
