@@ -123,9 +123,11 @@ def fleet(tmp_path: Path):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",
                        "mountpoint": str(tmp_path / "stage"),
-                       # Exactly one phase fits, so the window's own bound is
-                       # exercised rather than assumed.
-                       "capacity_bytes": PHASE_BYTES}}
+                       # The corrected joint-fit policy (#745) admits a
+                       # newcomer on its current plus its protected next, so
+                       # the tier must offer both phases; the fence then holds
+                       # the run-ahead's room while the lead stages.
+                       "capacity_bytes": 2 * PHASE_BYTES}}
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
@@ -160,6 +162,18 @@ def _lead(fleet) -> str:
     return str(fleet.staged["plan"]["phases"][0]["mover_row"]["action_key"])
 
 
+def _ready_for(queue: pool.PoolQueue, key: str) -> list[dict[str, object]]:
+    """The ready snapshot naming one key, in the queue's own record shape.
+
+    The corrected joint-fit policy queues the lead and its protected run-ahead
+    together, so a bare ``claim`` may take either.  A test about one row asks
+    for that row the way a worker's prefetched snapshot does.
+    """
+
+    return [item for item in queue.ready_items()
+            if str(item.get("action_key")) == key]
+
+
 def _stage_the_lead(fleet) -> dict[str, object]:
     """Publish the window, claim the lead mover, finish it with a full receipt."""
 
@@ -189,11 +203,15 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     queue, mover = fleet.queue, _lead(fleet)
     _cycle(fleet)
 
-    # The loop published exactly the phase the tier's free tokens covered...
+    # The corrected joint-fit policy admits the lead and its protected next
+    # together, so the loop queues both rows: the fence the coordinator took
+    # before publishing the lead is the run-ahead's room, and the run-ahead
+    # publishes with it.
     assert queue.item_path(pool.READY, mover).exists()
     others = [k for k in residency_plan.mover_keys(fleet.staged["plan"]) if k != mover]
-    assert others and not any(
-        queue.item_path(pool.READY, k).exists() for k in others)
+    assert others and all(
+        queue.item_path(pool.READY, k).exists() for k in others), (
+        "the protected run-ahead the gate admitted was not queued")
     # ...and the row it published carries the pin the pool reads.
     published = pool._read_json(queue.item_path(pool.READY, mover))
     block = published.get("residency")
@@ -393,7 +411,8 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
 
     _cycle(fleet)                                   # republished: unpinned, terminal
-    again = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    again = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"],
+                        ready=_ready_for(queue, mover))
     assert again is not None and again["action_key"] == mover
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
 
@@ -407,7 +426,7 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     """Refuse-and-keep through the real window (#631).
 
     The stage exists but belongs to another queue: the cycle keeps the whole
-    2 GiB supply minted and publishes no mover against it.  The operator then
+    4 GiB supply minted and publishes no mover against it.  The operator then
     removes the foreign marker by hand -- the bootstrap the design doc owns --
     the next cycle writes its own marker, and the deferred lead publishes.
     Nothing about the supply moved while the root was refused.
@@ -425,8 +444,8 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     assert record["stage_root_owner"].startswith(
         "stage_root_belongs_to_another_queue")
     assert record["stage_root_admits"] is False
-    assert record["tokens"]["stage_gib"] == 2
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == 2
+    assert record["tokens"]["stage_gib"] == 4
+    assert queue.tier_ledger(TIER).available()["stage_gib"] == 4
     assert not queue.item_path(pool.READY, mover).exists()
 
     (stage / stage_release.STAGE_ROOT_MARKER).unlink()
