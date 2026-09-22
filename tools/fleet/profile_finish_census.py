@@ -146,8 +146,11 @@ def main(argv=None) -> int:
     parser.add_argument("--queue", required=True, help="live queue root, read only")
     parser.add_argument("--scratch", required=True, help="throwaway directory")
     parser.add_argument("--out", help="also write the report here")
-    parser.add_argument("--repeat", type=int, default=5)
-    parser.add_argument("--prune-dry-run", action="store_true")
+    parser.add_argument("--repeat", type=int, default=5,
+                        help="runs per scenario; the report gives min, median and max")
+    parser.add_argument("--prune-dry-run", action="store_true",
+                        help="also classify each live record by the terminal-prune facts "
+                             "and time the census on a local copy with and without them")
     args = parser.parse_args(argv)
     live_root = Path(args.queue)
     funding = live_root / pool.TIER_FUNDING
