@@ -5461,6 +5461,20 @@ onto capacity that is not there. What is *not* deferred is the reconciliation
 inside the sweep — bytes no key holds are not a cache, they are the accounting
 hole #608 closed, and they are taken back every cycle.
 
+**A held mover whose receipt is gone is named by its fragment (#892).** The
+sweep reads an orphan's consumer from its move receipt, and a mover can outlive
+its receipt: the canary leg-3 mover `aa34e2a6e22f` held 1 stage GiB from
+2026-09-19 with no receipt in `movers/`. When the receipt names no consumer,
+the sweep takes one fragment census and resolves the holder only if exactly
+one direct fragment names it. That holder is then an orphan like any other:
+pressure-gated, oldest receipt first (it has none, so it sorts first), then
+`evict`, which rechecks co-owners, claims, pins and handoffs under its own
+locks. No fragment, several, a produced-output fragment, or a tainted census
+retains the holder, and every pass files a `stage-receiptless-holder-retained`
+receipt that names the reason. A prepaid produced-output mover withdrawn
+before it ran is the no-fragment shape; its tokens stay with its batch's
+funding lane, which keeps such intents on purpose.
+
 Two limits, stated rather than hidden. A direct call to the sweep with no
 pressure named still takes every orphan, which is what an operator means. And
 `reclaim_terminal_reservation` refuses an adopted mover, because it demands
@@ -5480,8 +5494,13 @@ Discovery does not authorize deletion. The sweep holds the consumer transition
 lock, then the mover transition lock, through the existing egress, which takes
 the stage ownership lock and retains its pin, co-owner and source-handoff
 checks. Fresh live-state checks exclude a republication that won discovery.
-The failed consumer must have the queue's verified immutable failed-attempt
-summary. For the withdrawn form, the mover's visible withdrawal must agree with
+The consumer must have exactly one terminal record, and it must be proven. A
+failed consumer needs the queue's verified immutable failed-attempt summary.
+A withdrawn consumer needs its visible withdrawal to agree with its immutable
+decision for that exact action and generation (#892): until 2026-09-22 only
+failure counted, and three withdrawn consumers' owners were cleared by hand
+that day. A consumer that is live again, done, or both failed and withdrawn
+retains. For the withdrawn mover form, the mover's visible withdrawal must agree with
 its immutable decision for that exact action and generation, and no move
 receipt may remain. There must be no live row, lease, filed consumer plan,
 material sidecar, or reservation directory. Missing proof, unreadable or
