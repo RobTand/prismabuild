@@ -113,11 +113,13 @@ def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
     # a finish tombstone and only then releases capacity and files ``done/``.
     # A generation-pinned wait answers ``executed`` from the archive inside
     # that window (#886), so the slot check must see the entombed claim.
+    # The second poll also answers for row 1, so a controller that frees the
+    # slot too early fails at the events assertion below, not in the fake.
     keys, events = _window_fakes(monkeypatch, [
-        {0: "executed"}, {0: "executed"}, {1: "executed"},
+        {0: "executed"}, {0: "executed", 1: "executed"}, {1: "executed"},
     ])
     queue = pool.PoolQueue(pbcampaign.pbrun.SH / "pb-queue")
-    path = queue.dir(pool.CLAIMED) / f"{keys[0]}.1790000000000000.sparky.7.abcdef01{suffix}"
+    path = queue.dir(pool.CLAIMED) / f"{keys[0]}.1.sparky.7.abcdef01{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
     monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
