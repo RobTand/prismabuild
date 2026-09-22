@@ -5071,6 +5071,19 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+New window publication processes already-admitted windows before newcomers,
+then newcomers by descending consumer priority (#874). If a feasible
+higher-priority newcomer fails the existing joint-fit gate transiently, the
+same tier pass defers further lower-priority new windows with
+`higher-priority-window-waiting`. Already-queued promises drain normally;
+the pass neither revokes them nor relaxes credit or advancement fences.
+Equal-priority order and backfill remain unchanged. Permanently oversized
+windows do not establish this wait, nor do current-plus-next needs exceeding
+the tier's entire capacity. The barrier is recomputed each pass, not stored
+as a reservation or a change to any frozen plan. This prevents smaller new
+windows from indefinitely replenishing ahead of a larger priority lead;
+it does not promise progress while existing readers retain capacity.
+
 Admission relief applies to both stage and RAM. RAM asks only when its normal
 bounded window has a promotion whose stage source is resident, preserving
 the existing rule against eviction for an unavailable source or a declined

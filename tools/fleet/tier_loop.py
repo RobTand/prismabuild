@@ -2241,6 +2241,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     for want in wants:
         by_tier.setdefault(str(want["tier_id"]), []).append(want)
     for tier_id, tier_wants in sorted(by_tier.items()):
+        def priority_of(want):
+            value = (want["consumer"].get("item") or {}).get("priority", 0)
+            return value if type(value) is int else 0
+
+        # Already-admitted windows keep their advancement authority before
+        # new work. Among newcomers, honour priority before spending fresh
+        # room; stable sorting preserves the existing order for equal ranks.
+        tier_wants = sorted(tier_wants, key=lambda want: (
+            bool(want["newcomer"]), -priority_of(want) if want["newcomer"] else 0))
         try:
             ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError, ValueError) as exc:
@@ -2343,6 +2352,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         running_extra = 0
         running_fence = 0
         expected_grants: set[str] = set()
+        waiting_priority: int | None = None
+        waiting_consumer: str | None = None
         for want in tier_wants:
             key = str(want["key"])
             needs = want["needs"]
@@ -2353,6 +2364,16 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             next_gib = int(nxt) if isinstance(nxt, int) else 0
             added_extra = 0
             if want["newcomer"]:
+                priority = priority_of(want)
+                if waiting_priority is not None and priority < waiting_priority:
+                    gated[(key, tier_id)] = {
+                        "reason": "higher-priority-window-waiting", "permanent": False,
+                        "need_gib": cur, "tier_id": tier_id,
+                        "waiting_consumer": waiting_consumer,
+                        "waiting_priority": waiting_priority,
+                        "output_note": window_credit.OUTPUT_UNENFORCED_NOTE,
+                    }
+                    continue
                 decision = window_credit.gate_newcomer(
                     held_gib=held_total + running_extra + running_fence,
                     ready_gib=ready_new_money,
@@ -2366,6 +2387,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "need_gib": cur, "tier_id": tier_id,
                         "output_note": str(decision.get("output_note") or ""),
                     }
+                    # Do not perpetually refill smaller lower-priority
+                    # windows while existing promises drain. Only a feasible
+                    # transient wait establishes this barrier; oversized or
+                    # unknown work cannot block otherwise useful newcomers.
+                    if (decision["reason"] == window_credit.REASON_STALL
+                            and not decision.get("permanent")
+                            and cur + next_gib <= capacity_gib
+                            and (waiting_priority is None or priority > waiting_priority)):
+                        waiting_priority, waiting_consumer = priority, key
                     continue
                 running_extra += cur + next_gib
                 added_extra = cur + next_gib
