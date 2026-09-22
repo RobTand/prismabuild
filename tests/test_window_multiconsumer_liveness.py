@@ -33,6 +33,12 @@ next minimum admission.  The publish-both test below asserts the corrected
 policy -- exactly one window admitted, the other gated ``joint-fit-stall``
 transient -- while the remaining tests stay as the audit record of the
 hazard it closes.
+
+Update (#832): the admitted window's protected next is a real reservation,
+not a gate-only promise.  ``advance_needs`` now carries the frontier fence on
+its ordinary nonfinal answer, so the window blind-takes the advance's room
+under its grant before the cycle's publication and binds it to the advance's
+own queued row; the free assertion below measures that reservation.
 """
 from __future__ import annotations
 
@@ -138,8 +144,9 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
     and the other is gated ``joint-fit-stall`` (transient, never permanent):
     a second current may not land in the room the first advance was
     promised.  The winner is queue-scan order, so the test reads it off the
-    events rather than hard-coding it.  Publishing still reserves nothing --
-    ``free`` is unchanged -- which is exactly why the gate must decide.
+    events rather than hard-coding it.  The lead's own publication reserves
+    nothing, but its protected next does: the room the gate admitted the
+    winner for is held under the advance's fence before the cycle ends.
     """
     queue = _queue(tmp_path, capacity_gib=5)
     plan_a = _plan(queue, CONSUMER_A, seed="moverA")
@@ -161,9 +168,27 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
     assert gated[0]["consumer"] != winner
     assert gated[0]["reason"] == "joint-fit-stall"
     assert gated[0]["permanent"] is False
-    # The publish itself still reserves nothing; the gate did the deciding.
-    kinds = queue.tier_ledger(TIER).available()
-    assert kinds.get("stage_gib", 0) == 5
+    # The lead's publish reserves nothing, but the protected next is a real
+    # reservation: the admitted window's advance holds a bound fence for its
+    # 2 GiB, so free is capacity minus that advance (#832).
+    plans = {CONSUMER_A: plan_a, CONSUMER_B: plan_b}
+    advance = str(plans[winner]["phases"][1]["mover_row"]["action_key"])  # type: ignore[index]
+    record = queue.read_funding(advance, TIER)
+    assert record is not None, [e for e in events
+                                if e.get("event") == "mover-published"]
+    assert record.get("state") in ("reserved", "transferring"), record
+    assert str(record.get("consumer_action_key")) == winner, record
+    assert str(record.get("plan_sha256")) == \
+        residency_plan.plan_sha256(plans[winner]), record
+    assert int(record.get("range_start_bytes")) == 2 * GIB, record
+    assert int(record.get("range_end_bytes")) == 4 * GIB, record
+    ledger = queue.tier_ledger(TIER)
+    kinds = ledger.available()
+    assert kinds.get("stage_gib", 0) == 3
+    held = sum(int(tokens.get("stage_gib", 0))
+               for tokens in (ledger.holder_tokens(holder)
+                              for holder in ledger.held_keys()))
+    assert held + kinds.get("stage_gib", 0) == 5
 
 
 def test_window_pressure_reports_max_not_sum(tmp_path) -> None:

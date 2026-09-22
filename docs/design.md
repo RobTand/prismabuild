@@ -4471,6 +4471,36 @@ window also needs an exact-owner transfer extension; a second acquisition is
 not evidence that the same bytes have been accounted once. Component tests
 establish neither deployed support nor whole-fleet conformance.
 
+**Advance fencing and its return contract (#832).**
+`residency_plan.advance_needs` names the fence on *every* answer:
+`fence_target` is the leg after the frontier (the earliest unstaged ahead
+leg), `fence_prior` the legs before it, and a final leg is
+`fence_target: None` said explicitly -- a missing field is never "final".
+`tier_loop._protect_tier_advances` fences exactly that one advance per
+consumer/tier/leg. It binds the fence to the mover's queued row when the row
+is already published (the record carries that row's `published_unix`, so a
+republished key never inherits older credit) and takes it blind under the
+grant before its own publication when it is not, so a current is never
+exposed without the room its next step was promised. A blind grant whose
+target row is not published yet is itself the retained proof **only when it
+already covers the whole demand**: the pass permits the window (blind-held)
+and defers the bind to the pass that sees the row, because gating the row's
+publication behind a bind that waits for that row is circular and wedges the
+window behind its own fence. A partial grant is never that proof -- it falls
+through to the bind path and fails closed while the row is unpublished,
+retaining what it holds; replenishment for an unpublished advance has no
+supported path (the bind needs the row's own `published_unix`), so a partial
+grant is an unsupported state that holds rather than publishes. A bind that
+fails beside a published row, and any unreadable record, row census, ledger
+or capacity evidence, still denies; nothing is bound beside unknown
+authority. A target whose own key already holds the demand is landed (or a
+live fence) and is never fenced twice; a grant the current frontier no
+longer needs is released by the dangling pass. The dangling release runs
+after the want pass on a complete census, so one cycle can still gate
+transiently while a superseded target's grant holds the fresh target's room;
+the next pass takes from the returned room. Scoped validation and its
+remaining limits are in `832_advance_fence_acceptance_2026-09-21.json`.
+
 #### Prepaid-output funding from the admitted window (candidate, R6)
 
 Funds one precommitted produced-output batch from the producer's existing
