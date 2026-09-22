@@ -115,7 +115,8 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
                  stage: Path, ordinal: int = 0, files: int = 2,
                  manifest: str = MANIFEST,
-                 material: int | None = 2) -> list[Path]:
+                 material: int | None = 2,
+                 seconds: float = 1.0) -> list[Path]:
     """Drive the ledger and the stage into the state a finished mover leaves.
 
     Tokens held, files on the device, a fragment naming them, a sidecar dating
@@ -125,6 +126,9 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
     ``material`` is how many of the fragment's entries the sidecar dates: all
     of them by default, fewer for a partial vouch, ``None`` for a legacy range
     with no sidecar at all.
+
+    ``seconds`` is how long the receipt says the copy took, which is what a
+    reader of measured fill rates prices (#903).
     """
 
     start, end = ordinal * PHASE_GIB * GIB, (ordinal + 1) * PHASE_GIB * GIB
@@ -173,7 +177,7 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
         "range_start_bytes": start, "range_end_bytes": end,
         "range_bytes": end - start, "bytes_staged": end - start,
         "entries_declared": files, "entries_staged": files,
-        "complete": True, "seconds": 1.0, "unix": 1000.0 + ordinal})
+        "complete": True, "seconds": float(seconds), "unix": 1000.0 + ordinal})
     return written
 
 
