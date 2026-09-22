@@ -2245,11 +2245,19 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             value = (want["consumer"].get("item") or {}).get("priority", 0)
             return value if type(value) is int else 0
 
+        def priority_candidate(want):
+            # The original lead can retire while a consumer is running,
+            # making the older credit gate call it a newcomer again. Only
+            # an unstarted current publication participates in admission
+            # priority; CLAIMED read windows neither create nor receive it.
+            return (bool(want["newcomer"])
+                    and want["consumer"].get("state") == pool.READY)
+
         # Already-admitted windows keep their advancement authority before
         # new work. Among newcomers, honour priority before spending fresh
         # room; stable sorting preserves the existing order for equal ranks.
         tier_wants = sorted(tier_wants, key=lambda want: (
-            bool(want["newcomer"]), -priority_of(want) if want["newcomer"] else 0))
+            priority_candidate(want), -priority_of(want) if priority_candidate(want) else 0))
         try:
             ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError, ValueError) as exc:
@@ -2365,7 +2373,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             added_extra = 0
             if want["newcomer"]:
                 priority = priority_of(want)
-                if waiting_priority is not None and priority < waiting_priority:
+                if (priority_candidate(want) and waiting_priority is not None
+                        and priority < waiting_priority):
                     gated[(key, tier_id)] = {
                         "reason": "higher-priority-window-waiting", "permanent": False,
                         "need_gib": cur, "tier_id": tier_id,
@@ -2391,7 +2400,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     # windows while existing promises drain. Only a feasible
                     # transient wait establishes this barrier; oversized or
                     # unknown work cannot block otherwise useful newcomers.
-                    if (decision["reason"] == window_credit.REASON_STALL
+                    if (priority_candidate(want)
+                            and decision["reason"] == window_credit.REASON_STALL
                             and not decision.get("permanent")
                             and cur + next_gib <= capacity_gib
                             and (waiting_priority is None or priority > waiting_priority)):
