@@ -595,22 +595,27 @@ class _PackedMentions:
 
 
 class _PublicationRefused(OSError):
-    """The publication gate refused one entry; the range stops taking work.
+    """The publication gate refused one entry; the range stops issuing work.
 
-    The gate's refusal is a property of the shared staged name, not of one
-    copy's source bytes: another publication owns it, a reader pin protects
-    it, or its proof state cannot be read.  Every remaining entry of the same
-    range races the same ownership state, so a copier thread that receives
-    this refusal consumes no further queued entries for the range -- the
-    already-active group may finish or refuse its current entry, and every
-    entry they already committed keeps its fragment, sidecar and byte count
-    (#853).  An ordinary source read, digest or filesystem failure is a plain
+    The refusal is made per staged name, and it says nothing about the other
+    names: they may be perfectly publishable.  It does, however, make the
+    range incomplete -- this mover cannot publish what it declared -- so
+    every further copy and publication grace is spent on a run that must be
+    retried anyway, and the first obstruction is buried under later entry
+    errors by the receipt's error cap.  A copier thread that receives this
+    signal therefore stops handing out queued entries for the range, bounding
+    the wasted work and surfacing the obstruction; the entries already
+    dispatched to the active group still finish or refuse, and everything
+    they committed keeps its fragment, sidecar and byte count (#853).
+
+    An ordinary source read, digest or filesystem failure is a plain
     ``OSError`` and keeps the existing per-entry handling: one bad source is
-    not evidence that the rest of the range is unpublishable.
+    not evidence about the rest of the range.
 
-    A subclass of ``OSError`` on purpose: every existing caller that catches
-    ``OSError`` -- the copier's error list, the mover's receipt, unit tests --
-    keeps exactly its behavior, and only the copier distinguishes the two.
+    A subclass of ``OSError`` so every caller that already catches
+    ``OSError`` keeps catching it -- the type breaks no existing behavior.
+    The copier deliberately changes its range handling for it, which is the
+    point of the type.
     """
 
     pass
@@ -675,10 +680,9 @@ class _StagedPublisher:
     Never replaces an occupied path except into proven absence (first
     publication) or re-verified orphan residue.  Returns ``(written,
     digest, identity)`` like a copy; raises ``_PublicationRefused`` on a
-    gate refusal and plain ``OSError`` on stop, which the worker files as
-    an entry error exactly like a digest mismatch -- with the difference
-    that a refusal also stops the copier from consuming more entries of
-    this range (#853).
+    gate refusal and plain ``OSError`` on stop.  The worker files both as an
+    entry error exactly like a digest mismatch; a refusal additionally stops
+    the copier from issuing further entries for this range (#853).
     """
 
     def __init__(self, *, queue, stage_root, residency_root,
@@ -1557,10 +1561,12 @@ class _Copier:
         self.generation = 0
         #: Set when the publication gate refused an entry (#853).  Internal
         #: to this one range and never the caller's ``stop`` event: it stops
-        #: the workers from taking further entries, while the external event
-        #: stays the caller's cancellation/withdrawal decision with its own
-        #: terminal.  An already-started entry may still finish or refuse;
-        #: what it commits stays committed.
+        #: the dispatch of further entries, while the external event stays
+        #: the caller's cancellation/withdrawal decision with its own
+        #: terminal.  An already-dispatched entry may still finish or refuse;
+        #: what it commits stays committed.  It is set under the dispatch
+        #: lock, so a refusal recorded there cannot be followed by another
+        #: entry being handed out.
         self.publication_refused = threading.Event()
 
     def _temporary(self, destination: Path) -> Path:
@@ -1716,17 +1722,20 @@ class _Copier:
 
     def run(self, entries: list[dict[str, object]], *, whole: set[str],
             stop: threading.Event, on_entry=None) -> None:
-        """Copy the window, stopping the range on the first gate refusal.
+        """Copy the window; a gate refusal ends dispatch for this run.
 
         ``stop`` is the caller's cancellation event and is never set here.  A
-        ``_PublicationRefused`` from the publication gate sets the copier's
-        own :attr:`publication_refused` instead: no worker takes a further
-        entry, while the entries already handed to the active group finish or
-        refuse normally and everything they committed stays committed.  Plain
+        ``_PublicationRefused`` sets the copier's own
+        :attr:`publication_refused` under the same small dispatch lock that
+        hands out entries, before the entry error is logged, so no worker is
+        given a new entry once the refusal is recorded.  The entries already
+        dispatched to the active group finish or refuse normally and
+        everything they committed stays committed.  The range is incomplete
+        either way, so the remaining entries are not judged unpublishable --
+        they are left to the retry -- and the first obstruction stays visible
+        instead of being buried under later per-entry errors.  Plain
         per-entry failures (a source read, a digest mismatch, an I/O error)
-        keep the existing behavior of recording the error and continuing; a
-        refused publication is a statement about the whole range's ownership,
-        and the remaining entries race the same state.
+        keep the existing behavior of recording the error and continuing.
         """
 
         admission = prewarm_loop.Admission()
@@ -1738,16 +1747,27 @@ class _Copier:
         for _ in range(self.workers):
             work.put(None)
 
+        #: Serializes handing out an entry with recording a refusal, so a
+        #: refusal can never be followed by another entry being dispatched.
+        #: Never held while logging (which takes ``self.lock``) or copying.
+        dispatch = threading.Lock()
+
         def record_error(path: str, exc: object) -> None:
             with self.lock:
                 if len(self.errors) < 20:
                     self.errors.append(f"{os.path.basename(path)}: {exc}")
 
+        def take() -> dict[str, object] | None:
+            """The next entry, or ``None`` once dispatch has ended."""
+
+            with dispatch:
+                if self.publication_refused.is_set():
+                    return None
+                return work.get()
+
         def worker() -> None:
             while not stop.is_set():
-                if self.publication_refused.is_set():
-                    return
-                entry = work.get()
+                entry = take()
                 if entry is None:
                     return
                 path, offset = str(entry["path"]), int(entry["offset"])
@@ -1770,15 +1790,18 @@ class _Copier:
                         entry, destination, admission, stop,
                         source=staged_source, source_offset=staged_offset)
                 except _PublicationRefused as exc:
-                    # The gate refused a shared staged name: every remaining
-                    # entry races that same ownership, so consume no further
-                    # entries.  The already-active group may finish or refuse
-                    # its current entry, and what it commits stays committed.
-                    # This is not the caller's stop: cancellation and
-                    # withdrawal are decided elsewhere and keep their own
-                    # terminal.
+                    # The range cannot publish what it declared, so stop
+                    # issuing work: record the refusal under the dispatch
+                    # lock first (peers stop being handed entries while this
+                    # thread is still logging), then log it outside that lock
+                    # -- ``record_error`` takes ``self.lock``.  The entries
+                    # already dispatched finish or refuse, and what they
+                    # committed stays committed.  This is not the caller's
+                    # stop: cancellation and withdrawal keep their own
+                    # decision and terminal.
+                    with dispatch:
+                        self.publication_refused.set()
                     record_error(path, exc)
-                    self.publication_refused.set()
                     return
                 except (OSError, ValueError) as exc:
                     # An ordinary source read, digest or filesystem failure:

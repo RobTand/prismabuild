@@ -4,19 +4,28 @@ The live shape (full512 Stage A R6, 2026-09-22): one shared staged name was
 vouched for by a FAILED consumer's DONE mover whose material dated a
 superseded incarnation, so the publication gate refused it -- correctly, it
 will not adopt an old-incarnation proof and will not overwrite a live or
-unknown publication.  Every remaining entry of the same range raced that same
-ownership state, yet the copier kept consuming the queue: each entry paid a
-full payload copy and then one whole 30 s grace before the same refusal, so
-sixteen sleeping workers spent the head's window on a decision only
-housekeeping or an owner could change.
+unknown publication.  That refusal says nothing about the other names: they
+may be perfectly publishable.  It does make the range incomplete, though, and
+the copier kept consuming the queue after it: each later entry paid a full
+payload copy and then one whole 30 s grace before its own refusal, so sixteen
+sleeping workers spent the head's window and buried the first obstruction
+under capped entry errors.
+
+The policy these tests hold is narrow: a gate refusal ends dispatch for the
+run -- no entry beyond the already-dispatched group is handed out -- bounding
+the wasted copies and grace waits and keeping the first obstruction visible,
+while everything already committed keeps its fragment, sidecar and bytes for
+the retry.  The remaining entries are not judged unpublishable; they are
+simply left to the next run.
 
 These tests drive the real ``stage_move.move`` with real tiny files and a real
-synthetic queue/stage.  They assert the bounded repair with deterministic work
-counters -- the entries the copier actually consumed, never a wall-clock
-threshold:
+synthetic queue/stage, and assert the bound with deterministic work counters
+and barriers, never a wall-clock threshold:
 
 * one worker consumes exactly the refusing entry and stops;
-* a wider group consumes at most one entry per worker;
+* a four-worker barrier puts four entries really in flight; only that prefix
+  is dispatched, no duplicates, and the one valid in-flight entry keeps its
+  committed bytes and proof while its peers refuse;
 * everything already committed keeps its fragment, sidecar and bytes;
 * a live pin and unknown ownership keep their exact refusal and nothing is
   replaced;
@@ -187,18 +196,50 @@ def test_one_refusal_stops_the_single_worker_range(fleet, tmp_path, monkeypatch)
         "entries after the refusal must not have been copied")
 
 
-def test_a_wider_group_consumes_at_most_one_entry_per_worker(
+def test_a_wider_group_dispatches_only_its_in_flight_prefix(
         fleet, tmp_path, monkeypatch):
-    """The bound is the already-active group, never the queued remainder."""
+    """A barrier puts four entries really in flight; only those are dispatched.
+
+    Three of the four refuse (unknown ownership: a non-regular destination)
+    and one is valid, so the committed entry's bytes and proof are asserted
+    beside its peers' refusals.  The valid entry is held until a peer's
+    refusal is recorded, so a fast success cannot race into a fifth entry and
+    the assertion is about the dispatched prefix, never queue timing.
+    """
 
     queue, stage, cas = fleet
     names = NAMES[:12]
     payloads = {name: _payload(index) for index, name in enumerate(names)}
     mount, manifest, digest, entries = _manifest(tmp_path, names, payloads)
-    for entry in entries:
-        destination = _destination(stage, mount, entry)
-        destination.mkdir(parents=True, exist_ok=True)
-    consumed = _spy_consumed(monkeypatch)
+    valid = entries[2]
+    for entry in (entries[0], entries[1], entries[3]):
+        _destination(stage, mount, entry).mkdir(parents=True, exist_ok=True)
+    first_four = {entry["path"] for entry in entries[:4]}
+    barrier = threading.Barrier(4)
+    real = stage_move._Copier._copy_one
+    consumed: list[str] = []
+    lock = threading.Lock()
+
+    def spying(self, entry, destination, admission, stop,
+               source=None, source_offset=None):
+        path = str(entry["path"])
+        with lock:
+            consumed.append(path)
+        if path in first_four:
+            try:
+                barrier.wait(timeout=15)
+            except threading.BrokenBarrierError as exc:
+                raise OSError(f"fixture: four entries never got in flight: "
+                              f"{exc}") from exc
+        if path == valid["path"]:
+            if not self.publication_refused.wait(15):
+                raise OSError(
+                    "fixture: no peer refusal was recorded while four "
+                    "entries were in flight")
+        return real(self, entry, destination, admission, stop,
+                    source=source, source_offset=source_offset)
+
+    monkeypatch.setattr(stage_move._Copier, "_copy_one", spying)
     stop = threading.Event()
     mover_key, successor = base._key(), base._key()
     args = _args(queue, stage, cas, mover_key, successor, manifest, digest,
@@ -206,12 +247,21 @@ def test_a_wider_group_consumes_at_most_one_entry_per_worker(
 
     result = stage_move.move(args, stop=stop)
 
-    assert 1 <= len(consumed) <= 4, (
-        f"four workers consumed {len(consumed)} of {len(entries)} entries")
-    assert consumed == [entry["path"] for entry in entries[:len(consumed)]], (
-        "consumption is a FIFO prefix, and it stopped inside the active group")
-    assert result["entries_staged"] == 0 and result["complete"] is False
-    assert len(result["errors"]) == len(consumed), result["errors"]
+    assert len(consumed) == 4 and set(consumed) == first_four, (
+        f"the range dispatched beyond its in-flight prefix: {consumed}")
+    assert len(set(consumed)) == len(consumed), "an entry was dispatched twice"
+    assert result["entries_staged"] == 1 and result["bytes_staged"] == SIZE
+    assert len(result["errors"]) == 3, result["errors"]
+    staged = _destination(stage, mount, valid)
+    assert staged.exists() and staged.read_bytes() == payloads[names[2]], (
+        "the valid in-flight entry must keep its committed bytes")
+    composed = residency_map.compose(residency_map.read_fragments(
+        queue.residency_fragment_root(), successor))["entries"]
+    assert residency_map.residency_map_key(valid["path"], 0) in composed, (
+        "the valid in-flight entry must keep its proof")
+    assert not any(_destination(stage, mount, entry).exists()
+                   for entry in entries[4:]), (
+        "no entry beyond the dispatched prefix may be consumed")
     assert stop.is_set() is False
 
 

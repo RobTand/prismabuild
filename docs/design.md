@@ -5597,41 +5597,49 @@ on the next retry), the contradictory sidecar headers that refuse rather
 than republish corrected, and the two-worker per-landing publication
 regression.
 
-### A refused publication stops consuming the range's remaining entries (#853)
+### A refused publication ends dispatch for the range's remaining entries (#853)
 
 The publication gate can refuse one shared staged name and will not replace
 what another publication owns, what a live pin protects, or what an
-unreadable proof might name. That refusal is a statement about the whole
-range's ownership: every remaining entry races the same state, so continuing
-to copy them spends payload reads and, for a vouch that cannot date the live
-incarnation, one full grace per entry on an outcome only housekeeping or an
-owner can change. On the 2026-09-22 full512 head one stale-material vouch
-left sixteen workers sleeping through grace after grace while the consumer
-stayed READY; the accepted red fixture measures 8,192 payload bytes copied
-for two blocked entries on one worker.
+unreadable proof might name. That refusal is made per name and proves nothing
+about the others -- they may be perfectly publishable. It does make the range
+incomplete, though: this mover cannot publish what it declared, so every
+further copy and, for an undatable vouch, every further grace is spent on a
+run that must be retried anyway, and the first obstruction is buried by the
+receipt's capped error list. On the 2026-09-22 full512 head one
+stale-material vouch left sixteen workers sleeping through grace after grace
+while the consumer stayed READY; the accepted red fixture measures 8,192
+payload bytes copied for two blocked entries on one worker. The policy is
+therefore to bound the wasted work and surface the obstruction, not to
+conclude anything about the remaining names.
 
-The gate signals that refusal with `stage_move._PublicationRefused`, a plain
-`OSError` subclass so every existing caller keeps its behavior. On receiving
-it a copier thread sets its own `publication_refused` flag and stops taking
-queued entries for this range; the entries already handed to the active
-group still finish or refuse, and everything they commit keeps its fragment,
-sidecar and byte count in the usual incomplete receipt, which names the
-refused path and the 20-error cap. The flag is internal and separate from
-the caller's `stop` event: a refusal never sets cancellation or withdrawal,
-which keep their own decision and terminal. An ordinary source read, digest
-mismatch or filesystem failure stays a per-entry error and does not stop the
-range -- one unreadable source is not evidence about the other names. Nothing
-here adds a terminal-owner lookup, a global scan, or any new permission to
-adopt or overwrite: the proof, pin, claim, grace and ownership decisions are
-exactly the ones the gate already made.
+The gate signals that refusal with `stage_move._PublicationRefused`, an
+`OSError` subclass, so every caller that already catches `OSError` keeps
+catching it and no existing behavior breaks on the type; the copier
+deliberately changes its range handling for it. On receiving it a copier
+thread records the refusal under the same small dispatch lock that hands out
+entries, before logging the entry error, so once the refusal is recorded no
+worker is handed a new entry. The entries already dispatched to the active
+group still finish or refuse, and everything they committed keeps its
+fragment, sidecar and byte count in the usual incomplete receipt, which names
+the refused path and is retained for the retry. The flag is internal and
+separate from the caller's `stop` event: a refusal never sets cancellation or
+withdrawal, which keep their own decision and terminal. An ordinary source
+read, digest mismatch or filesystem failure stays a per-entry error and does
+not stop the range -- one unreadable source is not evidence about the other
+names. Nothing here adds a terminal-owner lookup, a global scan, or any new
+permission to adopt or overwrite: the proof, pin, claim, grace and ownership
+decisions are exactly the ones the gate already made.
 
 `tests/test_publication_refusal_stops_the_range.py` holds the bound with
-deterministic work counters rather than wall-clock: one worker consumes
-exactly the refusing entry, a four-worker group consumes at most one entry
-per worker, an adopted entry keeps its proof and bytes while the next entry's
-refusal stops the range, a pinned publication is refused unchanged and never
-replaced, a missing source only records its own error and the range
-continues, and a pre-set external stop is never confused with the internal
+deterministic work counters and barriers rather than wall-clock: one worker
+consumes exactly the refusing entry; a four-worker barrier puts four entries
+really in flight, only that prefix is dispatched with no duplicates, and the
+one valid in-flight entry keeps its committed bytes and proof while its peers
+refuse; an adopted entry keeps its proof and bytes while the next entry's
+refusal stops the range; a pinned publication is refused unchanged and never
+replaced; a missing source only records its own error and the range
+continues; and a pre-set external stop is never confused with the internal
 flag. The accepted red evidence (`853-red-results.json`, shards
 `c36202318cfa` and `d992f975c10a`) is retained separately.
 
