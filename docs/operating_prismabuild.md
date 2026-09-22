@@ -3267,3 +3267,23 @@ single-file checkpoints. Supply the full source, plan, scales and immutable
 producer identity; PrismaBuild selects whole-layer work quanta and runs the
 receipt-gated merge. See [the model dispatcher guide](tessera_model_dispatch.md).
 The legacy `dispatch_tessera_shards.py` remains the GLM input-shard interface.
+
+### Logical batches with their own strict read inputs
+
+For logical requests, `task_data_manifest` derives each child's read list from its
+assigned task payloads instead of giving every child the whole corpus. Use the
+closed policy described in `docs/design_work_decomposition_2026-09-11.md`; each
+payload's selected reads array uses ordinary `{path, offset, bytes, sha256}`
+entries, and relative paths expand under the policy's mount prefix. The workload
+must still use the existing strict reader SDK and refuse origin fallback.
+`--require-data-manifest` accepts this explicit projection declaration, including
+receipt-only tasks whose reads arrays are empty.
+
+When explicitly authorized for a compatible client-only change, invoke
+`runtime-generations/<reviewed-staged-generation>/tools/pbcampaign.py` directly
+and retain that generation with the campaign evidence. Qualification must show
+that the generated ordinary child requests/plans execute on active workers and
+that worker/core/pool/storage/reader SDK bytes are unchanged. The staged generation
+must be complete, sealed and sourced from reviewed merged code. Do not move the
+live `repo` pointer or restart roles for this client selection; runtime activation
+still requires its ordinary idle-queue checks.

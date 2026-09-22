@@ -451,3 +451,48 @@ the most failure-prone boundary. Static application-selected shard counts are
 rejected because the application would become the fleet dispatcher. The chosen
 parent-decomposer-plan boundary gives PB control of granularity while every
 published execution unit stays immutable for its whole lifetime.
+
+## Per-child read manifests through the existing staging lane (#862)
+
+A logical request may add `task_data_manifest`, a closed policy object with
+schema `prismabuild.task_data_manifest.v1`, `payload_field`, `mount_prefix`,
+`residency_tier` (a tier ID or null for ordinary discovery), `residency_ram`
+(`auto` or `off`), and positive integer `mover_readers`/`mover_mem_gb` bounds.
+It is mutually exclusive with a non-null shared `common.data_manifest`.
+Each task's selected payload field is an explicit array of ordinary data-manifest
+entries (`path`, `offset`, `bytes`, `sha256`). Relative paths expand under the
+sealed mount prefix and then undergo the ordinary exact path validation; no
+traversal, glob or prefix escape is accepted. Empty arrays declare receipt-only
+tasks with no bulk reads. They never authorize an origin fallback.
+
+PB still chooses the same immutable task partitions. For each child it projects
+only those tasks' entries, preserving first-read order and deduplicating identical
+path/offset declarations; conflicting declarations refuse. The resulting ordinary
+v1 manifest has one `batch` residency phase. A child with no entries needs no
+manifest or movement. The policy is sealed in the parent's common params, the
+roster already binds every task declaration, and each child seals its own manifest
+as a normal data-manifest input. No new worker or reader wire schema is introduced.
+
+Every child movement graph comes from `pbrun.residency_stage_rows`. The complete
+set is published immutably under the logical parent as `data-plans.json` before
+any consumer row, and replay reads that set instead of repricing or repartitioning.
+Each normal consumer plan is installed in the residency registry inside that
+consumer's transition-lock transaction immediately before its row is published.
+The tier role alone publishes its movement nodes, including the head. Superseded
+immutable graphs refuse automatic revival; this addition does not invent a new
+withdrawal recovery protocol. A malformed or mismatched parent graph refuses
+before any new child row. Strict RAM/SSD reads remain the workload's existing SDK
+responsibility; a manifest alone never rewrites filesystem opens.
+
+The synchronous sealer owns the validated request for its lifetime and computes
+its roster/policy hashes and task index once (`PreparedBatches`), reusing those
+identities across children. Serialization, existing parent/child keys and membership
+are unchanged for requests without the new policy.
+
+This is client-only compilation into existing `logical_batch.v1`, data-manifest
+v1 and residency-plan v1 contracts. It does not require changing active worker,
+core, pool, storage or reader SDK bytes. A separately reviewed, completely staged
+immutable client generation may be explicitly selected by absolute tool path for
+compatible submissions while a campaign runs; record the selected generation and
+compatibility evidence. This is not permission to flip the live runtime pointer,
+restart roles, invoke a dirty checkout client or bypass the idle activation rule.
