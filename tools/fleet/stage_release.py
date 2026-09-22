@@ -2576,7 +2576,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             if not consumer:
                 # No receipt names the consumer: ask the fragments (#892).
                 if fragment_owners is None:
-                    fragment_owners = _fragment_owners(
+                    fragment_owners = _held_mover_fragment_owners(
                         Path(residency_root if residency_root is not None
                              else queue.root / pool.RESIDENCY))
                 consumer, why = _receiptless_owner(fragment_owners, key)
@@ -2630,7 +2630,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     return swept
 
 
-def _fragment_owners(root: Path) -> dict[str, list[tuple[str, bool]]] | str:
+def _held_mover_fragment_owners(root: Path) -> dict[str, list[tuple[str, bool]]] | str:
     """Every mover's fragment owners under ``root``, or why that is unknown.
 
     Maps each mover key to the ``(namespace, direct)`` of every fragment
