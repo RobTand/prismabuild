@@ -1,0 +1,171 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "3f0f752d42110ed4bc874c8e431d5b97b22e6c2b",
+  "ledger_commit": "3f0f752d42110ed4bc874c8e431d5b97b22e6c2b",
+  "scope": [
+    "PRG-04",
+    "TIER-05",
+    "INV-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "maintenance/832-fence-target-20260921",
+    "issue": "https://github.com/RobTand/prismabuild/issues/832",
+    "validated_repairs": [
+      {
+        "id": "PRG-04 nonfinal advance fence return (landed in main by PR840; cited, not claimed)",
+        "actions": [
+          {
+            "shard": 0,
+            "returncode": 1,
+            "summary": "4 failed, 1 passed in 8.92s",
+            "action_key": null,
+            "action_key_prefix": "f8222f01c4bb",
+            "receipt_sha256": null,
+            "local_result_claim_sha256": null,
+            "payload_path": null
+          },
+          {
+            "shard": 0,
+            "returncode": 1,
+            "summary": "5 failed, 2 passed in 11.00s",
+            "action_key": null,
+            "action_key_prefix": "d35b393dde21",
+            "receipt_sha256": null,
+            "local_result_claim_sha256": null,
+            "payload_path": null
+          }
+        ],
+        "outcome": "red before the return correction: 4 failed/1 passed and 5 failed/2 passed; origin/main carries the field pair at this record's contract_commit"
+      },
+      {
+        "id": "PRG-04 blind grant for an unpublished target permits without circularly gating its own row",
+        "actions": [
+          {
+            "shard": 0,
+            "returncode": 1,
+            "summary": "2 failed, 5 passed in 10.44s",
+            "action_key": null,
+            "action_key_prefix": "ebd2dd117a12",
+            "receipt_sha256": null,
+            "local_result_claim_sha256": null,
+            "payload_path": null
+          },
+          {
+            "shard": 0,
+            "returncode": 0,
+            "summary": "7 passed in 9.94s",
+            "action_key": "a6f043d3c48d69e0ff3470bfbe83638ad4054fef32a5b0f559c1f7c5ba3ab08d",
+            "action_key_prefix": null,
+            "receipt_sha256": "5fa0323998c23cc17ea514df3754ce54eb554253799ac2abdc7c3679fe672c2f",
+            "local_result_claim_sha256": "5639741d8e691e3d619b4e5184e694af6ec3a64a6f1f58075284639c36800cf4",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/e8/e82f6a32c019a06b3b76242a3c60156a632bcac18c04d85ce87ac27d308880a4"
+          },
+          {
+            "shard": 0,
+            "returncode": 0,
+            "summary": "61 passed in 12.46s",
+            "action_key": "4135165c59105d1feabf8ad227821d3e55b3c24718b6d82e9c51f21b2e8a8e9f",
+            "action_key_prefix": null,
+            "receipt_sha256": "883608a10d8194dce3c11c3d492d56363f1cd092556eec7c705e8ba3dcce6612",
+            "local_result_claim_sha256": "72a9d7937544f57614649d5a3a6e3e3f25094eeaaa22b33f344a2d8ffcfab585",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/f1/f1dab0018ecc6af8634bd26c05b881302679b8c8b35a50bf29c3adf8e6d46ca0"
+          },
+          {
+            "shard": 1,
+            "returncode": 0,
+            "summary": "56 passed in 19.39s",
+            "action_key": "0e22a10a383b0f415feb928c3fab73b649a59a17a4e8fc2799bec8d187328514",
+            "action_key_prefix": null,
+            "receipt_sha256": "de6b4c9ad981d3800e2f1972e3b48b5d0383b44850707af7d7b8dda4ae729d06",
+            "local_result_claim_sha256": "2e60c81c7464e9ed5d3f42ff976613fb823d31dbb10663ed118814c749c067e5",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/50/503cbbcd60c7d54ff5f01d906d85cb3c29a58dc11bbb0ecfdc39b45f23294036"
+          },
+          {
+            "shard": 2,
+            "returncode": 0,
+            "summary": "39 passed in 20.04s",
+            "action_key": "640d275603e6d95806318ac3d9ea977892a1727dee7c8074f89afda66690b3aa",
+            "action_key_prefix": null,
+            "receipt_sha256": "c74f768e0aa5fd8f4bb5eb05d881d91642cfbfef4ebe7c4880408f7fcb6c7083",
+            "local_result_claim_sha256": "eda83a788c15f7f1a8c102ba4b9661b7d4c9fc079d43be0d75054497031bda0f",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/90/9074f3e625c8e96f289313cda49fcd0ae61ebef77820c92a16e97b6101a9bc25"
+          },
+          {
+            "shard": 3,
+            "returncode": 0,
+            "summary": "36 passed, 2 warnings in 14.51s",
+            "action_key": "c4d166b4fb0493f09c5c5f729bd2d661e31f63bbcffda0264c50c9d354da292f",
+            "action_key_prefix": null,
+            "receipt_sha256": "e76855d28e6ca1d04807cf3a25c306c9f420d80e7e87067920e207ac85590d68",
+            "local_result_claim_sha256": "6c7cbd12daf1d7c2996551588dc7bbb3fbdc1f11bfff1ec5e9929916acb5adca",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/d6/d68f8cb61d83f3516d307e1b1d61a230772c90d82fd01c5ddbf24253f23ddb21"
+          },
+          {
+            "shard": 4,
+            "returncode": 0,
+            "summary": "28 passed in 15.46s",
+            "action_key": "764505e7689ba3893a826e86851333778e3fba5aee600a5b855bd7cc6160f66b",
+            "action_key_prefix": null,
+            "receipt_sha256": "3d59d0b6f44d4e4fa87ee8f3d115ace2a7a4254de7ed96f0e15b57732cade119",
+            "local_result_claim_sha256": "97d7dd9bc725c5087495cccecb3c570040c1df11d4924a7c2bf66554f1fc735f",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/5f/5f60e9750c84892d974e11ee68828ec602e56c7c306be71ddc01e04079b104c1"
+          },
+          {
+            "shard": 5,
+            "returncode": 0,
+            "summary": "39 passed in 13.12s",
+            "action_key": "a6a986fc31778d7d40175c3d0946aa86c6d92a33d2c565e9692832ccf60cca46",
+            "action_key_prefix": null,
+            "receipt_sha256": "e152482f3b51fad7f463e8143a60df19af495ceca88ba5556181ac0eb95c2986",
+            "local_result_claim_sha256": "5415e7b106e25acf3ccfc89bb1539bba1d6feabbf1bba4db719da745bba7bca1",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/80/80bdcf4b8ce9be1e4ccc43b96ba4c6ef3fb17f815f1e35bb3ccf3819fd3c62cb"
+          },
+          {
+            "shard": 6,
+            "returncode": 0,
+            "summary": "53 passed, 2 warnings in 18.43s",
+            "action_key": "d8cae83ebd6c98c65d53f7ff8546aa26ee53e16da8307fe4571b24d16bd75b5d",
+            "action_key_prefix": null,
+            "receipt_sha256": "fe73a31523115267ee1d0f966d53c2afb7e9fc2932837f7344863464038df710",
+            "local_result_claim_sha256": "173c0e6dfe8cf3c703169d08a0f75fd508f07f0b213220e1741f83e4d6ddb559",
+            "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/e9/e925ed65567fca8a9770a35461370754e7d926824446ce409c6ac18a12131ce2"
+          }
+        ],
+        "outcome": "return-only caller: 2 failed/5 passed (liveness wedge and deferred bind); with the bounded caller transition: 7 passed focused and 7/7 shards, 312 passed narrow, all rc 0 with CAS receipts and result payloads"
+      },
+      {
+        "id": "PRG-04 partial blind grant fails closed",
+        "actions": [
+          {
+            "shard": 0,
+            "returncode": 1,
+            "summary": "1 failed, 6 passed in 10.53s",
+            "action_key": null,
+            "action_key_prefix": "ffc31a2ede03",
+            "receipt_sha256": null,
+            "local_result_claim_sha256": null,
+            "payload_path": null
+          }
+        ],
+        "outcome": "buggy caller (any held grant permitted): 1 failed/6 passed -- a 1 GiB grant exposed a 2 GiB advance's publication; root QA's independent red is /home/rob/tmp/pb-maintenance-20260921-2240/evidence/832-root-partial-grant-red.json (action prefix 5cce290a0f43). With the corrected predicate the partial state gates, holds its tokens and publishes nothing (final-focused, final-narrow)."
+      }
+    ],
+    "remaining_gaps": [
+      "A partial grant for an unpublished advance is unsupported: with no row there is no published_unix to bind, so the pass fails closed (gated, tokens retained) instead of replenishing. Production reachability is unproven; the state is constructed in QA.",
+      "One cycle can still gate transiently when a superseded target's grant holds the fresh target's room, because dangling-grant release runs after the want pass on a complete census; the next pass takes from the returned room and publishes.",
+      "Source merge only: no deployment/activation and no workload proof is claimed; the staged-only tier policy is untouched (tests and docs only)."
+    ],
+    "note": "Astra's root QA reproduced the partial-grant hole in this lane's first caller transition (evidence/832-root-partial-grant-red.json, one failed behavioral assertion); the audit regression was adopted into tests/test_the_nonfinal_window_fences_its_advance.py. The two-line advance_needs return correction is origin/main's (PR840) and is not this lane's merge; this lane's source change is tools/fleet/tier_loop.py plus focused tests and the design.md contract paragraph."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
