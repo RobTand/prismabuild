@@ -167,8 +167,12 @@ def test_housekeeping_retires_the_dead_owner_and_unblocks(fleet) -> None:
     """Standard housekeeping routes the exact stale owner through `evict`."""
     queue, stage, _cas = fleet
     consumer, mover = _dead_owner(fleet)
-    receipts = stage_release.sweep_dead_owner_fragments(
-        queue, stage_roots={TIER: str(stage)})
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    publisher = _publisher(fleet, _key(), _key())
+    assert publisher._decide(stage / NAMES[0], SIZE, "c" * 64,
+                             computed=None, source_id=None,
+                             heal=True)[0] == "replace"
     retired = [entry for entry in receipts
                if entry.get("action_key") == mover
                and entry.get("complete") is True]
@@ -176,10 +180,6 @@ def test_housekeeping_retires_the_dead_owner_and_unblocks(fleet) -> None:
     assert not any((stage / name).exists() for name in NAMES)
     assert not residency_map.fragment_path(
         queue.root / pool.RESIDENCY, consumer, mover).exists()
-    publisher = _publisher(fleet, _key(), _key())
-    assert publisher._decide(stage / NAMES[0], SIZE, "c" * 64,
-                             computed=None, source_id=None,
-                             heal=True)[0] == "replace"
 
 
 def test_a_live_owner_is_retained(fleet) -> None:
@@ -192,8 +192,8 @@ def test_a_live_owner_is_retained(fleet) -> None:
     for name in NAMES:
         _stage_marked(stage, name)
     fragment = _write_fragment(queue, stage, consumer, mover, NAMES)
-    receipts = stage_release.sweep_dead_owner_fragments(
-        queue, stage_roots={TIER: str(stage)})
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert not [entry for entry in receipts
                 if entry.get("action_key") == mover
                 and entry.get("complete") is True]
@@ -207,8 +207,8 @@ def test_a_tainted_census_refuses_the_pass(fleet) -> None:
     consumer, mover = _dead_owner(fleet)
     residue = queue.root / pool.RESIDENCY / consumer / "residue.json"
     residue.write_bytes(b"{not json")
-    receipts = stage_release.sweep_dead_owner_fragments(
-        queue, stage_roots={TIER: str(stage)})
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert receipts and all(entry.get("complete") is not True
                             for entry in receipts)
     assert all((stage / name).exists() for name in NAMES)
@@ -226,8 +226,8 @@ def test_a_path_shared_with_a_live_owner_is_kept(fleet) -> None:
     _publish(queue, live_mover, max_attempts=1)
     live_fragment = _write_fragment(
         queue, stage, live_consumer, live_mover, NAMES[:1])
-    receipts = stage_release.sweep_dead_owner_fragments(
-        queue, stage_roots={TIER: str(stage)})
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert [entry for entry in receipts
             if entry.get("action_key") == mover
             and entry.get("complete") is True]
@@ -252,10 +252,165 @@ def test_a_surviving_covered_claim_is_skipped_not_evicted(fleet) -> None:
     for name in NAMES:
         _stage_marked(stage, name)
     fragment = _write_fragment(queue, stage, consumer, mover, NAMES)
-    receipts = stage_release.sweep_dead_owner_fragments(
-        queue, stage_roots={TIER: str(stage)})
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert not [entry for entry in receipts
                 if entry.get("action_key") == mover
                 and entry.get("complete") is True]
     assert all((stage / name).exists() for name in NAMES)
     assert fragment.exists()
+
+
+def _assert_retained(queue, stage, consumer, mover):
+    assert all((stage / name).exists() for name in NAMES)
+    assert residency_map.fragment_path(
+        queue.root / pool.RESIDENCY, consumer, mover).exists()
+
+
+@pytest.mark.parametrize('state', [pool.FAILED, pool.WITHDRAWN])
+@pytest.mark.parametrize('damage', ['wrong-key', 'wrong-generation', 'wrong-schema',
+                                    'malformed', 'empty', 'symlink', 'directory'])
+def test_unknown_terminal_identity_retains(fleet, state, damage):
+    import json
+    queue, stage, _ = fleet
+    consumer, mover = _dead_owner(fleet)
+    path = queue.item_path(state, consumer if state == pool.FAILED else mover)
+    record = json.loads(path.read_bytes())
+    if damage == 'wrong-key':
+        record['action_key'] = _key()
+    elif damage == 'wrong-generation':
+        record['published_unix'] += 1
+    elif damage == 'wrong-schema':
+        record['schema'] = 'unknown'
+    if damage in {'wrong-key', 'wrong-generation', 'wrong-schema'}:
+        path.write_text(json.dumps(record))
+    elif damage == 'malformed':
+        path.write_text('{broken')
+    elif damage == 'empty':
+        path.write_bytes(b'')
+    elif damage == 'symlink':
+        other = path.with_suffix('.saved')
+        path.rename(other)
+        path.symlink_to(other)
+    else:
+        path.unlink()
+        path.mkdir()
+    stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    _assert_retained(queue, stage, consumer, mover)
+
+
+@pytest.mark.parametrize('which', ['receipt', 'material', 'decision', 'attempt',
+                                  'consumer-lease', 'mover-lease', 'plan'])
+def test_missing_or_unknown_authority_is_not_absence(fleet, which):
+    import json
+    from prismabuild import reader_lease
+    queue, stage, _ = fleet
+    consumer, mover = _dead_owner(fleet)
+    if which == 'decision':
+        marker = json.loads(queue.item_path(pool.WITHDRAWN, mover).read_bytes())
+        queue.withdrawal_decision_path(marker).unlink()
+    elif which == 'attempt':
+        failed = json.loads(queue.item_path(pool.FAILED, consumer).read_bytes())
+        queue.attempt_path(failed, failed['attempts']).unlink()
+    else:
+        path = {'receipt': queue.move_path(mover),
+                'material': reader_lease.material_path(queue.root / pool.RESIDENCY,
+                                                      consumer, mover),
+                'consumer-lease': queue.lease_path(consumer),
+                'mover-lease': queue.lease_path(mover),
+                'plan': queue.residency_plan_path(consumer)}[which]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"schema":"unknown"}')
+    stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    _assert_retained(queue, stage, consumer, mover)
+
+
+@pytest.mark.parametrize('owner', ['consumer', 'mover'])
+def test_republication_after_census_retains_new_generation(fleet, monkeypatch, owner):
+    queue, stage, _ = fleet
+    consumer, mover = _dead_owner(fleet)
+    original = stage_release._fragment_census
+    published = False
+
+    def census(root):
+        nonlocal published
+        result = original(root)
+        if not published:
+            published = True
+            queue.publish(action_key=consumer if owner == 'consumer' else mover,
+                          cas_root='/cas', checkout_root='/co', worker_script='/w.py',
+                          resources={'cpu': 1}, max_attempts=1, recompute=True)
+        return result
+
+    monkeypatch.setattr(stage_release, '_fragment_census', census)
+    stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    _assert_retained(queue, stage, consumer, mover)
+    assert queue.item_path(pool.READY, consumer if owner == 'consumer' else mover).exists()
+
+
+def _probe_locks(root, keys, result):
+    queue = pool.PoolQueue(root)
+    for key in keys:
+        with queue._transition_locked(key, blocking=False) as acquired:
+            result.put(acquired)
+
+
+def test_consumer_and_mover_excluded_through_egress(fleet, monkeypatch):
+    import multiprocessing
+    queue, stage, _ = fleet
+    consumer, mover = _dead_owner(fleet)
+    original = stage_release.evict
+    observed = []
+
+    def evict(*args, **kwargs):
+        if kwargs.get('reason') == 'dead-owner-sweep':
+            ctx = multiprocessing.get_context('spawn')
+            result = ctx.Queue()
+            process = ctx.Process(target=_probe_locks,
+                                  args=(queue.root, [consumer, mover], result))
+            process.start()
+            observed.extend([result.get(timeout=10), result.get(timeout=10)])
+            process.join(timeout=10)
+            assert process.exitcode == 0
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stage_release, 'evict', evict)
+    stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    assert observed == [False, False]
+    assert not (stage / NAMES[0]).exists()
+
+
+def test_unreadable_ledger_retains_without_crashing(fleet, monkeypatch):
+    queue, stage, _ = fleet
+    consumer, mover = _dead_owner(fleet)
+    held = queue.tier_ledger(TIER).held_dir
+    original = os.listdir
+
+    def listed(path):
+        if Path(path) == held:
+            raise PermissionError('fixture ledger inaccessible')
+        return original(path)
+
+    monkeypatch.setattr(os, 'listdir', listed)
+    stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
+    _assert_retained(queue, stage, consumer, mover)
+
+
+def test_one_discovery_for_all_tiers(fleet, monkeypatch):
+    queue, stage, _ = fleet
+    _dead_owner(fleet)
+    second = stage.parent / 'ram'
+    second.mkdir()
+    ram = 'prismabuild-ram:dl380g10'
+    stage_release.register_stage_root(queue, tier_id=ram, stage_root=second)
+    original = stage_release.sweep_dead_owner_fragments
+    calls = []
+
+    def discovery(*args, **kwargs):
+        calls.append(set(kwargs['stage_roots']))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stage_release, 'sweep_dead_owner_fragments', discovery)
+    stage_release.sweep(queue, stage_roots={TIER: str(stage), ram: str(second)},
+                        pressure={TIER: 0, ram: 0})
+    assert calls == [{TIER, ram}]

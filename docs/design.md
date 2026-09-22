@@ -5231,6 +5231,31 @@ pressure named still takes every orphan, which is what an operator means. And
 exactly one terminal record and an adopted mover has none; the supported way to
 return that range is its egress, which is the path the sweep already uses.
 
+**Uncharged dead-owner fragments are reclaimed without pressure (#839).**
+The standard sweep now makes one complete fragment discovery across its tiers
+before its held-key pass. A failed consumer's withdrawn mover can leave a
+fragment after its reservation has gone, without filing a move receipt or
+material sidecar. The fragment still blocks the shared publisher indefinitely,
+so this exact shape is retired even when no tier needs capacity. This changes
+the automatic cleanup default for that shape; charged resident ranges retain
+the pressure-based adoption policy above.
+
+Discovery does not authorize deletion. The sweep holds the consumer transition
+lock, then the mover transition lock, through the existing egress, which takes
+the stage ownership lock and retains its pin, co-owner and source-handoff
+checks. Fresh live-state checks exclude a republication that won discovery.
+The failed consumer must have the queue's verified immutable failed-attempt
+summary; the mover's visible withdrawal must agree with its immutable decision
+for that exact action and generation. There must be no live row, lease, filed
+consumer plan, move receipt, material sidecar, or reservation directory.
+Missing proof, unreadable or nonregular records, incompatible identity, and
+other terminal shapes retain. Produced-output namespaces retain their separate
+lifecycle, and the stage-root marker remains mandatory. One ledger discovery
+per tier is reused to filter candidates; exact absence is checked again while
+the ownership transitions are excluded. Existing egress performs its fresh
+co-owner census for each actual retirement; no discovery cache replaces that
+atomic safety check.
+
 ### Reader pins: a live reader blocks eviction until it releases
 
 Fragments say bytes are staged; they do not say who is reading them. A reader
