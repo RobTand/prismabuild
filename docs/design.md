@@ -6494,7 +6494,7 @@ batches spend the window by exact transfer. Retirement returns the spent
 credits to free, and the producer takes them back with `refill_window`.
 Between the retirement and the refill the window is owed but held by nobody.
 The joint-fit gate (`window_credit.gate_newcomer`), the fence check
-(`fence_fits`) and the newcomer relief in `window_pressure` counted it as zero
+(`fence_fits`) and the relief in `window_pressure` counted it as zero
 (`output_gib=0`, note `output-scope-unenforced`), so a consumer's window could
 take the room the refill needs.
 
@@ -6511,6 +6511,13 @@ instance, claim, template or holding makes the result unknown, and the tier
 loop defers the tier as it does for an unreadable ledger
 (`advance-deferred-unknown-evidence`). An unreadable batch census counts no
 outstanding tokens, which can only raise the result.
+
+When counted, the obligation enters all three. The gate and the fence check
+add it to what they hold against capacity. The relief adds it to each tier's
+next-phase term, because a fence needs the owed window free as well. Without
+that, an admitted window's advance would wait beside reclaimable orphans. The
+newcomer probe's shortfall includes it too. A tier whose obligation is unknown
+asks for no relief, because its publication defers.
 
 The tier loop counts the obligation only when it runs with `--output-windows`
 (or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
