@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map  # noqa: E402
 import prewarm_loop  # noqa: E402
+import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -42,6 +43,17 @@ LIVE_CONSUMER = "4" * 64
 NAMES = ["alpha.bin", "beta.bin", "gamma.bin", "delta.bin"]
 SIZE = 1024
 SPAN = SIZE * len(NAMES)
+
+
+def _staged(stage: Path, name: str) -> Path:
+    """Where the stage mover writes source ``name``: its range name.
+
+    Derived through ``stage_move.stage_relative`` rather than spelled here, so
+    this file follows the naming rule instead of restating it.
+    """
+
+    return stage / stage_move.stage_relative(
+        f"/originals/{name}", 0, SIZE, mount_prefix="/originals")
 
 
 def _manifest_blob(cas_root: Path, mount: Path) -> str:
@@ -246,12 +258,12 @@ def _intact(fleet) -> bool:
     """Nothing staged was unlinked and no original was touched."""
 
     _queue, stage, _cas, _digest, originals, *_rest = fleet
-    return (all((stage / name).exists() for name in NAMES)
+    return (all(_staged(stage, name).exists() for name in NAMES)
             and all((originals / name).exists() for name in NAMES))
 
 
 def _stage_copy(stage: Path, name: str, *, marked: bool = True) -> Path:
-    path = stage / name
+    path = _staged(stage, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\0" * SIZE)
     if marked:
@@ -267,8 +279,8 @@ def _live_fragment(queue: pool.PoolQueue, stage: Path, names: list[str],
         "consumer_action_key": LIVE_CONSUMER, "mover_action_key": LIVE_MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": digest,
         "entries": {
-            residency_map.residency_map_key(str(stage / name), 0): {
-                "stage_path": str(stage / name), "bytes": SIZE,
+            residency_map.residency_map_key(str(_staged(stage, name)), 0): {
+                "stage_path": str(_staged(stage, name)), "bytes": SIZE,
                 "sha256": "b" * 64, "offset": 0,
             } for name in names
         },
@@ -293,7 +305,7 @@ def test_a_retired_heads_unprovable_copies_are_retired(fleet) -> None:
     assert got["complete"] and got["applied"] is True
     assert got["entries_retired"] == len(NAMES)
     assert got["bytes_retired"] == SPAN
-    assert not any((stage / name).exists() for name in NAMES)
+    assert not any(_staged(stage, name).exists() for name in NAMES)
     assert got["originals_checked"] == got["originals_present"] == len(NAMES)
     assert all((originals / name).exists() for name in NAMES)
 
@@ -324,7 +336,7 @@ def test_a_qualified_prefix_a_fragment_names_is_preserved(fleet) -> None:
     assert got["entries_retired"] == len(NAMES) - len(kept)
     assert got["retained_reasons"] == {
         "attributed_pinned_claimed_or_handed_off": 2}
-    assert all((stage / name).exists() for name in kept)
+    assert all(_staged(stage, name).exists() for name in kept)
 
 
 @pytest.mark.parametrize("census", [
@@ -335,10 +347,11 @@ def test_every_ownership_census_retains_what_it_names(
 
     _queue, stage, _cas, _digest, _originals, *_rest = fleet
     _populate(stage)
-    pinned = os.path.normpath(str(stage / NAMES[0]))
+    pinned = os.path.normpath(str(_staged(stage, NAMES[0])))
     held: object = ({pinned: [LIVE_CONSUMER]}
                     if census.endswith("live_for")
-                    else {NAMES[0]} if census == "_claimed_paths"
+                    else {str(_staged(stage, NAMES[0]).relative_to(stage))}
+                    if census == "_claimed_paths"
                     else {pinned})
     if "." in census:
         module, name = census.split(".")
@@ -348,7 +361,7 @@ def test_every_ownership_census_retains_what_it_names(
         monkeypatch.setattr(stage_release, census, lambda *a, **k: (held, []))
 
     got = _recover(fleet, apply=True)
-    assert (stage / NAMES[0]).exists()
+    assert _staged(stage, NAMES[0]).exists()
     assert got["entries_retired"] == len(NAMES) - 1
 
 
@@ -361,8 +374,33 @@ def test_a_file_the_stage_did_not_write_is_retained(fleet) -> None:
         _stage_copy(stage, name)
 
     got = _recover(fleet, apply=True)
-    assert (stage / NAMES[0]).exists()
+    assert _staged(stage, NAMES[0]).exists()
     assert got["retained_reasons"]["not_marked_by_the_stage"] == 1
+
+
+def test_a_pre_range_bare_name_is_retained_and_named(fleet) -> None:
+    """A copy under the bare name a pre-range head wrote is never retired.
+
+    Before range-only naming every read of a path from offset zero shared the
+    bare relative name, so a bare copy is not this head's identity even when
+    the stage marked it.  It is retained with its own reason rather than
+    counted as already gone, and nothing else in the scope is held back.
+    """
+
+    _queue, stage, *_rest = fleet
+    legacy = stage / NAMES[0]
+    legacy.write_bytes(b"\0" * SIZE)
+    os.setxattr(legacy, prewarm_loop.STAGE_SOURCE_XATTR,
+                f"/originals/{NAMES[0]}@0".encode())
+    for name in NAMES[1:]:
+        _stage_copy(stage, name)
+
+    got = _recover(fleet, apply=True)
+    assert legacy.exists()
+    assert got["retained_reasons"] == {
+        "pre_range_name_not_this_heads_identity": 1}
+    assert got["entries_retired"] == len(NAMES) - 1
+    assert got["entries_already_gone"] == 0
 
 
 def test_an_unanswerable_mark_retains_rather_than_deletes(
@@ -454,7 +492,7 @@ def test_a_missing_original_refuses_before_mutating(fleet) -> None:
     assert got["complete"] is False
     assert "last surviving input" in str(got["skipped"])
     assert got["entries_retired"] == 0
-    assert all((stage / name).exists() for name in NAMES)
+    assert all(_staged(stage, name).exists() for name in NAMES)
 
 
 def test_a_directory_original_is_refused(fleet) -> None:
@@ -468,7 +506,7 @@ def test_a_directory_original_is_refused(fleet) -> None:
     got = _recover(fleet, apply=True)
     assert got["complete"] is False
     assert "not a regular source file" in str(got["skipped"])
-    assert all((stage / name).exists() for name in NAMES)
+    assert all(_staged(stage, name).exists() for name in NAMES)
     assert (originals / NAMES[0]).is_dir(), "the refusal touched nothing"
 
 
@@ -483,7 +521,7 @@ def test_a_truncated_original_is_refused(fleet) -> None:
     got = _recover(fleet, apply=True)
     assert got["complete"] is False
     assert "short of" in str(got["skipped"])
-    assert all((stage / name).exists() for name in NAMES)
+    assert all(_staged(stage, name).exists() for name in NAMES)
     assert short.stat().st_size == SIZE - 1, "the refusal touched nothing"
 
 
@@ -496,7 +534,7 @@ def test_an_original_that_resolves_into_the_stage_is_refused(
     aliased = tmp_path / "aliased"
     aliased.mkdir()
     for name in NAMES:
-        (aliased / name).symlink_to(stage / name)
+        (aliased / name).symlink_to(_staged(stage, name))
     digest = _manifest_blob(cas, aliased)
     head, egress = _reseal(fleet, seal_digest=digest,
                            receipt_digest=digest, mount=aliased)
@@ -505,7 +543,7 @@ def test_an_original_that_resolves_into_the_stage_is_refused(
                    egress_action_key=egress)
     assert got["complete"] is False
     assert "inside the stage root" in str(got["skipped"])
-    assert all((stage / name).exists() for name in NAMES)
+    assert all(_staged(stage, name).exists() for name in NAMES)
 
 
 def test_nothing_happens_while_a_mover_could_be_writing(fleet) -> None:

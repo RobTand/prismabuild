@@ -47,7 +47,7 @@ TIER = red.TIER
 
 
 def _key_for(stage: Path, name: str) -> str:
-    return residency_map.residency_map_key(str(stage / name), 0)
+    return residency_map.residency_map_key(str(stage / red.staged_name(name)), 0)
 
 
 def _fragment_entries(material_entries: dict) -> dict:
@@ -159,7 +159,7 @@ def _count_destination_lstats(monkeypatch, paths) -> list[int]:
 def test_the_mixed_prune_is_partial_and_keeps_the_whole_charge(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    coherent = stage / NAMES[0]
+    coherent = stage / red.staged_name(NAMES[0])
     inode = os.stat(coherent).st_ino
     generation = _material_doc(queue, consumer, mover)["generation"]
     held = _tokens(queue, mover)
@@ -188,14 +188,14 @@ def test_the_mixed_prune_is_partial_and_keeps_the_whole_charge(fleet):
         "no charge may move during a partial prune")
     # The stale destination is physically recovered, so a successor replaces
     # it immediately instead of paying the orphan grace.
-    assert not (stage / NAMES[1]).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
 
 
 def test_the_successor_adopts_the_survivor_with_zero_recopy(
         fleet, tmp_path, monkeypatch):
     queue, stage, cas = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    coherent = stage / NAMES[0]
+    coherent = stage / red.staged_name(NAMES[0])
     inode = os.stat(coherent).st_ino
     receipts = red._sweep(queue, stage)
     assert [entry for entry in _receipts_for(receipts, mover)
@@ -255,7 +255,7 @@ def test_a_fully_stale_owner_settles_its_holder_once(fleet, tmp_path, monkeypatc
     assert not reader_lease.material_path(
         queue.residency_fragment_root(), consumer, mover).exists()
     assert _tokens(queue, mover) == {}, "the whole charge settles exactly once"
-    assert not any((stage / name).exists() for name in NAMES)
+    assert not any((stage / red.staged_name(name)).exists() for name in NAMES)
 
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)
     monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
@@ -287,7 +287,7 @@ def test_a_live_pin_retains_the_whole_candidate(fleet):
     pin = _acquire_pin(queue, consumer, mover)
     assert pin["ok"], pin
     replacement = red._stage(stage, NAMES[1] + ".later", red.NEW_PAYLOAD)
-    os.replace(replacement, stage / NAMES[1])
+    os.replace(replacement, stage / red.staged_name(NAMES[1]))
     queue.finish(mover, status="executed", detail={"returncode": 0})
     red._charge(queue, mover)
     held = _tokens(queue, mover)
@@ -297,7 +297,7 @@ def test_a_live_pin_retains_the_whole_candidate(fleet):
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["retained_reason"] == "live-pin", retained
     assert retained[0]["entries_pruned"] == 0
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, name) for name in NAMES}
     assert set(_material_doc(queue, consumer, mover)["entries"]) == {
@@ -310,14 +310,14 @@ def test_a_live_claim_overlap_retains_the_whole_candidate(fleet, monkeypatch):
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
         stage_release, "_claimed_paths_attributed",
-        lambda *args, **kwargs: ({NAMES[1]}, [], set()))
+        lambda *args, **kwargs: ({red.staged_name(NAMES[1])}, [], set()))
 
     receipts = red._sweep(queue, stage)
 
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["retained_reason"] == "live-claim", retained
     assert retained[0]["entries_pruned"] == 0
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, name) for name in NAMES}
 
@@ -327,21 +327,21 @@ def test_a_same_key_claim_retains_the_whole_candidate(fleet, monkeypatch):
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
         stage_release, "_claimed_paths_attributed",
-        lambda *args, **kwargs: (set(), [], {NAMES[1]}))
+        lambda *args, **kwargs: (set(), [], {red.staged_name(NAMES[1])}))
 
     receipts = red._sweep(queue, stage)
 
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["retained_reason"] == "same-key-claimed"
     assert retained[0]["entries_pruned"] == 0
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
 
 
 def test_a_promotion_handoff_retains_the_whole_candidate(
         fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    handoff = os.path.normpath(str((stage / NAMES[1]).resolve()))
+    handoff = os.path.normpath(str((stage / red.staged_name(NAMES[1])).resolve()))
     monkeypatch.setattr(
         stage_release, "_claimed_source_paths",
         lambda *args, **kwargs: ({handoff}, []))
@@ -351,7 +351,7 @@ def test_a_promotion_handoff_retains_the_whole_candidate(
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["retained_reason"] == "promotion-handoff"
     assert retained[0]["entries_pruned"] == 0
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
 
 
 def test_a_co_owner_fragment_protects_its_file_and_the_rest_still_prunes(
@@ -365,9 +365,9 @@ def test_a_co_owner_fragment_protects_its_file_and_the_rest_still_prunes(
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "b" * 64,
         "entries": {_key_for(stage, NAMES[1]): {
-            "stage_path": str(stage / NAMES[1]), "bytes": SIZE,
+            "stage_path": str(stage / red.staged_name(NAMES[1])), "bytes": SIZE,
             "sha256": red.OLD_DIGEST, "offset": 0}}})
-    protected = stage / NAMES[1]
+    protected = stage / red.staged_name(NAMES[1])
     assert protected.exists()
 
     receipts = red._sweep(queue, stage)
@@ -378,7 +378,7 @@ def test_a_co_owner_fragment_protects_its_file_and_the_rest_still_prunes(
     assert partial[0]["entries_pruned"] == 1
     assert partial[0]["entries_retained"] == 1
     assert protected.exists(), "a co-owner's physical file is never unlinked"
-    assert not (stage / NAMES[0]).exists()
+    assert not (stage / red.staged_name(NAMES[0])).exists()
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, NAMES[1])}
 
@@ -395,9 +395,9 @@ def test_a_co_owner_cannot_make_a_nonregular_path_clean(fleet):
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "b" * 64,
         "entries": {_key_for(stage, NAMES[1]): {
-            "stage_path": str(stage / NAMES[1]), "bytes": SIZE,
+            "stage_path": str(stage / red.staged_name(NAMES[1])), "bytes": SIZE,
             "sha256": red.OLD_DIGEST, "offset": 0}}})
-    target = stage / NAMES[1]
+    target = stage / red.staged_name(NAMES[1])
     os.unlink(target)
     target.mkdir()
 
@@ -406,7 +406,7 @@ def test_a_co_owner_cannot_make_a_nonregular_path_clean(fleet):
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "ownership-uncertain"
-    assert (stage / NAMES[0]).exists(), (
+    assert (stage / red.staged_name(NAMES[0])).exists(), (
         "another stale path must not delete behind a nonregular co-owned path")
     assert target.is_dir()
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
@@ -420,7 +420,7 @@ def test_a_same_inode_mutation_retains_the_whole_candidate(fleet):
     # NAMES[0] is the stale path, NAMES[1] the coherent one whose dated inode
     # is then changed in place (same inode, new mtime/ctime).
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[1]})
-    with open(stage / NAMES[1], "r+b") as stream:
+    with open(stage / red.staged_name(NAMES[1]), "r+b") as stream:
         stream.write(b"z")
 
     receipts = red._sweep(queue, stage)
@@ -429,7 +429,7 @@ def test_a_same_inode_mutation_retains_the_whole_candidate(fleet):
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "ownership-uncertain"
     assert retained[0]["errors"], "an in-place change is not stale evidence"
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
 
 
 @pytest.mark.parametrize("replacement", ["symlink", "directory"])
@@ -437,10 +437,10 @@ def test_a_nonregular_destination_retains_the_whole_candidate(
         fleet, replacement):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    target = stage / NAMES[1]
+    target = stage / red.staged_name(NAMES[1])
     os.unlink(target)
     if replacement == "symlink":
-        target.symlink_to(stage / NAMES[0])
+        target.symlink_to(stage / red.staged_name(NAMES[0]))
     else:
         target.mkdir()
 
@@ -450,7 +450,7 @@ def test_a_nonregular_destination_retains_the_whole_candidate(
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "ownership-uncertain"
     assert target.exists() or target.is_symlink()
-    assert (stage / NAMES[0]).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
 
 
 def test_a_symlink_outside_the_stage_retains_the_whole_candidate(fleet):
@@ -458,7 +458,7 @@ def test_a_symlink_outside_the_stage_retains_the_whole_candidate(fleet):
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     outside = stage.parent / "outside.bin"
     outside.write_bytes(red.NEW_PAYLOAD)
-    target = stage / NAMES[1]
+    target = stage / red.staged_name(NAMES[1])
     os.unlink(target)
     target.symlink_to(outside)
 
@@ -484,7 +484,7 @@ def test_a_missing_key_binding_retains_the_whole_candidate(fleet):
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "material-key-missing"
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
 
 
 def test_a_missing_path_without_a_bound_mention_retains_the_whole_candidate(
@@ -494,7 +494,7 @@ def test_a_missing_path_without_a_bound_mention_retains_the_whole_candidate(
                                       material=False)
     entries = red._entries(stage)
     entries.pop(_key_for(stage, NAMES[1]), None)
-    os.unlink(stage / NAMES[1])
+    os.unlink(stage / red.staged_name(NAMES[1]))
     red._write_sidecar(queue, stage, consumer, mover, entries)
 
     receipts = red._sweep(queue, stage)
@@ -502,8 +502,8 @@ def test_a_missing_path_without_a_bound_mention_retains_the_whole_candidate(
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "material-key-missing"
-    assert (stage / NAMES[0]).exists()
-    assert not (stage / NAMES[1]).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
 
 
 def test_a_foreign_material_retains_the_whole_candidate(fleet):
@@ -517,7 +517,7 @@ def test_a_foreign_material_retains_the_whole_candidate(fleet):
     retained = _receipts_for(receipts, mover)
     assert retained and retained[0]["entries_pruned"] == 0, retained
     assert retained[0]["retained_reason"] == "material-does-not-bind"
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
 
 
 @pytest.mark.parametrize("owner", ["consumer", "mover"])
@@ -562,7 +562,7 @@ def test_a_damaged_done_terminal_retains(fleet):
 
 
 def _assert_owner_intact(queue, stage, consumer, mover) -> None:
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / red.staged_name(name)).exists() for name in NAMES)
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, name) for name in NAMES}
     assert set(_material_doc(queue, consumer, mover)["entries"]) == {
@@ -605,8 +605,8 @@ def test_a_crash_after_the_fragment_write_replays_conservatively(
     # never asserts ownership.
     assert set(_material_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, name) for name in NAMES}
-    assert not (stage / NAMES[1]).exists()
-    assert (stage / NAMES[0]).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
     assert _tokens(queue, mover) == held
 
     # Replay: the pair completes, the material is trimmed to the surviving
@@ -619,7 +619,7 @@ def test_a_crash_after_the_fragment_write_replays_conservatively(
     assert set(material_after["entries"]) == {_key_for(stage, NAMES[0])}, (
         "a material superset must be trimmed to the surviving fragment keys")
     assert material_after["generation"] == material_generation
-    assert (stage / NAMES[0]).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
     assert _tokens(queue, mover) == held
     pin = reader_lease.acquire(
         queue, consumer_action_key=consumer,
@@ -666,8 +666,8 @@ def test_a_crash_before_the_fragment_write_replays_conservatively(
     assert partial[0]["bytes_unlinked"] == SIZE
     assert set(_fragment_doc(queue, consumer, mover)["entries"]) == {
         _key_for(stage, name) for name in NAMES}
-    assert not (stage / NAMES[1]).exists()
-    assert (stage / NAMES[0]).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
     assert _tokens(queue, mover) == held
 
     # The replay completes the pair from the absent leaf, once.
@@ -692,8 +692,8 @@ def test_repeated_sweeps_neither_prune_nor_settle_twice(fleet):
 
     assert not [entry for entry in _receipts_for(second, mover)
                 if entry.get("entries_pruned")]
-    assert (stage / NAMES[0]).exists()
-    assert not (stage / NAMES[1]).exists()
+    assert (stage / red.staged_name(NAMES[0])).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
     assert _tokens(queue, mover) == held
 
 
@@ -704,7 +704,7 @@ def test_an_unchanged_coherent_owner_skips_and_is_invalidated(
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
-    destinations = [stage / name for name in NAMES]
+    destinations = [stage / red.staged_name(name) for name in NAMES]
     seen = _count_destination_lstats(monkeypatch, destinations)
 
     def run_pass():
@@ -728,7 +728,7 @@ def test_an_unchanged_coherent_owner_skips_and_is_invalidated(
     # A replaced incarnation invalidates it and is then positively stale.
     seen[0] = 0
     replacement = red._stage(stage, NAMES[1] + ".later", red.NEW_PAYLOAD)
-    os.replace(replacement, stage / NAMES[1])
+    os.replace(replacement, stage / red.staged_name(NAMES[1]))
     receipts = run_pass()
     assert seen[0] >= 1, "a replaced destination must re-scan"
     assert [entry for entry in _receipts_for(receipts, mover)
@@ -760,7 +760,7 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
         "manifest_sha256": "a" * 64,
         "entries": _fragment_entries(entries)})
     queue.finish(mover, status="executed", detail={"returncode": 0})
-    destinations = [sub / name for name in NAMES]
+    destinations = [sub / red.staged_name(name) for name in NAMES]
     seen = _count_destination_lstats(monkeypatch, destinations)
 
     def run_pass():
@@ -774,9 +774,12 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
     run_pass()
     assert seen[0] == 0, "the unchanged owner must skip"
 
-    moved = stage / "sub-moved"
-    os.rename(sub, moved)
-    os.rename(moved, sub)
+    # The checkpoint stands on each destination's immediate parent, which
+    # for a staged input is its own ``<name>.pbrange`` directory.
+    parent = destinations[0].parent
+    moved = parent.with_name(parent.name + "-moved")
+    os.rename(parent, moved)
+    os.rename(moved, parent)
     seen[0] = 0
     run_pass()
     assert seen[0] >= len(destinations), (
@@ -791,19 +794,19 @@ def test_a_claim_blocks_then_recovery_after_it_ends(
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
         stage_release, "_claimed_paths_attributed",
-        lambda *args, **kwargs: ({NAMES[1]}, [], set()))
+        lambda *args, **kwargs: ({red.staged_name(NAMES[1])}, [], set()))
     first = red._sweep(queue, stage)
     retained = _receipts_for(first, mover)
     assert retained and retained[0]["retained_reason"] == "live-claim"
     assert retained[0]["entries_pruned"] == 0
-    assert (stage / NAMES[1]).exists()
+    assert (stage / red.staged_name(NAMES[1])).exists()
     monkeypatch.undo()
 
     second = red._sweep(queue, stage)
     pruned = [entry for entry in _receipts_for(second, mover)
               if entry.get("entries_pruned") == 1]
     assert pruned, second
-    assert not (stage / NAMES[1]).exists()
+    assert not (stage / red.staged_name(NAMES[1])).exists()
 
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)
     monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
@@ -826,7 +829,7 @@ def test_a_rename_after_installation_is_seen_by_the_next_sweep(
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
-    destinations = [stage / name for name in NAMES]
+    destinations = [stage / red.staged_name(name) for name in NAMES]
     seen = _count_destination_lstats(monkeypatch, destinations)
     real_install = stage_release._install_skip_checkpoint
     raced = []
@@ -837,7 +840,7 @@ def test_a_rename_after_installation_is_seen_by_the_next_sweep(
             raced.append(True)
             replacement = red._stage(stage, NAMES[1] + ".later",
                                      red.NEW_PAYLOAD)
-            os.replace(replacement, stage / NAMES[1])
+            os.replace(replacement, stage / red.staged_name(NAMES[1]))
         return installed
 
     monkeypatch.setattr(stage_release, "_install_skip_checkpoint",
@@ -863,7 +866,8 @@ def test_a_symlinked_intermediate_directory_retains(fleet):
     path = red._stage(real, NAMES[0], red.OLD_PAYLOAD)
     (stage / "sub").symlink_to(real)
     entries = {_key_for(real, NAMES[0]): {
-        "stage_path": str(stage / "sub" / NAMES[0]), "bytes": SIZE,
+        "stage_path": str(stage / "sub" / red.staged_name(NAMES[0])),
+        "bytes": SIZE,
         "sha256": red.OLD_DIGEST, "file_id": red._identity(path)}}
     reader_lease.write_material(
         queue.residency_fragment_root(), consumer_action_key=consumer,

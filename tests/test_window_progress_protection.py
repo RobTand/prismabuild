@@ -204,6 +204,12 @@ def _await_funded(queue: pool.PoolQueue, mover: str, *, cycles: int = 4) -> None
     raise AssertionError(f"no transferred fence for {mover[:12]}")
 
 
+def _staged_name(file_name: str) -> str:
+    """The stage's name for one whole ``SPAN``-byte source file."""
+
+    return stage_move.stage_relative(f"/m/{file_name}", 0, SPAN,
+                                     mount_prefix="/m")
+
 def _land(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
           digest: str, mover: str, consumer: str, start: int, end: int,
           expect: bytes, *, owner: str) -> None:
@@ -222,7 +228,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
     entries = sorted(json.loads(manifest_path.read_text())["entries"],
                      key=lambda entry: entry["path"])
     staged_name = Path(str(entries[start // SPAN]["path"])).name
-    staged = tmp_path / "stage" / staged_name
+    staged = tmp_path / "stage" / _staged_name(staged_name)
     assert staged.read_bytes() == expect, f"staged bytes differ for {mover[:12]}"
 
 
@@ -314,7 +320,8 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     assert receipt["complete"] is True
     queue.record_move(p1, receipt)
     queue.finish(p1, status="executed")
-    assert (tmp_path / "stage" / f"{ptag}-p1.bin").read_bytes() == \
+    assert (tmp_path / "stage"
+            / _staged_name(f"{ptag}-p1.bin")).read_bytes() == \
         ctx[ptag]["payloads"][f"{ptag}-p1.bin"]
     assert tier_loop.compose_map(queue, P) is not None
     _claim_exact(queue, P, owner="w-pp")
@@ -323,7 +330,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     # The stalled window is admitted into the freed room and completes.
     stage_release.evict(queue, p0, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
-    assert not (tmp_path / "stage" / f"{ptag}-p0.bin").exists()
+    assert not (tmp_path / "stage" / _staged_name(f"{ptag}-p0.bin")).exists()
     admitted = False
     for _ in range(4):
         events = tier_loop.residency_window(queue, tiers=tiers)
@@ -627,7 +634,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     assert int(receipt["bytes_staged"]) == SPAN
     queue.record_move(ctx["r0"], receipt)
     queue.finish(ctx["r0"], status="executed")
-    assert (tmp_path / "ram" / "ram-p0.bin").read_bytes() == \
+    assert (tmp_path / "ram" / _staged_name("ram-p0.bin")).read_bytes() == \
         ctx["payloads"]["ram-p0.bin"]
     assert int(ram_ledger.holder_tokens(ctx["r0"]).get("ram_gib", 0)) == 1
 
@@ -685,7 +692,8 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     assert n0_receipt["complete"] is True
     queue.record_move(n0, n0_receipt)
     queue.finish(n0, status="executed")
-    assert (tmp_path / "stage" / "ramb-p0.bin").read_bytes() == payloads_b["ramb-p0.bin"]
+    assert (tmp_path / "stage" / _staged_name("ramb-p0.bin")).read_bytes() \
+        == payloads_b["ramb-p0.bin"]
 
     ram_events = tier_loop.ram_residency_window(queue, tiers=tiers)
     stalled = {str(e["consumer"]): e for e in ram_events

@@ -10,7 +10,7 @@ to mean "the whole file".  The capture's mover published 45 KB under the name
 R11's movers needed for 5.37 GB; every R11 mover then found a publication
 whose sidecar mentioned a different size, read it as "owned", waited out the
 grace and refused ("shared staged name is published elsewhere, still unproven
-after the grace").  72 shard names across 40 read phases were blocked, and the
+after the grace").  74 shard names across 40 read phases were blocked, and the
 capture's own mover was blocked the same way by an earlier withdrawn capture.
 No proof can ever settle that contest: the two publications hold different
 bytes, and one file cannot hold both.
@@ -156,3 +156,62 @@ def test_the_name_encodes_offset_and_size_for_every_entry():
     assert whole == f"d/f.safetensors{stage_move.RANGE_SUFFIX}/0-{WHOLE}"
     assert prefix != whole
     assert name("/m/d/f.safetensors", 0, WHOLE, mount_prefix="/m") == whole
+
+
+def test_a_staged_input_ignores_named_once():
+    """Input side: being named once never buys a staged input the bare name.
+
+    ``named_once`` is what the former rule read as "whole"; for a staged
+    input it changes nothing, so a caller that still passes it cannot bring
+    the collision back.
+    """
+
+    name = stage_move.stage_relative
+    for named_once in (False, True):
+        assert name("/m/d/f.safetensors", 0, PREFIX, mount_prefix="/m",
+                    named_once=named_once) == (
+            f"d/f.safetensors{stage_move.RANGE_SUFFIX}/0-{PREFIX}")
+
+
+def test_a_produced_output_keeps_the_name_its_producer_declared():
+    """Produced-output side: a declared output keeps its declared name.
+
+    The namespace is the producing action's digest, so no other publisher's
+    read derives a name inside it; a path its manifest names once from
+    offset zero stays ``produced-output/<namespace>/<rel>``, and a split
+    output still gets range names.
+    """
+
+    namespace = "ab" * 32
+    name = stage_move.stage_relative
+    assert name("/o/p1.bin", 0, WHOLE, mount_prefix="/o", namespace=namespace,
+                named_once=True) == f"produced-output/{namespace}/p1.bin"
+    assert name("/o/p1.bin", 0, PREFIX, mount_prefix="/o",
+                namespace=namespace, named_once=False) == (
+        f"produced-output/{namespace}/p1.bin{stage_move.RANGE_SUFFIX}"
+        f"/0-{PREFIX}")
+    assert name("/o/p1.bin", PREFIX, PREFIX, mount_prefix="/o",
+                namespace=namespace, named_once=True) == (
+        f"produced-output/{namespace}/p1.bin{stage_move.RANGE_SUFFIX}"
+        f"/{PREFIX}-{PREFIX}")
+
+
+def test_a_retired_range_whose_directory_was_pruned_is_absent(tmp_path):
+    """Retiring a range prunes its then-empty ``<rel>.pbrange`` directory.
+
+    The containment check must read that as the range being absent (so a
+    stale mention can be pruned on replay), while a missing structural
+    directory above it stays unknown ownership.
+    """
+
+    import stage_release
+
+    stage = tmp_path / "stage"
+    (stage / "model").mkdir(parents=True)
+    relative = stage_move.stage_relative(
+        "/m/model/f.safetensors", 0, WHOLE, mount_prefix="/m")
+    state = stage_release._containment_state
+    assert state(stage, stage / relative) == "absent"
+    missing_parent = stage_move.stage_relative(
+        "/m/gone/f.safetensors", 0, WHOLE, mount_prefix="/m")
+    assert state(stage, stage / missing_parent) == "unknown"

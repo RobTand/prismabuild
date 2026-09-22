@@ -3963,8 +3963,8 @@ classification, release at egress — transfers intact, aimed at the right
 actor: one occupancy leg per movement node.
 
 **Shared staged paths and who may delete them.** A staged name is a pure function
-of the manifest entry (`stage_relative`: whole files keep their relative name,
-split ranges land at `<rel>.pbrange/<offset>-<size>`), with no mover namespace --
+of the manifest entry (`stage_relative`: every staged input lands at
+`<rel>.pbrange/<offset>-<size>`, whole files included), with no mover namespace --
 so forward and reverse passes, or two read phases of one v2 plan, stage the same
 source extent onto one file, and a promotion reads it back from that same staged
 name at offset zero (never the manifest's pool path at the manifest offset). An
@@ -4312,11 +4312,27 @@ Each entry is written beside its final name and renamed into place, so a partial
 file is never visible under the name a consumer reads, and its digest is
 computed on the way through. A staged range that the manifest gave a digest for
 and does not match is deleted and left out of the map: publishing it would make
-the map a lie a consumer trusts in preference to the pool. Entries a manifest
-names once, at offset zero, keep their relative name; every other range gets a
-name of its own under a `.pbrange/` suffix, because two movers holding two
-ranges of one shard cannot both rename-publish into one file, and the staged
-object's length has to be the range's length.
+the map a lie a consumer trusts in preference to the pool. Every staged input is
+named by the exact range it holds, `<rel>.pbrange/<offset>-<size>`, because two movers
+holding two ranges of one shard cannot both rename-publish into one file, and
+the staged object's length has to be the range's length. There is no bare-name
+case for "whole" files: a manifest entry carries no file size, so a pure
+function of the entry cannot tell a whole-file read from a prefix read. The
+former rule gave the bare name to any path a manifest named once from offset
+zero, and on 2026-09-22 a routing capture's 45 KB safetensors-header reads and
+GLM Stage A's 5.37 GB whole-shard reads derived one name for 74 shards; each
+side's movers refused the other's publication forever. Two entries now share a
+staged name exactly when they name the same bytes of the same source, so after
+a runtime publication a new mover recopies a range an older mover staged under
+its bare name, and the bare copy is left behind as orphan cache. The
+retention censuses (`_claimed_paths_attributed`, `_claimed_source_paths`) also
+count the former bare spelling, because a plan row keeps the tools of the
+generation that sealed it and may still write it; nothing publishes or deletes
+by that spelling, and orphan recovery retains a bare copy it finds instead of
+counting its entry as gone. A produced output keeps the name its producer
+declared, `produced-output/<namespace>/<rel>` for a path its manifest names once
+from offset zero: the namespace is the producing action's own digest, so no
+other publisher's read can derive a name inside it.
 
 A range whose entries total more bytes than the range reserved is
 `residency_overran_reservation`, refused before the copy rather than after it:

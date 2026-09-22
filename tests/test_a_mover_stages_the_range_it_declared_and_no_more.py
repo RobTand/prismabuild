@@ -90,6 +90,12 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
     return args
 
 
+def _staged(stage: Path, relative: str, size: int) -> Path:
+    """Where the mover stages the whole ``size``-byte source ``relative``."""
+
+    return stage / stage_move.stage_relative(
+        f"/m/{relative}", 0, size, mount_prefix="/m")
+
 def _three_files(tmp_path: Path) -> tuple[Path, list[dict[str, object]]]:
     mount = tmp_path / "mnt"
     entries = [
@@ -113,8 +119,8 @@ def test_the_range_is_copied_verified_and_named_in_a_fragment(tmp_path: Path) ->
     assert receipt["errors"] == []
     assert "refusal" not in receipt
     stage = Path(args.stage_root)
-    assert (stage / "shard-1.bin").read_bytes() == b"a" * 4096
-    assert (stage / "sub" / "shard-2.bin").read_bytes() == b"b" * 8192
+    assert _staged(stage, "shard-1.bin", 4096).read_bytes() == b"a" * 4096
+    assert _staged(stage, "sub/shard-2.bin", 8192).read_bytes() == b"b" * 8192
     fragments = rm.read_fragments(args.residency_root, CONSUMER)
     assert len(fragments) == 1
     assert set(fragments[0]["entries"]) == {
@@ -134,8 +140,8 @@ def test_only_the_declared_prefix_is_staged(tmp_path: Path) -> None:
 
     assert receipt["bytes_staged"] == 4096
     assert receipt["complete"] is True
-    assert (Path(args.stage_root) / "shard-1.bin").exists()
-    assert not (Path(args.stage_root) / "sub" / "shard-2.bin").exists()
+    assert _staged(Path(args.stage_root), "shard-1.bin", 4096).exists()
+    assert not _staged(Path(args.stage_root), "sub/shard-2.bin", 8192).exists()
 
 
 def test_two_ranges_of_one_file_get_names_of_their_own(tmp_path: Path) -> None:
@@ -187,7 +193,7 @@ def test_bytes_that_are_not_the_manifests_bytes_are_not_published(
     assert receipt["complete"] is False
     assert receipt["entries_staged"] == 1
     assert any("digest mismatch" in error for error in receipt["errors"])
-    assert not (Path(args.stage_root) / "sub" / "shard-2.bin").exists()
+    assert not _staged(Path(args.stage_root), "sub/shard-2.bin", 8192).exists()
     fragments = rm.read_fragments(args.residency_root, CONSUMER)
     assert list(fragments[0]["entries"]) == [
         rm.residency_map_key(str(mount / "shard-1.bin"), 0)]
@@ -205,7 +211,7 @@ def test_a_source_that_cannot_be_read_leaves_nothing_behind(tmp_path: Path) -> N
     assert receipt["refusal"] == "residency_moved_nothing"
     stage = Path(args.stage_root)
     assert not list(stage.rglob("*.partial"))
-    assert not (stage / "shard-1.bin").exists()
+    assert not _staged(stage, "shard-1.bin", 4096).exists()
 
 
 def test_a_range_whose_entries_exceed_it_is_refused_before_the_copy(
@@ -315,7 +321,7 @@ def test_a_failed_fragment_publication_is_recorded_and_the_copy_goes_on(
     assert receipt["entries_staged"] == 3
     assert receipt["bytes_staged"] == 4096 + 8192 + 2048
     stage = Path(args.stage_root)
-    assert (stage / "shard-1.bin").exists() and (stage / "shard-3.bin").exists()
+    assert _staged(stage, "shard-1.bin", 4096).exists() and _staged(stage, "shard-3.bin", 2048).exists()
     # And the final publish repaired the fragment, so the map is whole.
     assert len(rm.read_fragments(args.residency_root, CONSUMER)[0]["entries"]) == 3
 
@@ -338,7 +344,8 @@ def test_a_second_movers_bad_copy_never_destroys_the_first_ones_good_one(
 
     first = stage_move.move(_args(tmp_path, manifest, start=0, end=4096))
     assert first["complete"] is True
-    staged = Path(_args(tmp_path, manifest, start=0, end=4096).stage_root) / "shard.bin"
+    staged = _staged(Path(_args(tmp_path, manifest, start=0, end=4096).stage_root),
+                     "shard.bin", 4096)
     assert staged.read_bytes() == b"a" * 4096
 
     # The source changes under us -- a rewritten shard, or bit rot.  That is
@@ -401,15 +408,24 @@ def test_the_one_off_manifest_door_refuses_what_core_refuses(
         stage_move.move(_args(tmp_path, manifest, start=0, end=4096))
 
 
-def test_two_entries_may_not_stage_as_one_file(tmp_path: Path) -> None:
-    """Derived range names and declared paths share one namespace."""
+def test_a_declared_path_that_spells_a_range_name_stages_apart(
+        tmp_path: Path) -> None:
+    """Derived range names and declared paths share one namespace, and the
+    derivation keeps them apart.
+
+    A source file literally named ``shard.bin.pbrange/0-2048`` is a legal
+    declared path.  It derives ``shard.bin.pbrange/0-2048.pbrange/0-2048``,
+    not the name the first range of ``shard.bin`` derives, because every
+    staged name ends in the range it holds.  Before range-only naming this
+    manifest was refused with ``residency_destination_collision``; a
+    collision is now unreachable from any manifest ``core`` accepts (a repeated
+    ``(path, offset)`` is refused there), and the check in ``move`` stays as
+    the invariant's own guard.
+    """
 
     mount = tmp_path / "mnt"
     payload = b"a" * 4096
     _write(mount / "shard.bin", payload)
-    # Two entries make it a split file, so its first range derives the name
-    # ``shard.bin.pbrange/0-2048`` -- which is also a legal declared path, and
-    # this manifest declares it.
     head = {"path": str(mount / "shard.bin"), "offset": 0, "bytes": 2048,
             "sha256": hashlib.sha256(payload[:2048]).hexdigest()}
     tail = {"path": str(mount / "shard.bin"), "offset": 2048, "bytes": 2048,
@@ -417,8 +433,10 @@ def test_two_entries_may_not_stage_as_one_file(tmp_path: Path) -> None:
     collider = _write(mount / "shard.bin.pbrange" / "0-2048", b"b" * 2048)
     manifest = _manifest(mount, [head, tail, collider])
 
-    with pytest.raises(SystemExit, match="residency_destination_collision"):
-        stage_move.move(_args(tmp_path, manifest, start=0, end=3 * 2048))
+    receipt = stage_move.move(_args(tmp_path, manifest, start=0, end=3 * 2048))
 
+    assert receipt["complete"] is True, receipt["errors"]
     stage = Path(tmp_path / "stage")
-    assert not stage.exists() or not list(stage.rglob("*"))
+    assert (stage / "shard.bin.pbrange" / "0-2048").read_bytes() == payload[:2048]
+    assert (stage / "shard.bin.pbrange" / "0-2048.pbrange"
+            / "0-2048").read_bytes() == b"b" * 2048

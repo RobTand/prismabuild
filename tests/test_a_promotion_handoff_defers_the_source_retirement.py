@@ -237,7 +237,11 @@ def test_the_promotion_claim_is_recognized_through_the_real_helper(
 
     paths, tainted = stage_release._claimed_source_paths(queue, stage)
     assert tainted == []
-    assert paths == {os.path.normpath(str(staged))}, (
+    # The staged source leg under its range name, and the bare name a stage
+    # leg sealed before range-only naming may still hold (over-retained).
+    bare = staged.parent.parent / "calib.bin"
+    assert paths == {os.path.normpath(str(staged)),
+                     os.path.normpath(str(bare))}, (
         "the sealed promotion claim must name this staged source leg")
 
 
@@ -350,7 +354,8 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     ]))
     assert promotion.get("refusal") is None, promotion
     assert promotion["complete"] is True
-    assert (ram / "calib.bin").read_bytes() == _payload()
+    assert (ram / stage_move.stage_relative(
+        "/m/calib.bin", 0, SIZE, mount_prefix="/m")).read_bytes() == _payload()
 
     # The RAM fragment names the ram tier and the ram path: it can never
     # vouch for the surviving SSD incarnation, which is why the SSD

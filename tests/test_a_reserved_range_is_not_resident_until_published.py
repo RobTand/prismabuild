@@ -347,7 +347,9 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
     queue.record_move(RAM_MOVER, promotion)
     assert queue.tier_ledger(RAM_TIER).acquire(RAM_MOVER, {"ram_gib": 1})
 
-    promoted = queue.root / "ram" / "model" / "shard-0.bin"
+    promoted = queue.root / "ram" / stage_move.stage_relative(
+        str(paths[0]), 0, paths[0].stat().st_size,
+        mount_prefix=str(tmp_path / "mnt"))
     assert promoted.read_bytes() == paths[0].read_bytes(), "exact bytes"
 
     assert residency_plan.resident_movers(

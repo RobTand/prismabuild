@@ -223,7 +223,9 @@ def test_a_reachable_origin_still_stages_and_is_never_censused(
     assert receipt["bytes_staged"] == 4096
     assert "refusal" not in receipt
     assert "origin_reachability" not in receipt
-    assert (Path(args.stage_root) / "shard-1.bin").read_bytes() == b"a" * 4096
+    staged = Path(args.stage_root) / stage_move.stage_relative(
+        "/m/shard-1.bin", 0, 4096, mount_prefix="/m")
+    assert staged.read_bytes() == b"a" * 4096
 
 
 def test_a_missing_file_under_a_present_root_is_not_an_unreachable_origin(

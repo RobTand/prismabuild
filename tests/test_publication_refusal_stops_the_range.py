@@ -91,7 +91,7 @@ def _manifest(tmp_path: Path, names, payloads, *, absent=()):
 
 def _destination(stage: Path, mount: Path, entry) -> Path:
     relative = stage_move.stage_relative(
-        str(entry["path"]), 0, SIZE, mount_prefix=str(mount), whole_file=True)
+        str(entry["path"]), 0, SIZE, mount_prefix=str(mount))
     return stage / relative
 
 
