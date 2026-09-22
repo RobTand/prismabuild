@@ -145,6 +145,12 @@ STAGE_ROOT_MARKER = ".prismabuild-stage.json"
 STAGE_ROOT_MARKER_SCHEMA_V1 = "prismabuild.stage-root.v1"
 STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
 
+#: The event a dead-owner eviction publishes, so an operator can tell bytes
+#: whose only owner was terminal-dead (failed consumer, withdrawn mover) from
+#: bytes routine reconciliation found unowned and from a named historical
+#: range an operator asked about by identity.
+DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
+
 
 def queue_identity(queue: pool.PoolQueue) -> str:
     """The string a marker names a queue by: its root's real path.
@@ -1505,6 +1511,178 @@ def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
     return wanted, owners
 
 
+def _metadata_absent(path: Path) -> bool:
+    """Positive absence with strict close-to-open NFS revalidation.
+
+    Opening the parent follows the queue's ``_read_json_fresh`` discipline,
+    without its best-effort fallback or another full directory listing for
+    each candidate. Any object at the address retains, including symlinks;
+    unreadable/non-directory parents raise instead of becoming absence.
+    """
+    try:
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY
+                             | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        # The parent can itself have a negatively cached lookup. Revalidate
+        # its parent before concluding that this subtree does not exist.
+        if _metadata_absent(path.parent):
+            return True
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY
+                             | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
+def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
+    """Read a regular, identity-bound queue outcome; filenames are not proof."""
+    record = json.loads(pb._read_regular_file_nofollow(
+        queue.item_path(state, key), where="dead-owner outcome"))
+    if (not isinstance(record, dict)
+            or record.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1
+            or record.get("action_key") != key):
+        raise pool.PoolContractError("dead-owner outcome identity mismatch")
+    queue.attempt_generation(record)  # validates a finite generation and key
+    return record
+
+
+def sweep_dead_owner_fragments(
+        queue: pool.PoolQueue, *, stage_roots: dict[str, str],
+        residency_root: str | Path | None = None,
+) -> list[dict[str, object]]:
+    """Retire only failed-consumer / withdrawn-mover residue with no charge.
+
+    One complete fragment census and one ledger discovery per tier identify
+    candidates, never authorize deletion. Each consumer is then held across
+    validation and all its evictions; each child is held before its fresh
+    state checks and existing egress. Lock order is consumer -> mover -> stage
+    ownership, the same as window publication and dead-consumer withdrawal.
+    Thus a successor published after discovery either wins before these locks
+    and is retained, or waits until this old owner's egress has completed.
+
+    Failure evidence is the queue's immutable attempt-backed summary, checked
+    once per consumer transaction. A cancellation must match its immutable
+    generation decision. Missing, unreadable, legacy or inconsistent evidence
+    retains, as do any plan, material sidecar, move receipt, live row, lease or
+    reservation. This deliberately excludes other terminal shapes and all
+    produced namespaces. No age or pressure is deletion authority.
+    """
+    root = Path(residency_root if residency_root is not None
+                else queue.root / pool.RESIDENCY)
+    if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+        return []
+    receipts: list[dict[str, object]] = []
+
+    def refuse(why: str, consumer: str = "", mover: str = "") -> None:
+        receipts.append({
+            "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": DEAD_OWNER_EVENT,
+            "action_key": mover, "consumer_action_key": consumer,
+            "tier_id": "", "stage_root": "", "reason": "dead-owner-sweep",
+            "complete": False, "errors": [why],
+            "host": socket.gethostname(), "unix": time.time(),
+        })
+
+    fragments, tainted = _fragment_census(root)
+    if tainted:
+        refuse("ownership uncertain: " + "; ".join(tainted[:8]))
+        return receipts
+    try:
+        failed_keys = set(os.listdir(queue.dir(pool.FAILED)))
+        withdrawn_keys = set(os.listdir(queue.dir(pool.WITHDRAWN)))
+    except OSError as exc:
+        refuse(f"ownership uncertain: queue census: {exc}")
+        return receipts
+    held_by_tier: dict[str, set[str]] = {}
+    for tier, stage in stage_roots.items():
+        if stage_root_refusal(queue, stage) is not None:
+            continue
+        try:
+            # Include nonregular holder names: an unknown ledger entry is
+            # not evidence that this mover has no charge.
+            held_by_tier[tier] = set(os.listdir(queue.tier_ledger(tier).held_dir))
+        except FileNotFoundError:
+            held_by_tier[tier] = set()
+        except (OSError, pool.PoolContractError) as exc:
+            refuse(f"ownership uncertain: tier ledger: {exc}")
+    candidates: dict[str, list[tuple[str, dict]]] = {}
+    for consumer, mover, fragment, direct in fragments:
+        tier = fragment.get("tier_id")
+        if (direct and _namespace_shaped(consumer)
+                and f"{consumer}.json" in failed_keys
+                and f"{mover}.json" in withdrawn_keys
+                and tier in held_by_tier and mover not in held_by_tier[tier]):
+            candidates.setdefault(consumer, []).append((mover, fragment))
+    uncertainty = (OSError, ValueError, pb.PrismaBuildError)
+    for consumer, children in candidates.items():
+        try:
+            with queue._transition_locked(consumer):
+                live, why = residency_plan.live_state(queue, consumer)
+                if why:
+                    refuse(f"ownership uncertain: {why}", consumer)
+                if live or why:
+                    continue
+                if any(not _metadata_absent(queue.item_path(state, consumer))
+                       for state in (pool.DONE, pool.WITHDRAWN)):
+                    continue
+                if (not _metadata_absent(queue.lease_path(consumer))
+                        or not _metadata_absent(queue.residency_plan_path(consumer))):
+                    continue
+                failed = _owner_record(queue, pool.FAILED, consumer)
+                # Reuse the queue's canonical history/generation/log checks;
+                # no whole-model hashing, and only once for this consumer.
+                ending = queue.adopted_attempt_summary(failed)
+                if (failed.get("status") != "failed"
+                        or ending["status"] != "failed"
+                        or ending["disposition"] != pool.FAILED):
+                    continue
+                for mover, observed in children:
+                    try:
+                        with queue.mover_transition_lock(mover):
+                            live, why = residency_plan.live_state(queue, mover)
+                            if why:
+                                refuse(f"ownership uncertain: {why}", consumer, mover)
+                            if live or why:
+                                continue
+                            if any(not _metadata_absent(queue.item_path(state, mover))
+                                   for state in (pool.DONE, pool.FAILED)):
+                                continue
+                            marker = _owner_record(queue, pool.WITHDRAWN, mover)
+                            decisions = queue.withdrawal_decisions(
+                                mover, generation=marker["published_unix"])
+                            if (marker.get("status") != "withdrawn"
+                                    or len(decisions) != 1
+                                    or decisions[0][1] != marker
+                                    or queue.withdrawal_covers(marker, action_key=mover)
+                                    != marker):
+                                raise pool.PoolContractError(
+                                    "withdrawal lacks its exact immutable decision")
+                            tier = str(observed["tier_id"])
+                            if any(not _metadata_absent(path) for path in (
+                                    queue.lease_path(mover), queue.move_path(mover),
+                                    queue.tier_ledger(tier).held_dir / mover,
+                                    reader_lease.material_path(root, consumer, mover))):
+                                continue
+                            current = residency_map.validate_fragment(json.loads(
+                                pb._read_regular_file_nofollow(
+                                    residency_map.fragment_path(root, consumer, mover),
+                                    where="dead-owner fragment")))
+                            if current != observed:
+                                continue  # adoption/republication won discovery
+                            receipts.append(evict(
+                                queue, mover, consumer_action_key=consumer,
+                                stage_root=stage_roots[tier], residency_root=root,
+                                reason="dead-owner-sweep"))
+                    except uncertainty as exc:
+                        refuse(f"ownership uncertain: {exc}", consumer, mover)
+        except uncertainty as exc:
+            refuse(f"ownership uncertain: {exc}", consumer)
+    return receipts
+
+
 def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
           residency_root: str | Path | None = None,
           pressure: Mapping[str, int] | None = None) -> list[dict[str, object]]:
@@ -1540,10 +1718,22 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     bulk if avoidable."*  Oldest receipt first, so a tier under repeated
     pressure takes the same range back twice rather than alternating between
     two -- a deterministic order, not a ranking of what is worth keeping.
+
+    **Dead owners are retired unconditionally (#839).**  A failed consumer's
+    withdrawn mover holds no tokens and filed no receipt, so the held-key
+    pass above can never see it -- yet its fragment still forbids publication
+    of its paths, which is a liveness block rather than a capacity question.
+    `sweep_dead_owner_fragments` runs once across tiers before the held-key
+    pass and retires each exact stale owner through the
+    same `evict`, which rechecks co-owners, claims, pins, and handoffs under
+    its own locks; a resubmitted consumer is excluded by the locked state
+    recheck before eviction, so pressure deference would only preserve the block.
     """
 
     wanted, owners = live_claims(queue)
     swept: list[dict[str, object]] = []
+    swept.extend(sweep_dead_owner_fragments(
+        queue, stage_roots=stage_roots, residency_root=residency_root))
     for tier_id, stage_root in stage_roots.items():
         refusal = stage_root_refusal(queue, stage_root)
         if refusal is not None:
