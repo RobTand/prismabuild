@@ -160,6 +160,10 @@ STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
 #: range an operator asked about by identity.
 DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
 
+#: The event an orphan sweep files for a held mover that has no receipt and
+#: no single direct fragment to name its consumer (#892).
+RECEIPTLESS_HOLDER_EVENT = "stage-receiptless-holder-retained"
+
 #: The event a bounded prune of positively stale mentions publishes (#853).
 #: Unlike a dead-owner eviction this keeps the whole old holder: no charge
 #: moves until the last fragment goes through the ordinary whole-owner egress,
@@ -2232,6 +2236,27 @@ def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     return record
 
 
+def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
+    """The withdrawn record of ``key``, proven by its one immutable decision.
+
+    A withdrawn marker by filename alone is not proof: the decision filed for
+    the marker's generation must be exactly one, must equal the marker, and
+    must be the one ``withdrawal_covers`` answers with.  Anything else raises,
+    and the caller retains.
+    """
+
+    marker = _owner_record(queue, pool.WITHDRAWN, key)
+    decisions = queue.withdrawal_decisions(
+        key, generation=marker["published_unix"])
+    if (marker.get("status") != "withdrawn"
+            or len(decisions) != 1
+            or decisions[0][1] != marker
+            or queue.withdrawal_covers(marker, action_key=key) != marker):
+        raise pool.PoolContractError(
+            "withdrawal lacks its exact immutable decision")
+    return marker
+
+
 def _partial_done_receipt_matches(queue, consumer: str, mover: str,
                                   fragment: Mapping[str, object]) -> bool:
     """Exact partial-copy evidence for an unmaterialized DONE owner (#866).
@@ -2272,6 +2297,10 @@ def sweep_dead_owner_fragments(
         residency_root: str | Path | None = None,
 ) -> list[dict[str, object]]:
     """Retire proven dead unmaterialized owners with no charge (#839, #866).
+
+    A consumer is dead when it has exactly one terminal record and that
+    record is proven: a failed one by its attempt-backed summary, a withdrawn
+    one by its exact immutable withdrawal decision (#892).
 
     One complete fragment census and one ledger discovery per tier identify
     candidates, never authorize deletion. Each consumer is then held across
@@ -2340,7 +2369,8 @@ def sweep_dead_owner_fragments(
     for consumer, mover, fragment, direct in fragments:
         tier = fragment.get("tier_id")
         if (direct and _namespace_shaped(consumer)
-                and f"{consumer}.json" in failed_keys
+                and (f"{consumer}.json" in failed_keys
+                     or f"{consumer}.json" in withdrawn_keys)
                 and f"{mover}.json" in eligible_terminal_keys
                 and tier in held_by_tier):
             # The charge is not a discovery filter: a charged,
@@ -2357,20 +2387,35 @@ def sweep_dead_owner_fragments(
                     refuse(f"ownership uncertain: {why}", consumer)
                 if live or why:
                     continue
-                if any(not _metadata_absent(queue.item_path(state, consumer))
-                       for state in (pool.DONE, pool.WITHDRAWN)):
+                # Exactly one terminal record: failed or withdrawn.  Two is
+                # not a death but a question, and done is not a death at all.
+                if not _metadata_absent(queue.item_path(pool.DONE, consumer)):
+                    continue
+                consumer_failed = not _metadata_absent(
+                    queue.item_path(pool.FAILED, consumer))
+                consumer_withdrawn = not _metadata_absent(
+                    queue.item_path(pool.WITHDRAWN, consumer))
+                if consumer_failed == consumer_withdrawn:
                     continue
                 if (not _metadata_absent(queue.lease_path(consumer))
                         or not _metadata_absent(queue.residency_plan_path(consumer))):
                     continue
-                failed = _owner_record(queue, pool.FAILED, consumer)
-                # Reuse the queue's canonical history/generation/log checks;
-                # no whole-model hashing, and only once for this consumer.
-                ending = queue.adopted_attempt_summary(failed)
-                if (failed.get("status") != "failed"
-                        or ending["status"] != "failed"
-                        or ending["disposition"] != pool.FAILED):
-                    continue
+                if consumer_failed:
+                    failed = _owner_record(queue, pool.FAILED, consumer)
+                    # Reuse the queue's canonical history/generation/log
+                    # checks; no whole-model hashing, and only once for this
+                    # consumer.
+                    ending = queue.adopted_attempt_summary(failed)
+                    if (failed.get("status") != "failed"
+                            or ending["status"] != "failed"
+                            or ending["disposition"] != pool.FAILED):
+                        continue
+                else:
+                    # A withdrawn consumer is as dead as a failed one when its
+                    # immutable decision says so -- the proof a withdrawn
+                    # mover already needs below.  Without it, WS-P cleared
+                    # three such owners by hand on 2026-09-22.
+                    _require_exact_withdrawal(queue, consumer)
                 for mover, observed in children:
                     try:
                         with queue.mover_transition_lock(mover):
@@ -2392,16 +2437,7 @@ def sweep_dead_owner_fragments(
                                         or ending["disposition"] != pool.DONE):
                                     continue
                             else:
-                                marker = _owner_record(queue, pool.WITHDRAWN, mover)
-                                decisions = queue.withdrawal_decisions(
-                                    mover, generation=marker["published_unix"])
-                                if (marker.get("status") != "withdrawn"
-                                        or len(decisions) != 1
-                                        or decisions[0][1] != marker
-                                        or queue.withdrawal_covers(marker, action_key=mover)
-                                        != marker):
-                                    raise pool.PoolContractError(
-                                        "withdrawal lacks its exact immutable decision")
+                                _require_exact_withdrawal(queue, mover)
                             tier = str(observed["tier_id"])
                             if not _metadata_absent(queue.lease_path(mover)):
                                 continue
@@ -2490,6 +2526,14 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     pressure takes the same range back twice rather than alternating between
     two -- a deterministic order, not a ranking of what is worth keeping.
 
+    **A held mover with no receipt is named by its fragment (#892).**  The
+    receipt is where this reads a mover's consumer, and a mover can outlive
+    its receipt: the canary leg-3 mover ``aa34e2a6e22f`` held 1 GiB for
+    three days with none.  Exactly one direct fragment naming the mover is
+    an exact owner, and the mover is then an orphan like any other.  No
+    fragment, several, a produced-output one, or a tainted census retains,
+    and the pass files a receipt saying which.
+
     **Dead owners are retired unconditionally (#839).**  A failed consumer's
     withdrawn mover holds no tokens and filed no receipt, so the held-key
     pass above can never see it -- yet its fragment still forbids publication
@@ -2505,6 +2549,9 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     swept: list[dict[str, object]] = []
     swept.extend(sweep_dead_owner_fragments(
         queue, stage_roots=stage_roots, residency_root=residency_root))
+    # Taken once, and only when a held key has no receipt to name its
+    # consumer (#892).
+    fragment_owners: dict[str, list[tuple[str, bool]]] | str | None = None
     for tier_id, stage_root in stage_roots.items():
         refusal = stage_root_refusal(queue, stage_root)
         if refusal is not None:
@@ -2527,7 +2574,16 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             consumer = (str(receipt.get("consumer_action_key")) if isinstance(receipt, dict)
                         else "")
             if not consumer:
-                continue
+                # No receipt names the consumer: ask the fragments (#892).
+                if fragment_owners is None:
+                    fragment_owners = _fragment_owners(
+                        Path(residency_root if residency_root is not None
+                             else queue.root / pool.RESIDENCY))
+                consumer, why = _receiptless_owner(fragment_owners, key)
+                if not consumer:
+                    swept.append(_receiptless_refusal(
+                        key, tier_id=tier_id, stage_root=stage_root, why=why))
+                    continue
             staged_unix = 0.0
             if isinstance(receipt, dict):
                 try:
@@ -2572,6 +2628,68 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                 or reconciled["unowned_left"]):
             swept.append(reconciled)
     return swept
+
+
+def _fragment_owners(root: Path) -> dict[str, list[tuple[str, bool]]] | str:
+    """Every mover's fragment owners under ``root``, or why that is unknown.
+
+    Maps each mover key to the ``(namespace, direct)`` of every fragment
+    naming it.  A tainted census is returned as its reason instead: a
+    fragment that cannot be read may be the one that names another owner.
+    """
+
+    fragments, tainted = _fragment_census(root)
+    if tainted:
+        return "ownership uncertain: " + "; ".join(tainted[:ATTRIBUTION_TAINT_LIMIT])
+    owners: dict[str, list[tuple[str, bool]]] = {}
+    for namespace, mover, _fragment, direct in fragments:
+        owners.setdefault(mover, []).append((namespace, direct))
+    return owners
+
+
+def _receiptless_owner(owners: dict[str, list[tuple[str, bool]]] | str,
+                       mover: str) -> tuple[str, str]:
+    """The consumer that owns a held mover with no receipt, or why none can.
+
+    The fragment is the document that names whose bytes a mover staged, so
+    exactly one direct fragment is an exact owner: the orphan sweep then
+    treats the holder as it treats any orphan, pressure first and ``evict``
+    after, and ``evict`` rechecks co-owners, claims, pins and handoffs under
+    its own locks.  Anything else is not an owner (#892):
+
+    * no fragment: no document names one.  A produced-output mover prepaid
+      at publication is this shape, and its tokens belong to its batch's
+      funding lane, which retains them on purpose (``safe_release_instance``);
+    * more than one fragment: two documents disagree;
+    * a produced-output fragment: its batch's lifecycle owns the mover.
+    """
+
+    if isinstance(owners, str):
+        return "", owners
+    named = owners.get(mover, [])
+    if not named:
+        return "", "no fragment names this held mover and it has no receipt"
+    if len(named) > 1:
+        return "", (f"{len(named)} fragments name this held mover: "
+                    + ", ".join(sorted(namespace[:12] for namespace, _ in named)))
+    namespace, direct = named[0]
+    if not direct:
+        return "", (f"only a produced-output fragment ({namespace[:12]}) names "
+                    f"this held mover; its batch lifecycle owns it")
+    return namespace, ""
+
+
+def _receiptless_refusal(mover: str, *, tier_id: str, stage_root: str,
+                         why: str) -> dict[str, object]:
+    """The receipt an unresolvable receipt-less holder files each pass."""
+
+    return {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": RECEIPTLESS_HOLDER_EVENT,
+        "action_key": mover, "consumer_action_key": "", "tier_id": tier_id,
+        "stage_root": str(stage_root), "reason": "orphan-sweep",
+        "complete": False, "errors": [why],
+        "host": socket.gethostname(), "unix": time.time(),
+    }
 
 
 def _is_mover_partial(name: str) -> bool:
