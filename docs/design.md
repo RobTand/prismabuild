@@ -5619,6 +5619,15 @@ generation, not a key), and a consumer whose plan this reader refuses
 (unattributable movers are hands off; a refused withdrawal is reported, never
 forced).
 
+Discovery first intersects terminal names with one observation of filed-plan
+names (#870). Unrelated historical outcomes cannot own staging work and do not
+trigger terminal-body reads or repeated live-queue absence scans. This is only
+a candidate filter: each selected consumer still undergoes the unchanged
+locked terminal, live-state, current-plan and incarnation checks before any
+withdrawal or reap. An unreadable registry defers the pass; a plan not visible
+in this observation is considered on a later pass. No mutable live-state cache
+or cross-cycle authorization is introduced.
+
 The other half is a mover that ends without a complete receipt: its tokens go
 back at `finish`, but every entry it renamed into place before it failed stays
 on the dataset, named by its fragment and counted by no token — and nothing
