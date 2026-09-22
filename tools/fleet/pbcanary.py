@@ -62,6 +62,7 @@ import datetime
 import hashlib
 import importlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -399,6 +400,7 @@ def receipt_ref_for(fleet_root: Path, receipt_path: Path) -> str:
 
 def terminal_progress_observation(
     paths: dict, action_key: str, artifact: str, receipt: dict,
+    *, generation: float | None = None,
 ) -> dict | None:
     """Accepted progress from the terminal attempt that produced ``artifact``.
 
@@ -408,8 +410,14 @@ def terminal_progress_observation(
 
     * the CAS receipt's own result digest and length must name exactly the
       artifact bytes (the producer evidence);
-    * the action's ``done/`` record must be the executed terminal for this
-      action key;
+    * the terminal must be the executed ending of the generation this driver
+      submitted (``generation``, pbrun's ``published_unix``), read from that
+      generation's immutable attempt archive.  ``PoolQueue.finish`` publishes
+      the attempt, entombs the claim, releases capacity and only then files
+      ``done/``, and a wait can answer inside that window: the 6d88c0b15b18
+      canary's leg 3 read ``done/`` 1.23 s before it existed.  ``done/`` is
+      read only when the archive has no ending yet, and only for the same
+      generation; with no generation named it is the only source;
     * its immutable attempt history, read and verified by the queue's own
       ``attempt_outcomes`` (canonical links, content-addressed logs), must
       end at an executed ``done`` attempt -- the terminal's adopted attempt;
@@ -429,14 +437,9 @@ def terminal_progress_observation(
             or result_bytes != len(artifact_bytes)
             or hashlib.sha256(artifact_bytes).hexdigest() != result_sha):
         return None
-    record_path = Path(paths["queue_root"]) / "done" / f"{action_key}.json"
-    try:
-        record = json.loads(record_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, dict) or record.get("action_key") != action_key:
-        return None
-    if record.get("status") != "executed":
+    if generation is not None and (
+            type(generation) not in (int, float)
+            or not math.isfinite(float(generation))):
         return None
     source = str(paths.get("published_src") or "")
     if source and source not in sys.path:
@@ -447,6 +450,33 @@ def terminal_progress_observation(
         return None
     try:
         queue = pool_mod.PoolQueue(Path(paths["queue_root"]))
+    except (OSError, ValueError):
+        return None
+    record = None
+    if generation is not None:
+        try:
+            archived = queue.archived_generation_outcomes(
+                action_key, generation=float(generation))
+        except (OSError, ValueError):
+            return None
+        if archived:
+            record = archived[0][1]
+    if record is None:
+        record_path = Path(paths["queue_root"]) / "done" / f"{action_key}.json"
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    if not isinstance(record, dict) or record.get("action_key") != action_key:
+        return None
+    if generation is not None:
+        published = record.get("published_unix")
+        if (type(published) not in (int, float)
+                or float(published) != float(generation)):
+            return None
+    if record.get("status") != "executed":
+        return None
+    try:
         outcomes = queue.attempt_outcomes(record)
     except (OSError, ValueError):
         return None
@@ -582,8 +612,11 @@ def _execute_side(
         ) from exc
     (leg_dir / f"artifact{file_tag}.txt").write_text(artifact, encoding="utf-8")
     write_json(leg_dir / f"receipt{file_tag}.json", receipt)
+    published = detach.get("published_unix") if isinstance(detach, dict) else None
     evidence = terminal_progress_observation(
-        paths, action_key, artifact, receipt)
+        paths, action_key, artifact, receipt,
+        generation=(float(published)
+                    if type(published) in (int, float) else None))
     envelope = {"action_key": action_key, "receipt": receipt,
                 "artifact": artifact, "stdout": artifact,
                 "progress_observation": None, "progress_attempt": None}
