@@ -5096,7 +5096,10 @@ that overfills — and is read off the plan and the ledger rather than picked:
   tier rather than the plan: `capacity − step`. Free capacity still binds
   first whenever it is smaller, exactly as before, and `capacity` is the
   ledger's minted total rather than its free remainder — a bound read off what
-  is free would shrink as the window it bounds fills it.
+  is free would shrink as the window it bounds fills it. Since #903 a rolling
+  window is also bounded by its consumer's **refill horizon** (see
+  "A window stages only to its consumer's refill horizon" below), which is
+  what keeps `capacity − step` from being spent on speculation.
 
 The second bound covers run-ahead only. Total occupancy is the phases awaiting
 egress, plus the phase being read, plus run-ahead, and the first two are
@@ -5138,9 +5141,11 @@ ranges do not admit its missing head (#829). Both the pressure probe and
 the publication gate use that identity and the next still-unpublished legs,
 with conservative obligations (full queued demand and a minimum next-step term
 from progressing windows). The relief is stated as the free the sweep must reach
-(`free + shortfall`) and is bounded to the tier's orphans. A window that
-cannot fit even after every orphan returns — permanently oversize, or blocked
-by live readers — adds no admission-relief term. The ordinary next-phase
+(`free + shortfall`) and is bounded to what the tier can give back: its
+orphans, and since #903 the landed ranges past their readers' refill
+horizons. A window that cannot fit even after all of that returns —
+permanently oversize, or blocked by live readers — adds no admission-relief
+term. The ordinary next-phase
 pressure remains independent, and the sweep still takes only eligible orphans.
 The real gate re-checks
 everything before publishing; the probe only decides whether the room is
@@ -5158,8 +5163,9 @@ landed movers of the withdrawn R11 held 484 GiB, and an operator had to egress
 them by hand. `window_pressure` now probes each such claim through the same
 `gate_newcomer` path as a newcomer. The claim is a final window of one step,
 with only the obligation the claim gate checks: what is held. The relief is
-`free + shortfall`, bounded to the tier's orphans, and the sweep evicts oldest
-first until the claim fits. A claim that cannot fit even after every orphan
+`free + shortfall`, bounded to the tier's orphans (and, since #903, the
+landed ranges past their readers' refill horizons), and the sweep evicts
+oldest first until the claim fits. A claim that cannot fit even after every orphan
 returns, or that exceeds the tier, asks for nothing (#632). A withdrawn ready
 key asks for nothing either (#708). No new eviction rule was needed. The
 withdrawn consumer's movers were already orphans under the existing
@@ -5401,6 +5407,148 @@ that gate is measured to open the claim again (fault-injection RED, 2026-09-20).
 `release_tier_reservations` remains only behind `pin_holds_tier_tokens` in
 `reclaim_terminal_reservation`, where an explicit `unpin=True` already names
 the release.
+
+### A window stages only to its consumer's refill horizon (#903)
+
+The #632 bound keeps the stage from reaching 0 B; it does not ask how far
+ahead a consumer needs its bytes. On 2026-09-22 GLM Stage A R12
+(`683cb3caa5ea`) published 22 movers in one cycle, 69 s after its claim,
+under a budget of `565 − 22 = 543` GiB. At 22:30Z it was reading `chain-043`
+while 24 landed ranges held 528 GiB of the 565 GiB stage, the farthest
+(`chain-019`) about 24 phases ahead. Two of its later movers and the native
+capture's 3 GiB lead waited on `tier_reservation_unavailable`. At 23:03Z the
+capture (`a92f62783e8f`) was admitted, read `head` to `layer-2`, reported
+`layer-3`, and waited 300 s for a 14 GiB range the window never published
+before PB stopped it. None of R12's ranges could be evicted for it: every one
+belonged to a live plan, so none was an orphan.
+
+Rob: *"The time a spark spends processing should be used to refill the
+ramdisk and ssds."* A window now publishes only to its consumer's refill
+horizon, and a range already landed past a horizon is room another window can
+take.
+
+**The horizon.** `residency_plan.refill_horizon` measures it in the plan's
+read order, which is its byte order (`validate_plan` requires each phase to
+start where the previous one ended). It has three spans:
+
+* The phase the consumer's accepted progress names, which it is reading.
+* The consumer's read-ahead: `mem_gb` plus its admission's
+  `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
+  The two are summed even where they share one physical pool (GB10 unified
+  memory), which over-states the reach, so the horizon errs long.
+* The refill: ranges past that reach until they cover what the consumer
+  reads while a copy published now lands, and never less than one range.
+
+The refill time is one heartbeat (`pool.HEARTBEAT_S`, 30 s, how stale an
+accepted phase can be) plus one tier-loop cycle (`--interval-s`) plus the
+landing time: the largest range still ahead at the slowest rate a copy of
+this plan has landed at (`bytes_staged / seconds` from its receipts). It is
+priced by throughput rather than by a receipt's duration, so a plan whose
+landed copies were small ranges does not under-price its large ones. The
+consumption rate is the bytes through the end of the accepted phase over the
+time from the claim to that phase's report. Counting the whole accepted phase
+as read over-states the rate, which errs toward a longer horizon.
+
+Before anything is measured, two fill numbers stand in. Until a copy of the
+plan lands, the landing rate is the smallest fill any of its movers was
+sealed with; on 2026-09-22 R12's 24 copies, all sealed at 144 MB/s, landed at
+134 to 626 MB/s (median 154). Until the consumer reports after its claim,
+its consumption is the tier's announced fill supply: a consumer that reads
+staged bytes cannot keep up a rate above what the tier refills them at, so
+the horizon priced at it is at least as long. With no accepted progress
+there is no horizon, and the #632 regime (one step) stands.
+
+For R12 at 22:30Z: 81.2 GB read in 3919 s (20.7 MB/s), 180 GiB of read-ahead
+reaching to 274.5 GB (`chain-042` to `chain-034`), a 174 s landing for a
+23.4 GB range at 134 MB/s, so 5.5 GB of refill and one range, `chain-033`.
+The horizon ends where `chain-032` starts. The refill term is one range for
+any consumer whose rate is small beside its ranges; the read-ahead term is
+what sets R12's horizon.
+
+**What the horizon bounds.** Every decision that asks "what will this window
+publish" asks it with the horizon:
+
+* `window` publishes no range of a later phase that starts at or past the
+  horizon. That is the normal state of a rolling window, not a stall, and
+  files no `window-stalled`.
+* `advance_needs` lists no such range in `waiting`, so a window re-gated as
+  a newcomer after its original lead retired does not ask the joint gate for
+  two ranges it will not publish, and its fence protects the range after the
+  frontier only when that range is inside the horizon.
+* `window_pressure` counts no such range as pressure, whether as a probe or
+  as a row queued before the horizon existed.
+
+**Ranges past a horizon are room.** Staging ahead is choice (b) of the two
+the issue named: ranges land ahead of need and stay resident as a cache
+until another window needs the room, rather than being published only as
+the consumer advances (a). A landed range costs nothing while the tier has
+room, and Rob's rule is to use the hardware: *"As long as we are maximally
+using the hardware, I am OK with latency incurred by waiting for IO."* New
+publication stops at the horizon, so (b) only ever applies to ranges landed
+before the horizon moved or existed.
+
+`evict_beyond_horizon` runs after the orphan sweep, on the same pressure.
+When a stage tier is still short of the free a live window needs — a running
+consumer's in-horizon range, a newcomer's lead, a ready consumer's claim —
+it gives back landed ranges past their readers' horizons:
+
+* Farthest-needed first (Belady's order), in seconds at each reader's own
+  consumption rate, so two readers' ranges compare in one unit.
+* One at a time, re-reading the ledger after each, stopping at the room.
+* Never a range inside any reader's horizon, nor the advance (the first
+  range past it), nor a range whose mover or egress is queued or running,
+  nor a superseded or withdrawn window's (the orphan sweep and adoption own
+  those).
+* Not at all when every candidate together could not make the room (#632:
+  no futile eviction). The event is `beyond-horizon-eviction-futile`.
+
+Each eviction is all or nothing: `stage_release.evict(..., whole=True)`
+judges every entry under the ownership lock before the first unlink. A range
+a reader has pinned, that a promotion is reading, or whose ownership the
+pass cannot prove is declined whole — nothing unlinked, no retiring mark,
+tokens and fragment held — and the next candidate goes instead
+(`beyond-horizon-eviction-declined`). An egress may delete part of a passed
+range and defer the rest; a range a consumer will still read may not be
+left looking staged with holes in it.
+
+An evicted range's mover holds no tokens, so it reads as unpublished (the
+rule above), and its window publishes it again, whole, on the cycle the
+reader's progress brings it back inside the horizon.
+
+The newcomer and claim relief terms (#orphan-pressure, #901) are bounded by
+orphans plus these ranges. That is what the 23:03Z capture lacked twice: on
+the cycle that saw its `layer-3` report, the would-publish term asked for
+14 GiB and the sweep had no orphan to give; after its `head` egress retired
+its original lead, the gate re-read it as a newcomer, and the relief was
+bounded to orphans, which were zero.
+
+**Assumptions and limits.**
+
+* The horizon trusts the consumer to read in plan order and to hold no more
+  than its reservations ahead. A consumer that prefetches past its
+  reservations can find a range evicted; the PrismaQuant layer reader then
+  waits `STAGED_RANGE_WAIT_S` (300 s) for the window to publish it again.
+* The RAM window keeps its own bounds (`prefill_depth`, #642) and is not
+  bounded by the horizon.
+* The horizon does not jointly admit consumers: two readers whose horizons
+  together exceed the tier still contend through the joint gate, as before.
+* A consumer claimed before #903 keeps its landed ranges until another
+  window needs the room. Its movers already in `ready/` past its horizon stay
+  queued: withdrawing one would retire the whole plan (#708). Such a row
+  claims room like any other, so while R12's `chain-021` and `chain-018`
+  rows wait, room freed for someone else can be taken by them first; they
+  then land past R12's horizon and are candidates again. The joint gate's
+  relief counts queued rows, so a newcomer's relief covers them in one cycle.
+
+The replay in
+`tests/test_r12_and_the_capture_replay_under_the_refill_horizon.py` runs
+the tier loop's cycle on R12's and the capture's live byte ranges, copy rates
+and claim times (`tests/fixtures/r12_stage_20260922.json`). One cycle gives
+back `chain-019` for the capture's 3 GiB lead (R12 keeps 506 of 528 GiB);
+on the cycle that sees the capture's `layer-3` report, `chain-019` goes and
+`layer-3` publishes; after the capture's lead retires, `chain-022`,
+`chain-020` and `chain-019` go (the gate counts R12's two queued rows) and
+`layer-3` publishes.
 
 ### Adopting a resident range, and when an orphan is evicted
 

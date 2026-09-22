@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+import math
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 import os
@@ -64,6 +65,11 @@ import worker_loop as runtime_gate  # noqa: E402
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.MOVERS
+
+#: Seconds between cycles; ``_serve`` sets it from ``--interval-s``.  A
+#: window's refill horizon counts one cycle of latency (#903), and a caller
+#: that drives :func:`cycle` directly gets the parser's default.
+CYCLE_INTERVAL_S = 60.0
 
 #: The interpreter this loop runs under, and the directory the fleet scripts
 #: were published into beside it.  Read here rather than passed in: the loop is
@@ -181,6 +187,8 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             if not isinstance(key, str):
                 continue
             accepted = None
+            claimed_unix = None
+            reported_unix = None
             if state == pool.CLAIMED:
                 claimed_unix = item.get("claimed_unix")
                 if isinstance(claimed_unix, (int, float)):
@@ -188,11 +196,16 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
                         queue, key, float(claimed_unix))
                     if observation is not None:
                         accepted = str(observation["phase"])
+                        reported_unix = observation.get("reported_unix")
             # The record itself travels beside the key: ``record_denial`` is
             # keyed by an item's own ``published_unix`` generation, so a
-            # coordinator that carried only the key could not file one.
+            # coordinator that carried only the key could not file one.  The
+            # claim time and the accepted phase's report time are the two
+            # ends of the consumer's measured consumption (#903).
             out.append({"action_key": key, "state": state,
-                        "accepted_phase": accepted, "item": item})
+                        "accepted_phase": accepted, "item": item,
+                        "claimed_unix": claimed_unix,
+                        "reported_unix": reported_unix})
     return out
 
 
@@ -1892,6 +1905,236 @@ def adopt_resident_ranges(
     return events
 
 
+#: Landing rates of complete stage copies, in bytes per second, by queue and
+#: mover.  Read once per mover: a receipt that says the copy completed is
+#: not rewritten while the range stays landed (#903).
+_LANDING_RATES: dict[tuple[str, str], float] = {}
+
+
+def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
+    """The rate one complete stage copy landed at, or ``None`` (#903).
+
+    ``bytes_staged`` over ``seconds`` from the mover's own receipt, which is
+    what ``stage_move`` measured while it copied.  ``None`` for no receipt,
+    an incomplete one, or one that does not read: an unlanded copy measured
+    nothing.
+    """
+
+    cache_key = (str(queue.root), str(mover_action_key))
+    cached = _LANDING_RATES.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        record = queue.move_record(str(mover_action_key))
+    except (OSError, pool.PoolContractError, ValueError):
+        return None
+    if not isinstance(record, Mapping) or record.get("complete") is not True:
+        return None
+    try:
+        staged = int(record.get("bytes_staged") or 0)
+        seconds = float(record.get("seconds") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if staged <= 0 or not math.isfinite(seconds) or seconds <= 0:
+        return None
+    rate = staged / seconds
+    _LANDING_RATES[cache_key] = rate
+    return rate
+
+
+def _readahead_bytes(item: object) -> int | None:
+    """The bytes a claimed consumer can hold ahead of what it reads (#903).
+
+    Its memory reservations: ``mem_gb`` of host memory plus the GPU memory
+    its admission budgeted.  A consumer that keeps what it prefetches cannot
+    hold more than it reserved.  The two are summed even where they share
+    one physical pool (a GB10's unified memory), which over-states the
+    reach, so the horizon errs long, never short.  ``None`` when the item's
+    resources do not read.
+    """
+
+    if not isinstance(item, Mapping):
+        return None
+    resources = item.get("resources")
+    if not isinstance(resources, Mapping):
+        return None
+    mem = resources.get("mem_gb", 0)
+    if (isinstance(mem, bool) or not isinstance(mem, (int, float))
+            or not math.isfinite(float(mem)) or mem < 0):
+        return None
+    total = int(float(mem) * storage_tiers.GIB)
+    admission = item.get("gpu_admission")
+    if isinstance(admission, Mapping):
+        budget = admission.get("gpu_memory_budget_bytes")
+        if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
+            total += budget
+    return total
+
+
+def _sealed_fill_bytes_per_s(plan: Mapping[str, object],
+                             tier_id: str) -> float | None:
+    """The smallest fill any of the plan's stage copies was sealed with.
+
+    The pre-measurement landing rate (#903), used only until the plan's
+    first copy lands and its receipt replaces it.  Each copy is admitted
+    with the fill reservation its row was sealed with, so the smallest of
+    them is the slowest rate a copy of this plan was provisioned for.  It is
+    not a guaranteed floor: on 2026-09-22 R12's 24 complete copies, all
+    sealed at 144 MB/s, landed at 134 to 626 MB/s (median 154), so the
+    slowest ran 7% under it.
+    """
+
+    kind = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"
+    demands: list[float] = []
+    phases = plan.get("phases")
+    if not isinstance(phases, list):
+        return None
+    for phase in phases:
+        if not isinstance(phase, Mapping):
+            continue
+        rows = [phase.get("mover_row")]
+        chunks = phase.get("stage_chunks")
+        if isinstance(chunks, list):
+            rows = [chunk.get("mover_row") for chunk in chunks
+                    if isinstance(chunk, Mapping)]
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            resources = row.get("resources")
+            value = (resources.get(kind) if isinstance(resources, Mapping)
+                     else None)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and value > 0):
+                demands.append(float(value) * storage_tiers.MB)
+    return min(demands) if demands else None
+
+
+def _stage_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
+                   plan: Mapping[str, object],
+                   tier_record: Mapping[str, object] | None,
+                   ) -> dict[str, object] | None:
+    """A claimed consumer's refill horizon on its stage, or ``None`` (#903).
+
+    :func:`residency_plan.refill_horizon` with this box's measurements: the
+    consumer's reservations for its read-ahead, the slowest complete copy of
+    its plan for the landing rate (before any copy lands, the smallest fill
+    its copies were sealed with), the tier's announced fill supply for its
+    consumption before that is measured, and one heartbeat plus one cycle
+    for the time an accepted phase takes to reach a decision.  ``None`` --
+    a ready consumer, no accepted progress, nothing measured -- leaves every
+    decision what it was before the horizon existed.
+    """
+
+    if consumer.get("state") != pool.CLAIMED:
+        return None
+    accepted = consumer.get("accepted_phase")
+    if not residency_plan.accepted(plan, accepted):              # type: ignore[arg-type]
+        return None
+    readahead = _readahead_bytes(consumer.get("item"))
+    if readahead is None:
+        return None
+    tier_id = str(plan.get("tier_id") or "")
+    rates = [rate for rate in (_landing_rate(queue, key) for key in
+                               residency_plan.stage_mover_keys(plan))
+             if rate is not None]
+    landing = min(rates) if rates else _sealed_fill_bytes_per_s(plan, tier_id)
+    supply = None
+    if isinstance(tier_record, Mapping):
+        tokens = tier_record.get("tokens")
+        if isinstance(tokens, Mapping):
+            value = tokens.get(storage_tiers.FILL_KIND)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and value > 0):
+                supply = float(value)
+    if landing is None and supply is not None:
+        landing = supply * storage_tiers.MB
+    try:
+        return residency_plan.refill_horizon(
+            plan, accepted,                                      # type: ignore[arg-type]
+            claimed_unix=consumer.get("claimed_unix"),
+            reported_unix=consumer.get("reported_unix"),
+            readahead_bytes=readahead, landing_bytes_per_s=landing,
+            report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
+            fill_supply_mb_s=supply)
+    except (residency_plan.ResidencyPlanError, KeyError, TypeError,
+            ValueError):
+        return None
+
+
+def _horizon_end(horizon: Mapping[str, object] | None) -> int | None:
+    """Where the first leg outside a horizon starts, or ``None`` for no bound."""
+
+    if not isinstance(horizon, Mapping):
+        return None
+    end = horizon.get("horizon_end_bytes")
+    return int(end) if isinstance(end, int) and not isinstance(end, bool) else None
+
+
+def _beyond_horizon_candidates(
+    queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
+    consumers: list, cancelled: frozenset[str],
+) -> dict[str, list[dict[str, object]]]:
+    """Per stage tier, the landed ranges no reader needs before a refill (#903).
+
+    A range is a candidate when its consumer is claimed and reporting, the
+    range lies past that consumer's refill horizon, its copy is complete and
+    holds the tier's tokens, and nothing is queued or running on it -- not
+    its mover (a copy in flight is not a landed range) and not its egress
+    (already being given back).  Ranges inside a horizon never appear, nor
+    do a superseded or withdrawn window's (the orphan sweep and the
+    successor's adoption own those).  Farthest first: the range whose
+    reader reaches it last is the one to give back first, measured in
+    seconds at each reader's own consumption rate so two readers' ranges
+    compare in one unit.
+    """
+
+    out: dict[str, list[dict[str, object]]] = {}
+    for key, consumer, plan, tier_id in consumers:
+        if key in cancelled or tier_id not in tiers:
+            continue
+        if tiers[tier_id].get("tier") != "stage":
+            continue
+        try:
+            if residency_plan.superseded(queue, plan) is not None:
+                continue
+            horizon = _stage_horizon(queue, consumer, plan, tiers.get(tier_id))
+            if horizon is None:
+                continue
+            ledger = queue.tier_ledger(tier_id)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        beyond = horizon.get("beyond")
+        if not isinstance(beyond, list):
+            continue
+        for leg in beyond:
+            mover = str(leg["mover_action_key"])
+            egress = leg.get("egress_row")
+            egress_key = (str(egress.get("action_key"))
+                          if isinstance(egress, Mapping) else "")
+            try:
+                held = int(ledger.holder_tokens(mover).get(kind, 0))
+                busy = any(
+                    queue.item_path(state, name).exists()
+                    for state in (pool.READY, pool.CLAIMED)
+                    for name in (mover, egress_key) if name)
+            except (OSError, pool.PoolContractError, ValueError):
+                continue
+            if held <= 0 or busy or _landing_rate(queue, mover) is None:
+                continue
+            out.setdefault(tier_id, []).append({
+                "tier_id": tier_id, "consumer_action_key": key,
+                "mover_action_key": mover, "phase": leg["phase"],
+                "chunk_index": leg.get("chunk_index"), "stage_gib": held,
+                "seconds_until_needed": float(leg["seconds_until_needed"]),
+            })
+    for rows in out.values():
+        rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
+                                   str(row["mover_action_key"])))
+    return out
+
+
+
 def _unpublished_lead(needs: Mapping[str, object], published: set[str]) -> bool:
     """The publication gate's newcomer boundary, including adopted tails."""
 
@@ -1973,17 +2216,18 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
                       output_enforced: bool, capacity_gib: int,
                       cur_min_gib: int, next_min_gib: int | None,
                       existing_min_next_gib: int, free_gib: int,
-                      orphan_gib: int) -> int | None:
+                      evictable_gib: int) -> int | None:
     """The free a sweep must reach so ``gate_newcomer`` admits, or ``None``.
 
     One arithmetic for every relief term (#orphan-pressure, #901): the gate
     decides, and its own terms give the shortfall.  ``None`` when the gate
     admits already, when its answer is permanent or unknown (no eviction
-    could admit it), or when the shortfall exceeds what the tier's orphans
-    hold (#632: a demand that cannot fit even after every orphan returns
-    asks for nothing).  Otherwise the answer is stated as the free the
-    sweep must reach; its oldest-first, stop-at-needed order keeps the
-    eviction to the shortfall.
+    could admit it), or when the shortfall exceeds what the tier can give
+    back (#632: a demand that cannot fit even after everything evictable
+    returns asks for nothing).  ``evictable_gib`` is the tier's orphans plus
+    the landed ranges past their readers' refill horizons (#903).
+    Otherwise the answer is stated as the free the sweeps must reach; their
+    stop-at-needed order keeps the eviction to the shortfall.
     """
 
     decision = window_credit.gate_newcomer(
@@ -1997,7 +2241,7 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
         return None
     shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
                  + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
-    if 0 < shortfall <= orphan_gib:
+    if 0 < shortfall <= evictable_gib:
         return free_gib + shortfall
     return None
 
@@ -2049,6 +2293,14 @@ def window_pressure(
     one-step window with the obligations the claim gate checks (none but
     held), bounded to the tier's orphans the same way.  A withdrawn ready
     key asks for nothing (#708).
+
+    Every term is asked within the consumer's refill horizon (#903): a leg
+    past it is not something the window will publish this cycle, so it is
+    not pressure -- not as a probe, not as a row queued before the horizon
+    existed, and not as a newcomer's current or next.  And the two relief
+    terms are bounded by what the tier can give back, which since #903 is
+    its orphans plus the landed ranges past their readers' horizons
+    (:func:`evict_beyond_horizon` takes those after the orphan sweep).
     """
 
     need: dict[str, int] = {}
@@ -2084,6 +2336,13 @@ def window_pressure(
                     consumer.get("item"), tiers):
                 claimants.setdefault(demand_tier, []).append(gib)
         accepted = consumer["accepted_phase"]
+        # The refill horizon (#903): a leg past it is not something this
+        # window will publish this cycle, however much room there is, so it
+        # asks for no room either -- not as a probe, not as a queued row
+        # published before the horizon existed, and not as a newcomer's
+        # current or next.  ``None`` changes nothing.
+        horizon_end = _horizon_end(_stage_horizon(
+            queue, consumer, plan, tiers.get(tier_id)))
         # Asked of the window rather than of the plan (#632).  A phase the
         # run-ahead bound has already declined is not something the tier needs
         # tokens for, and reporting it as pressure would evict a resident range
@@ -2098,7 +2357,7 @@ def window_pressure(
         # phase's chunks are what its movers will ask for one by one (#675).
         # A whole-phase leg is one leg over the phase's whole range, which
         # is what keeps this probe byte-identical to today beside chunks.
-        legs: list[tuple[str, int]] = []
+        legs: list[tuple[str, int, str, int]] = []
         for phase in ahead:
             chunks = phase.get("stage_chunks")
             if isinstance(chunks, list):
@@ -2109,14 +2368,22 @@ def window_pressure(
                     if not isinstance(mover, Mapping):
                         continue
                     legs.append((str(mover.get("action_key")),
-                                 int(chunk.get("stage_gib", 0))))
+                                 int(chunk.get("stage_gib", 0)),
+                                 str(phase["name"]),
+                                 int(chunk.get("start_bytes", 0))))
             elif isinstance(phase.get("mover_row"), Mapping):
                 legs.append((str(phase["mover_row"]["action_key"]),  # type: ignore[index]
-                             int(phase.get("stage_gib", 0))))
-        waiting = [key for key, _gib in legs
-                   if key in already - staged and key not in cancelled]
+                             int(phase.get("stage_gib", 0)),
+                             str(phase["name"]),
+                             int(phase.get("start_bytes", 0))))
+        reading = str(ahead[0]["name"]) if ahead else None
+        waiting = [key for key, _gib, phase_name, start in legs
+                   if key in already - staged and key not in cancelled
+                   and (horizon_end is None or phase_name == reading
+                        or start < horizon_end)]
         stage_needs = residency_plan.advance_needs(
-            plan, accepted, published=sorted(already), staged=sorted(staged))
+            plan, accepted, published=sorted(already), staged=sorted(staged),
+            horizon_end_bytes=horizon_end)
         stage_newcomer = _unpublished_lead(stage_needs, already)
         if stage_newcomer:
             newcomers.setdefault(str(tier_id), []).append(stage_needs)
@@ -2127,15 +2394,15 @@ def window_pressure(
             # again -- it counts as published -- so asking the window what it
             # would publish next would step straight over it.
             need[tier_id] = max(need.get(tier_id, 0),
-                                next(gib for key, gib in legs
+                                next(gib for key, gib, _phase, _start in legs
                                      if key == waiting[0]))
             continue
-        unbounded = sum(gib for _key, gib in legs)
+        unbounded = sum(gib for _key, gib, _phase, _start in legs)
         decision = residency_plan.window(
             plan, accepted_phase=accepted,                       # type: ignore[arg-type]
             free_gib=unbounded, capacity_gib=int(capacity),
             published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled))
+            withdrawn=sorted(cancelled), horizon_end_bytes=horizon_end)
         wanted = decision["publish"]
         assert isinstance(wanted, list)
         if wanted:
@@ -2248,6 +2515,17 @@ def window_pressure(
     # what the real gate will check and never falls short of it; relief
     # is bounded to the tier's orphans, so a window that cannot fit even
     # after every orphan returns asks for nothing and evicts nothing.
+    # What the tiers can give back beside their orphans (#903): the landed
+    # ranges past their readers' refill horizons.  A live plan's ranges are
+    # never orphans, so before #903 a relief bounded to orphans alone asked
+    # nothing of a stage one far-ahead window had filled, and a newcomer's
+    # gate -- or a running consumer re-gated after its lead retired --
+    # waited for as long as that reader took to read it all.
+    speculative: dict[str, int] = {}
+    if newcomers or claimants:
+        for tier_id, rows in _beyond_horizon_candidates(
+                queue, tiers, consumers, cancelled).items():
+            speculative[tier_id] = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
     for tier_id in sorted({t for t, w in newcomers.items() if w}
                           | {t for t, c in claimants.items() if c}):
         # A tier whose owed output was unreadable lost its newcomers above.
@@ -2276,7 +2554,8 @@ def window_pressure(
                         ledger.holder_tokens(holder).get(kind, 0))
         except (OSError, pool.PoolContractError, ValueError):
             continue
-        if orphan_gib <= 0:
+        evictable_gib = orphan_gib + speculative.get(tier_id, 0)
+        if evictable_gib <= 0:
             continue
         # A ready consumer's claim (#901): its claim-time demand is a final
         # window of one step, asked of the same gate with the obligations
@@ -2291,7 +2570,7 @@ def window_pressure(
                 output_enforced=False, capacity_gib=capacity_gib,
                 cur_min_gib=demand_gib, next_min_gib=None,
                 existing_min_next_gib=0, free_gib=free_gib,
-                orphan_gib=orphan_gib)
+                evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
         if not waiting_newcomers:
@@ -2322,7 +2601,7 @@ def window_pressure(
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
                 next_min_gib=nxt if isinstance(nxt, int) else None,
                 existing_min_next_gib=existing_next, free_gib=free_gib,
-                orphan_gib=orphan_gib)
+                evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
     return need
@@ -2442,9 +2721,13 @@ def reclaim_failed_mover_partials(
 
 def _advance_wants(queue: pool.PoolQueue,
                    tiers: Mapping[str, Mapping[str, object]], *,
-                   mover_role: str, tier_of, state_of,
+                   mover_role: str, tier_of, state_of, horizon_of=None,
                    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Per-consumer advance needs for one movement leg, in queue scan order.
+
+    ``horizon_of(consumer, plan, tier_id)`` answers a window's refill
+    horizon (#903) so its needs ask for no leg the window will not publish;
+    ``None`` asks the whole plan, as before.
 
     Returns ``(wants, unknown)``.  One want per live consumer whose plan
     carries this leg on a local tier; one unknown entry per consumer this
@@ -2504,7 +2787,9 @@ def _advance_wants(queue: pool.PoolQueue,
             needs = residency_plan.advance_needs(
                 plan, consumer["accepted_phase"],  # type: ignore[arg-type]
                 published=sorted(already), rowed=rowed, staged=sorted(staged),
-                mover_role=mover_role)
+                mover_role=mover_role,
+                horizon_end_bytes=(None if horizon_of is None
+                                   else horizon_of(consumer, plan, tier_id)))
         except residency_plan.ResidencyPlanError as exc:
             unknown.append({
                 "consumer": key, "tier_id": tier_id, "leg": mover_role,
@@ -2561,6 +2846,7 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
 def _protect_tier_advances(queue: pool.PoolQueue,
                            tiers: Mapping[str, Mapping[str, object]], *,
                            mover_role: str, tier_of, state_of,
+                           horizon_of=None,
                            ) -> dict[str, object]:
     """Gate newcomers and fence protected nexts on every local tier, one pass.
 
@@ -2610,7 +2896,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     unknown_ready = False
     wants, census_unknown = _advance_wants(
         queue, tiers, mover_role=mover_role,
-        tier_of=tier_of, state_of=state_of)
+        tier_of=tier_of, state_of=state_of, horizon_of=horizon_of)
     for entry in census_unknown:
         consumer_key = str(entry.get("consumer", ""))
         entry_tier = entry.get("tier_id")
@@ -3672,10 +3958,18 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
 
     published: list[dict[str, object]] = []
     cancelled = _withdrawn_keys(queue, withdrawn)
+
+    def horizon_of(consumer, plan, tier_id):
+        # One horizon per window for the gate and the publication alike
+        # (#903): the gate reserves room for exactly the legs the window
+        # would publish.
+        return _horizon_end(_stage_horizon(queue, consumer, plan,
+                                           tiers.get(tier_id)))
+
     protection = _protect_tier_advances(
         queue, tiers, mover_role="mover_row",
         tier_of=lambda plan: plan.get("tier_id"),
-        state_of=_mover_state)
+        state_of=_mover_state, horizon_of=horizon_of)
     gated = protection["gated"]
     assert isinstance(gated, dict)
     grants = protection["grants"]
@@ -3789,11 +4083,15 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "tier_id": tier_id,
                               "reason": f"ledger unreadable: {exc!r}"})
             continue
+        # Bounded by the consumer's refill horizon as well as by room and the
+        # run-ahead budget (#903): a leg past it publishes on the cycle the
+        # consumer's progress brings it inside, and not before.
         decision = residency_plan.window(
             plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
             free_gib=int(free), capacity_gib=int(capacity),
             published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled))
+            withdrawn=sorted(cancelled),
+            horizon_end_bytes=horizon_of(consumer, plan, tier_id))
         stall = decision["stall"]
         if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
@@ -3987,7 +4285,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     protection_again = _protect_tier_advances(
         queue, tiers, mover_role="mover_row",
         tier_of=lambda plan: plan.get("tier_id"),
-        state_of=_mover_state)
+        state_of=_mover_state, horizon_of=horizon_of)
     published.extend(protection_again["events"])  # type: ignore[arg-type]
     published.extend(_settle_protected(queue, protection_again))
     return published
@@ -4067,6 +4365,107 @@ def sweep_orphans(queue: pool.PoolQueue,
     if not stage_roots:
         return []
     return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure)
+
+
+def evict_beyond_horizon(queue: pool.PoolQueue,
+                         tiers: Mapping[str, Mapping[str, object]], *,
+                         consumers: list,
+                         pressure: Mapping[str, int] | None,
+                         withdrawn: frozenset[str] | None = None,
+                         ) -> list[dict[str, object]]:
+    """Give back landed ranges past their readers' refill horizons (#903).
+
+    Runs after the orphan sweep, on the same ``pressure``: when a stage tier
+    is still short of the free a live window needs -- a running consumer's
+    in-horizon range, a newcomer's lead, a ready consumer's claim -- the
+    ranges no reader needs before a refill could land are the room.  They go
+    farthest-needed first (Belady's order across every reader on the tier),
+    one at a time, re-reading the ledger after each, and stop when the tier
+    has the room.  A tier that could not reach the room even after every
+    candidate went evicts nothing (#632: no futile eviction).
+
+    Each eviction is all or nothing (``stage_release.evict`` with
+    ``whole``): a range a reader has pinned, that a promotion is reading,
+    or whose ownership this pass cannot prove is declined whole -- nothing
+    unlinked, no retiring mark -- and the next candidate goes instead.  A
+    range inside any reader's horizon is never a candidate.  An evicted
+    range's mover holds no tokens afterwards, so it reads as unpublished and
+    its window publishes it again, whole, on the cycle the reader's
+    progress brings it back inside the horizon.
+    """
+
+    events: list[dict[str, object]] = []
+    if not pressure:
+        return events
+    cancelled = _withdrawn_keys(queue, withdrawn)
+    short: dict[str, int] = {}
+    for tier_id, needed in pressure.items():
+        record = tiers.get(tier_id)
+        if (int(needed) <= 0 or not isinstance(record, Mapping)
+                or record.get("tier") != "stage"):
+            continue
+        try:
+            free = int(queue.tier_ledger(tier_id).available().get(
+                storage_tiers.capacity_kind_of(tier_id), 0))
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if free < int(needed):
+            short[tier_id] = int(needed)
+    if not short:
+        return events
+    candidates = _beyond_horizon_candidates(queue, tiers, consumers, cancelled)
+    for tier_id, needed in sorted(short.items()):
+        rows = candidates.get(tier_id, [])
+        if not rows:
+            continue
+        stage_root = str(tiers[tier_id].get("mountpoint") or "")
+        refusal = (stage_release.stage_root_refusal(queue, stage_root)
+                   if stage_root else "no stage root announced")
+        if refusal is not None:
+            events.append({"event": "beyond-horizon-eviction-refused",
+                           "tier_id": tier_id, "stage_root": stage_root,
+                           "refusal": refusal})
+            continue
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        ledger = queue.tier_ledger(tier_id)
+        try:
+            free = int(ledger.available().get(kind, 0))
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
+        if free + offered < needed:
+            events.append({"event": "beyond-horizon-eviction-futile",
+                           "tier_id": tier_id, "needed_gib": needed,
+                           "free_gib": free, "beyond_horizon_gib": offered})
+            continue
+        for row in rows:
+            if free >= needed:
+                break
+            receipt = stage_release.evict(
+                queue, str(row["mover_action_key"]),
+                consumer_action_key=str(row["consumer_action_key"]),
+                stage_root=stage_root, reason="beyond-horizon", whole=True)
+            events.append({
+                "event": ("beyond-horizon-evicted" if receipt.get("complete")
+                          else "beyond-horizon-eviction-declined"),
+                "tier_id": tier_id,
+                "consumer": row["consumer_action_key"],
+                "mover": row["mover_action_key"],
+                "phase": row["phase"], "chunk_index": row["chunk_index"],
+                "stage_gib": row["stage_gib"],
+                "seconds_until_needed": round(
+                    float(row["seconds_until_needed"]), 1),  # type: ignore[arg-type]
+                "needed_gib": needed,
+                "tokens_released": receipt.get("tokens_released"),
+                "tokens_decharged": receipt.get("tokens_decharged"),
+                "declined": receipt.get("declined") or [],
+                "live_pins": receipt.get("live_pins") or [],
+                "errors": receipt.get("errors") or []})
+            try:
+                free = int(ledger.available().get(kind, 0))
+            except (OSError, pool.PoolContractError, ValueError):
+                break
+    return events
 
 
 def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:
@@ -4618,6 +5017,13 @@ def cycle(
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
         print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
+    # Orphans first, then the ranges past their readers' refill horizons
+    # (#903): an orphan is nobody's, a range past a horizon is somebody's
+    # later, so the sweep that returns what nobody will read goes first.
+    for event in evict_beyond_horizon(queue, announced_tiers,
+                                      consumers=planned, pressure=pressure,
+                                      withdrawn=withdrawn):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     # The ram window before the stage's, so a phase's ram egress is published
     # before its stage egress: the tokens that bound the smaller tier come
     # back first, and a ram range never outlives the stage range that feeds
@@ -4683,6 +5089,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _serve(args) -> int:
+    global CYCLE_INTERVAL_S
+    # The cadence this loop decides at is part of every horizon it prices
+    # (#903): a range published now is first seen published a cycle later.
+    CYCLE_INTERVAL_S = float(args.interval_s)
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.ensure_layout()
     host = socket.gethostname()

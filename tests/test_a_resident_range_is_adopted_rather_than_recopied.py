@@ -282,11 +282,13 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     held = {key: gib for key, gib in held.items() if key not in fenced}
     root = queue.residency_fragment_root()
     accounted: dict[str, int] = {}
-    # ``material/`` sits beside the consumer directories, not among them
-    # (``reader_lease.material_path``), so it is not a consumer to read.
+    # ``material/`` and ``leases/`` sit beside the consumer directories, not
+    # among them (``reader_lease.material_path``, ``reader_lease.leases_root``),
+    # so neither is a consumer to read.
     consumers = sorted(entry.name for entry in root.iterdir()
                        if entry.is_dir()
-                       and entry.name != reader_lease.MATERIAL_SUBDIR)
+                       and entry.name not in (reader_lease.MATERIAL_SUBDIR,
+                                              reader_lease.LEASES_SUBDIR))
     for consumer in consumers:
         for fragment in residency_map.read_fragments(root, consumer):
             mover = str(fragment["mover_action_key"])

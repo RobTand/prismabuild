@@ -79,6 +79,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -1761,6 +1762,138 @@ def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
         capacity_gib=capacity_gib, runahead_cap_gib=runahead_cap_gib)
 
 
+def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
+                   claimed_unix: object, reported_unix: object,
+                   readahead_bytes: int | None,
+                   landing_bytes_per_s: float | None,
+                   report_latency_s: float,
+                   fill_supply_mb_s: float | None = None,
+                   mover_role: str = "mover_row") -> dict[str, object] | None:
+    """How far ahead of a reading consumer its window must be staged (#903).
+
+    The horizon is three spans of the plan's read order, which is its byte
+    order (``validate_plan`` requires each phase to start where the last one
+    ended):
+
+    * the phase the consumer's accepted progress names, which it is reading;
+    * ``readahead_bytes`` past that phase's end, the bytes the consumer can
+      hold ahead of what it is reading -- its memory reservations, which are
+      what bounds a prefetch that has to keep what it reads;
+    * the refill: legs past that reach until they cover what the consumer
+      reads while a copy published now lands, and never fewer than one leg,
+      so the next range is staged before the current reach is exhausted.
+
+    The refill's time is ``report_latency_s`` (how stale an accepted phase
+    can be when a cycle reads it, plus the wait for the next cycle) plus the
+    landing time: the largest leg still ahead at ``landing_bytes_per_s``, the
+    slowest rate a copy of this plan has landed at.  Priced by throughput
+    rather than by a receipt's duration, so a plan whose landed copies were
+    small legs does not under-price its large ones.  Its rate is the
+    consumer's measured consumption: the bytes up to the end of the accepted
+    phase over the time from its claim to that phase's report.  Counting the
+    whole accepted phase as read over-estimates the rate while the consumer
+    is inside it, which errs toward a longer horizon.
+
+    Before a rate can be measured -- no report time after the claim --
+    ``fill_supply_mb_s`` stands in.  A consumer that reads staged bytes
+    cannot keep up a rate above what the tier refills them at, so the tier's
+    fill supply bounds its steady consumption from above, and a horizon
+    priced at it is at least as long as the measured one would be.
+
+    Returns ``None`` when the horizon is undefined: no accepted progress (the
+    window's own no-progress regime already publishes one step), no
+    read-ahead or landing rate, or no consumption rate.  ``None`` keeps the window's
+    decisions exactly what they were before the horizon existed.  Otherwise
+    ``horizon_end_bytes`` is where the first leg outside the horizon starts
+    (``None`` when every remaining leg is inside it), ``advance`` names that
+    leg -- the next one the window will publish -- and ``beyond`` names every
+    leg after it, in read order.
+    """
+
+    if mover_role not in _MOVEMENT_ROLES:
+        raise ResidencyPlanError(
+            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+            f"not {mover_role!r}")
+    if not accepted(plan, accepted_phase):
+        return None
+    if (readahead_bytes is None or isinstance(readahead_bytes, bool)
+            or readahead_bytes < 0):
+        return None
+    if not (_finite_number(landing_bytes_per_s)
+            and float(landing_bytes_per_s) > 0):             # type: ignore[arg-type]
+        return None
+    ahead = remaining(plan, accepted_phase)
+    ahead_names = [str(phase["name"]) for phase in ahead]
+    reading = ahead[0]
+    first_start = int(plan["phases"][0]["start_bytes"])      # type: ignore[index]
+    read_through = int(reading["end_bytes"])
+    rate: float | None = None
+    basis = ""
+    if (_finite_number(claimed_unix) and _finite_number(reported_unix)
+            and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
+        rate = (read_through - first_start) / (
+            float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
+        basis = "measured"
+    elif _finite_number(fill_supply_mb_s) and float(fill_supply_mb_s) > 0:  # type: ignore[arg-type]
+        rate = float(fill_supply_mb_s) * storage_tiers.MB      # type: ignore[arg-type]
+        basis = "fill-supply"
+    if rate is None or rate <= 0:
+        return None
+    future = [leg for leg in _legs(plan, mover_role=mover_role)
+              if leg["phase"] in ahead_names[1:]]
+    largest = max((int(leg["end_bytes"]) - int(leg["start_bytes"])
+                   for leg in future), default=0)
+    landing_s = largest / float(landing_bytes_per_s)         # type: ignore[arg-type]
+    latency = float(report_latency_s) + landing_s
+    reach_end = read_through + int(readahead_bytes)
+    refill_bytes = rate * latency
+    horizon_end: int | None = None
+    refilled = 0
+    for leg in future:
+        start = int(leg["start_bytes"])
+        if start < reach_end:
+            continue
+        if refilled and refilled >= refill_bytes:
+            horizon_end = start
+            break
+        refilled += int(leg["end_bytes"]) - start
+    outside = ([] if horizon_end is None else
+               [leg for leg in future if int(leg["start_bytes"]) >= horizon_end])
+    return {
+        "consumer_action_key": plan["consumer_action_key"],
+        "accepted_phase": accepted_phase,
+        "consumption_bytes_per_s": rate,
+        "consumption_basis": basis,
+        "read_through_bytes": read_through,
+        "readahead_bytes": int(readahead_bytes),
+        "reach_end_bytes": reach_end,
+        "landing_s": landing_s,
+        "latency_s": latency,
+        "refill_bytes": refill_bytes,
+        "horizon_end_bytes": horizon_end,
+        "advance": (str(outside[0]["mover_row"]["action_key"])  # type: ignore[index]
+                    if outside else None),
+        "beyond": [{
+            "phase": str(leg["phase"]),
+            "chunk_index": leg["chunk_index"],
+            "mover_action_key": str(leg["mover_row"]["action_key"]),  # type: ignore[index]
+            "egress_row": leg["egress_row"],
+            "start_bytes": int(leg["start_bytes"]),
+            "end_bytes": int(leg["end_bytes"]),
+            "stage_gib": int(leg["stage_gib"]),
+            # Belady's order: the leg the consumer reaches last is the one to
+            # give back first.  Seconds from the end of the accepted phase at
+            # the measured rate, so two consumers' legs compare in one unit.
+            "seconds_until_needed": (int(leg["start_bytes"]) - read_through) / rate,
+        } for leg in outside[1:]],
+    }
+
+
+def _finite_number(value: object) -> bool:
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(float(value)))
+
+
 #: Which chunk table a window decision reads, by mover role: the stage
 #: window reads ``stage_chunks`` (#675), the ram window ``ram_chunks`` (#673).
 _CHUNK_TABLES = {
@@ -1818,7 +1951,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            staged: Sequence[str] = (),
            runahead_cap_gib: int | None = None,
            mover_role: str = "mover_row",
-           withdrawn: Sequence[str] = ()) -> dict[str, object]:
+           withdrawn: Sequence[str] = (),
+           horizon_end_bytes: int | None = None) -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -1876,6 +2010,16 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     capacity as the only bound for a consumer that is reporting.  The answer
     carries ``stall``: ``None``, or what the window declined to publish and
     what it is waiting for.
+
+    ``horizon_end_bytes`` is the third bound, and the one that answers "how
+    far ahead does this consumer need its bytes" rather than "how much room
+    is there" (#903): :func:`refill_horizon`'s ``horizon_end_bytes``.  A leg
+    of a later phase that starts at or past it is not published this cycle,
+    however much room the tier has; it is published on the cycle the
+    consumer's progress brings it inside.  That is the normal state of a
+    rolling window, not a stall, so it files no ``stall``.  ``None`` -- no
+    horizon, or every remaining leg inside it -- leaves the decision exactly
+    as it was.  The phase being read is never held back by it.
     """
 
     if mover_role not in _MOVEMENT_ROLES:
@@ -1929,6 +2073,9 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
             continue
         need = int(leg["stage_gib"])
         is_current = leg["phase"] == current_name
+        if (not is_current and horizon_end_bytes is not None
+                and int(leg["start_bytes"]) >= int(horizon_end_bytes)):
+            break     # past the refill horizon: published as progress arrives
         if not is_current and budget is not None and runahead + need > budget:
             stall = {
                 "consumer_action_key": plan["consumer_action_key"],
@@ -2001,7 +2148,8 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
                   published: Sequence[str] = (),
                   rowed: Sequence[str] = (),
                   staged: Sequence[str] = (),
-                  mover_role: str = "mover_row") -> dict[str, object]:
+                  mover_role: str = "mover_row",
+                  horizon_end_bytes: int | None = None) -> dict[str, object]:
     """The minimum simultaneous current-plus-next needs of one window leg.
 
     The first two unpublished legs in read order: ``current_min_gib`` is what
@@ -2022,6 +2170,21 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     the legs before it: one fence per window, and the phase the blind
     pre-publish take and the post-publish bind agree on.  The gate reads
     ``waiting``/``prior`` exactly as before.
+
+    ``horizon_end_bytes`` is :func:`window`'s refill horizon (#903), and it
+    bounds ``waiting`` the way it bounds the window's publication: a leg of
+    a later phase that starts at or past it is not something this window
+    will publish this cycle, so it is neither the current nor the next the
+    gate reserves room for.  Without the bound a rolling window re-gated as
+    a newcomer (its original lead retired) asks the joint gate for two legs
+    it will not publish, and that phantom footprint can hold another
+    consumer's in-horizon leg out.  The fence is bounded the same way: its
+    frontier is still the earliest unstaged leg of the whole plan, but a
+    ``fence_target`` past the horizon is no advance yet -- the window will
+    not publish it until progress brings it inside -- so it is ``None``
+    this cycle, and a fence held for it would be room reserved for a leg
+    nobody asked for.  ``queued`` stays on the whole plan.  ``None``
+    changes nothing.
     """
 
     if mover_role not in _MOVEMENT_ROLES:
@@ -2034,9 +2197,12 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     rowed_set = set(rowed)
     staged_set = set(staged)
     full = _legs(plan, mover_role=mover_role)
+    current_name = ahead_names[0] if ahead_names else None
     waiting = [leg for leg in full
                if leg["phase"] in ahead_names
-               and str(leg["mover_row"]["action_key"]) not in done]  # type: ignore[index]
+               and str(leg["mover_row"]["action_key"]) not in done  # type: ignore[index]
+               and (horizon_end_bytes is None or leg["phase"] == current_name
+                    or int(leg["start_bytes"]) < int(horizon_end_bytes))]
     queued = [leg for leg in full
               if leg["phase"] in ahead_names
               and str(leg["mover_row"]["action_key"]) in rowed_set]  # type: ignore[index]
@@ -2059,7 +2225,9 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     fence_prior: list[dict[str, object]] = []
     if frontier_index is not None and frontier_index + 1 < len(full):
         candidate = full[frontier_index + 1]
-        if candidate["phase"] in ahead_names:
+        if candidate["phase"] in ahead_names and (
+                horizon_end_bytes is None or candidate["phase"] == current_name
+                or int(candidate["start_bytes"]) < int(horizon_end_bytes)):
             fence_target = _advance_entry(candidate)
             fence_prior = _advance_prior(full[:frontier_index])
     if not waiting:
@@ -2115,6 +2283,7 @@ __all__ = [
     "mover_keys",
     "ram_mover_keys",
     "read",
+    "refill_horizon",
     "remaining",
     "runahead_budget_gib",
     "runahead_step_gib",
