@@ -215,3 +215,27 @@ def test_a_resumed_restage_keeps_the_price_it_was_sealed_at(
     demand = _sealed(world, mover)["params"]["demand"]
     assert demand[FILL_DEMAND] == 100
     assert _row(world, mover)["resources"] == demand
+
+
+def test_the_batch_gate_admits_fill_on_its_own_tier_only(
+        tmp_path: Path) -> None:
+    """A rate kind names no bytes, so the R4 range-floor gate reads past it
+    on the batch's own tier; the occupancy term must still be exactly the
+    floor, and nothing may name a second tier."""
+
+    world, _descs = restage._staged_world(tmp_path)
+    _offer_fill(world.q, 100)
+    ensured = world.ensure("b1")
+    assert ensured.get("ok") is True, ensured
+    params = _sealed(world, str(ensured["mover_key"]))["params"]
+    ref = params["produced_output_batch"]
+    floor = params["demand"][f"{KIND}@{TIER}"]
+    ok = world.q.validate_produced_output_batch(
+        ref, {f"{KIND}@{TIER}": floor, FILL_DEMAND: 40})
+    assert ok["batch_namespace"] == ref["batch_namespace"]
+    elsewhere = f"{FILL}{storage_tiers.TIER_DEMAND_SEPARATOR}prismabuild-stage:elsewhere"
+    for demand in ({f"{KIND}@{TIER}": floor, elsewhere: 40},
+                   {f"{KIND}@{TIER}": floor + 1, FILL_DEMAND: 40},
+                   {FILL_DEMAND: 40}):
+        with pytest.raises(pool.PoolContractError, match="range floor"):
+            world.q.validate_produced_output_batch(ref, demand)

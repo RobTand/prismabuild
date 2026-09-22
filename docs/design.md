@@ -6543,7 +6543,11 @@ by the tier's `pool_identity`), capped by the tier's current offer. The
 sealed command carries the matching `--fill-mb-s-pool-side`, so the receipt
 records what the claim reserved. The stage window still comes from the
 producer by exact transfer. The fill is not prepaid: the claim takes it from
-the tier's free fill and the stop returns it.
+the tier's free fill and the stop returns it. The produced-output batch gate
+(`validate_produced_output_batch`, R4) therefore reads past rate kinds on
+the batch's own tier, as the #595 gate does. The occupancy term must still be
+exactly the range floor, and a demand that names a second tier is still
+refused.
 
 The reservation is off by default. A producer opts in by setting
 `PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL=1` in its sealed environment, and
