@@ -130,14 +130,27 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
     start, end = ordinal * PHASE_GIB * GIB, (ordinal + 1) * PHASE_GIB * GIB
     entries: dict[str, object] = {}
     written: list[Path] = []
+    # The fragment covers the whole range the receipt declares, because that
+    # is what a complete receipt means: ``stage_move`` adds each landed
+    # entry's own length to both the entry's ``bytes`` and the receipt's
+    # ``bytes_staged``, so for ``complete: true`` the two are equal.  A
+    # fragment accounting for 64 bytes of a two-GiB range is a range nothing
+    # on the stage covers, and adoption now refuses exactly that (#853).
+    # The files are sparse: their real length is the declared length, and no
+    # blocks are written for it.  Nothing here reads their contents -- what a
+    # reader checks is the stat identity, which a sparse file answers
+    # honestly.
+    share, remainder = divmod(end - start, files)
     for index in range(files):
+        size = share + (remainder if index == files - 1 else 0)
         path = stage / manifest[:8] / f"phase-{ordinal}" / f"part-{index}.bin"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x" * 32)
+        with open(path, "wb") as stream:
+            stream.truncate(size)
         written.append(path)
         entries[residency_map.residency_map_key(
             f"/pool/{manifest[:8]}/phase-{ordinal}/part-{index}.bin", 0)] = {
-                "stage_path": str(path), "bytes": 32, "offset": 0,
+                "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
     residency_map.write_fragment(queue.residency_fragment_root(), {

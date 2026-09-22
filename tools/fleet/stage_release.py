@@ -1814,8 +1814,27 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 != str(current.get("manifest_sha256"))):
             retained_reason = "material-does-not-bind"
             return receipt(retained=total)
-        if (current.get("epoch") or None) != (material.get("epoch") or None):
-            retained_reason = "material-epoch-mismatch"
+        # The strict reader's exact sidecar convention, read the way
+        # ``reader_lease.acquire`` and ``covers_for_keys`` read it: a
+        # non-RAM tier's fragment and sidecar carry no epoch at all
+        # (absent or empty), and a RAM tier's carry the same non-empty
+        # one.  Agreement is not validity -- two documents that agree on
+        # a staged epoch are two documents the reader refuses
+        # ("ownership-uncertain: staged epoch set"), and a deletion
+        # authority may never read metadata the reader will not read as
+        # ownership.  Anything else retains the whole candidate.
+        fragment_epoch = current.get("epoch")
+        material_epoch = material.get("epoch")
+        if tier_id.startswith(storage_tiers.RAM_TIER_PREFIX):
+            if not (isinstance(fragment_epoch, str) and fragment_epoch):
+                retained_reason = "epoch-invalid"
+                return receipt(retained=total)
+            if material_epoch != fragment_epoch:
+                retained_reason = "material-epoch-mismatch"
+                return receipt(retained=total)
+        elif (fragment_epoch not in (None, "")
+                or material_epoch not in (None, "")):
+            retained_reason = "epoch-invalid"
             return receipt(retained=total)
         # Every fragment entry binds exactly to its own material key before
         # any path state is classified: a by-path or first-mention match would

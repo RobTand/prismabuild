@@ -4398,8 +4398,16 @@ disks. The record carries `capacity_source` so the fallback announces itself.
 
 ### The pin, and what may take it back
 
-**Held tier tokens equal bytes on the stage, at every instant.** A mover keeps
-its tokens from `finish` until an egress deletes its files, because releasing at
+**Held tier tokens cover the bytes on the stage, at every instant.** Every
+resident byte is behind a held token, and a holder is settled exactly once.
+Equality is the ordinary case; a conservative reservation is the one
+documented exception, and it errs the safe way -- a partial stale-mention
+prune (#853) deletes some of an owner's files and keeps the owner's whole
+charge, so the tier reserves for bytes that have already gone until the last
+fragment leaves through the ordinary whole-owner egress. Tokens for bytes
+that are gone cost capacity; bytes with no token behind them are the overfill
+the reservation exists to prevent, and nothing here creates those. A mover
+keeps its tokens from `finish` until an egress deletes its files, because releasing at
 `finish` bounds concurrent copies rather than resident bytes: twenty-one movers
 of 34.4 GB run one after another leave 722 GB on a 721 GB stage while the ledger
 reads its full supply free at every step. `PoolQueue.residency_pin_holds` decides
@@ -5308,11 +5316,16 @@ orphan sweep had deleted all of it by 14:17Z, and the resubmission of the same
 manifest had to copy every byte again. Rob: *"We should not be rerunning
 anything in bulk if avoidable."*
 
-**The invariant does not move.** Held tier tokens equal bytes on the stage at
-every instant, before this and after it. #598 refused retained-but-unpinned
+**The invariant does not move.** Held tier tokens cover the bytes on the stage
+at every instant, before this and after it. #598 refused retained-but-unpinned
 bytes for that reason and nothing here reintroduces them: every resident byte
 is held by some key throughout, and the two changes below are about *which* key
-and *when* the bytes go, never about whether they are counted.
+and *when* the bytes go, never about whether they are counted. The one holder
+that is deliberately larger than its bytes is a partially pruned stale-mention
+owner (#853): it keeps its whole charge, slack included, until its last
+fragment leaves through the ordinary whole-owner egress, so the reservation
+errs toward reserving for bytes that have gone and never toward bytes no token
+covers.
 
 **Adoption.** A mover's action key hashes an argv carrying
 `--consumer-action-key`, so two consumers of one manifest seal two different
@@ -5447,7 +5460,10 @@ existing regular file is **inode difference**, exactly as
 `_StagedPublisher._proof_candidate` reads it (#755); a same-inode size/time
 change is divergence, not permission. Absent paths prune as absent.
 Everything else retains the whole owner: an unreadable, malformed or foreign
-fragment/material, any binding or epoch mismatch, a nonregular path, a
+fragment/material, any binding mismatch, an epoch that is not the shape the
+strict reader requires (absent or empty off the ram tier, the same non-empty
+string on it -- two documents agreeing on a staged epoch are two documents
+the reader refuses), a nonregular path, a
 symlinked intermediate directory or any component that leaves the stage, or
 any taint in the claim, pin, co-owner or promotion-handoff censuses. A live
 claim, a live reader pin, a promotion source handoff or a same-key claim
@@ -5464,8 +5480,10 @@ does not run under this lock), so its holder is settled exactly once. A mixed
 owner is partially pruned: each positively stale destination is unlinked
 after a fresh identity comparison immediately before the act, then the
 fragment is rewritten to its survivors and the material to the same
-survivors' mentions, under the unchanged generation and epoch. Nonexistent or
-nonregular paths may be pruned only after their key bound exactly. The
+survivors' mentions, under the unchanged generation and epoch. A nonregular
+path never authorizes cleanup: it is unknown ownership and retains the whole
+candidate, documents included. Only a missing leaf may be pruned, and only
+after its key bound exactly -- the mention goes, nothing is unlinked. The
 fragment is authoritative and written first, so a crash between the two
 document writes leaves a material superset that dates removed fragment
 entries but cannot itself assert ownership, and a replay settles nothing
@@ -5479,7 +5497,9 @@ eviction may retire the smaller fragment and return the remainder before
 that. Partial capacity reclamation is explicitly not claimed. The receipt
 (`stage-stale-mention-pruned`) reports committed metadata prunes only after
 the fragment write lands, already-absent entries, files actually unlinked and
-their declared bytes, whether the fragment/material pair completed, and
+the bytes those files actually held, measured by the same `lstat` that
+identified each one immediately before its `unlink` -- never a declared or
+planned length -- whether the fragment/material pair completed, and
 `charge_retained`; it never reports full-owner recovery (`complete`) while
 survivors remain, and an interrupted pair reports committed and physical
 work separately.
@@ -5506,10 +5526,19 @@ A partially pruned owner is a **per-path cache, never a whole-range donor**.
 Its historical move receipt stays factual -- nothing rewrites it to hide the
 prune -- so whole-range adoption notices the disagreement: `tier_loop.adopt`
 refuses unless the current donor fragment still agrees with the complete
-receipt's `entries_declared`/`entries_staged`, its actual staged bytes and
-the requested leg's range, all checked under the donor's transition and stage
-ownership transaction before any successor document is written or any token
-moves (a failed adoption leaves donor, successor and tokens untouched).  A
+receipt's `entries_declared`/`entries_staged`, **covers its staged bytes
+exactly**, and matches the requested leg's range. Coverage is equality, not a
+bound: `stage_move` adds each landed entry's own length to both that entry's
+`bytes` and the receipt's `bytes_staged` (an adopted incarnation returns the
+same length without copying), and a run that did not land every entry files an
+incomplete receipt -- so for `complete: true` the two are equal, and equal
+entry counts prove nothing about bytes. Two surviving 4 KiB entries under a
+receipt that staged 16 KiB is a certificate for bytes the stage does not
+carry. All of it is checked under the donor's transition and stage ownership
+transaction, and before the per-file identity walk -- metadata is cheap and
+only a donor that can still stand for the whole range is worth qualifying file
+by file -- before any successor document is written or any token moves (a
+failed adoption leaves donor, successor and tokens untouched).  A
 successor therefore takes the surviving entry through the shared publisher's
 per-path proof and copies the rest; whole-range adoption never certifies a
 shortened fragment as the original complete range.  When a crash between the
