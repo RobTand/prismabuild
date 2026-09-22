@@ -6488,6 +6488,50 @@ movers instead of after them. Excluding exports from the floor would bring
 back the `never_fits_tier_capacity` deadlock that #706 closed, so exports
 keep it.
 
+**A producer's unheld window is an obligation the tier gate can count.**
+A producer reserves its template's `window_gib` on the tier at claim, and its
+batches spend the window by exact transfer. Retirement returns the spent
+credits to free, and the producer takes them back with `refill_window`.
+Between the retirement and the refill the window is owed but held by nobody.
+The joint-fit gate (`window_credit.gate_newcomer`), the fence check
+(`fence_fits`) and the relief in `window_pressure` counted it as zero
+(`output_gib=0`, note `output-scope-unenforced`), so a consumer's window could
+take the room the refill needs.
+
+`produced_output.unheld_window_gib(queue, tier_id)` measures that gap. For
+every owner whose live claimed row names its instance's own attempt, it
+returns `window - held - outstanding`, floored at zero. `window` comes from
+the filed template the instance is bound to, and `held` and `outstanding`
+are the terms `refill_window` bounds itself by. Both are held tokens that the
+gate already counts, so no token is counted twice. A queued owner's window is
+still in its ready demand, and a finished or superseded owner owes nothing.
+The census reads each owner's claimed row before any of its records, so a
+dead owner's torn record costs nothing. For a live owner, an unreadable
+instance, claim, template or holding makes the result unknown, and the tier
+loop defers the tier as it does for an unreadable ledger
+(`advance-deferred-unknown-evidence`). An unreadable batch census counts no
+outstanding tokens, which can only raise the result.
+
+When counted, the obligation enters all three. The gate and the fence check
+add it to what they hold against capacity. The relief adds it to each tier's
+next-phase term, because a fence needs the owed window free as well. Without
+that, an admitted window's advance would wait beside reclaimable orphans. The
+newcomer probe's shortfall includes it too. A tier whose obligation is unknown
+asks for no relief, because its publication defers.
+
+The tier loop counts the obligation only when it runs with `--output-windows`
+(or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
+made before, with the same note. Any other value of the variable stops the
+loop at start. The supervisor restarts a role whose argv differs from its
+declaration, and a role inherits the supervisor's environment, so the switch
+is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published
+like any other change, not a hand relaunch. The window, not the template's `minimum_gib`, is the charge:
+`refill_window` treats a top-up as optional once holdings reach the minimum,
+so the window over-counts the room a producer strictly needs, and it errs
+toward the producer. An A/B that turns it on compares, against a run
+without it, the `window-gated` events that name `joint-fit-stall` with an
+empty `output_note` and the producer's `refill_deferred` count.
+
 **Still open.**
 
 * The export's pool-side cost is unmeasured. The receipt records file-side

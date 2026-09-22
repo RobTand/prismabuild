@@ -85,8 +85,11 @@ REASON_OVERSIZE = "joint-fit-oversize"
 REASON_UNFUNDED = "advance-credit-unfunded"
 REASON_DEFER_UNKNOWN = "advance-deferred-unknown-evidence"
 
-#: The produced-output obligation until the PB contract lands: counted as zero
-#: with this note on every gated decision.  Never an estimate.
+#: The note on a decision that counted no produced-output obligation.  The
+#: tier loop counts a producer's unheld window (``produced_output.
+#: unheld_window_gib``) only when it runs with ``--output-windows`` (#747);
+#: otherwise the obligation is zero and every decision carries this note.
+#: Never an estimate.
 OUTPUT_UNENFORCED_NOTE = "output-scope-unenforced"
 
 
@@ -109,7 +112,8 @@ def grant_key(consumer_action_key: str, tier_id: str, leg: str,
 def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
                   capacity_gib: int | None, cur_min_gib: int,
                   next_min_gib: int | None,
-                  existing_min_next_gib: int) -> dict[str, object]:
+                  existing_min_next_gib: int,
+                  output_enforced: bool = False) -> dict[str, object]:
     """Whether a window's first step may publish against shared room.
 
     ``held_gib`` counts every held token on the tier (movers, grants, pins --
@@ -122,21 +126,22 @@ def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
     ``capacity_gib=None`` is unknown capacity and always defers.  A minimum
     that exceeds capacity with no unrelated obligations held, queued, owed,
     or protected is permanent (nothing can retire into room); any obligation
-    keeps the stall transient.
+    keeps the stall transient.  ``output_gib`` is the produced-output
+    obligation nobody holds yet; ``output_enforced`` says it was counted,
+    and clears the unenforced note on the decision.
     """
 
+    note = "" if output_enforced else OUTPUT_UNENFORCED_NOTE
     if capacity_gib is None:
         return {"admit": False, "reason": REASON_DEFER_UNKNOWN,
-                "permanent": False,
-                "output_note": OUTPUT_UNENFORCED_NOTE}
+                "permanent": False, "output_note": note}
     if cur_min_gib > capacity_gib:
         return {"admit": False, "reason": REASON_OVERSIZE, "permanent": True,
-                "output_note": OUTPUT_UNENFORCED_NOTE}
+                "output_note": note}
     total = (held_gib + ready_gib + output_gib + cur_min_gib
              + (next_min_gib or 0) + existing_min_next_gib)
     if total <= capacity_gib:
-        return {"admit": True, "reason": "",
-                "output_note": OUTPUT_UNENFORCED_NOTE}
+        return {"admit": True, "reason": "", "output_note": note}
     if (held_gib + ready_gib + output_gib + existing_min_next_gib == 0
             and cur_min_gib + (next_min_gib or 0) > capacity_gib):
         # Permanent unsupported workset, not an endless transient: nothing
@@ -145,9 +150,9 @@ def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
         # next under it) can never fit however long the window waits.  Any
         # unrelated obligation at all keeps the transient stall instead.
         return {"admit": False, "reason": REASON_OVERSIZE, "permanent": True,
-                "output_note": OUTPUT_UNENFORCED_NOTE}
+                "output_note": note}
     return {"admit": False, "reason": REASON_STALL, "permanent": False,
-            "output_note": OUTPUT_UNENFORCED_NOTE}
+            "output_note": note}
 
 
 def fence_fits(*, held_gib: int, ready_gib: int, output_gib: int,
@@ -155,11 +160,12 @@ def fence_fits(*, held_gib: int, ready_gib: int, output_gib: int,
     """Whether one more fence keeps every future take fundable.
 
     New-money peak accounting: everything held plus everything queued that
-    will commit new capacity plus unenforced output must leave the tier
+    will commit new capacity plus owed output must leave the tier
     within capacity.  ``ready_gib`` carries new money only (funded rows ride
     at zero); the fence's own take from free is enforced atomically by the
-    reserve itself.  Every claim, copy, pin, and temporary overlap is counted
-    exactly once, never twice.
+    reserve itself.  ``output_gib`` is the produced-output window nobody
+    holds (zero unless the tier loop counts it).  Every claim, copy, pin,
+    and temporary overlap is counted exactly once, never twice.
     """
 
     if capacity_gib is None:
@@ -232,22 +238,6 @@ def held_grants(ledger) -> list[str]:
     except (OSError, ValueError):
         return []
     return sorted(key for key in keys if str(key).startswith(GRANT_PREFIX))
-
-
-def obligations(*, held_gib: int, ready_gib: int, output_gib: int = 0,
-                output_enforced: bool = False) -> dict[str, object]:
-    """One tier's joint obligations, with the output scope explicit.
-
-    Until the PB produced-output contract lands, ``output_enforced`` is False
-    and the value counts as zero with the standing note -- never an estimate.
-    """
-
-    return {"held_gib": int(held_gib), "ready_gib": int(ready_gib),
-            "output_gib": int(output_gib) if output_enforced else 0,
-            "output_enforced": bool(output_enforced),
-            "output_note": "" if output_enforced else OUTPUT_UNENFORCED_NOTE,
-            "total_gib": int(held_gib) + int(ready_gib)
-            + (int(output_gib) if output_enforced else 0)}
 
 
 def decision_needs(plan: Mapping[str, object], accepted_phase: str | None,
