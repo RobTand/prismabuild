@@ -5084,6 +5084,14 @@ as a reservation or a change to any frozen plan. This prevents smaller new
 windows from indefinitely replenishing ahead of a larger priority lead;
 it does not promise progress while existing readers retain capacity.
 
+This priority policy applies only to a positively `READY` consumer in its
+current publication (#881). A `CLAIMED` consumer whose original lead has
+retired can still satisfy the older unpublished-lead credit-gate predicate;
+that does not make it an unstarted admission. Such running windows neither
+establish nor receive the priority barrier and remain ahead of new admissions.
+The original credit gate, minimum next-step reservation and funding checks
+are unchanged. A READY retry remains eligible regardless of historical attempts.
+
 Admission relief applies to both stage and RAM. RAM asks only when its normal
 bounded window has a promotion whose stage source is resident, preserving
 the existing rule against eviction for an unavailable source or a declined
