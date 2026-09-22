@@ -42,6 +42,7 @@ from collections.abc import Iterable, Mapping
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 
 from . import storage_tiers
@@ -54,6 +55,11 @@ RESIDENCY_MAP_FRAGMENT_SCHEMA_V1 = "prismaquant.prismabuild.residency_map_fragme
 RESIDENCY_MAP_SCHEMA_V1 = "prismaquant.prismabuild.residency_map.v1"
 
 _HEX = frozenset("0123456789abcdef")
+#: ``_HEX`` checked at C speed: ``[0-9a-f]`` is a literal ASCII range, so a
+#: full match accepts exactly the strings whose every character is in
+#: ``_HEX``.  Every fragment entry carries a digest, and the per-character
+#: generator was the hottest line of a cover lookup (#893).
+_HEX_RUN = re.compile("[0-9a-f]*")
 #: ``ram_path`` is optional and names the tmpfs copy of an entry the stage
 #: already vouches for (#640); it is the overlay's half of the entry.
 _ENTRY_KEYS = frozenset({"stage_path", "bytes", "offset", "sha256", "ram_path"})
@@ -103,7 +109,7 @@ def parse_residency_map_key(key: str) -> tuple[str, int]:
 
 def _digest(value: object, *, where: str) -> str:
     if (not isinstance(value, str) or len(value) != 64
-            or any(character not in _HEX for character in value)):
+            or _HEX_RUN.fullmatch(value) is None):
         raise ResidencyMapError(f"{where} must be a 64-character lowercase digest")
     return value
 
@@ -129,7 +135,8 @@ def _absolute(value: object, *, where: str) -> str:
 
 
 def _action_key(value: object, *, where: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or any(c not in _HEX for c in value):
+    if (not isinstance(value, str) or len(value) != 64
+            or _HEX_RUN.fullmatch(value) is None):
         raise ResidencyMapError(f"{where} must be a 64-character action key")
     return value
 
