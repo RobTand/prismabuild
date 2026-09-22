@@ -27,6 +27,7 @@ import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 
 import ram_promote  # noqa: E402
+import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -36,6 +37,9 @@ MANIFEST_SHA = "9" * 64
 RAM_TIER = "ram:dl380g10"
 GIB = storage_tiers.GIB
 CHUNK = 1 << 20
+#: The stage's (and the promotion's) name for the one whole-file entry.
+SHARD = stage_move.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
+                                  mount_prefix="/mnt/shared")
 
 
 def _hexkey(seed: str) -> str:
@@ -47,8 +51,8 @@ def _staged(tmp_path: Path) -> tuple[Path, Path, bytes]:
 
     payload = bytes(range(256)) * (CHUNK // 256)
     stage = tmp_path / "stage"
-    (stage / "model").mkdir(parents=True)
-    (stage / "model" / "shard-0.bin").write_bytes(payload)
+    (stage / SHARD).parent.mkdir(parents=True)
+    (stage / SHARD).write_bytes(payload)
     manifest = {
         "schema": pb.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
@@ -91,7 +95,7 @@ def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
     """
 
     root = queue.root / pool.RESIDENCY
-    staged = stage / "model" / "shard-0.bin"
+    staged = stage / SHARD
     key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
     digest = hashlib.sha256(payload).hexdigest()
     residency_map.write_fragment(root, {
@@ -137,7 +141,7 @@ def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
     assert receipt["epoch"] == epoch
     assert receipt["bytes_staged"] == CHUNK
     # The same content-addressed identity: the relative name the stage holds.
-    staged_copy = ram / "model" / "shard-0.bin"
+    staged_copy = ram / SHARD
     assert staged_copy.read_bytes() == payload
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
@@ -220,7 +224,7 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
                                  stage_root=str(ram))
 
     assert egress["complete"] is True
-    assert not (ram / "model" / "shard-0.bin").exists()
+    assert not (ram / SHARD).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
     assert not residency_map.fragment_path(
         queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()

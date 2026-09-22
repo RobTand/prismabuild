@@ -178,7 +178,9 @@ def _completed_gap(queue: pool.PoolQueue, tmp_path: Path, stage: Path,
         _move_args(queue, stage, manifest_path, key, consumer, size, digest))
     assert receipt["complete"] is True, receipt
     queue.record_move(key, receipt)
-    staged = Path(str(receipt["stage_root"])) / name
+    source_dir = tmp_path / "source"
+    staged = Path(str(receipt["stage_root"])) / stage_move.stage_relative(
+        str(source_dir / name), 0, size, mount_prefix=str(source_dir))
     assert staged.exists()
     return key, digest, staged
 

@@ -60,7 +60,7 @@ from prismabuild import storage_tiers  # noqa: E402
 
 from stage_move import (  # noqa: E402
     _Copier, _StagedPublisher, _delta, cpu_seconds, load_manifest,
-    own_action_key, proc_io, stage_relative, whole_file_paths,
+    own_action_key, proc_io, stage_relative,
 )
 
 
@@ -182,13 +182,11 @@ def promote(args, *, stop=None) -> dict[str, object]:
     # The same destination-collision check the stage mover makes: two entries
     # that derive one staged name would let the later copy overwrite the
     # earlier while both fragments vouch for it.
-    whole = whole_file_paths(entries)
     destinations: dict[str, str] = {}
     for entry in window:
         path, offset = str(entry["path"]), int(entry["offset"])
         relative = stage_relative(path, offset, int(entry["bytes"]),
-                                  mount_prefix=mount_prefix,
-                                  whole_file=path in whole)
+                                  mount_prefix=mount_prefix)
         # The staged name is taken from the proof, never recomputed on
         # trust: a replace between the proof and this loop must refuse,
         # not read a new file under an old name.
@@ -239,7 +237,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
     # one that snapshotted before waits out here until its delete completes.
     # Acquired and released -- nothing is held during the copy itself.
     pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.ram_root)
-    copier.run(window, whole=whole, stop=stop)
+    copier.run(window, stop=stop)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
     cpu_used = max(0.0, cpu_seconds() - cpu_before)

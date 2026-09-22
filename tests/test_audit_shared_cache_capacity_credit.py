@@ -58,6 +58,11 @@ W_MODEL_TIGHT = 0  # MODELLED discovery `available`: stage physically tight
 HOST_CAP = {"cpu": 8, "mem_gb": 16}
 
 
+def _staged_name(name: str, size: int) -> str:
+    """The stage's name for one whole ``size``-byte pool file ``name``."""
+
+    return stage_move.stage_relative(f"/m/{name}", 0, size, mount_prefix="/m")
+
 def _manifest_bytes(pool_dir: Path) -> tuple[dict, Path]:
     pool_dir.mkdir(parents=True, exist_ok=True)
     shared = hashlib.sha256(b"audit-shared-extent").digest() * (MIB // 32)
@@ -288,9 +293,10 @@ def test_mixed_shared_and_deleted_splits_freed_from_decharged(tmp_path: Path) ->
     assert first["entries_shared"] == 1 and first["entries_deleted"] == 1
     assert first["tokens_released"] == 1, first
     assert first.get("tokens_decharged") == 1, first
-    remaining = sorted(p.name for p in (tmp_path / "stage").rglob("*")
+    stage = tmp_path / "stage"
+    remaining = sorted(str(p.relative_to(stage)) for p in stage.rglob("*")
                        if p.is_file() and p.name != stage_release.STAGE_ROOT_MARKER)
-    assert remaining == ["shared.bin"], remaining
+    assert remaining == [_staged_name("shared.bin", MIB)], remaining
 
 
 def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
@@ -667,8 +673,9 @@ def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> No
     assert first["entries_shared"] == 1 and first["entries_deleted"] == 1
     assert first["tokens_released"] == 0, first
     assert first.get("tokens_decharged") == 1, first
-    assert (tmp_path / "stage" / "frac.bin").exists()
-    assert not (tmp_path / "stage" / "excl.bin").exists()
+    assert (tmp_path / "stage"
+            / _staged_name("frac.bin", len(shared_blob))).exists()
+    assert not (tmp_path / "stage" / _staged_name("excl.bin", len(excl))).exists()
     numbers = _ledger_numbers(queue)
     assert numbers["free"] == 0, numbers
     _publish_mover(queue, MOVER_C, 0, MIB, manifest_sha, total)

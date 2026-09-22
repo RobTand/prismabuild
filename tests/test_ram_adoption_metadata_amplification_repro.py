@@ -71,6 +71,18 @@ SMALL_BUDGET = 16 << 10
 DEFAULT_BUDGET = int(stage_move._INDEX_BUDGET_BYTES)
 
 
+def _staged(root: Path, source: str) -> Path:
+    """Where a promotion lands the whole ``PAYLOAD``-sized ``source``.
+
+    Named through ``stage_move.stage_relative``, the same derivation the
+    copier uses, so the fixture's published destinations are the copier's.
+    """
+
+    path = root / stage_move.stage_relative(
+        "/m/" + Path(source).name, 0, len(PAYLOAD), mount_prefix="/m")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
 def _hex64(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -141,7 +153,7 @@ def _fixture(tmp_path: Path, *, destinations: int = N_DESTS,
         name = f"model-{index:05d}-of-{destinations:05d}.safetensors"
         source = src_root / name
         source.write_bytes(PAYLOAD)
-        (ram_root / name).write_bytes(PAYLOAD)
+        _staged(ram_root, str(source)).write_bytes(PAYLOAD)
         entries.append({"path": str(source), "offset": 0,
                         "bytes": len(PAYLOAD), "sha256": digest})
 
@@ -149,7 +161,7 @@ def _fixture(tmp_path: Path, *, destinations: int = N_DESTS,
     material_entries: dict[str, dict[str, object]] = {}
     for entry in entries:
         key = residency_map.residency_map_key(entry["path"], 0)
-        destination = str(ram_root / Path(entry["path"]).name)
+        destination = str(_staged(ram_root, entry["path"]))
         identity = reader_lease.stat_identity(destination)
         assert identity is not None
         fragment_entries[key] = {
@@ -220,7 +232,7 @@ def _sweep(tmp_path: Path, monkeypatch, *, budget: int,
     publisher = _publisher(forest, tmp_path)
     adopted = []
     for entry in forest["entries"]:
-        destination = forest["ram_root"] / Path(entry["path"]).name
+        destination = _staged(forest["ram_root"], entry["path"])
         result = publisher.try_adopt(
             entry, destination, stage_move._origin_id_of(entry["path"]))
         adopted.append(result is not None)
@@ -245,7 +257,7 @@ def _verdicts(publisher, forest: dict[str, object]) -> list[tuple]:
     out = []
     for entry in forest["entries"]:
         norm = os.path.normpath(
-            str(forest["ram_root"] / Path(entry["path"]).name))
+            str(_staged(forest["ram_root"], entry["path"])))
         proof, standing, detail = publisher._proof_search(
             norm, int(entry["bytes"]), entry.get("sha256"))
         out.append((proof is not None, standing, detail))
@@ -376,8 +388,7 @@ def test_a_mutated_sidecar_and_a_corrupt_fragment_are_seen_after_retention(
     consumer, mover = forest["owners"][0]
     entries = forest["entries"]
     target = entries[0]
-    norm = os.path.normpath(str(forest["ram_root"] /
-                                 Path(target["path"]).name))
+    norm = os.path.normpath(str(_staged(forest["ram_root"], target["path"])))
 
     assert _verdicts(publisher, forest) == [
         (True, "proof", None)] * len(entries)
@@ -438,7 +449,7 @@ def test_duplicate_sidecar_mentions_keep_their_order(tmp_path, monkeypatch):
     forest = _fixture(tmp_path, destinations=1, owners=1)
     consumer, mover = forest["owners"][0]
     entry = forest["entries"][0]
-    norm = os.path.normpath(str(forest["ram_root"] / Path(entry["path"]).name))
+    norm = os.path.normpath(str(_staged(forest["ram_root"], entry["path"])))
     live = forest["material_entries"][
         str(residency_map.residency_map_key(entry["path"], 0))]["file_id"]
     stale = {"ino": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
@@ -505,7 +516,6 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
         pacer=None, stage_root=forest["ram_root"],
         mount_prefix=str(forest["src_root"]), block=1 << 16, workers=4,
         owner=_hex64("promoting-mover"), publisher=publisher)
-    whole = {entry["path"] for entry in forest["entries"]}
 
     first_decode = threading.Event()
     competing_entered = threading.Event()
@@ -551,7 +561,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
             assert first_decode.wait(30), "no copier decode was observed"
             for entry in forest["entries"]:
                 adopted = publisher.try_adopt(
-                    entry, forest["ram_root"] / Path(entry["path"]).name,
+                    entry, _staged(forest["ram_root"], entry["path"]),
                     stage_move._origin_id_of(entry["path"]))
                 competing_results.append(adopted is not None)
         except BaseException as exc:            # surfaced, never swallowed
@@ -561,7 +571,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
                               name="competing-adopter", daemon=True)
     thread.start()
     try:
-        copier.run(forest["entries"], whole=whole, stop=threading.Event())
+        copier.run(forest["entries"], stop=threading.Event())
     finally:
         thread.join(60)
 
@@ -598,7 +608,7 @@ def test_a_late_tainted_fragment_defeats_an_earlier_proof(tmp_path,
     monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
-    destination = forest["ram_root"] / Path(entry["path"]).name
+    destination = _staged(forest["ram_root"], entry["path"])
     assert publisher.try_adopt(
         entry, destination,
         stage_move._origin_id_of(entry["path"])) is not None
@@ -632,8 +642,7 @@ def test_a_late_divergent_sidecar_defeats_an_earlier_proof(tmp_path,
     monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
-    norm = os.path.normpath(str(forest["ram_root"] /
-                                 Path(entry["path"]).name))
+    norm = os.path.normpath(str(_staged(forest["ram_root"], entry["path"])))
     assert publisher._proof_search(
         norm, entry["bytes"], entry["sha256"])[1] == "proof"
 
@@ -654,7 +663,7 @@ def test_a_late_divergent_sidecar_defeats_an_earlier_proof(tmp_path,
         f"{standing!r}: {detail!r}")
     with pytest.raises(OSError):
         publisher.try_adopt(
-            entry, forest["ram_root"] / Path(entry["path"]).name,
+            entry, _staged(forest["ram_root"], entry["path"]),
             stage_move._origin_id_of(entry["path"]))
 
 
@@ -671,7 +680,7 @@ def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
     monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
-    destination = forest["ram_root"] / Path(entry["path"]).name
+    destination = _staged(forest["ram_root"], entry["path"])
     norm = os.path.normpath(str(destination))
     assert publisher._proof_search(
         norm, entry["bytes"], entry["sha256"])[1] == "proof"
@@ -716,8 +725,7 @@ def test_a_same_size_rewrite_with_restored_mtime_is_seen(tmp_path,
     monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
-    norm = os.path.normpath(str(forest["ram_root"] /
-                                 Path(entry["path"]).name))
+    norm = os.path.normpath(str(_staged(forest["ram_root"], entry["path"])))
     assert publisher._proof_search(
         norm, entry["bytes"], entry["sha256"])[1] == "proof"
 

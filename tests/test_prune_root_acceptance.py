@@ -8,7 +8,7 @@ from test_stale_material_done_owner_retires import (
 )
 import stage_release
 import tier_loop
-from test_stale_material_done_owner_retires import base, SIZE
+from test_stale_material_done_owner_retires import base, SIZE, staged_name
 
 
 def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
@@ -43,10 +43,10 @@ def test_matching_nonram_epochs_are_still_invalid_for_cleanup(fleet):
         doc['epoch'] = 'invalid-ssd-epoch'
         path.write_text(json.dumps(doc))
     charge = queue.tier_ledger(TIER).holder_tokens(mover)
-    before = {name: (stage / name).read_bytes() for name in NAMES}
+    before = {name: (stage / staged_name(name)).read_bytes() for name in NAMES}
     result = _sweep(queue, stage)
-    assert all((stage / name).exists() for name in NAMES), result
-    assert {name: (stage / name).read_bytes() for name in NAMES} == before
+    assert all((stage / staged_name(name)).exists() for name in NAMES), result
+    assert {name: (stage / staged_name(name)).read_bytes() for name in NAMES} == before
     assert queue.tier_ledger(TIER).holder_tokens(mover) == charge
     assert fragment_path.exists() and material_path.exists()
 
@@ -61,7 +61,7 @@ def test_replacement_before_checkpoint_install_does_not_become_clean(fleet, monk
         if not raced:
             raced.append(True)
             replacement = _stage(stage, NAMES[1] + '.later', NEW_PAYLOAD)
-            os.replace(replacement, stage / NAMES[1])
+            os.replace(replacement, stage / staged_name(NAMES[1]))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(stage_release, '_install_skip_checkpoint', before_install)
@@ -69,5 +69,5 @@ def test_replacement_before_checkpoint_install_does_not_become_clean(fleet, monk
     assert raced
     result = stage_release.sweep_dead_owner_fragments(queue, stage_roots={TIER: str(stage)})
     assert any(row.get('entries_pruned') == 1 for row in result), result
-    assert not (stage / NAMES[1]).exists()
-    assert (stage / NAMES[0]).exists()
+    assert not (stage / staged_name(NAMES[1])).exists()
+    assert (stage / staged_name(NAMES[0])).exists()

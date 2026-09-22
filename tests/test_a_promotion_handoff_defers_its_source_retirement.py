@@ -51,6 +51,9 @@ MIB = 1 << 20
 HOST_CAP = {"cpu": 8, "mem_gb": 16}
 WORKER = "worker:1:abcd0001"
 SOURCE_NAME = "layer.bin"
+#: Where the stage mover (and the promotion) name the one whole-file entry.
+STAGED_NAME = stage_move.stage_relative(f"/m/{SOURCE_NAME}", 0, MIB,
+                                        mount_prefix="/m")
 
 
 def _manifest(tmp_path: Path) -> tuple[dict, Path]:
@@ -240,7 +243,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     _promote(queue, stage, ram, manifest_path, promo, CONSUMER_A, MIB)
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
-    staged = stage / SOURCE_NAME
+    staged = stage / STAGED_NAME
     ledger = queue.tier_ledger(TIER)
     assert staged.exists() and paths["fragment"].exists()
     assert paths["material"].exists()
@@ -339,7 +342,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
 
     paths_a = _paths(queue, CONSUMER_A, MOVER_A)
     paths_b = _paths(queue, CONSUMER_B, MOVER_B)
-    staged = stage / SOURCE_NAME
+    staged = stage / STAGED_NAME
     ledger = queue.tier_ledger(TIER)
 
     # The claim is live and the promotion has not acquired yet: the handoff
@@ -366,7 +369,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
                          CONSUMER_A, MIB)
     assert [cover["mover_action_key"]
             for cover in promotion["source_covers"]] == [MOVER_A], promotion
-    assert (ram / SOURCE_NAME).exists()
+    assert (ram / STAGED_NAME).exists()
 
     # The handoff ends; now the ordinary shared settlement applies.
     queue.finish(promo, status="executed")
@@ -406,7 +409,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     paths["material"].unlink()
     promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
 
-    staged = stage / SOURCE_NAME
+    staged = stage / STAGED_NAME
     ledger = queue.tier_ledger(TIER)
     first = stage_release.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
@@ -440,7 +443,7 @@ def test_a_malformed_promotion_claim_taints_and_retains(
                               "--range-end-bytes", "0"])
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
-    staged = stage / SOURCE_NAME
+    staged = stage / STAGED_NAME
     ledger = queue.tier_ledger(TIER)
     receipt = stage_release.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,

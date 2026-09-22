@@ -73,8 +73,8 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
-#: A staged range that is not a whole file lives under this suffix, so the
-#: name of one range can never be the name of another.
+#: Every staged object lives under this suffix, named by the exact range it
+#: holds, so the name of one range can never be the name of another.
 RANGE_SUFFIX = ".pbrange"
 
 #: Seconds between republications of the residency fragment while a move runs.
@@ -84,14 +84,42 @@ FRAGMENT_PUBLISH_S = 5.0
 
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
-                   whole_file: bool, namespace: str | None = None) -> str:
+                   namespace: str | None = None,
+                   named_once: bool = False) -> str:
     """Where one manifest entry's bytes live under the stage root.
 
-    A path the manifest names exactly once, from offset zero, keeps its own
-    relative name.  Anything else is one range among several of the same file
-    and gets a name of its own: two movers holding two ranges of one shard
-    cannot both rename-publish into one file, and the staged object's length
-    has to be the range's length for the consumer to read it from position 0.
+    **Staged input.**  Every entry is named by the exact range it holds:
+    ``<rel>.pbrange/<offset>-<size>``.  Two entries share a staged name
+    exactly when they name the same bytes of the same source, which is
+    exactly when sharing one staged object is correct, and the staged
+    object's length is always the range's length, so the consumer reads it
+    from position 0.  ``named_once`` is ignored for staged input.
+
+    **Produced output** (``namespace`` given) keeps the name its producer
+    declared: ``produced-output/<namespace>/<rel>`` for a path its manifest
+    names once from offset zero (``named_once``), and a range name otherwise.
+    The namespace is the producing action's own digest, so no other
+    publisher's read can derive a name inside it and the declared name
+    cannot collide across consumers.
+
+    Staged input deliberately has no bare-name branch.  Its name is a pure
+    function of the sealed manifest entry (``path``, ``offset``, ``bytes``),
+    and a manifest entry carries no file size, so "this entry covers the
+    whole file" is not derivable from what the name may depend on.  The
+    former rule -- a path the manifest names exactly once, from offset zero,
+    keeps its bare name -- took "named once from zero" for "whole": a routing
+    capture that read each safetensors shard's 45 KB header and a consumer
+    that read the whole 5.37 GB shard derived one name for two different
+    objects, and whichever published second refused after the grace, for as
+    long as the first publication stood (GLM Stage A R11, 2026-09-22: 74
+    shard names across 40 read phases).  :func:`pre_range_stage_relative`
+    keeps the former spelling for the retention censuses only.
+
+    The staged-input derivation is injective: the last component is
+    ``<offset>-<size>``, digits only, so the relative path and the range are
+    both recoverable from the name, and a declared path that itself ends in
+    ``.pbrange/<a>-<b>`` gets a suffix of its own rather than landing on
+    another entry's range.
     """
 
     relative = path[len(mount_prefix.rstrip("/")) + 1:]
@@ -102,19 +130,45 @@ def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
                 or any(c not in "0123456789abcdef" for c in namespace)):
             raise ValueError("produced stage namespace must be a 64-character digest")
         relative = f"produced-output/{namespace}/{relative}"
-    if whole_file and offset == 0:
-        return relative
+        if named_once and offset == 0:
+            return relative
     return f"{relative}{RANGE_SUFFIX}/{offset}-{size}"
 
 
-def whole_file_paths(entries: list[dict[str, object]]) -> set[str]:
-    """Paths the manifest names exactly once; everything else is a split file."""
+def paths_named_once(entries: list[dict[str, object]]) -> set[str]:
+    """Paths the manifest names exactly once.
+
+    Decides a produced output's declared name (:func:`stage_relative`) and
+    the pre-range spelling of a staged input
+    (:func:`pre_range_stage_relative`); it never says a read covers a file.
+    """
 
     counts: dict[str, int] = {}
     for entry in entries:
         path = str(entry["path"])
         counts[path] = counts.get(path, 0) + 1
     return {path for path, count in counts.items() if count == 1}
+
+
+def pre_range_stage_relative(path: str, offset: int, size: int, *,
+                             mount_prefix: str, named_once: bool,
+                             namespace: str | None = None) -> str:
+    """The name a mover of a generation before range-only naming derived.
+
+    Only the retention censuses read this.  A plan row keeps the tool path of
+    the generation that sealed it, so a mover published after a runtime
+    publication can still be an older mover writing the bare name for a path
+    its manifest names once from offset zero.  A census that decides what
+    another publisher may be writing therefore counts both spellings:
+    over-retaining is a pass and over-removing is a failure.  Nothing may
+    *publish* or *delete* by this name.
+    """
+
+    ranged = stage_relative(path, offset, size, mount_prefix=mount_prefix,
+                            namespace=namespace, named_once=named_once)
+    if namespace is None and named_once and offset == 0:
+        return ranged[:ranged.rindex(RANGE_SUFFIX + "/")]
+    return ranged
 
 
 #: Origin-directory stat results that PROVE the declared origin is not
@@ -1720,9 +1774,13 @@ class _Copier:
             identity = None
         return written, computed, identity
 
-    def run(self, entries: list[dict[str, object]], *, whole: set[str],
-            stop: threading.Event, on_entry=None) -> None:
+    def run(self, entries: list[dict[str, object]], *,
+            stop: threading.Event, on_entry=None,
+            named_once: frozenset[str] = frozenset()) -> None:
         """Copy the window; a gate refusal ends dispatch for this run.
+
+        ``named_once`` is :func:`paths_named_once` of the whole manifest; it
+        decides produced-output names only (:func:`stage_relative`).
 
         ``stop`` is the caller's cancellation event and is never set here.  A
         ``_PublicationRefused`` sets the copier's own
@@ -1774,8 +1832,9 @@ class _Copier:
                 try:
                     relative = stage_relative(
                         path, offset, int(entry["bytes"]),
-                        mount_prefix=self.mount_prefix, whole_file=path in whole,
-                        namespace=self.namespace)
+                        mount_prefix=self.mount_prefix,
+                        namespace=self.namespace,
+                        named_once=path in named_once)
                     destination = self.stage_root / relative
                     if self.source_stage_root is not None:
                         # A promotion reads the staged tree, where this same
@@ -2070,8 +2129,9 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                          stage_root: Path, manifest_sha256: str,
                          residency_root: Path,
                          window: list[dict[str, object]],
-                         whole: set[str], mount_prefix: str,
+                         mount_prefix: str,
                          namespace: str | None = None,
+                         named_once: frozenset[str] = frozenset(),
                          ) -> tuple[dict[str, dict[str, object]],
                                     dict[str, dict[str, object]], str | None]:
     """This mover's own prior coverage, qualified for a same-key retry.
@@ -2133,8 +2193,8 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
         path, offset = str(entry["path"]), int(entry["offset"])
         relative = stage_relative(
             path, offset, int(entry["bytes"]),
-            mount_prefix=mount_prefix, whole_file=path in whole,
-            namespace=namespace)
+            mount_prefix=mount_prefix, namespace=namespace,
+            named_once=path in named_once)
         key = residency_map.residency_map_key(path, offset)
         facts[key] = (int(entry["bytes"]), os.path.normpath(str(
             Path(stage_root) / relative)), str(entry.get("sha256") or ""),
@@ -2333,15 +2393,18 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     # Two entries that derive one staged name would let the later copy
     # overwrite the earlier while both fragments vouch for it, and compose
     # cannot see it: the two map keys differ, so the same-key conflict never
-    # fires.  Derived range names and declared paths share one namespace under
-    # the stage root, so a manifest alone can reach the collision.
-    whole = whole_file_paths(entries)
+    # fires.  Staged-input naming (:func:`stage_relative`) is injective, so an
+    # input manifest can no longer reach this; a produced output's declared
+    # name still can (a declared path that spells another entry's range
+    # name), and this refuses it.
+    named_once = frozenset(paths_named_once(entries))
     destinations: dict[str, str] = {}
     for entry in window:
         path, offset = str(entry["path"]), int(entry["offset"])
         relative = stage_relative(path, offset, int(entry["bytes"]),
                                   mount_prefix=mount_prefix,
-                                  whole_file=path in whole, namespace=namespace)
+                                  namespace=namespace,
+                                  named_once=path in named_once)
         claimed = destinations.get(relative)
         if claimed is not None:
             raise SystemExit(
@@ -2384,8 +2447,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         mover_action_key=str(args.action_key), tier_id=str(args.tier_id),
         stage_root=Path(args.stage_root),
         manifest_sha256=str(manifest_sha256),
-        residency_root=residency_root, window=window, whole=whole,
-        mount_prefix=mount_prefix, namespace=namespace)
+        residency_root=residency_root, window=window,
+        mount_prefix=mount_prefix, namespace=namespace,
+        named_once=named_once)
     if staged_seeds:
         copier.staged.update(staged_seeds)
         copier.sidecar.update(sidecar_seeds)
@@ -2488,8 +2552,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     # against an egress that may be snapshotting right now.  Acquired and
     # released -- nothing is held during the copy itself.
     pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.stage_root)
-    copier.run(window, whole=whole, stop=stop,
-               on_entry=None if args.no_incremental_fragment else publish)
+    copier.run(window, stop=stop,
+               on_entry=None if args.no_incremental_fragment else publish,
+               named_once=named_once)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
     cpu_used = max(0.0, cpu_seconds() - cpu_before)

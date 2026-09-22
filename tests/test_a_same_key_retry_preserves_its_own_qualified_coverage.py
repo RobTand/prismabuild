@@ -52,6 +52,14 @@ PAYLOADS = [b"a", b"b", b"c"]
 TOTAL = sum(SIZES)
 
 
+def _staged(stage: Path, name: str) -> Path:
+    """Where the mover stages the whole source ``name`` (one of ``SIZES``)."""
+
+    names = ["shard-1.bin", "sub/shard-2.bin", "shard-3.bin"]
+    return stage / stage_move.stage_relative(
+        f"/m/{name}", 0, SIZES[names.index(name)], mount_prefix="/m")
+
+
 def _sources(tmp_path: Path) -> tuple[Path, list[dict[str, object]],
                                       list[str], list[str]]:
     """Three tiny real sources, their manifest entries, digests and keys."""
@@ -186,7 +194,7 @@ def test_a_partial_retry_never_publishes_below_its_own_qualified_prefix(
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
     opened = _count_source_opens(monkeypatch, fleet[2])
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
-    suffix = Path(args.stage_root) / "sub" / "shard-2.bin"
+    suffix = _staged(Path(args.stage_root), "sub/shard-2.bin")
     inode_before = suffix.stat().st_ino
 
     second = stage_move.move(args)
@@ -252,14 +260,14 @@ def test_changed_prior_bytes_fail_closed_and_are_never_replaced(
     _interrupted_first_attempt(fleet)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
     tampered_payload = b"b" * SIZES[1] + b"X"
-    (Path(args.stage_root) / "sub" / "shard-2.bin").write_bytes(
+    _staged(Path(args.stage_root), "sub/shard-2.bin").write_bytes(
         tampered_payload)
 
     second = stage_move.move(args)
 
     assert second["complete"] is False
     assert any("shard-2" in str(error) for error in second["errors"])
-    assert (Path(args.stage_root) / "sub" / "shard-2.bin").read_bytes() \
+    assert _staged(Path(args.stage_root), "sub/shard-2.bin").read_bytes() \
         == tampered_payload, "changed bytes were replaced"
     # And the changed entry was never re-dated: no fabricated proof.
     assert keys[1] not in _material(args)["entries"]
@@ -324,7 +332,7 @@ def test_a_corrupt_own_fragment_with_a_new_destination_refuses_everything(
     corrupt_bytes = b'{"schema": "prismaquant.prismabuild.resi'
     _corrupt(fragment, corrupt_bytes)
     stage = Path(args.stage_root)
-    landed = {name: (stage / name).read_bytes()
+    landed = {name: _staged(stage, name).read_bytes()
               for name in ("shard-1.bin", "sub/shard-2.bin")}
 
     with pytest.raises(SystemExit, match="residency_prior_fragment_unreadable"):
@@ -333,10 +341,10 @@ def test_a_corrupt_own_fragment_with_a_new_destination_refuses_everything(
     # Nothing was copied, nothing was published, nothing was altered.
     assert fragment.read_bytes() == corrupt_bytes, (
         "the tainted ownership record was overwritten")
-    assert not (stage / "shard-3.bin").exists(), (
+    assert not _staged(stage, "shard-3.bin").exists(), (
         "the refusal did not precede the copy")
     for name, payload in landed.items():
-        assert (stage / name).read_bytes() == payload
+        assert _staged(stage, name).read_bytes() == payload
     # And a subsequent retry meets the same refusal, not an erased state.
     with pytest.raises(SystemExit, match="residency_prior_fragment_unreadable"):
         stage_move.move(args)

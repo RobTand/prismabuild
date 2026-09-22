@@ -1313,7 +1313,12 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
     assert late["complete"] is False, late
     assert any("cotangent-0.pt" in str(err) and "different bytes" in str(err)
                for err in late["errors"]), late["errors"]
-    assert (stage / "cotangent-0.pt").read_bytes() == b"A" * 4096
+    # This harness stages the batch without ``--produced-output-namespace``
+    # (production always passes it), so the copy lives at its staged-input
+    # name; derived, never spelled, so this asserts the refusal alone.
+    staged_a = stage / stage_move.stage_relative(
+        shared, 0, 4096, mount_prefix=str(origin))
+    assert staged_a.read_bytes() == b"A" * 4096
 
     # 3. Retirement evicts the staged copy and ends ownership, so the
     #    same path regenerates through the ordinary mover.
@@ -1322,4 +1327,4 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
                            residency_root=str(out_base))["ok"] is True
     staged = _stage_batch(queue, batch_b, origin, stage, out_base, tmp_path)
     assert staged["complete"] is True
-    assert (stage / "cotangent-0.pt").read_bytes() == b"Z" * 4096
+    assert staged_a.read_bytes() == b"Z" * 4096
