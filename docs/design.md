@@ -6499,10 +6499,30 @@ keep it.
   `/proc/diskstats` on dl380g10.
 * `stage_move.movers_claimed_on_tier` does not count exports among the
   readers that share a fill measurement.
-* The spool's local window is not a tier yet. It is bounded per owner by
-  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`, not by a host ledger. On
-  2026-09-22, sparky had 125 GB free (93% used) with a 628 MB spool.
-  sparklina had 411 GB free with 30 MB.
+
+**Host spool window.** A producer's local spool window can be a host
+reservation, so two producers on one box cannot together overrun its disk.
+Two switches turn it on, and both default off. A box declares a spool budget
+with `worker_loop.py --spool-gb N`, which adds `spool_gb: N` to the host
+kinds it offers. Without the flag, the box declares only `mem_gb` and `cpu`,
+as before. A producer opts in with `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1`
+in its sealed environment. `pbrun` then derives `spool_gb` =
+ceil(`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` / 2^30) into the sealed demand,
+the same way the produced-output template derives tier demand. `pbrun`
+refuses a typed `--demand spool_gb`, an opt-in with no positive byte bound,
+and an opt-in on `--transport slurm`, which cannot hold a host spool. Claim
+charges `spool_gb` through the ordinary host ledger like `mem_gb`, and
+`ProducedSpool` refuses to start when its claimed row reserves less than the
+derived amount. The per-owner byte bound and the `statvfs` check still apply.
+If no box declares `spool_gb`, an opted-in producer is unplaceable, and
+`pbrun` does not say so: its placement check reads a kind that an offer does
+not name as unknown, not zero, so it queues the action. Every claim then
+records `never_fits_capacity`, and the action stays in `ready`. A waiting
+`pbrun` prints `gave up waiting` when `--wait-s` expires and cancels nothing.
+Withdraw the action, or start a box with `--spool-gb`. `pbrun` does refuse
+the action at submission when every box that matches its tags declares a
+smaller `spool_gb` than the demand. On 2026-09-22, sparky had 125 GB free
+(93% used) with a 628 MB spool, and sparklina had 411 GB free with 30 MB.
 
 ### Logical child read-manifest projection (#862)
 
