@@ -6019,3 +6019,47 @@ Attempt logs are read by seeking to their end for a capped tail. The verifying
 reader in `pool.attempt_outcomes` reads every stream whole to check a digest,
 which is the right contract for a verifier and would make a status call cost
 whatever the action printed.
+
+### Producer-local precommit spool and asynchronous canonical export (#857)
+
+`produced_spool.ProducedSpool` is an opt-in precommit writer lane. The producer's
+sealed environment declares `PRISMABUILD_PRODUCED_SPOOL_ROOT` and
+`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`; the source host comes from its live claim.
+The root must be local disk, not network storage or tmpfs. Existing canonical
+`require_prewrite` ownership and durable quota precede every local reservation.
+Reservations bound the sum of live group ceilings within one owner instance.
+They are not a global host disk ledger: physical space is reserved by the
+consumer serializer's `posix_fallocate` on the SAME inode it writes, with a
+bounded writer and truncation to actual bytes before close. A separate reserve
+file followed by an unbounded ordinary write does not satisfy this contract.
+
+After a complete local group closes, PB seals a source-host CPU1/mem1GiB action
+through `movement_actions` and publishes it on the existing pool queue. Each
+group is independently retryable and scheduler-owned; no application copy
+thread or secondary dispatcher moves bytes. The exporter reads only the local
+sources, verifies their recorded identity and the writer's digest, writes each
+canonical temporary, fsyncs it, publishes the canonical name and fsyncs its
+parent directory. First publication never overwrites an unexpected destination.
+Local per-file proofs bind completed canonical incarnations; a completed retry
+adopts those proofs with stat checks and no shared payload read. A crash after
+name publication but before its post-publication proof recopies from the
+unchanged local source and may replace only the recorded owned incarnation.
+Unknown paths, changed bytes, incomplete groups and corrupt records retain.
+
+The group acknowledgement is bound to its sealed manifest and export action.
+Only that verified durable acknowledgement permits existing canonical
+produced-output descriptors and committed progress; local writes and queued
+exports are not committed units. Existing `publish_prepaid_batch`, canonical
+origin identity, strict RAM/SSD leases, retirement and restaging stay unchanged.
+The first slice therefore moves synchronous origin writes off the compute
+thread but does not yet provide local read leases or eliminate subsequent
+strict staging/readback. Each export consumes its own ordinary CPU/memory
+reservation; producer memory and local disk ceilings must leave honest capacity
+for it. There is no GPU demand on an exporter.
+
+Completed local files can be removed only against the bound acknowledgement,
+with a source-identity census before unlink. Pending/failed/unknown exports and
+partial writer groups retain their local bytes and reservation for recovery.
+A repeated successful release is idempotent, including interruption after
+unlink but before updating its reservation. Metadata remains as bounded proof;
+this lane does not add an automatic orphan sweeper or change owner cancellation.
