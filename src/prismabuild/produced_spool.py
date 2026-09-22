@@ -15,13 +15,18 @@ import os
 from pathlib import Path
 import socket
 import stat
+import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
+from . import storage_tiers
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
 MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 SCHEMA = "prismabuild.produced_spool.v1"
+PACING_SCHEMA = "prismabuild.produced_spool.pacing.v1"
+#: The copy loop's block, and so the pacer's step: one read, one write.
+BLOCK_BYTES = 1 << 20
 
 
 class SpoolError(RuntimeError):
@@ -163,6 +168,69 @@ def _export_record(group, owner):
             or len(inputs) != 1 or inputs[0]["sha256"] != record["manifest_sha256"]):
         raise SpoolError("export record is not bound to its sealed action")
     return record
+
+
+def export_fill(queue, tier_id):
+    """The pool-side fill one export reserves on ``tier_id``, or ``None`` (#747).
+
+    An export writes into the pool the stage movers read from, and the
+    measured cost of a pool write is displaced mover reads (2026-09-22,
+    dl380g10: member reads fell from 175 to 92 MB/s under 150-300 MB/s of
+    member writes, and to 19 MB/s above that).  So the export reserves on the
+    tier ledger the movers reserve from, by the one rule they are priced by,
+    ``storage_tiers.current_fill_offer``.  No export receipt prices a pool
+    write yet, so the measured side is ``None`` and the price is the tier's
+    current offer: one read MB per written MB, which over-charges a write
+    (the same bins displace about 0.4 read MB per written MB) and so errs
+    toward the movers.  A tier that announces no fill offer prices nothing,
+    and the export stays unreserved and unpaced exactly as before.
+    """
+
+    for record in queue.tiers():
+        if isinstance(record, dict) and str(record.get("tier_id")) == str(tier_id):
+            fill, _offer, _basis = storage_tiers.current_fill_offer(record, None)
+            return int(fill) if fill else None
+    return None
+
+
+class ExportPacer:
+    """Hold one export's write rate to the fill it reserved.
+
+    A token bucket over the whole export at ``rate_mb_s`` (decimal MB, the
+    ledger's unit).  When the copy runs ahead of its schedule the written
+    bytes are flushed before the wait, because a ``write`` returns into the
+    client's page cache and the NFS client would otherwise send the backlog
+    at line rate: the flush is what makes the pool see the paced stream.
+    """
+
+    def __init__(self, rate_mb_s):
+        self.rate = _positive(rate_mb_s, "pace rate") * 1_000_000
+        self.started = time.monotonic()
+        self.bytes = 0
+        self.held = 0.0
+        self.flushes = 0
+
+    def wrote(self, count, handle):
+        self.bytes += count
+        ahead = self.bytes / self.rate - (time.monotonic() - self.started)
+        if ahead <= 0:
+            return
+        handle.flush()
+        os.fdatasync(handle.fileno())
+        self.flushes += 1
+        ahead = self.bytes / self.rate - (time.monotonic() - self.started)
+        if ahead > 0:
+            time.sleep(ahead)
+            self.held += ahead
+
+    def record(self, tier_id):
+        seconds = time.monotonic() - self.started
+        return {"schema": PACING_SCHEMA, "tier_id": str(tier_id),
+                "rate_mb_s": int(self.rate // 1_000_000), "bytes": self.bytes,
+                "seconds": round(seconds, 3), "held_seconds": round(self.held, 3),
+                "flushes": self.flushes,
+                "mb_per_s_file_side": (round(self.bytes / seconds / 1e6, 1)
+                                       if seconds > 0 else None)}
 
 
 class ProducedSpool:
@@ -331,11 +399,21 @@ class ProducedSpool:
             if not templated.get("ok"):
                 raise SpoolError(str(templated))
             tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
+            command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
+                       "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
+            demand = {"cpu": 1, "mem_gb": 1}
+            # The pool write enters under a reservation on the tier its
+            # batch stages through, and is paced to it (#747).  The rate is
+            # sealed in the command, so it is part of the export's identity.
+            tier_id = str(prewrite.get("tier") or "")
+            fill = export_fill(self.queue, tier_id) if tier_id else None
+            if fill:
+                demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
+                command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
             action = movement_actions.seal_movement_action(
                 templated["template"],
-                command=["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
-                         "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]],
-                demand={"cpu": 1, "mem_gb": 1}, tags=[self.host],
+                command=command,
+                demand=demand, tags=[self.host],
                 log_name=f"produced-export-{batch_id}.log",
                 retry_policy={"max_attempts": 3, "retry_safe": True},
                 extra_params={"produced_spool": {"manifest_sha256": manifest_input["sha256"],
@@ -353,9 +431,11 @@ class ProducedSpool:
         key = record["export_key"]
         state = po._mover_live_state(self.queue, key)
         if state == "absent":
+            # The row carries exactly the demand the action sealed, so a
+            # reservation priced at seal time is the one admission charges.
             self.queue.publish(action_key=key, cas_root=self.cas_root,
                 worker_script=launch["worker_script"], **launch["addressing"],
-                resources={"cpu": 1, "mem_gb": 1}, tags=[self.host],
+                resources=dict(record["action"]["params"]["demand"]), tags=[self.host],
                 max_attempts=3, retry_safe=True, priority=launch["priority"],
                 refuse_withdrawn=True)
         elif state in {"failed", "withdrawn"}:
@@ -446,7 +526,23 @@ def _check_copy(proof, entry, index, manifest_sha256):
     return proof
 
 
+def _check_pacing(pacing):
+    if (not isinstance(pacing, dict) or set(pacing) != {
+            "schema", "tier_id", "rate_mb_s", "bytes", "seconds", "held_seconds",
+            "flushes", "mb_per_s_file_side"}
+            or pacing["schema"] != PACING_SCHEMA
+            or not isinstance(pacing["tier_id"], str) or not pacing["tier_id"]):
+        raise SpoolError("export pacing record is corrupt")
+    _positive(pacing["rate_mb_s"], "pacing rate")
+    for key in ("bytes", "flushes"):
+        if type(pacing[key]) is not int or pacing[key] < 0:
+            raise SpoolError("export pacing counters are corrupt")
+
+
 def _check_receipt(receipt, manifest, record):
+    if isinstance(receipt, dict) and "pacing" in receipt:
+        _check_pacing(receipt["pacing"])
+        receipt = {key: value for key, value in receipt.items() if key != "pacing"}
     if (not isinstance(receipt, dict) or set(receipt) != {
             "schema", "export_key", "manifest_sha256", "entries"}
             or receipt["schema"] != SCHEMA
@@ -461,7 +557,7 @@ def _check_receipt(receipt, manifest, record):
             raise SpoolError("export-destination-changed")
 
 
-def _export_entry(group, entry, index, manifest_sha256):
+def _export_entry(group, entry, index, manifest_sha256, pacer=None):
     source = _path(entry["source_path"], group / "payload")
     destination = _path(entry["destination_path"])
     temporary = Path(str(destination) + ".tmp")
@@ -517,12 +613,14 @@ def _export_entry(group, entry, index, manifest_sha256):
             copied = 0
             with os.fdopen(fd, "wb") as writer:
                 _write(proof_path, proof)
-                while block := reader.read(1 << 20):
+                while block := reader.read(BLOCK_BYTES):
                     copied += len(block)
                     if copied > entry["bytes"]:
                         raise SpoolError("source exceeded declared bytes")
                     writer.write(block)
                     digest.update(block)
+                    if pacer is not None:
+                        pacer.wrote(len(block), writer)
                 writer.flush()
                 os.fsync(writer.fileno())
             if (copied != entry["bytes"] or digest.hexdigest() != entry["sha256"]
@@ -547,8 +645,16 @@ def _export_entry(group, entry, index, manifest_sha256):
             return proof
 
 
-def export_group(queue, manifest_path, manifest_sha256, export_key):
-    """Worker payload: local-only reads, canonical writes, durable acknowledgement."""
+def export_group(queue, manifest_path, manifest_sha256, export_key, *,
+                 pace_mb_s=None, pace_tier=None):
+    """Worker payload: local-only reads, canonical writes, durable acknowledgement.
+
+    With ``pace_mb_s`` the canonical writes are held to that rate, the fill
+    the export reserved on ``pace_tier``, and the receipt records what the
+    pacer did.  Without it the copy runs unpaced, as before.
+    """
+    if (pace_mb_s is None) != (pace_tier is None):
+        raise SpoolError("a paced export names both its rate and its tier")
     manifest = _read(manifest_path, expected_sha256=manifest_sha256)
     if manifest is None or manifest.get("schema") != SCHEMA:
         raise SpoolError("sealed export manifest is absent or malformed")
@@ -577,10 +683,13 @@ def export_group(queue, manifest_path, manifest_sha256, export_key):
             class_bytes[entry["artifact_class"]] += entry["bytes"]
         if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
             raise SpoolError("canonical artifact class budget changed or exceeded")
-        landed = [_export_entry(group, entry, index, manifest_sha256)
+        pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
+        landed = [_export_entry(group, entry, index, manifest_sha256, pacer)
                   for index, entry in enumerate(manifest["entries"])]
         receipt = {"schema": SCHEMA, "export_key": export_key,
                    "manifest_sha256": manifest_sha256, "entries": landed}
+        if pacer is not None:
+            receipt["pacing"] = pacer.record(pace_tier)
         _check_receipt(receipt, manifest, record)
         _write(group / "receipt.json", receipt)
         return {"ok": True, "entries": len(landed)}
@@ -591,8 +700,12 @@ def main(argv=None):
     parser.add_argument("--queue", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--manifest-sha256", required=True)
+    parser.add_argument("--pace-mb-s", type=int,
+                        help="hold the canonical writes to this rate, the fill reserved")
+    parser.add_argument("--pace-tier", help="the tier whose fill the rate was reserved on")
     args = parser.parse_args(argv)
     result = export_group(pool.PoolQueue(args.queue), args.manifest,
-                          args.manifest_sha256, os.environ.get("PRISMABUILD_ACTION_KEY", ""))
+                          args.manifest_sha256, os.environ.get("PRISMABUILD_ACTION_KEY", ""),
+                          pace_mb_s=args.pace_mb_s, pace_tier=args.pace_tier)
     print(json.dumps(result, sort_keys=True))
     return 0

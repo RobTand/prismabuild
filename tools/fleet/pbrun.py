@@ -5087,35 +5087,13 @@ def movement_tools(tier: Mapping[str, object], *,
 
 def current_fill_offer(tier: Mapping[str, object],
                        measured: int | None) -> tuple[int | None, int | None, str]:
-    """The fill a *freshly sealed* mover may reserve, and where it came from.
+    """The fill a freshly sealed mover may reserve; see ``storage_tiers``.
 
-    A sealed row is never rewritten, so the only moment the price can follow
-    the tier is when the window is sealed (#708, #710).  The tier's announced
-    tokens are the offer admission will honour on this cycle; the
-    receipts-derived single-reader share is the fallback for a tier that
-    announces none.  When both exist the smaller wins: never ask more than
-    the tier offers, and never ask more than a reader has been measured
-    drawing.  The tier's own probe rule sizes its offer, so a fresh mover
-    sealed here is admissible without the tier having to grow past it.
-
-    Returns ``(fill, offer, basis)``; a ``None`` fill means nothing has
-    priced the pool, which is the ordinary first-submission state.
+    The rule moved to ``storage_tiers.current_fill_offer`` so the
+    produced-output exporter prices its pool writes by the same rule (#747).
     """
 
-    offer: int | None = None
-    tokens = tier.get("tokens")
-    if isinstance(tokens, Mapping):
-        value = tokens.get(storage_tiers.FILL_KIND)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            offer = int(value)
-    if offer is None:
-        return (measured, None,
-                "receipts" if measured is not None else "unmeasured")
-    if measured is None:
-        return offer, offer, "tier-offer"
-    if measured <= offer:
-        return measured, offer, "receipts-under-offer"
-    return offer, offer, "tier-offer-cap"
+    return storage_tiers.current_fill_offer(tier, measured)
 
 
 def residency_stage_rows(
