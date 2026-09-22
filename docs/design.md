@@ -6576,18 +6576,6 @@ resources differ from its sealed demand. Pricing reads every movement
 receipt once per restage seal, the same census pbrun takes for each
 submission. Only producers that opt in pay it.
 
-**Still open.**
-
-* The export's pool-side cost is unmeasured. The receipt records file-side
-  MB/s. Server-side `pool_write` stamping, which mirrors a mover's
-  `disk_pacing`, is not implemented.
-* The A/B that sizes the price has not run. Its primary endpoint is displaced
-  mover read bytes per exported GiB. Pair paced and unpaced exports under
-  the same mover load, about 20 pairs, and read member sectors from
-  `/proc/diskstats` on dl380g10.
-* `stage_move.movers_claimed_on_tier` does not count exports among the
-  readers that share a fill measurement.
-
 **Host spool window.** A producer's local spool window can be a host
 reservation, so two producers on one box cannot together overrun its disk.
 Two switches turn it on, and both default off. A box declares a spool budget
@@ -6611,6 +6599,18 @@ Withdraw the action, or start a box with `--spool-gb`. `pbrun` does refuse
 the action at submission when every box that matches its tags declares a
 smaller `spool_gb` than the demand. On 2026-09-22, sparky had 125 GB free
 (93% used) with a 628 MB spool, and sparklina had 411 GB free with 30 MB.
+
+**Still open.**
+
+* The export's pool-side cost is unmeasured. The receipt records file-side
+  MB/s. Server-side `pool_write` stamping, which mirrors a mover's
+  `disk_pacing`, is not implemented.
+* The A/B that sizes the price has not run. Its primary endpoint is displaced
+  mover read bytes per exported GiB. Pair paced and unpaced exports under
+  the same mover load, about 20 pairs, and read member sectors from
+  `/proc/diskstats` on dl380g10.
+* `stage_move.movers_claimed_on_tier` does not count exports among the
+  readers that share a fill measurement.
 
 ### Logical child read-manifest projection (#862)
 
