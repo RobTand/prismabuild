@@ -5146,6 +5146,26 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+**A ready consumer's claim is also pressure (#901).** Once a ready consumer's
+leads hold their tokens, the claim's residency gate passes, and the next thing
+that refuses the claim is its own claim-time tier demand, such as a
+produced-output window. The claim takes that demand from free and checks
+nothing else. Without this term, a withdrawn consumer's landed movers kept the
+room while nothing asked the sweep for it. On 2026-09-22, GLM Stage A R12
+(`683cb3caa5ea`) waited about 25 minutes in `ready/` with
+`tier_reservation_unavailable` (available 35, requested 48). Meanwhile, 22
+landed movers of the withdrawn R11 held 484 GiB, and an operator had to egress
+them by hand. `window_pressure` now probes each such claim through the same
+`gate_newcomer` path as a newcomer. The claim is a final window of one step,
+with only the obligation the claim gate checks: what is held. The relief is
+`free + shortfall`, bounded to the tier's orphans, and the sweep evicts oldest
+first until the claim fits. A claim that cannot fit even after every orphan
+returns, or that exceeds the tier, asks for nothing (#632). A withdrawn ready
+key asks for nothing either (#708). No new eviction rule was needed. The
+withdrawn consumer's movers were already orphans under the existing
+definition: no ready or claimed item names them. The missing piece was the
+pressure that lets the sweep take them.
+
 New window publication processes already-admitted windows before newcomers,
 then newcomers by descending consumer priority (#874). If a feasible
 higher-priority newcomer fails the existing joint-fit gate transiently, the

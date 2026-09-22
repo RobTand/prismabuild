@@ -1943,6 +1943,65 @@ def output_obligation(queue: pool.PoolQueue, tier_id: str
     return (int(owed["gib"]), True, "", "")
 
 
+def _claim_tier_demands(item: object,
+                        tiers: Mapping[str, Mapping[str, object]]
+                        ) -> list[tuple[str, int]]:
+    """``(tier_id, gib)`` for each announced tier a ready row's claim takes.
+
+    Read from the row's own ``resources``, the demand its claim passes to
+    the tier ledger (#901).  A row whose demand does not parse asks for
+    nothing: the claim refuses it on the same parse.
+    """
+
+    if not isinstance(item, Mapping):
+        return []
+    try:
+        _host, demands = storage_tiers.split_demand(item.get("resources") or {})
+    except (ValueError, TypeError, AttributeError):
+        return []
+    out: list[tuple[str, int]] = []
+    for tier_id, needs in sorted(demands.items()):
+        if tier_id not in tiers or not isinstance(needs, Mapping):
+            continue
+        gib = int(needs.get(storage_tiers.capacity_kind_of(tier_id), 0) or 0)
+        if gib > 0:
+            out.append((str(tier_id), gib))
+    return out
+
+
+def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
+                      output_enforced: bool, capacity_gib: int,
+                      cur_min_gib: int, next_min_gib: int | None,
+                      existing_min_next_gib: int, free_gib: int,
+                      orphan_gib: int) -> int | None:
+    """The free a sweep must reach so ``gate_newcomer`` admits, or ``None``.
+
+    One arithmetic for every relief term (#orphan-pressure, #901): the gate
+    decides, and its own terms give the shortfall.  ``None`` when the gate
+    admits already, when its answer is permanent or unknown (no eviction
+    could admit it), or when the shortfall exceeds what the tier's orphans
+    hold (#632: a demand that cannot fit even after every orphan returns
+    asks for nothing).  Otherwise the answer is stated as the free the
+    sweep must reach; its oldest-first, stop-at-needed order keeps the
+    eviction to the shortfall.
+    """
+
+    decision = window_credit.gate_newcomer(
+        held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
+        output_enforced=output_enforced, capacity_gib=capacity_gib,
+        cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
+        existing_min_next_gib=existing_min_next_gib)
+    if decision.get("admit"):
+        return None
+    if str(decision.get("reason")) != window_credit.REASON_STALL:
+        return None
+    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
+                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
+    if 0 < shortfall <= orphan_gib:
+        return free_gib + shortfall
+    return None
+
+
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -1978,6 +2037,18 @@ def window_pressure(
     coordinator will not publish it, and evicting a resident range to make
     room for cancelled work is room nobody will use -- the same deadlock
     shape #632 and #642 closed on the other side.
+
+    The third term is a READY consumer's own claim (#901).  Once its leads
+    hold their tokens, the next thing it asks the tier for is its
+    claim-time demand -- a produced-output window, say -- and the claim
+    takes that from free.  Without this term a withdrawn consumer's landed
+    movers held the room the successor's claim needed while nothing asked
+    the sweep for it: 2026-09-22, R12 waited 25 minutes in ``ready/``
+    beside 484 GiB of a withdrawn consumer's orphans.  The claim is probed
+    through the same ``gate_newcomer`` path as a newcomer, as a final
+    one-step window with the obligations the claim gate checks (none but
+    held), bounded to the tier's orphans the same way.  A withdrawn ready
+    key asks for nothing (#708).
     """
 
     need: dict[str, int] = {}
@@ -1991,12 +2062,27 @@ def window_pressure(
     # gate's identity and remaining needs on both movement legs.
     newcomers: dict[str, list[Mapping[str, object]]] = {}
     landed_next: dict[str, int] = {}
+    # Claim-time tier demands of ready consumers whose leads are pinned
+    # (#901), per tier: the next thing such a consumer asks the tier for.
+    claimants: dict[str, list[int]] = {}
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
             # waiting on room: evicting for it would make room nobody uses.
             continue
         already, staged = _mover_state(queue, plan, tier_id)
+        if (consumer.get("state") == pool.READY and _key not in cancelled
+                and set(residency_plan.leads_for(plan)) <= staged):
+            # A ready consumer whose leads hold their tokens is past the
+            # claim's residency gate, which refuses before any token is
+            # taken; what refuses it next is its own claim-time tier demand
+            # (#901).  Asked of every tier this loop announced, since the
+            # demand may name a tier other than the plan's own.  A claimed
+            # consumer already holds its reservation, and a withdrawn key
+            # will never claim (#708).
+            for demand_tier, gib in _claim_tier_demands(
+                    consumer.get("item"), tiers):
+                claimants.setdefault(demand_tier, []).append(gib)
         accepted = consumer["accepted_phase"]
         # Asked of the window rather than of the plan (#632).  A phase the
         # run-ahead bound has already declined is not something the tier needs
@@ -2162,9 +2248,11 @@ def window_pressure(
     # what the real gate will check and never falls short of it; relief
     # is bounded to the tier's orphans, so a window that cannot fit even
     # after every orphan returns asks for nothing and evicts nothing.
-    for tier_id, waiting_newcomers in newcomers.items():
-        if not waiting_newcomers:
-            continue
+    for tier_id in sorted({t for t, w in newcomers.items() if w}
+                          | {t for t, c in claimants.items() if c}):
+        # A tier whose owed output was unreadable lost its newcomers above.
+        waiting_newcomers = newcomers.get(tier_id, [])
+        waiting_claims = claimants.get(tier_id, [])
         kind = storage_tiers.capacity_kind_of(tier_id)
         try:
             ledger = queue.tier_ledger(tier_id)
@@ -2190,6 +2278,24 @@ def window_pressure(
             continue
         if orphan_gib <= 0:
             continue
+        # A ready consumer's claim (#901): its claim-time demand is a final
+        # window of one step, asked of the same gate with the obligations
+        # the claim's own tier gate checks.  ``begin_acquire`` takes the
+        # demand from free and checks nothing else, so held, the demand and
+        # capacity are the whole question: no queued demand, no owed output
+        # (the demand may itself be that output window) and no protected
+        # next.  Its oversize answer is the claim's ``never_fits``.
+        for demand_gib in waiting_claims:
+            relief = _admission_relief(
+                held_gib=held_total, ready_gib=0, output_gib=0,
+                output_enforced=False, capacity_gib=capacity_gib,
+                cur_min_gib=demand_gib, next_min_gib=None,
+                existing_min_next_gib=0, free_gib=free_gib,
+                orphan_gib=orphan_gib)
+            if relief is not None:
+                need[tier_id] = max(need.get(tier_id, 0), relief)
+        if not waiting_newcomers:
+            continue
         try:
             ready_full = 0
             for item in queue.ready_items():
@@ -2208,29 +2314,17 @@ def window_pressure(
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
-            cur = int(needs.get("current_min_gib") or 0)
             nxt = needs.get("next_min_gib")
-            next_gib = int(nxt) if isinstance(nxt, int) else 0
-            decision = window_credit.gate_newcomer(
+            relief = _admission_relief(
                 held_gib=held_total, ready_gib=ready_full,
                 output_gib=output_gib, output_enforced=output_enforced,
-                capacity_gib=capacity_gib, cur_min_gib=cur,
+                capacity_gib=capacity_gib,
+                cur_min_gib=int(needs.get("current_min_gib") or 0),
                 next_min_gib=nxt if isinstance(nxt, int) else None,
-                existing_min_next_gib=existing_next)
-            if decision.get("admit"):
-                continue
-            if str(decision.get("reason")) != window_credit.REASON_STALL:
-                # Permanent (oversize) or unknown: no relief could admit
-                # it, and evicting for it would be futile by definition.
-                continue
-            shortfall = (held_total + ready_full + output_gib + cur
-                         + next_gib + existing_next - capacity_gib)
-            if 0 < shortfall <= orphan_gib:
-                # Relief, stated as the free the sweep must reach: evicting
-                # ``shortfall`` admits this newcomer, and the sweep's
-                # oldest-first, stop-at-needed order keeps it to that.
-                need[tier_id] = max(need.get(tier_id, 0),
-                                    free_gib + shortfall)
+                existing_min_next_gib=existing_next, free_gib=free_gib,
+                orphan_gib=orphan_gib)
+            if relief is not None:
+                need[tier_id] = max(need.get(tier_id, 0), relief)
     return need
 
 
