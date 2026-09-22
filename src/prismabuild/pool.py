@@ -12961,7 +12961,11 @@ class PoolQueue:
                 if (age is None
                         and record.get("withdrawn_unix") is None
                         and not self.attempt_path(
-                            record, prior_attempts + 1).exists()):
+                            record, prior_attempts + 1).exists()
+                        # Consumed output funding proves this claim already
+                        # persisted its lease; a subsequently missing lease
+                        # cannot restore its one-use entitlement (#848).
+                        and self._spent_output_retry_stop(record) is None):
                     # Nothing ever ran under this claim, so nothing failed under
                     # it.  ``claim`` writes the lease before it returns and
                     # ``execute`` writes the child pid into it before the payload

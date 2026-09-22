@@ -190,3 +190,22 @@ def test_corrupt_archived_stop_cannot_authorize_early_failure(tmp_path, field):
     path.chmod(0o444)
     with pytest.raises(pool.PoolContractError, match="binding differs"):
         w.q.adopted_attempt_summary(record)
+
+
+def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, monkeypatch):
+    w, mover, claimed, funding, _ = _funded_claim(tmp_path)
+    w.q.lease_path(mover).unlink()
+    now = pool._now()
+    monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 1)
+    held = w.ledger.holder_tokens(mover)
+    w.q.reap_stale(timeout_s=3600)
+    ended = w.q.item_path(pool.FAILED, mover)
+    assert ended.exists()
+    assert not w.q.item_path(pool.READY, mover).exists()
+    record = pool._read_json(ended)
+    assert record["attempts"] == 1 and record["max_attempts"] == 3
+    assert "unstarted_releases" not in record
+    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    # No copy evidence is unknown occupancy, never proof that storage is free.
+    assert w.ledger.holder_tokens(mover) == held
+    assert w.q.read_output_funding(mover, TIER) == funding

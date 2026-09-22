@@ -4881,8 +4881,11 @@ match files `FAILED` with `output_retry_stop` evidence even before the attempt
 budget is exhausted. The sealed request, budget, failure status, logs, and actual
 attempt count are unchanged. The immutable evidence is validated by attempt
 adoption without rereading mutable funding, so later retirement cannot change
-history. Both normal finish and stale-lease recovery use this archive contract;
-late finish still cannot alter a live successor's queue row or reservations.
+history. Both normal finish and stale-lease recovery use this archive contract.
+A consumed claim whose lease later disappears is not an unstarted release:
+its durable funding proof establishes that claim and lease publication already
+completed. It follows the same failed-attempt path after the existing grace.
+Late finish still cannot alter a live successor's queue row or reservations.
 
 Absent, corrupt, changed-generation, or otherwise mismatched funding supplies
 no such proof and keeps the existing retry and fail-closed admission behavior.
