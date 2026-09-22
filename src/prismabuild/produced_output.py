@@ -1257,8 +1257,10 @@ def refill_window(queue, instance: Mapping[str, object],
     tier, before or after. It is a lifecycle return of the producer's own
     admitted window, never a batch's fresh acquisition: batches still fund
     only by exact transfer. Requires the live owner and a provable census;
-    a shortfall below the window refuses with the typed
-    tier-reservation-unavailable rather than exceeding the bound. The
+    an unavailable top-up is deferred when positive holdings already meet
+    the declared minimum. That is not batch funding: the subsequent exact
+    transfer must still prove the actual batch fits. Otherwise the typed
+    tier-reservation-unavailable refuses rather than exceeding the bound. The
     lane's sequential-writer contract applies (one producer action per
     instance, as everywhere in this lane).
     """
@@ -1274,6 +1276,8 @@ def refill_window(queue, instance: Mapping[str, object],
     if tier not in checked_template["permitted_tiers"]:
         return {"ok": False, "refusal": "tier-not-permitted"}
     window = int(checked_template["working_demands"][tier]["window_gib"])
+    minimum = max(1, int(
+        checked_template["working_demands"][tier]["minimum_gib"]))
     owner = str(checked_instance["owner_action_key"])
     kind = tiers_mod.capacity_kind_of(tier)
     gated = _require_live_owner(queue, checked_instance)
@@ -1296,11 +1300,18 @@ def refill_window(queue, instance: Mapping[str, object],
                     "outstanding": outstanding, "window_gib": window}
         available = ledger.available().get(kind, 0)
         take = min(room, available)
-        if take <= 0:
-            return {"ok": False, "refusal": "tier-reservation-unavailable",
-                    "available": ledger.available(), "window_gib": window,
-                    "held": held, "outstanding": outstanding}
-        if not ledger.acquire(owner, {kind: take}):
+        if take <= 0 or not ledger.acquire(owner, {kind: take}):
+            # Replenishment is advisory when existing credit remains usable.
+            # In particular a contended mint guard can decline acquisition
+            # even beside free capacity. Do not make exact prepaid funding
+            # wait for that optional acquisition. Re-read after the attempt:
+            # only current holdings, never the earlier snapshot, qualify.
+            held = ledger.holder_tokens(owner).get(kind, 0)
+            if held >= minimum:
+                return {"ok": True, "tier": tier, "acquired": 0,
+                        "held": held, "outstanding": outstanding,
+                        "window_gib": window, "kind": kind,
+                        "refill_deferred": "tier-reservation-unavailable"}
             return {"ok": False, "refusal": "tier-reservation-unavailable",
                     "available": ledger.available(), "window_gib": window,
                     "held": held, "outstanding": outstanding}
