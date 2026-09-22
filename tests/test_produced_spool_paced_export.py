@@ -48,10 +48,10 @@ def test_a_tier_offering_no_fill_leaves_the_export_unreserved(tmp_path):
 
 
 def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
-    spool = base.world(tmp_path, maximum=4 << 20)
+    spool = base.world(tmp_path, maximum=2 << 20)
     offer_fill(spool.queue, 1)
-    payload = b"x" * 1_500_000
-    _source, destination, entries = base.prepare(spool, payload=payload, ceiling=2 << 20)
+    payload = b"x" * 1_000_000      # under the template's 1 MiB payload maximum
+    _source, destination, entries = base.prepare(spool, payload=payload, ceiling=1 << 20)
     handle = spool.submit_group("b1", entries)
     action = sealed(spool)
     demand = {"cpu": 1, "mem_gb": 1, FILL_DEMAND: 1}
@@ -75,8 +75,8 @@ def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
     pacing = ps._read(spool._group("b1") / "receipt.json")["pacing"]
     assert pacing["schema"] == ps.PACING_SCHEMA and pacing["tier_id"] == fx.TIER
     assert pacing["rate_mb_s"] == 1 and pacing["bytes"] == len(payload)
-    # 1.5 MB at 1 MB/s: the pace binds, measured on the file side.
-    assert pacing["seconds"] >= 1.4 and pacing["held_seconds"] > 1.0
+    # 1 MB at 1 MB/s: the pace binds, measured on the file side.
+    assert pacing["seconds"] >= 0.95 and pacing["held_seconds"] > 0.5
     assert pacing["flushes"] >= 1 and pacing["mb_per_s_file_side"] <= 1.1
 
 
