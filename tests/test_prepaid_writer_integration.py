@@ -1064,12 +1064,14 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     mover staged NOTHING, so its terminal frees its reservation (nothing
     is occupying anything -- a partial one retains instead, which
     `test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them`
-    measures), while its funding record stays `consumed` and the retry
-    ladder requeues the row READY. That row is then unclaimable, and
-    stays unclaimable after `refill_window` and after re-driving
-    `publish_prepaid_batch` -- which short-circuits a committed batch to
-    its duplicate and re-funds nothing. The working recovery is retire ->
-    reclaim -> refill -> plan a new batch, and the census names it.
+    measures), while its funding record stays `consumed` and the failed
+    row is filed terminal FAILED rather than requeued (#848: a spent
+    fence cannot fund a second claim on this mover key). That row is
+    unclaimable, and stays unclaimable after `refill_window` and after
+    re-driving `publish_prepaid_batch` -- which short-circuits a committed
+    batch to its duplicate and re-funds nothing. The working recovery is
+    retire -> reclaim -> refill -> plan a new batch, and the census names
+    it.
 
     The failure is real, not mocked: the origin file disappears before
     the mover runs, so the sealed argv stages nothing and exits nonzero
@@ -1112,10 +1114,11 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     funding = q.read_output_funding(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
-    # The row is requeued READY -- and cannot be claimed.
-    assert po._mover_live_state(q, mover) == "ready"
+    # The row is terminal FAILED -- and cannot be claimed.
+    assert po._mover_live_state(q, mover) == "failed"
+    assert not q.item_path(pool.READY, mover).exists()
     assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
-    # The row is queued but can never be funded back into a claim, so
+    # The row is failed but can never be funded back into a claim, so
     # recovery must name the terminal route instead of telling the caller
     # to keep waiting for it.
     events = po.recover_batches(q, inst, template)
@@ -1423,7 +1426,9 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     for it. Reading a holding count as liveness calls such a row live and
     waits for it forever, the same defect as calling a live row dead, so
     the verdict is taken from the filed record and a holding is added
-    here to prove the count is never consulted.
+    here to prove the count is never consulted. The spent fence is spent
+    in both queue states (#848): the failed row is filed terminal FAILED,
+    and the verdict is the same one the READY arm emits.
     """
 
     cas_root = tmp_path / "cas"
@@ -1451,10 +1456,10 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     outcome = q.execute(claimed, timeout_s=240)
     assert outcome.get("returncode") != 0, outcome
     q.finish(mover, status="failed")
-    # Nothing staged, so nothing retained -- and the row is requeued READY
-    # with a spent record.
+    # Nothing staged, so nothing retained -- and the row is filed terminal
+    # FAILED with a spent record (#848).
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert po._mover_live_state(q, mover) == "ready"
+    assert po._mover_live_state(q, mover) == "failed"
     verdict = {"event": "output-mover-unfundable-retire", "batch_id": "b1",
                "mover": mover, "action": "retire-reclaim-replan"}
     assert verdict in po.recover_batches(q, inst, template)
@@ -1865,12 +1870,16 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
 
-    # The same record `finish` judged: attempts remain, so the retry ladder
-    # requeued the row READY rather than filing a terminal, and the row
-    # still carries the tier residency block the gate reads.
-    assert po._mover_live_state(q, mover) == "ready"
-    record = pool._read_json(q.item_path(pool.READY, mover))
+    # The same record `finish` judged: attempts remain, but the claim's
+    # fence is proven spent, so the terminal override (#848) files the row
+    # FAILED -- where it still carries the tier residency block the
+    # predicate reads. The override reads the filed funding record, not
+    # this malformed receipt: the two judgements are independent.
+    assert po._mover_live_state(q, mover) == "failed"
+    record = pool._read_json(q.item_path(pool.FAILED, mover))
     assert isinstance(record, dict), record
+    assert q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    assert int(record.get("attempts", 0)) < int(record.get("max_attempts", 3))
     assert record["residency"]["tier_id"] == TIER, record["residency"]
     assert q.output_partial_pin_holds(record, mover) is True
 
@@ -1911,6 +1920,13 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     `ledger.begin_acquire` is ever called. The drop sites are downstream
     of that acquisition, so the occupied state is unreachable at both.
 
+    The live queue no longer even leaves the row where they could see it:
+    #848 files a failed mover with a proven-spent fence terminal FAILED
+    rather than requeueing it READY. So the legacy READY row a pre-#848
+    ladder would have requeued is reconstructed here WITH the production
+    requeue shaper, after the real terminal is measured, and the claim
+    path is driven against that state for real.
+
     Measured, not reasoned: the gate's own refusal is captured by name,
     `release_tier_reservations` is watched and must not be called at all,
     and the aggregate census plus the bytes on the stage are the same
@@ -1946,13 +1962,26 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
     q.finish(mover, status="failed")
 
-    # Occupied, charged, and back in the queue -- the state the drop sites
-    # would have to be safe for.
+    # Occupied and charged -- but the spent fence filed the row terminal
+    # FAILED (#848) instead of requeueing it.
     occupied = {"capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
     assert _tier_census(ledger) == occupied
-    assert po._mover_live_state(q, mover) == "ready"
+    assert po._mover_live_state(q, mover) == "failed"
+    assert not q.item_path(pool.READY, mover).exists()
     funding = q.read_output_funding(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
+
+    # The legacy READY row a pre-#848 ladder left behind, rebuilt from the
+    # real terminal through the one production requeue shaper, so the claim
+    # path the drop sites live on is still driven against the occupied
+    # state those sites would have to be safe for.
+    terminal = pool._read_json(q.item_path(pool.FAILED, mover))
+    assert isinstance(terminal, dict), terminal
+    legacy = dict(terminal)
+    pool._write_json_atomic(
+        q._shape_as_ready_item(legacy, action_key=mover), legacy)
+    assert po._mover_live_state(q, mover) == "ready"
+    assert _tier_census(ledger) == occupied
 
     blanket: list[str] = []
     released = pool.PoolQueue.release_tier_reservations
