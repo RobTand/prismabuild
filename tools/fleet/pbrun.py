@@ -2871,6 +2871,34 @@ def outstanding_submission(q, key: str, *, lane_root=None):
         generation = item.get("published_unix") if isinstance(item, dict) else None
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
+    # A claim whose finish is in flight.  ``PoolQueue.finish`` moves
+    # ``claimed/<key>.json`` aside to a finish tombstone before it releases
+    # capacity and files ``done/``; the receipt is already in the CAS by then.
+    # Reading only the two names above made that window look like nothing
+    # outstanding, so ``pbwait`` answered ``cache_hit`` before the ending
+    # existed and a caller reading ``done/`` found nothing (the 6d88c0b15b18
+    # canary's leg 3).  The pool's own claim gate treats both suffixes as a
+    # live claim (``already_claimed``); agree with it.
+    suffixes = (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX)
+    try:
+        names = os.listdir(q.dir(pool.CLAIMED))
+    except OSError:
+        names = []
+    for name in names:
+        if not (name.startswith(f"{key}.") and name.endswith(suffixes)):
+            continue
+        try:
+            item = json.loads(
+                (q.dir(pool.CLAIMED) / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Gone because the finish just filed its ending, or not a record:
+            # either way the terminal read that follows answers.
+            continue
+        if not isinstance(item, dict) or item.get("action_key") != key:
+            continue
+        generation = item.get("published_unix")
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("pool", float(generation), item))
     if not candidates:
         return None
     return max(candidates, key=lambda entry: entry[1])
