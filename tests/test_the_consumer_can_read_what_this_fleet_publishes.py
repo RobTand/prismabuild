@@ -136,9 +136,11 @@ def test_the_file_server_declares_the_tiers_role() -> None:
 
     assert "tiers" in roles, "dl380g10 is the box that owns the stage dataset"
     assert supervise.ROLE_SCRIPTS["tiers"] == "tier_loop.py"
-    # The pool whose receipts the fill bandwidth is learned from, and nothing
-    # else: every quantity the loop announces is re-read each cycle.
-    assert roles["tiers"] == ["--source-pool", "storage_pool"]
+    # The pool whose receipts the fill bandwidth is learned from, plus the
+    # explicit 5 s minimum cycle interval #873 set for short campaign quanta.
+    # Every capacity and price is still re-read each cycle.
+    assert roles["tiers"] == ["--source-pool", "storage_pool",
+                              "--interval-s", "5"]
     # And the storage role it runs beside is untouched.
     assert "storage" in roles
 
