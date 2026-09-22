@@ -6403,6 +6403,107 @@ A repeated successful release is idempotent, including interruption after
 unlink but before updating its reservation. Metadata remains as bounded proof;
 this lane does not add an automatic orphan sweeper or change owner cancellation.
 
+### Declared outputs enter the pool under a fill reservation and a pace (#747)
+
+A declared output is the write-side twin of a declared input, and it gets the
+same treatment: a reservation on the tier ledger it disturbs, and a movement
+node in the DAG that is paced to what it reserved. The produced-spool export
+is that node for producer outputs.
+
+**What the pool pays for a write.** Measured read-only on dl380g10 on
+2026-09-22 (Netdata and ZFS kstat, R10 windows):
+
+* Memory was never the constraint. Memory PSI stayed at 0, available memory
+  stayed at or above 164 GiB, and the ARC memory throttle count stayed at 0.
+  Dirty data already sits inside the ARC term that RAM admission charges.
+  PB therefore does not budget dirty data as a separate tier kind.
+* Spindle time was the constraint. Stage-mover reads from the four-disk
+  raidz1 changed with pool member writes:
+
+  | Member writes | Mover reads |
+  |---|---|
+  | 0-5 MB/s | 175 MB/s |
+  | 150-300 MB/s | 92 MB/s |
+  | Above 300 MB/s | 19 MB/s |
+
+  Read await doubled from 28 ms to 54 ms, and HDD busy ran at 84-88%.
+
+A pool write is therefore paid for in displaced mover reads. The ledger that
+already prices mover reads, `fill_mb_s_pool_side@<tier>`, is the one an
+export reserves from.
+
+**Off by default.** The price below is not measured, so the reservation and
+the pace are both opt-in. A producer turns them on by setting
+`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` in its sealed environment. When
+the variable is absent, empty, or `0`, every export is sealed exactly as it
+was before #747, so publishing a runtime that carries the pacer changes no
+live export. Any other value is refused when the spool is built.
+`submit_group(..., paced=True|False)` overrides the producer's setting for
+one group, so an A/B can interleave paced and unpaced exports from one
+producer. A replay keeps whatever the first submission sealed.
+
+**Reservation.** When the export is opted in and the batch's prewrite tier
+announces a fill offer, `ProducedSpool.submit_group` seals `fill_mb_s_pool_side@<tier>` into the
+export's demand. It prices that demand with `storage_tiers.current_fill_offer`,
+the rule pbrun's movers use. It also seals `--pace-mb-s N --pace-tier <tier>`
+into the command. The publish row carries exactly the sealed demand, and a
+replay keeps the price it was sealed at. A tier that announces no fill offer
+leaves the export unreserved and unpaced, as before.
+
+**Publish attribution.** The #595 gate refuses tier demand that carries no
+residency block or produced-output template, because such demand names bytes
+that no manifest maps. A rate kind names no bytes: `TIER_RATE_KINDS` tokens
+price bandwidth while the action runs and are returned when it stops (#636).
+The gate now applies only to occupancy kinds, and occupancy demand without a
+range or a working window is still refused.
+
+**Pace.** `ExportPacer` is a token bucket over the export's canonical writes,
+denominated in decimal MB per second like the ledger. When the copy gets
+ahead of schedule, it flushes and `fdatasync`s before it waits. Without the
+flush, the NFS client would send its page-cache backlog at line rate, and the
+pace would bind only on the client side. The receipt's `pacing` block
+(`prismabuild.produced_spool.pacing.v1`) records the rate, the bytes, the
+seconds, the seconds held, the flushes, and the file-side MB/s. On
+dl380g10's `sync=disabled` dataset, `fdatasync` is acknowledged from RAM. It
+bounds the arrival rate at the server, not durability.
+
+**The price is an over-charge, deliberately.** An export reserves the tier's
+whole current offer (167 on 2026-09-22), one read MB per written MB. A mover
+reserves its receipts share (about 57). One export therefore takes about
+three movers' worth of fill while it runs. Two things are known about the
+price:
+
+* A fit of the live member series gives k ≈ 0.38 read MB displaced per
+  physical written MB. Physical write bytes are the logical bytes, divided by
+  compression, times 4/3 for raidz1 parity, plus metadata. This is an
+  estimate from one day's windows, not a measurement of an export.
+* No export receipt prices a pool write yet.
+
+1:1 errs toward the movers until the A/B below sizes the real price. The
+pace, not the reservation, bounds what an export does to the spindles.
+`probe_fill_demand` treats any oldest ready fill demand as the tier's probe
+floor (#706). While an export is the oldest ready fill row, the tier mints
+the ceiling plus the export's demand. The export can then run beside the
+movers instead of after them. Excluding exports from the floor would bring
+back the `never_fits_tier_capacity` deadlock that #706 closed, so exports
+keep it.
+
+**Still open.**
+
+* The export's pool-side cost is unmeasured. The receipt records file-side
+  MB/s. Server-side `pool_write` stamping, which mirrors a mover's
+  `disk_pacing`, is not implemented.
+* The A/B that sizes the price has not run. Its primary endpoint is displaced
+  mover read bytes per exported GiB. Pair paced and unpaced exports under
+  the same mover load, about 20 pairs, and read member sectors from
+  `/proc/diskstats` on dl380g10.
+* `stage_move.movers_claimed_on_tier` does not count exports among the
+  readers that share a fill measurement.
+* The spool's local window is not a tier yet. It is bounded per owner by
+  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`, not by a host ledger. On
+  2026-09-22, sparky had 125 GB free (93% used) with a 628 MB spool.
+  sparklina had 411 GB free with 30 MB.
+
 ### Logical child read-manifest projection (#862)
 
 The logical decomposer's optional `task_data_manifest` policy projects declared
