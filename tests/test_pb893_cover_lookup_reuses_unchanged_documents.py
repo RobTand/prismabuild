@@ -301,7 +301,7 @@ class Fleet:
             "tier": tier,
             "material_epoch": (rng.choice(["E1", "E1", "E0"])
                                if tier == RAM_TIER
-                               else rng.choice([None] * 9 + ["E1"])),
+                               else rng.choice([None] * 4 + ["E1"])),
             "fragment_epoch": None,
             "manifest": rng.choice([MANIFEST] * 5 + [OTHER_MANIFEST]),
             "fragment_manifest": None,
