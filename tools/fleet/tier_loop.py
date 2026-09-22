@@ -547,8 +547,9 @@ def drop_prior_ram_epochs(
                     # those stable until retaining/releasing this holder.
                     # Every transition lock below is nonblocking, so a
                     # claim holding mover->mint makes us defer, never wait
-                    # in the reverse order. The mint lock is reentrant for
-                    # the ordinary release primitive used below.
+                    # in the reverse order. Only this tier is released
+                    # under the guard, reentrantly on the mint already
+                    # held; other tiers are swept after it drops.
                     if not locks.enter_context(
                             queue.tier_mint_lock(tier_id, blocking=False)):
                         credit, reason = "unknown", "tier mint busy"
@@ -570,10 +571,31 @@ def drop_prior_ram_epochs(
                          if isinstance(receipt, Mapping) else "")
                 if live and epoch == live:
                     continue
-                released = queue.release_tier_reservations(key)
-                events.append({"event": "ram-ghost-tokens-released",
-                               "tier_id": tier_id, "holder": key,
-                               "epoch": epoch or None, "released": released})
+                # This tier only, and under the guard that proved the
+                # holder reclaimable: a tier ledger's mutation guard *is*
+                # that tier's mint lock, so releasing every tier here
+                # would block on another tier's mint while holding this
+                # one -- an order nothing else in the tree takes, and one
+                # the "mint is a leaf" analysis does not cover.
+                try:
+                    released = ledger.release(key)
+                except (OSError, pool.PoolContractError):
+                    released = 0
+            # Guard dropped.  A holder reaches one tier, so the rest is
+            # normally a no-op; sweep it as a leaf anyway, exactly as
+            # ``stage_release._evict_owned`` does after its own mint
+            # section, so a holder that somehow reached two tiers still
+            # leaves neither behind.
+            for other_tier in queue.tier_ids():
+                if other_tier == tier_id:
+                    continue
+                try:
+                    released += queue.tier_ledger(other_tier).release(key)
+                except (OSError, pool.PoolContractError, ValueError):
+                    continue
+            events.append({"event": "ram-ghost-tokens-released",
+                           "tier_id": tier_id, "holder": key,
+                           "epoch": epoch or None, "released": released})
     return events
 
 

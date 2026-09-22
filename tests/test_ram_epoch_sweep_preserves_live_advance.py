@@ -182,3 +182,63 @@ def test_unreadable_claimed_progress_cannot_rewind_credit_frontier(tmp_path, mon
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {'ram_gib': 1}
     assert any(e.get('reason') == 'claimed progress is not positively available' for e in events)
+
+
+def test_reclaim_completes_while_another_tier_mint_is_held(tmp_path):
+    """The RAM reclaim must not wait on a second tier while holding its own mint.
+
+    The ledger's mutation guard is that tier's mint lock, so an all-tier
+    release inside the guarded section blocks on another tier's mint while
+    holding this one -- an order nothing else in the tree takes.  The queue
+    sorts ``prismabuild-stage:`` before ``ram:``, so under that shape the
+    sweep parks on the stage mint before it ever frees the RAM grant.
+    """
+
+    import threading
+    import time
+
+    queue, plan, grant = blind_window(tmp_path)
+    queue.withdraw(base.CONSUMER, reason='finished private fixture')
+    ledger = queue.tier_ledger(base.RAM_TIER)
+    assert ledger.holder_tokens(grant) == {'ram_gib': 1}
+
+    holding, let_go = threading.Event(), threading.Event()
+    failures: list[BaseException] = []
+
+    def hold_other_tier_mint():
+        with queue.tier_mint_lock(base.TIER):
+            holding.set()
+            let_go.wait(20)
+
+    def run_sweep():
+        try:
+            base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
+        except BaseException as exc:      # surfaced by the assertions below
+            failures.append(exc)
+
+    other = threading.Thread(target=hold_other_tier_mint)
+    sweep = threading.Thread(target=run_sweep)
+    other.start()
+    try:
+        assert holding.wait(5), 'fixture never took the other tier mint'
+        sweep.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if ledger.holder_tokens(grant) == {} or failures:
+                break
+            time.sleep(0.05)
+        assert not failures, failures[0]
+        assert ledger.holder_tokens(grant) == {}, (
+            'RAM reclaim did not complete while another tier mint was held: '
+            'the sweep is waiting on that tier while holding this one')
+        # The guarded section is over, so this tier's mint is free again.
+        with queue.tier_mint_lock(base.RAM_TIER, blocking=False) as acquired:
+            assert acquired, 'sweep still holds the RAM mint after releasing it'
+    finally:
+        let_go.set()
+        other.join(10)
+        if sweep.is_alive() or sweep.ident is not None:
+            sweep.join(10)
+        assert not other.is_alive()
+    assert not sweep.is_alive(), 'sweep never finished'
+    assert not failures, failures[0]

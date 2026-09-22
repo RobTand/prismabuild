@@ -3847,6 +3847,12 @@ also bind the frozen leg/range, current publication generation and actual
 funding tokens. The tier mint guard holds the ledger stable through the decision; consumer
 and mover transition locks are acquired nonblocking beneath it, so a
 contending normal mover→mint path makes cleanup defer rather than deadlock.
+Only the swept tier is released under that guard, reentrantly on the mint it
+already holds; any other tier is swept after the guard drops, the same leaf
+ordering `stage_release._evict_owned` uses after its own mint section. A tier
+ledger's mutation guard is that tier's mint lock, so releasing every tier
+inside the guard would wait on a second tier's mint while holding the first,
+which is the one order the "mint is a leaf" analysis does not cover.
 Consumer and mover transition locks protect the ownership decision;
 unknown evidence, funding rotation or contention retain the credits with a
 `ram-credit-cleanup-deferred` diagnostic. Known dead/missing or superseded
