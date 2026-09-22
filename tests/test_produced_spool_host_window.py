@@ -29,6 +29,7 @@ import worker_loop  # noqa: E402
 
 GIB = 1 << 30
 KIND = "spool_gb"
+SWITCH = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
 
 
 # -- the pure helper ----------------------------------------------------------
@@ -36,7 +37,7 @@ KIND = "spool_gb"
 
 @pytest.mark.parametrize("switch", [None, "", "0"])
 def test_off_derives_no_host_term_even_without_a_byte_bound(switch):
-    variables = {} if switch is None else {ps.HOST_WINDOW_ENV: switch}
+    variables = {} if switch is None else {SWITCH: switch}
     assert ps.host_window_terms(variables) == {}
     assert ps.host_window_terms({**variables, ps.MAX_ENV: str(5 * GIB)}) == {}
 
@@ -45,14 +46,14 @@ def test_off_derives_no_host_term_even_without_a_byte_bound(switch):
     (1, 1), (256, 1), (GIB, 1), (GIB + 1, 2), (3 * GIB, 3), (32 << 30, 32),
 ])
 def test_on_derives_the_window_in_whole_gib_rounded_up(maximum, gib):
-    variables = {ps.HOST_WINDOW_ENV: "1", ps.MAX_ENV: str(maximum)}
-    assert ps.HOST_WINDOW_KIND == KIND
+    variables = {SWITCH: "1", ps.MAX_ENV: str(maximum)}
+    assert (ps.HOST_WINDOW_ENV, ps.HOST_WINDOW_KIND) == (SWITCH, KIND)
     assert ps.host_window_terms(variables) == {KIND: gib}
 
 
 @pytest.mark.parametrize("maximum", [None, "", "0", "-5", "1.5", "x", " 7"])
 def test_on_refuses_a_missing_or_non_positive_byte_bound(maximum):
-    variables = {ps.HOST_WINDOW_ENV: "1"}
+    variables = {SWITCH: "1"}
     if maximum is not None:
         variables[ps.MAX_ENV] = maximum
     with pytest.raises(ps.SpoolError, match=ps.MAX_ENV):
@@ -62,7 +63,7 @@ def test_on_refuses_a_missing_or_non_positive_byte_bound(maximum):
 @pytest.mark.parametrize("switch", ["yes", "true", "2", " 1"])
 def test_a_switch_that_is_not_zero_or_one_is_refused(switch):
     with pytest.raises(ps.SpoolError, match="must be 0 or 1"):
-        ps.host_window_terms({ps.HOST_WINDOW_ENV: switch, ps.MAX_ENV: "256"})
+        ps.host_window_terms({SWITCH: switch, ps.MAX_ENV: "256"})
 
 
 # -- the worker's declaration -------------------------------------------------
@@ -190,32 +191,32 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
                                     root=tmp_path / "local", max_bytes=maximum)
 
 
-@pytest.mark.parametrize("env", [None, {ps.HOST_WINDOW_ENV: ""}, {ps.HOST_WINDOW_ENV: "0"}])
+@pytest.mark.parametrize("env", [None, {SWITCH: ""}, {SWITCH: "0"}])
 def test_an_off_producer_checks_no_host_window(tmp_path, env):
     spool = _spool(tmp_path, env=env)()
     assert spool.host_window == {}
 
 
 def test_an_on_producer_whose_row_reserved_its_window_spools(tmp_path):
-    spool = _spool(tmp_path, env={ps.HOST_WINDOW_ENV: "1"}, reserved=1)()
+    spool = _spool(tmp_path, env={SWITCH: "1"}, reserved=1)()
     assert spool.host_window == {KIND: 1}
     assert spool.reserve_group  # the ordinary spool, unchanged past the check
 
 
 def test_an_on_producer_whose_row_reserved_nothing_refuses(tmp_path):
-    make = _spool(tmp_path, env={ps.HOST_WINDOW_ENV: "1"})
+    make = _spool(tmp_path, env={SWITCH: "1"})
     with pytest.raises(ps.SpoolError, match=r"spool_gb.*0.*1|1.*spool_gb.*0"):
         make()
 
 
 def test_an_on_producer_whose_row_reserved_too_little_refuses(tmp_path):
-    make = _spool(tmp_path, env={ps.HOST_WINDOW_ENV: "1"}, reserved=1,
+    make = _spool(tmp_path, env={SWITCH: "1"}, reserved=1,
                   maximum=GIB + 1)
     with pytest.raises(ps.SpoolError, match=r"\b1\b.*\b2\b|\b2\b.*\b1\b"):
         make()
 
 
 def test_an_on_producer_refuses_an_invalid_switch(tmp_path):
-    make = _spool(tmp_path, env={ps.HOST_WINDOW_ENV: "on"}, reserved=1)
+    make = _spool(tmp_path, env={SWITCH: "on"}, reserved=1)
     with pytest.raises(ps.SpoolError, match="must be 0 or 1"):
         make()
