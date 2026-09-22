@@ -105,6 +105,48 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
     assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
 
 
+@pytest.mark.parametrize("suffix", [pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX])
+def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
+    monkeypatch, tmp_path, suffix,
+):
+    # ``PoolQueue.finish`` files the attempt archive, moves the claim aside to
+    # a finish tombstone and only then releases capacity and files ``done/``.
+    # A generation-pinned wait answers ``executed`` from the archive inside
+    # that window (#886), so the slot check must see the entombed claim.
+    keys, events = _window_fakes(monkeypatch, [
+        {0: "executed"}, {0: "executed"}, {1: "executed"},
+    ])
+    queue = pool.PoolQueue(pbcampaign.pbrun.SH / "pb-queue")
+    path = queue.dir(pool.CLAIMED) / f"{keys[0]}.1790000000000000.sparky.7.abcdef01{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{}')
+    monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
+    submissions, waited = pbcampaign.run_windowed(
+        [{"index": i} for i in range(2)], transport="pool", max_inflight=1, wait_s=30,
+    )
+    assert events == [("submit", 0), ("poll", [0]), ("poll", [0]),
+                      ("submit", 1), ("poll", [1])]
+    assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
+
+
+def test_only_this_keys_finish_records_occupy_its_slot(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    key, other = "a" * 64, "b" * 64
+    claimed = queue.dir(pool.CLAIMED)
+    assert pbcampaign._pool_slot_occupied(queue, key) is False
+    (claimed / f"{other}.1.h.1.x{pool.TOMBSTONE_SUFFIX}").write_text("{}")
+    (claimed / f"{key}.lease").write_text("{}")
+    assert pbcampaign._pool_slot_occupied(queue, key) is False
+    for suffix in (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX):
+        record = claimed / f"{key}.1.h.1.y{suffix}"
+        record.write_text("not json")
+        # Occupancy is the name, exactly as the pool's claim gate reads it.
+        assert pbcampaign._pool_slot_occupied(queue, key) is True
+        record.unlink()
+    assert pbcampaign._pool_slot_occupied(queue, key) is False
+
+
 def test_unreadable_outcome_stops_publication_and_keeps_remaining_rows(monkeypatch):
     keys, events = _window_fakes(monkeypatch, [{0: "unreadable", 1: "waiting"}])
     submissions, waited = pbcampaign.run_windowed(
