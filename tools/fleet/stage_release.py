@@ -1550,11 +1550,46 @@ def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     return record
 
 
+def _partial_done_receipt_matches(queue, consumer: str, mover: str,
+                                  fragment: Mapping[str, object]) -> bool:
+    """Exact partial-copy evidence for an unmaterialized DONE owner (#866).
+
+    The immutable terminal proves the attempt ended; this separately binds
+    its incomplete movement declaration to the fragment about to be retired.
+    A complete or unknown copy is outside this narrow recovery contract.
+    """
+    record = json.loads(pb._read_regular_file_nofollow(
+        queue.move_path(mover), where="partial DONE move receipt"))
+    if not isinstance(record, dict):
+        raise pool.PoolContractError("partial DONE receipt is not an object")
+    if record.get("complete") is not False:
+        return False
+    for field, expected in (("schema", pool.POOL_MOVE_SCHEMA_V1),
+                            ("action_key", mover), ("consumer_action_key", consumer),
+                            ("tier_id", fragment["tier_id"]),
+                            ("stage_root", fragment["stage_root"]),
+                            ("manifest_sha256", fragment["manifest_sha256"])):
+        if record.get(field) != expected:
+            raise pool.PoolContractError(f"partial DONE receipt differs at {field}")
+    fields = ("entries_declared", "entries_staged", "bytes_staged",
+              "range_start_bytes", "range_end_bytes", "range_bytes")
+    if any(type(record.get(field)) is not int or record[field] < 0 for field in fields):
+        raise pool.PoolContractError("partial DONE receipt has invalid counts/range")
+    entries = fragment["entries"]
+    if (not 0 < record["entries_staged"] < record["entries_declared"]
+            or record["entries_staged"] != len(entries)
+            or record["bytes_staged"] != sum(int(entry["bytes"]) for entry in entries.values())
+            or not 0 < record["bytes_staged"] <= record["range_bytes"]
+            or record["range_bytes"] != record["range_end_bytes"] - record["range_start_bytes"]):
+        raise pool.PoolContractError("partial DONE receipt does not cover its fragment")
+    return True
+
+
 def sweep_dead_owner_fragments(
         queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         residency_root: str | Path | None = None,
 ) -> list[dict[str, object]]:
-    """Retire only failed-consumer / withdrawn-mover residue with no charge.
+    """Retire proven dead unmaterialized owners with no charge (#839, #866).
 
     One complete fragment census and one ledger discovery per tier identify
     candidates, never authorize deletion. Each consumer is then held across
@@ -1566,10 +1601,12 @@ def sweep_dead_owner_fragments(
 
     Failure evidence is the queue's immutable attempt-backed summary, checked
     once per consumer transaction. A cancellation must match its immutable
-    generation decision. Missing, unreadable, legacy or inconsistent evidence
-    retains, as do any plan, material sidecar, move receipt, live row, lease or
-    reservation. This deliberately excludes other terminal shapes and all
-    produced namespaces. No age or pressure is deletion authority.
+    generation decision. A DONE mover instead needs an immutable executed
+    terminal and an incomplete move receipt exactly covering its fragment.
+    Missing, unreadable, legacy or inconsistent evidence retains, as do any
+    plan, material sidecar, live row, lease or reservation. Withdrawn movers
+    still require no receipt. Other terminal shapes and all produced namespaces
+    remain excluded. No age or pressure is deletion authority.
     """
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
@@ -1593,6 +1630,7 @@ def sweep_dead_owner_fragments(
     try:
         failed_keys = set(os.listdir(queue.dir(pool.FAILED)))
         withdrawn_keys = set(os.listdir(queue.dir(pool.WITHDRAWN)))
+        done_keys = set(os.listdir(queue.dir(pool.DONE)))
     except OSError as exc:
         refuse(f"ownership uncertain: queue census: {exc}")
         return receipts
@@ -1613,7 +1651,7 @@ def sweep_dead_owner_fragments(
         tier = fragment.get("tier_id")
         if (direct and _namespace_shaped(consumer)
                 and f"{consumer}.json" in failed_keys
-                and f"{mover}.json" in withdrawn_keys
+                and f"{mover}.json" in withdrawn_keys | done_keys
                 and tier in held_by_tier and mover not in held_by_tier[tier]):
             candidates.setdefault(consumer, []).append((mover, fragment))
     uncertainty = (OSError, ValueError, pb.PrismaBuildError)
@@ -1647,24 +1685,36 @@ def sweep_dead_owner_fragments(
                                 refuse(f"ownership uncertain: {why}", consumer, mover)
                             if live or why:
                                 continue
-                            if any(not _metadata_absent(queue.item_path(state, mover))
-                                   for state in (pool.DONE, pool.FAILED)):
+                            if not _metadata_absent(queue.item_path(pool.FAILED, mover)):
                                 continue
-                            marker = _owner_record(queue, pool.WITHDRAWN, mover)
-                            decisions = queue.withdrawal_decisions(
-                                mover, generation=marker["published_unix"])
-                            if (marker.get("status") != "withdrawn"
-                                    or len(decisions) != 1
-                                    or decisions[0][1] != marker
-                                    or queue.withdrawal_covers(marker, action_key=mover)
-                                    != marker):
-                                raise pool.PoolContractError(
-                                    "withdrawal lacks its exact immutable decision")
+                            done = not _metadata_absent(queue.item_path(pool.DONE, mover))
+                            if done:
+                                if not _metadata_absent(queue.item_path(pool.WITHDRAWN, mover)):
+                                    continue
+                                terminal = _owner_record(queue, pool.DONE, mover)
+                                ending = queue.adopted_attempt_summary(terminal)
+                                if (terminal.get("status") != "executed"
+                                        or ending["status"] != "executed"
+                                        or ending["disposition"] != pool.DONE):
+                                    continue
+                            else:
+                                marker = _owner_record(queue, pool.WITHDRAWN, mover)
+                                decisions = queue.withdrawal_decisions(
+                                    mover, generation=marker["published_unix"])
+                                if (marker.get("status") != "withdrawn"
+                                        or len(decisions) != 1
+                                        or decisions[0][1] != marker
+                                        or queue.withdrawal_covers(marker, action_key=mover)
+                                        != marker):
+                                    raise pool.PoolContractError(
+                                        "withdrawal lacks its exact immutable decision")
                             tier = str(observed["tier_id"])
                             if any(not _metadata_absent(path) for path in (
-                                    queue.lease_path(mover), queue.move_path(mover),
+                                    queue.lease_path(mover),
                                     queue.tier_ledger(tier).held_dir / mover,
                                     reader_lease.material_path(root, consumer, mover))):
+                                continue
+                            if not done and not _metadata_absent(queue.move_path(mover)):
                                 continue
                             current = residency_map.validate_fragment(json.loads(
                                 pb._read_regular_file_nofollow(
@@ -1672,6 +1722,9 @@ def sweep_dead_owner_fragments(
                                     where="dead-owner fragment")))
                             if current != observed:
                                 continue  # adoption/republication won discovery
+                            if done and not _partial_done_receipt_matches(
+                                    queue, consumer, mover, current):
+                                continue
                             receipts.append(evict(
                                 queue, mover, consumer_action_key=consumer,
                                 stage_root=stage_roots[tier], residency_root=root,
