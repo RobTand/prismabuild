@@ -229,7 +229,7 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    core as pb, decomposition as dc, pool,
+    core as pb, decomposition as dc, pool, residency_plan,
 )
 
 import fleet_submit  # noqa: E402
@@ -644,7 +644,7 @@ def load_manifest(
             request = dc.validate_logical_request(value)
             _require_row_shape(request["common"], index=0)
             _require_submittable_row(request["common"], index=0, transport=transport)
-            if require_data_manifest:
+            if require_data_manifest and "task_data_manifest" not in request:
                 _require_data_manifest(
                     request["common"],
                     where="the common half of this logical request")
@@ -1094,7 +1094,7 @@ def publish_index(index, *, cas, parent_key: str) -> None:
         )
 
 
-def child_record(child, *, args, queue, cas) -> dict:
+def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
     """Publish one child, or attach to what is already answering for it.
 
     The same three answers a detached ``pbrun`` gives, in the same shape, so
@@ -1124,8 +1124,26 @@ def child_record(child, *, args, queue, cas) -> dict:
     # ``--detach`` needs, but the queue can take the key between the two.  The
     # publication's own refusal is the exact answer, so a child that lost that
     # race reports the same attachment rather than a second copy (#812).
-    queued, generation = pbrun.publish_or_attach(
-        queue, pbrun.publication_row(child, args=args, queue=queue), key=key)
+    if staged_plan is None:
+        queued, generation = pbrun.publish_or_attach(
+            queue, pbrun.publication_row(child, args=args, queue=queue), key=key)
+    else:
+        # The same consumer ownership transaction as pbrun's staged lane.
+        # Every graph was sealed/frozen in the parent before this first row;
+        # only registry installation and publication happen here.
+        with queue._transition_locked(key):
+            if residency_plan.superseded(queue, staged_plan) is not None:
+                raise SystemExit("decomposed child's immutable data plan was superseded; refusing automatic revival")
+            residency_plan.freeze(queue, staged_plan)
+            row = pbrun.publication_row(child, args=args, queue=queue)
+            row["residency"] = {
+                "schema": pool.RESIDENCY_SCHEMA_V1,
+                "manifest_sha256": staged_plan["manifest_sha256"],
+                "manifest_bytes": staged_plan["manifest_bytes"],
+                "tier_id": staged_plan["tier_id"],
+                "leads": residency_plan.leads_for(staged_plan)}
+            queued = pbrun.publish_or_refuse(queue, row)
+            generation = pbrun.published_generation(queue, key, queued)
     if queued is None:
         ready = queue.item_path(pool.READY, key)
         return json.loads(pbrun.detach_line(
@@ -1139,6 +1157,68 @@ def child_record(child, *, args, queue, cas) -> dict:
         published_unix=generation,
         submission=queued,
     ))
+
+
+def frozen_child_data_plans(request, plan, children, *, template, args, queue, cas):
+    """Freeze every ordinary movement graph before publishing any consumer.
+
+    The parent record is immutable recovery authority. Actual per-consumer
+    residency registry installation remains inside its ordinary ownership
+    transaction, so the tier loop never sees a free-floating ownerless plan.
+    """
+    path = decomposition_dir(cas, plan["parent_key"]) / "data-plans.json"
+    stored = _stored_document(path)
+    if stored is None:
+        policy = request["task_data_manifest"]
+        stage_args = argparse.Namespace(**{
+            **vars(args), "residency": "stage",
+            "residency_tier": policy["residency_tier"],
+            "residency_ram": policy["residency_ram"],
+            "residency_mover_readers": policy["mover_readers"],
+            "residency_mover_mem_gb": policy["mover_mem_gb"]})
+        tier = None
+        rows = []
+        for child in children:
+            child_plan = None
+            if child["params"].get("data_manifest") is not None:
+                if tier is None:
+                    tier = pbrun.resolve_stage_tier(queue, stage_args.residency_tier)
+                child_template = {**template, "inputs": child["inputs"],
+                                  "params": child["params"], "environment": child["environment"]}
+                staged = pbrun.residency_stage_rows(
+                    child_template, consumer_action_key=child["action_key"],
+                    tier=tier, args=stage_args, queue=queue, cas=cas)
+                child_plan = staged["plan"]
+            rows.append({"action_key": child["action_key"], "plan": child_plan})
+        proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
+                    "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
+                    "children": rows}
+        if pb._atomic_publish(path, dc.document_bytes(proposed)):
+            stored = proposed
+        else:
+            stored = _stored_document(path)
+    if (not isinstance(stored, dict) or set(stored) != {"schema", "parent_key", "plan_key", "children"}
+            or stored["schema"] != "prismabuild.decomposed_data_plans.v1"
+            or stored["parent_key"] != plan["parent_key"] or stored["plan_key"] != plan["plan_key"]
+            or not isinstance(stored["children"], list) or len(stored["children"]) != len(children)):
+        raise ManifestError("decomposed data-plan record is corrupt or belongs to another plan")
+    checked = []
+    for child, row in zip(children, stored["children"]):
+        if not isinstance(row, dict) or set(row) != {"action_key", "plan"} or row["action_key"] != child["action_key"]:
+            raise ManifestError("decomposed data-plan child identity differs from the frozen publication")
+        manifest = child["params"].get("data_manifest")
+        if manifest is None:
+            if row["plan"] is not None:
+                raise ManifestError("a no-read child unexpectedly has a staging plan")
+            checked.append(None)
+            continue
+        child_plan = residency_plan.validate_plan(row["plan"])
+        if (child_plan["consumer_action_key"] != child["action_key"]
+                or child_plan["manifest_sha256"] != manifest["input"]["sha256"]
+                or child_plan["manifest_bytes"] != manifest["input"]["bytes"]):
+            raise ManifestError("decomposed staging plan does not bind its child's read manifest")
+        checked.append(child_plan)
+    return checked
 
 
 def decompose(
@@ -1186,6 +1266,9 @@ def decompose(
         ) from None
     template = prepared["template"]
     cas = template["cas"]
+    if "task_data_manifest" in request:
+        template = {**template, "params": {
+            **template["params"], dc.TASK_DATA_POLICY_PARAM: request["task_data_manifest"]}}
 
     frozen = dc.freeze_common(
         request["common"],
@@ -1196,10 +1279,11 @@ def decompose(
         dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
 
     children, digests = [], []
+    prepared_batches = dc.PreparedBatches(request, plan)
     for ordinal in range(len(plan["partitions"])):
+        envelope = prepared_batches.envelope(ordinal)
         batch_input, _ = cas.ingest_bytes(
-            dc.document_bytes(
-                dc.batch_envelope(request, plan, child_ordinal=ordinal)),
+            dc.document_bytes(envelope),
             input_id=dc.TASK_BATCH_INPUT_ID,
         )
         children.append(pbrun.seal_decomposed_child(
@@ -1210,10 +1294,16 @@ def decompose(
             roster_input=roster_input,
             batch_input=batch_input,
             cas=cas,
+            prepared_batches=prepared_batches,
+            **({"data_manifest": dc.task_data_manifest(request["task_data_manifest"], envelope)}
+               if "task_data_manifest" in request else {}),
         ))
         digests.append(str(batch_input["sha256"]))
 
     queue = pool.PoolQueue(pbrun.SH / "pb-queue")
+    data_plans = (frozen_child_data_plans(
+        request, plan, children, template=template, args=args, queue=queue, cas=cas)
+        if "task_data_manifest" in request else [None] * len(children))
     # Once, not once per child.  Every child of one plan carries the same
     # placement and the same demand, so the census answers them all the same
     # way, and printing that answer N times would bury it.
@@ -1237,7 +1327,9 @@ def decompose(
     records = []
     for ordinal, child in enumerate(children):
         try:
-            published = child_record(child, args=args, queue=queue, cas=cas)
+            published = child_record(child, args=args, queue=queue, cas=cas,
+                                     **({"staged_plan": data_plans[ordinal]}
+                                        if data_plans[ordinal] is not None else {}))
         except SystemExit as exc:
             # One child's refusal, reported like one row's.  The children
             # already published are in ``records`` and are the whole of what a
@@ -1250,8 +1342,8 @@ def decompose(
               f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
               file=sys.stderr, flush=True)
         records.append(published)
-    if any(record.get("status") in {"submitted", "attached"}
-           for record in records):
+    if ("task_data_manifest" not in request
+            and any(record.get("status") in {"submitted", "attached"} for record in records)):
         _warn_about_a_cold_shared_read(
             request["common"],
             where="the common half of this logical request")
@@ -1348,9 +1440,9 @@ def close_group(group, *, cas) -> int:
             )
         manifests = []
         child_evidence = []
+        prepared_batches = dc.PreparedBatches(request, plan)
         for ordinal, child in enumerate(children):
-            expected_batch = dc.logical_batch_param(
-                request, plan, child_ordinal=ordinal)
+            expected_batch = prepared_batches.membership(ordinal)
             params = child.get("params")
             if (not isinstance(params, dict)
                     or params.get(dc.LOGICAL_BATCH_PARAM) != expected_batch):

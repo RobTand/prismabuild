@@ -102,6 +102,8 @@ LOGICAL_BATCH_SCHEMA_V1 = "prismabuild.logical_batch.v1"
 PUBLICATION_INDEX_SCHEMA_V1 = "prismabuild.decomposition_publication.v1"
 CHILD_RESULT_MANIFEST_SCHEMA_V1 = "prismabuild.child_result_manifest.v1"
 GROUP_RECEIPT_SCHEMA_V1 = "prismabuild.group_receipt.v1"
+TASK_DATA_MANIFEST_SCHEMA_V1 = "prismabuild.task_data_manifest.v1"
+TASK_DATA_POLICY_PARAM = "logical_task_data_policy"
 
 #: The sealed ``params`` key under which a child carries its membership.  A
 #: child is an ordinary action in every other respect, so what makes it a
@@ -447,6 +449,88 @@ def validate_common_spec(value: object) -> dict[str, Any]:
     }
 
 
+def validate_task_data_policy(value: object) -> dict[str, Any]:
+    policy = pb._exact_mapping(value, keys={
+        "schema", "payload_field", "mount_prefix", "residency_tier",
+        "residency_ram", "mover_readers", "mover_mem_gb"},
+        where="task data manifest policy")
+    if policy["schema"] != TASK_DATA_MANIFEST_SCHEMA_V1:
+        pb._fail("unsupported task data manifest policy schema")
+    field = pb._text(policy["payload_field"], where="task data payload field", pattern=pb._ID_RE)
+    tier = policy["residency_tier"]
+    if tier is not None:
+        tier = pb._text(tier, where="task data residency tier")
+    ram = policy["residency_ram"]
+    if ram not in ("auto", "off"):
+        pb._fail("task data residency_ram must be auto or off")
+    readers = pb._nonnegative_integer(policy["mover_readers"], where="task data mover readers")
+    memory = pb._nonnegative_integer(policy["mover_mem_gb"], where="task data mover memory")
+    if readers < 1 or memory < 1:
+        pb._fail("task data mover CPU/readers and memory must be positive")
+    prefix = pb._text(policy["mount_prefix"], where="task data mount prefix")
+    # Delegate path and manifest normalization to the ordinary data contract.
+    pb.validate_data_manifest({"schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "produced_by": {}, "annotations": {}, "mount_prefix": prefix,
+        "entries": [{"path": prefix + "/validation", "offset": 0, "bytes": 1, "sha256": None}],
+        "entry_count": 1, "total_bytes": 1})
+    return {"schema": TASK_DATA_MANIFEST_SCHEMA_V1, "payload_field": field,
+            "mount_prefix": prefix, "residency_tier": tier, "residency_ram": ram,
+            "mover_readers": readers, "mover_mem_gb": memory}
+
+
+def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project only the assigned tasks, preserving first-read order.
+
+    Repeated identical physical entries are staged once for this whole-batch
+    residency phase. Conflicting declarations for one path/offset refuse.
+    This projects a PB-frozen task partition; it never chooses membership.
+    """
+    policy = validate_task_data_policy(policy)
+    entries, seen = [], {}
+    for task in envelope["tasks"]:
+        payload = task["payload"]
+        if not isinstance(payload, Mapping):
+            pb._fail("task data projection needs an object payload")
+        reads = payload.get(policy["payload_field"])
+        if not isinstance(reads, list):
+            pb._fail(f"task {task['id']} needs an explicit declared reads array")
+        if not reads:
+            continue  # A receipt-only task explicitly declares no bulk reads.
+        expanded = []
+        for entry in reads:
+            if isinstance(entry, Mapping):
+                path = entry.get("path")
+                if isinstance(path, str) and not path.startswith("/"):
+                    entry = {**entry, "path": policy["mount_prefix"] + "/" + path}
+            expanded.append(entry)
+        checked = pb.validate_data_manifest({
+            "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+            "mount_prefix": policy["mount_prefix"], "entries": expanded,
+            "entry_count": len(reads),
+            "total_bytes": sum(entry.get("bytes", 0) for entry in reads
+                               if isinstance(entry, Mapping) and type(entry.get("bytes")) is int)})
+        for entry in checked["entries"]:
+            identity = (entry["path"], entry["offset"])
+            if identity in seen:
+                if seen[identity] != entry:
+                    pb._fail("conflicting task reads name one physical entry")
+                continue
+            seen[identity] = entry
+            entries.append(entry)
+    total = sum(entry["bytes"] for entry in entries)
+    if not entries:
+        return None
+    return pb.validate_data_manifest({
+        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "produced_by": {"tool": "prismabuild.decomposition",
+                        "parent_key": envelope.get("parent_key"),
+                        "plan_key": envelope.get("plan_key"),
+                        "child_ordinal": envelope.get("child_ordinal")},
+        "annotations": {"phases": [{"name": "batch", "cumulative_bytes": total}]},
+        "mount_prefix": policy["mount_prefix"], "entries": entries,
+        "entry_count": len(entries), "total_bytes": total})
+
+
 def validate_logical_request(value: object) -> dict[str, Any]:
     """Canonicalize a whole request and check the two halves agree.
 
@@ -456,7 +540,8 @@ def validate_logical_request(value: object) -> dict[str, Any]:
     here means the producer hears about it before a parent record exists.
     """
 
-    request = pb._exact_mapping(value, keys=_REQUEST_KEYS, where="logical request")
+    optional = {"task_data_manifest"} if isinstance(value, Mapping) and "task_data_manifest" in value else set()
+    request = pb._exact_mapping(value, keys=_REQUEST_KEYS | optional, where="logical request")
     if request["schema"] != LOGICAL_REQUEST_SCHEMA_V1:
         pb._fail(f"logical request schema must be {LOGICAL_REQUEST_SCHEMA_V1!r}")
     common = validate_common_spec(request["common"])
@@ -470,12 +555,19 @@ def validate_logical_request(value: object) -> dict[str, Any]:
                 f"{task['residency_key']!r} is not priced by the batch policy; "
                 f"it prices {sorted(priced)}"
             )
-    return {
+    result = {
         "schema": LOGICAL_REQUEST_SCHEMA_V1,
         "common": common,
         "roster": roster,
         "batch_policy": policy,
     }
+    if optional:
+        if common["data_manifest"] is not None:
+            pb._fail("task data projection and a shared data_manifest are mutually exclusive")
+        projected = validate_task_data_policy(request["task_data_manifest"])
+        task_data_manifest(projected, {"tasks": roster["tasks"]})
+        result["task_data_manifest"] = projected
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -655,6 +747,9 @@ def build_plan(
             "frozen common argv differs from the request's; the plan would be "
             "keyed on a command no child runs"
         )
+    if (frozen["action_common"]["params"].get(TASK_DATA_POLICY_PARAM)
+            != validated.get("task_data_manifest")):
+        pb._fail("task data projection policy must be sealed in the frozen parent")
     partitions = partition_roster(
         validated["roster"], validated["batch_policy"]
     )
@@ -784,57 +879,56 @@ def resolve_task_batch(
     return resolved
 
 
+class PreparedBatches:
+    """One validated request's immutable identities, computed once per seal.
+
+    The synchronous decomposer owns request/plan for this object's lifetime;
+    callers must not mutate them. It removes repeated whole-roster hashing and
+    indexing without changing membership, serialization or any identity bytes.
+    """
+    def __init__(self, request: Mapping[str, Any], plan: Mapping[str, Any]):
+        self.request, self.plan = request, plan
+        self.by_id = {task["id"]: task for task in request["roster"]["tasks"]}
+        self.roster_sha256 = canonical_sha256(request["roster"])
+        self.batch_policy_sha256 = canonical_sha256(request["batch_policy"])
+
+    def require_bound(self, request, plan):
+        if self.request is not request or self.plan is not plan:
+            pb._fail("prepared batch identities belong to another request or plan")
+
+    def membership(self, child_ordinal: int) -> dict[str, Any]:
+        # The path helper owns the ordinal type/range-independent validation.
+        child_result_manifest_path(child_ordinal)
+        if child_ordinal >= len(self.plan["partitions"]):
+            pb._fail("child ordinal is outside the frozen plan")
+        return {"schema": LOGICAL_BATCH_SCHEMA_V1,
+                "parent_key": self.plan["parent_key"], "plan_key": self.plan["plan_key"],
+                "roster_sha256": self.roster_sha256,
+                "batch_policy_sha256": self.batch_policy_sha256,
+                "child_ordinal": child_ordinal,
+                "ordered_task_ids": list(self.plan["partitions"][child_ordinal])}
+
+    def envelope(self, child_ordinal: int) -> dict[str, Any]:
+        membership = self.membership(child_ordinal)
+        return {"schema": BATCH_ENVELOPE_SCHEMA_V1,
+                **{key: membership[key] for key in ("parent_key", "plan_key", "roster_sha256",
+                                                     "batch_policy_sha256", "child_ordinal")},
+                "result_manifest_path": child_result_manifest_path(child_ordinal),
+                "tasks": [self.by_id[task_id] for task_id in membership["ordered_task_ids"]]}
+
+
 def batch_envelope(
     request: Mapping[str, Any], plan: Mapping[str, Any], *, child_ordinal: int
 ) -> dict[str, Any]:
-    """The immutable file one child reads to learn exactly what it measures.
-
-    It carries whole tasks rather than ids because the child has to act on the
-    payload, and a child that had to resolve ids against the roster would need
-    the roster's order to mean the same thing twice.
-    """
-
-    partitions = plan["partitions"]
-    if not 0 <= child_ordinal < len(partitions):
-        pb._fail(
-            f"child ordinal {child_ordinal} is outside the plan's "
-            f"{len(partitions)} batches"
-        )
-    by_id = {task["id"]: task for task in request["roster"]["tasks"]}
-    return {
-        "schema": BATCH_ENVELOPE_SCHEMA_V1,
-        "parent_key": plan["parent_key"],
-        "plan_key": plan["plan_key"],
-        "roster_sha256": canonical_sha256(request["roster"]),
-        "batch_policy_sha256": canonical_sha256(request["batch_policy"]),
-        "child_ordinal": child_ordinal,
-        # Told rather than derived: the child would otherwise have to
-        # reimplement the naming rule to agree with the action that already
-        # declared its result path.
-        "result_manifest_path": child_result_manifest_path(child_ordinal),
-        "tasks": [by_id[task_id] for task_id in partitions[child_ordinal]],
-    }
+    """The immutable file one child reads to learn exactly what it measures."""
+    return PreparedBatches(request, plan).envelope(child_ordinal)
 
 
 def logical_batch_param(
     request: Mapping[str, Any], plan: Mapping[str, Any], *, child_ordinal: int
 ) -> dict[str, Any]:
-    """What a child seals into ``params`` so its key binds its membership.
-
-    Ids rather than payloads: the payload bytes already reach the key through
-    the batch input's digest, and repeating them would make one child's key
-    grow with its batch for no additional statement.
-    """
-
-    return {
-        "schema": LOGICAL_BATCH_SCHEMA_V1,
-        "parent_key": plan["parent_key"],
-        "plan_key": plan["plan_key"],
-        "roster_sha256": canonical_sha256(request["roster"]),
-        "batch_policy_sha256": canonical_sha256(request["batch_policy"]),
-        "child_ordinal": child_ordinal,
-        "ordered_task_ids": list(plan["partitions"][child_ordinal]),
-    }
+    """The existing sealed membership; use PreparedBatches across many children."""
+    return PreparedBatches(request, plan).membership(child_ordinal)
 
 
 def publication_index(

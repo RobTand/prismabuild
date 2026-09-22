@@ -6073,3 +6073,13 @@ partial writer groups retain their local bytes and reservation for recovery.
 A repeated successful release is idempotent, including interruption after
 unlink but before updating its reservation. Metadata remains as bounded proof;
 this lane does not add an automatic orphan sweeper or change owner cancellation.
+
+### Logical child read-manifest projection (#862)
+
+The logical decomposer's optional `task_data_manifest` policy projects declared
+reads from each PB-assigned batch into its own ordinary v1 data manifest and
+single-phase staged read window. It uses the existing stage planner and tier-role
+publisher, freezes all movement graphs before the first child row, and reuses
+those graphs on replay. Empty-read cached tasks declare no bulk input. The closed
+policy, identity binding, scope and client-only compatibility contract are in
+[the decomposition design](design_work_decomposition_2026-09-11.md#per-child-read-manifests-through-the-existing-staging-lane-862).

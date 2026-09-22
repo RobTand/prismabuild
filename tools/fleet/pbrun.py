@@ -5640,6 +5640,8 @@ def seal_decomposed_child(
     roster_input: Mapping[str, object],
     batch_input: Mapping[str, object],
     cas,
+    data_manifest: Mapping[str, object] | None = None,
+    prepared_batches=None,
 ) -> dict[str, object]:
     """Seal the ``child_ordinal``-th child of one plan, off one template.
 
@@ -5661,6 +5663,22 @@ def seal_decomposed_child(
         template["params"]["command"],
         batch_path=cas.blob_path(str(batch_input["sha256"])),
     )
+    inputs = [roster_input, batch_input]
+    if prepared_batches is not None:
+        prepared_batches.require_bound(request, plan)
+    params = {dc.LOGICAL_BATCH_PARAM: (
+        prepared_batches.membership(child_ordinal) if prepared_batches is not None
+        else dc.logical_batch_param(request, plan, child_ordinal=child_ordinal))}
+    if data_manifest is not None:
+        if template["params"].get("data_manifest") is not None:
+            raise SystemExit("a projected child cannot also inherit a shared data manifest")
+        manifest = pb.validate_data_manifest(data_manifest)
+        entry, _ = cas.ingest_bytes(
+            pb._canonical_file_bytes(manifest), input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        inputs.append(entry)
+        params["data_manifest"] = {"input": entry, "mount_prefix": manifest["mount_prefix"],
+                                   "entry_count": manifest["entry_count"],
+                                   "total_bytes": manifest["total_bytes"]}
     return seal_action_from_template(
         template,
         command=command,
@@ -5668,10 +5686,8 @@ def seal_decomposed_child(
         # The roster before the batch, in that order, on every child: the
         # input list reaches the key, so the order is part of the identity and
         # not a detail of how this loop was written.
-        extra_inputs=[roster_input, batch_input],
-        extra_params={dc.LOGICAL_BATCH_PARAM: dc.logical_batch_param(
-            request, plan, child_ordinal=child_ordinal
-        )},
+        extra_inputs=inputs,
+        extra_params=params,
     )
 
 
