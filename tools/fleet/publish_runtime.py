@@ -83,6 +83,9 @@ FLEET_SCRIPTS = (
     # movement node itself, exec'd by an admitted action on the storage box
     # (#583).  A generation without it publishes movers nothing can run.
     "stage_move.py",
+    # Source-host PRECOMMIT local-spool exports are ordinary admitted actions.
+    # Their payload must travel with the package that seals their command.
+    "produced_export.py",
     # ...and stage_release.py beside it, the egress node that deletes a staged
     # range and returns its tier tokens.  The tier loop also imports it for the
     # orphan sweep, so a generation without it leaves a withdrawn consumer's
