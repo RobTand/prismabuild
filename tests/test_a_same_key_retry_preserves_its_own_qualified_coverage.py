@@ -284,11 +284,16 @@ def test_a_corrupt_prior_sidecar_preserves_vouches_but_dates_nothing(
     assert all(keys[1] in document["entries"]
                for document in documents.documents), (
         "vouches were dropped rather than left to refuse fail-closed")
-    # Whatever landed wrote a fresh, honest sidecar; the entries whose
-    # dates could not be read back were never dated by this run.
-    dated = _material(args)["entries"]
-    assert keys[0] not in dated and keys[1] not in dated, (
-        "an unreadable prior date was carried or invented")
+    assert set(fragment_keys(args)) == set(keys[:2]), (
+        "the preserved vouches must survive the aborted retry")
+    # The first undatable vouch refuses and stops the range (#853), so
+    # nothing new landed and no fresh sidecar was written.  The corrupt prior
+    # date stays exactly as unreadable as it was: no date was carried and
+    # none was invented for the entries whose dates could not be read back.
+    got = reader_lease.read_material(
+        Path(args.residency_root), CONSUMER, MOVER)
+    assert isinstance(got, Exception), (
+        "the aborted retry must not rewrite a sidecar it never dated")
 
 
 # --- unknown or contradictory ownership refuses the invocation ----------

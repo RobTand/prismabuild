@@ -5106,6 +5106,14 @@ as a reservation or a change to any frozen plan. This prevents smaller new
 windows from indefinitely replenishing ahead of a larger priority lead;
 it does not promise progress while existing readers retain capacity.
 
+This priority policy applies only to a positively `READY` consumer in its
+current publication (#881). A `CLAIMED` consumer whose original lead has
+retired can still satisfy the older unpublished-lead credit-gate predicate;
+that does not make it an unstarted admission. Such running windows neither
+establish nor receive the priority barrier and remain ahead of new admissions.
+The original credit gate, minimum next-step reservation and funding checks
+are unchanged. A READY retry remains eligible regardless of historical attempts.
+
 Admission relief applies to both stage and RAM. RAM asks only when its normal
 bounded window has a promotion whose stage source is resident, preserving
 the existing rule against eviction for an unavailable source or a declined
@@ -5631,6 +5639,52 @@ prior fragment that refuses before any copy leaves the record untouched
 on the next retry), the contradictory sidecar headers that refuse rather
 than republish corrected, and the two-worker per-landing publication
 regression.
+
+### A refused publication ends dispatch for the range's remaining entries (#853)
+
+The publication gate can refuse one shared staged name and will not replace
+what another publication owns, what a live pin protects, or what an
+unreadable proof might name. That refusal is made per name and proves nothing
+about the others -- they may be perfectly publishable. It does make the range
+incomplete, though: this mover cannot publish what it declared, so every
+further copy and, for an undatable vouch, every further grace is spent on a
+run that must be retried anyway, and the first obstruction is buried by the
+receipt's capped error list. On the 2026-09-22 full512 head one
+stale-material vouch left sixteen workers sleeping through grace after grace
+while the consumer stayed READY; the accepted red fixture measures 8,192
+payload bytes copied for two blocked entries on one worker. The policy is
+therefore to bound the wasted work and surface the obstruction, not to
+conclude anything about the remaining names.
+
+The gate signals that refusal with `stage_move._PublicationRefused`, an
+`OSError` subclass, so every caller that already catches `OSError` keeps
+catching it and no existing behavior breaks on the type; the copier
+deliberately changes its range handling for it. On receiving it a copier
+thread records the refusal under the same small dispatch lock that hands out
+entries, before logging the entry error, so once the refusal is recorded no
+worker is handed a new entry. The entries already dispatched to the active
+group still finish or refuse, and everything they committed keeps its
+fragment, sidecar and byte count in the usual incomplete receipt, which names
+the refused path and is retained for the retry. The flag is internal and
+separate from the caller's `stop` event: a refusal never sets cancellation or
+withdrawal, which keep their own decision and terminal. An ordinary source
+read, digest mismatch or filesystem failure stays a per-entry error and does
+not stop the range -- one unreadable source is not evidence about the other
+names. Nothing here adds a terminal-owner lookup, a global scan, or any new
+permission to adopt or overwrite: the proof, pin, claim, grace and ownership
+decisions are exactly the ones the gate already made.
+
+`tests/test_publication_refusal_stops_the_range.py` holds the bound with
+deterministic work counters and barriers rather than wall-clock: one worker
+consumes exactly the refusing entry; a four-worker barrier puts four entries
+really in flight, only that prefix is dispatched with no duplicates, and the
+one valid in-flight entry keeps its committed bytes and proof while its peers
+refuse; an adopted entry keeps its proof and bytes while the next entry's
+refusal stops the range; a pinned publication is refused unchanged and never
+replaced; a missing source only records its own error and the range
+continues; and a pre-set external stop is never confused with the internal
+flag. The accepted red evidence (`853-red-results.json`, shards
+`c36202318cfa` and `d992f975c10a`) is retained separately.
 
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
