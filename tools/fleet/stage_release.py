@@ -1631,6 +1631,7 @@ def sweep_dead_owner_fragments(
         failed_keys = set(os.listdir(queue.dir(pool.FAILED)))
         withdrawn_keys = set(os.listdir(queue.dir(pool.WITHDRAWN)))
         done_keys = set(os.listdir(queue.dir(pool.DONE)))
+        eligible_terminal_keys = withdrawn_keys | done_keys
     except OSError as exc:
         refuse(f"ownership uncertain: queue census: {exc}")
         return receipts
@@ -1651,7 +1652,7 @@ def sweep_dead_owner_fragments(
         tier = fragment.get("tier_id")
         if (direct and _namespace_shaped(consumer)
                 and f"{consumer}.json" in failed_keys
-                and f"{mover}.json" in withdrawn_keys | done_keys
+                and f"{mover}.json" in eligible_terminal_keys
                 and tier in held_by_tier and mover not in held_by_tier[tier]):
             candidates.setdefault(consumer, []).append((mover, fragment))
     uncertainty = (OSError, ValueError, pb.PrismaBuildError)
