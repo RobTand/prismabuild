@@ -145,6 +145,12 @@ STAGE_ROOT_MARKER = ".prismabuild-stage.json"
 STAGE_ROOT_MARKER_SCHEMA_V1 = "prismabuild.stage-root.v1"
 STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
 
+#: The event a dead-owner eviction publishes, so an operator can tell bytes
+#: whose only owner was terminal-dead (failed consumer, withdrawn mover) from
+#: bytes routine reconciliation found unowned and from a named historical
+#: range an operator asked about by identity.
+DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
+
 
 def queue_identity(queue: pool.PoolQueue) -> str:
     """The string a marker names a queue by: its root's real path.
@@ -1505,6 +1511,123 @@ def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
     return wanted, owners
 
 
+def _row_keys(queue: pool.PoolQueue, state: str) -> set[str] | None:
+    """The keys filed under one queue state, or None when unknowable.
+
+    Listed rather than stat-ed for the same NFS reason `terminal_keys` and
+    `withdrawn_keys` give: a negatively cached absence must not read as an
+    empty state.  Only absence (no directory yet) reads as empty; any other
+    read failure is unknown ownership, and the caller retains.
+    """
+
+    try:
+        names = os.listdir(queue.dir(state))
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return None
+    return set(
+        name[: -len(".json")] for name in names if name.endswith(".json"))
+
+
+def sweep_dead_owner_fragments(
+        queue: pool.PoolQueue, *, stage_roots: dict[str, str],
+        residency_root: str | Path | None = None,
+) -> list[dict[str, object]]:
+    """Retire fragments whose only owner is terminal-dead (#839).
+
+    The liveness gap the held-key sweep structurally cannot close: a failed
+    consumer's withdrawn mover holds no tier tokens and filed no move
+    receipt, so no ledger names it — yet its fragment still vouches for its
+    staged paths, and the shared publisher's proof search (which walks every
+    fragment) answers `owned` for them forever.  Reconciliation cannot help
+    either: the file carries the prewarm source mark, so it reads as
+    prewarm-owned and rests in `unowned_left`.
+
+    Discovery is conservative and every check is positive.  One complete
+    fragment census (a single walk, no per-entry document re-read) names the
+    candidates; a tainted census refuses the whole pass rather than reading
+    unknown ownership as absent.  A candidate retires only when its consumer
+    is filed under failed with no live or completed row, its mover is filed
+    under withdrawn with no live or terminal row at all, the mover holds no
+    tokens on the fragment's tier, and no move receipt is filed for it.
+    Produced-output namespaces have their own lifecycle and are never
+    candidates here.
+
+    Deletion itself is not decided here: each exact stale owner is routed
+    through the existing `evict`, which rechecks co-owner fragments, live
+    and foreign claims, reader pins, and promotion handoffs under the
+    mover transition lock and the stage ownership lock.  Live, unknown, and
+    shared owners therefore survive this pass by construction.  Deliberately
+    unconditional on `pressure`: a proven-dead owner blocks publication, not
+    just capacity, and a resubmitted consumer is a new live row, which the
+    live checks above already exclude.
+    """
+
+    root = Path(residency_root if residency_root is not None
+                else queue.root / pool.RESIDENCY)
+    fragments, tainted = _fragment_census(root)
+    if tainted:
+        return [{
+            "schema": pool.POOL_EGRESS_SCHEMA_V1,
+            "event": DEAD_OWNER_EVENT,
+            "tier_id": "", "stage_root": "",
+            "reason": "dead-owner-sweep",
+            "complete": False,
+            "errors": [f"ownership uncertain: {item}" for item in tainted[:8]],
+            "host": socket.gethostname(), "unix": time.time(),
+        }]
+    states: dict[str, set[str] | None] = {}
+    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
+                  pool.WITHDRAWN):
+        states[state] = _row_keys(queue, state)
+    if any(keys is None for keys in states.values()):
+        return [{
+            "schema": pool.POOL_EGRESS_SCHEMA_V1,
+            "event": DEAD_OWNER_EVENT,
+            "tier_id": "", "stage_root": "",
+            "reason": "dead-owner-sweep",
+            "complete": False,
+            "errors": ["ownership uncertain: queue state unreadable"],
+            "host": socket.gethostname(), "unix": time.time(),
+        }]
+    ready = states[pool.READY] or set()
+    claimed = states[pool.CLAIMED] or set()
+    done = states[pool.DONE] or set()
+    failed = states[pool.FAILED] or set()
+    withdrawn = states[pool.WITHDRAWN] or set()
+    live = ready | claimed
+    receipts: list[dict[str, object]] = []
+    for namespace, mover, fragment, direct in fragments:
+        if not direct or not _namespace_shaped(namespace):
+            continue  # produced namespaces keep their own lifecycle
+        consumer = namespace
+        if consumer in live or mover in live:
+            continue
+        if consumer not in failed or consumer in done:
+            continue
+        if mover not in withdrawn or mover in done or mover in failed:
+            continue
+        tier = fragment.get("tier_id")
+        stage_root = (stage_roots.get(tier) if isinstance(tier, str)
+                      else None)
+        if stage_root is None:
+            continue
+        try:
+            held = queue.tier_ledger(str(tier)).held_keys()
+        except (OSError, pool.PoolContractError):
+            continue
+        if mover in held:
+            continue
+        if queue.move_record(mover) is not None:
+            continue
+        receipts.append(evict(queue, mover, consumer_action_key=consumer,
+                              stage_root=stage_root,
+                              residency_root=residency_root,
+                              reason="dead-owner-sweep"))
+    return receipts
+
+
 def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
           residency_root: str | Path | None = None,
           pressure: Mapping[str, int] | None = None) -> list[dict[str, object]]:
@@ -1540,6 +1663,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     bulk if avoidable."*  Oldest receipt first, so a tier under repeated
     pressure takes the same range back twice rather than alternating between
     two -- a deterministic order, not a ranking of what is worth keeping.
+
+    **Dead owners are retired unconditionally (#839).**  A failed consumer's
+    withdrawn mover holds no tokens and filed no receipt, so the held-key
+    pass above can never see it -- yet its fragment still forbids publication
+    of its paths, which is a liveness block rather than a capacity question.
+    `sweep_dead_owner_fragments` retires each exact stale owner through the
+    same `evict`, which rechecks co-owners, claims, pins, and handoffs under
+    its own locks; a resubmitted consumer is a new live row, which discovery
+    already excludes, so pressure deference would only preserve the block.
     """
 
     wanted, owners = live_claims(queue)
@@ -1590,6 +1722,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             swept.append(evict(queue, key, consumer_action_key=consumer,
                                stage_root=stage_root,
                                residency_root=residency_root, reason="orphan-sweep"))
+        # Dead owners next, while their tier still owns this loop iteration:
+        # a failed consumer's withdrawn mover holds no tokens and filed no
+        # receipt, so the held-key pass above can never see it, yet its
+        # fragment still forbids publication of its paths (#839).  The pass
+        # routes each exact stale owner through the same `evict`, which
+        # rechecks co-owners, claims, pins, and handoffs under its own locks.
+        swept.extend(sweep_dead_owner_fragments(
+            queue, stage_roots={tier_id: stage_root},
+            residency_root=residency_root))
         # Held keys first, then the rest of the stage: the evictions above turn
         # held bytes into absent ones, so the reconciliation below sees the same
         # directory the ledger now describes rather than one eviction behind it.
