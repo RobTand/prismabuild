@@ -1497,7 +1497,7 @@ def adopt_resident_ranges(
     consumers: list | None = None,
     withdrawn: frozenset[str] | None = None,
 ) -> list[dict[str, object]]:
-    """Take over every resident range a live consumer's window still needs (#598).
+    """Take over the resident prefix before a live window's first gap (#864).
 
     Before the orphan sweep, deliberately: the ranges this can take are exactly
     the ones the sweep would delete, and the campaign's shape is one probe and
@@ -1510,6 +1510,13 @@ def adopt_resident_ranges(
     that matters, because a stage with room would simply have staged the copy.
     Phases the consumer has already read past are left alone; taking those over
     would pin bytes it will never open again.
+
+    A missing near range stops adoption of farther ranges. Those bytes stay
+    charged under their historical donors, reusable without another copy, but
+    remain eligible for the existing pressure-driven orphan sweep. Adopting
+    beyond a hole would put all those distant bytes under live-plan protection
+    while the missing frontier and its advance have no room to stage. Existing
+    live owners and reader pins keep their ordinary protection.
 
     A leg whose key carries a live withdrawal marker is not adopted: the plan
     that names it is marked superseded in this cycle (#708), and moving
@@ -1543,7 +1550,16 @@ def adopt_resident_ranges(
         ledger = queue.tier_ledger(tier_id)
         digest = str(plan["manifest_sha256"])
         accepted = consumer["accepted_phase"]
+        try:
+            resident = residency_plan.resident_movers(queue, plan, tier_id=tier_id)
+        except residency_plan.ResidencyEvidenceUnreadable as exc:
+            events.append({"event": "adoption-prefix-deferred", "consumer": consumer_key,
+                           "reason": "residency-evidence-unreadable", "error": str(exc)})
+            continue
+        prefix_blocked = False
         for phase in residency_plan.remaining(plan, accepted):  # type: ignore[arg-type]
+            if prefix_blocked:
+                break
             # One adoption candidate per leg: a chunked phase's chunks are
             # adopted under their own ranges and keys (#675), because the
             # descriptor match proves the taken range equal to the range the
@@ -1574,15 +1590,22 @@ def adopt_resident_ranges(
                             and not isinstance(chunk_index, bool))):
                     continue
                 if new_key in cancelled:
-                    continue      # the plan is being retired; do not pin to it
+                    prefix_blocked = True
+                    break         # never adopt past a withdrawn frontier
+                if new_key in resident:
+                    continue      # this exact leg already has qualified bytes
                 candidates = index.get(_descriptor(digest, tier_id, cstart, cend))
                 if not candidates:
-                    continue
+                    prefix_blocked = True
+                    break
                 if ledger.holder_tokens(new_key):
-                    continue      # this leg already holds tokens of its own
+                    prefix_blocked = True
+                    break         # booked room is not qualified residency
                 if (queue.item_path(pool.READY, new_key).exists()
                         or queue.item_path(pool.CLAIMED, new_key).exists()):
-                    continue      # its own copy is queued or running; let it finish
+                    prefix_blocked = True
+                    break         # let its own copy finish before adopting ahead
+                leg_adopted = False
                 for old_key in list(candidates):
                     if old_key == new_key:
                         continue
@@ -1596,6 +1619,7 @@ def adopt_resident_ranges(
                                   chunk_index=chunk_index)
                     events.append(event)
                     if event.get("adopted"):
+                        leg_adopted = True
                         index.pop(_descriptor(digest, tier_id, cstart, cend),
                                   None)
                         break
@@ -1612,6 +1636,9 @@ def adopt_resident_ranges(
                         candidates.remove(old_key)
                         continue
                     break          # busy or unnamed: this cycle's answer stands
+                if not leg_adopted:
+                    prefix_blocked = True
+                    break
     return events
 
 
