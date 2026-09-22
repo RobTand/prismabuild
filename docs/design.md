@@ -6515,7 +6515,10 @@ outstanding tokens, which can only raise the result.
 The tier loop counts the obligation only when it runs with `--output-windows`
 (or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
 made before, with the same note. Any other value of the variable stops the
-loop at start. The window, not the template's `minimum_gib`, is the charge:
+loop at start. The supervisor restarts a role whose argv differs from its
+declaration, and a role inherits the supervisor's environment, so the switch
+is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published
+like any other change, not a hand relaunch. The window, not the template's `minimum_gib`, is the charge:
 `refill_window` treats a top-up as optional once holdings reach the minimum,
 so the window over-counts the room a producer strictly needs, and it errs
 toward the producer. An A/B that turns it on compares, against a run
