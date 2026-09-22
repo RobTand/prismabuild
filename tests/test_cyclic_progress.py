@@ -282,10 +282,14 @@ def test_the_parked_finalize_ends_on_its_allowance_without_a_deadline(tmp_path):
 
     assert outcome["status"] == "timeout", outcome
     assert outcome["termination_reason"] == "no_progress"
-    # It walked all four cycles and parked in finalize: its own allowance,
-    # not an early kill, is what bounded it.
-    assert outcome["progress_observation"]["last_accepted"]["phase"] == "finalize"
-    assert 6.0 < outcome["elapsed_s"] < 15.0, outcome
+    # It walked all four durable cycles and parked in finalize: the phase and
+    # the committed count are what say its own allowance ended it.  No
+    # wall-clock bound belongs here -- the checkpoint refund is explicitly
+    # unbounded, so an elapsed-time assertion would only re-create the flake
+    # this repair removes (#841 review).
+    accepted = outcome["progress_observation"]["last_accepted"]
+    assert accepted["phase"] == "finalize"
+    assert accepted["units_completed"] == 4
 
 
 def test_live_phase_switching_without_new_units_still_times_out(tmp_path):
