@@ -1121,6 +1121,38 @@ def require_relocatable_checkout(
 
 
 _FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb"})
+#: The derived host kind a produced-output producer's spool window reserves,
+#: and the two sealed variables it is derived from (#747).  Spelled here so
+#: the typed-demand refusal does not import the spool module; the derivation
+#: itself is ``produced_spool.host_window_terms``.
+_SPOOL_WINDOW_KIND = "spool_gb"
+_SPOOL_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
+_SPOOL_MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
+
+
+def spool_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
+    """The host demand a sealed environment's spool window derives, or ``{}``.
+
+    Off, the environment derives nothing and every submission seals exactly
+    as before.  On, the producer's local spool window is a ``spool_gb``
+    reservation charged through the host ledger at claim, which only the pull
+    queue holds: a SLURM allocation has no host ledger to charge it to.
+    """
+
+    if _SPOOL_WINDOW_ENV not in variables:
+        return {}     # the unopted path imports and reads nothing new
+    from prismabuild import produced_spool
+
+    try:
+        terms = produced_spool.host_window_terms(variables)
+    except produced_spool.SpoolError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+    if terms and transport != "pool":
+        raise SystemExit(
+            f"pbrun: {_SPOOL_WINDOW_ENV}=1 needs the pull queue: the spool "
+            f"window is a host-ledger reservation, and --transport {transport} "
+            "cannot hold a host spool")
+    return terms
 
 
 def validate_fleet_demand(demand: Mapping[str, object]) -> None:
@@ -1133,6 +1165,12 @@ def validate_fleet_demand(demand: Mapping[str, object]) -> None:
 
     if "" in demand:
         raise SystemExit("--demand resource name cannot be empty")
+    if _SPOOL_WINDOW_KIND in demand:
+        # Named apart from the generic refusal because it is a host kind a
+        # worker can offer, just never a typed one (#747).
+        raise SystemExit(
+            f"--demand must not name {_SPOOL_WINDOW_KIND!r}: it is derived from "
+            f"the sealed {_SPOOL_WINDOW_ENV}=1 and {_SPOOL_MAX_ENV} environment")
     unsupported = sorted(set(demand) - _FLEET_DEMAND_KINDS)
     if unsupported:
         rendered = ", ".join(repr(kind) for kind in unsupported)
@@ -4704,6 +4742,18 @@ def freeze_action_template(
             data_manifest_summary["content_encoding"] = manifest_encoding
     else:
         data_manifest_summary = None
+    # The spool window demand is derived from the sealed environment, so the
+    # two are checked together here, where both are final (#747).  Off, a
+    # sealed ``spool_gb`` is refused rather than carried unexplained.
+    spool_terms = spool_window_terms(variables, transport=transport)
+    sealed_spool = {kind: int(need) for kind, need in demand.items()
+                    if kind == _SPOOL_WINDOW_KIND}
+    if sealed_spool != spool_terms:
+        raise SystemExit(
+            f"pbrun: sealed {_SPOOL_WINDOW_KIND} demand {sealed_spool or 'none'} "
+            f"disagrees with the environment's spool window "
+            f"{spool_terms or 'none'}; {_SPOOL_WINDOW_ENV} and {_SPOOL_MAX_ENV} "
+            "are the only source of it")
     produced_declaration = None
     produced_validated = None
     if produced_output_template_path is not None:
@@ -6130,6 +6180,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     if not args.no_default_env:
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             variables.setdefault(name, str(demand["cpu"]))
+    # A produced-output producer's local spool window, when its environment
+    # opts in (#747).  Derived like the template's tier demand, never typed:
+    # ``_parse_demand`` has already refused a typed ``spool_gb``.  Off, this
+    # adds nothing, and the demand is byte-for-byte what it was.
+    demand.update(spool_window_terms(variables, transport=args.transport))
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")

@@ -28,6 +28,16 @@ MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 #: to it; absent, empty or ``"0"`` leaves every export unreserved and unpaced,
 #: so publishing a runtime that carries the pacer changes no live export.
 PACED_EXPORT_ENV = "PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT"
+#: Opt-in for the host spool window (#747).  Only ``"1"`` in the producer's
+#: sealed environment turns the owner's :data:`MAX_ENV` window into a
+#: :data:`HOST_WINDOW_KIND` reservation on the host ledger, derived by pbrun
+#: and charged at claim against the budget a box declares with
+#: ``worker_loop.py --spool-gb``.  Absent, empty or ``"0"`` derives no demand
+#: and checks nothing, so publishing a runtime that carries it changes no
+#: live producer.
+HOST_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
+#: The host kind the window is reserved in, in GiB like ``mem_gb``.
+HOST_WINDOW_KIND = "spool_gb"
 SCHEMA = "prismabuild.produced_spool.v1"
 PACING_SCHEMA = "prismabuild.produced_spool.pacing.v1"
 #: The copy loop's block, and so the pacer's step: one read, one write.
@@ -158,6 +168,29 @@ def _local_disk(path):
         raise SpoolError("spool root is not a known local disk filesystem")
 
 
+def host_window_terms(variables):
+    """The host demand one producer's spool window reserves, or ``{}`` (#747).
+
+    ``variables`` is the producer's sealed environment.  Off -- no
+    :data:`HOST_WINDOW_ENV`, ``""`` or ``"0"`` -- there is no term, whatever
+    else the environment says.  On, the window is the owner's byte bound,
+    :data:`MAX_ENV`, rounded up to whole GiB: the unit the host ledger
+    counts, so a reservation never holds less than the spool may fill.
+    """
+
+    switch = variables.get(HOST_WINDOW_ENV, "")
+    if switch not in ("", "0", "1"):
+        raise SpoolError(f"{HOST_WINDOW_ENV} must be 0 or 1, not {switch!r}")
+    if switch != "1":
+        return {}
+    raw = variables.get(MAX_ENV)
+    if (not isinstance(raw, str) or not raw.isascii() or not raw.isdigit()
+            or int(raw) <= 0):
+        raise SpoolError(f"{HOST_WINDOW_ENV}=1 needs a positive integer "
+                         f"{MAX_ENV}, not {raw!r}")
+    return {HOST_WINDOW_KIND: -(-int(raw) // storage_tiers.GIB)}
+
+
 def _export_record(group, owner):
     record = _read(group / "export.json")
     if record is None:
@@ -265,6 +298,23 @@ class ProducedSpool:
         self.host = str(row.get("claimed_host") or "")
         if not self.host:
             raise SpoolError("source host is unknown")
+        #: The host demand this producer's claim must hold for its window,
+        #: ``{}`` unless the sealed environment opts in (#747).  The per-owner
+        #: bound and the ``statvfs`` check in :meth:`reserve_group` apply
+        #: either way; this is what keeps two producers on one box from
+        #: overrunning it together.
+        self.host_window = host_window_terms(variables)
+        resources = row.get("resources") if isinstance(row.get("resources"), dict) else {}
+        for kind, need in self.host_window.items():
+            try:
+                held = int(resources.get(kind, 0))
+            except (TypeError, ValueError):
+                held = 0
+            if held < need:
+                raise SpoolError(
+                    f"{HOST_WINDOW_ENV}=1 needs the claim to reserve {kind}={need} "
+                    f"for a {variables[MAX_ENV]}-byte window; the claimed row "
+                    f"reserves {kind}={held}")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         _local_disk(self.root)
         self.directory = _path(self.root / po.instance_namespace(self.instance), self.root)

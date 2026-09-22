@@ -1008,7 +1008,9 @@ def main():
         signal.signal(signal.SIGTERM, previous)
 
 
-def _run_loop(stop_requested):
+def build_parser() -> argparse.ArgumentParser:
+    """The worker loop's arguments, without reading them."""
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true",
                     help="serve at most one action and exit, whether or not "
@@ -1048,9 +1050,40 @@ def _run_loop(stop_requested):
     ap.add_argument("--cpu-slots", type=int, default=0,
                     help="cores this box offers the queue; 0 = the cores this "
                          "loop is actually pinned to")
-    args = ap.parse_args()
+    ap.add_argument("--spool-gb", type=int, default=0,
+                    help="local disk this box offers produced-output spools, "
+                         "in GiB; 0 declares none (#747)")
+    return ap
+
+
+def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse argument values no box can declare."""
+
     if args.gpu_slots < 0:
         ap.error("--gpu-slots cannot be negative")
+    if args.spool_gb < 0:
+        ap.error("--spool-gb cannot be negative")
+
+
+def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str, int]:
+    """The stable host kinds this loop declares: memory, cores, and spool.
+
+    ``spool_gb`` is the local disk budget produced-output producers reserve
+    their spool windows against at claim (#747).  It is declared only when
+    ``--spool-gb`` is positive, so a box started without the flag offers
+    exactly what it offered before the kind existed.
+    """
+
+    declared = {"mem_gb": args.mem_gb, "cpu": cores}
+    if args.spool_gb > 0:
+        declared["spool_gb"] = args.spool_gb
+    return declared
+
+
+def _run_loop(stop_requested):
+    ap = build_parser()
+    args = ap.parse_args()
+    validate_args(ap, args)
     pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
     # Cores are a resource, and until now they were the only one the ledger
     # could not see.  A ``pytest -n 24`` action declaring ``mem_gb=4`` was
@@ -1081,7 +1114,7 @@ def _run_loop(stop_requested):
     # count from the root-published snapshot, refreshed on every idle pass.
     # Positive legacy slot values are normalized to one device during rollout;
     # they no longer encode a hand-tuned concurrency ceiling.
-    base_declared = {"mem_gb": args.mem_gb, "cpu": cores}
+    base_declared = declared_host_capacity(args, cores=cores)
     gpu_capable = args.gpu or args.gpu_slots > 0
     # Capability and current admission are distinct. ``--gpu`` says this host
     # has a GPU so submissions remain queueable through a telemetry outage;
