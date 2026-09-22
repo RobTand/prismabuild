@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import math
@@ -354,10 +354,6 @@ def _terminal_metrics(
 
     outcomes: dict[tuple[str, str], int] = defaultdict(int)
     timings: dict[tuple[str, str], list[float]] = defaultdict(list)
-    #: The heaviest reading each box's endings reported in the window, by
-    #: metric.  Absent for a host whose endings carried no box window, which is
-    #: how a box with no flight recorder differs from a box that idled.
-    window_peaks: dict[tuple[str, str], float] = {}
     for row in selected:
         host = _host(row.get("host")) or "unknown"
         outcome = str(row.get("status") or "unknown")
@@ -365,21 +361,6 @@ def _terminal_metrics(
         outcomes[(host, outcome)] += 1
         if row.get("unreadable"):
             continue
-        for field, metric in (
-            ("gpu_power_peak_w", "gpu_power_peak_watts"),
-            ("gpu_power_reference_w", "gpu_power_reference_watts"),
-            ("gpu_power_peak_fraction", "gpu_power_peak_fraction"),
-            ("gpu_framebuffer_used_peak_bytes", "gpu_framebuffer_used_peak_bytes"),
-            ("gpu_framebuffer_total_bytes", "gpu_framebuffer_total_bytes"),
-            ("memory_peak_bytes", "memory_peak_bytes"),
-            ("io_write_bytes", "io_write_bytes"),
-            ("io_read_bytes", "io_read_bytes"),
-        ):
-            value = _number(row.get(field))
-            if value is None:
-                continue
-            key = (host, metric)
-            window_peaks[key] = max(window_peaks.get(key, value), value)
         # ``read_endings`` already projected these fields from its bounded
         # read. Opening the complete record again doubled both NFS traffic and
         # the allocation spike from rows that embedded action logs.
@@ -415,16 +396,65 @@ def _terminal_metrics(
         target.add(sum(values) / len(values), host=host, stat="mean")
         target.add(max(values), host=host, stat="max")
         timing_jobs.add(len(values), host=host, phase=phase)
-    box = metrics.family(
-        "prismabuild_terminal_box_window",
-        "Heaviest per-action resource reading among the host's terminal records in the bounded window; GPU power is measured against the device's own published reference, and every metric is absent rather than zero where no record carried it.",
-    )
-    for (host, metric), value in sorted(window_peaks.items()):
-        box.add(value, host=host, metric=metric)
+    _box_window_peaks(metrics, selected)
 
     readable = accessible and all(not row.get("unreadable") for row in selected)
     terminal_success.add(1 if readable else 0)
     return readable
+
+
+#: The GPU metrics that are a reading *against a reference*, and so have to be
+#: separated by the scope of the reference they were taken against.  Watts and
+#: bytes are absolute and compare across any reference; a fraction and the
+#: denominator it used do not (#806).
+_SCOPED_BOX_WINDOW_METRICS = frozenset((
+    "gpu_power_peak_watts", "gpu_power_reference_watts", "gpu_power_peak_fraction",
+))
+
+
+def _box_window_peaks(metrics: Metrics, rows: Iterable[Mapping[str, object]]) -> None:
+    """Publish the heaviest box-window reading each host reported, by scope.
+
+    Absent rather than zero for a host whose endings carried no box window,
+    which is how a box with no flight recorder differs from a box that idled.
+
+    ``scope`` is the reference the GPU power readings were taken against:
+    ``measured_peak`` and ``declared_fallback`` are GPU-only, ``soc_tdp`` is
+    the whole-module envelope, and ``unknown`` is a record filed before the
+    reference was scoped at all.  It is a label and not a suffix because the
+    alternative is a ``max`` over two denominators, which is a number taken
+    against neither.  Readings with no reference carry an empty scope, which
+    Prometheus reads as no label, so the family keeps one label set.
+    """
+
+    peaks: dict[tuple[str, str, str], float] = {}
+    for row in rows:
+        if row.get("unreadable"):
+            continue
+        host = _host(row.get("host")) or "unknown"
+        scope = row.get("gpu_power_reference_scope")
+        scope = scope if isinstance(scope, str) and scope else "unknown"
+        for field, metric in (
+            ("gpu_power_peak_w", "gpu_power_peak_watts"),
+            ("gpu_power_reference_w", "gpu_power_reference_watts"),
+            ("gpu_power_peak_fraction", "gpu_power_peak_fraction"),
+            ("gpu_framebuffer_used_peak_bytes", "gpu_framebuffer_used_peak_bytes"),
+            ("gpu_framebuffer_total_bytes", "gpu_framebuffer_total_bytes"),
+            ("memory_peak_bytes", "memory_peak_bytes"),
+            ("io_write_bytes", "io_write_bytes"),
+            ("io_read_bytes", "io_read_bytes"),
+        ):
+            value = _number(row.get(field))
+            if value is None:
+                continue
+            key = (host, metric, scope if metric in _SCOPED_BOX_WINDOW_METRICS else "")
+            peaks[key] = max(peaks.get(key, value), value)
+    box = metrics.family(
+        "prismabuild_terminal_box_window",
+        "Heaviest per-action resource reading among the host's terminal records in the bounded window; GPU power is measured against the GPU-only reference named by the scope label, and every metric is absent rather than zero where no record carried it.",
+    )
+    for (host, metric, scope), value in sorted(peaks.items()):
+        box.add(value, host=host, metric=metric, scope=scope)
 
 
 def _release_metrics(

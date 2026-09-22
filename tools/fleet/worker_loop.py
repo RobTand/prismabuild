@@ -108,7 +108,8 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import (adaptive_cpu, box_capacity, container_images,  # noqa: E402
+from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
+                         box_capacity, container_images,
                          core as pb, cpu_topology, pool)
 from pbstatus import Deadline, bounded  # noqa: E402
 
@@ -1288,7 +1289,15 @@ def _run_loop(stop_requested):
         # permitting a claim from missing or stale telemetry. Retiring deletes
         # free tokens only, so it never removes an active action's reservation;
         # a later fresh observation can restore capacity on a subsequent claim.
-        observe_overrides = {"gpu_sample": gpu_sample}
+        # The placement power fraction this offer publishes is a GPU-only
+        # reading over a GPU-only reference (#806).  Admission's host-local
+        # record is where the measured half of that reference lives, so the
+        # offer reads the same one rather than keeping a second.
+        observe_overrides = {
+            "gpu_sample": gpu_sample,
+            "gpu_state": gpu_admission.host_local_power_state(
+                getattr(queue.ledger(), "base", None)),
+        }
         if args.assume_idle:
             # This diagnostic may bypass noisy CPU and host-memory readings,
             # but it is not an escape hatch from the trusted GPU boundary.

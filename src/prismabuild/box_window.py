@@ -31,6 +31,7 @@ when nothing was measured. It cannot interrupt a filesystem read in progress.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -411,12 +412,15 @@ def _pqteld_groups(series, reference) -> dict[str, dict]:
             "power_w_mean": power.mean, "power_w_peak": power.high,
         }
         if isinstance(reference, dict):
-            envelope = reference.get("power_reference_w")
-            gpu["power_reference_w"] = envelope
+            # Named for what it is.  The fraction is against a GPU-only
+            # reference (#806), and its scope travels in the same group so a
+            # reader never has to assume which reference it was.
+            watts = reference.get("power_reference_w")
+            gpu["power_reference_w"] = watts
             gpu["power_reference_scope"] = reference.get("power_reference_scope")
             gpu["power_reference_source"] = reference.get("power_reference_source")
-            if isinstance(envelope, (int, float)) and envelope > 0:
-                gpu["power_peak_fraction_of_reference"] = power.high / envelope
+            if isinstance(watts, (int, float)) and watts > 0:
+                gpu["power_peak_fraction_of_reference"] = power.high / watts
         if util is not None and util.count:
             gpu["utilization_percent_mean"] = util.mean
             gpu["utilization_percent_peak"] = util.high
@@ -621,27 +625,37 @@ def read_window(start_unix: float, end_unix: float, *, host: str,
     return window
 
 
-def gpu_power_reference(*, timeout_s: float = 1.0) -> dict[str, object] | None:
-    """The device's own power reference, so no envelope is ever hardcoded.
+def gpu_power_reference(*, timeout_s: float = 1.0,
+                        state: object = None) -> dict[str, object] | None:
+    """The reference this action's GPU watts are a fraction of, and its scope.
 
-    ``gpu_capacity`` already reads it from the driver and already records that
-    a GB10 has no programmable limit, so its published SoC TDP is a reference
-    and not a measured GPU saturation point. That distinction has to travel
-    with the fraction, or the fraction reads as a claim it is not.
+    The recorder's ``power_draw_w`` is a GPU-only reading, so the number it is
+    divided by has to be GPU-only too.  ``adaptive_gpu.reporting_power_reference``
+    is that number and is the same one admission divides by, so a receipt
+    saying 70 % and a controller calling the box busy are talking about one
+    ceiling.  GB10's published 140 W is the whole-SoC TDP: it stays on the
+    device sample as provenance, and it reaches a fraction only under its own
+    ``soc_tdp`` scope, on a device nothing better is known about.
+
+    ``state`` is admission's host-local record, whose ratcheted ``power_peaks``
+    raise the reference above its declared floor.  Omitting it is safe and
+    costs only precision -- the declared floor is GPU-only and labelled -- so
+    a caller with no ledger in hand is never pushed back to the SoC envelope.
     """
 
-    from . import gpu_capacity
+    from . import adaptive_gpu, gpu_capacity
 
     found, _ = gpu_capacity.devices(timeout_s=timeout_s)
     best = None
     for device in found:
-        reference = device.get("power_reference_w")
+        reference, scope, source = adaptive_gpu.reporting_power_reference(
+            device, state if isinstance(state, Mapping) else {})
         if isinstance(reference, (int, float)) and reference > 0:
             if best is None or reference > best["power_reference_w"]:
                 best = {
                     "power_reference_w": float(reference),
-                    "power_reference_scope": device.get("power_reference_scope"),
-                    "power_reference_source": device.get("power_reference_source"),
+                    "power_reference_scope": scope,
+                    "power_reference_source": source,
                 }
     return best
 

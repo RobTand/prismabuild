@@ -587,8 +587,10 @@ with prismabuild_torch_profile():
 **What they cost.** A fixed-iteration GPU workload (32,000 2048x2048 bf16
 matmuls), five interleaved paired repeats per arm inside one admitted action on
 sparky (`2defaf9735ed`, 2026-09-07). The receipt's own box window over those
-arms: GPU 69.1 W mean and 96.4 W peak of the 140 W envelope, CPU 7.6 % busy
-mean. Read the power, not the utilization — the same window reads 68 % mean
+arms: GPU 69.1 W mean and 96.4 W peak, CPU 7.6 % busy
+mean. That receipt predates #806 and recorded its fraction against the 140 W
+whole-SoC envelope; the watts are the measurement, and against today's GPU-only
+reference the same peak is a much larger fraction of it. Read the power, not the utilization — the same window reads 68 % mean
 GPU utilization, which on GB10 says a kernel was resident and nothing about
 how loaded the SMs were.
 
@@ -2256,8 +2258,8 @@ idle" call for different responses.
     the shared copy is not a fallback. Scopes without local authority retain
     their telemetry-path accounting, including separate late-cleanup archives.
 *   `box_window` — the machine around the action for `[start_unix, end_unix]`.
-    GPU power mean and peak, the fraction of the device's own published power
-    reference, GPU utilisation, the unified memory pool and the memory and I/O
+    GPU power mean and peak, the fraction of the GPU-only power reference
+    admission itself divides by, GPU utilisation, the unified memory pool and the memory and I/O
     pressure stalls come from the `pqteld` flight recorder on the GB10 boxes;
     CPU busy and CPU pressure come from Netdata on every box, because pqteld
     records no CPU column at all. Each Netdata query targets 4096 points
@@ -2283,16 +2285,25 @@ idle" call for different responses.
     samples, and allocations between ticks may be missed. The retained peak
     survives allocation release; no finish-time HIP query is used to invent
     history. This adds no device probe to the existing sampler.
-    On GB10 the power reference is the SoC TDP and
-    covers the CPU too, which `power_reference_scope` says; it is a reference,
-    not a measured saturation point. Reading the window is bounded to about two
+    `power_w_peak` is a GPU-only reading, so `power_reference_w` is a GPU-only
+    number too: `adaptive_gpu.reporting_power_reference` supplies it, which is
+    the same reference admission divides by (#806). `power_reference_scope`
+    says which one it is — `gpu_power_limit` for a driver limit,
+    `measured_peak` for the highest GPU draw this host has sampled from the
+    device, `declared_fallback` for the declared per-device floor, and
+    `soc_tdp` for a device nothing better is known about, whose envelope covers
+    the CPU too and is a reference rather than a measured saturation point.
+    Reading the window is bounded to about two
     seconds and can never fail a finish: an unreachable recorder produces
     `{"source": "unavailable", "reason": ...}` and the action still completes.
 
 `pbstatus` prints peak memory, the bytes moved and the GPU power peak against
 its reference (or `vram=peak/total` for a discrete framebuffer window) in the
 endings table's `RESOURCE` column, and `pbrun` ends a run
-with the same line. `pbmetrics` exports the live peaks as
+with the same line. The GPU cell names the scope beside the percentage —
+`gpu=70.0W/100.0W(70%,declared_fallback)` — and reads `unknown` on a record
+filed before the reference was scoped, which is a record not to compare against
+a current one rather than a reading against today's reference. `pbmetrics` exports the live peaks as
 `prismabuild_attempt_peak_resources` and the endings' windows as
 `prismabuild_terminal_box_window`. Every one of them renders a field no record
 carried as absent, never as zero.

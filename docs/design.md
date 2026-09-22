@@ -2841,7 +2841,22 @@ display and provenance, and is never a denominator: it covers CPU power, and
 the measured GPU peak on these boxes is 106 W to 114 W (#806). The ratchet is
 capped by that published envelope, so one implausible `power.draw` cannot raise
 the reference. A device with neither a driver limit nor a declared entry has no
-reference, which leaves its sample invalid and refuses. Utilization percentage
+reference, which leaves its sample invalid and refuses.
+
+Everything that *reports* a power ratio divides by that same reference.
+`adaptive_gpu.reporting_power_reference` defers to the admission derivation and
+differs from it in one direction only: admission refuses a device it has no
+GPU-only reference for, while a reader has nothing to refuse, so a device that
+publishes only its vendor SoC envelope is still described --- under the
+`soc_tdp` scope, which says the denominator covers CPU power the numerator does
+not. The scope travels beside every published ratio, in the receipt
+(`box_window.gpu.power_reference_scope`), in the ending summary
+(`gpu_power_reference_scope`), in the `pbstatus` and `pbrun` resource line, in
+the `pbmetrics` `scope` label and in the placement offer, so a fraction is never
+read against a reference nobody named. The measured half of the reference lives
+only in admission's host-local `gpu-state.json`; a reader reaches it through
+`adaptive_gpu.host_local_power_state`, and failing to reach it falls back to the
+declared GPU-only floor, never to the SoC envelope (#806). Utilization percentage
 is not treated as a saturation measure. Any foreign GPU process closes admission on these
 single-device hosts. Processes attributed to one broker attempt do not consume
 extra capacity when that attempt opens multiple CUDA contexts or uses a daemon
@@ -3068,18 +3083,29 @@ or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
 It is not a thermal control and nothing here measures temperature or
-throughput. The GPU side reads drawn power against the device's own envelope,
-because `gpu_utilization` reports a resident kernel rather than working SMs.
-Two fields leave `box_capacity.observe`: `gpu_power_measured_fraction` is the
-raw sampled draw over that envelope, while the legacy `gpu_power_fraction` is
-the congestion proxy the fleet already published (`max(raw, 1.0 if limited)`,
+throughput. The GPU side reads drawn power against a reference, because
+`gpu_utilization` reports a resident kernel rather than working SMs. The
+reading is GPU-only, so the reference is: `box_capacity.observe` asks
+`adaptive_gpu.reporting_power_reference` for it and divides by the same watts
+admission does, rather than writing a second rule down (#806). It is given
+admission's host-local state by the worker loop, so a ratcheted measured peak
+is the denominator here too; without that state the declared GPU-only floor
+applies, which is coarser and still GPU-only. A device nothing better is known
+about keeps its published SoC envelope, and then the scope below says `soc_tdp`
+so a reader knows the denominator covers CPU power the numerator does not.
+Two fractions leave `box_capacity.observe`: `gpu_power_measured_fraction` is
+the raw sampled draw over that reference, while the legacy `gpu_power_fraction`
+is the congestion proxy the fleet already published (`max(raw, 1.0 if limited)`,
 the same reading `adaptive_gpu` calls congested). Placement prefers the
 measured fraction and falls back to the legacy proxy for old offers, so an
 idle SW-capped GB10 (~0.03 measured, 1.0 proxy, Sep-20 Sparklina flap) does
-not defer CPU work. The limiter itself travels as `gpu_limited` with
+not defer CPU work. `gpu_power_reference_w` and `gpu_power_reference_scope`
+name the denominator behind the measured fraction, so a ratio and what it is a
+ratio of are never read apart. The limiter itself travels as `gpu_limited` with
 `gpu_throttle_mask` / `gpu_throttle_reasons` for diagnosis. The CPU side reads
 `load1` per preferred core. All come from the offer's `observed_detail`
-(`gpu_power_measured_fraction`, `gpu_power_fraction`, `gpu_limited`,
+(`gpu_power_measured_fraction`, `gpu_power_fraction`, `gpu_power_reference_w`,
+`gpu_power_reference_scope`, `gpu_limited`,
 `gpu_power_sampled_unix`, `observed_unix`, `load1`) and
 both must be fresher than `GPU_SAMPLE_MAX_AGE_S`. The two thresholds --- when a
 box counts as busy, and how much better an alternative must look --- are
