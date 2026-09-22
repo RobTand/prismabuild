@@ -125,11 +125,11 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
 
 
 def _bind(q: pool.PoolQueue, template: dict, owner: str,
-          cas_root: Path) -> dict:
+          cas_root: Path, *, checkout_root: Path | None = None) -> dict:
     terms = po.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root=str(cas_root),
               worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
-              checkout_root=str(Path(q.root).parent / "mover-checkout"),
+              checkout_root=str(checkout_root or (Path(q.root).parent / "mover-checkout")),
               resources={"cpu": 1, "mem_gb": 1, **terms},
               produced_output_template=template)
     claimed = q.claim(owner="w-owner")
@@ -308,6 +308,10 @@ class _World:
             self.q, self.inst, self.template, batch_id=batch_id,
             cas_root=self.cas_root, **self.publish_kwargs)
 
+    def stage_path(self, name: str, batch_id: str = "b1") -> Path:
+        return (self.stage_root / "produced-output"
+                / self.entry(batch_id)["batch_namespace"] / name)
+
     def commitments(self) -> dict:
         path = po._commitments_path(self.q.root, self.inst)
         return json.loads(path.read_text())
@@ -362,9 +366,9 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     manifest = str(first["manifest_digest"])
     ns = str(first["batch_namespace"])
     world.run_mover(mover0, "w-char-1")
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert world.stage_path("p1.bin").read_bytes() == payload
     assert world.retire("b1").get("ok") is True
-    assert not (world.stage_root / "p1.bin").exists()
+    assert not world.stage_path("p1.bin").exists()
 
     # (a) The writer path answers a duplicate over the spent mover and stages
     #     nothing at all.
@@ -378,7 +382,7 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     assert record is not None and str(record["state"]) == "consumed"
     assert po._mover_live_state(world.q, mover0) == pool.DONE
     assert map_mod.read_fragments(world.out_base, ns) == []
-    assert not (world.stage_root / "p1.bin").exists()
+    assert not world.stage_path("p1.bin").exists()
 
     # ...and the recovery census names no route back to a staged copy: the
     # batch simply reads retired.
@@ -432,7 +436,7 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
     world.run_mover(mover0, "w-fwd")
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert world.stage_path("p1.bin").read_bytes() == payload
 
     # A real forward read.
     read1 = world.pin(mover0, manifest, total)
@@ -450,7 +454,7 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     assert str(retired["mover_key"]) == mover0
     assert int(retired["generation"]) == 0
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
-    assert not (world.stage_root / "p1.bin").exists()
+    assert not world.stage_path("p1.bin").exists()
 
     # The window credit came back to free; the producer re-takes its own
     # admitted window through the existing lifecycle primitive.
@@ -478,7 +482,7 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     if free:
         assert world.ledger.acquire(squatter, {KIND: free}) is True
     world.run_mover(mover1, "w-rev")
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert world.stage_path("p1.bin").read_bytes() == payload
 
     # A real second read, over the new material.
     read2 = world.pin(mover1, manifest, total)
@@ -528,7 +532,7 @@ def test_an_old_generation_reader_cannot_borrow_the_new_material(
     assert ensured.get("ok") is True, ensured
     mover1 = str(ensured["mover_key"])
     world.run_mover(mover1, "w-gen1")
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert world.stage_path("p1.bin").read_bytes() == payload
 
     stale = world.pin(mover0, manifest, len(payload))
     assert stale.get("ok") is not True, stale
@@ -579,7 +583,7 @@ def test_every_prewrite_completes_before_the_first_read_on_one_credit(
     assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
     assert world.ledger.available().get(KIND, 0) == free_before
     world.run_mover(mover, "w-window")
-    assert (world.stage_root / "p0.bin").read_bytes() == payload
+    assert world.stage_path("p0.bin", "b0").read_bytes() == payload
     # The other three are still uncommitted, still budgeted, still unstaged.
     for other_id, _descs, _payload in plans[1:]:
         assert other_id not in world.commitments()["batches"]
@@ -932,7 +936,7 @@ def test_a_crash_at_every_prefix_resumes_without_double_funding(
 
     # ...and the resumed successor is a real mover the fleet can run.
     world.run_mover(crashed_mover, f"w-{prefix_name}")
-    assert (world.stage_root / "p1.bin").exists()
+    assert world.stage_path("p1.bin").exists()
 
 
 def test_an_unfunded_successor_keeps_its_intent_and_finishes_later(

@@ -279,7 +279,7 @@ def test_the_first_mover_seals_the_producers_checkout_snapshot(
     receipt = _execute(world, mover_key)
     assert receipt["complete"] is True, receipt
     assert receipt["bytes_staged"] == len(payload)
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert (world.stage_root / "produced-output" / first["batch_namespace"] / "p1.bin").read_bytes() == payload
     world.q.finish(mover_key, status="executed")
 
 

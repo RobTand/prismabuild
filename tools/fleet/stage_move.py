@@ -84,7 +84,7 @@ FRAGMENT_PUBLISH_S = 5.0
 
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
-                   whole_file: bool) -> str:
+                   whole_file: bool, namespace: str | None = None) -> str:
     """Where one manifest entry's bytes live under the stage root.
 
     A path the manifest names exactly once, from offset zero, keeps its own
@@ -97,6 +97,11 @@ def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
     relative = path[len(mount_prefix.rstrip("/")) + 1:]
     if not relative or relative.startswith("/"):
         raise ValueError(f"{path!r} is not inside {mount_prefix!r}")
+    if namespace is not None:
+        if (len(namespace) != 64
+                or any(c not in "0123456789abcdef" for c in namespace)):
+            raise ValueError("produced stage namespace must be a 64-character digest")
+        relative = f"produced-output/{namespace}/{relative}"
     if whole_file and offset == 0:
         return relative
     return f"{relative}{RANGE_SUFFIX}/{offset}-{size}"
@@ -1493,12 +1498,14 @@ class _Copier:
     def __init__(self, *, mounts: prewarm_loop.MountMap, pacer, stage_root: Path,
                  mount_prefix: str, block: int, workers: int,
                  owner: str = "",
+                 namespace: str | None = None,
                  source_stage_root: Path | str | None = None,
                  publisher: _StagedPublisher | None = None) -> None:
         self.mounts = mounts
         self.pacer = pacer
         self.stage_root = stage_root
         self.mount_prefix = mount_prefix
+        self.namespace = namespace
         self.block = block
         self.workers = max(1, workers)
         self.owner = str(owner or "")
@@ -1696,7 +1703,8 @@ class _Copier:
                 try:
                     relative = stage_relative(
                         path, offset, int(entry["bytes"]),
-                        mount_prefix=self.mount_prefix, whole_file=path in whole)
+                        mount_prefix=self.mount_prefix, whole_file=path in whole,
+                        namespace=self.namespace)
                     destination = self.stage_root / relative
                     if self.source_stage_root is not None:
                         # A promotion reads the staged tree, where this same
@@ -1978,6 +1986,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                          residency_root: Path,
                          window: list[dict[str, object]],
                          whole: set[str], mount_prefix: str,
+                         namespace: str | None = None,
                          ) -> tuple[dict[str, dict[str, object]],
                                     dict[str, dict[str, object]], str | None]:
     """This mover's own prior coverage, qualified for a same-key retry.
@@ -2039,7 +2048,8 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
         path, offset = str(entry["path"]), int(entry["offset"])
         relative = stage_relative(
             path, offset, int(entry["bytes"]),
-            mount_prefix=mount_prefix, whole_file=path in whole)
+            mount_prefix=mount_prefix, whole_file=path in whole,
+            namespace=namespace)
         key = residency_map.residency_map_key(path, offset)
         facts[key] = (int(entry["bytes"]), os.path.normpath(str(
             Path(stage_root) / relative)), str(entry.get("sha256") or ""),
@@ -2173,10 +2183,47 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     return staged, sidecar, generation
 
 
+def _produced_stage_namespace(args) -> str | None:
+    """An explicit sealed output opt-in, bound to the existing batch reference.
+
+    Old requests and ordinary inputs keep their original path derivation. A
+    new output mover cannot select another batch's directory, an unchecked
+    path component, or a caller-supplied manifest through this opt-in.
+    """
+
+    namespace = getattr(args, "produced_output_namespace", None)
+    if namespace is None:
+        return None
+    if args.manifest:
+        raise SystemExit("produced_stage_namespace: requires the sealed manifest")
+    try:
+        ref, present = pool._sealed_produced_output_batch(
+            args.cas_root, str(args.action_key))
+        if not present or ref is None:
+            raise pool.PoolContractError("sealed output reference absent")
+        kind = storage_tiers.capacity_kind_of(str(args.tier_id))
+        demand = {f"{kind}@{args.tier_id}": storage_tiers.stage_tokens_for_bytes(
+            int(args.range_end_bytes) - int(args.range_start_bytes))}
+        checked = pool.PoolQueue(Path(args.pool_root)).validate_produced_output_batch(
+            ref, demand, residency_block={
+                "tier_id": str(args.tier_id),
+                "manifest_sha256": str(args.manifest_sha256),
+                "range_start_bytes": int(args.range_start_bytes),
+                "range_end_bytes": int(args.range_end_bytes)})
+        if (namespace != checked["batch_namespace"]
+                or str(args.consumer_action_key) != namespace):
+            raise pool.PoolContractError("sealed batch namespace mismatch")
+    except (OSError, ValueError, pool.PoolContractError,
+            pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError) as exc:
+        raise SystemExit(f"produced_stage_namespace: {exc}") from None
+    return str(namespace)
+
+
 def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     """Stage the declared range and return the receipt, refusing an overrun."""
 
     stop = stop or threading.Event()
+    namespace = _produced_stage_namespace(args)
     cas_root = Path(args.cas_root)
     manifest = load_manifest(cas_root, args.action_key, args.manifest)
     mount_prefix = str(manifest["mount_prefix"])
@@ -2209,7 +2256,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         path, offset = str(entry["path"]), int(entry["offset"])
         relative = stage_relative(path, offset, int(entry["bytes"]),
                                   mount_prefix=mount_prefix,
-                                  whole_file=path in whole)
+                                  whole_file=path in whole, namespace=namespace)
         claimed = destinations.get(relative)
         if claimed is not None:
             raise SystemExit(
@@ -2233,7 +2280,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
-        owner=str(args.action_key), publisher=publisher)
+        owner=str(args.action_key), publisher=publisher, namespace=namespace)
 
     manifest_sha256 = args.manifest_sha256
 
@@ -2253,7 +2300,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         stage_root=Path(args.stage_root),
         manifest_sha256=str(manifest_sha256),
         residency_root=residency_root, window=window, whole=whole,
-        mount_prefix=mount_prefix)
+        mount_prefix=mount_prefix, namespace=namespace)
     if staged_seeds:
         copier.staged.update(staged_seeds)
         copier.sidecar.update(sidecar_seeds)
@@ -2535,6 +2582,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "into the argv it is computed from")
     parser.add_argument("--consumer-action-key", required=True,
                         help="the action these bytes are staged for")
+    parser.add_argument("--produced-output-namespace", default=None,
+                        help="sealed produced batch namespace for physical path isolation; "
+                             "must match the request's produced-output reference")
     parser.add_argument("--tier-id", required=True,
                         help="the storage tier these bytes are staged on, as "
                              "tier_loop announces it")
