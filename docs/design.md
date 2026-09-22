@@ -5314,6 +5314,22 @@ first would leave an egress able to release tokens for bytes that are still
 there; dropping it last means the worst an interrupted adoption leaves is a
 range named twice, which every reader already tolerates.
 
+Adoption follows the contiguous qualified prefix of the remaining stage legs
+(#864). A missing leg, an unfinished copy, a withdrawn leg, or an unqualified
+donor stops that consumer's adoption pass. A reservation alone does not bridge
+the gap: the existing `resident_movers` predicate establishes that an earlier
+leg has landed. This also applies between chunks inside a phase. Farther donor
+ranges stay charged to their historical owners and remain cached while there
+is no pressure; the existing orphan sweep may reclaim them when a missing
+frontier and its funded advance need the room. Transferring them early would
+put them under whole-live-plan protection and could starve that frontier.
+
+This changes cross-consumer adoption, not live-plan ownership. Already-owned
+future ranges, including same-key retries and tails adopted before this change,
+keep their existing protection. It does not retroactively evict a live tail or
+provide a live producer-window shrink operation. Reader pins, co-owner checks,
+the immutable plan, and the existing admission/funding algorithms are unchanged.
+
 An adopted mover never runs, so it files no terminal record. What it files is a
 move receipt carrying `adopted_from` and `bytes_copied: 0`, and what it holds is
 the range's tokens — the same two facts the gate's `executed` branch is really
