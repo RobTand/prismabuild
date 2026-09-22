@@ -28,9 +28,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, produced_output as po, window_credit  # noqa: E402
+import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
+import test_a_resident_range_is_adopted_rather_than_recopied as adopted  # noqa: E402
 import test_produced_output_lifecycle_r2 as produced  # noqa: E402
+import test_window_progress_protection as protection  # noqa: E402
 
 TIER = produced.STAGE_TIER
 KIND = produced.STAGE_BARE
@@ -169,3 +172,104 @@ def test_any_other_setting_is_refused(owner, monkeypatch) -> None:
     monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "yes")
     with pytest.raises(ValueError):
         tier_loop.output_obligation(queue, TIER)
+
+
+def test_the_flag_is_off_unless_named() -> None:
+    assert tier_loop._parser().parse_args([]).output_windows is False
+    assert tier_loop._parser().parse_args(
+        ["--output-windows"]).output_windows is True
+
+
+def test_the_loop_refuses_to_start_on_any_other_setting(monkeypatch) -> None:
+    monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "true")
+    with pytest.raises(SystemExit):
+        tier_loop.main(["--interval-s", "5"])
+
+
+# ------------------------------------------------ through the real tier loop
+
+
+def _owes(gib):
+    def census(_queue, tier_id):
+        owed = gib if tier_id == TIER else 0
+        return {"gib": owed, "owners": {}, "unknown": [], "bounded": []}
+    return census
+
+
+def _unknown(_queue, _tier_id):
+    return {"gib": None, "owners": {},
+            "unknown": [{"owner": "f" * 64, "error": "template unreadable"}],
+            "bounded": []}
+
+
+@pytest.mark.parametrize("enforced", [False, True])
+def test_an_owed_window_gates_the_newcomer_that_fits_only_without_it(
+        tmp_path: Path, monkeypatch, enforced: bool) -> None:
+    """Six GiB fit two 1+1 windows, but not beside a 3 GiB owed window."""
+
+    ctx = protection._setup_two_consumers(tmp_path, stage_gib=6)
+    queue = ctx["queue"]
+    monkeypatch.setattr(po, "unheld_window_gib", _owes(3))
+    if enforced:
+        monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
+    else:
+        monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
+    events = tier_loop.residency_window(queue, tiers=protection._tiers(tmp_path))
+    gated = protection._gated(events)
+    if not enforced:
+        assert gated == {}
+        assert len(protection._published(events)) == 4
+        return
+    assert set(gated) == {protection.CONSUMER_B}, gated
+    assert gated[protection.CONSUMER_B]["reason"] == window_credit.REASON_STALL
+    assert gated[protection.CONSUMER_B]["output_note"] == ""
+    assert protection._published(events) == set(ctx["aa"]["movers"])
+
+
+def test_an_unknown_obligation_defers_the_tier(tmp_path: Path,
+                                               monkeypatch) -> None:
+    ctx = protection._setup_two_consumers(tmp_path, stage_gib=6)
+    monkeypatch.setattr(po, "unheld_window_gib", _unknown)
+    monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
+    events = tier_loop.residency_window(ctx["queue"],
+                                        tiers=protection._tiers(tmp_path))
+    assert protection._published(events) == set()
+    assert [e for e in events
+            if e.get("event") == "advance-deferred-unknown-evidence"
+            and "template unreadable" in str(e.get("error"))], events
+
+
+@pytest.mark.parametrize("enforced,expected", [(False, 4), (True, 5)])
+def test_the_relief_covers_the_owed_window(tmp_path: Path, monkeypatch,
+                                           enforced: bool,
+                                           expected: int) -> None:
+    """The sweep must free what the gate will count, or the newcomer waits.
+
+    Capacity 6: two finished movers' orphans (2 + 2), 2 free, and a
+    newcomer's 2 + 2 window.  Without the owed GiB the admission shortfall
+    is 2, so the relief asks free to reach 4; with it the gate needs one
+    more, and a relief that ignored it would evict too little.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.mint_tier_capacity(TIER, {"stage_gib": 6})
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    for ordinal in (0, 1):
+        adopted._stage_range(queue, mover=adopted._hexkey(f"stalemover{ordinal}"),
+                             consumer="8" * 64, stage=stage, ordinal=ordinal,
+                             manifest="e" * 64)
+    adopted._publish_consumer(queue, adopted.SECOND,
+                              adopted._plan(queue, adopted.SECOND,
+                                            label="second"))
+    assert queue.tier_ledger(TIER).available()["stage_gib"] == 2
+    monkeypatch.setattr(po, "unheld_window_gib", _owes(1))
+    if enforced:
+        monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
+    else:
+        monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
+    pressure = tier_loop.window_pressure(
+        queue, tiers={TIER: adopted._tier_record(stage, gib=6)})
+    assert pressure.get(TIER) == expected, pressure

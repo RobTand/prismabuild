@@ -47,6 +47,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import produced_output  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
@@ -1898,6 +1899,50 @@ def _unpublished_lead(needs: Mapping[str, object], published: set[str]) -> bool:
     return bool(lead) and str(lead) not in published
 
 
+#: Opt-in switch for the produced-output obligation (#747).  ``1`` counts
+#: each tier's unheld producer window (``produced_output.unheld_window_gib``)
+#: in the joint-fit gate, the fence check and the newcomer relief; unset or
+#: ``0`` counts it as zero, as before.  ``--output-windows`` sets it.
+OUTPUT_WINDOWS_ENV = "PRISMABUILD_TIER_OUTPUT_WINDOWS"
+
+
+def output_windows_enabled() -> bool:
+    """Whether this loop counts produced-output windows; refuses any other value."""
+
+    value = os.environ.get(OUTPUT_WINDOWS_ENV, "")
+    if value in ("", "0"):
+        return False
+    if value == "1":
+        return True
+    raise ValueError(
+        f"{OUTPUT_WINDOWS_ENV} must be unset, 0 or 1, not {value!r}")
+
+
+def output_obligation(queue: pool.PoolQueue, tier_id: str
+                      ) -> tuple[int, bool, str, str]:
+    """``(output_gib, enforced, output_note, error)`` for one tier's gate.
+
+    Off (the default), the obligation is zero with the standing
+    ``output-scope-unenforced`` note, exactly as before #747.  On, it is
+    the GiB of live producer windows that nobody holds: the room a
+    producer's next ``refill_window`` takes back from free.  An obligation
+    the census cannot read is an error, never zero, and the caller defers
+    the tier as it does for an unreadable ledger.
+    """
+
+    if not output_windows_enabled():
+        return (0, False, window_credit.OUTPUT_UNENFORCED_NOTE, "")
+    try:
+        owed = produced_output.unheld_window_gib(queue, tier_id)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return (0, True, "", f"output windows unreadable: {exc}")
+    if owed["gib"] is None:
+        return (0, True, "", "output windows unknown: " + "; ".join(
+            f"{str(entry.get('owner', ''))[:12] or '(scopes)'}: "
+            f"{entry.get('error', '')}" for entry in owed["unknown"]))
+    return (int(owed["gib"]), True, "", "")
+
+
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -2142,13 +2187,20 @@ def window_pressure(
                     ready_full += int(tier_needs.get(kind, 0) or 0)
         except (OSError, pool.PoolContractError, ValueError):
             ready_full = 0
+        output_gib, output_enforced, _note, output_error = (
+            output_obligation(queue, tier_id))
+        if output_error:
+            # Unknown output evidence: the real gate defers this tier, so
+            # no relief could admit anything and none is asked for.
+            continue
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             cur = int(needs.get("current_min_gib") or 0)
             nxt = needs.get("next_min_gib")
             next_gib = int(nxt) if isinstance(nxt, int) else 0
             decision = window_credit.gate_newcomer(
-                held_gib=held_total, ready_gib=ready_full, output_gib=0,
+                held_gib=held_total, ready_gib=ready_full,
+                output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib, cur_min_gib=cur,
                 next_min_gib=nxt if isinstance(nxt, int) else None,
                 existing_min_next_gib=existing_next)
@@ -2158,8 +2210,8 @@ def window_pressure(
                 # Permanent (oversize) or unknown: no relief could admit
                 # it, and evicting for it would be futile by definition.
                 continue
-            shortfall = (held_total + ready_full + cur + next_gib
-                         + existing_next - capacity_gib)
+            shortfall = (held_total + ready_full + output_gib + cur
+                         + next_gib + existing_next - capacity_gib)
             if 0 < shortfall <= orphan_gib:
                 # Relief, stated as the free the sweep must reach: evicting
                 # ``shortfall`` admits this newcomer, and the sweep's
@@ -2540,7 +2592,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     ready_rows.append((action, row_gib))
                     ready_by_key[action] = item
         held_total = sum(int(tokens.get(kind, 0)) for tokens in held.values())
-        output_gib = 0  # unenforced until the produced-output contract lands
+        output_gib, output_enforced, output_note, output_error = (
+            output_obligation(queue, tier_id))
+        if output_error:
+            unknown_tiers.add(tier_id)
+            events.append({"event": "advance-deferred-unknown-evidence",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "error": output_error})
+            continue
         # New money per queued row: a row fully covered by its funding
         # record will consume its fence instead of free, so it commits no
         # new capacity.  Funded rows are invisible to everyone but the
@@ -2615,13 +2674,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "need_gib": cur, "tier_id": tier_id,
                         "waiting_consumer": waiting_consumer,
                         "waiting_priority": waiting_priority,
-                        "output_note": window_credit.OUTPUT_UNENFORCED_NOTE,
+                        "output_note": output_note,
                     }
                     continue
                 decision = window_credit.gate_newcomer(
                     held_gib=held_total + running_extra + running_fence,
                     ready_gib=ready_new_money,
-                    output_gib=output_gib, capacity_gib=capacity_gib,
+                    output_gib=output_gib, output_enforced=output_enforced,
+                    capacity_gib=capacity_gib,
                     cur_min_gib=cur, next_min_gib=nxt if isinstance(nxt, int) else None,
                     existing_min_next_gib=reserve_next or 0)
                 if not decision["admit"]:
@@ -2770,8 +2830,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             "reason": window_credit.REASON_STALL,
                             "permanent": False, "need_gib": cur,
                             "tier_id": tier_id,
-                            "output_note":
-                                window_credit.OUTPUT_UNENFORCED_NOTE,
+                            "output_note": output_note,
                         }
                         if added_extra:
                             running_extra -= added_extra
@@ -2787,8 +2846,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             "reason": window_credit.REASON_STALL,
                             "permanent": False, "need_gib": cur,
                             "tier_id": tier_id,
-                            "output_note":
-                                window_credit.OUTPUT_UNENFORCED_NOTE,
+                            "output_note": output_note,
                         }
                         if added_extra:
                             running_extra -= added_extra
@@ -2830,8 +2888,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
                         "tier_id": tier_id,
-                        "output_note":
-                            window_credit.OUTPUT_UNENFORCED_NOTE,
+                        "output_note": output_note,
                     }
                     if added_extra:
                         running_extra -= added_extra
@@ -2878,8 +2935,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             "reason": window_credit.REASON_STALL,
                             "permanent": False, "need_gib": cur,
                             "tier_id": tier_id,
-                            "output_note":
-                                window_credit.OUTPUT_UNENFORCED_NOTE,
+                            "output_note": output_note,
                         }
                     if added_extra:
                         running_extra -= added_extra
@@ -2933,7 +2989,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     "reason": window_credit.REASON_STALL,
                     "permanent": False, "need_gib": cur,
                     "tier_id": tier_id,
-                    "output_note": window_credit.OUTPUT_UNENFORCED_NOTE,
+                    "output_note": output_note,
                 }
                 if added_extra:
                     running_extra -= added_extra
@@ -3003,8 +3059,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
                         "tier_id": tier_id,
-                        "output_note":
-                            window_credit.OUTPUT_UNENFORCED_NOTE,
+                        "output_note": output_note,
                     }
                     if added_extra:
                         running_extra -= added_extra
@@ -3020,8 +3075,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
                         "tier_id": tier_id,
-                        "output_note":
-                            window_credit.OUTPUT_UNENFORCED_NOTE,
+                        "output_note": output_note,
                     }
                     if added_extra:
                         running_extra -= added_extra
@@ -3062,7 +3116,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
                         "tier_id": tier_id,
-                        "output_note": window_credit.OUTPUT_UNENFORCED_NOTE,
+                        "output_note": output_note,
                     }
                     if added_extra:
                         running_extra -= added_extra
@@ -3082,7 +3136,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     "reason": window_credit.REASON_STALL,
                     "permanent": False, "need_gib": cur,
                     "tier_id": tier_id,
-                    "output_note": window_credit.OUTPUT_UNENFORCED_NOTE,
+                    "output_note": output_note,
                 }
                 if added_extra:
                     running_extra -= added_extra
@@ -4514,6 +4568,10 @@ def _parser() -> argparse.ArgumentParser:
                              "re-read each cycle")
     parser.add_argument("--once", action="store_true",
                         help="run one cycle, print the records as JSON and exit")
+    parser.add_argument("--output-windows", action="store_true",
+                        help="count each tier's unheld produced-output window "
+                             "in the joint-fit gate and the fence check (#747); "
+                             f"sets {OUTPUT_WINDOWS_ENV}=1. Off by default")
     return parser
 
 
@@ -4588,6 +4646,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.interval_s <= 0:
         raise SystemExit("--interval-s must be positive")
+    if args.output_windows:
+        os.environ[OUTPUT_WINDOWS_ENV] = "1"
+    try:
+        output_windows_enabled()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     try:
         with runtime_gate.role_singleton(Path(__file__)):
             return _serve(args)

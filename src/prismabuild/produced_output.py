@@ -1321,6 +1321,115 @@ def refill_window(queue, instance: Mapping[str, object],
             "kind": kind}
 
 
+def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
+    """The live producers' admitted windows that nobody holds, on one tier.
+
+    A producer reserves its template's ``window_gib`` on the tier at claim
+    (``owner_demand_terms``), and its batches spend that window by exact
+    transfer. Retirement returns the spent credits to FREE, not to the
+    owner, and the owner takes them back with `refill_window`. Between a
+    retirement and the refill the window is owed but held by nobody, so a
+    tier gate that counts only held tokens and queued demand counts it as
+    zero, and a consumer's window can take the room the refill needs.
+
+    Per live owner this is ``window - held - outstanding``, floored at zero,
+    with the same terms `refill_window` bounds itself by: ``held`` is the
+    owner's own holdings and ``outstanding`` is what its batches still hold
+    elsewhere (`PoolQueue._output_outstanding_window_tokens`). Both are held
+    tokens a gate already counts, so the result never counts a token twice.
+    A queued owner's window is still in its ready demand and a finished or
+    superseded owner owes nothing, so only an owner whose live CLAIMED row
+    names the instance's own attempt contributes.
+
+    Liveness is read first, from the claimed row alone, so a dead owner's
+    records are never opened: a torn record under a finished owner costs
+    nothing. For a live owner, an unreadable instance, claim, filed template
+    or holding makes the obligation unknown: ``gib`` is ``None`` and
+    ``unknown`` names the owner. An unreadable batch census counts no
+    outstanding tokens, which can only raise the result, and ``bounded``
+    names the owner. Returns ``{"gib", "owners", "unknown", "bounded"}``.
+    Read-only: it takes no lock and changes nothing.
+    """
+
+    from prismabuild import pool as pool_mod
+    from prismabuild import storage_tiers as tiers_mod
+
+    tier = str(tier_id)
+    kind = tiers_mod.capacity_kind_of(tier)
+    owed: dict[str, int] = {}
+    unknown: list[dict[str, str]] = []
+    bounded: list[str] = []
+    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    try:
+        owners = _scope_owners(scopes_root)
+    except FileNotFoundError:
+        owners = []
+    except OSError as exc:
+        return {"gib": None, "owners": {},
+                "unknown": [{"owner": "", "error": f"scopes unreadable: {exc}"}],
+                "bounded": []}
+    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    for owner in owners:
+        try:
+            if not queue.item_path(pool_mod.CLAIMED, owner).exists():
+                continue
+            paths = _owner_instance_paths(scopes_root / owner)
+        except OSError as exc:
+            unknown.append({"owner": owner, "error": f"unreadable: {exc}"})
+            continue
+        window: int | None = None
+        error = ""
+        for path in paths:
+            try:
+                instance = validate_instance(json.loads(path.read_text()))
+            except (OSError, ValueError) as exc:
+                error = f"instance {path.name} unreadable: {exc}"
+                break
+            if str(instance["owner_action_key"]) != owner:
+                error = f"instance {path.name} names another owner"
+                break
+            gated = _require_live_owner(queue, instance)
+            if gated is not None:
+                refusal = str(gated.get("refusal") or "")
+                if refusal in ("owner-not-running", "stale-superseded-owner"):
+                    continue
+                error = f"claim unreadable: {refusal}"
+                break
+            try:
+                template = validate_template(json.loads(
+                    (templates_root
+                     / f"{instance['template_id']}.json").read_text()))
+            except (OSError, ValueError) as exc:
+                error = f"template {instance['template_id']} unreadable: {exc}"
+                break
+            if template_sha256(template) != instance["template_sha256"]:
+                error = (f"template {instance['template_id']} is not the one "
+                         "the instance is bound to")
+                break
+            if tier not in template["permitted_tiers"]:
+                continue
+            bound = int(template["working_demands"][tier]["window_gib"])
+            window = bound if window is None else max(window, bound)
+        if error:
+            unknown.append({"owner": owner, "error": error})
+            continue
+        if window is None:
+            continue
+        try:
+            held = int(queue.tier_ledger(tier).holder_tokens(owner).get(kind, 0))
+        except (OSError, pool_mod.PoolContractError, ValueError) as exc:
+            unknown.append({"owner": owner, "error": f"holdings unreadable: {exc}"})
+            continue
+        outstanding, census_unknown = (
+            queue._output_outstanding_window_tokens(owner, tier, kind))
+        if census_unknown:
+            outstanding = 0
+            bounded.append(owner)
+        owed[owner] = max(0, window - held - int(outstanding))
+    return {"gib": None if unknown else sum(owed.values()),
+            "owners": owed, "unknown": unknown, "bounded": bounded}
+
+
 def _planned_omitted_absent(prewrite: Mapping[str, object],
                             sealed: list[dict[str, object]]) -> bool:
     """Every planned path the descriptors omit is proven absent.
@@ -4774,6 +4883,32 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         return {"ok": True, "released": released, "lease_proof": lease_proof}
 
 
+def _scope_owners(scopes_root: Path) -> list[str]:
+    """Owner directories under the produced-output scopes root, sorted."""
+
+    return sorted(p.name for p in scopes_root.iterdir() if p.is_dir())
+
+
+def _owner_instance_paths(owner_dir: Path) -> list[Path]:
+    """Every filed instance record of one owner, in name order.
+
+    Bound instances live at ``<owner>/<template>.<nonce>/instance.json``; a
+    flat ``<owner>/<name>.json`` other than ``commitments.json`` is the older
+    spelling and still counts. Raises ``OSError`` when the owner directory
+    cannot be listed.
+    """
+
+    candidates: list[Path] = []
+    for child in sorted(owner_dir.iterdir()):
+        if child.is_dir():
+            candidate = child / "instance.json"
+            if candidate.is_file():
+                candidates.append(candidate)
+        elif child.suffix == ".json" and child.name != "commitments.json":
+            candidates.append(child)
+    return candidates
+
+
 def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, object]]:
     """Deterministic read-only reconciliation for the tier-loop tick.
 
@@ -4793,22 +4928,13 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     events: list[dict[str, object]] = []
     scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
     try:
-        owners = sorted(p.name for p in scopes_root.iterdir() if p.is_dir())
+        owners = _scope_owners(scopes_root)
     except OSError:
         return events
     out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
     for owner in owners:
-        owner_dir = scopes_root / owner
-        candidates: list[Path] = []
         try:
-            for child in sorted(owner_dir.iterdir()):
-                if child.is_dir():
-                    # Bound instances live at <owner>/<template>.<nonce>/instance.json.
-                    candidate = child / "instance.json"
-                    if candidate.is_file():
-                        candidates.append(candidate)
-                elif child.suffix == ".json" and child.name != "commitments.json":
-                    candidates.append(child)
+            candidates = _owner_instance_paths(scopes_root / owner)
         except OSError:
             continue
         for path in candidates:
@@ -5352,6 +5478,7 @@ __all__ = [
     "commit_batch",
     "publish_prepaid_batch",
     "refill_window",
+    "unheld_window_gib",
     "build_stage_manifest",
     "retire_batch",
     "reclaim_origin",
