@@ -271,7 +271,7 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
     """Return one verified read-only wait snapshot without blocking its parent.
 
     The child only reads the submission namespaces, terminal records, immutable
-    preemption links, sealed request, and CAS receipt/payload.  In particular,
+    attempt evidence, sealed request, and CAS receipt/payload.  In particular,
     it never resumes a SLURM job or files an ending.  The generation selected
     by a preemption handoff returns to the parent, which keeps that exact
     identity on every later observation.

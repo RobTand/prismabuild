@@ -287,8 +287,10 @@ The existing immutable attempt outcome also retains the preemption handoff
 context and interrupted-attempt prefix. If a later same-status generation
 replaces the mutable terminal summary, the waiter reconstructs the original
 retry's ending from that attempt, revalidating canonical history, log digests
-and withdrawal lineage. Recovery writes no queue pointer and names the immutable
-attempt as its source. Attempts predating this context provide no inferred link.
+and withdrawal lineage. The same exact-generation reader serves an ordinary
+generation whose row a later run replaced, with no handoff context to follow.
+Recovery writes no queue pointer and names the immutable attempt as its source.
+Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
@@ -337,15 +339,30 @@ pre-check gives — the egress defers as in-flight, the output mover reports
 `published: false` — so the flag makes the existing decision exact rather than
 adding a new one.
 
-Known limit: a waiter is still pinned to a generation whose mutable
-`done`/`failed` row a later generation of the same key can replace, and a
-waiter that has not yet observed its own ending when that happens has no exact
-reader for it.
+A waiter pinned to a generation is not limited to the mutable terminal rows,
+which a later generation of the same key can replace. The immutable attempt
+outcome that `finish` publishes before the row moves is read back by
+`PoolQueue.archived_generation_outcomes`: exact to the generation, every
+attempt in its directory verified against the `(action_key, published_unix)`
+name and its canonical attempt path, the contiguous numbered run ending at its
+terminal attempt rebuilt as history, and the adopted first-writer summary,
+log digests and byte counts checked. A numbered run must begin at attempt 1
+unless the attempt's immutable handoff context proves the interrupted prefix;
+a missing prefix with no context refuses rather than being reported as
+authorized history, and the `<number>.receipt-reconciliation.json` sidecars
+filed beside the attempts are not attempts. Tampered, malformed or incomplete
+archive evidence refuses with `PoolContractError` instead of being read
+around; an archive with no terminal attempt answers nothing rather than
+inventing a verdict. The selection step `pbrun.outcome_poll` calls it beside
+the mutable rows for the same reason it follows a preemption successor: the
+waiter's generation is the one it submitted, and a newer generation's ending
+is never reported as this run's.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
-the three mutable terminal rows, immutable withdrawal decisions, archived
-preemption evidence, and the exact successor selection above; the selected
+the three mutable terminal rows, immutable withdrawal decisions, the archived
+endings of the exact generation (preemption successors included), and the
+exact successor selection above; the selected
 generation returns to the parent and is carried into the next snapshot.
 After an ending lands, its immutable attempt history and logs are verified in a
 second, separately bounded child before `pbrun` prints a result. The parent
@@ -4598,6 +4615,36 @@ free), nor the successor id.
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
+* **Origin reachability is typed at the mover (#804).** A produced-output
+  prefix is validated as an absolute normalized path and nothing more, and
+  the mover runs on the tier host, which is usually not the box that wrote
+  it. The classification is a bounded POST-COPY diagnosis, not a census over
+  healthy work: only when the copy has staged nothing and did not overrun
+  does `stage_move.origin_reachability_diagnosis` stat the distinct origin
+  directories of the declared window -- one stat each, through the same
+  mount map the copy reads through -- and file the result on that receipt as
+  `origin_reachability`: `unreachable` only for positive proof (a missing
+  component, a path that is not a directory, EACCES/EPERM), `unknown` for
+  every other stat failure, `partial` for a mixed window, `reachable` for a
+  reachable root whose declared file is gone. A mover that staged nothing
+  beside an `unreachable` window refuses `origin_unreachable` instead of the
+  ordinary `residency_moved_nothing`. It never vetoes the copy, so adoption
+  of an already-published incarnation still completes a mover whose origin
+  root is gone, and a mover that stages any byte pays no directory stat at
+  all.
+  `materialization_state` reads the active mover's receipt ONCE and derives
+  `mover_receipt_complete` and `mover_refusal` from that exact observation,
+  so the two can never describe two generations of a rewritten record; a
+  typed `origin_unreachable` is returned through the failure contract every
+  caller already raises on, as `ok: False` with `refusal:
+  origin_unreachable` beside the retained mover/materialization identity
+  (`mover_key`, `generation`, `tier`, `mover_queue_state`). The owner
+  therefore stops on the FIRST failed attempt, with no consumer patch.
+  Unknown I/O is never typed as an origin refusal, and an absent or
+  unreadable receipt leaves both answers None -- silence is not a named
+  failure and not readiness. Only the ACTIVE materialization's own receipt
+  can answer this: a retired predecessor's refusal is history and never
+  poisons its successor.
 * **Successor identity (PO-03).** The successor's mover key IS its funding key, and it
   is the content-addressed key of a request PB seals over the filed
   materialization GENERATION (`_seal_output_mover`, `log_name` plus
@@ -4684,10 +4731,11 @@ The contract is three-valued, never two:
   partial batch is occupancy: half a batch on the stage is half a stage spent.
   An overrun is occupancy too -- it refused for staging MORE than it declared.
 * **Proven empty — release.** A mover that filed a refusal receipt
-  (`residency_moved_nothing`) naming this tier, reporting `bytes_staged` as
-  EXACT non-boolean integer zero, and published no fragment. All three, as a
-  conjunction. A zero-output failure frees its reservation because nothing is
-  occupying anything.
+  (`residency_moved_nothing`, or `origin_unreachable` for a window whose
+  origin directories are not on the tier host) naming this tier, reporting
+  `bytes_staged` as EXACT non-boolean integer zero, and published no
+  fragment. All three, as a conjunction. A zero-output failure frees its
+  reservation because nothing is occupying anything.
 * **Unknown — retain.** Anything else, including a MISSING move receipt and a
   malformed count. `stage_move` publishes a fragment per entry as the bytes
   land and calls `record_move` once, last, so a kill in that window leaves
@@ -4890,9 +4938,11 @@ newcomer on *current plus protected next* against held and queued bytes. A
 window that fits only after orphan reclamation therefore deadlocked beside
 reclaimable bytes: the sweep relieved one phase, the gate kept refusing on
 cur+next, and nothing re-pressured (2026-09-20, attributable pristine-main
-failure `44b15d345804`). `window_pressure` now probes each true newcomer —
-nothing published, landed or accepted — through `gate_newcomer` itself, with
-conservative obligations (full queued demand and a minimum next-step term
+failure `44b15d345804`). `window_pressure` probes each newcomer through
+`gate_newcomer` itself. A newcomer has an unpublished lead: adopted later
+ranges do not admit its missing head (#829). Both the pressure probe and
+the publication gate use that identity and the next still-unpublished legs,
+with conservative obligations (full queued demand and a minimum next-step term
 from progressing windows). The relief is stated as the free the sweep must reach
 (`free + shortfall`) and is bounded to the tier's orphans. A window that
 cannot fit even after every orphan returns — permanently oversize, or blocked
@@ -4902,11 +4952,14 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
-This repair is scoped to stage newcomer admission. It retains the previous
-RAM pressure calculation, and its full queued-demand estimate can defer
+Admission relief applies to both stage and RAM. RAM asks only when its normal
+bounded window has a promotion whose stage source is resident, preserving
+the existing rule against eviction for an unavailable source or a declined
+run-ahead phase. Its full queued-demand estimate can defer
 additional relief when some ready rows are already funded. It is not a
-complete liveness proof. The source, CPU results and outstanding live checks
-are recorded in `orphan_pressure_acceptance_2026-09-20.json`.
+complete liveness proof. Earlier acceptance is recorded in
+`orphan_pressure_acceptance_2026-09-20.json`; #829's repair has its own scoped
+acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`.
 
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on

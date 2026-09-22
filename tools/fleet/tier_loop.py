@@ -1615,6 +1615,13 @@ def adopt_resident_ranges(
     return events
 
 
+def _unpublished_lead(needs: Mapping[str, object], published: set[str]) -> bool:
+    """The publication gate's newcomer boundary, including adopted tails."""
+
+    lead = needs.get("lead_mover_action_key")
+    return bool(lead) and str(lead) not in published
+
+
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -1658,11 +1665,10 @@ def window_pressure(
     cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
     # Newcomer admission probes (#orphan-pressure): collected during the
-    # walk, probed once per tier after it.  A newcomer is a live consumer
-    # whose window has published nothing yet; its admission is the joint
-    # gate's cur+next contract, and the relief it can wait for is the
-    # tier's orphans.
-    newcomers: dict[str, list[tuple[object, object]]] = {}
+    # walk, probed once per tier after it. A newcomer has an unpublished
+    # lead, even when later ranges were adopted (#829): use the publication
+    # gate's identity and remaining needs on both movement legs.
+    newcomers: dict[str, list[Mapping[str, object]]] = {}
     landed_next: dict[str, int] = {}
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
@@ -1702,13 +1708,11 @@ def window_pressure(
                              int(phase.get("stage_gib", 0))))
         waiting = [key for key, _gib in legs
                    if key in already - staged and key not in cancelled]
-        if not already and not staged and accepted is None:
-            # Nothing published, nothing landed, no accepted phase: this
-            # window's admission is the joint gate's to decide, probed
-            # for the sweep after the walk.  A consumer already inside
-            # its window is not a newcomer whatever its rows look like.
-            newcomers.setdefault(str(tier_id), []).append(
-                (plan, accepted))
+        stage_needs = residency_plan.advance_needs(
+            plan, accepted, published=sorted(already), staged=sorted(staged))
+        stage_newcomer = _unpublished_lead(stage_needs, already)
+        if stage_newcomer:
+            newcomers.setdefault(str(tier_id), []).append(stage_needs)
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -1729,9 +1733,8 @@ def window_pressure(
         assert isinstance(wanted, list)
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
-            if already or staged or accepted is not None:
-                # A window with progress (published, landed or accepted)
-                # is not the newcomer below; its next is the joint gate's
+            if not stage_newcomer:
+                # An admitted window's next is the joint gate's
                 # ``existing_min_next`` term, minimum first, collected so
                 # the newcomer probe asks with the same shape.  Counted
                 # for every progressing window so the probe never asks
@@ -1799,6 +1802,15 @@ def window_pressure(
         if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
+            ram_needs = residency_plan.advance_needs(
+                plan, accepted, published=sorted(state["already"]),
+                staged=sorted(state["staged"]), mover_role="ram_mover_row")
+            if _unpublished_lead(ram_needs, set(state["already"])):
+                newcomers.setdefault(ram_tier_id, []).append(ram_needs)
+            else:
+                ram_next = int(ram_wanted[0]["stage_gib"])
+                landed_next[ram_tier_id] = min(
+                    landed_next.get(ram_tier_id, ram_next), ram_next)
     # Newcomer admission pressure (#orphan-pressure): the joint-fit gate's
     # own decision, asked here for the sweep.  A newcomer gated by a
     # TRANSIENT joint-fit stall is waiting on room that may exist as safe
@@ -1855,12 +1867,7 @@ def window_pressure(
         except (OSError, pool.PoolContractError, ValueError):
             ready_full = 0
         existing_next = landed_next.get(tier_id, 0)
-        for plan, accepted in waiting_newcomers:
-            try:
-                needs = window_credit.decision_needs(
-                    plan, accepted, published=[])
-            except (ValueError, TypeError, KeyError, OSError):
-                continue
+        for needs in waiting_newcomers:
             cur = int(needs.get("current_min_gib") or 0)
             nxt = needs.get("next_min_gib")
             next_gib = int(nxt) if isinstance(nxt, int) else 0
@@ -2068,7 +2075,6 @@ def _advance_wants(queue: pool.PoolQueue,
                 "consumer": key, "tier_id": tier_id, "leg": mover_role,
                 "error": f"advance needs refused: {exc!r}"})
             continue
-        lead = needs.get("lead_mover_action_key")
         already_set = set(already)
         staged_set = set(staged)
         wants.append({
@@ -2078,7 +2084,7 @@ def _advance_wants(queue: pool.PoolQueue,
             # Newcomer while its lead is unpublished: the gate blocks the
             # formation event (publishing the lead), not the landing.  Once
             # the lead is queued, later cycles treat it as admitted.
-            "newcomer": bool(lead) and str(lead) not in already_set,
+            "newcomer": _unpublished_lead(needs, already_set),
         })
     return wants, unknown
 

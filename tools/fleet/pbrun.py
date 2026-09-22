@@ -2483,10 +2483,16 @@ def outcome_poll(
                 found.append((path, record))
     if generation is not None and not any(
             record.get("published_unix") == generation for _, record in found):
-        # A later same-status generation may have replaced the only mutable
-        # terminal row. The preemption successor's immutable attempt still
-        # carries its generation link, complete history and original verdict.
-        found.extend(q.archived_preemption_outcomes(key, generation=generation))
+        # A later generation may have replaced the only mutable terminal row:
+        # done/ and failed/ are one slot per action key, so a re-run of the
+        # same content-addressed work legitimately overwrites the earlier
+        # row (#817).  The immutable attempt filed before that row moved still
+        # carries this generation's verdict, its complete history and its
+        # logs.  A preemption successor's handoff context is one shape of that
+        # evidence and an ordinary generation is the other; the reader is
+        # exact to the generation and refuses tampered or incomplete
+        # archives rather than reporting a neighbour's verdict.
+        found.extend(q.archived_generation_outcomes(key, generation=generation))
     if generation is not None and found:
         # A legacy ending with no generation remains the fallback when it is
         # the only account of this run.  It must not outrank an exact ending
@@ -2770,9 +2776,15 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     ):
         adopted = q.adopted_attempt_summary(outcome)
         disposition = adopted["disposition"]
+        # An ending recovered from its own immutable attempt is not filed in a
+        # disposition directory at all -- the attempt path is its source, for
+        # an ordinary generation and a preemption successor alike.  A mutable
+        # terminal row must still sit in the directory its adopted
+        # disposition names.
         archived_source = (
-            outcome.get("preemption_context") is not None
-            and Path(outcome_path) == q.attempt_path(outcome, outcome["attempts"]))
+            isinstance(outcome.get("attempts"), int)
+            and Path(outcome_path) == q.attempt_path(
+                outcome, outcome["attempts"]))
         if not archived_source and disposition != Path(outcome_path).parent.name:
             raise pool.PoolContractError(
                 "terminal queue directory disagrees with the adopted immutable "

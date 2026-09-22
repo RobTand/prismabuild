@@ -2096,6 +2096,8 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
         "prior": _advance_prior(prior),
         "queued": _entry_list(queued),
         "queued_prior": _advance_prior(queued_prior),
+        "fence_target": fence_target,
+        "fence_prior": fence_prior,
     }
     return out
 
