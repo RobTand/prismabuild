@@ -5745,6 +5745,19 @@ can then reclaim orphan refs. A lost attestation file can be reconstructed
 from a validated complete export stored in the terminal. Unknown scope or
 pin state retains ownership, and an old attempt cannot release a successor.
 
+The cover lookup (`covers_for_keys`) only selects movers; `acquire`
+revalidates under the ownership lock before anything pins. The lookup keeps
+each mover's validated sidecar and fragment per process, keyed by root,
+consumer and mover, and bounded at `COVER_DOCS_CACHE_PAIRS` (#893). Every
+call still opens both files, so NFS close-to-open revalidates them, and a
+file is read and validated again only when the `(st_dev, st_ino, st_size,
+st_mtime_ns, st_ctime_ns)` of the descriptor just opened changes. The
+identity never leaves the process, so `st_dev` is consistent here, unlike in
+the portable identity above. Both writers rename a new inode into place, so
+every republish, #823's same-generation one included, is seen; a same-size
+rewrite of the same inode within one timestamp tick would not be, and no
+writer makes one. Absence and malformation are never cached.
+
 ### A same-key retry resumes its own qualified coverage
 
 A mover's action key is a content hash, so a retried mover — a timeout, a
