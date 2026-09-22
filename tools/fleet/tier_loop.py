@@ -1146,6 +1146,20 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     """
 
     events: list[dict[str, object]] = []
+    # Only a filed plan can attribute work to a dead consumer. Discover these
+    # positive candidates before inspecting terminal history: live_state's
+    # safe absence check lists the live queue, so doing it for every historical
+    # action creates history-by-live-queue work (#870). This is only a filter;
+    # _sweep_dead_consumer still rechecks terminal, live state and current plan
+    # under the consumer lock before withdrawing or reaping anything. A plan
+    # filed after this observation is conservatively deferred to the next pass.
+    try:
+        filed_keys = {path.stem for path in pool._scan(queue.root / pool.RESIDENCY_PLANS)
+                      if path.suffix == ".json" and len(path.stem) == 64}
+    except OSError:
+        return events
+    if not filed_keys:
+        return events
     for state in (pool.FAILED, pool.WITHDRAWN, pool.DONE):
         try:
             paths = list(pool._scan(queue.dir(state)))
@@ -1154,7 +1168,7 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
         for path in paths:
             name = path.name
             key = name[:-len(".json")] if name.endswith(".json") else name
-            if len(key) != 64:
+            if key not in filed_keys:
                 continue
             _sweep_dead_consumer(queue, key=key, state=state, path=path,
                                  events=events)
