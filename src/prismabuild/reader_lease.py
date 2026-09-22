@@ -58,12 +58,15 @@ capability.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
+import threading
 import time
 import uuid
 
@@ -83,6 +86,10 @@ LEASES_SUBDIR = "leases"
 MATERIAL_SUBDIR = "material"
 
 _HEX = frozenset("0123456789abcdef")
+#: ``_HEX`` checked at C speed: ``[0-9a-f]`` is a literal ASCII range, so a
+#: full match accepts exactly the strings whose every character is in
+#: ``_HEX`` (#893: the per-character generator dominated cover lookups).
+_HEX_RUN = re.compile("[0-9a-f]*")
 
 
 class ReaderLeaseError(ValueError):
@@ -225,7 +232,7 @@ def write_material(root: str | Path, *, consumer_action_key: str,
 
 def _hex(value: object, length: int, *, where: str) -> str:
     if (not isinstance(value, str) or len(value) != length
-            or any(c not in _HEX for c in value)):
+            or _HEX_RUN.fullmatch(value) is None):
         raise ReaderLeaseError(f"{where} must be {length} lowercase hex")
     return value
 
@@ -1521,24 +1528,134 @@ def auto_reclaim(queue, *, residency_root=None) -> dict[str, object]:
 # Window cover lookup (PQ-facing helper): what to acquire, without inventing
 # --------------------------------------------------------------------------
 
-def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
-                       context: dict | None):
-    """Validated (material, fragment) for one mover, sidecar-checked cache.
+#: How many ``(root, consumer, mover)`` pairs the cover lookup keeps
+#: validated in this process (#893).  One pair holds that mover's validated
+#: material sidecar and fragment: what one pre-#893 lookup parsed for that
+#: mover and then dropped.  A reader serves one consumer, whose live movers
+#: are one staged window; R11 (GLM Stage A) has 27, about 19 MB of JSON.
+#: Pairs of movers that leave the consumer's material directory are pruned
+#: on the next lookup, so the cache follows the live set, and the bound only
+#: caps a process that looks up many consumers or roots, at about nine times
+#: R11's live set.  A live set larger than the bound stays correct: the
+#: least recently used pairs are re-read, as every pair was before #893.
+COVER_DOCS_CACHE_PAIRS = 256
 
-    The cache holds VALIDATED documents.  The sidecar is re-read on every
-    call; a repeat lookup reuses the cached fragment only while the fresh
-    sidecar equals the cached one.  The stage mover republishes both
-    documents incrementally as entries land under ONE generation per run
-    (stage_move.publish / begin_material), so the generation alone cannot
-    date the pair: a republished sidecar re-reads the fragment and replaces
-    the cache entry.  Absence and malformation are NEVER cached, so newly
-    published material is always seen.  Selection only: acquire revalidates
-    under the ownership lock before anything pins.
+#: ``(root, consumer, mover) -> (material slot, fragment slot)``; a slot is
+#: ``(identity, validated document)`` or ``None``.  Guarded by
+#: ``_COVER_DOCS_LOCK``.  Reads and validation run outside the lock, so two
+#: threads may both re-read a changed file; the later store wins, and both
+#: answers came from their own opens.
+_COVER_DOCS: OrderedDict[tuple[str, str, str], tuple[object, object]] = (
+    OrderedDict())
+_COVER_DOCS_LOCK = threading.Lock()
+
+
+def clear_cover_docs_cache() -> None:
+    """Forget every validated cover document this process holds."""
+
+    with _COVER_DOCS_LOCK:
+        _COVER_DOCS.clear()
+
+
+def _read_cover_doc(path: Path, validate, held):
+    """``(identity, validated document)`` for one cover file, reusing ``held``.
+
+    Opens first, so NFS close-to-open revalidates the file's attributes
+    exactly as the unconditional re-read did, then takes the identity from
+    the descriptor it opened: ``(st_dev, st_ino, st_size, st_mtime_ns,
+    st_ctime_ns)``.  Never a separate ``stat`` of the name, whose cached
+    attributes can be older than the open.  An unchanged identity returns
+    ``held`` without reading; any change reads and validates through the
+    same descriptor.  Both writers of these files (``write_material`` and
+    ``residency_map.write_fragment``) rename a new inode into place, so every
+    republish, including #823's same-generation incremental republish,
+    presents a new identity.  An in-place rewrite changes the size or moves
+    the modification and change times at the filesystem's timestamp
+    granularity; a same-size rewrite of the same inode inside one timestamp
+    tick is the one change this identity cannot see, and no writer of these
+    files makes one.  Raises what a fresh read raises: ``OSError``
+    (``FileNotFoundError`` when absent), or ``ValueError`` for a document
+    that does not parse or validate.
     """
 
-    material = read_material(root, consumer_action_key, mover)
-    if not isinstance(material, dict):
+    with open(path) as stream:
+        info = os.fstat(stream.fileno())
+        identity = (info.st_dev, info.st_ino, info.st_size,
+                    info.st_mtime_ns, info.st_ctime_ns)
+        if held is not None and held[0] == identity:
+            return held
+        return identity, validate(json.load(stream))
+
+
+def _remember_cover_docs(slot: tuple[str, str, str], material_slot,
+                         fragment_slot) -> None:
+    with _COVER_DOCS_LOCK:
+        _COVER_DOCS[slot] = (material_slot, fragment_slot)
+        _COVER_DOCS.move_to_end(slot)
+        while len(_COVER_DOCS) > COVER_DOCS_CACHE_PAIRS:
+            _COVER_DOCS.popitem(last=False)
+
+
+def _forget_cover_docs(slot: tuple[str, str, str]) -> None:
+    with _COVER_DOCS_LOCK:
+        _COVER_DOCS.pop(slot, None)
+
+
+def _prune_cover_docs(root: str, consumer_action_key: str,
+                      live: set[str]) -> None:
+    """Drop the pairs of movers that left the consumer's material directory."""
+
+    with _COVER_DOCS_LOCK:
+        gone = [slot for slot in _COVER_DOCS
+                if slot[0] == root and slot[1] == consumer_action_key
+                and slot[2] not in live]
+        for slot in gone:
+            del _COVER_DOCS[slot]
+
+
+def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
+                       context: dict | None):
+    """Validated (material, fragment) for one mover, identity-checked.
+
+    The process keeps VALIDATED documents keyed by ``(root, consumer,
+    mover)`` (#893).  Every call still opens both files, so each answer is
+    exactly as fresh as the unconditional re-read it replaces, and a file is
+    read and validated again only when the identity of the descriptor just
+    opened differs from the one validated (:func:`_read_cover_doc`).
+    PrismaQuant passes a fresh ``context`` on every call, so before #893 each
+    call re-read and re-validated every mover's documents: 19 MB and 13,956
+    fragment entries on R11, two or three times per staged entry.
+
+    The sidecar is checked first on every call.  A caller's persistent
+    ``context`` reuses its cached fragment only while that fresh sidecar
+    equals the cached one: the stage mover republishes both documents
+    incrementally as entries land under ONE generation per run
+    (stage_move.publish / begin_material), so the generation alone cannot
+    date the pair (#823).  Absence and malformation are NEVER cached; either
+    drops the mover's pair, so newly published material is always seen.
+    The returned documents are shared across calls and threads, and callers
+    must not mutate them.  Selection only: acquire revalidates under the
+    ownership lock before anything pins.
+    """
+
+    from prismabuild import residency_map as map_mod
+
+    slot = (str(root), consumer_action_key, mover)
+    with _COVER_DOCS_LOCK:
+        held = _COVER_DOCS.get(slot)
+        if held is not None:
+            _COVER_DOCS.move_to_end(slot)
+    held_material, held_fragment = held if held is not None else (None, None)
+    try:
+        # Validators resolve at call time: the module attributes stay the
+        # one definition of a valid document.
+        material_slot = _read_cover_doc(
+            material_path(root, consumer_action_key, mover),
+            lambda value: validate_material(value), held_material)
+    except (OSError, ValueError):
+        _forget_cover_docs(slot)
         return None, None
+    material = material_slot[1]
     generation = str(material.get("generation") or "")
     if not generation:
         return None, None
@@ -1546,14 +1663,17 @@ def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
         hit = context.get(f"cover:{consumer_action_key}:{mover}")
         if (isinstance(hit, dict) and hit.get("generation") == generation
                 and hit.get("material") == material):
+            _remember_cover_docs(slot, material_slot, held_fragment)
             return hit.get("material"), hit.get("fragment")
     try:
-        from prismabuild import residency_map as map_mod
-        with open(map_mod.fragment_path(
-                root, consumer_action_key, mover)) as stream:
-            fragment = map_mod.validate_fragment(json.load(stream))
+        fragment_slot = _read_cover_doc(
+            map_mod.fragment_path(root, consumer_action_key, mover),
+            lambda value: map_mod.validate_fragment(value), held_fragment)
     except (OSError, ValueError):
+        _forget_cover_docs(slot)
         return None, None
+    fragment = fragment_slot[1]
+    _remember_cover_docs(slot, material_slot, fragment_slot)
     if context is not None:
         context[f"cover:{consumer_action_key}:{mover}"] = {
             "generation": generation, "material": material,
@@ -1604,13 +1724,15 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
             if entry.is_file() and entry.name.endswith(".json"))
     except OSError:
         return {"ok": False, "refusal": "unpublished"}
+    _prune_cover_docs(str(base), consumer_action_key,
+                      {name[:-len(".json")] for name in names})
     wanted = set(keys)
     # Per-key candidates: mover -> (bytes, digest, generation).
     candidates: dict[str, list[tuple[str, object, object, str]]] = {}
     selected: dict[str, dict[str, object]] = {}
     for name in names:
         mover = name[:-len(".json")]
-        if len(mover) != 64 or any(c not in _HEX for c in mover):
+        if len(mover) != 64 or _HEX_RUN.fullmatch(mover) is None:
             continue
         material, fragment = _cached_cover_docs(
             base, consumer_action_key, mover, context)
@@ -1646,8 +1768,20 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
         fragment_entries = fragment.get("entries")
         if not isinstance(fragment_entries, dict):
             continue
-        for key, mention in material_entries.items():
-            if str(key) not in wanted or not isinstance(mention, dict):
+        # Visit only the wanted keys this mover mentions, from whichever
+        # side is smaller: PQ asks for one key per call, and each R11 mover
+        # mentions about 500 (#893).  Keys are independent below, so the
+        # visiting order within one mover changes nothing; the mover order,
+        # which fixes each key's candidate order, is unchanged.
+        if len(wanted) < len(material_entries):
+            mentions = [(key, material_entries[key]) for key in wanted
+                        if key in material_entries]
+        else:
+            mentions = [(key, mention)
+                        for key, mention in material_entries.items()
+                        if str(key) in wanted]
+        for key, mention in mentions:
+            if not isinstance(mention, dict):
                 continue
             vouched = fragment_entries.get(str(key))
             # The sidecar dates the fragment's vouching: same path,
