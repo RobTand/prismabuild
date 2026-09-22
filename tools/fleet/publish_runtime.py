@@ -152,6 +152,10 @@ FLEET_SCRIPTS = (
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("profile_finish_census.py",
+     "a read-only profile of the census a finish pays, run from a checkout "
+     "through pbrun against a view of a queue's funding directory; it is a "
+     "record of one measurement rather than an operator command"),
     ("qualify_rollout.py",
      "paired rollout qualification actors use submitted checkouts and a fresh "
      "private shared root; their simulated host services are not an operator "

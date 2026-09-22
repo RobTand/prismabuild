@@ -170,7 +170,7 @@ def test_finish_returns_tier_tokens_through_the_output_aware_release(
     assert claimed is not None
     monkeypatch.setattr(
         pool.PoolQueue, "output_keep_names_for_owner",
-        lambda self, owner_key, tier_id: (set(), True))
+        lambda self, owner_key, tier_id, **_census: (set(), True))
     queue.finish(KEY_A, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 1}}
