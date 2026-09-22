@@ -105,17 +105,20 @@ class ResourceProfileMetrics(unittest.TestCase):
             "schema": "prismabuild.resource_profile.v1",
             "box_window": {"source": "pqteld", "gpu": {
                 "source": "pqteld", "power_w_peak": 42.0,
-                "power_reference_w": 140.0,
-                "power_peak_fraction_of_reference": 0.3}},
+                "power_reference_w": 100.0,
+                "power_reference_scope": "declared_fallback",
+                "power_peak_fraction_of_reference": 0.42}},
         }
         _write(path, record)
         text = self.collect(terminal_limit=20)
+        # The scope the reading was taken against is a label, so two
+        # denominators are never maxed into one series (#806).
         self.assertIn(
             'prismabuild_terminal_box_window{host="sparky",'
-            'metric="gpu_power_peak_watts"} 42', text)
+            'metric="gpu_power_peak_watts",scope="declared_fallback"} 42', text)
         self.assertIn(
             'prismabuild_terminal_box_window{host="sparky",'
-            'metric="gpu_power_peak_fraction"} 0.3', text)
+            'metric="gpu_power_peak_fraction",scope="declared_fallback"} 0.42', text)
         self.assertFalse(
             [line for line in _samples(text, "prismabuild_terminal_box_window")
              if 'host="dl380"' in line],
@@ -135,12 +138,14 @@ class ResourceProfileMetrics(unittest.TestCase):
         _write(path, record)
         text = self.collect(terminal_limit=20)
         samples = _samples(text, "prismabuild_terminal_box_window")
+        # A framebuffer reading needs no power reference, so its scope is
+        # empty, which Prometheus reads as no label at all.
         self.assertIn(
             'prismabuild_terminal_box_window{host="sparky",'
-            'metric="gpu_framebuffer_used_peak_bytes"} 2147483648', text)
+            'metric="gpu_framebuffer_used_peak_bytes",scope=""} 2147483648', text)
         self.assertIn(
             'prismabuild_terminal_box_window{host="sparky",'
-            'metric="gpu_framebuffer_total_bytes"} 17179869184', text)
+            'metric="gpu_framebuffer_total_bytes",scope=""} 17179869184', text)
         self.assertFalse([line for line in samples if 'metric="gpu_power_' in line])
 
 

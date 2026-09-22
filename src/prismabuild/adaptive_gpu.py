@@ -110,6 +110,58 @@ def admission_power_reference(device, state):
     return float(declared), 'declared_fallback', DECLARED_GPU_POWER_REFERENCE_SOURCE
 
 
+def reporting_power_reference(device, state):
+    """Return ``(watts, scope, source)`` for a reference a *reader* divides by.
+
+    Receipts, metrics and the cross-resource placement proxy publish the same
+    GPU-only ``power_w`` admission reads, so they divide it by the same
+    reference: this defers to ``admission_power_reference`` and adds nothing
+    to it.  One number, one meaning -- a receipt and a refusal on the same box
+    at the same moment cannot disagree about what full looks like.
+
+    Reporting differs from admission in one direction only.  Admission refuses
+    a device it has no GPU-only reference for, because admitting on an unknown
+    ceiling is the decision that costs something; a reader has nothing to
+    refuse, so a device that publishes only its vendor SoC envelope is still
+    described -- under the ``soc_tdp`` scope, which says the denominator
+    covers CPU power the numerator does not.  That is a labelled fallback a
+    reader can discount, and every caller here carries the scope beside the
+    ratio so it can be.  The scope allow-list is admission's: a reference
+    nobody scoped is still no reference at all.
+    """
+    watts, scope, source = admission_power_reference(device, state)
+    if _number(watts) and watts > 0:
+        return watts, scope, source
+    if device.get('power_reference_scope') != 'soc_tdp':
+        return None, None, None
+    published = device.get('power_reference_w')
+    if not _number(published) or not published:
+        return None, None, None
+    return float(published), 'soc_tdp', device.get('power_reference_source')
+
+
+def host_local_power_state(ledger_base):
+    """Admission's own state, for a reader that wants only its sampled peaks.
+
+    The measured reference lives in one place -- the host-local
+    ``gpu-state.json`` admission ratchets under its own lock -- so a receipt
+    or a placement reading reads that record rather than keeping a second one
+    that could drift from it.  Total by construction: no ledger, no base, an
+    unreadable directory or a torn file all mean "no peaks recorded here",
+    which leaves ``reporting_power_reference`` on the declared floor.  That is
+    still a GPU-only, labelled reference, so a reader never falls back to the
+    SoC envelope because a file was missing.  Reporting is the caller here and
+    reporting has nothing to refuse, so this answers rather than raises.
+    """
+    if not ledger_base:
+        return {}
+    try:
+        return adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(ledger_base) / 'gpu-state.json')
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
 def record_power_peak(state, device):
     """Ratchet the highest GPU-only draw sampled from this device.
 

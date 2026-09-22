@@ -40,6 +40,8 @@ from pathlib import Path
 import subprocess
 import time
 
+from . import adaptive_gpu
+
 #: Memory the box keeps for itself rather than offering the queue its last
 #: byte.  Carried over from the ``--honest-memory`` flag this replaces.
 MEMORY_MARGIN_GB = 8
@@ -299,6 +301,7 @@ def observe(
     *,
     margin_gb: int = MEMORY_MARGIN_GB,
     gpu_sample: object = _READ,
+    gpu_state: Mapping[str, object] | None = None,
     mem_gb: object = _READ,
     load1: object = _READ,
     now: float | None = None,
@@ -314,6 +317,13 @@ def observe(
     function takes itself. GPU ownership comes only from the broker's
     attributed job and foreign-process inventories; process counts are never
     inferred here.
+
+    ``gpu_state`` is admission's host-local record, whose ratcheted GPU power
+    peaks raise the power reference above its declared floor (#806).  It is an
+    explicit argument and not a sentinel read: this module reaches no ledger,
+    so there is no box to read it from here.  Omitting it costs precision and
+    nothing else -- the declared floor is still a GPU-only, labelled reference
+    -- and the resulting scope says which one was used.
 
     A kind nothing here knows how to read passes through untouched: an
     unobservable resource is not a busy one.
@@ -362,14 +372,19 @@ def observe(
                 "gpu_attributed_jobs": len(jobs),
                 "foreign_gpu_processes": len(foreign_processes),
             })
-            # How loaded the GPU is, read as power against its envelope --
+            # How loaded the GPU is, read as power against a reference --
             # never as ``gpu_utilization``, which on GB10 reports a resident
             # kernel rather than working SMs and reads the same at 47 W and
-            # 140 W.  The reference is the device's own power limit, or the
-            # SoC envelope when the device declares that scope, which is the
-            # rule ``adaptive_gpu`` already admits on.  Published only when
-            # every device answers: an unreadable device must not average away
-            # as idle, so one gap withholds the whole field.
+            # 140 W.  ``power_w`` is GPU-only, so the reference is GPU-only:
+            # ``adaptive_gpu.reporting_power_reference``, the same one
+            # admission divides by, is asked for it here rather than a second
+            # rule being written down (#806).  A device it can say nothing
+            # better about keeps the published SoC envelope, and then
+            # ``gpu_power_reference_scope`` says ``soc_tdp`` so a reader knows
+            # the denominator includes CPU power the numerator does not.
+            # Published only when every device answers: an unreadable device
+            # must not average away as idle, so one gap withholds the whole
+            # field.
             #
             # Two numbers leave this block, because one name was doing two
             # jobs.  ``gpu_power_fraction`` is the congestion proxy placement
@@ -383,21 +398,31 @@ def observe(
             # tell the two apart without re-reading the broker.
             power_fractions = []
             measured_fractions = []
+            references: list[tuple[float, object]] = []
             for device in devices:
                 power = _number(device.get("power_w"))
-                reference = _number(device.get("power_limit_w"), positive=True)
-                if reference is None and device.get("power_reference_scope") == "soc_tdp":
-                    reference = _number(device.get("power_reference_w"), positive=True)
+                watts, scope, _ = adaptive_gpu.reporting_power_reference(
+                    device, gpu_state if isinstance(gpu_state, Mapping) else {})
+                reference = _number(watts, positive=True)
                 if power is None or reference is None:
                     break
+                references.append((reference, scope))
                 measured_fractions.append(power / reference)
-                # A throttled device is at its envelope whatever the sampled
+                # A throttled device is at its reference whatever the sampled
                 # draw says, the same reading ``adaptive_gpu`` calls congested.
                 power_fractions.append(max(power / reference,
                                            1.0 if device.get("limited") is True else 0.0))
             if len(power_fractions) == len(devices):
                 detail["gpu_power_fraction"] = max(power_fractions)
                 detail["gpu_power_measured_fraction"] = max(measured_fractions)
+                # The denominator behind ``gpu_power_measured_fraction``, and
+                # what kind of ceiling it is.  A published ratio whose scope a
+                # reader cannot see is the defect this closes, so the pair
+                # names the device the maximum came from rather than an
+                # average nothing was measured against.
+                loudest = measured_fractions.index(max(measured_fractions))
+                detail["gpu_power_reference_w"] = references[loudest][0]
+                detail["gpu_power_reference_scope"] = references[loudest][1]
                 detail["gpu_power_sampled_unix"] = gpu_sample["sampled_unix"]
                 limited_flags = [device.get("limited") for device in devices]
                 if any(flag is True for flag in limited_flags):

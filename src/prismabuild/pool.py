@@ -1710,6 +1710,7 @@ _CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
 #: absence of one, and "not measured" never renders as a measurement of zero.
 RESOURCE_SUMMARY_FIELDS = ("memory_peak_bytes", "io_read_bytes", "io_write_bytes",
                            "gpu_power_peak_w", "gpu_power_reference_w",
+                           "gpu_power_reference_scope",
                            "gpu_power_peak_fraction", "gpu_framebuffer_used_peak_bytes",
                            "gpu_framebuffer_total_bytes")
 
@@ -1730,8 +1731,12 @@ def resource_profile_summary(detail: Mapping[str, object]) -> dict[str, object]:
     """The three facts an ending can report about what its run cost.
 
     Peak memory and I/O come from the exact attempt's own accounting; GPU power
-    comes from the box window, against the reference the device published, so
-    the fraction says what it is a fraction of.
+    comes from the box window, against the GPU-only reference admission itself
+    divides by, with the scope of that reference beside it so the fraction
+    says what it is a fraction of (#806).  ``gpu_power_reference_scope`` is
+    ``None`` on every record filed before that reference existed, which is how
+    a fraction taken against the SoC TDP stays distinguishable from one taken
+    against a measured GPU ceiling.
     """
 
     summary: dict[str, object] = {field: None for field in RESOURCE_SUMMARY_FIELDS}
@@ -1750,6 +1755,8 @@ def resource_profile_summary(detail: Mapping[str, object]) -> dict[str, object]:
     if isinstance(gpu, Mapping):
         summary["gpu_power_peak_w"] = _measured(gpu.get("power_w_peak"))
         summary["gpu_power_reference_w"] = _measured(gpu.get("power_reference_w"))
+        scope = gpu.get("power_reference_scope")
+        summary["gpu_power_reference_scope"] = scope if isinstance(scope, str) and scope else None
         summary["gpu_power_peak_fraction"] = _measured(
             gpu.get("power_peak_fraction_of_reference"))
         summary["gpu_framebuffer_used_peak_bytes"] = _measured(
@@ -1795,7 +1802,13 @@ def describe_resource_profile(ending: Mapping[str, object]) -> str:
         if reference is not None:
             cell += f"/{float(reference):.1f}W"
         if fraction is not None:
-            cell += f"({float(fraction) * 100:.0f}%)"
+            # The percentage never travels without the name of what it is a
+            # percentage of.  ``unknown`` is for records filed before the
+            # reference was scoped, and reads as "do not compare this one"
+            # rather than as a reading taken against today's reference (#806).
+            scope = ending.get("gpu_power_reference_scope")
+            cell += (f"({float(fraction) * 100:.0f}%,"
+                     f"{scope if isinstance(scope, str) and scope else 'unknown'})")
         parts.append(cell)
     used = ending.get("gpu_framebuffer_used_peak_bytes")
     total = ending.get("gpu_framebuffer_total_bytes")
@@ -10662,9 +10675,13 @@ class PoolQueue:
             return 0.0            # no GPU to take power from; nothing to prefer away
         stamp = detail.get("gpu_power_sampled_unix")
         # Placement is about drawn power, not the limiter flag: an idle
-        # SW-capped device draws ~3% of its SoC envelope while the legacy
-        # congestion proxy reads 1.0.  Prefer the raw measured fraction when
-        # the offer carries it; fall back to the legacy proxy for old offers.
+        # SW-capped device draws ~3% of its GPU power reference while the
+        # legacy congestion proxy reads 1.0.  Prefer the raw measured fraction
+        # when the offer carries it; fall back to the legacy proxy for old
+        # offers.  Both are fractions of whatever reference the offer's
+        # ``gpu_power_reference_scope`` names, which is GPU-only wherever the
+        # box could derive one (#806) and the SoC envelope only on a device
+        # nothing better is known about.
         measured = detail.get("gpu_power_measured_fraction")
         legacy = detail.get("gpu_power_fraction")
         load = measured if number(measured) else legacy
@@ -15910,21 +15927,40 @@ class PoolQueue:
         profile["box_window"] = window
         return profile
 
-    @staticmethod
-    def _box_window(start_unix: float, finished_unix: float) -> dict[str, object]:
+    def _gpu_power_state(self) -> dict:
+        """Admission's host-local GPU record, for the reference the receipt uses.
+
+        Read, never written, and never allowed to fail the finish path: an
+        unreachable record leaves ``reporting_power_reference`` on its declared
+        GPU-only floor, which is a coarser answer and not a wrong one.
+        """
+
+        try:
+            return gpu_admission.host_local_power_state(
+                getattr(self.ledger(), "base", None))
+        except Exception:                                    # noqa: BLE001
+            return {}
+
+    def _box_window(self, start_unix: float, finished_unix: float) -> dict[str, object]:
         """The box's own view of these seconds, or why there isn't one.
 
         Bounded and total: the finish path may not fail on telemetry, so every
         way this can go wrong ends in ``unavailable`` with the reason on the
         record.  An action lost to its own instrumentation would be a worse
         defect than the blindness this is fixing.
+
+        The GPU power reference is resolved against this host's own admission
+        state, so the receipt's fraction and the admission decision taken
+        seconds earlier divide by the same watts (#806).
         """
 
+        state = self._gpu_power_state()
         try:
             return box_window.read_window(
                 start_unix, finished_unix, host=socket.gethostname(),
                 csv_dir=box_window.default_csv_dir(),
-                gpu_reference=box_window.gpu_power_reference)
+                gpu_reference=lambda *, timeout_s: box_window.gpu_power_reference(
+                    timeout_s=timeout_s, state=state))
         except Exception as exc:                                 # noqa: BLE001
             return {"schema": box_window.BOX_WINDOW_SCHEMA_V1,
                     "host": socket.gethostname(),

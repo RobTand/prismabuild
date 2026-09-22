@@ -566,7 +566,8 @@ def test_gpu_reference_uses_only_the_remaining_window_budget(monkeypatch, csv_el
 
     def devices(*, timeout_s):
         budgets.append(timeout_s)
-        return [{"power_reference_w": 140.0}], []
+        return [{"power_reference_w": 140.0,
+                 "power_reference_scope": "soc_tdp"}], []
 
     monkeypatch.setattr(box_window, "_pqteld_series", csv)
     monkeypatch.setattr(gpu_capacity, "devices", devices)
@@ -668,8 +669,9 @@ PROFILE = {
     "process_io": {"source": "proc_io", "read_bytes": 1024,
                    "write_bytes": 64 * MIB},
     "box_window": {"source": "pqteld", "gpu": {
-        "source": "pqteld", "power_w_peak": 42.0, "power_reference_w": 140.0,
-        "power_peak_fraction_of_reference": 0.3}},
+        "source": "pqteld", "power_w_peak": 42.0, "power_reference_w": 100.0,
+        "power_reference_scope": "declared_fallback",
+        "power_peak_fraction_of_reference": 0.42}},
 }
 
 
@@ -680,12 +682,15 @@ def test_pbstatus_endings_report_peak_memory_io_and_gpu_power(tmp_path):
     assert row["io_write_bytes"] == 64 * MIB
     assert row["io_read_bytes"] == 1024
     assert row["gpu_power_peak_w"] == pytest.approx(42.0)
-    assert row["gpu_power_reference_w"] == pytest.approx(140.0)
-    assert row["gpu_power_peak_fraction"] == pytest.approx(0.3)
+    assert row["gpu_power_reference_w"] == pytest.approx(100.0)
+    assert row["gpu_power_reference_scope"] == "declared_fallback"
+    assert row["gpu_power_peak_fraction"] == pytest.approx(0.42)
     rendered = "\n".join(pbstatus.ending_lines([row]))
     assert "RESOURCE" in rendered
     assert "rss=3.0G" in rendered
-    assert "gpu=42.0W/140.0W(30%)" in rendered
+    # The percentage never travels without the name of what it is a
+    # percentage of (#806).
+    assert "gpu=42.0W/100.0W(42%,declared_fallback)" in rendered
 
 
 def test_an_ending_from_before_the_profile_renders_absent_not_zero(tmp_path):
