@@ -2132,6 +2132,24 @@ def window_pressure(
                 ram_next = int(ram_wanted[0]["stage_gib"])
                 landed_next[ram_tier_id] = min(
                     landed_next.get(ram_tier_id, ram_next), ram_next)
+    # The owed output windows (#747), once per tier that asks for room.  Off
+    # by default, every tier reads ``(0, False)`` and nothing below changes.
+    # On, the fence check counts the owed window, so the next-phase relief
+    # must leave it free as well, or an admitted window's advance waits
+    # beside reclaimable orphans; the newcomer probe counts it too.  An
+    # obligation the census cannot read defers the tier's publication, so
+    # no relief could admit anything there and none is asked for.
+    owed: dict[str, tuple[int, bool]] = {}
+    for tier_id in sorted(set(need) | {t for t, w in newcomers.items() if w}):
+        owed_gib, owed_enforced, _note, owed_error = (
+            output_obligation(queue, tier_id))
+        if owed_error:
+            need.pop(tier_id, None)
+            newcomers.pop(tier_id, None)
+            continue
+        owed[tier_id] = (owed_gib, owed_enforced)
+        if owed_enforced and owed_gib and tier_id in need:
+            need[tier_id] += owed_gib
     # Newcomer admission pressure (#orphan-pressure): the joint-fit gate's
     # own decision, asked here for the sweep.  A newcomer gated by a
     # TRANSIENT joint-fit stall is waiting on room that may exist as safe
@@ -2187,12 +2205,7 @@ def window_pressure(
                     ready_full += int(tier_needs.get(kind, 0) or 0)
         except (OSError, pool.PoolContractError, ValueError):
             ready_full = 0
-        output_gib, output_enforced, _note, output_error = (
-            output_obligation(queue, tier_id))
-        if output_error:
-            # Unknown output evidence: the real gate defers this tier, so
-            # no relief could admit anything and none is asked for.
-            continue
+        output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             cur = int(needs.get("current_min_gib") or 0)
