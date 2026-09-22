@@ -12961,7 +12961,11 @@ class PoolQueue:
                 if (age is None
                         and record.get("withdrawn_unix") is None
                         and not self.attempt_path(
-                            record, prior_attempts + 1).exists()):
+                            record, prior_attempts + 1).exists()
+                        # Consumed output funding proves this claim already
+                        # persisted its lease; a subsequently missing lease
+                        # cannot restore its one-use entitlement (#848).
+                        and self._spent_output_retry_stop(record) is None):
                     # Nothing ever ran under this claim, so nothing failed under
                     # it.  ``claim`` writes the lease before it returns and
                     # ``execute`` writes the child pid into it before the payload
@@ -13119,7 +13123,12 @@ class PoolQueue:
                 # Whatever the outcome, the dead claimant's capacity goes back.  A
                 # reservation outliving its holder is the starvation bug's shape.
                 self._release_reservation(
-                    key, host=holder if isinstance(holder, str) else socket.gethostname())
+                    key, host=holder if isinstance(holder, str) else socket.gethostname(),
+                    # A terminal spent-output attempt may have copied only a
+                    # prefix. Its existing material pin still owns occupancy;
+                    # stopping retries does not retire that material.
+                    keep_tier=(adopted.get("output_retry_stopped") is True
+                               and self.pin_holds_tier_tokens(record, key)))
                 try:
                     _write_json_atomic(destination, record)
                 except OSError:
@@ -13756,6 +13765,81 @@ class PoolQueue:
 
     # -- attempt evidence and terminal states ----------------------------
 
+    @classmethod
+    def _validate_output_retry_stop(cls, evidence: object,
+                                    attempt: Mapping[str, object]) -> None:
+        """Validate a self-contained immutable exception to the retry budget.
+
+        Never consult today's funding here: retirement or a later publication
+        cannot change the disposition of an already archived attempt.
+        """
+        if (not isinstance(evidence, Mapping)
+                or set(evidence) != {"schema", "reason", "funding",
+                                     "claim_funding", "produced_output_batch"}
+                or evidence.get("schema") != "prismabuild.output_retry_stop.v1"
+                or evidence.get("reason") != "output_funding_consumed"):
+            raise PoolContractError("invalid output retry-stop evidence")
+        funding = cls.validate_output_funding(evidence.get("funding"))
+        claimed = evidence.get("claim_funding")
+        ref = evidence.get("produced_output_batch")
+        if (funding["state"] != "consumed"
+                or funding["mover_action_key"] != attempt.get("action_key")
+                or funding["published_unix"] != attempt.get("published_unix")
+                or not isinstance(claimed, Mapping)
+                or claimed.get("variant") != "output"
+                or claimed.get("generation") != funding["generation"]
+                or claimed.get("kinds") != {funding["kind"]: len(funding["tokens"])}
+                or not isinstance(claimed.get("tokens"), list)
+                or any(not isinstance(name, str) for name in claimed["tokens"])
+                or sorted(claimed["tokens"]) != sorted(funding["tokens"])
+                or not isinstance(ref, Mapping)
+                or ref.get("schema") != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
+                or not cls._output_record_matches_request(funding, ref)):
+            raise PoolContractError("output retry-stop binding differs from attempt")
+
+    def _spent_output_retry_stop(self, record: Mapping[str, object]
+                                 ) -> dict[str, object] | None:
+        """Prove this claim consumed precisely the output fence it was given.
+
+        Called only while archiving a failed attempt under its transition
+        lock. Unknown/absent/changed proof grants no terminal override. This
+        reads no producer liveness or material state and releases nothing.
+        """
+        ref = record.get("produced_output_batch")
+        claimed = record.get("tier_funding")
+        if not isinstance(ref, Mapping) or not isinstance(claimed, Mapping):
+            return None
+        tier = ref.get("tier_id")
+        if not isinstance(tier, str):
+            return None
+        binding = claimed.get(tier)
+        if not isinstance(binding, Mapping):
+            return None
+        try:
+            funding, state = self.output_funding_file_state(
+                str(record.get("action_key")), tier)
+            if state != "ok" or funding is None:
+                return None
+            sealed, present = _sealed_produced_output_batch(
+                record.get("cas_root"), str(record.get("action_key")))
+            if present and not self._output_projection_matches_request(ref, sealed):
+                return None
+            residency = record.get("residency")
+            if (not isinstance(residency, Mapping)
+                    or residency.get("tier_id") != tier
+                    or residency.get("manifest_sha256") != funding["manifest_digest"]
+                    or residency.get("range_start_bytes") != funding["range_start_bytes"]
+                    or residency.get("range_end_bytes") != funding["range_end_bytes"]):
+                return None
+            proof = {"schema": "prismabuild.output_retry_stop.v1",
+                     "reason": "output_funding_consumed",
+                     "funding": dict(funding), "claim_funding": dict(binding),
+                     "produced_output_batch": dict(ref)}
+            self._validate_output_retry_stop(proof, record)
+            return proof
+        except (OSError, PoolContractError, TypeError, ValueError):
+            return None
+
     def archive_attempt(
         self,
         record: Mapping[str, object],
@@ -13850,6 +13934,13 @@ class PoolQueue:
                 "sha256": digest,
             }
 
+        # A spent output fence is an execution entitlement for one claim,
+        # not a retryable reservation. File the positive binding alongside
+        # the original failure; never rewrite the request's attempt budget.
+        retry_stop = (self._spent_output_retry_stop(record)
+                      if status not in {"executed", "cache_hit"} else None)
+        if retry_stop is not None:
+            disposition = FAILED
         outcome = {
             "schema": POOL_ATTEMPT_SCHEMA_V1,
             "action_key": str(record.get("action_key") or ""),
@@ -13871,6 +13962,8 @@ class PoolQueue:
             "detail": details,
             "logs": logs,
         }
+        if retry_stop is not None:
+            outcome["output_retry_stop"] = retry_stop
         if (record.get("preempted_by") is not None
                 and type(record.get("attempt_history_missing_before")) is int
                 and record["attempt_history_missing_before"] > 0):
@@ -14289,8 +14382,13 @@ class PoolQueue:
         if type(attempt) is not int or type(max_attempts) is not int:
             raise PoolContractError("pool attempt transition has invalid bounds")
         succeeded = status in {"executed", "cache_hit"}
+        stopped = "output_retry_stop" in adopted
+        if stopped:
+            if succeeded:
+                raise PoolContractError("successful attempt cannot stop an output retry")
+            self._validate_output_retry_stop(adopted["output_retry_stop"], adopted)
         expected = (
-            DONE if succeeded else FAILED if attempt >= max_attempts else "requeued"
+            DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
         )
         if disposition != expected:
             raise PoolContractError(
@@ -14317,6 +14415,7 @@ class PoolQueue:
             "attempt": attempt,
             "status": status,
             "disposition": disposition,
+            "output_retry_stopped": stopped,
             "finished_unix": finished_unix,
             "finished_host": finished_host,
             "detail": detail,
