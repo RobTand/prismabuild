@@ -51,7 +51,12 @@ TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
 MANIFEST = "4" * 64
 GIB = storage_tiers.GIB
-PHASE_GIB = 2
+#: The phase is the one file below, so its reservation is the tokens that
+#: file's range occupies -- ``stage_tokens_for_bytes`` rounds a 1,296-byte
+#: range up to one whole GiB, which is the unit a tier can refuse on.
+#: Declaring two GiB for it would make the receipt claim a range the
+#: fragment does not cover, and adoption now refuses exactly that (#853).
+PHASE_GIB = 1
 STAGE_GIB = 5
 
 #: The live file: 1,296 bytes of calibration payload, one whole-file entry.
@@ -93,7 +98,10 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
           label: str = "") -> dict[str, object]:
     """One consumer's frozen plan over the shared manifest, as #598 tests seal."""
 
-    start, end = 0, PHASE_GIB * GIB
+    # The manifest is the one whole file, so the phase is its byte span:
+    # what the mover's complete receipt declares is what its fragment
+    # accounts for.
+    start, end = 0, SIZE
     built = [{
         "name": "phase-0",
         "start_bytes": start, "end_bytes": end, "stage_gib": PHASE_GIB,
@@ -102,14 +110,14 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
                    {STAGE_KIND: PHASE_GIB, "cpu": 1, "mem_gb": 1}),
             "residency": {
                 "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                "manifest_sha256": MANIFEST, "manifest_bytes": SIZE,
                 "range_start_bytes": start, "range_end_bytes": end},
         },
         "egress_row": _row(queue, _hexkey(f"{label}egress0"), {"mem_gb": 1}),
     }]
     return residency_plan.build_plan(
         consumer_action_key=consumer, tier_id=TIER, stage_root="/stage/prewarm",
-        manifest_sha256=MANIFEST, manifest_bytes=1 << 30, phases=built)
+        manifest_sha256=MANIFEST, manifest_bytes=SIZE, phases=built)
 
 
 def _publish_consumer(queue: pool.PoolQueue, consumer: str,
@@ -120,7 +128,7 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
         resources={"cpu": 1, "mem_gb": 1},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                   "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                   "manifest_sha256": MANIFEST, "manifest_bytes": SIZE,
                    "leads": residency_plan.leads_for(plan)})
 
 
@@ -182,8 +190,8 @@ def _publish_donor_record(queue: pool.PoolQueue, *, mover: str, consumer: str,
         entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
                            "sha256": DIGEST, "file_id": identity}})
     assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
-    start = ordinal * PHASE_GIB * GIB
-    end = (ordinal + 1) * PHASE_GIB * GIB
+    start = ordinal * SIZE
+    end = (ordinal + 1) * SIZE
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,
