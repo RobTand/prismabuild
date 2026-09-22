@@ -5126,6 +5126,7 @@ def residency_stage_rows(
     args: argparse.Namespace,
     queue,
     cas,
+    movement_receipts: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Seal every movement and egress node this submission will ever have.
 
@@ -5285,7 +5286,10 @@ def residency_stage_rows(
     # per-phase read would give two phases of one plan different demands
     # because a mover finished between them.
     readers = int(args.residency_mover_readers)
-    receipts = queue.move_records()
+    # A logical freeze supplies one invocation-local observation for all its
+    # siblings. None retains the standalone submission's fresh observation;
+    # an explicitly empty snapshot must not trigger another live census.
+    receipts = queue.move_records() if movement_receipts is None else movement_receipts
     # Which pools the receipts must have measured to price this window
     # (#611): the tier's current identity, as the tier loop announced it.
     # ``None`` -- a tier last announced by an older generation -- prices off
