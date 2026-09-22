@@ -370,7 +370,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     assert receipt["complete"] is True, receipt
     total = sum(int(d["bytes"]) for d in descs)
     assert receipt["bytes_staged"] == total
-    staged = Path(stage_root) / "p1.bin"
+    staged = Path(stage_root) / "produced-output" / res["batch_namespace"] / "p1.bin"
     assert staged.read_bytes() == payload
     q.finish(mover, status="executed")
 
@@ -734,7 +734,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
                                  tmp_path / "mover-checkout")
         assert receipt["complete"] is True, receipt
         assert receipt["bytes_staged"] == len(payload)
-        staged = Path(stage_root) / f"{tag}.bin"
+        staged = Path(stage_root) / "produced-output" / res["batch_namespace"] / f"{tag}.bin"
         assert staged.read_bytes() == payload
         q.finish(mover, status="executed")
         retired = po.retire_batch(q, inst, template, batch_id,

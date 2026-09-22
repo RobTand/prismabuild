@@ -4588,6 +4588,29 @@ seal time (`producer-checkout-snapshot-invalid` /
 `producer-checkout-snapshot-input-missing`) rather than on a worker after a
 claim.
 
+#### Produced-output physical namespaces (#849)
+
+New produced-output movers explicitly seal `--produced-output-namespace` with
+PB's existing immutable `batch_namespace`. Their files live below
+`<tier-root>/produced-output/<batch_namespace>/<manifest-relative-path>`.
+The registered tier root, ownership lock, fragment and material schemas,
+original descriptors and prepaid funding stay unchanged. Different batches
+or owner attempts can therefore retain different bytes with the same basename
+without replacing one another's material. The namespace is stable across the
+same batch's later materializations; normal pin-aware retirement still must
+finish before a successor can reuse that batch's paths.
+
+Before staging, the opt-in requires the CAS request's validated produced-output
+reference, the existing template/namespace/demand validator, and exact agreement
+with the invocation's consumer, tier, manifest and range. It cannot accept a
+foreign namespace, arbitrary path component, missing or corrupt reference, or
+an unsealed `--manifest` override. Destination collision checks, copying and
+same-key partial-coverage recovery all use the same namespace derivation.
+Ordinary inputs and historical mover requests without the explicit flag retain
+their original path layout; nothing migrates or overwrites existing material.
+A source merge does not change sealed deployed runtimes or revive a mover whose
+funding was already consumed (#848).
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.

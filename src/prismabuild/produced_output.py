@@ -2806,8 +2806,8 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     params carry the `produced_output_materialization` record. That is what
     makes the successor's content-addressed action key -- which IS its funding
     key -- unique per generation, deterministic on replay, and impossible to
-    supply as a nonce. `generation == 0` seals byte-for-byte what this lane
-    has always sealed, once the producer's own record is carried: the child's
+    supply as a nonce. Every generation seals the same physical batch namespace
+    under the registered tier root. The child's
     `params.checkout_snapshot` is the producer's validated sealed record when
     the producer has one, and absent when it does not.
 
@@ -2903,6 +2903,7 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
                "--pool-root", str(queue.root),
                "--cas-root", str(cas.root),
                "--consumer-action-key", batch_ns,
+               "--produced-output-namespace", batch_ns,
                "--tier-id", tier,
                "--stage-root", stage_root,
                "--manifest-sha256", manifest_digest,
