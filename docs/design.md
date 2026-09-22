@@ -5466,14 +5466,21 @@ sweep reads an orphan's consumer from its move receipt, and a mover can outlive
 its receipt: the canary leg-3 mover `aa34e2a6e22f` held 1 stage GiB from
 2026-09-19 with no receipt in `movers/`. When the receipt names no consumer,
 the sweep takes one fragment census and resolves the holder only if exactly
-one direct fragment names it. That holder is then an orphan like any other:
-pressure-gated, oldest receipt first (it has none, so it sorts first), then
-`evict`, which rechecks co-owners, claims, pins and handoffs under its own
-locks. No fragment, several, a produced-output fragment, or a tainted census
-retains the holder, and every pass files a `stage-receiptless-holder-retained`
-receipt that names the reason. A prepaid produced-output mover withdrawn
-before it ran is the no-fragment shape; its tokens stay with its batch's
-funding lane, which keeps such intents on purpose.
+one direct fragment names it and that consumer has provably ended: it is
+neither ready nor claimed, and exactly one outcome record (`done`, `failed`,
+or `withdrawn` with its one immutable decision) says how. That holder is then
+an orphan like any other: pressure-gated, oldest receipt first (it has none,
+so it sorts first), then `evict`, which rechecks co-owners, claims, pins and
+handoffs under its own locks. No fragment, several, a produced-output
+fragment, a tainted census, or a consumer with no ending retains the holder.
+A consumer the queue has no outcome for is not an ending: #798's legacy
+fixture is that shape, and the first version of this change deleted its
+bytes. A retained holder is reported as a `stage-receiptless-holder-retained`
+receipt naming the reason only when the tier's window still lacks room after
+the pass; otherwise it waits quietly, so an unresolvable holder does not add
+a line to every tier cycle. A prepaid produced-output mover withdrawn before
+it ran is the no-fragment shape; its tokens stay with its batch's funding
+lane, which keeps such intents on purpose.
 
 Two limits, stated rather than hidden. A direct call to the sweep with no
 pressure named still takes every orphan, which is what an operator means. And

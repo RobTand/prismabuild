@@ -160,8 +160,9 @@ STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
 #: range an operator asked about by identity.
 DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
 
-#: The event an orphan sweep files for a held mover that has no receipt and
-#: no single direct fragment to name its consumer (#892).
+#: The event an orphan sweep reports for a held mover that has no receipt and
+#: no single direct fragment naming a consumer that has ended (#892), when the
+#: tier's window still lacks room after the pass.
 RECEIPTLESS_HOLDER_EVENT = "stage-receiptless-holder-retained"
 
 #: The event a bounded prune of positively stale mentions publishes (#853).
@@ -2530,9 +2531,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     receipt is where this reads a mover's consumer, and a mover can outlive
     its receipt: the canary leg-3 mover ``aa34e2a6e22f`` held 1 GiB for
     three days with none.  Exactly one direct fragment naming the mover is
-    an exact owner, and the mover is then an orphan like any other.  No
-    fragment, several, a produced-output one, or a tainted census retains,
-    and the pass files a receipt saying which.
+    an exact owner, and once that owner has provably ended -- not queued, and
+    exactly one outcome record -- the mover is an orphan like any other.  No
+    fragment, several, a produced-output one, a tainted census, or an owner
+    with no ending retains.  A retained holder is reported, with the reason,
+    only when the tier's window still lacks room after the pass; otherwise it
+    waits quietly, as it did before.
 
     **Dead owners are retired unconditionally (#839).**  A failed consumer's
     withdrawn mover holds no tokens and filed no receipt, so the held-key
@@ -2567,6 +2571,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         except (OSError, pool.PoolContractError):
             continue
         orphans: list[tuple[float, str, str]] = []
+        retained: list[dict[str, object]] = []
         for key in held:
             if key in wanted or key in owners:
                 continue
@@ -2580,8 +2585,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                         Path(residency_root if residency_root is not None
                              else queue.root / pool.RESIDENCY))
                 consumer, why = _receiptless_owner(fragment_owners, key)
+                if consumer:
+                    why = _unended_owner(queue, consumer)
+                    if why:
+                        consumer = ""
                 if not consumer:
-                    swept.append(_receiptless_refusal(
+                    retained.append(_receiptless_refusal(
                         key, tier_id=tier_id, stage_root=stage_root, why=why))
                     continue
             staged_unix = 0.0
@@ -2607,6 +2616,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             swept.append(evict(queue, key, consumer_action_key=consumer,
                                stage_root=stage_root,
                                residency_root=residency_root, reason="orphan-sweep"))
+        if retained and _still_short(queue, tier_id, kind, needed):
+            # A retained receipt-less holder is reported only when keeping it
+            # costs something: the tier's window still lacks room after every
+            # orphan that could go has gone.  Otherwise it is a quiet wait, as
+            # before #892, rather than a line on every cycle.
+            swept.extend(retained)
         # Held keys first, then the rest of the stage: the evictions above turn
         # held bytes into absent ones, so the reconciliation below sees the same
         # directory the ledger now describes rather than one eviction behind it.
@@ -2652,7 +2667,8 @@ def _receiptless_owner(owners: dict[str, list[tuple[str, bool]]] | str,
     """The consumer that owns a held mover with no receipt, or why none can.
 
     The fragment is the document that names whose bytes a mover staged, so
-    exactly one direct fragment is an exact owner: the orphan sweep then
+    exactly one direct fragment is an exact owner.  Once
+    :func:`_unended_owner` also proves that owner ended, the orphan sweep
     treats the holder as it treats any orphan, pressure first and ``evict``
     after, and ``evict`` rechecks co-owners, claims, pins and handoffs under
     its own locks.  Anything else is not an owner (#892):
@@ -2677,6 +2693,53 @@ def _receiptless_owner(owners: dict[str, list[tuple[str, bool]]] | str,
         return "", (f"only a produced-output fragment ({namespace[:12]}) names "
                     f"this held mover; its batch lifecycle owns it")
     return namespace, ""
+
+
+def _unended_owner(queue: pool.PoolQueue, consumer: str) -> str:
+    """Why a fragment-named consumer has not provably ended, or ``""``.
+
+    The fragment names who staged the bytes; only an ending says nobody will
+    read them.  The consumer must be neither ready nor claimed, and exactly
+    one outcome record must say how it ended: ``done`` (its inputs are
+    spent), ``failed``, or ``withdrawn`` with its one immutable decision.  No
+    outcome at all is not an ending -- #798's legacy consumer is that shape,
+    and a queue whose records are not all visible yet looks the same -- and
+    two outcomes are a question, never an answer.
+    """
+
+    try:
+        live, why = residency_plan.live_state(queue, consumer)
+        if why:
+            return f"its consumer's queue state is uncertain: {why}"
+        if live:
+            return f"its consumer {consumer[:12]} is still queued ({live})"
+        ended = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
+                 if not _metadata_absent(queue.item_path(state, consumer))]
+        if not ended:
+            return f"its consumer {consumer[:12]} has no outcome record"
+        if len(ended) > 1:
+            return (f"its consumer {consumer[:12]} has {len(ended)} outcome "
+                    f"records: {', '.join(ended)}")
+        if ended[0] == pool.WITHDRAWN:
+            _require_exact_withdrawal(queue, consumer)
+        else:
+            _owner_record(queue, ended[0], consumer)
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return f"its consumer's outcome is unreadable: {exc}"
+    return ""
+
+
+def _still_short(queue: pool.PoolQueue, tier_id: str, kind: str,
+                 needed: int | None) -> bool:
+    """Whether the tier's window still lacks room after this pass's evictions."""
+
+    if needed is None or needed <= 0:
+        return False
+    try:
+        free = int(queue.tier_ledger(tier_id).available().get(kind, 0))
+    except (OSError, pool.PoolContractError):
+        return True
+    return free < needed
 
 
 def _receiptless_refusal(mover: str, *, tier_id: str, stage_root: str,
