@@ -50,6 +50,12 @@ NEW_PAYLOAD = b"n" * SIZE
 GRACE = 0.5
 
 
+def staged_name(name: str) -> str:
+    """Where the stage mover stages the whole ``SIZE``-byte source ``name``."""
+
+    return stage_move.stage_relative(f"/m/{name}", 0, SIZE, mount_prefix="/m")
+
+
 def _identity(path: Path) -> dict[str, int]:
     info = os.stat(path)
     return {"ino": int(info.st_ino), "size": int(info.st_size),
@@ -69,7 +75,7 @@ def _entries(stage: Path) -> dict[str, dict[str, object]]:
 
     out: dict[str, dict[str, object]] = {}
     for name in NAMES:
-        path = stage / name
+        path = stage / staged_name(name)
         key = residency_map.residency_map_key(str(path), 0)
         out[key] = {
             "stage_path": str(path), "bytes": SIZE, "sha256": OLD_DIGEST,
@@ -87,8 +93,8 @@ def _fragment(queue, stage, consumer, mover) -> None:
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64,
         "entries": {
-            residency_map.residency_map_key(str(stage / name), 0): {
-                "stage_path": str(stage / name), "bytes": SIZE,
+            residency_map.residency_map_key(str(stage / staged_name(name)), 0): {
+                "stage_path": str(stage / staged_name(name)), "bytes": SIZE,
                 "sha256": OLD_DIGEST, "offset": 0,
             } for name in NAMES
         },
@@ -121,7 +127,12 @@ def _stage(stage: Path, name: str, payload: bytes) -> Path:
     unmarked file would let reconcile remove the bytes and hide the block.
     """
 
-    path = stage / name
+    # ``<name>.later`` is a replacement written beside its target's staged
+    # name, to be renamed over it; everything else is the staged name.
+    later = ".later"
+    path = (stage / (staged_name(name[:-len(later)]) + later)
+            if name.endswith(later) else stage / staged_name(name))
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     os.setxattr(path, base.prewarm_loop.STAGE_SOURCE_XATTR,
                 f"/originals/{name}@0".encode())
@@ -160,7 +171,7 @@ def stale_owner(fleet, *, coherent_names=(), charged: bool = True,
             if name in coherent_names:
                 continue
             replacement = _stage(stage, f"{name}.later", NEW_PAYLOAD)
-            os.replace(replacement, stage / name)
+            os.replace(replacement, stage / staged_name(name))
     _fragment(queue, stage, consumer, mover)
     if move_receipt:
         queue.record_move(mover, {
@@ -191,7 +202,7 @@ def _sweep(queue, stage):
 def _kept(queue, stage, consumer, mover) -> None:
     """The whole ownership survives: files, fragment, material and charge."""
 
-    assert all((stage / name).exists() for name in NAMES)
+    assert all((stage / staged_name(name)).exists() for name in NAMES)
     assert residency_map.fragment_path(
         queue.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
@@ -270,7 +281,7 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
     consumer, mover = stale_owner(fleet)
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
-    assert publisher._decide(stage / NAMES[0], SIZE, "c" * 64,
+    assert publisher._decide(stage / staged_name(NAMES[0]), SIZE, "c" * 64,
                              computed=None, source_id=None,
                              heal=True)[0] == "refuse", (
         "the stale owner must block the shared publisher")
@@ -318,11 +329,11 @@ def test_a_mixed_fragment_lets_the_successor_publish_the_stale_path(
     consumer, mover = stale_owner(fleet, coherent_names=coherent)
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
-    blocked = publisher._decide(stage / NAMES[1], SIZE, OLD_DIGEST,
+    blocked = publisher._decide(stage / staged_name(NAMES[1]), SIZE, OLD_DIGEST,
                                 computed=None, source_id=None, heal=False)
     assert blocked[0] in ("wait", "refuse"), (
         f"the stale path must not adopt or replace, saw {blocked}")
-    assert publisher._decide(stage / NAMES[0], SIZE, OLD_DIGEST,
+    assert publisher._decide(stage / staged_name(NAMES[0]), SIZE, OLD_DIGEST,
                              computed=None, source_id=None,
                              heal=True)[0] == "adopt", (
         "the coherent entry must still prove its path")
@@ -332,7 +343,7 @@ def test_a_mixed_fragment_lets_the_successor_publish_the_stale_path(
     # reproduction requires is that ordinary housekeeping leaves the coherent
     # destination's bytes intact and does not leave the stale path blocked
     # forever; the successor move below is that second half.
-    assert (stage / NAMES[0]).read_bytes() == OLD_PAYLOAD, (
+    assert (stage / staged_name(NAMES[0])).read_bytes() == OLD_PAYLOAD, (
         f"the coherent destination's bytes did not survive ordinary "
         f"housekeeping: {receipts}")
 
@@ -347,7 +358,7 @@ def test_a_mixed_fragment_lets_the_successor_publish_the_stale_path(
     result = stage_move.move(args)
     assert result["complete"] and result["entries_staged"] == len(entries), (
         result["errors"])
-    assert (stage / NAMES[0]).read_bytes() == OLD_PAYLOAD, (
+    assert (stage / staged_name(NAMES[0])).read_bytes() == OLD_PAYLOAD, (
         "the coherent destination must serve the successor, adopted or "
         "republished -- never be left blocked")
     queue.record_move(copier, result)
@@ -365,7 +376,7 @@ def test_a_coherent_current_incarnation_material_is_retained(fleet):
     assert not _retired(receipts, mover), receipts
     _kept(queue, stage, consumer, mover)
     publisher = base._publisher(fleet, base._key(), base._key())
-    assert publisher._decide(stage / NAMES[0], SIZE, OLD_DIGEST,
+    assert publisher._decide(stage / staged_name(NAMES[0]), SIZE, OLD_DIGEST,
                              computed=None, source_id=None,
                              heal=True)[0] == "adopt", (
         "a coherent current-incarnation mention must still prove its path")
@@ -438,7 +449,7 @@ def test_a_live_reader_pin_keeps_the_owner_and_its_bytes(fleet):
     assert acquired.get("ok"), acquired
     for name in NAMES:
         replacement = _stage(stage, f"{name}.later", NEW_PAYLOAD)
-        os.replace(replacement, stage / name)
+        os.replace(replacement, stage / staged_name(name))
     queue.finish(mover, status="executed", detail={"returncode": 0})
     _charge(queue, mover)
 

@@ -117,7 +117,8 @@ from prismabuild import storage_tiers  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
-    _metadata_version, stage_relative, whole_file_paths,
+    RANGE_SUFFIX, _metadata_version, paths_named_once,
+    pre_range_stage_relative, stage_relative,
 )
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
@@ -829,7 +830,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
             tainted.append(f"{key[:12]}: manifest {digest[:12]} unreadable")
             continue
         mount_prefix, entries = layout
-        whole = whole_file_paths(entries)
+        named_once = paths_named_once(entries)
         try:
             window = prewarm_loop.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
@@ -841,15 +842,21 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])
             try:
-                relative = stage_relative(
-                    path, offset, int(entry["bytes"]),
-                    mount_prefix=mount_prefix,
-                    whole_file=path in whole)
+                # Both spellings: a claimed mover may be a frozen plan row
+                # of a generation from before range-only naming, still
+                # writing the bare name.  A retention census over-retains.
+                relatives = {
+                    stage_relative(path, offset, int(entry["bytes"]),
+                                   mount_prefix=mount_prefix),
+                    pre_range_stage_relative(
+                        path, offset, int(entry["bytes"]),
+                        mount_prefix=mount_prefix,
+                        named_once=path in named_once)}
             except ValueError:
                 continue
             # Compared against fragment ``stage_path`` values, which join the
             # stage root with this same relative name.
-            settled.add(relative)
+            settled.update(relatives)
     return paths, tainted, own_paths
 
 
@@ -1103,7 +1110,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
             tainted.append(f"{key[:12]}: manifest {digest[:12]} unreadable")
             continue
         mount_prefix, entries = layout
-        whole = whole_file_paths(entries)
+        named_once = paths_named_once(entries)
         try:
             window = prewarm_loop.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
@@ -1112,13 +1119,20 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])
             try:
-                relative = stage_relative(
-                    path, offset, int(entry["bytes"]),
-                    mount_prefix=mount_prefix,
-                    whole_file=path in whole)
+                # Both spellings, as in :func:`_claimed_paths_attributed`: a
+                # promotion sealed before range-only naming reads the bare
+                # name its stage leg wrote.
+                relatives = {
+                    stage_relative(path, offset, int(entry["bytes"]),
+                                   mount_prefix=mount_prefix),
+                    pre_range_stage_relative(
+                        path, offset, int(entry["bytes"]),
+                        mount_prefix=mount_prefix,
+                        named_once=path in named_once)}
             except ValueError:
                 continue
-            paths.add(os.path.normpath(os.path.join(stage_real, relative)))
+            for relative in relatives:
+                paths.add(os.path.normpath(os.path.join(stage_real, relative)))
     return paths, tainted
 
 
@@ -1635,6 +1649,12 @@ def _containment_state(stage: Path, target: Path) -> str:
     path that leaves the stage is unknown ownership, never a pathname to act
     on.  Only the final component may be missing, and that is ``"absent"``:
     the caller may prune the mention but never unlink anything.
+
+    A staged range's final name is two components, ``<rel>.pbrange`` and
+    ``<offset>-<size>``, and the unlink that retires the range prunes the
+    then-empty ``<rel>.pbrange`` directory with it.  That directory missing
+    is therefore the range missing, ``"absent"``, not an unknown
+    intermediate: every component above it was still ``lstat``ed.
     """
 
     try:
@@ -1656,10 +1676,12 @@ def _containment_state(stage: Path, target: Path) -> str:
     for index, part in enumerate(relative.parts):
         current = current / part
         last = index == len(relative.parts) - 1
+        range_directory = (index == len(relative.parts) - 2
+                           and part.endswith(RANGE_SUFFIX))
         try:
             info = os.lstat(current)
         except FileNotFoundError:
-            return "absent" if last else "unknown"
+            return "absent" if last or range_directory else "unknown"
         except OSError:
             return "unknown"
         if last:
@@ -2821,7 +2843,6 @@ def _scope_for_range(cas_root: str, manifest_sha256: str,
     if layout is None:
         return None
     mount_prefix, entries = layout
-    whole = whole_file_paths(entries)
     try:
         window = prewarm_loop.entries_between(entries, start, end)
     except (ValueError, TypeError):
@@ -2832,7 +2853,7 @@ def _scope_for_range(cas_root: str, manifest_sha256: str,
         try:
             names.add(stage_relative(
                 path, offset, int(entry["bytes"]),
-                mount_prefix=mount_prefix, whole_file=path in whole))
+                mount_prefix=mount_prefix))
         except ValueError:
             continue
     return names, list(window), mount_prefix
@@ -3168,7 +3189,6 @@ def recover_orphaned_range(
                 f"manifest {manifest_sha256[:12]} unreadable; scope "
                 f"undeterminable")
         mount_prefix, entries = layout
-        whole = whole_file_paths(entries)
         try:
             window = prewarm_loop.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
@@ -3193,18 +3213,31 @@ def recover_orphaned_range(
                 f"the window holds {len(window)} entries, not the {staged} "
                 f"the head recorded staging; scope is not that window")
         names: dict[str, dict[str, object]] = {}
+        #: The bare name a head from before range-only naming may have
+        #: written instead, per derived name.  Never deleted here: a bare
+        #: name was shared by every read of that path from offset zero, so it
+        #: is not this head's identity.  Found, it is retained and named in
+        #: the receipt rather than counted as already gone.
+        pre_range: dict[str, str] = {}
+        named_once = paths_named_once(entries)
         for entry in window:
             source, offset = str(entry["path"]), int(entry["offset"])
             try:
                 relative = stage_relative(
                     source, offset, int(entry["bytes"]),
-                    mount_prefix=mount_prefix, whole_file=source in whole)
+                    mount_prefix=mount_prefix)
+                legacy = pre_range_stage_relative(
+                    source, offset, int(entry["bytes"]),
+                    mount_prefix=mount_prefix,
+                    named_once=source in named_once)
             except ValueError as exc:
                 # A name that cannot be derived shrinks the scope silently if
                 # it is skipped, and a partial scope is a different question
                 # from the one the receipt asked.
                 return refuse(f"{source}: staged name underivable: {exc}")
             names[relative] = entry
+            if legacy != relative:
+                pre_range[relative] = legacy
         receipt["scope_entries"] = len(names)
 
         # Originals first: nothing is destroyed before the inputs they stand
@@ -3300,7 +3333,11 @@ def recover_orphaned_range(
             path = stage / relative
             try:
                 if not path.exists():
-                    already_gone += 1
+                    legacy = pre_range.get(relative)
+                    if legacy is not None and os.path.lexists(stage / legacy):
+                        retain("pre_range_name_not_this_heads_identity")
+                    else:
+                        already_gone += 1
                     continue
                 if path.is_symlink() or not path.is_file():
                     retain("not_a_regular_file")

@@ -262,15 +262,13 @@ def test_two_movers_copying_one_entry_do_not_share_a_temporary(
         entries.append({
             "path": str(path), "bytes": len(payload), "offset": 0,
             "sha256": hashlib.sha256(payload).hexdigest()})
-    whole = {str(entry["path"]) for entry in entries}
-
     copiers = [_copier(tmp_path / "stage", source_dir, owner=("a" if n == 0 else "b") * 64)
                for n in range(2)]
     assert (copiers[0]._temporary(tmp_path / "stage" / "shard-0000.bin")
             != copiers[1]._temporary(tmp_path / "stage" / "shard-0000.bin"))
     stop = threading.Event()
     threads = [threading.Thread(target=copier.run, args=(entries,),
-                                kwargs={"whole": whole, "stop": stop})
+                                kwargs={"stop": stop})
                for copier in copiers]
     for thread in threads:
         thread.start()
@@ -281,8 +279,10 @@ def test_two_movers_copying_one_entry_do_not_share_a_temporary(
         assert copier.errors == [], copier.errors[:3]
         assert copier.bytes_staged == sum(int(entry["bytes"]) for entry in entries)
     for entry in entries:
-        staged = tmp_path / "stage" / Path(str(entry["path"])).name
-        assert staged.read_bytes() == (tmp_path / "pool" / staged.name).read_bytes()
+        staged = tmp_path / "stage" / stage_move.stage_relative(
+            str(entry["path"]), 0, int(entry["bytes"]),
+            mount_prefix=str(source_dir))
+        assert staged.read_bytes() == Path(str(entry["path"])).read_bytes()
 
 
 def test_one_mover_still_cleans_up_after_itself(tmp_path: Path) -> None:
@@ -295,7 +295,7 @@ def test_one_mover_still_cleans_up_after_itself(tmp_path: Path) -> None:
     stop = threading.Event()
     copier.run([{"path": str(missing), "bytes": 16, "offset": 0,
                  "sha256": "d" * 64}],
-               whole={str(missing)}, stop=stop)
+               stop=stop)
 
     assert len(copier.errors) == 1
     leftovers = list((tmp_path / "stage").rglob("*.partial"))

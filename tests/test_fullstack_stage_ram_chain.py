@@ -160,16 +160,21 @@ def _run_chain(tmp_path: Path):
     return queue, manifest, whole_len, str(epoch["epoch"])
 
 
+def _staged(name: str, offset: int, size: int) -> str:
+    """The stage's (and the promotion's) name for one ``model/`` range."""
+
+    return stage_move.stage_relative(f"/m/model/{name}", offset, size,
+                                     mount_prefix="/m")
+
 def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:
     """Staged bytes equal source bytes via digests, both layouts."""
     queue, manifest, whole_len, _ = _run_chain(tmp_path)
     files = corpus()
-    staged_whole = tmp_path / "stage" / "model" / WHOLE
+    staged_whole = tmp_path / "stage" / _staged(WHOLE, 0, whole_len)
     assert staged_whole.read_bytes() == files["/pool/model/shard-0.bin"]
-    split_files = [p for p in (tmp_path / "stage").rglob("*")
-                   if ".pbrange" in str(p) and p.is_file()]
-    assert split_files, "split range stages its own .pbrange object"
-    staged_split = split_files[0].read_bytes()
+    split_file = tmp_path / "stage" / _staged(SPLIT, SPLIT_OFFSET, SPLIT_BYTES)
+    assert split_file.is_file(), "split range stages its own .pbrange object"
+    staged_split = split_file.read_bytes()
     assert staged_split == files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]
     fragments = residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)
     assert len(fragments) >= 2
@@ -179,7 +184,7 @@ def test_ram_promotion_lands_under_epoch_with_map_lookup(tmp_path: Path) -> None
     """Promoted bytes resolve through compose/lookup/overlay_ram."""
     queue, manifest, whole_len, epoch = _run_chain(tmp_path)
     files = corpus()
-    ram_copy = tmp_path / "ram" / "model" / WHOLE
+    ram_copy = tmp_path / "ram" / _staged(WHOLE, 0, whole_len)
     assert ram_copy.read_bytes() == files["/pool/model/shard-0.bin"]
     fragments = [residency_map.validate_fragment(f) for f in
                  residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]

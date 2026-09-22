@@ -2399,7 +2399,11 @@ attempt retains the ceiling under which it started.
 `pbcampaign --max-inflight N` is optional waiting-pool controller policy, outside
 sealed action identity and the resource ledger. One invocation retains at most
 N distinct unfinished action keys and publishes a replacement only after a
-successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
+successful `pbwait` observation and absence of that key's READY/CLAIMED leaves,
+including a finish tombstone or `.late-finish` record under `claimed/`.
+`PoolQueue.finish` entombs the claim before it releases capacity and files the
+ending, and a generation-pinned observation can answer from the attempt archive
+inside that window (#886), so the entombed claim still holds the slot.
 A receipt or withdrawal outcome alone cannot free a slot while queue work or
 claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
 An outcome read that timed out with its reader reaped keeps the key pending and
@@ -3959,8 +3963,8 @@ classification, release at egress — transfers intact, aimed at the right
 actor: one occupancy leg per movement node.
 
 **Shared staged paths and who may delete them.** A staged name is a pure function
-of the manifest entry (`stage_relative`: whole files keep their relative name,
-split ranges land at `<rel>.pbrange/<offset>-<size>`), with no mover namespace --
+of the manifest entry (`stage_relative`: every staged input lands at
+`<rel>.pbrange/<offset>-<size>`, whole files included), with no mover namespace --
 so forward and reverse passes, or two read phases of one v2 plan, stage the same
 source extent onto one file, and a promotion reads it back from that same staged
 name at offset zero (never the manifest's pool path at the manifest offset). An
@@ -4308,11 +4312,27 @@ Each entry is written beside its final name and renamed into place, so a partial
 file is never visible under the name a consumer reads, and its digest is
 computed on the way through. A staged range that the manifest gave a digest for
 and does not match is deleted and left out of the map: publishing it would make
-the map a lie a consumer trusts in preference to the pool. Entries a manifest
-names once, at offset zero, keep their relative name; every other range gets a
-name of its own under a `.pbrange/` suffix, because two movers holding two
-ranges of one shard cannot both rename-publish into one file, and the staged
-object's length has to be the range's length.
+the map a lie a consumer trusts in preference to the pool. Every staged input is
+named by the exact range it holds, `<rel>.pbrange/<offset>-<size>`, because two movers
+holding two ranges of one shard cannot both rename-publish into one file, and
+the staged object's length has to be the range's length. There is no bare-name
+case for "whole" files: a manifest entry carries no file size, so a pure
+function of the entry cannot tell a whole-file read from a prefix read. The
+former rule gave the bare name to any path a manifest named once from offset
+zero, and on 2026-09-22 a routing capture's 45 KB safetensors-header reads and
+GLM Stage A's 5.37 GB whole-shard reads derived one name for 74 shards; each
+side's movers refused the other's publication forever. Two entries now share a
+staged name exactly when they name the same bytes of the same source, so after
+a runtime publication a new mover recopies a range an older mover staged under
+its bare name, and the bare copy is left behind as orphan cache. The
+retention censuses (`_claimed_paths_attributed`, `_claimed_source_paths`) also
+count the former bare spelling, because a plan row keeps the tools of the
+generation that sealed it and may still write it; nothing publishes or deletes
+by that spelling, and orphan recovery retains a bare copy it finds instead of
+counting its entry as gone. A produced output keeps the name its producer
+declared, `produced-output/<namespace>/<rel>` for a path its manifest names once
+from offset zero: the namespace is the producing action's own digest, so no
+other publisher's read can derive a name inside it.
 
 A range whose entries total more bytes than the range reserved is
 `residency_overran_reservation`, refused before the copy rather than after it:
@@ -4608,6 +4628,25 @@ Publication derives the projection from the CAS-filed request (contradictory
 kwarg and corrupt requests refuse) and requires staged-or-committed intent
 before READY exposure; claim derives requiredness from the filed request once
 per action (combined mutable-authority loss defers, never fresh).
+
+**What a finish reads (#747).** `consumed` is terminal and nothing advances
+it, so every produced batch leaves one record behind. The finish census reads
+only what it can count: `output_keep_names_for_owner` skips the census when the
+owner holds nothing on the tier (the keep set is a subset of the holdings, and
+UNKNOWN retains only holdings), and `_release_reservation` reads one census per
+conclusion across all tiers. The tier loop runs
+`retire_terminal_output_funding` once per cycle. It moves a record to
+`tier-funding/retired/` only when the record is `consumed` or `released`, its
+mover has a filed `done`, `failed` or `withdrawn` record with no `ready` or
+`claimed` row, no lease, and no token on the record's tier, re-read under the
+mover's transition lock. Per-mover reads (`read_output_funding`,
+`output_funding_file_state`, `_output_funding_unretired`) fall back to the
+retired copy, so every decision about one mover reads what it read before, and
+writers refuse to file beside a retired record. Only the directory scans stop
+reading it. Measured on the 2026-09-22 queue (973 records, 972 terminal):
+concluding an action that holds no tier token went from 2,919 record reads and
+0.80 s to none and 0.0007 s; a holder's conclusion went from 2,919 reads to one
+census over the live records only.
 
 #### Operational writer path (R7 integration, candidate)
 

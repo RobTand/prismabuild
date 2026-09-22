@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
-from stage_move import _Copier, whole_file_paths  # noqa: E402
+from stage_move import _Copier  # noqa: E402
 import ram_promote  # noqa: E402
 
 CONSUMER_A = "a" * 64
@@ -134,12 +134,11 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     manifest_path.write_text(json.dumps(manifest))
 
     entries = prewarm_loop.manifest_read_entries(manifest)
-    assert whole_file_paths(entries) == set()
     stage_copier = _Copier(
         mounts=prewarm_loop.MountMap([f"/mnt/shared={pool_dir}"]),
         pacer=None, stage_root=stage, mount_prefix="/mnt/shared",
         block=MIB, workers=2, owner="stage-mover")
-    stage_copier.run(entries, whole=set(), stop=threading.Event())
+    stage_copier.run(entries, stop=threading.Event())
     assert stage_copier.errors == []
     assert stage_copier.bytes_staged == 2 * MIB
 
@@ -644,7 +643,9 @@ def test_an_explicit_override_beats_a_conflicting_record_root(fleet) -> None:
 
     paths, tainted = stage_release._claimed_paths(queue, TIER, override_cas)
     assert tainted == []
-    assert paths == {"model/other.bin"}
+    # Both spellings of the override's one entry: the range name, and the
+    # bare name a mover sealed before range-only naming may still write.
+    assert paths == {"model/other.bin", "model/other.bin.pbrange/0-4096"}
 
 
 def test_an_inverted_range_is_undeterminable_not_unowned(fleet) -> None:

@@ -390,6 +390,12 @@ _FUNDING_BINDING_FIELDS = frozenset({
 #: mover per tier per variant, owned by the pool; the produced-output lane
 #: references its ``generation`` and never mirrors it.
 TIER_FUNDING_OUTPUT_SCHEMA_V1 = "prismabuild.tier_funding.output.v1"
+#: Subdirectory of ``TIER_FUNDING`` holding output funding records whose mover
+#: is terminal and holds nothing on the record's tier (see
+#: :meth:`PoolQueue.retire_terminal_output_funding`).  A record is read at the
+#: same per-mover address whether or not it was retired; only the directory
+#: census, which never needs a terminal record, stops reading it.
+TIER_FUNDING_RETIRED = "retired"
 #: Immutable output binding fields within one generation (``state``/``unix``
 #: advance as in V1).  ``published_unix`` is the sealed mover publication;
 #: ``owner_*`` binds the live producer claim that prepaid the window.
@@ -6227,6 +6233,13 @@ class PoolQueue:
         return (self.root / TIER_FUNDING
                 / f"{mover_action_key}.{tier_id}.output-funding.json")
 
+    def funding_output_retired_path(self, mover_action_key: str,
+                                    tier_id: str) -> Path:
+        """Where :meth:`retire_terminal_output_funding` moves that record."""
+
+        return (self.root / TIER_FUNDING / TIER_FUNDING_RETIRED
+                / f"{mover_action_key}.{tier_id}.output-funding.json")
+
     @staticmethod
     def validate_output_funding(value: object) -> dict[str, object]:
         """Refuse an output funding record that is not exactly one binding.
@@ -6340,6 +6353,9 @@ class PoolQueue:
 
         try:
             raw = _read_json(self.funding_output_path(mover_action_key, tier_id))
+            if raw is None:
+                raw = _read_json(self.funding_output_retired_path(
+                    mover_action_key, tier_id))
         except (OSError, PoolContractError):
             return None
         if raw is None:
@@ -6364,7 +6380,15 @@ class PoolQueue:
 
         path = self.funding_output_path(mover_action_key, tier_id)
         try:
-            with open(path, "rb") as handle:
+            try:
+                handle = open(path, "rb")
+            except FileNotFoundError:
+                # A retired record answers at the same address: retirement
+                # moves a terminal record out of the census, never out of
+                # the per-mover reads that decide anything about it.
+                handle = open(self.funding_output_retired_path(
+                    mover_action_key, tier_id), "rb")
+            with handle:
                 raw_bytes = handle.read(1024 * 1024 + 1)
         except FileNotFoundError:
             # Proven ENOENT only is absent. Any other failure (including
@@ -6412,6 +6436,7 @@ class PoolQueue:
         path = self.funding_output_path(str(checked["mover_action_key"]),
                                         str(checked["tier_id"]))
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._refuse_retired_output_funding(checked)
         try:
             raw = _read_json(path)
         except (OSError, PoolContractError):
@@ -6449,6 +6474,132 @@ class PoolQueue:
         _write_json_atomic(path, checked)
         return path
 
+    def _refuse_retired_output_funding(self, checked: Mapping[str, object]) -> None:
+        """A retired record is terminal: no write may land beside it.
+
+        Retirement requires a terminal mover holding nothing on the tier, and
+        the produced-output lane mints a new mover key for every
+        materialization, so no legal writer ever addresses a retired record.
+        A write that did would file a second record for one mover and tier,
+        which is exactly what the per-mover address forbids.
+        """
+
+        retired = self.funding_output_retired_path(
+            str(checked["mover_action_key"]), str(checked["tier_id"]))
+        try:
+            os.stat(retired)
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise PoolContractError("retired output funding unreadable for CAS")
+        raise PoolContractError(
+            "output funding record is retired; a terminal record admits no write")
+
+    def retire_terminal_output_funding(self) -> dict[str, object]:
+        """Move terminal output funding records out of the census directory.
+
+        ``consumed`` is a terminal funding state and nothing advances it, so
+        without this every produced batch left one record that every census
+        read for ever: 973 of them on 2026-09-22, read three times per finish
+        (once per tier), 0.8 s of NFS reads to conclude an action that held
+        nothing.  A record is retired only when every fact that could still
+        make it count is proven:
+
+        * its state is ``consumed`` or ``released``;
+        * its mover has a filed ``done``, ``failed`` or ``withdrawn`` record
+          and no ``ready`` or ``claimed`` row;
+        * its mover has no lease; and
+        * its mover holds no token on the record's tier.
+
+        The facts are re-read under the mover's transition lock before the
+        rename, and any read failure keeps the record where it is.  Retired
+        records stay readable at their per-mover address through
+        :meth:`read_output_funding` and :meth:`output_funding_file_state`, so
+        every decision about one mover reads what it read before.  Only the
+        directory scans stop reading them: :meth:`output_census_for_owner`
+        never counted a ``consumed`` record, and
+        :meth:`_output_outstanding_window_tokens` counts one only while its
+        mover holds tokens, which a retired mover proved it does not.
+
+        Idempotent and safe to run beside the census.  Returns counts.
+        """
+
+        funding_dir = self.root / TIER_FUNDING
+        suffix = ".output-funding.json"
+        counts = {"scanned": 0, "retired": 0, "kept": 0, "busy": 0,
+                  "unreadable": 0}
+        try:
+            names = sorted(entry.name for entry in os.scandir(funding_dir)
+                           if entry.name.endswith(suffix) and entry.is_file(
+                               follow_symlinks=False))
+        except FileNotFoundError:
+            return counts
+        except OSError:
+            counts["unreadable"] += 1
+            return counts
+        retired_dir = funding_dir / TIER_FUNDING_RETIRED
+        for name in names:
+            counts["scanned"] += 1
+            mover, dot, tier_id = name[: -len(suffix)].partition(".")
+            if not dot or len(mover) != 64 or not tier_id:
+                counts["kept"] += 1
+                continue
+            try:
+                ledger = self.tier_ledger(tier_id)
+            except (OSError, PoolContractError, ValueError):
+                counts["kept"] += 1
+                continue
+            if not self._output_funding_terminal(mover, tier_id, ledger):
+                counts["kept"] += 1
+                continue
+            with self.mover_transition_lock(mover, blocking=False) as acquired:
+                if not acquired:
+                    counts["busy"] += 1
+                    continue
+                if not self._output_funding_terminal(mover, tier_id, ledger):
+                    counts["kept"] += 1
+                    continue
+                try:
+                    retired_dir.mkdir(exist_ok=True)
+                    target = retired_dir / name
+                    if os.path.lexists(target):
+                        counts["kept"] += 1
+                        continue
+                    os.rename(funding_dir / name, target)
+                except OSError:
+                    counts["unreadable"] += 1
+                    continue
+            counts["retired"] += 1
+        return counts
+
+    def _output_funding_terminal(self, mover: str, tier_id: str,
+                                 ledger: "ResourceLedger") -> bool:
+        """Every retirement fact for one record, fail-closed (see above)."""
+
+        record, file_state = self.output_funding_file_state(mover, tier_id)
+        if file_state != "ok" or not isinstance(record, Mapping):
+            return False
+        if str(record.get("state")) not in ("consumed", "released"):
+            return False
+        try:
+            for state in (READY, CLAIMED):
+                if os.path.lexists(self.item_path(state, mover)):
+                    return False
+            if not any(os.path.lexists(self.item_path(state, mover))
+                       for state in (DONE, FAILED, WITHDRAWN)):
+                return False
+            if os.path.lexists(self.lease_path(mover)):
+                return False
+            with os.scandir(ledger.held_dir / mover) as entries:
+                if any(True for _ in entries):
+                    return False
+        except FileNotFoundError:
+            # The holder directory is absent: the mover holds nothing here.
+            return True
+        except (OSError, PoolContractError, ValueError):
+            return False
+        return True
+
     def _rotate_output_funding_locked(
             self, record: Mapping[str, object], *,
             expect_generation: str | None) -> Path:
@@ -6461,6 +6612,7 @@ class PoolQueue:
         path = self.funding_output_path(str(checked["mover_action_key"]),
                                         str(checked["tier_id"]))
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._refuse_retired_output_funding(checked)
         try:
             raw = _read_json(path)
         except (OSError, PoolContractError):
@@ -8041,12 +8193,23 @@ class PoolQueue:
         return intents
 
     def output_keep_names_for_owner(
-            self, owner_key: str, tier_id: str) -> tuple[set[str], bool]:
+            self, owner_key: str, tier_id: str, *,
+            census: Callable[[], tuple[list[dict], bool]] | None = None,
+    ) -> tuple[set[str], bool]:
         """(keep_set, unknown) for owner finish (R2 fail-retain + R3 scandir).
 
         Holdings enumerated with explicit `os.scandir` classification: proven
         ENOENT/NotADirectory (no holder dir) is empty; any other read failure
         is UNKNOWN (retain all). Census UNKNOWN likewise retains all.
+
+        The census is read only when the owner holds something on this tier.
+        The keep set is a subset of the holdings and UNKNOWN retains only
+        holdings, so an owner holding nothing gets the same answer from no
+        census as from a clean one. That is the case of almost every
+        finishing action, and the census reads every output funding record
+        in the pool. A caller concluding one key across several tiers passes
+        ``census``, a callable returning one shared census, because the
+        census names every tier and one read answers them all.
         """
 
         try:
@@ -8062,7 +8225,10 @@ class PoolQueue:
                 return (set(), True)
         except (OSError, PoolContractError, ValueError):
             return (set(), True)
-        intents, unknown = self.output_census_for_owner(str(owner_key))
+        if not held:
+            return (set(), False)
+        intents, unknown = (census() if census is not None
+                            else self.output_census_for_owner(str(owner_key)))
         if unknown:
             return (set(held), True)
         keep: set[str] = set()
@@ -8456,7 +8622,17 @@ class PoolQueue:
             return False
         except OSError:
             return True
-        for name in names:
+        # A retired record is still this key's record: it reads as it did.
+        try:
+            names += [entry.name for entry in os.scandir(
+                          funding_dir / TIER_FUNDING_RETIRED)
+                      if entry.name.startswith(prefix)
+                      and entry.name.endswith(suffix)]
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return True
+        for name in sorted(set(names)):
             tier_id = name[len(prefix):-len(suffix)]
             if not tier_id:
                 return True
@@ -8527,6 +8703,15 @@ class PoolQueue:
         # tier tokens for reaper retry, preserving attribution.
         with self._transition_locked(str(action_key), blocking=True):
             tier_released = 0
+            # One census per conclusion, read only if some tier holds a token
+            # for this key (see ``output_keep_names_for_owner``).
+            census: list[tuple[list[dict], bool]] = []
+
+            def owner_census() -> tuple[list[dict], bool]:
+                if not census:
+                    census.append(self.output_census_for_owner(str(action_key)))
+                return census[0]
+
             for tier_id in self.tier_ids():
                 try:
                     ledger = self.tier_ledger(tier_id)
@@ -8534,7 +8719,8 @@ class PoolQueue:
                     continue
                 try:
                     keep, unknown = self.output_keep_names_for_owner(
-                        str(action_key), tier_id)
+                        str(action_key), tier_id,
+                        census=owner_census)
                 except (OSError, PoolContractError, ValueError):
                     continue
                 try:

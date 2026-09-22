@@ -902,6 +902,66 @@ def test_driver_binds_progress_to_the_receipt_attempt(tmp_path: Path) -> None:
         paths, CONSUMER, artifact, _cas_receipt(artifact)) is None
 
 
+def test_driver_reads_the_submitted_generation_before_done_is_filed(
+        tmp_path: Path) -> None:
+    """The finish window: the attempt is archived, ``done/`` is not yet filed.
+
+    ``PoolQueue.finish`` publishes the immutable attempt, entombs the claim,
+    releases capacity and only then writes ``done/<key>.json``.  pbwait can
+    answer inside that window (the 6d88c0b15b18 canary's leg 3 read ``done/``
+    1.23 s before it existed).  The submitted generation's archived attempt is
+    the same evidence, so the driver reads it there, exact to the generation.
+    """
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    paths = _paths(queue, tmp_path)
+    artifact = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":true}\n'
+    _write_terminal(queue, CONSUMER, attempts=[artifact])
+    (queue.dir(pool.DONE) / f"{CONSUMER}.json").unlink()
+
+    evidence = pbcanary.terminal_progress_observation(
+        paths, CONSUMER, artifact, _cas_receipt(artifact), generation=100.0)
+    assert evidence is not None, "the archived attempt is the evidence"
+    assert evidence["attempt"] == 1
+    assert evidence["observation"]["last_accepted"]["units_completed"] == 3
+
+    # Exact to the generation: another generation's archive is never read,
+    # and without a generation there is nothing to bind the archive to.
+    assert pbcanary.terminal_progress_observation(
+        paths, CONSUMER, artifact, _cas_receipt(artifact),
+        generation=101.0) is None
+    assert pbcanary.terminal_progress_observation(
+        paths, CONSUMER, artifact, _cas_receipt(artifact)) is None
+
+
+def test_driver_passes_the_submitted_generation(
+        tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(pbcanary, "submit_leg", lambda *a, **k: (
+        "key-1", {"action_key": "key-1", "published_unix": 123.25}))
+    monkeypatch.setattr(pbcanary, "wait_leg", lambda *a, **k: {
+        "returncode": 0, "stdout": "", "stderr": "", "record": {}})
+    monkeypatch.setattr(pbcanary, "load_verified_receipt",
+                        lambda *a, **k: ({}, tmp_path / "receipt.json",
+                                         b"artifact\n"))
+    seen = {}
+
+    def observe(*args, **kwargs):
+        seen.update(kwargs)
+        return {"observation": _observation(), "attempt": 1}
+
+    monkeypatch.setattr(pbcanary, "terminal_progress_observation", observe)
+    leg_dir = tmp_path / "leg-3"
+    leg_dir.mkdir()
+    paths = {"queue_root": str(tmp_path / "pb-queue"),
+             "published_src": str(SRC), "cas_root": str(tmp_path / "cas")}
+    pbcanary._execute_side(
+        paths, leg="leg-3", spec={"name": "leg-3"}, argv=["true"],
+        checkout=tmp_path, run_id="run-1", generation=None, priority=-10,
+        fleet_root=tmp_path, leg_dir=leg_dir, side=None, extra_flags=[],
+        extra_env={}, manifest=None, wait_s=60)
+    assert seen.get("generation") == 123.25
+
+
 def test_driver_attaches_the_observation_to_the_verify_envelope(
         tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(pbcanary, "submit_leg",

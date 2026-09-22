@@ -64,7 +64,8 @@ SIZE = 1296
 PAYLOAD = bytes(range(256)) * 5 + bytes(range(16))
 DIGEST = hashlib.sha256(PAYLOAD).hexdigest()
 SOURCE = "/mnt/shared/pq-live-reader-20260920/calib-8x16.safetensors"
-RELATIVE = "pq-live-reader-20260920/calib-8x16.safetensors"
+#: Where the stage mover stages it: its range name, derived rather than spelled.
+RELATIVE = stage_move.stage_relative(SOURCE, 0, SIZE, mount_prefix="/mnt/shared")
 MAP_KEY = residency_map.residency_map_key(SOURCE, 0)
 ENTRIES = [{"path": SOURCE, "offset": 0, "bytes": SIZE, "sha256": DIGEST}]
 
@@ -450,7 +451,7 @@ def test_the_mover_adopts_the_current_incarnation_despite_a_stale_record(
     before = reader_lease.stat_identity(str(stage / RELATIVE))
     copier = _copier(tmp_path, stage, fourth_mover, queue)
 
-    copier.run(ENTRIES, whole={SOURCE}, stop=threading.Event())
+    copier.run(ENTRIES, stop=threading.Event())
 
     assert copier.errors == [], (
         f"the mover must adopt the current incarnation, not refuse it: "
