@@ -190,10 +190,11 @@ def test_campaign_cycle_field_roundtrips_and_refuses_missing_phases_or_slurm():
     pbcampaign._require_row_shape({**row, "progress_cycle": None}, index=0)
 
 
-CYCLIC_REPORTER = '''
+_CYCLIC_HEAD = '''
 import os, runpy, sys, time
 commit = runpy.run_path(os.environ["PRISMABUILD_ACTION_PROGRESS_HELPER"])["commit"]
-units = 0
+'''
+_CYCLIC_CYCLES = '''units = 0
 for cycle in range(4):
     commit(units, "encode")
     time.sleep(0.8)
@@ -204,11 +205,29 @@ for cycle in range(4):
     units += 1
     commit(units, "publish")
     time.sleep(0.1)
-with open("result", "w") as f:
+'''
+
+#: The reporter that completes: four durable cycles, a result and a finalize.
+CYCLIC_REPORTER = _CYCLIC_HEAD + _CYCLIC_CYCLES + '''with open("result", "w") as f:
     f.write(str(units))
     f.flush()
     os.fsync(f.fileno())
 commit(units, "finalize")
+'''
+
+#: The same reporter that cannot complete (#841).  It walks the same four
+#: durable cycles, enters the declared finalize phase, and parks awaiting
+#: termination without writing a result.  Natural completion is therefore
+#: impossible, so the sealed deadline is the only way this action can end
+#: successfully; if deadline enforcement ever breaks, the finalize phase's
+#: own allowance ends it with the distinct ``no_progress`` reason instead of
+#: letting it hang or finish.  The worker's documented checkpoint refund
+#: (execution budgets exclude synchronous checkpoint intervals) can move the
+#: wall-clock deadline, but it cannot make an action that never completes
+#: read as ``executed``.
+CYCLIC_REPORTER_PARKED = _CYCLIC_HEAD + _CYCLIC_CYCLES + '''commit(units, "finalize")
+while True:
+    time.sleep(1)
 '''
 
 
@@ -219,8 +238,14 @@ def test_claimed_cyclic_action_completes_and_still_honours_deadline(tmp_path, cy
         # Under the full suite it exceeded the deliberately short publish
         # grace (all four durable units were present when the control died).
         ["startup=3", "encode=3", "publish=0.3", "finalize=3"], cycle=cycle)
-    queue, item = _claimed(tmp_path, mode="report", seconds=4, policy=policy,
-                           timeout_s=deadline, source=CYCLIC_REPORTER)
+    # The deadline case parks in finalize instead of completing (#841), so no
+    # timing margin decides the outcome: an action that cannot succeed can
+    # only be ended by its sealed deadline (or, if that breaks, by the
+    # finalize allowance, which fails the reason assertion below).
+    queue, item = _claimed(
+        tmp_path, mode="report", seconds=4, policy=policy, timeout_s=deadline,
+        source=(CYCLIC_REPORTER_PARKED if deadline is not None
+                else CYCLIC_REPORTER))
     outcome = queue.execute(item, timeout_s=3, heartbeat_s=0.05, timeout_grace_s=0.2)
     if cycle and deadline is None:
         assert outcome["status"] == "executed", outcome
@@ -236,6 +261,31 @@ def test_claimed_cyclic_action_completes_and_still_honours_deadline(tmp_path, cy
         assert outcome["status"] == "timeout", outcome
         assert outcome["termination_reason"] == ("execution_deadline" if deadline else "no_progress")
     assert outcome["progress_cycle"] is cycle
+
+
+def test_the_parked_finalize_ends_on_its_allowance_without_a_deadline(tmp_path):
+    """#841's fallback bound: a payload that cannot complete still ends.
+
+    The deadline case parks in the finalize phase rather than writing a
+    result, so a missed deadline can never read as success.  With no sealed
+    deadline the same payload must still end -- on the finalize phase's own
+    allowance, with the distinct ``no_progress`` reason -- rather than hang
+    or complete.  This is the bound the deadline arm rests on.
+    """
+
+    policy = pbrun.parse_progress_phases(
+        ["startup=3", "encode=3", "publish=0.3", "finalize=3"], cycle=True)
+    queue, item = _claimed(tmp_path, mode="report", seconds=4, policy=policy,
+                           source=CYCLIC_REPORTER_PARKED)
+    outcome = queue.execute(item, timeout_s=3, heartbeat_s=0.05,
+                            timeout_grace_s=0.2)
+
+    assert outcome["status"] == "timeout", outcome
+    assert outcome["termination_reason"] == "no_progress"
+    # It walked all four cycles and parked in finalize: its own allowance,
+    # not an early kill, is what bounded it.
+    assert outcome["progress_observation"]["last_accepted"]["phase"] == "finalize"
+    assert 6.0 < outcome["elapsed_s"] < 15.0, outcome
 
 
 def test_live_phase_switching_without_new_units_still_times_out(tmp_path):
