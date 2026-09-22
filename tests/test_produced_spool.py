@@ -29,14 +29,14 @@ def forbid_payload_reads(monkeypatch, paths):
     monkeypatch.setattr(os, "open", checked)
 
 
-def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1):
+def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1, env=None):
     cas_root = tmp_path / "cas"
     template = fx._template(str(tmp_path / "canonical"))
     initial = fx._producer_request(tmp_path, cas_root, template)
     cas, request = po._read_producer_request(cas_root, initial)
     request.pop("action_key")
     request["environment"]["variables"].update({ps.ROOT_ENV: str(tmp_path / "local"),
-                                                ps.MAX_ENV: str(maximum)})
+                                                ps.MAX_ENV: str(maximum), **(env or {})})
     action = core.seal_action(request)
     cas.publish_action_request(action)
     owner = action["action_key"]

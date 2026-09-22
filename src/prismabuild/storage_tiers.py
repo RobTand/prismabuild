@@ -1227,6 +1227,43 @@ def _single_reader_share(record: Mapping[str, object]) -> float | None:
     return min(float(rate), delivered / sharers)
 
 
+def current_fill_offer(tier: Mapping[str, object],
+                       measured: int | None) -> tuple[int | None, int | None, str]:
+    """The fill a *freshly sealed* movement node may reserve, and where it came from.
+
+    A sealed row is never rewritten, so the only moment the price can follow
+    the tier is when the node is sealed (#708, #710).  The tier's announced
+    tokens are the offer admission will honour on this cycle; the
+    receipts-derived single-reader share is the fallback for a tier that
+    announces none.  When both exist the smaller wins: never ask more than
+    the tier offers, and never ask more than a reader has been measured
+    drawing.  The tier's own probe rule sizes its offer, so a fresh node
+    sealed here is admissible without the tier having to grow past it.
+
+    Shared by every sealer of a pool-side movement node: pbrun's movers and
+    the produced-output exporter (#747), so a copy into the pool and a copy
+    out of it are priced against one offer by one rule.
+
+    Returns ``(fill, offer, basis)``; a ``None`` fill means nothing has
+    priced the pool, which is the ordinary first-submission state.
+    """
+
+    offer: int | None = None
+    tokens = tier.get("tokens")
+    if isinstance(tokens, Mapping):
+        value = tokens.get(FILL_KIND)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            offer = int(value)
+    if offer is None:
+        return (measured, None,
+                "receipts" if measured is not None else "unmeasured")
+    if measured is None:
+        return offer, offer, "tier-offer"
+    if measured <= offer:
+        return measured, offer, "receipts-under-offer"
+    return offer, offer, "tier-offer-cap"
+
+
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
     pool_identity: Mapping[str, object] | None = None,
