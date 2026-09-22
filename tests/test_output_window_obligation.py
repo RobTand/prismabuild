@@ -273,3 +273,39 @@ def test_the_relief_covers_the_owed_window(tmp_path: Path, monkeypatch,
     pressure = tier_loop.window_pressure(
         queue, tiers={TIER: adopted._tier_record(stage, gib=6)})
     assert pressure.get(TIER) == expected, pressure
+
+
+@pytest.mark.parametrize("enforced,expected", [(False, 1), (True, 4)])
+def test_the_next_phase_relief_leaves_the_owed_window_free(
+        tmp_path: Path, monkeypatch, enforced: bool, expected: int) -> None:
+    """An admitted window's fence counts the owed GiB, so its relief must too.
+
+    Consumer A's movers are published and hold nothing; the next-phase term
+    asks the tier for one GiB.  Enforced with 3 GiB owed, the fence check
+    needs those 3 free as well, and a relief that asked for 1 would leave the
+    advance waiting beside reclaimable orphans.
+    """
+
+    ctx = protection._setup_two_consumers(tmp_path, stage_gib=6)
+    queue = ctx["queue"]
+    tiers = protection._tiers(tmp_path)
+    monkeypatch.setattr(po, "unheld_window_gib", _owes(3))
+    if enforced:
+        monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
+    else:
+        monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
+    tier_loop.residency_window(queue, tiers=tiers)
+    assert queue.item_path(pool.READY, ctx["aa"]["movers"][0]).exists()
+    assert tier_loop.window_pressure(queue, tiers=tiers).get(TIER) == expected
+
+
+def test_an_unknown_obligation_asks_no_relief(tmp_path: Path,
+                                              monkeypatch) -> None:
+    ctx = protection._setup_two_consumers(tmp_path, stage_gib=6)
+    queue = ctx["queue"]
+    tiers = protection._tiers(tmp_path)
+    tier_loop.residency_window(queue, tiers=tiers)
+    assert tier_loop.window_pressure(queue, tiers=tiers).get(TIER) == 1
+    monkeypatch.setattr(po, "unheld_window_gib", _unknown)
+    monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
+    assert TIER not in tier_loop.window_pressure(queue, tiers=tiers)
