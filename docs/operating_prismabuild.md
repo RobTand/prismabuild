@@ -3123,11 +3123,16 @@ admission. Unknown memory domains grant no capacity. `--gpu-memory-gb` is
 refused with `--transport slurm`, whose separate VRAM enforcement is unsupported.
 
 On GB10 the broker identifies its 140 W reference as SoC TDP, not a programmable
-GPU-only power limit. Receipts and metrics keep printing power against it, but
-admission does not: it divides by the highest GPU-only draw the host has sampled
-from that device, floored by the declared per-device capacity fact
-`adaptive_gpu.DECLARED_GPU_POWER_REFERENCE_W`. Neither number is a saturation
-target.
+GPU-only power limit. That envelope stays on the device sample as
+`power_reference_w` with scope `soc_tdp` for provenance, and reaches a fraction
+only under that scope, on a device nothing better is known about. Receipts and
+metrics divide by the same reference admission does, not by the SoC envelope:
+`adaptive_gpu.reporting_power_reference` defers to the admission derivation,
+which returns the highest GPU-only draw the host has sampled from that device,
+floored by the declared per-device capacity fact
+`adaptive_gpu.DECLARED_GPU_POWER_REFERENCE_W` (#806). The scope travels beside
+every published ratio, so a fraction is never read against a reference nobody
+named. Neither number is a saturation target.
 GPU utilization percentage and an activity response alone do not prove useful
 throughput; use profiling, power, CPU activity, residency and useful work per
 joule when assessing a performance result.
