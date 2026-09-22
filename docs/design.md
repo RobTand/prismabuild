@@ -6532,6 +6532,33 @@ toward the producer. An A/B that turns it on compares, against a run
 without it, the `window-gated` events that name `joint-fit-stall` with an
 empty `output_note` and the producer's `refill_deferred` count.
 
+**A restaged batch's mover can reserve fill like an input mover.** A restage
+(`ensure_batch_materialized`) copies a retired batch back from its origin on
+the pool. The read is cold, like a consumer's input mover, but the restage
+mover reserved no fill, so it read the spindles outside the ledger that
+rations them. It can now reserve `fill_mb_s_pool_side@<tier>` at the price
+pbrun gives a mover: `storage_tiers.current_fill_offer` over the movement
+receipts' single-reader share (`mover_fill_demand_from_receipts`, filtered
+by the tier's `pool_identity`), capped by the tier's current offer. The
+sealed command carries the matching `--fill-mb-s-pool-side`, so the receipt
+records what the claim reserved. The stage window still comes from the
+producer by exact transfer. The fill is not prepaid: the claim takes it from
+the tier's free fill and the stop returns it.
+
+The reservation is off by default. A producer opts in by setting
+`PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL=1` in its sealed environment, and
+`ensure_batch_materialized(..., restage_fill=True|False)` overrides that for
+one call. When the variable is absent, empty, or `0`, a restage is sealed
+exactly as before. Any other value refuses the restage at seal time, before
+an intent is filed. A first publication never reserves fill, because it
+reads what the producer has just written. A tier with no offer and no usable
+receipt prices nothing, and the mover stays unreserved. The price is kept on
+the materialization row (`fill_mb_s_pool_side`), so a resumed restage
+republishes the demand it was sealed at: the launch refuses a row whose
+resources differ from its sealed demand. Pricing reads every movement
+receipt once per restage seal, the same census pbrun takes for each
+submission. Only producers that opt in pay it.
+
 **Still open.**
 
 * The export's pool-side cost is unmeasured. The receipt records file-side
