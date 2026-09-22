@@ -4140,7 +4140,16 @@ class PoolQueue:
                         _prec_ok = False
             if not _prec_ok:
                 raise PoolContractError("output-funding-missing")
-        if tier_demand and residency is None and produced_ref is None:
+        # A rate kind names no bytes (#636): its tokens price bandwidth drawn
+        # while the action runs and are returned when it stops, so the sealed
+        # command that reserved the rate is its whole attribution.  The
+        # produced-output exporter reserves pool fill that way (#747).  Only
+        # the occupancy kinds need a manifest range or a working window.
+        occupancy_demand = {
+            tier_id: kinds for tier_id, needs in tier_demand.items()
+            if (kinds := {kind: need for kind, need in needs.items()
+                          if kind not in TIER_RATE_KINDS})}
+        if occupancy_demand and residency is None and produced_ref is None:
             # Derived, never typed (#595): every tier demand the fleet's own
             # submitters seal travels beside the residency block whose
             # manifest range (mover) or leads (consumer) it accounts for --
@@ -4152,7 +4161,7 @@ class PoolQueue:
             raise PoolContractError(
                 "tier demand requires a residency block or a declared "
                 "produced-output template: "
-                f"{sorted(tier_demand)} names no manifest range, leads, or "
+                f"{sorted(occupancy_demand)} names no manifest range, leads, or "
                 "working window")
         if type(max_attempts) is not int or max_attempts < 1:
             raise PoolContractError("max_attempts must be a positive integer")

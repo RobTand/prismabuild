@@ -161,3 +161,25 @@ def test_a_paced_export_names_both_its_rate_and_its_tier(tmp_path):
 def test_movers_and_exports_share_one_fill_rule(tokens, measured, expected):
     tier = {} if tokens is None else {"tokens": tokens}
     assert storage_tiers.current_fill_offer(tier, measured) == expected
+
+
+@pytest.mark.parametrize("kinds, accepted", [
+    ({FILL: 1}, True),
+    ({fx.KIND: 1}, False),
+    ({FILL: 1, fx.KIND: 1}, False),
+])
+def test_only_a_rate_is_attributed_by_its_sealed_command(tmp_path, kinds, accepted):
+    """A rate names no bytes; occupancy still needs a range or a window (#595)."""
+
+    queue = fx._queue(tmp_path)
+    resources = {"cpu": 1, **{f"{kind}@{fx.TIER}": need for kind, need in kinds.items()}}
+
+    def publish():
+        queue.publish(action_key="7" * 64, cas_root="/cas", worker_script="/w.py",
+                      checkout_root="/co", resources=resources)
+    if accepted:
+        publish()
+        assert queue.item_path(pool.READY, "7" * 64).exists()
+    else:
+        with pytest.raises(pool.PoolContractError, match="residency block"):
+            publish()
