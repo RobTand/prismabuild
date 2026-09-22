@@ -646,14 +646,24 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
 
     entries: dict[str, object] = {}
     written: list[Path] = []
+    # The fragment covers the whole range the receipt declares, because that
+    # is what a complete receipt means: ``stage_move`` adds each landed
+    # entry's own length to both the entry's ``bytes`` and the receipt's
+    # ``bytes_staged``, so the two are equal for ``complete: true`` and
+    # adoption refuses a donor whose entries cannot cover its range (#853).
+    # The files are sparse, so the declared length is the real length and no
+    # blocks are written for it; nothing here reads their contents.
+    share, remainder = divmod(end - start, files)
     for index in range(files):
+        size = share + (remainder if index == files - 1 else 0)
         path = stage / "donor" / f"part-{index}.bin"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x" * 32)
+        with open(path, "wb") as stream:
+            stream.truncate(size)
         written.append(path)
         entries[residency_map.residency_map_key(
             f"/mnt/shared/part-{index}", 0)] = {
-                "stage_path": str(path), "bytes": 32, "offset": 0,
+                "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": "a" * 64}
     assert queue.tier_ledger(TIER).acquire(
         mover, {"stage_gib": (end - start) // GIB})
