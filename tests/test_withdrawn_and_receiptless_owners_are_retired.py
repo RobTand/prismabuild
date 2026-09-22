@@ -17,9 +17,18 @@ without one.  The canary leg-3 mover ``aa34e2a6e22f`` finished on 2026-09-19,
 its consumer is done, it holds 1 stage GiB, and ``movers/`` has no receipt
 for it -- but its fragment is still filed under its consumer, and the
 fragment is the document that names whose bytes these are.  One direct
-fragment is an exact owner; none, or more than one, is not.  A produced-output
-mover is never resolved this way: its tokens belong to its batch's
-lifecycle, which owns the funding (``safe_release_instance``).
+fragment is an exact owner; none, or more than one, is not.  The consumer it
+names must also have ended, proven by exactly one outcome record: a consumer
+that is still queued, or that the queue has no record of at all, may yet read
+the bytes.  A produced-output mover is never resolved this way: its tokens
+belong to its batch's lifecycle, which owns the funding
+(``safe_release_instance``).
+
+A holder the sweep cannot resolve is reported only when keeping it costs
+something: the sweep was given pressure for the tier, and after every orphan
+it could evict the tier still lacks the room.  Otherwise the pass stays
+quiet, as it did before, so an unresolvable holder does not add a line to
+every tier cycle.
 
 Everything runs on a synthetic stage under ``tmp_path`` registered to a
 queue under ``tmp_path``; nothing reads or writes a real stage.
@@ -188,6 +197,19 @@ def _receiptless(fleet) -> tuple[str, str]:
     return consumer, mover
 
 
+#: More room than the synthetic tier has: the window can never fit, so every
+#: retention costs something and must say why.
+UNMET = {TIER: 64}
+
+
+def _refusals(receipts, mover) -> list[dict]:
+    refused = [entry for entry in receipts if entry.get("action_key") == mover]
+    assert all(entry.get("complete") is not True for entry in refused), refused
+    assert all(entry.get("event") == stage_release.RECEIPTLESS_HOLDER_EVENT
+               for entry in refused), refused
+    return refused
+
+
 def test_a_receiptless_holder_is_swept_through_its_fragments_consumer(fleet) -> None:
     queue, stage, _cas = fleet
     consumer, mover = _receiptless(fleet)
@@ -219,9 +241,9 @@ def test_a_receiptless_holder_named_by_two_consumers_retains(fleet) -> None:
     consumer, mover = _receiptless(fleet)
     other = _done_consumer(queue)
     dead._write_fragment(queue, stage, other, mover, NAMES[:1])
-    receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
-    refused = [entry for entry in receipts if entry.get("action_key") == mover]
-    assert refused and all(entry.get("complete") is not True for entry in refused)
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
+    refused = _refusals(receipts, mover)
     assert any("2 fragments" in " ".join(entry.get("errors", [])) for entry in refused)
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
     assert all((stage / name).exists() for name in NAMES)
@@ -233,9 +255,9 @@ def test_a_receiptless_holder_with_no_fragment_retains(fleet) -> None:
     queue, stage, _cas = fleet
     consumer = _done_consumer(queue)
     mover = _held_mover(queue, stage, consumer)
-    receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
-    refused = [entry for entry in receipts if entry.get("action_key") == mover]
-    assert refused and all(entry.get("complete") is not True for entry in refused)
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
+    refused = _refusals(receipts, mover)
     assert any("no fragment names" in " ".join(entry.get("errors", []))
                for entry in refused)
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
@@ -274,3 +296,67 @@ def test_a_produced_output_holder_is_left_to_its_batch_lifecycle(fleet) -> None:
     assert not _retired(receipts, mover)
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
     assert all((stage / name).exists() for name in NAMES)
+
+
+# ------------------------------------------ an owner that has not provably ended
+
+
+def _fragment_named(fleet, consumer: str) -> str:
+    queue, stage, _cas = fleet
+    mover = _held_mover(queue, stage, consumer)
+    for name in NAMES:
+        dead._stage_marked(stage, name)
+    dead._write_fragment(queue, stage, consumer, mover, NAMES)
+    return mover
+
+
+def _kept(queue, stage, mover) -> None:
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert all((stage / name).exists() for name in NAMES)
+
+
+def test_a_fragment_naming_a_consumer_the_queue_never_saw_retains(fleet) -> None:
+    """No outcome record is not an ending: the bytes may still be read."""
+
+    queue, stage, _cas = fleet
+    never = dead._key()
+    mover = _fragment_named(fleet, never)
+    receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
+    assert not [entry for entry in receipts if entry.get("action_key") == mover]
+    _kept(queue, stage, mover)
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
+    refused = _refusals(receipts, mover)
+    assert any("no outcome record" in " ".join(entry.get("errors", []))
+               for entry in refused), refused
+    _kept(queue, stage, mover)
+
+
+def test_a_fragment_naming_a_still_queued_consumer_retains(fleet) -> None:
+    """A claimed consumer whose plan does not name the mover may still read it."""
+
+    queue, stage, _cas = fleet
+    consumer = dead._key()
+    dead._publish(queue, consumer, max_attempts=1)
+    assert queue.item_path(pool.CLAIMED, consumer).exists()
+    mover = _fragment_named(fleet, consumer)
+    receipts = stage_release.sweep(
+        queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
+    refused = _refusals(receipts, mover)
+    assert any("still queued" in " ".join(entry.get("errors", []))
+               for entry in refused), refused
+    _kept(queue, stage, mover)
+
+
+def test_an_unresolvable_holder_is_quiet_when_it_costs_nothing(fleet) -> None:
+    """Without unmet pressure a retained holder adds no line to the cycle."""
+
+    queue, stage, _cas = fleet
+    consumer = _done_consumer(queue)
+    mover = _held_mover(queue, stage, consumer)
+    for pressure in (None, {TIER: 0}, {TIER: 1}):
+        receipts = stage_release.sweep(
+            queue, stage_roots={TIER: str(stage)}, pressure=pressure)
+        assert not [entry for entry in receipts
+                    if entry.get("action_key") == mover], (pressure, receipts)
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
