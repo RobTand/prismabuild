@@ -1177,17 +1177,21 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
             "residency_mover_readers": policy["mover_readers"],
             "residency_mover_mem_gb": policy["mover_mem_gb"]})
         tier = None
+        movement_receipts = None
         rows = []
         for child in children:
             child_plan = None
             if child["params"].get("data_manifest") is not None:
                 if tier is None:
                     tier = pbrun.resolve_stage_tier(queue, stage_args.residency_tier)
+                if movement_receipts is None:
+                    movement_receipts = tuple(queue.move_records())
                 child_template = {**template, "inputs": child["inputs"],
                                   "params": child["params"], "environment": child["environment"]}
                 staged = pbrun.residency_stage_rows(
                     child_template, consumer_action_key=child["action_key"],
-                    tier=tier, args=stage_args, queue=queue, cas=cas)
+                    tier=tier, args=stage_args, queue=queue, cas=cas,
+                    movement_receipts=movement_receipts)
                 child_plan = staged["plan"]
             rows.append({"action_key": child["action_key"], "plan": child_plan})
         proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
