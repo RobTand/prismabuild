@@ -481,7 +481,9 @@ def _run_cycle(queue: pool.PoolQueue, stage: Path, **kw) -> list[dict]:
 
 def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     """The ACTUAL tier_loop.cycle applies exactly one ledger write per tier:
-    no early partial-kind mint, no stale second write, rate kinds intact."""
+    no early partial-kind mint, no stale second write, rate kinds intact.
+    The rate expectation is bound, before the mint, to the same receipt fold
+    the cycle prices from: the two real movers measured the pool."""
     queue = _fleet(tmp_path)
     manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -491,10 +493,30 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
     _shield_consumer(queue)
-    # A ready row with sealed fill demand: the real probe rule (not the
-    # record's advisory fill field) prices the tier's rate kind.
+    # A ready row with sealed fill demand: its 7 is the probe increment over
+    # the pool the two real movers measured, never the record's advisory
+    # fill field (50) that discovery offers.
     _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total, fill=7)
     ledger = queue.tier_ledger(TIER)
+
+    # Observe the fixture's own receipts before the mint, through the same
+    # fold the cycle runs.  The rate kind is the best delivery those movers
+    # demonstrated plus the oldest ready row's sealed demand; a run whose
+    # copies were too fast for the pacer to sample has nothing measured, and
+    # the probe rule stands alone.  Either expectation is derived from the
+    # fixture, not read back off the mint it checks.
+    observations = tier_loop.ReceiptCache().read(
+        [queue.root / pool.PREWARM, queue.root / pool.MOVERS])
+    assert len(observations) == 2, observations
+    supply = storage_tiers.fill_supply_from_records(observations)
+    assert supply["ceiling_mb_s"] is None, supply
+    probe = tier_loop.probe_fill_demand(queue.ready_items(), TIER)
+    assert probe == 7, probe
+    if supply["best_mb_s"] is None or int(supply["best_mb_s"]) <= 0:
+        expected_rate, expected_source = probe, "probe"
+    else:
+        expected_rate = int(supply["best_mb_s"]) + probe
+        expected_source = "measured-growing"
 
     applies: list[dict] = []
     real_apply = pool.PoolQueue._apply_tier_capacity
@@ -514,12 +536,14 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     assert len(applies) == 1, applies
     assert set(applies[0]) == {KIND, storage_tiers.FILL_KIND}, applies
     assert applies[0][KIND] == 0 + 2, applies  # writable + landed, once
-    assert applies[0][storage_tiers.FILL_KIND] == 7, applies  # real probe
+    assert applies[0][storage_tiers.FILL_KIND] == expected_rate, applies
     (record,) = [r for r in announced if r["tier_id"] == TIER]
     assert record["landed_gib"] == 2 and record["in_flight_gib"] == 0
     assert record["capacity_basis"] == "zfs available + landed"
+    assert record["fill_records"] == len(observations)
+    assert record["fill_source"] == expected_source, record
     assert ledger.capacity().get(KIND) == 2
-    assert ledger.capacity().get(storage_tiers.FILL_KIND) == 7
+    assert ledger.capacity().get(storage_tiers.FILL_KIND) == expected_rate
     assert ledger.available().get(KIND, 0) == 0
     assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
     assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
