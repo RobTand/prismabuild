@@ -118,7 +118,11 @@
     "10",
     "--python",
     "/usr/bin/python3"
-   ]
+   ],
+   "status": "offline",
+   "status_reason": "Out of scope for now. Rob, 2026-09-22: \"Wsl-gpu out of scope at the moment. I’ll opt it back in at some point.\" To opt it back in, publish a roster without these four status fields.",
+   "status_by": "Rob Tand (recorded by the Claude Opus 5.5 campaign coordinator)",
+   "status_unix": 1790111947
   }
  },
  "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",

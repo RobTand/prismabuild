@@ -25,9 +25,13 @@ def test_the_wsl_box_resolves_through_its_windows_hostname(monkeypatch, tmp_path
     ``socket.gethostname()`` on that box returns ``DESKTOP-P5UOGNJ`` because
     WSL2 inherits the Windows machine name, so the supervisor would refuse to
     start on a roster keyed only by the name the fleet uses for it.
+
+    Presence is a separate question (#606): the checked-in shape stays in the
+    roster while the box is declared offline, so this resolves that shape as
+    an active box would.
     """
 
-    config = Path(__file__).resolve().parents[1] / "tools/fleet/fleet_boxes.json"
+    config = _checked_in_roster(tmp_path, presence=None)
     monkeypatch.setattr(supervise, "CONFIG", config)
     monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
     canonical = supervise.declared_shape("wsl-gpu", 0)
@@ -37,6 +41,33 @@ def test_the_wsl_box_resolves_through_its_windows_hostname(monkeypatch, tmp_path
     tags = {args[i + 1] for i, arg in enumerate(args) if arg == "--tag"}
     assert {"wsl-gpu", "gfx1201", "rocm", "rdna4"} <= tags
     assert args[args.index("--mem-gb") + 1] == "16"
+
+
+def test_an_offline_wsl_box_refuses_under_both_names(monkeypatch, tmp_path):
+    """An absence declared on the canonical name also stops the alias."""
+
+    config = _checked_in_roster(tmp_path, presence={
+        "status": "offline", "status_reason": "out of scope",
+        "status_by": "test", "status_unix": 1.0})
+    monkeypatch.setattr(supervise, "CONFIG", config)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    for name in ("wsl-gpu", "DESKTOP-P5UOGNJ"):
+        with pytest.raises(SystemExit, match="offline"):
+            supervise.declared_shape(name, 0)
+
+
+def _checked_in_roster(tmp_path, *, presence):
+    """The checked-in roster with wsl-gpu's presence fields replaced."""
+
+    real = Path(__file__).resolve().parents[1] / "tools/fleet/fleet_boxes.json"
+    document = json.loads(real.read_text())
+    entry = document["boxes"]["wsl-gpu"]
+    for field in ("status", "status_reason", "status_by", "status_unix"):
+        entry.pop(field, None)
+    entry.update(presence or {})
+    config = tmp_path / "fleet_boxes.json"
+    config.write_text(json.dumps(document))
+    return config
 
 
 def test_every_declared_alias_names_one_box():
