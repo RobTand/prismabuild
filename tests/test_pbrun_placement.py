@@ -1633,12 +1633,16 @@ def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
     queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
+    # ``--wait-s 0`` is one immediate observation with the standard bounded
+    # reader budget.  A subsecond caller deadline races bounded-reader startup
+    # and IPC under suite load, and the read timeout's exit (74) is not this
+    # test's subject; the sealed action it reads is unaffected (#822).
     with mock.patch.object(pbrun, "SH", root), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--here",
-                            "--wait-s", "0.01", *extra_argv,
+                            "--wait-s", "0", *extra_argv,
                             "--", "echo", "hi"]):
         assert pbrun.main() == 75          # accepted; nothing here claims it
 
@@ -1875,13 +1879,16 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
 
+    # ``--wait-s 0`` is one immediate observation with the standard bounded
+    # reader budget; a subsecond deadline races reader startup under load and
+    # the read timeout's 74 is not what this test asserts (#822).
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
              mock.patch.object(socket, "gethostname", return_value=HOST), \
              mock.patch.object(sys, "argv",
                                ["pbrun.py", "--cwd", str(work), "--here",
-                                "--wait-s", "0.01",
+                                "--wait-s", "0",
                                 "--", "echo", "hi"]):
         assert pbrun.main() == 75          # nothing is running to claim it
 
@@ -1918,13 +1925,16 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
     queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
+    # ``--wait-s 0``: one immediate observation with the standard bounded
+    # reader budget, so a loaded box's reader startup cannot turn the
+    # accepted-and-unclaimed 75 into the read timeout's 74 (#822).
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--tag", "x86",
-                            "--wait-s", "0.01", "--", "echo", "hi"]):
+                            "--wait-s", "0", "--", "echo", "hi"]):
         if offset_s > 60:
             with pytest.raises(SystemExit, match="no recorded worker"):
                 pbrun.main()
