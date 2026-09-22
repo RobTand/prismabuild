@@ -119,6 +119,12 @@ OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 #: `reader_lease.__file__` under it. Never a mutable `/repo` checkout.
 READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
 
+#: Sealed producer env that opts a restage mover into reserving pool fill
+#: (#747).  "" or "0" is off (the default), "1" is on, anything else refuses
+#: the restage.  Read from the producer's SEALED request, never from the
+#: calling process: the switch is part of what the producer was admitted as.
+RESTAGE_FILL_ENV = "PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL"
+
 #: Delivered SDK + funding dependencies this lane binds to (not stubs).
 SDK_DEPENDENCY = (
     "PB730 additive owner/material-namespace SDK contract (delivered on "
@@ -1959,7 +1965,8 @@ def _committed_restage_authority(queue, checked_instance, checked_template,
 
 def _append_materialization_locked(
         queue, checked_instance, checked_template, batch_id: str, *,
-        mover_key: str, tier: str, generation: int, host: str) -> bool:
+        mover_key: str, tier: str, generation: int, host: str,
+        fill: int | None = None) -> bool:
     """File one restage INTENT under the caller's ownership lock.
 
     This is the durable resumption point, and it is filed BEFORE any funding
@@ -1971,7 +1978,10 @@ def _append_materialization_locked(
     immutable record loads; the entry still agrees on mover/tier/namespace;
     the first materialization is stage-retired with its origin charge intact),
     re-derives the generation from the record on disk, and appends
-    `{mover_key, tier, generation, retired: False, state: "intent", host}`.
+    `{mover_key, tier, generation, retired: False, state: "intent", host}`,
+    plus `fill_mb_s_pool_side` when the sealed mover reserved pool fill
+    (#747): a resume republishes the row from this record without re-sealing,
+    and a row's resources must equal its sealed demand.
     Idempotent: a materialization already filed with this mover key returns
     True without appending. Any provenance failure raises.
     """
@@ -2011,11 +2021,14 @@ def _append_materialization_locked(
         # generation-mismatched row: every step is idempotent, so the retry
         # re-derives the current generation and heals by re-calling.
         raise ProducedOutputError("restage-generation-changed")
-    updated = dict(entry)
-    updated["materializations"] = existing + [{
+    row: dict[str, object] = {
         "mover_key": str(mover_key), "tier": tier,
         "generation": int(generation), "retired": False,
-        "state": "intent", "host": str(host)}]
+        "state": "intent", "host": str(host)}
+    if fill is not None:
+        row["fill_mb_s_pool_side"] = int(fill)
+    updated = dict(entry)
+    updated["materializations"] = existing + [row]
     batches[batch_id] = updated
     try:
         _write_commitments(path, {"batches": batches})
@@ -2900,6 +2913,26 @@ def _announced_tier_record(queue, tier: str) -> Mapping[str, object] | None:
     return None
 
 
+def _sealed_restage_fill_setting(request: Mapping[str, object]) -> bool | None:
+    """The producer's sealed `RESTAGE_FILL_ENV`: False, True, or None if bad.
+
+    Absent, "" and "0" are off; "1" is on. Any other value is a sealing
+    mistake that no restage should guess at, so it answers None and the
+    caller refuses before anything is filed.
+    """
+
+    environment = request.get("environment")
+    variables = (environment.get("variables")
+                 if isinstance(environment, Mapping) else None)
+    value = (variables.get(RESTAGE_FILL_ENV, "")
+             if isinstance(variables, Mapping) else "")
+    if value in ("", "0"):
+        return False
+    if value == "1":
+        return True
+    return None
+
+
 def _seal_output_mover(queue, checked_instance: Mapping[str, object],
                        checked_template: Mapping[str, object],
                        descriptors: list[Mapping[str, object]], *,
@@ -2907,7 +2940,8 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
                        producer_action_key: str | None,
                        command_extra: Sequence[str] = (),
                        retry_policy: Mapping[str, object] | None = None,
-                       generation: int = 0) -> dict[str, object]:
+                       generation: int = 0,
+                       restage_fill: bool | None = None) -> dict[str, object]:
     """Seal and file ONE output mover for this batch, and answer its facts.
 
     The single sealing path for the produced-output lane: first publication
@@ -2943,9 +2977,23 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     input the child does not inherit, is refused here rather than sealed for a
     worker to reject.
 
+    A re-materialization may also reserve pool fill (#747), and only when the
+    producer opted in: `restage_fill` when the caller passes it, else the
+    producer's sealed `RESTAGE_FILL_ENV`. A restage copies a retired batch
+    back off the pool, cold, the way a consumer's input mover does, so it is
+    priced the way pbrun prices one: `storage_tiers.current_fill_offer` over
+    the movement receipts and the tier's current offer. The demand gains the
+    `fill_mb_s_pool_side@<tier>` term and the command the matching
+    `--fill-mb-s-pool-side`, and the price is returned as `fill` so the
+    materialization row can carry it for a resume. A first publication never
+    reserves fill: it reads what the producer has just written. A tier that
+    offers no fill and has no usable receipt prices nothing, and the mover is
+    sealed unreserved exactly as before.
+
     Returns the sealed facts (`mover_key`, `action`, `host`, `kind`, `gib`,
-    `total`, `manifest_digest`, `batch_namespace`, `retry_policy`, `cas`) with
-    the request already filed in CAS, or a typed `{"ok": False, "step", ...}`.
+    `fill`, `total`, `manifest_digest`, `batch_namespace`, `retry_policy`,
+    `cas`) with the request already filed in CAS, or a typed
+    `{"ok": False, "step", ...}`.
     """
 
     from prismabuild import core as core_mod
@@ -2970,6 +3018,14 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     if isinstance(parent, Mapping):
         return dict(parent)
     cas, request = parent
+    reserve_fill = False
+    if int(generation) > 0:
+        setting = _sealed_restage_fill_setting(request)
+        if setting is None:
+            return {"ok": False, "step": "seal",
+                    "refusal": (f"{RESTAGE_FILL_ENV} in the producer's sealed "
+                                f"environment must be 0 or 1")}
+        reserve_fill = setting if restage_fill is None else bool(restage_fill)
     # The batch's stage data manifest, sealed as the request's data-manifest
     # input exactly as a consumer submission's is: the mover finds it in its
     # own sealed request, never on a caller's filesystem. The parent's own
@@ -3019,6 +3075,23 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     host = str(record.get("host") or "")
     kind = tiers_mod.capacity_kind_of(tier)
     gib = tiers_mod.stage_tokens_for_bytes(total)
+    demand: dict[str, int] = {"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib}
+    fill: int | None = None
+    fill_basis: str | None = None
+    if reserve_fill:
+        # pbrun's mover rule, unchanged: the receipts' single-reader share,
+        # capped by what the tier offers on this cycle (#708). Receipts from
+        # another pool behind the same tier id price nothing (#611).
+        identity = record.get("pool_identity")
+        measured = tiers_mod.mover_fill_demand_from_receipts(
+            queue.move_records(), tier_id=tier,
+            pool_identity=identity if isinstance(identity, Mapping) else None)
+        priced, _offer, fill_basis = tiers_mod.current_fill_offer(
+            record, measured)
+        if priced is not None and int(priced) > 0:
+            fill = int(priced)
+            demand[f"{tiers_mod.FILL_KIND}"
+                   f"{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}"] = fill
     command = [mover_python, mover_tool,
                "--pool-root", str(queue.root),
                "--cas-root", str(cas.root),
@@ -3034,6 +3107,10 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
                "--residency-root", str(output_fragment_root(
                    Path(queue.root) / pool_mod.RESIDENCY)),
                "--readers", "2"]
+    if fill is not None:
+        # Receipt only: the mover records what its claim reserved, so a
+        # later tier cycle can ask whether the pool delivered it.
+        command += ["--fill-mb-s-pool-side", str(fill)]
     command += [str(flag) for flag in command_extra]
     mover_retry_policy = (dict(retry_policy) if retry_policy is not None
                           else {"max_attempts": 3, "retry_safe": True})
@@ -3057,7 +3134,7 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
         action = movement_actions.seal_movement_action(
             mover_template,
             command=command,
-            demand={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
+            demand=demand,
             tags=[host] if host else [],
             log_name=log_name,
             retry_policy=mover_retry_policy,
@@ -3070,7 +3147,8 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     return {"ok": True, "action": action,
             "mover_key": str(action["action_key"]),
             "cas": cas, "cas_root": str(cas.root), "host": host,
-            "kind": kind, "gib": gib, "total": total,
+            "kind": kind, "gib": gib, "fill": fill, "fill_basis": fill_basis,
+            "total": total,
             "manifest_digest": manifest_digest, "batch_namespace": batch_ns,
             "retry_policy": mover_retry_policy, "ref": dict(ref)}
 
@@ -3224,7 +3302,8 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
                               launch: Mapping[str, object], host: str,
                               tier: str, kind: str, gib: int,
                               manifest_digest: str, total: int,
-                              retry_policy: Mapping[str, object]
+                              retry_policy: Mapping[str, object],
+                              fill: int | None = None
                               ) -> dict[str, object]:
     """Publish one output mover's READY row through the EXISTING channel.
 
@@ -3235,11 +3314,18 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
     publication and restage. A row already published for this content-
     addressed key is a typed duplicate, not a conflict: the sealed key IS the
     identity, so republishing the same key is the resume path, never a second
-    unit of work.
+    unit of work. `fill` is the pool fill the sealed request reserved, if
+    any: the row's resources must equal its sealed demand, or the launch
+    refuses it.
     """
 
     from prismabuild import pool as pool_mod
+    from prismabuild import storage_tiers as tiers_mod
 
+    resources: dict[str, int] = {"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib}
+    if fill is not None:
+        resources[f"{tiers_mod.FILL_KIND}"
+                  f"{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}"] = int(fill)
     state = _mover_live_state(queue, mover_key)
     if state == "unknown":
         return {"ok": False, "step": "publish",
@@ -3255,7 +3341,7 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
             max_attempts=int(retry_policy["max_attempts"]),
             retry_safe=bool(retry_policy.get("retry_safe", True)),
             **dict(launch["addressing"]),
-            resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": gib},
+            resources=resources,
             residency={"schema": pool_mod.RESIDENCY_SCHEMA_V1,
                        "tier_id": tier,
                        "manifest_sha256": manifest_digest,
@@ -3388,6 +3474,7 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
                               producer_action_key: str | None = None,
                               command_extra: Sequence[str] = (),
                               retry_policy: Mapping[str, object] | None = None,
+                              restage_fill: bool | None = None,
                               ) -> dict[str, object]:
     """Make one ALREADY COMMITTED batch resident on its tier again.
 
@@ -3431,6 +3518,14 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
     Window credit is NOT invented here: a producer whose window is spent must
     call `refill_window` first, and an unfunded successor reports the ordinary
     `tier-reservation-unavailable` with its intent standing, resumable.
+
+    Pool fill is off by default (#747). With `restage_fill=True`, or with no
+    argument and the producer's sealed `RESTAGE_FILL_ENV` set to "1", the
+    successor's mover also reserves `fill_mb_s_pool_side@<tier>` at the price
+    `_seal_output_mover` derives. That term is not prepaid: the claim takes it
+    from the tier's free fill like any mover's, and the stop returns it. A
+    resume republishes the price the intent was sealed at, whatever the switch
+    or the tier's offer says by then.
     """
 
     try:
@@ -3534,20 +3629,22 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
                 batch_id=batch_id, tier=tier, cas_root=cas_root,
                 producer_action_key=producer_action_key,
                 command_extra=command_extra, retry_policy=retry_policy,
-                generation=generation)
+                generation=generation, restage_fill=restage_fill)
             if not sealed_mover.get("ok"):
                 return sealed_mover
             mover = str(sealed_mover["mover_key"])
             host = str(sealed_mover["host"])
             kind = str(sealed_mover["kind"])
             gib = int(sealed_mover["gib"])
+            fill = sealed_mover.get("fill")
+            assert fill is None or isinstance(fill, int)
             mover_retry_policy = dict(sealed_mover["retry_policy"])
             mover_cas_root = str(sealed_mover["cas_root"])
             try:
                 _append_materialization_locked(
                     queue, checked_instance, checked_template, batch_id,
                     mover_key=mover, tier=tier, generation=generation,
-                    host=host)
+                    host=host, fill=fill)
             except ProducedOutputError as exc:
                 return {"ok": False, "step": "intent", "refusal": str(exc)}
         else:
@@ -3558,6 +3655,12 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
             mover = str(resume.get("mover_key") or "")
             generation = int(resume.get("generation") or 0)
             host = str(resume.get("host") or "")
+            # The price the intent was sealed at (#747), absent when it
+            # reserved none. Anything else on the row is not a price.
+            fill = resume.get("fill_mb_s_pool_side")
+            if fill is not None and (type(fill) is not int or fill <= 0):
+                return {"ok": False, "step": "resume",
+                        "refusal": "unknown-retain: materialization-fill"}
             if str(resume.get("state")) != "funded":
                 ok, refusal = _recheck_origin_identity(filed, sealed)
                 if not ok:
@@ -3596,7 +3699,7 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
         queue, mover_key=mover, cas_root=mover_cas_root, launch=launch,
         host=host, tier=tier, kind=kind, gib=gib,
         manifest_digest=manifest_digest, total=total,
-        retry_policy=mover_retry_policy)
+        retry_policy=mover_retry_policy, fill=fill)
     if not published.get("ok"):
         return published
     funded = queue.fund_output_batch(
@@ -5447,6 +5550,7 @@ __all__ = [
     "OUTPUT_BATCHES_SUBDIR",
     "OUTPUT_FRAGMENTS_SUBDIR",
     "READER_HELPER_ROOT_ENV",
+    "RESTAGE_FILL_ENV",
     "SDK_DEPENDENCY",
     "ARTIFACT_CLASSES",
     "ProducedOutputError",
