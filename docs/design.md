@@ -4671,6 +4671,17 @@ tokens (ordinary exact transfer from the producer's window; `refill_window`
 remains the producer's own lifecycle call and `ensure` never acquires from
 free), nor the successor id.
 
+`refill_window` replenishes that bounded window opportunistically (#854).
+When free capacity or the nonblocking tier mutation guard refuses a top-up,
+positive owner holdings at least as large as the declared `minimum_gib`
+allow `ok: true`, `acquired: 0`, and
+`refill_deferred: tier-reservation-unavailable`. This reports retained usable
+credit, not a full window or authorization for any particular batch. The
+subsequent exact prepaid transfer still checks the actual batch size and
+refuses its real shortfall. Empty holdings (including a zero declared minimum),
+holdings below the minimum, and unknown ownership or funding census retain
+their refusal. Refill adds no retry loop and changes no retirement authority.
+
 * **Readiness is read fresh (#808).** An owner learns that a copy landed from
   the mover's filed receipt (`materialization_state`,
   `mover_receipt_complete`), and it polls for that receipt from another box

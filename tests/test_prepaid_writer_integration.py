@@ -1979,3 +1979,77 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert blanket == [], blanket
     assert _tier_census(ledger) == occupied
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
+
+
+@pytest.mark.parametrize("contended", [False, True])
+@pytest.mark.parametrize("batch_gib", [1, 2])
+def test_refill_does_not_block_spending_held_credit(
+        tmp_path: Path, monkeypatch, contended: bool, batch_gib: int) -> None:
+    """Top-up availability cannot veto an otherwise funded next batch.
+
+    A sparse larger origin tests the real two-token shortfall without
+    allocating or copying GiB: neither arm executes a mover.
+    """
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    template["durable_maxima"]["payload_max_bytes"] = 4 << 30
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    inst = _bind(q, template, owner, cas_root)
+    ledger = q.tier_ledger(TIER)
+    _announce_tier(q, tmp_path / "stage")
+    assert ledger.release_count(owner, {KIND: 1}) == {KIND: 1}
+    if contended:
+        # The production nonblocking mint guard makes begin_acquire return
+        # None under contention, even when the availability read was >0.
+        monkeypatch.setattr(pool.ResourceLedger, "begin_acquire",
+                            lambda *args, **kwargs: None)
+    else:
+        assert ledger.acquire(_hexkey("squatter"), {KIND: 3})
+    before = _tier_census(ledger)
+    refill = po.refill_window(q, inst, template, tier=TIER)
+    assert refill["ok"] is True, refill
+    assert refill["acquired"] == 0
+    assert refill["held"] == 1
+    assert refill["refill_deferred"] == "tier-reservation-unavailable"
+    assert _tier_census(ledger) == before
+
+    descs = _descriptors(tmp_path, template, inst, "p-refill", b"data",
+                         digest_mode="null")
+    if batch_gib == 2:
+        with Path(descs[0]["path"]).open("r+b") as handle:
+            handle.truncate((1 << 30) + 1)
+        descs[0]["bytes"] = (1 << 30) + 1
+    _prewrite(q, inst, template, "refill-batch", TIER, descs)
+    result = po.publish_prepaid_batch(
+        q, inst, template, descs, batch_id="refill-batch", tier=TIER,
+        cas_root=cas_root, producer_action_key=owner,
+        command_extra=["--unpaced"])
+    if batch_gib == 1:
+        assert result["ok"] is True, result
+        assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+        assert ledger.holder_tokens(result["mover_key"])[KIND] == 1
+    else:
+        assert result["ok"] is False, result
+        assert result["refusal"] == "tier-reservation-unavailable", result
+        assert _tier_census(ledger) == before
+    assert ledger.available().get(KIND, 0) == before["free"]
+
+
+@pytest.mark.parametrize("minimum,held", [(0, 0), (1, 0), (2, 1)])
+def test_refill_without_held_minimum_still_refuses(
+        tmp_path: Path, minimum: int, held: int) -> None:
+    cas_root = tmp_path / "cas"
+    template = _template(str(tmp_path / "outputs"))
+    template["working_demands"][TIER]["minimum_gib"] = minimum
+    owner = _producer_request(tmp_path, cas_root, template)
+    q = _queue(tmp_path)
+    inst = _bind(q, template, owner, cas_root)
+    ledger = q.tier_ledger(TIER)
+    ledger.release_count(owner, {KIND: 2 - held})
+    assert ledger.acquire(_hexkey("squatter"), {KIND: 4 - held})
+    before = _tier_census(ledger)
+    result = po.refill_window(q, inst, template, tier=TIER)
+    assert result["ok"] is False, result
+    assert result["refusal"] == "tier-reservation-unavailable"
+    assert _tier_census(ledger) == before
