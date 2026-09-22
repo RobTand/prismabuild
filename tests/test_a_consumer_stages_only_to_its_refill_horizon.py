@@ -155,14 +155,21 @@ def _reader(queue: pool.PoolQueue, stage: Path, *,
     return files
 
 
-def _newcomer(queue: pool.PoolQueue) -> str:
-    """A ready consumer of another manifest whose lead mover is queued."""
+def _newcomer(queue: pool.PoolQueue, *, phases: int = 1,
+              queued: bool = True) -> str:
+    """A ready consumer of another manifest, and its lead mover's key.
+
+    ``queued`` publishes the lead mover, the shape of a lead whose claim is
+    short; without it the lead waits on the window's joint-fit gate, the
+    shape of the native capture's lead on 2026-09-22.
+    """
 
     plan = _plan(queue, NEWCOMER, label="newcomer", manifest=NEWCOMER_MANIFEST,
-                 phases=1)
+                 phases=phases)
     _publish_consumer(queue, NEWCOMER, plan, manifest=NEWCOMER_MANIFEST)
     lead = dict(plan["phases"][0]["mover_row"])  # type: ignore[index]
-    queue.publish(**lead)
+    if queued:
+        queue.publish(**lead)
     return str(lead["action_key"])
 
 
@@ -252,3 +259,34 @@ def test_a_window_publishes_only_to_its_refill_horizon(tmp_path: Path) -> None:
     published = {ordinal for ordinal in range(PHASES)
                  if queue.item_path(pool.READY, _mover("reader", ordinal)).exists()}
     assert published == {1, 2}, published
+
+
+def test_a_gated_newcomer_is_relieved_by_ranges_past_the_horizon(
+        tmp_path: Path) -> None:
+    """The capture's shape: an unpublished lead gated on current plus next.
+
+    The newcomer has two phases, so the window's joint-fit gate admits it
+    only when the tier holds its lead and its next beside everything already
+    held: 16 + 2 + 2 against 17, three short.  The relief that gate asks for
+    was bounded by the tier's orphans (#orphan-pressure, #901), and a live
+    plan's ranges are never orphans, so before the fix nothing was asked for
+    and the lead was never published.  After it, ranges past the reader's
+    horizon count toward that bound: the two farthest go, and the lead
+    publishes the same cycle.
+    """
+
+    capacity = PHASE_GIB * PHASES + 1
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    files = _reader(queue, stage, landed=tuple(range(PHASES)))
+    lead = _newcomer(queue, phases=2, queued=False)
+
+    _cycle(queue, stage, gib=capacity)
+
+    assert queue.item_path(pool.READY, lead).exists()
+    for ordinal in (6, 7):
+        assert not _held(queue, _mover("reader", ordinal)), ordinal
+        assert not any(path.exists() for path in files[ordinal]), ordinal
+    for ordinal in range(6):
+        assert _held(queue, _mover("reader", ordinal)), ordinal
+        assert all(path.exists() for path in files[ordinal]), ordinal
+    assert_ledger_matches_the_stage(queue)
