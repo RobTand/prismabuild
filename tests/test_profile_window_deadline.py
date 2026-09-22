@@ -18,7 +18,11 @@ def _assert_stopped(pid):
     while time.monotonic() < deadline:
         try:
             state = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # The killed child's /proc entry can vanish between the lookup and
+            # the read, and the kernel reports that as ESRCH rather than
+            # ENOENT; both mean the process this helper is waiting for is gone
+            # (#846).  Permission and every other OSError stay loud.
             return
         if state == 'Z':
             return
