@@ -4869,6 +4869,32 @@ shared question (`_output_funding_verdict`) decides both, because a retry
 event pointing at permanently unclaimable work is the same wait-forever
 defect as a live-wait one.
 
+### Failed output claims retain their real terminal disposition (#848)
+
+An executed produced-output mover has consumed a one-claim funding fence.
+If that attempt fails, remaining `max_attempts` cannot make the same fence
+claimable again. Before publishing its immutable attempt, `archive_attempt`
+compares the validated consumed funding record with the durable claim's
+`tier_funding` output generation and exact token set, its publication, residency,
+and produced-output reference (including the CAS request when filed). A positive
+match files `FAILED` with `output_retry_stop` evidence even before the attempt
+budget is exhausted. The sealed request, budget, failure status, logs, and actual
+attempt count are unchanged. The immutable evidence is validated by attempt
+adoption without rereading mutable funding, so later retirement cannot change
+history. Both normal finish and stale-lease recovery use this archive contract;
+late finish still cannot alter a live successor's queue row or reservations.
+
+Absent, corrupt, changed-generation, or otherwise mismatched funding supplies
+no such proof and keeps the existing retry and fail-closed admission behavior.
+Ordinary work and unspent funding keep their retry contracts. Successful output
+claims remain successful. This transition releases no material or funding;
+partial or unknown material retains the existing occupancy pins, including when
+a reaper files the terminal failure. Recovery of the committed output still uses
+the existing retire, reclaim, and re-plan lifecycle, never a second spend of the
+failed claim's funding. Already archived READY retries are not rewritten by this
+change and still require an explicit supported operational disposition.
+
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when
