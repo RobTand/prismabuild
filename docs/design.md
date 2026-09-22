@@ -4614,6 +4614,29 @@ seal time (`producer-checkout-snapshot-invalid` /
 `producer-checkout-snapshot-input-missing`) rather than on a worker after a
 claim.
 
+#### Produced-output physical namespaces (#849)
+
+New produced-output movers explicitly seal `--produced-output-namespace` with
+PB's existing immutable `batch_namespace`. Their files live below
+`<tier-root>/produced-output/<batch_namespace>/<manifest-relative-path>`.
+The registered tier root, ownership lock, fragment and material schemas,
+original descriptors and prepaid funding stay unchanged. Different batches
+or owner attempts can therefore retain different bytes with the same basename
+without replacing one another's material. The namespace is stable across the
+same batch's later materializations; normal pin-aware retirement still must
+finish before a successor can reuse that batch's paths.
+
+Before staging, the opt-in requires the CAS request's validated produced-output
+reference, the existing template/namespace/demand validator, and exact agreement
+with the invocation's consumer, tier, manifest and range. It cannot accept a
+foreign namespace, arbitrary path component, missing or corrupt reference, or
+an unsealed `--manifest` override. Destination collision checks, copying and
+same-key partial-coverage recovery all use the same namespace derivation.
+Ordinary inputs and historical mover requests without the explicit flag retain
+their original path layout; nothing migrates or overwrites existing material.
+A source merge does not change sealed deployed runtimes or revive a mover whose
+funding was already consumed (#848).
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.
@@ -4894,6 +4917,35 @@ nothing -- so that branch reports the same terminal route rather than
 shared question (`_output_funding_verdict`) decides both, because a retry
 event pointing at permanently unclaimable work is the same wait-forever
 defect as a live-wait one.
+
+### Failed output claims retain their real terminal disposition (#848)
+
+An executed produced-output mover has consumed a one-claim funding fence.
+If that attempt fails, remaining `max_attempts` cannot make the same fence
+claimable again. Before publishing its immutable attempt, `archive_attempt`
+compares the validated consumed funding record with the durable claim's
+`tier_funding` output generation and exact token set, its publication, residency,
+and produced-output reference (including the CAS request when filed). A positive
+match files `FAILED` with `output_retry_stop` evidence even before the attempt
+budget is exhausted. The sealed request, budget, failure status, logs, and actual
+attempt count are unchanged. The immutable evidence is validated by attempt
+adoption without rereading mutable funding, so later retirement cannot change
+history. Both normal finish and stale-lease recovery use this archive contract.
+A consumed claim whose lease later disappears is not an unstarted release:
+its durable funding proof establishes that claim and lease publication already
+completed. It follows the same failed-attempt path after the existing grace.
+Late finish still cannot alter a live successor's queue row or reservations.
+
+Absent, corrupt, changed-generation, or otherwise mismatched funding supplies
+no such proof and keeps the existing retry and fail-closed admission behavior.
+Ordinary work and unspent funding keep their retry contracts. Successful output
+claims remain successful. This transition releases no material or funding;
+partial or unknown material retains the existing occupancy pins, including when
+a reaper files the terminal failure. Recovery of the committed output still uses
+the existing retire, reclaim, and re-plan lifecycle, never a second spend of the
+failed claim's funding. Already archived READY retries are not rewritten by this
+change and still require an explicit supported operational disposition.
+
 
 ### The window
 

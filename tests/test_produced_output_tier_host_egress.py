@@ -154,7 +154,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     mover0 = str(first["mover_key"])
     ns = str(first["batch_namespace"])
     world.run_mover(mover0, "w-fwd")
-    staged = world.stage_root / "p1.bin"
+    staged = world.stage_path("p1.bin")
     assert staged.read_bytes() == payload
     assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
 
@@ -283,7 +283,7 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     mover0 = str(first["mover_key"])
     manifest = str(first["manifest_digest"])
     world.run_mover(mover0, "w-fwd")
-    staged = world.stage_root / "p1.bin"
+    staged = world.stage_path("p1.bin")
     read = world.pin(mover0, manifest, len(payload))
     assert read.get("ok") is True, read
 
@@ -337,7 +337,7 @@ def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
     retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert "egress_action_key" not in retired["receipt"]
-    assert not (world.stage_root / "p1.bin").exists()
+    assert not world.stage_path("p1.bin").exists()
     assert list((Path(world.q.root) / pool.READY).glob("*.json")) == []
 
 
@@ -359,7 +359,7 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
     _descs, first = _staged_batch(world, "b1", "p1", payload)
     mover0 = str(first["mover_key"])
     world.run_mover(mover0, "w-fwd")
-    staged = world.stage_root / "p1.bin"
+    staged = world.stage_path("p1.bin")
 
     with _NoFleetTools():
         egress = _assert_own_egress_deferral(world.retire("b1"))
@@ -392,7 +392,7 @@ def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
     _descs, first = _staged_batch(world, "b1", "p1", payload)
     mover0 = str(first["mover_key"])
     world.run_mover(mover0, "w-fwd")
-    staged = world.stage_root / "p1.bin"
+    staged = world.stage_path("p1.bin")
 
     def retire(**roots) -> dict:
         arguments = {"stage_root": str(world.stage_root),
@@ -474,5 +474,5 @@ def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
     assert "receipt" not in stopped, "no deferral for a poller to wait on"
     assert stopped["egress_action_key"] == egress
     assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN
-    assert (world.stage_root / "p1.bin").read_bytes() == payload
+    assert world.stage_path("p1.bin").read_bytes() == payload
     assert not world.entry("b1").get("retired")
