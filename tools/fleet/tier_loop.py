@@ -4467,6 +4467,14 @@ def cycle(
     for event in residency_window(queue, tiers=announced_tiers, now=now,
                                   withdrawn=withdrawn):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
+    # Terminal output funding last, once every step above that could still
+    # spend a produced batch's fence has run.  Every finish that holds a tier
+    # token reads the census, and a record nothing can count again only makes
+    # that read longer (#747).
+    retired_funding = queue.retire_terminal_output_funding()
+    if retired_funding.get("retired") or retired_funding.get("unreadable"):
+        print(json.dumps({"unix": time.time(), "event": "output-funding-retired",
+                          **retired_funding}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
     # its free tokens go now, its held ones as their holders finish, and its
     # record says why it is empty rather than vanishing.
