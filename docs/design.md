@@ -5745,6 +5745,19 @@ can then reclaim orphan refs. A lost attestation file can be reconstructed
 from a validated complete export stored in the terminal. Unknown scope or
 pin state retains ownership, and an old attempt cannot release a successor.
 
+The cover lookup (`covers_for_keys`) only selects movers; `acquire`
+revalidates under the ownership lock before anything pins. The lookup keeps
+each mover's validated sidecar and fragment per process, keyed by root,
+consumer and mover, and bounded at `COVER_DOCS_CACHE_PAIRS` (#893). Every
+call still opens both files, so NFS close-to-open revalidates them, and a
+file is read and validated again only when the `(st_dev, st_ino, st_size,
+st_mtime_ns, st_ctime_ns)` of the descriptor just opened changes. The
+identity never leaves the process, so `st_dev` is consistent here, unlike in
+the portable identity above. Both writers rename a new inode into place, so
+every republish, #823's same-generation one included, is seen; a same-size
+rewrite of the same inode within one timestamp tick would not be, and no
+writer makes one. Absence and malformation are never cached.
+
 ### A same-key retry resumes its own qualified coverage
 
 A mover's action key is a content hash, so a retried mover — a timeout, a
@@ -6487,6 +6500,81 @@ the ceiling plus the export's demand. The export can then run beside the
 movers instead of after them. Excluding exports from the floor would bring
 back the `never_fits_tier_capacity` deadlock that #706 closed, so exports
 keep it.
+
+**A producer's unheld window is an obligation the tier gate can count.**
+A producer reserves its template's `window_gib` on the tier at claim, and its
+batches spend the window by exact transfer. Retirement returns the spent
+credits to free, and the producer takes them back with `refill_window`.
+Between the retirement and the refill the window is owed but held by nobody.
+The joint-fit gate (`window_credit.gate_newcomer`), the fence check
+(`fence_fits`) and the relief in `window_pressure` counted it as zero
+(`output_gib=0`, note `output-scope-unenforced`), so a consumer's window could
+take the room the refill needs.
+
+`produced_output.unheld_window_gib(queue, tier_id)` measures that gap. For
+every owner whose live claimed row names its instance's own attempt, it
+returns `window - held - outstanding`, floored at zero. `window` comes from
+the filed template the instance is bound to, and `held` and `outstanding`
+are the terms `refill_window` bounds itself by. Both are held tokens that the
+gate already counts, so no token is counted twice. A queued owner's window is
+still in its ready demand, and a finished or superseded owner owes nothing.
+The census reads each owner's claimed row before any of its records, so a
+dead owner's torn record costs nothing. For a live owner, an unreadable
+instance, claim, template or holding makes the result unknown, and the tier
+loop defers the tier as it does for an unreadable ledger
+(`advance-deferred-unknown-evidence`). An unreadable batch census counts no
+outstanding tokens, which can only raise the result.
+
+When counted, the obligation enters all three. The gate and the fence check
+add it to what they hold against capacity. The relief adds it to each tier's
+next-phase term, because a fence needs the owed window free as well. Without
+that, an admitted window's advance would wait beside reclaimable orphans. The
+newcomer probe's shortfall includes it too. A tier whose obligation is unknown
+asks for no relief, because its publication defers.
+
+The tier loop counts the obligation only when it runs with `--output-windows`
+(or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
+made before, with the same note. Any other value of the variable stops the
+loop at start. The supervisor restarts a role whose argv differs from its
+declaration, and a role inherits the supervisor's environment, so the switch
+is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published
+like any other change, not a hand relaunch. The window, not the template's `minimum_gib`, is the charge:
+`refill_window` treats a top-up as optional once holdings reach the minimum,
+so the window over-counts the room a producer strictly needs, and it errs
+toward the producer. An A/B that turns it on compares, against a run
+without it, the `window-gated` events that name `joint-fit-stall` with an
+empty `output_note` and the producer's `refill_deferred` count.
+
+**A restaged batch's mover can reserve fill like an input mover.** A restage
+(`ensure_batch_materialized`) copies a retired batch back from its origin on
+the pool. The read is cold, like a consumer's input mover, but the restage
+mover reserved no fill, so it read the spindles outside the ledger that
+rations them. It can now reserve `fill_mb_s_pool_side@<tier>` at the price
+pbrun gives a mover: `storage_tiers.current_fill_offer` over the movement
+receipts' single-reader share (`mover_fill_demand_from_receipts`, filtered
+by the tier's `pool_identity`), capped by the tier's current offer. The
+sealed command carries the matching `--fill-mb-s-pool-side`, so the receipt
+records what the claim reserved. The stage window still comes from the
+producer by exact transfer. The fill is not prepaid: the claim takes it from
+the tier's free fill and the stop returns it. The produced-output batch gate
+(`validate_produced_output_batch`, R4) therefore reads past rate kinds on
+the batch's own tier, as the #595 gate does. The occupancy term must still be
+exactly the range floor, and a demand that names a second tier is still
+refused.
+
+The reservation is off by default. A producer opts in by setting
+`PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL=1` in its sealed environment, and
+`ensure_batch_materialized(..., restage_fill=True|False)` overrides that for
+one call. When the variable is absent, empty, or `0`, a restage is sealed
+exactly as before. Any other value refuses the restage at seal time, before
+an intent is filed. A first publication never reserves fill, because it
+reads what the producer has just written. A tier with no offer and no usable
+receipt prices nothing, and the mover stays unreserved. The price is kept on
+the materialization row (`fill_mb_s_pool_side`), so a resumed restage
+republishes the demand it was sealed at: the launch refuses a row whose
+resources differ from its sealed demand. Pricing reads every movement
+receipt once per restage seal, the same census pbrun takes for each
+submission. Only producers that opt in pay it.
 
 **Still open.**
 

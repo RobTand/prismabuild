@@ -9497,8 +9497,9 @@ class PoolQueue:
         finite ranges; total>0 with start 0); filed template by template_id
         must exist and its sha must equal the reference; namespace recomputed
         through produced_output's existing validators must equal the
-        reference; tier must be permitted with demand exactly the range floor
-        on that tier alone (single-tier output movers); sealed residency, when
+        reference; tier must be permitted with occupancy demand exactly the
+        range floor on that tier alone (single-tier output movers; a rate kind
+        on the same tier names no bytes and is allowed); sealed residency, when
         given, must name the same tier/manifest/range. Returns the checked
         reference. Publication stores this projection immutably in the item.
         """
@@ -9611,7 +9612,13 @@ class PoolQueue:
                 {str(k): int(v) for k, v in dict(demand).items()})
         except (TypeError, ValueError) as exc:
             raise PoolContractError(f"batch reference demand: {exc}") from exc
-        tier_needs = declared_grouped.get(str(tier_id), {})
+        # A rate kind names no bytes (#636), so it is no part of the range
+        # floor: a restaged batch's mover may reserve pool fill on its own
+        # tier (#747).  The occupancy kind must still be exactly the floor,
+        # and nothing may name another tier.
+        tier_needs = {
+            k: v for k, v in declared_grouped.get(str(tier_id), {}).items()
+            if k not in TIER_RATE_KINDS}
         if (set(tier_needs) != {kind} or int(tier_needs[kind]) != int(floor)
                 or len(declared_grouped) != 1):
             raise PoolContractError(
