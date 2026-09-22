@@ -11,7 +11,9 @@ failed with "no accepted-progress observation" exactly so, 1.23 s before the
 record it wanted was written.
 
 The pool's own claim gate already treats a finish tombstone as a live claim
-(``already_claimed``); the waiter must agree with it.
+(``already_claimed``); the waiter must agree with it.  Knowing the generation,
+it then reads that generation's ending from the immutable attempt archive
+(#817), which ``finish`` publishes before the claim moves.
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ import pbwait  # noqa: E402
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
 
 
-def test_a_wait_inside_the_finish_window_keeps_waiting_for_the_ending(
+def test_a_wait_inside_the_finish_window_reports_the_archived_ending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     work = _checkout(tmp_path)
@@ -72,11 +74,14 @@ def test_a_wait_inside_the_finish_window_keeps_waiting_for_the_ending(
     assert any(name.startswith(f"{key}.") and name.endswith(pool.TOMBSTONE_SUFFIX)
                for name in window["claimed"]), window["claimed"]
     # The fix: the entombed claim is still outstanding pool work, so the wait
-    # does not answer from the receipt before the ending is filed.
+    # names its generation and answers with that generation's real ending,
+    # read from the immutable attempt archive (#817) that ``finish`` wrote
+    # before the claim moved -- never ``cache_hit`` from the receipt alone.
     assert window["found"] is not None and window["found"][0] == "pool"
     rows = window["rows"]
-    assert [row["status"] for row in rows] == ["waiting"], rows
-    assert pbwait.verdict(rows) != 0
+    assert [row["status"] for row in rows] == ["executed"], rows
+    assert rows[0]["transport"] == "pool"
+    assert rows[0]["returncode"] == 0
 
     # Once the finish files the ending, the same wait reports it.
     after = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=5.0)
