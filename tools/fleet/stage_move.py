@@ -594,6 +594,28 @@ class _PackedMentions:
         return _decode_mentions(self.values[start:end])
 
 
+class _PublicationRefused(OSError):
+    """The publication gate refused one entry; the range stops taking work.
+
+    The gate's refusal is a property of the shared staged name, not of one
+    copy's source bytes: another publication owns it, a reader pin protects
+    it, or its proof state cannot be read.  Every remaining entry of the same
+    range races the same ownership state, so a copier thread that receives
+    this refusal consumes no further queued entries for the range -- the
+    already-active group may finish or refuse its current entry, and every
+    entry they already committed keeps its fragment, sidecar and byte count
+    (#853).  An ordinary source read, digest or filesystem failure is a plain
+    ``OSError`` and keeps the existing per-entry handling: one bad source is
+    not evidence that the rest of the range is unpublishable.
+
+    A subclass of ``OSError`` on purpose: every existing caller that catches
+    ``OSError`` -- the copier's error list, the mover's receipt, unit tests --
+    keeps exactly its behavior, and only the copier distinguishes the two.
+    """
+
+    pass
+
+
 class _StagedPublisher:
     """Linearize staged-path publication under the stage ownership lock.
 
@@ -652,9 +674,11 @@ class _StagedPublisher:
 
     Never replaces an occupied path except into proven absence (first
     publication) or re-verified orphan residue.  Returns ``(written,
-    digest, identity)`` like a copy; raises ``OSError`` on refuse/stop,
-    which the worker files as an entry error exactly like a digest
-    mismatch.
+    digest, identity)`` like a copy; raises ``_PublicationRefused`` on a
+    gate refusal and plain ``OSError`` on stop, which the worker files as
+    an entry error exactly like a digest mismatch -- with the difference
+    that a refusal also stops the copier from consuming more entries of
+    this range (#853).
     """
 
     def __init__(self, *, queue, stage_root, residency_root,
@@ -756,8 +780,8 @@ class _StagedPublisher:
         Metadata-only, under one ownership-lock hold: the same proof the
         publish gate requires, minus the copy-compare path (no computed
         digest exists yet).  Returns ``(want, digest, file_id)`` or
-        ``None`` to proceed with the copy.  Raises ``OSError`` for
-        provably divergent bytes, failing fast before any copy.
+        ``None`` to proceed with the copy.  Raises ``_PublicationRefused``
+        for provably divergent bytes, failing fast before any copy.
         """
 
         want = int(entry["bytes"])
@@ -775,7 +799,7 @@ class _StagedPublisher:
             if standing == "unknown":
                 return None
             if standing == "divergent":
-                raise OSError(detail)
+                raise _PublicationRefused(detail)
             if proof is None:
                 return None
             return want, proof[0], proof[1]
@@ -805,7 +829,7 @@ class _StagedPublisher:
                     return want, verdict[1], verdict[2]
                 if verdict[0] == "refuse":
                     temp_path.unlink(missing_ok=True)
-                    raise OSError(verdict[1])
+                    raise _PublicationRefused(verdict[1])
             if stop is not None and stop.is_set():
                 temp_path.unlink(missing_ok=True)
                 raise OSError(f"stopping before {destination} publishes")
@@ -1531,6 +1555,13 @@ class _Copier:
         #: outside the lock can say which snapshot it is and an older one can
         #: be discarded rather than written over a newer one.
         self.generation = 0
+        #: Set when the publication gate refused an entry (#853).  Internal
+        #: to this one range and never the caller's ``stop`` event: it stops
+        #: the workers from taking further entries, while the external event
+        #: stays the caller's cancellation/withdrawal decision with its own
+        #: terminal.  An already-started entry may still finish or refuse;
+        #: what it commits stays committed.
+        self.publication_refused = threading.Event()
 
     def _temporary(self, destination: Path) -> Path:
         """This mover's own temporary beside ``destination`` (#620).
@@ -1685,6 +1716,19 @@ class _Copier:
 
     def run(self, entries: list[dict[str, object]], *, whole: set[str],
             stop: threading.Event, on_entry=None) -> None:
+        """Copy the window, stopping the range on the first gate refusal.
+
+        ``stop`` is the caller's cancellation event and is never set here.  A
+        ``_PublicationRefused`` from the publication gate sets the copier's
+        own :attr:`publication_refused` instead: no worker takes a further
+        entry, while the entries already handed to the active group finish or
+        refuse normally and everything they committed stays committed.  Plain
+        per-entry failures (a source read, a digest mismatch, an I/O error)
+        keep the existing behavior of recording the error and continuing; a
+        refused publication is a statement about the whole range's ownership,
+        and the remaining entries race the same state.
+        """
+
         admission = prewarm_loop.Admission()
         self.limit = (self.pacer.depth if self.pacer is not None
                       else (lambda: self.workers))
@@ -1694,8 +1738,15 @@ class _Copier:
         for _ in range(self.workers):
             work.put(None)
 
+        def record_error(path: str, exc: object) -> None:
+            with self.lock:
+                if len(self.errors) < 20:
+                    self.errors.append(f"{os.path.basename(path)}: {exc}")
+
         def worker() -> None:
             while not stop.is_set():
+                if self.publication_refused.is_set():
+                    return
                 entry = work.get()
                 if entry is None:
                     return
@@ -1718,10 +1769,21 @@ class _Copier:
                     written, digest, identity = self._copy_one(
                         entry, destination, admission, stop,
                         source=staged_source, source_offset=staged_offset)
+                except _PublicationRefused as exc:
+                    # The gate refused a shared staged name: every remaining
+                    # entry races that same ownership, so consume no further
+                    # entries.  The already-active group may finish or refuse
+                    # its current entry, and what it commits stays committed.
+                    # This is not the caller's stop: cancellation and
+                    # withdrawal are decided elsewhere and keep their own
+                    # terminal.
+                    record_error(path, exc)
+                    self.publication_refused.set()
+                    return
                 except (OSError, ValueError) as exc:
-                    with self.lock:
-                        if len(self.errors) < 20:
-                            self.errors.append(f"{os.path.basename(path)}: {exc}")
+                    # An ordinary source read, digest or filesystem failure:
+                    # one entry's trouble, not evidence about the range.
+                    record_error(path, exc)
                     continue
                 record = {
                     "stage_path": str(destination),
