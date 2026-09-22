@@ -32,6 +32,7 @@ the rest from the measurement.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -330,6 +331,136 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     return not pool.membership_handoff_authorized(marker)
 
 
+def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
+    """Positive unconsumed-credit proof; locks live through caller's decision.
+
+    Blind holder names only discover possible consumers. A fresh frozen plan,
+    live queue row and exact current advance authorize retention. Bound credit
+    additionally proves the mover publication and existing funding binding.
+    """
+    blind = holder.startswith(window_credit.GRANT_PREFIX)
+    funding = None
+    if blind:
+        prefix = holder[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
+        if len(prefix) != 16 or any(c not in "0123456789abcdef" for c in prefix):
+            return "none", "malformed blind-grant name"
+        candidates = [p.stem for p in pool._scan(queue.root / pool.RESIDENCY_PLANS)
+                      if p.suffix == ".json" and len(p.stem) == 64
+                      and p.stem.startswith(prefix)]
+        if len(candidates) > 1:
+            return "unknown", "ambiguous blind-grant consumer"
+        if not candidates:
+            return "none", "no filed consumer plan"
+        consumer = candidates[0]
+    else:
+        status, funding, reason = queue.read_funding_evidence(holder, tier_id)
+        if status == "unknown":
+            return "unknown", reason
+        if funding is None or funding["state"] not in ("reserved", "transferring"):
+            if not locks.enter_context(queue.mover_transition_lock(holder, blocking=False)):
+                return "unknown", "mover transition busy"
+            return "none", "not unconsumed credit"
+        consumer = str(funding["consumer_action_key"])
+    if not locks.enter_context(queue.mover_transition_lock(consumer, blocking=False)):
+        return "unknown", "consumer transition busy"
+    if not blind and not locks.enter_context(
+            queue.mover_transition_lock(holder, blocking=False)):
+        return "unknown", "mover transition busy"
+    live, error = residency_plan.live_state(queue, consumer)
+    if error:
+        return "unknown", error
+    if live is None:
+        return "none", "consumer is terminal or vanished"
+    refused = []
+    plan, _incarnation = residency_plan.read_filed(
+        queue, consumer, on_unreadable=refused.append)
+    if refused:
+        return "unknown", str(refused[0])
+    if plan is None or plan.get("ram_tier_id") != tier_id:
+        return "none", "no matching frozen RAM plan"
+    marker = residency_plan.superseded(queue, plan)
+    if marker:
+        return ("unknown", "retirement marker unreadable") if marker.get("unreadable") else (
+            "none", "plan superseded")
+    if not current_epoch:
+        return "none", "RAM tier has no current epoch"
+    item = pool._read_json(queue.item_path(live, consumer))
+    if not isinstance(item, dict) or item.get("action_key") != consumer:
+        return "unknown", "live consumer row unreadable or divergent"
+    if blind:
+        accepted = None
+        if live == pool.CLAIMED:
+            observed = prewarm_loop.progress_phase(queue, consumer, float(item["claimed_unix"]))
+            if observed is None:
+                # The tolerant progress reader also returns None for a
+                # corrupt/missing lease. Destruction must not mistake that
+                # uncertainty for proof of the initial frontier.
+                return "unknown", "claimed progress is not positively available"
+            accepted = str(observed["phase"])
+        already, held = _ram_mover_state(queue, plan, tier_id)
+        rowed = [key for key in residency_plan.ram_mover_keys(plan)
+                 if queue.item_path(pool.READY, key).exists()]
+        needs = residency_plan.advance_needs(
+            plan, accepted, published=sorted(already), staged=sorted(held),
+            rowed=rowed, mover_role="ram_mover_row")
+        target = needs.get("fence_target")
+        if target is None or holder != window_credit.grant_key(
+                consumer, tier_id, "ram_mover_row", target["phase"], target["chunk_index"]):
+            return "none", "holder is not the current frozen advance"
+        mover = str(target["mover_action_key"])
+        demand = int(target["stage_gib"])
+    else:
+        mover = holder
+        leg = residency_plan.find_mover_leg(plan, mover)
+        if leg is None or leg["mover_role"] != "ram_mover_row":
+            return "none", "funding mover is outside frozen RAM plan"
+        demand = int(leg["stage_gib"])
+    if not locks.enter_context(queue.mover_transition_lock(mover, blocking=False)):
+        return "unknown", "mover transition busy"
+    status, record, reason = queue.read_funding_evidence(mover, tier_id)
+    if status == "unknown":
+        return "unknown", reason
+    if funding is not None and (record is None or
+            (record["consumer_action_key"], record["generation"]) !=
+            (funding["consumer_action_key"], funding["generation"])):
+        return "unknown", "funding rotated during qualification"
+    if blind and record is None:
+        tokens = queue.tier_ledger(tier_id).holder_tokens(holder)
+        if tokens == {"ram_gib": demand}:
+            return "live", "exact blind advance"
+        return "unknown", "partial or divergent blind holdings"
+    if record is None:
+        return "unknown", "funding disappeared during qualification"
+    if (record["state"] not in ("reserved", "transferring")
+            or record["consumer_action_key"] != consumer
+            or record["plan_sha256"] != residency_plan.plan_sha256(plan)
+            or record["mover_action_key"] != mover
+            or record["tier_id"] != tier_id or record["kind"] != "ram_gib"):
+        return "none", "funding is not this unconsumed plan credit"
+    leg = residency_plan.find_mover_leg(plan, mover)
+    if (leg is None or leg["mover_role"] != "ram_mover_row"
+            or (record["range_start_bytes"], record["range_end_bytes"]) != (
+                leg["start_bytes"], leg["end_bytes"])):
+        return "none", "funding range differs from frozen leg"
+    row = pool._read_json(queue.item_path(pool.READY, mover))
+    if not isinstance(row, dict):
+        return "unknown", "funded mover publication unavailable"
+    if row.get("published_unix") != record["published_unix"]:
+        return "none", "funding publication is stale"
+    if blind:
+        names = {p.name for p in pool._glob(
+            queue.tier_ledger(tier_id).held_dir / holder, "*-*")}
+        if (record["state"] == "reserved" and len(record["tokens"]) == demand
+                and all(name.startswith("ram_gib-") and name in names
+                        for name in record["tokens"])):
+            return "live", "bound grant before transfer"
+    else:
+        covered, _generation = queue.funded_cover(tier_id, row, "ram_gib", demand)
+        if covered == demand:
+            return "live", "bound mover before claim"
+    return "unknown", "unconsumed funding has incomplete token evidence"
+
+
 def drop_prior_ram_epochs(
         queue: pool.PoolQueue,
         tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
@@ -409,11 +540,40 @@ def drop_prior_ram_epochs(
             epoch = (str(receipt.get("epoch") or "")
                      if isinstance(receipt, Mapping) else "")
             if live and epoch == live:
-                continue
-            released = queue.release_tier_reservations(key)
-            events.append({"event": "ram-ghost-tokens-released",
-                           "tier_id": tier_id, "holder": key,
-                           "epoch": epoch or None, "released": released})
+                continue  # Positive current material needs no credit census.
+            with ExitStack() as locks:
+                try:
+                    # The current advance depends on real holdings. Keep
+                    # those stable until retaining/releasing this holder.
+                    # Every transition lock below is nonblocking, so a
+                    # claim holding mover->mint makes us defer, never wait
+                    # in the reverse order. The mint lock is reentrant for
+                    # the ordinary release primitive used below.
+                    if not locks.enter_context(
+                            queue.tier_mint_lock(tier_id, blocking=False)):
+                        credit, reason = "unknown", "tier mint busy"
+                    else:
+                        credit, reason = _ram_credit_state(
+                            queue, tier_id, key, current_epoch=live, locks=locks)
+                except (OSError, pool.PoolContractError, ValueError, KeyError) as exc:
+                    credit, reason = "unknown", str(exc)
+                if credit != "none":
+                    if credit == "unknown":
+                        events.append({"event": "ram-credit-cleanup-deferred",
+                                       "tier_id": tier_id, "holder": key,
+                                       "reason": reason})
+                    continue
+                if queue.item_path(pool.CLAIMED, key).exists():
+                    continue
+                receipt = queue.move_record(key)
+                epoch = (str(receipt.get("epoch") or "")
+                         if isinstance(receipt, Mapping) else "")
+                if live and epoch == live:
+                    continue
+                released = queue.release_tier_reservations(key)
+                events.append({"event": "ram-ghost-tokens-released",
+                               "tier_id": tier_id, "holder": key,
+                               "epoch": epoch or None, "released": released})
     return events
 
 

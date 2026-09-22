@@ -3838,6 +3838,28 @@ fresh ranges land, nothing reads as ram-resident, and `residency_verdict`
 denies `ram_epoch_stale` whenever a composed map's ram epoch is not the one
 the tier announces now — the same one-cycle wait as `map_not_composed`.
 
+Epoch reclamation distinguishes material from unconsumed advance credit
+(#879). An exact current blind grant is a future reservation, not a RAM copy:
+its candidate name must resolve to a live consumer's fresh frozen RAM plan,
+then equal that plan's current `advance_needs` fence and its whole demand.
+A name prefix alone grants nothing. A queued mover's unconsumed credit must
+also bind the frozen leg/range, current publication generation and actual
+funding tokens. The tier mint guard holds the ledger stable through the decision; consumer
+and mover transition locks are acquired nonblocking beneath it, so a
+contending normal mover→mint path makes cleanup defer rather than deadlock.
+Consumer and mover transition locks protect the ownership decision;
+unknown evidence, funding rotation or contention retain the credits with a
+`ram-credit-cleanup-deferred` diagnostic. Known dead/missing or superseded
+owners and unrelated/forged grants remain reclaimable. The existing window
+still retires grants its frontier no longer needs.
+
+A qualified future reservation survives a mount-epoch change because it
+claims no already-resident bytes; old-epoch material still drops exactly as
+before. A disappeared RAM tier retains no future grant. Reservations remain
+charged to the ordinary ledger, including after capacity shrink, and cannot
+admit a copy beyond current capacity. This adds no funding schema or migration.
+
+
 **The promotion node, and the occupancy it holds.** Stage→ram promotion is
 a movement node like the stage's own: `ram_promote.py` copies a *landed*
 stage range into the tmpfs under the same content-addressed names, with the
