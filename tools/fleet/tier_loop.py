@@ -2140,7 +2140,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     it explicitly needs none (final, ``fence_target`` None) -- and it is in
     neither ``gated`` nor any unknown set.  Every required-but-unproved
     advance lands in ``gated`` (fit/binding) or unknown (unreadable
-    evidence); absence of an entry is never permission.  The only
+    evidence); absence of an entry is never permission.  A held grant that
+    already covers the whole demand and whose target row is not published
+    yet is itself retained proof: it is permitted blind-held and its bind is
+    deferred to the pass that sees the row, because a bound record carries
+    the row's own ``published_unix`` and gating the row's publication behind
+    that bind would be circular.  A partial grant is never such proof: it
+    falls through to the bind path and fails closed while the row is
+    unpublished, retaining what it holds.  A genuinely failed bind beside a
+    published row, or any unreadable record or row, still denies.  The only
     mutations are fence ``acquire``/``release`` (reserve, cancel) plus
     funding-record writes; transfers run in the post-pass settle, queue rows
     are never written here.  Unreadable ledger, ready, or capacity evidence
@@ -2326,9 +2334,13 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             # under the grant before its publish when it is not, so no
             # admitted current is exposed without its advance reservation
             # real.  Both spellings target the same phase, so the blind take
-            # and the bind agree.  Positive authority: only ``permitted``
-            # publishes; every required-but-unproved advance below lands in
-            # ``gated`` or unknown.
+            # and the bind agree.  A blind grant that covers the whole demand
+            # and whose target row has not published is itself the live
+            # reservation: it permits the window (blind-held) and binds in
+            # the later pass that sees the row, never the reverse; a partial
+            # grant permits nothing and fails closed.  Positive authority:
+            # only ``permitted`` publishes; every required-but-unproved
+            # advance below lands in ``gated`` or unknown.
             target = needs.get("fence_target")
             if not isinstance(target, dict):
                 # Final: explicitly needs no advance.  Still subject to the
@@ -2407,9 +2419,33 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         running_extra -= added_extra
                     continue
                 if record_status == "absent":
-                    # Tokens held with no binding (a crash between acquire
-                    # and write): bind the names now rather than fence twice.
-                    # A failed bind proves nothing -- deny, do not publish.
+                    if (not mover_rowed and not mover_holds
+                            and held_grant >= demand):
+                        # The advance's row is not published yet and the
+                        # grant already holds the *whole* demand: it is the
+                        # live blind pre-publish reservation (the ``#832``
+                        # nonfinal fence), and binding needs the row's own
+                        # ``published_unix`` to stay immutable.  Permit
+                        # blind-held and defer the bind to the pass after
+                        # the row publishes; gating here would deny the very
+                        # publication the bind waits for, wedging the window
+                        # behind its own fence.  A partial grant is not the
+                        # advance's reservation: it falls through to the
+                        # bind path and fails closed while the row is
+                        # unpublished (unsupported replenishment before
+                        # publication), with its tokens retained.
+                        if added_extra:
+                            running_extra -= next_gib
+                        permitted[(key, tier_id)] = {
+                            "advance": "blind-held", "tier_id": tier_id,
+                            "leg": mover_role, "mover": mover,
+                            "grant": grant, "need_gib": demand,
+                        }
+                        continue
+                    # Tokens held with no binding beside a published row (a
+                    # crash between acquire and write): bind the names now
+                    # rather than fence twice.  A failed bind proves nothing
+                    # -- deny, do not publish.
                     bound = _bind_fence(
                         queue, tier_id, kind, grant, key, want["plan"],
                         first, demand)
