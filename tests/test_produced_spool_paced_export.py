@@ -1,4 +1,4 @@
-"""A produced-output export enters the pool under a fill reservation and a pace (#747).
+"""An opted-in produced-output export enters the pool under a fill reservation and a pace (#747).
 
 Measured on dl380g10 on 2026-09-22: member reads fell from 175 to 92 MB/s
 while the pool took 150-300 MB/s of member writes, and to 19 MB/s above
@@ -7,6 +7,10 @@ stage-mover reads, so an export prices itself on the tier ledger the movers
 reserve from, by the rule they are priced by, and holds its write rate to
 what it reserved. These tests pin that contract end to end through a real
 claim, execute and finish.
+
+The price is not yet measured, so the behaviour is opt-in: a producer whose
+sealed environment does not set ``PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1``
+exports exactly as before, and a runtime publication changes no live export.
 """
 from __future__ import annotations
 
@@ -38,8 +42,61 @@ def sealed(spool, batch="b1") -> dict:
     return ps._read(spool._group(batch) / "export.json")["action"]
 
 
-def test_a_tier_offering_no_fill_leaves_the_export_unreserved(tmp_path):
+#: The producer environment that opts every export into the pace.
+PACED = {ps.PACED_EXPORT_ENV: "1"}
+
+
+def unpaced(action) -> bool:
+    return (action["params"]["demand"] == {"cpu": 1, "mem_gb": 1}
+            and "--pace-mb-s" not in action["params"]["command"])
+
+
+@pytest.mark.parametrize("env", [None, {ps.PACED_EXPORT_ENV: ""}, {ps.PACED_EXPORT_ENV: "0"}])
+def test_an_export_is_unpaced_unless_its_producer_opts_in(tmp_path, env):
+    """The tier offers fill, and still nothing is reserved: off is the default."""
+
+    spool = base.world(tmp_path, env=env)
+    assert spool.paced_export is False
+    offer_fill(spool.queue, 7)
+    _source, _destination, entries = base.prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    assert unpaced(sealed(spool))
+    row = json.loads(spool.queue.item_path(pool.READY, handle["export_key"]).read_text())
+    assert row["resources"] == {"cpu": 1, "mem_gb": 1}
+
+
+def test_an_opt_in_that_is_not_zero_or_one_is_refused(tmp_path):
+    with pytest.raises(ps.SpoolError, match="must be 0 or 1"):
+        base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "yes"})
+
+
+@pytest.mark.parametrize("env, paced, expect_paced", [
+    (None, True, True),
+    (PACED, False, False),
+    (PACED, None, True),
+])
+def test_one_group_may_override_its_producers_setting(tmp_path, env, paced, expect_paced):
+    """How an A/B interleaves paced and unpaced exports from one producer."""
+
+    spool = base.world(tmp_path, env=env)
+    offer_fill(spool.queue, 7)
+    _source, _destination, entries = base.prepare(spool)
+    spool.submit_group("b1", entries, paced=paced)
+    action = sealed(spool)
+    assert unpaced(action) is not expect_paced
+    if expect_paced:
+        assert action["params"]["demand"][FILL_DEMAND] == 7
+
+
+def test_a_group_override_must_be_a_bool(tmp_path):
     spool = base.world(tmp_path)
+    _source, _destination, entries = base.prepare(spool)
+    with pytest.raises(ps.SpoolError, match="paced must be"):
+        spool.submit_group("b1", entries, paced="1")
+
+
+def test_a_tier_offering_no_fill_leaves_the_export_unreserved(tmp_path):
+    spool = base.world(tmp_path, env=PACED)
     _source, _destination, entries = base.prepare(spool)
     spool.submit_group("b1", entries)
     action = sealed(spool)
@@ -48,7 +105,7 @@ def test_a_tier_offering_no_fill_leaves_the_export_unreserved(tmp_path):
 
 
 def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
-    spool = base.world(tmp_path, maximum=2 << 20)
+    spool = base.world(tmp_path, maximum=2 << 20, env=PACED)
     offer_fill(spool.queue, 1)
     payload = b"x" * 1_000_000      # under the template's 1 MiB payload maximum
     _source, destination, entries = base.prepare(spool, payload=payload, ceiling=1 << 20)
@@ -81,13 +138,15 @@ def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
 
 
 def test_a_replay_keeps_the_price_it_was_sealed_at(tmp_path):
-    spool = base.world(tmp_path)
+    spool = base.world(tmp_path, env=PACED)
     offer_fill(spool.queue, 1)
     _source, _destination, entries = base.prepare(spool)
     first = spool.submit_group("b1", entries)
     offer_fill(spool.queue, 5)
     again = spool.submit_group("b1", entries)
     assert again["export_key"] == first["export_key"]
+    # Nor does a replay that asks for no pace unseal the one it sealed.
+    assert spool.submit_group("b1", entries, paced=False)["export_key"] == first["export_key"]
     assert sealed(spool)["params"]["demand"][FILL_DEMAND] == 1
     row = json.loads(spool.queue.item_path(pool.READY, first["export_key"]).read_text())
     assert row["resources"] == sealed(spool)["params"]["demand"]

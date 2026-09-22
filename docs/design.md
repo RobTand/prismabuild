@@ -6367,8 +6367,18 @@ A pool write is therefore paid for in displaced mover reads. The ledger that
 already prices mover reads, `fill_mb_s_pool_side@<tier>`, is the one an
 export reserves from.
 
-**Reservation.** When the batch's prewrite tier announces a fill offer,
-`ProducedSpool.submit_group` seals `fill_mb_s_pool_side@<tier>` into the
+**Off by default.** The price below is not measured, so the reservation and
+the pace are both opt-in. A producer turns them on by setting
+`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` in its sealed environment. When
+the variable is absent, empty, or `0`, every export is sealed exactly as it
+was before #747, so publishing a runtime that carries the pacer changes no
+live export. Any other value is refused when the spool is built.
+`submit_group(..., paced=True|False)` overrides the producer's setting for
+one group, so an A/B can interleave paced and unpaced exports from one
+producer. A replay keeps whatever the first submission sealed.
+
+**Reservation.** When the export is opted in and the batch's prewrite tier
+announces a fill offer, `ProducedSpool.submit_group` seals `fill_mb_s_pool_side@<tier>` into the
 export's demand. It prices that demand with `storage_tiers.current_fill_offer`,
 the rule pbrun's movers use. It also seals `--pace-mb-s N --pace-tier <tier>`
 into the command. The publish row carries exactly the sealed demand, and a

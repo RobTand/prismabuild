@@ -23,6 +23,11 @@ from . import storage_tiers
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
 MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
+#: Opt-in for the paced export (#747).  Only ``"1"`` in the producer's sealed
+#: environment makes an export reserve its tier's fill and hold its write rate
+#: to it; absent, empty or ``"0"`` leaves every export unreserved and unpaced,
+#: so publishing a runtime that carries the pacer changes no live export.
+PACED_EXPORT_ENV = "PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT"
 SCHEMA = "prismabuild.produced_spool.v1"
 PACING_SCHEMA = "prismabuild.produced_spool.pacing.v1"
 #: The copy loop's block, and so the pacer's step: one read, one write.
@@ -250,6 +255,11 @@ class ProducedSpool:
         if (variables.get(ROOT_ENV) != str(self.root)
                 or variables.get(MAX_ENV) != str(max_bytes)):
             raise SpoolError("spool root and byte bound must match the sealed producer environment")
+        paced = variables.get(PACED_EXPORT_ENV, "")
+        if paced not in ("", "0", "1"):
+            raise SpoolError(f"{PACED_EXPORT_ENV} must be 0 or 1, not {paced!r}")
+        #: Whether this producer's exports reserve fill and pace by default.
+        self.paced_export = paced == "1"
         self._live()
         row = pool._read_json(queue.item_path(pool.CLAIMED, self.owner)) or {}
         self.host = str(row.get("claimed_host") or "")
@@ -323,7 +333,18 @@ class ProducedSpool:
                 "ceiling_bytes": ceiling_bytes, "released": False})
             return group / "payload"
 
-    def submit_group(self, batch_id, entries):
+    def submit_group(self, batch_id, entries, *, paced=None):
+        """Seal and publish the export of one reserved group.
+
+        ``paced`` overrides the producer's :data:`PACED_EXPORT_ENV` for this
+        group only, which is how an A/B interleaves paced and unpaced exports
+        from one producer.  ``None`` takes the producer's setting.  A replay
+        keeps whatever the first submission sealed.
+        """
+
+        if paced is not None and not isinstance(paced, bool):
+            raise SpoolError("paced must be True, False or None")
+        paced = self.paced_export if paced is None else paced
         self._live()
         group = self._group(batch_id)
         with _lock(group / ".export.lock"):
@@ -402,11 +423,12 @@ class ProducedSpool:
             command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
                        "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
             demand = {"cpu": 1, "mem_gb": 1}
-            # The pool write enters under a reservation on the tier its
-            # batch stages through, and is paced to it (#747).  The rate is
-            # sealed in the command, so it is part of the export's identity.
+            # Opted in, the pool write enters under a reservation on the tier
+            # its batch stages through, and is paced to it (#747).  The rate
+            # is sealed in the command, so it is part of the export's
+            # identity.  Not opted in, the export is sealed as before.
             tier_id = str(prewrite.get("tier") or "")
-            fill = export_fill(self.queue, tier_id) if tier_id else None
+            fill = export_fill(self.queue, tier_id) if paced and tier_id else None
             if fill:
                 demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
                 command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
