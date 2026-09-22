@@ -1440,6 +1440,45 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 if stale:
                     return {**outcome, "reason": "donor_file_changed",
                             "stale": stale}
+                # A partial prune can leave the fragment a strict subset of
+                # the complete range its historical receipt declares (#853).
+                # Whole-range adoption transfers one reservation and files
+                # one complete receipt, so it may only take over the exact
+                # range the donor's own complete receipt staged: the receipt
+                # must be complete, its declared and staged entry counts must
+                # equal the fragment's validated entries, their byte sum must
+                # equal the receipt's actual staged bytes and the requested
+                # leg's span, and the receipt's range must be that leg.  A
+                # shortened fragment is a per-path cache for the publisher,
+                # never a whole-range donor.
+                declared = receipt.get("entries_declared")
+                staged = receipt.get("entries_staged")
+                receipt_start = receipt.get("range_start_bytes")
+                receipt_end = receipt.get("range_end_bytes")
+                staged_bytes = receipt.get("bytes_staged")
+                if (receipt.get("complete") is not True
+                        or receipt.get("refusal")
+                        or any(isinstance(value, bool) or not isinstance(value, int)
+                               for value in (declared, staged, receipt_start,
+                                             receipt_end, staged_bytes))
+                        # The counts are the shortening witness: a partial
+                        # prune leaves fewer fragment entries than the
+                        # complete receipt declared and staged.
+                        or declared != staged
+                        or declared != len(source["entries"])
+                        or int(receipt_start) != int(range_start_bytes)
+                        or int(receipt_end) != int(range_end_bytes)
+                        # The receipt's own byte accounting must still equal
+                        # its range, and the fragment may never claim more
+                        # physical bytes than the copy actually staged.
+                        or int(staged_bytes)
+                        != int(receipt_end) - int(receipt_start)
+                        or sum(int(entry["bytes"])
+                               for entry in dict(source["entries"]).values())
+                        > int(staged_bytes)):
+                    return {**outcome, "reason": "donor_range_shortened",
+                            "declared": declared, "staged": staged,
+                            "entries": len(source["entries"])}
             residency_map.write_fragment(residency_root, residency_map.reissue(
                 source, consumer_action_key=consumer_action_key,
                 mover_action_key=new_key))
@@ -1640,7 +1679,8 @@ def adopt_resident_ranges(
                     reason = str(event.get("reason") or "")
                     if reason in ("donor_file_changed", "donor_file_missing",
                                   "donor_undated", "donor_material_partial",
-                                  "donor_material_mismatch"):
+                                  "donor_material_mismatch",
+                                  "donor_range_shortened"):
                         # The donor's dated material no longer describes the
                         # incarnation on the stage, and it stays that way
                         # until somebody republishes: not this cycle, not a

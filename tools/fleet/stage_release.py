@@ -93,7 +93,9 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat as statmod
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -110,7 +112,9 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 import prewarm_loop  # noqa: E402
-from stage_move import stage_relative, whole_file_paths  # noqa: E402
+from stage_move import (  # noqa: E402
+    _metadata_version, stage_relative, whole_file_paths,
+)
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
 #: question cannot be answered here".  Linux reports ``ENODATA``; the name
@@ -150,6 +154,24 @@ STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
 #: bytes routine reconciliation found unowned and from a named historical
 #: range an operator asked about by identity.
 DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
+
+#: The event a bounded prune of positively stale mentions publishes (#853).
+#: Unlike a dead-owner eviction this keeps the whole old holder: no charge
+#: moves until the last fragment goes through the ordinary whole-owner egress,
+#: which settles it exactly once.  The receipt says so explicitly.
+STALE_MENTION_EVENT = "stage-stale-mention-pruned"
+
+#: Bounds on the process-local, skip-only checkpoint cache (#853).  An entry
+#: beyond any bound is simply never cached or is forgotten; a forgotten
+#: candidate takes the uncached scan, which is slower, never weaker.  The
+#: aggregate retained-path and path-byte budgets bound the cache as a whole,
+#: not just its entry count.  A checkpoint is only ever installed for an
+#: unchanged, fully coherent owner and may only skip the cleanup scan --
+#: never a mutable-state check, a deletion, or an adoption.
+SKIP_CHECKPOINT_MAX_ENTRIES = 256
+SKIP_CHECKPOINT_MAX_DIRS = 1024
+SKIP_CHECKPOINT_MAX_TOTAL_DIRS = 8192
+SKIP_CHECKPOINT_MAX_TOTAL_BYTES = 1 << 20
 
 
 def queue_identity(queue: pool.PoolQueue) -> str:
@@ -1436,6 +1458,621 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     }
 
 
+_skip_checkpoints: dict[tuple, dict[str, object]] = {}
+_skip_checkpoints_lock = threading.Lock()
+_skip_checkpoint_usage = {"dirs": 0, "bytes": 0}
+
+
+def reset_skip_checkpoints() -> None:
+    """Forget every skip checkpoint (tests, and callers that want a reset)."""
+
+    with _skip_checkpoints_lock:
+        _skip_checkpoints.clear()
+        _skip_checkpoint_usage["dirs"] = 0
+        _skip_checkpoint_usage["bytes"] = 0
+
+
+def _path_version(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Change evidence for one regular metadata file, or ``None``."""
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if not statmod.S_ISREG(info.st_mode):
+        return None
+    return _metadata_version(info)
+
+
+def _directory_version(path: Path) -> tuple[int, int, int, int] | None:
+    """Change evidence for one immediate parent directory, or ``None``.
+
+    ``lstat`` says what the name is, so a symlink or anything else is never a
+    directory the skip cache may stand on.  Device and inode catch a
+    replacement of the directory itself (an ancestor rename resolves to a
+    fresh inode), mtime catches a rename into or out of it, and ctime catches
+    a metadata replacement that leaves mtime alone.
+    """
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if not statmod.S_ISDIR(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino, info.st_mtime_ns,
+            int(getattr(info, "st_ctime_ns", 0)))
+
+
+def _skip_checkpoint_key(queue: pool.PoolQueue, root: Path, stage: Path,
+                         tier_id: str, consumer_action_key: str,
+                         mover_action_key: str) -> tuple:
+    """The cache key: both roots and the owner identity, never just the key.
+
+    Two queues, two residency roots or two stage roots can name the same
+    action key; a checkpoint is a statement about one root's files only, so
+    the roots travel in the key.
+    """
+
+    return (str(queue.root), str(root), str(stage), tier_id,
+            consumer_action_key, mover_action_key)
+
+
+def _forget_checkpoint_locked(key: tuple) -> None:
+    record = _skip_checkpoints.pop(key, None)
+    if record is not None:
+        _skip_checkpoint_usage["dirs"] -= int(record["dir_count"])
+        _skip_checkpoint_usage["bytes"] -= int(record["bytes"])
+
+
+def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
+                             stamps: dict[str, tuple[int, int, int, int]],
+                             ) -> bool:
+    """Install the EXACT verified versions of one fully coherent owner.
+
+    The caller passes the stamps it sampled around its scan and proved equal;
+    nothing is sampled again here, so a rename that lands between the scan and
+    this call can never be blessed as clean -- the next pass reads the
+    recorded (older) stamp, sees the difference and re-scans.  Every stamp
+    must be present.  The cache is bounded by entries, by total retained paths
+    and by total retained path bytes; overflow forgets the oldest entry and,
+    when a single candidate cannot fit, caches nothing.  A cache entry only
+    ever skips a cleanup scan: it holds no deletion or adoption authority.
+    """
+
+    if fragment_version is None or material_version is None or not stamps:
+        return False
+    if any(version is None for version in stamps.values()):
+        return False
+    dirs = len(stamps)
+    chars = sum(len(name) for name in stamps)
+    if dirs > SKIP_CHECKPOINT_MAX_DIRS:
+        return False
+
+    def over() -> bool:
+        return (_skip_checkpoint_usage["dirs"] + dirs
+                > SKIP_CHECKPOINT_MAX_TOTAL_DIRS
+                or _skip_checkpoint_usage["bytes"] + chars
+                > SKIP_CHECKPOINT_MAX_TOTAL_BYTES
+                or len(_skip_checkpoints) + 1 > SKIP_CHECKPOINT_MAX_ENTRIES)
+
+    with _skip_checkpoints_lock:
+        _forget_checkpoint_locked(key)
+        while _skip_checkpoints and over():
+            _forget_checkpoint_locked(next(iter(_skip_checkpoints)))
+        if over():
+            return False
+        _skip_checkpoints[key] = {
+            "fragment": fragment_version, "material": material_version,
+            "dirs": dict(stamps), "dir_count": dirs, "bytes": chars,
+        }
+        _skip_checkpoint_usage["dirs"] += dirs
+        _skip_checkpoint_usage["bytes"] += chars
+    return True
+
+
+def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
+                         material_path: Path) -> bool:
+    """Whether an unchanged, fully coherent owner may skip its cleanup scan.
+
+    Every recorded stamp is re-read; any difference forgets the checkpoint and
+    runs the uncached check, so a rename, a replacement or a metadata rewrite
+    is seen before any skip.  A hit only ever skips the per-entry scan: the
+    owner's terminal, live, lease and plan state were checked before this is
+    consulted, and no deletion, adoption or mutable-state check is skipped.
+    """
+
+    with _skip_checkpoints_lock:
+        record = _skip_checkpoints.get(key)
+    if record is None:
+        return False
+    fresh = (_path_version(fragment_path) == record["fragment"]
+             and _path_version(material_path) == record["material"])
+    if fresh:
+        for name, version in dict(record["dirs"]).items():
+            if _directory_version(Path(name)) != version:
+                fresh = False
+                break
+    if not fresh:
+        with _skip_checkpoints_lock:
+            _forget_checkpoint_locked(key)
+    return fresh
+
+
+def _read_material_nofollow(root: Path, consumer_action_key: str,
+                            mover_action_key: str):
+    """The sidecar read with the cleanup authority's regular/no-follow rules.
+
+    ``reader_lease.read_material`` follows a symlink standing where the
+    sidecar belongs; a deletion authority may not.  Returns the validated
+    document, ``None`` for absence, or a reason string for anything that is
+    not a readable, valid regular file.
+    """
+
+    path = reader_lease.material_path(
+        root, consumer_action_key, mover_action_key)
+    try:
+        raw = pb._read_regular_file_nofollow(path, where="prune material")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return f"material unreadable: {exc}"
+    try:
+        return reader_lease.validate_material(json.loads(raw))
+    except (ValueError, reader_lease.ReaderLeaseError, pb.PrismaBuildError) as exc:
+        return f"material invalid: {exc}"
+
+
+def _containment_state(stage: Path, target: Path) -> str:
+    """``"ok"``, ``"absent"`` or ``"unknown"`` for one path under a stage.
+
+    Every component is ``lstat``ed from the stage root down, so a symlinked
+    intermediate directory, a file standing where a directory belongs, or a
+    path that leaves the stage is unknown ownership, never a pathname to act
+    on.  Only the final component may be missing, and that is ``"absent"``:
+    the caller may prune the mention but never unlink anything.
+    """
+
+    try:
+        # The configured root is resolved once (a stage root may itself be a
+        # symlink); every component *below* it is lstat'ed, so a symlinked
+        # intermediate directory is never followed.
+        nominal = Path(os.path.abspath(str(stage)))
+        base = Path(os.path.realpath(str(stage)))
+        target_abs = Path(os.path.abspath(str(target)))
+    except OSError:
+        return "unknown"
+    try:
+        relative = target_abs.relative_to(nominal)
+    except ValueError:
+        return "unknown"
+    if not relative.parts:
+        return "unknown"
+    current = base
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        last = index == len(relative.parts) - 1
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            return "absent" if last else "unknown"
+        except OSError:
+            return "unknown"
+        if last:
+            return "ok"
+        if not statmod.S_ISDIR(info.st_mode):
+            return "unknown"
+    return "unknown"
+
+
+def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
+                         consumer_action_key: str, stage: Path, tier_id: str,
+                         root: Path, observed: Mapping[str, object],
+                         ) -> dict[str, object]:
+    """Prune positively stale paths from one terminal owner's documents (#853).
+
+    A FAILED consumer's executed DONE mover can leave a material sidecar
+    dating an incarnation the live destination no longer carries.  The shared
+    publisher is right to refuse both adoption and replacement of that name,
+    so the owner's stale vouch has to go before a successor can publish the
+    path -- but a *mixed* document also holds coherent entries whose proof,
+    bytes and charge are reusable cache, and whole-owner ``evict`` would
+    destroy them.
+
+    This transaction selects, classifies and acts inside one stage ownership
+    hold (the lock a publisher's decide-and-rename holds), under the mover
+    transition lock the caller already holds.  The rules, in order:
+
+    * the stage root must positively belong to this queue
+      (:func:`stage_root_refusal`), and the fragment must be the snapshot the
+      terminal checks authorized and bind exactly to this tier and stage;
+    * the material is read with the cleanup authority's regular/no-follow
+      rules, and must bind the same consumer, mover, tier, stage root,
+      manifest and epoch as the fragment;
+    * **every** fragment entry must bind exactly to its own material key --
+      key present, matching stage path, matching bytes, and matching digest
+      where the fragment declares one -- before any path state is classified,
+      so unknown metadata can never authorize a deletion;
+    * a live claim, live reader pin, promotion handoff or same-key claim
+      overlapping the candidate retains the whole owner: the bounded #877
+      mover ends before the later ordinary sweep recovers the still-owned
+      paths, and no mention is dropped merely because a foreign claim promises
+      a future proof;
+    * a path component outside the stage, or a symlinked intermediate
+      directory, file or anything else standing where a directory belongs, is
+      unknown ownership and retains the whole owner.  Only a missing leaf is
+      ``absent``;
+    * positive staleness for an existing regular file is inode difference,
+      exactly as :meth:`stage_move._StagedPublisher._proof_candidate` reads it
+      (#755).  Same-inode size/time change is divergence, not permission.  A
+      co-owner fragment protects its physical file, so that entry and its date
+      stay untouched;
+    * the fragment and material file versions are sampled before their reads
+      and again after the scan; a change during classification retains the
+      whole owner and installs no checkpoint;
+    * a fully stale, unprotected owner goes through :func:`_evict_owned` --
+      the ordinary whole-owner egress -- inside this same transaction (no
+      containment reclamation: that runs before the ownership lock by
+      design), so its holder is settled exactly once;
+    * a mixed owner is partially pruned: each positively stale destination is
+      unlinked after a fresh identity comparison, then the fragment is
+      rewritten to its survivors and the material to the same survivors'
+      mentions, under the same generation and epoch.  A crash between the two
+      document writes is safe: the fragment is authoritative and first, so a
+      surviving material mention that no fragment entry names is a date
+      without an owner, never ownership.
+
+    The old holder is deliberately left with its entire charge.  That is a
+    conservative reservation, including any slack for the deleted entries:
+    when the final old fragment disappears, the ordinary whole-owner egress
+    releases it exactly once, and ordinary pressure eviction may retire the
+    smaller fragment and return the remainder in the meantime.  No partial
+    capacity reclamation is claimed.
+
+    The receipt reports committed metadata prunes (only after the fragment
+    write succeeds), already-absent entries, entries actually unlinked and
+    their bytes, whether the fragment/material pair completed, and that the
+    whole charge was retained.  A fully coherent owner changes nothing and
+    installs the bounded skip checkpoint.
+    """
+
+    fragment_path = residency_map.fragment_path(
+        root, consumer_action_key, mover_action_key)
+    material_path = reader_lease.material_path(
+        root, consumer_action_key, mover_action_key)
+    errors: list[str] = []
+    retained_reason = ""
+
+    def receipt(*, pruned: int = 0, absent: int = 0, retained: int = 0,
+                unlinked: int = 0, unlinked_bytes: int = 0,
+                pair_complete: bool = True, partial: bool = False,
+                complete: bool = False, cacheable: bool = False,
+                charge_retained: bool = True) -> dict[str, object]:
+        return {
+            "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": STALE_MENTION_EVENT,
+            "action_key": mover_action_key,
+            "consumer_action_key": consumer_action_key,
+            "tier_id": tier_id, "stage_root": str(stage),
+            "reason": "stale-mention-prune",
+            "entries_pruned": pruned, "entries_already_absent": absent,
+            "entries_retained": retained, "entries_unlinked": unlinked,
+            "bytes_unlinked": unlinked_bytes,
+            "document_pair_complete": pair_complete,
+            "charge_retained": charge_retained, "partial": partial,
+            "cacheable": cacheable, "retained_reason": retained_reason,
+            "complete": complete, "errors": errors,
+            "host": socket.gethostname(), "unix": time.time(),
+        }
+
+    refusal = stage_root_refusal(queue, str(stage))
+    if refusal is not None:
+        retained_reason = "stage-root-refused"
+        errors.append(f"stage root refused: {refusal}")
+        return receipt(retained=len(observed.get("entries") or {}))
+
+    # Versions before the reads and again after the scan: metadata that
+    # changed while this transaction classified it is not acted on, and the
+    # versions a checkpoint installs are exactly the ones verified here.
+    fragment_version_before = _path_version(fragment_path)
+    material_version_before = _path_version(material_path)
+
+    with queue.stage_ownership_lock(str(stage)):
+        try:
+            current = residency_map.validate_fragment(json.loads(
+                pb._read_regular_file_nofollow(
+                    fragment_path, where="stale-mention fragment")))
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            errors.append(f"ownership uncertain: {exc}")
+            return receipt(retained=len(observed.get("entries") or {}))
+        entries = dict(current["entries"])
+        total = len(entries)
+        if current != observed:
+            retained_reason = "fragment-changed"
+            return receipt(retained=total)
+        if str(current.get("tier_id")) != tier_id:
+            retained_reason = "ownership-uncertain"
+            errors.append("ownership uncertain: fragment tier does not match")
+            return receipt(retained=total)
+        if str(current.get("stage_root")) != str(stage):
+            retained_reason = "ownership-uncertain"
+            errors.append("ownership uncertain: fragment stage does not match")
+            return receipt(retained=total)
+        material = _read_material_nofollow(
+            root, consumer_action_key, mover_action_key)
+        if material is None:
+            retained_reason = "material-absent"
+            return receipt(retained=total)
+        if isinstance(material, str):
+            retained_reason = "material-unreadable"
+            errors.append(f"ownership uncertain: {material}")
+            return receipt(retained=total)
+        if (str(material.get("consumer_action_key")) != consumer_action_key
+                or str(material.get("mover_action_key")) != mover_action_key
+                or str(material.get("tier_id")) != str(current.get("tier_id"))
+                or str(material.get("stage_root")) != str(current.get("stage_root"))
+                or str(material.get("manifest_sha256"))
+                != str(current.get("manifest_sha256"))):
+            retained_reason = "material-does-not-bind"
+            return receipt(retained=total)
+        if (current.get("epoch") or None) != (material.get("epoch") or None):
+            retained_reason = "material-epoch-mismatch"
+            return receipt(retained=total)
+        # Every fragment entry binds exactly to its own material key before
+        # any path state is classified: a by-path or first-mention match would
+        # let unknown metadata authorize a deletion.  Extra material keys are
+        # the crash superset and are ignored; every surviving key must bind.
+        material_entries = dict(material.get("entries") or {})
+        bound: dict[str, Mapping] = {}
+        for key, entry in entries.items():
+            mention = material_entries.get(key)
+            if not isinstance(mention, Mapping):
+                retained_reason = "material-key-missing"
+                return receipt(retained=total)
+            if (os.path.normpath(str(mention["stage_path"]))
+                    != os.path.normpath(str(entry["stage_path"]))
+                    or int(mention["bytes"]) != int(entry["bytes"])):
+                retained_reason = "material-key-mismatch"
+                return receipt(retained=total)
+            declared = entry.get("sha256")
+            if (isinstance(declared, str) and declared
+                    and str(mention["sha256"]) != declared):
+                retained_reason = "material-digest-mismatch"
+                return receipt(retained=total)
+            if not isinstance(mention.get("file_id"), Mapping):
+                retained_reason = "material-key-undated"
+                return receipt(retained=total)
+            bound[key] = mention
+        wanted = _wanted_stage_paths(entries)
+        claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
+            queue, tier_id, own_key=mover_action_key)
+        owners, fragment_taint = _fragment_owners(
+            root, wanted, except_consumer=consumer_action_key,
+            except_mover=mover_action_key)
+        pins, pin_taint = reader_lease.live_for(queue, wanted, residency_root=root)
+        source_paths, source_taint = _claimed_source_paths(queue, stage)
+        tainted = claimed_taint + fragment_taint + pin_taint + source_taint
+        if tainted:
+            retained_reason = "ownership-uncertain"
+            errors.extend(f"ownership uncertain: {item}" for item in tainted)
+            return receipt(retained=total)
+        if own_claimed:
+            retained_reason = "same-key-claimed"
+            return receipt(retained=total)
+        if pins:
+            retained_reason = "live-pin"
+            return receipt(retained=total)
+        stage_abs = Path(os.path.abspath(str(stage)))
+        overlap_claim = overlap_handoff = False
+        contained: dict[str, str] = {}
+        for key, entry in entries.items():
+            path = Path(str(entry["stage_path"]))
+            state = _containment_state(stage, path)
+            contained[key] = state
+            if state == "unknown":
+                retained_reason = "ownership-uncertain"
+                errors.append(
+                    f"ownership uncertain: {entry['stage_path']} is not a "
+                    f"contained stage path")
+                return receipt(retained=total)
+            try:
+                relative = str(Path(os.path.abspath(str(path))).relative_to(
+                    stage_abs))
+            except (OSError, ValueError):
+                relative = None
+            if relative is not None and relative in claimed:
+                overlap_claim = True
+            try:
+                resolved = os.path.normpath(str(path.resolve()))
+            except OSError:
+                resolved = ""
+            if resolved in source_paths:
+                overlap_handoff = True
+        if overlap_claim:
+            retained_reason = "live-claim"
+            return receipt(retained=total)
+        if overlap_handoff:
+            retained_reason = "promotion-handoff"
+            return receipt(retained=total)
+        # The verified directory stamps, sampled around the classification
+        # scan; nothing is sampled a third time for installation.
+        parents = {Path(str(entry["stage_path"])).parent
+                   for entry in entries.values()}
+        dirs_before = {str(parent): _directory_version(parent) for parent in parents}
+        prune: list[str] = []
+        absent: list[str] = []
+        retained_paths = 0
+        expected_ino: dict[str, int] = {}
+        for key, entry in entries.items():
+            if contained[key] == "absent":
+                absent.append(key)
+                continue
+            path = Path(str(entry["stage_path"]))
+            norm = os.path.normpath(str(path))
+            # The path's own state is classified before the co-owner branch:
+            # a co-owner's fragment protects a physical file, but it can never
+            # make a nonregular, unstatable or unknown path clean, and it must
+            # not let another stale path of the same candidate delete.
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                absent.append(key)
+                continue
+            except OSError as exc:
+                retained_reason = "ownership-uncertain"
+                errors.append(f"ownership uncertain: {key}: {exc}")
+                return receipt(retained=total)
+            if not statmod.S_ISREG(info.st_mode):
+                retained_reason = "ownership-uncertain"
+                errors.append(f"ownership uncertain: {key} is not a regular file")
+                return receipt(retained=total)
+            if owners.get(norm):
+                # A co-owner's fragment protects the physical file: keep this
+                # entry and its date exactly as they are.
+                retained_paths += 1
+                continue
+            if int(bound[key]["file_id"].get("ino", -1)) != int(info.st_ino):
+                # Positive staleness: the name carries an incarnation this
+                # record does not date (#755), so the vouch can never prove
+                # or protect it.
+                prune.append(key)
+                expected_ino[key] = int(info.st_ino)
+                continue
+            live = reader_lease.stat_identity(str(path))
+            if live is None or not reader_lease.file_id_matches(
+                    bound[key]["file_id"], live):
+                # Same inode, changed in place: divergence, not permission.
+                retained_reason = "ownership-uncertain"
+                errors.append(f"ownership uncertain: {key} changed in place")
+                return receipt(retained=total)
+        dirs_after = {str(parent): _directory_version(parent) for parent in parents}
+        if dirs_before != dirs_after:
+            retained_reason = "ownership-uncertain"
+            errors.append("ownership uncertain: a parent directory changed")
+            return receipt(retained=total)
+        fragment_version_after = _path_version(fragment_path)
+        material_version_after = _path_version(material_path)
+        if (fragment_version_after is None or material_version_after is None
+                or fragment_version_after != fragment_version_before
+                or material_version_after != material_version_before):
+            retained_reason = "documents-changed"
+            return receipt(retained=total)
+        if not prune and not absent:
+            if retained_paths:
+                retained_reason = "co-owner"
+                return receipt(retained=total)
+            # A crash between the fragment and material writes leaves the
+            # material a superset.  The strict reader walks every material
+            # entry, so the pair is complete only when the material dates
+            # exactly the fragment's validated keys: trim it before caching
+            # this otherwise-coherent owner, under the same generation.
+            material_final_version = material_version_after
+            if set(material_entries) != set(entries):
+                try:
+                    reader_lease.write_material(
+                        root, consumer_action_key=consumer_action_key,
+                        mover_action_key=mover_action_key, tier_id=tier_id,
+                        stage_root=str(current["stage_root"]),
+                        manifest_sha256=str(current["manifest_sha256"]),
+                        generation=str(material["generation"]),
+                        entries={key: material_entries[key] for key in entries},
+                        epoch=material.get("epoch"))
+                except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                    errors.append(f"material trim: {exc}")
+                    return receipt(retained=total)
+                material_final_version = _path_version(material_path)
+            cacheable = _install_skip_checkpoint(
+                _skip_checkpoint_key(queue, root, stage, tier_id,
+                                     consumer_action_key, mover_action_key),
+                fragment_version_after, material_final_version, dirs_after)
+            return receipt(retained=total, cacheable=cacheable)
+        if not retained_paths and len(prune) + len(absent) == total:
+            # Fully stale and unprotected: the ordinary whole-owner egress is
+            # exact and settles the holder once.  Called here, inside the same
+            # ownership transaction; containment reclamation deliberately does
+            # not run under this lock.
+            return _evict_owned(
+                queue, mover_action_key, consumer_action_key=consumer_action_key,
+                stage=stage, tier_id=tier_id, root=root,
+                fragment_path=fragment_path, entries=entries, errors=errors,
+                reason="stale-mention-prune", auto_reclaimed=[],
+                auto_retained={})
+        # Partial prune: unlink the positively stale destinations, then write
+        # the fragment to its survivors and the material to the same
+        # survivors' mentions.  No ledger call: the whole old charge stays.
+        surviving = {key: entry for key, entry in entries.items()
+                     if key not in expected_ino and key not in absent}
+        unlinked: list[str] = []
+        unlinked_bytes = 0
+
+        def partial_receipt(*, fragment_committed: bool,
+                            pair_complete: bool) -> dict[str, object]:
+            # Only the committed fragment write makes a metadata prune real;
+            # the physical deletions are reported as they actually happened,
+            # even when the pair never completed.
+            return receipt(
+                pruned=(len(prune) + len(absent)) if fragment_committed else 0,
+                absent=len(absent) if fragment_committed else 0,
+                retained=len(surviving) if fragment_committed else total,
+                unlinked=len(unlinked), unlinked_bytes=unlinked_bytes,
+                pair_complete=pair_complete, partial=True)
+
+        for key in prune:
+            path = Path(str(entries[key]["stage_path"]))
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{key}: {exc}")
+                return partial_receipt(fragment_committed=False,
+                                       pair_complete=False)
+            if (not statmod.S_ISREG(info.st_mode)
+                    or int(info.st_ino) != expected_ino[key]):
+                # Fresh identity comparison at the act itself: what the scan
+                # classified is what is unlinked, or nothing is.
+                errors.append(f"{key}: destination changed under the lock")
+                return partial_receipt(fragment_committed=False,
+                                       pair_complete=False)
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{key}: {exc}")
+                return partial_receipt(fragment_committed=False,
+                                       pair_complete=False)
+            unlinked.append(key)
+            unlinked_bytes += int(info.st_size)
+            _prune_empty(path.parent, stage)
+        # Survivor material is filtered by the fragment's exact validated key
+        # set, never by matching path: an extra material key naming the same
+        # path must not survive the rewrite, and safe extra material never
+        # grants ownership or deletion authority.
+        survivor_mentions = {key: material_entries[key] for key in surviving}
+        document = {key: current[key] for key in current if key != "entries"}
+        document["entries"] = surviving
+        try:
+            residency_map.write_fragment(root, document)
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            errors.append(f"fragment rewrite: {exc}")
+            return partial_receipt(fragment_committed=False,
+                                   pair_complete=False)
+        try:
+            reader_lease.write_material(
+                root, consumer_action_key=consumer_action_key,
+                mover_action_key=mover_action_key, tier_id=tier_id,
+                stage_root=str(current["stage_root"]),
+                manifest_sha256=str(current["manifest_sha256"]),
+                generation=str(material["generation"]),
+                entries=survivor_mentions,
+                epoch=material.get("epoch"))
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            errors.append(f"material rewrite: {exc}")
+            return partial_receipt(fragment_committed=True,
+                                   pair_complete=False)
+        return partial_receipt(fragment_committed=True, pair_complete=True)
+
+
 def _tokens_for_newly_free_bytes(stage_bytes: int) -> int:
     """Token count actually leaving the stage settles, in whole GiB, floored.
 
@@ -1602,11 +2239,18 @@ def sweep_dead_owner_fragments(
     Failure evidence is the queue's immutable attempt-backed summary, checked
     once per consumer transaction. A cancellation must match its immutable
     generation decision. A DONE mover instead needs an immutable executed
-    terminal and an incomplete move receipt exactly covering its fragment.
-    Missing, unreadable, legacy or inconsistent evidence retains, as do any
-    plan, material sidecar, live row, lease or reservation. Withdrawn movers
-    still require no receipt. Other terminal shapes and all produced namespaces
-    remain excluded. No age or pressure is deletion authority.
+    terminal plus one of two positive shapes: an incomplete move receipt
+    exactly covering an unmaterialized fragment (#866), or a material sidecar
+    that is pruned of the paths whose live destination carries a different
+    incarnation (#853, :func:`prune_stale_mentions`).  The second shape may
+    carry a charge: a partial prune retains the whole holder and no charge
+    moves, while a fully stale owner goes through the ordinary whole-owner
+    egress exactly once.  Missing, unreadable, legacy or inconsistent evidence
+    retains, as do any plan, live row, lease, live claim, reader pin,
+    promotion handoff or unreadable census. Withdrawn movers still require no
+    receipt and are never partially pruned. Other terminal shapes and all
+    produced namespaces remain excluded. No age or pressure is deletion
+    authority.
     """
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
@@ -1653,7 +2297,11 @@ def sweep_dead_owner_fragments(
         if (direct and _namespace_shaped(consumer)
                 and f"{consumer}.json" in failed_keys
                 and f"{mover}.json" in eligible_terminal_keys
-                and tier in held_by_tier and mover not in held_by_tier[tier]):
+                and tier in held_by_tier):
+            # The charge is not a discovery filter: a charged,
+            # material-bearing DONE owner is the #853 shape the material
+            # branch prunes.  The zero-charge gates of #839/#866 stay in the
+            # per-mover block below.
             candidates.setdefault(consumer, []).append((mover, fragment))
     uncertainty = (OSError, ValueError, pb.PrismaBuildError)
     for consumer, children in candidates.items():
@@ -1710,10 +2358,34 @@ def sweep_dead_owner_fragments(
                                     raise pool.PoolContractError(
                                         "withdrawal lacks its exact immutable decision")
                             tier = str(observed["tier_id"])
-                            if any(not _metadata_absent(path) for path in (
-                                    queue.lease_path(mover),
-                                    queue.tier_ledger(tier).held_dir / mover,
-                                    reader_lease.material_path(root, consumer, mover))):
+                            if not _metadata_absent(queue.lease_path(mover)):
+                                continue
+                            material_present = not _metadata_absent(
+                                reader_lease.material_path(root, consumer, mover))
+                            if material_present:
+                                # #853: a material-bearing DONE owner, charged
+                                # or not.  A withdrawn one keeps whatever its
+                                # sidecar dates (no re-dispatch guarantee
+                                # exists for it here), exactly as before.
+                                if not done:
+                                    continue
+                                if _skip_checkpoint_hit(
+                                        _skip_checkpoint_key(
+                                            queue, root,
+                                            Path(stage_roots[tier]), tier,
+                                            consumer, mover),
+                                        residency_map.fragment_path(
+                                            root, consumer, mover),
+                                        reader_lease.material_path(
+                                            root, consumer, mover)):
+                                    continue
+                                receipts.append(prune_stale_mentions(
+                                    queue, mover, consumer_action_key=consumer,
+                                    stage=Path(stage_roots[tier]), tier_id=tier,
+                                    root=root, observed=observed))
+                                continue
+                            if not _metadata_absent(
+                                    queue.tier_ledger(tier).held_dir / mover):
                                 continue
                             if not done and not _metadata_absent(queue.move_path(mover)):
                                 continue
