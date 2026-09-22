@@ -15,7 +15,21 @@ from prismabuild import reader_lease as rlc
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 
-def world(tmp_path, *, maximum=256):
+def forbid_payload_reads(monkeypatch, paths):
+    """Catch both ordinary and descriptor-relative payload opens."""
+    original = os.open
+    forbidden = {Path(path) for path in paths}
+    def checked(path, flags, *args, **kwargs):
+        target = Path(path)
+        if not target.is_absolute() and kwargs.get("dir_fd") is not None:
+            target = Path(os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}")) / target
+        if target in forbidden and flags & os.O_ACCMODE == os.O_RDONLY:
+            raise AssertionError("retry reread a forbidden payload")
+        return original(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", checked)
+
+
+def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1):
     cas_root = tmp_path / "cas"
     template = fx._template(str(tmp_path / "canonical"))
     initial = fx._producer_request(tmp_path, cas_root, template)
@@ -27,7 +41,24 @@ def world(tmp_path, *, maximum=256):
     cas.publish_action_request(action)
     owner = action["action_key"]
     q = fx._queue(tmp_path)
-    inst = fx._bind(q, template, owner, cas_root)
+    if host_capacity is None:
+        inst = fx._bind(q, template, owner, cas_root)
+    else:
+        q.publish(action_key=owner, cas_root=str(cas_root),
+            worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
+            checkout_root=str(tmp_path / "mover-checkout"),
+            resources={"cpu": 1, "mem_gb": parent_mem, **po.owner_demand_terms(template)},
+            produced_output_template=template)
+        claimed = q.claim(owner="finite-producer", capacity=host_capacity)
+        assert claimed is not None and claimed["action_key"] == owner
+        control = fx._broker_control(q, owner)
+        po.declare_template(q.root, template)
+        inst = po.bind_instance(q, template, owner_action_key=owner,
+            claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
+                "PRISMABUILD_ACTION_NONCE": control["nonce"],
+                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
+        po.declare_instance(q.root, inst)
+        assert po.admit_instance(q, inst, template)["ok"]
     fx._announce_tier(q, tmp_path / "stage")
     spool = ps.ProducedSpool(q, inst, template, cas_root=cas_root,
                              root=tmp_path / "local", max_bytes=maximum)
@@ -132,6 +163,7 @@ def test_export_ack_retry_adopts_durable_copy_without_opening_payloads(tmp_path,
     assert destination.read_bytes() == b"hello"
     assert not spool.poll_group("b1")["complete"]
     monkeypatch.setattr(ps, "_write", original)
+    forbid_payload_reads(monkeypatch, [source, destination])
     import builtins
     opener = builtins.open
     def no_payload_read(path, mode="r", *args, **kwargs):
@@ -164,7 +196,7 @@ def test_changed_destination_never_acknowledges_or_releases(tmp_path):
     destination.write_bytes(b"other")
     assert spool.poll_group("b1")["refusal"] == "export-destination-changed"
     assert not spool.release_group("b1")["ok"] and source.exists()
-    with pytest.raises(ps.SpoolError, match="destination changed"):
+    with pytest.raises(ps.SpoolError, match="destination.changed"):
         direct_export(spool, handle)
 
 
@@ -230,6 +262,7 @@ def test_interrupted_publication_recopies_local_without_reading_remote(tmp_path,
         direct_export(spool, handle)
     assert destination.exists() and not spool.poll_group("b1")["complete"]
     monkeypatch.setattr(ps, "_write", original)
+    forbid_payload_reads(monkeypatch, [destination])
     import builtins
     opener = builtins.open
     def no_remote_read(path, mode="r", *args, **kwargs):
@@ -271,3 +304,144 @@ def test_release_resumes_after_partial_local_unlink(tmp_path):
     direct_export(spool, handle)
     source.unlink()  # interruption after last unlink, before reservation update
     assert spool.release_group("b1")["ok"]
+
+
+@pytest.mark.parametrize("parent_mem,can_claim", [(96, True), (104, False)])
+def test_export_admission_respects_live_producer_aggregate_memory(tmp_path, parent_mem, can_claim):
+    capacity = {"cpu": 2, "mem_gb": 104}
+    spool = world(tmp_path, host_capacity=capacity, parent_mem=parent_mem)
+    source, destination, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    assert spool.queue.ledger().holder_tokens(spool.owner)["mem_gb"] == parent_mem
+    claimed = spool.queue.claim(owner="finite-export", tags=[spool.host], capacity=capacity)
+    if not can_claim:
+        assert claimed is None
+        assert spool.queue.item_path(pool.READY, handle["export_key"]).exists()
+        assert not destination.exists() and source.exists()
+        return
+    assert claimed is not None and claimed["action_key"] == handle["export_key"]
+    assert spool.queue.ledger().holder_tokens(handle["export_key"])["mem_gb"] == 1
+    assert spool.queue.item_path(pool.CLAIMED, spool.owner).exists()
+    outcome = spool.queue.execute(claimed, timeout_s=120)
+    assert outcome.get("returncode") == 0, outcome
+    assert spool.poll_group("b1")["complete"]
+
+
+def test_temp_credit_cannot_fund_canonical_payload(tmp_path):
+    spool = world(tmp_path)
+    destination = Path(spool.template["output_prefix"]) / "b1.bin"
+    assert po.require_prewrite(spool.queue, spool.instance, spool.template,
+        batch_id="b1", tier=fx.TIER, class_bytes={"payload":1,"checkpoint":0,"temp":63},
+        paths=[str(destination),str(destination)+".tmp"])["ok"]
+    directory = spool.reserve_group("b1", 64)
+    source = directory / "b1.bin"
+    source.write_bytes(b"hello")
+    entries = [{"source_path":str(source), "destination_path":str(destination),
+                "bytes":5, "sha256":hashlib.sha256(b"hello").hexdigest()}]
+    with pytest.raises(ps.SpoolError, match="class budget"):
+        spool.submit_group("b1", entries)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("swap", ["source-leaf", "source-parent", "destination-parent"])
+def test_export_refuses_postseal_symlink_paths(tmp_path, swap):
+    spool = world(tmp_path)
+    source, destination, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    if swap == "source-leaf":
+        original = source.with_name("original.bin")
+        source.rename(original)
+        source.symlink_to(original)
+    elif swap == "source-parent":
+        original = source.parent.with_name("original-payload")
+        source.parent.rename(original)
+        source.parent.symlink_to(original, target_is_directory=True)
+    else:
+        foreign = tmp_path / "foreign-destination"
+        foreign.mkdir()
+        destination.parent.symlink_to(foreign, target_is_directory=True)
+    with pytest.raises((ps.SpoolError, core.CASTamperError)):
+        direct_export(spool, handle)
+    assert not destination.exists()
+
+
+def test_release_revalidates_ack_after_waiting_for_export_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    spool = world(tmp_path)
+    source, destination, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    direct_export(spool, handle)
+    original = ps._lock
+    @contextmanager
+    def changed_while_waiting(path):
+        with original(path):
+            if Path(path).name == ".export.lock":
+                destination.write_bytes(b"other")
+            yield
+    monkeypatch.setattr(ps, "_lock", changed_while_waiting)
+    assert not spool.release_group("b1")["ok"]
+    assert source.exists()
+
+
+def test_corrupt_copy_digest_is_not_a_reusable_proof(tmp_path, monkeypatch):
+    spool = world(tmp_path)
+    _, _, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    original = ps._write
+    def interrupted(path, body):
+        if Path(path).name == "receipt.json":
+            raise RuntimeError("before ack")
+        return original(path, body)
+    monkeypatch.setattr(ps, "_write", interrupted)
+    with pytest.raises(RuntimeError):
+        direct_export(spool, handle)
+    monkeypatch.setattr(ps, "_write", original)
+    proof_path = spool._group("b1") / "copy-0.json"
+    proof = ps._read(proof_path)
+    proof["sha256"] = "0" * 64
+    ps._write(proof_path, proof)
+    with pytest.raises(ps.SpoolError, match="digest"):
+        direct_export(spool, handle)
+
+
+def test_corrupt_receipt_digest_is_not_durable_ack(tmp_path):
+    spool = world(tmp_path)
+    source, _, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    direct_export(spool, handle)
+    path = spool._group("b1") / "receipt.json"
+    receipt = ps._read(path)
+    receipt["entries"][0]["sha256"] = "0" * 64
+    ps._write(path, receipt)
+    assert not spool.poll_group("b1")["ok"]
+    assert not spool.release_group("b1")["ok"] and source.exists()
+
+
+def test_recovery_never_duplicates_canonical_bytes_above_prewrite(tmp_path, monkeypatch):
+    spool = world(tmp_path)
+    source, destination, entries = prepare(spool, ceiling=5)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    original = ps._write
+    def interrupted(path, body):
+        if Path(path).name == "copy-0.json" and body.get("complete"):
+            raise RuntimeError("after canonical publication")
+        return original(path, body)
+    monkeypatch.setattr(ps, "_write", interrupted)
+    with pytest.raises(RuntimeError):
+        direct_export(spool, handle)
+    observed = []
+    def enforce_budget(path, body):
+        if Path(path).name == "copy-0.json":
+            total = sum(p.stat().st_size for p in destination.parent.glob("b1.bin*"))
+            observed.append(total)
+            assert total <= 5, "canonical plus temporary exceeded payload5/temp0 prewrite"
+        return original(path, body)
+    monkeypatch.setattr(ps, "_write", enforce_budget)
+    assert direct_export(spool, handle)["ok"]
+    assert observed and max(observed) == 5
+    assert source.exists() and destination.read_bytes() == b"hello"

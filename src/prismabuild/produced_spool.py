@@ -32,9 +32,34 @@ class SpoolCapacityDeferred(SpoolError):
     """Only the bounded local spool is full; completed exports may free it."""
 
 
-def _read(path):
+@contextmanager
+def _parent(path, *, create=False):
+    path = Path(path)
+    descriptor = core._open_directory_nofollow(
+        path.parent, where="produced spool parent", create=create, mode=0o700)
     try:
-        body = core._decode_strict_json(Path(path).read_bytes(), where="spool record")
+        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        yield descriptor
+        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+    finally:
+        os.close(descriptor)
+
+
+def _read(path, *, expected_sha256=None):
+    path = Path(path)
+    try:
+        with _parent(path) as directory:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size > 8 << 20:
+                    raise SpoolError("unknown-retain: nonregular or oversized spool record")
+                raw = handle.read((8 << 20) + 1)
+                if reader_lease.portable_identity(before) != reader_lease.portable_identity(os.fstat(handle.fileno())):
+                    raise SpoolError("unknown-retain: spool record changed during read")
+        if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise SpoolError("sealed spool record changed")
+        body = core._decode_strict_json(raw, where="spool record")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -44,34 +69,35 @@ def _read(path):
     return body
 
 
-def _sync_directory(path):
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def _write(path, body):
     path = Path(path)
     raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    with open(tmp, "xb") as handle:
-        handle.write(raw)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
-    _sync_directory(path.parent)
+    temporary = path.name + f".{os.getpid()}.tmp"
+    with _parent(path) as directory:
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
 
 
 @contextmanager
 def _lock(path):
-    with open(path, "a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    path = Path(path)
+    with _parent(path) as directory:
+        descriptor = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
         try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise SpoolError("spool lock is not regular")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            core._assert_directory_identity(directory, path.parent, where="locked spool parent")
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def _positive(value, name):
@@ -91,8 +117,12 @@ def _path(value, root=None):
     return path
 
 
-def _identity(path):
-    value = os.lstat(path)
+def _identity(path, *, directory=None):
+    path = Path(path)
+    if directory is None:
+        with _parent(path) as descriptor:
+            return _identity(path, directory=descriptor)
+    value = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
     if not stat.S_ISREG(value.st_mode):
         raise SpoolError("spool payload is not a regular file")
     return reader_lease.portable_identity(value)
@@ -116,6 +146,23 @@ def _local_disk(path):
             selected = (len(mount), right.split()[0])
     if selected is None or selected[1] in {"nfs", "nfs4", "cifs", "smb3", "tmpfs", "ramfs"}:
         raise SpoolError("spool root is not a known local disk filesystem")
+
+
+def _export_record(group, owner):
+    record = _read(group / "export.json")
+    if record is None:
+        return None
+    if set(record) != {"export_key", "manifest_sha256", "batch_id", "action"}:
+        raise SpoolError("export record shape is corrupt")
+    action = core.validate_action(record["action"])
+    expected = {"manifest_sha256": record["manifest_sha256"],
+                "owner": owner, "batch_id": group.name}
+    inputs = [entry for entry in action["inputs"] if entry["id"] == "produced-spool-manifest"]
+    if (action["action_key"] != record["export_key"] or record["batch_id"] != group.name
+            or action["params"].get("produced_spool") != expected
+            or len(inputs) != 1 or inputs[0]["sha256"] != record["manifest_sha256"]):
+        raise SpoolError("export record is not bound to its sealed action")
+    return record
 
 
 class ProducedSpool:
@@ -215,14 +262,17 @@ class ProducedSpool:
             reservation = self._reservation(group)
             if reservation is None or reservation.get("released"):
                 raise SpoolError("no active spool reservation")
-            old = _read(group / "export.json")
+            old = _export_record(group, self.owner)
             if old is not None:
-                manifest = _read(group / "manifest.json")
+                manifest = _read(group / "manifest.json", expected_sha256=old["manifest_sha256"])
                 keys = ("source_path", "destination_path", "bytes", "sha256")
                 if (not isinstance(entries, (list, tuple)) or manifest is None
                         or [{key: entry.get(key) for key in keys} for entry in entries]
                         != [{key: entry.get(key) for key in keys} for entry in manifest["entries"]]):
                     raise SpoolError("export replay changed its group entries")
+                if ([entry.get("artifact_class", "payload") for entry in entries]
+                        != [entry["artifact_class"] for entry in manifest["entries"]]):
+                    raise SpoolError("export replay changed its artifact class")
                 return self._publish(old)
             prewrite = po._read_prewrite(po._prewrites_dir(
                 self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
@@ -233,6 +283,7 @@ class ProducedSpool:
             checked = []
             seen = set()
             sources = set()
+            class_bytes = {"payload": 0, "checkpoint": 0}
             for entry in entries:
                 source = _path(entry["source_path"], group / "payload")
                 destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
@@ -249,10 +300,17 @@ class ProducedSpool:
                 size = _positive(entry["bytes"], "entry bytes")
                 if identity["size"] != size:
                     raise SpoolError("local source size changed")
+                artifact_class = entry.get("artifact_class", "payload")
+                if artifact_class not in class_bytes:
+                    raise SpoolError("export artifact class must be payload or checkpoint")
+                class_bytes[artifact_class] += size
                 digest = entry.get("sha256")
                 po._hex64(digest, where="spool sha256")
                 checked.append({"source_path": str(source), "destination_path": str(destination),
-                                "bytes": size, "sha256": digest, "source_identity": identity})
+                                "bytes": size, "sha256": digest, "source_identity": identity,
+                                "artifact_class": artifact_class})
+            if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+                raise SpoolError("export exceeds its canonical artifact class budget")
             if sum(entry["bytes"] for entry in checked) > reservation["ceiling_bytes"]:
                 raise SpoolError("local group exceeded its reserved byte ceiling")
             actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
@@ -307,22 +365,19 @@ class ProducedSpool:
 
     def poll_group(self, batch_id):
         group = self._group(batch_id)
-        record = _read(group / "export.json")
+        record = _export_record(group, self.owner)
         if record is None:
             return {"ok": True, "complete": False}
         key = record["export_key"]
         receipt = _read(group / "receipt.json")
         if receipt is not None:
-            if (receipt.get("export_key") != key
-                    or receipt.get("manifest_sha256") != record["manifest_sha256"]):
-                return {"ok": False, "complete": False, "refusal": "export-receipt-binding"}
-            manifest = _read(group / "manifest.json")
-            if manifest is None or len(receipt.get("entries", [])) != len(manifest["entries"]):
-                return {"ok": False, "complete": False, "refusal": "export-receipt-incomplete"}
-            for entry, landed in zip(manifest["entries"], receipt["entries"]):
-                if (landed.get("destination_path") != entry["destination_path"]
-                        or not _matches(entry["destination_path"], landed.get("identity"))):
-                    return {"ok": False, "complete": False, "refusal": "export-destination-changed"}
+            try:
+                manifest = _read(group / "manifest.json", expected_sha256=record["manifest_sha256"])
+                if manifest is None:
+                    raise SpoolError("export manifest is missing")
+                _check_receipt(receipt, manifest, record)
+            except (SpoolError, reader_lease.ReaderLeaseError) as exc:
+                return {"ok": False, "complete": False, "refusal": str(exc)}
             return {"ok": True, "complete": True, "export_key": key}
         state = po._mover_live_state(self.queue, key)
         if state in {"failed", "withdrawn", "done"}:
@@ -336,96 +391,132 @@ class ProducedSpool:
         if not result.get("ok") or not result.get("complete"):
             return {**result, "ok": False, "refusal": result.get("refusal", "export-incomplete-retain")}
         with _lock(group / ".export.lock"), _lock(self.directory / ".reservation.lock"):
+            result = self.poll_group(batch_id)
+            if not result.get("ok") or not result.get("complete"):
+                return {**result, "ok": False, "refusal": result.get("refusal", "export-incomplete-retain")}
             reservation = self._reservation(group)
             if reservation.get("released"):
                 return {"ok": True, "duplicate": True}
-            manifest = _read(group / "manifest.json")
-            sources = {Path(entry["source_path"]): entry["source_identity"] for entry in manifest["entries"]}
+            record = _export_record(group, self.owner)
+            manifest = _read(group / "manifest.json", expected_sha256=record["manifest_sha256"])
+            sources = {_path(entry["source_path"], group / "payload"): entry["source_identity"]
+                       for entry in manifest["entries"]}
             actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
             if not actual.issubset(sources) or any(not _matches(path, sources[path]) for path in actual):
                 return {"ok": False, "refusal": "local-spool-changed-retain"}
             for path in actual:
-                path.unlink()
+                with _parent(path) as directory:
+                    if not reader_lease.file_id_matches(sources[path], _identity(path, directory=directory)):
+                        return {"ok": False, "refusal": "local-spool-changed-retain"}
+                    os.unlink(path.name, dir_fd=directory)
+                    os.fsync(directory)
             reservation["released"] = True
             _write(group / "reservation.json", reservation)
             return {"ok": True, "released_bytes": reservation["ceiling_bytes"]}
 
 
-def export_group(queue, manifest_path, manifest_sha256, export_key):
-    """Worker payload: local-only reads, canonical writes, durable acknowledgement."""
-    raw = Path(manifest_path).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != manifest_sha256:
-        raise SpoolError("sealed export manifest changed")
-    manifest = json.loads(raw)
-    group = Path(manifest["group"])
-    with _lock(group / ".export.lock"):
-        record = _read(group / "export.json")
-        if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
-            raise SpoolError("export action does not own this local group")
-        claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
-        if claim.get("claimed_host") != manifest["host"]:
-            raise SpoolError("export is not claimed on the source host")
-        prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
-                                    f"{manifest['batch_id']}.prewrite.json")
-        receipt = _read(group / "receipt.json")
-        if receipt is not None:
-            if (receipt.get("export_key") != export_key
-                    or receipt.get("manifest_sha256") != manifest_sha256
-                    or not isinstance(receipt.get("entries"), list)
-                    or len(receipt["entries"]) != len(manifest["entries"])
-                    or [entry.get("destination_path") for entry in receipt["entries"]]
-                    != [entry["destination_path"] for entry in manifest["entries"]]):
-                raise SpoolError("export receipt binding is corrupt")
-            if all(_matches(entry["destination_path"], entry["identity"]) for entry in receipt["entries"]):
-                return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
-            raise SpoolError("acknowledged canonical destination changed")
-        if prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]:
-            raise SpoolError("canonical prewrite authority is absent")
-        landed = []
-        for index, entry in enumerate(manifest["entries"]):
-            source = Path(entry["source_path"])
-            destination = Path(entry["destination_path"])
-            temporary = Path(str(destination) + ".tmp")
-            proof_path = group / f"copy-{index}.json"
-            proof = _read(proof_path)
-            if proof and proof.get("complete"):
-                if not _matches(destination, proof["identity"]):
-                    raise SpoolError("completed destination changed")
-                landed.append(proof)
-                continue
-            if not _matches(source, entry["source_identity"]):
+def _copy_binding(entry, index, manifest_sha256):
+    return {"schema": SCHEMA, "kind": "export-copy", "manifest_sha256": manifest_sha256,
+            "entry_index": index, "entry_sha256": core.canonical_sha256(entry)}
+
+
+def _check_copy(proof, entry, index, manifest_sha256):
+    binding = _copy_binding(entry, index, manifest_sha256)
+    if not isinstance(proof, dict) or any(proof.get(key) != value for key, value in binding.items()):
+        raise SpoolError("copy proof manifest/entry binding is corrupt")
+    if type(proof["entry_index"]) is not int:
+        raise SpoolError("copy proof entry index is corrupt")
+    allowed = set(binding) | {"temporary_ino", "ready_identity", "sha256", "complete",
+                              "destination_path", "identity"}
+    if set(proof) - allowed:
+        raise SpoolError("copy proof has unknown fields")
+    _positive(proof.get("temporary_ino"), "copy temporary inode")
+    if "complete" in proof and type(proof["complete"]) is not bool:
+        raise SpoolError("copy completion flag is corrupt")
+    if "ready_identity" in proof:
+        reader_lease._check_identity(proof["ready_identity"], where="copy ready identity")
+        if (proof["ready_identity"]["size"] != entry["bytes"]
+                or proof.get("sha256") != entry["sha256"]):
+            raise SpoolError("copy proof size/digest does not bind the declared entry")
+    if proof.get("complete"):
+        reader_lease._check_identity(proof.get("identity"), where="copy landed identity")
+        if ("ready_identity" not in proof or proof["identity"]["size"] != entry["bytes"]
+                or proof.get("destination_path") != entry["destination_path"]):
+            raise SpoolError("copy proof destination is corrupt")
+    return proof
+
+
+def _check_receipt(receipt, manifest, record):
+    if (not isinstance(receipt, dict) or set(receipt) != {
+            "schema", "export_key", "manifest_sha256", "entries"}
+            or receipt["schema"] != SCHEMA
+            or receipt["export_key"] != record["export_key"]
+            or receipt["manifest_sha256"] != record["manifest_sha256"]
+            or not isinstance(receipt["entries"], list)
+            or len(receipt["entries"]) != len(manifest["entries"])):
+        raise SpoolError("export receipt binding is corrupt")
+    for index, (entry, proof) in enumerate(zip(manifest["entries"], receipt["entries"])):
+        _check_copy(proof, entry, index, record["manifest_sha256"])
+        if not proof.get("complete") or not _matches(entry["destination_path"], proof["identity"]):
+            raise SpoolError("export-destination-changed")
+
+
+def _export_entry(group, entry, index, manifest_sha256):
+    source = _path(entry["source_path"], group / "payload")
+    destination = _path(entry["destination_path"])
+    temporary = Path(str(destination) + ".tmp")
+    proof_path = group / f"copy-{index}.json"
+    proof = _read(proof_path)
+    if proof is not None:
+        _check_copy(proof, entry, index, manifest_sha256)
+    with _parent(source) as source_parent, _parent(destination, create=True) as destination_parent:
+        def dest_identity(path):
+            try:
+                return _identity(path, directory=destination_parent)
+            except FileNotFoundError:
+                return None
+        if proof and proof.get("complete"):
+            if not reader_lease.file_id_matches(proof["identity"], dest_identity(destination)):
+                raise SpoolError("completed destination changed")
+            return proof
+        # Pin the real local source before any unacknowledged recovery can
+        # remove a canonical incarnation. Every ancestor and the leaf refuse
+        # symlinks, and subsequent I/O uses these held directory descriptors.
+        source_fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                            dir_fd=source_parent)
+        with os.fdopen(source_fd, "rb") as reader:
+            source_identity = reader_lease.portable_identity(os.fstat(reader.fileno()))
+            if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode) or not reader_lease.file_id_matches(
+                    entry["source_identity"], source_identity):
                 raise SpoolError("local source changed before export")
-            if str(destination) not in prewrite["paths"] or str(temporary) not in prewrite["paths"]:
-                raise SpoolError("canonical export path is not owned")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            # An interrupted final rename may have landed without a post-rename
-            # proof. Recopy from the unchanged LOCAL source; never reread HDD
-            # payloads, and never replace an unrelated canonical incarnation.
-            replace_owned = destination.exists()
-            if replace_owned:
-                current = _identity(destination)
-                prior = (proof or {}).get("ready_identity", {})
-                prior_destination = (proof or {}).get("previous_identity")
-                if (not reader_lease.file_id_matches(prior_destination, current)
-                        and any(current.get(k) != prior.get(k)
-                                for k in ("ino", "size", "mtime_ns"))):
+            current = dest_identity(destination)
+            if current is not None:
+                ready = (proof or {}).get("ready_identity", {})
+                # Only this exact export's known pre-publication inode gets
+                # the expected link/rename ctime transition. No post-ACK file
+                # gets that exception: completed proofs above require all4.
+                if any(current.get(key) != ready.get(key) for key in ("ino", "size", "mtime_ns")):
                     raise SpoolError("unowned or changed canonical destination")
-                owned_destination = current
-            if temporary.exists():
-                current = _identity(temporary)
-                if current["ino"] != (proof or {}).get("temporary_ino"):
+                if not reader_lease.file_id_matches(current, dest_identity(destination)):
+                    raise SpoolError("canonical incarnation changed during recovery")
+                os.unlink(destination.name, dir_fd=destination_parent)
+                os.fsync(destination_parent)
+                # Never overlap an old unacknowledged canonical copy with a
+                # new temporary. The pinned unchanged LOCAL file stays owned,
+                # so temp=0 remains bounded by the canonical payload budget.
+            temporary_identity = dest_identity(temporary)
+            if temporary_identity is not None:
+                if temporary_identity["ino"] != (proof or {}).get("temporary_ino"):
                     raise SpoolError("unowned export temporary")
-                temporary.unlink()
-            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-            proof = {"temporary_ino": os.fstat(fd).st_ino}
-            if replace_owned:
-                proof["previous_identity"] = owned_destination
-            _write(proof_path, proof)
+                os.unlink(temporary.name, dir_fd=destination_parent)
+            fd = os.open(temporary.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                         0o600, dir_fd=destination_parent)
+            proof = {**_copy_binding(entry, index, manifest_sha256),
+                     "temporary_ino": os.fstat(fd).st_ino}
             digest = hashlib.sha256()
             copied = 0
-            with os.fdopen(fd, "wb") as writer, open(source, "rb") as reader:
-                if not reader_lease.file_id_matches(entry["source_identity"], reader_lease.portable_identity(os.fstat(reader.fileno()))):
-                    raise SpoolError("local source changed at open")
+            with os.fdopen(fd, "wb") as writer:
+                _write(proof_path, proof)
                 while block := reader.read(1 << 20):
                     copied += len(block)
                     if copied > entry["bytes"]:
@@ -434,30 +525,63 @@ def export_group(queue, manifest_path, manifest_sha256, export_key):
                     digest.update(block)
                 writer.flush()
                 os.fsync(writer.fileno())
-            if copied != entry["bytes"] or not _matches(source, entry["source_identity"]):
-                raise SpoolError("source changed while exporting")
-            if entry["sha256"] is not None and digest.hexdigest() != entry["sha256"]:
-                raise SpoolError("local source digest mismatch")
-            proof.update(ready_identity=_identity(temporary), sha256=digest.hexdigest())
+            if (copied != entry["bytes"] or digest.hexdigest() != entry["sha256"]
+                    or not reader_lease.file_id_matches(entry["source_identity"],
+                        reader_lease.portable_identity(os.fstat(reader.fileno())))
+                    or not reader_lease.file_id_matches(entry["source_identity"],
+                        _identity(source, directory=source_parent))):
+                raise SpoolError("source changed or digest mismatched while exporting")
+            proof.update(ready_identity=_identity(temporary, directory=destination_parent),
+                         sha256=digest.hexdigest())
             _write(proof_path, proof)
-            if replace_owned:
-                # A prior interrupted export owns this exact destination.
-                # Recheck its incarnation immediately before replacement.
-                current = _identity(destination)
-                if not reader_lease.file_id_matches(owned_destination, current):
-                    raise SpoolError("canonical destination changed during recovery")
-                os.replace(temporary, destination)
-            else:
-                # Publish without ever replacing an unexpected destination
-                # that appeared between the ownership check and this call.
-                os.link(temporary, destination)
-                temporary.unlink()
-            _sync_directory(destination.parent)
-            proof.update(complete=True, destination_path=str(destination), identity=_identity(destination))
+            core._assert_directory_identity(destination_parent, destination.parent,
+                                             where="canonical export parent")
+            os.link(temporary.name, destination.name,
+                    src_dir_fd=destination_parent, dst_dir_fd=destination_parent,
+                    follow_symlinks=False)
+            os.unlink(temporary.name, dir_fd=destination_parent)
+            os.fsync(destination_parent)
+            proof.update(complete=True, destination_path=str(destination),
+                         identity=_identity(destination, directory=destination_parent))
             _write(proof_path, proof)
-            landed.append(proof)
+            return proof
+
+
+def export_group(queue, manifest_path, manifest_sha256, export_key):
+    """Worker payload: local-only reads, canonical writes, durable acknowledgement."""
+    manifest = _read(manifest_path, expected_sha256=manifest_sha256)
+    if manifest is None or manifest.get("schema") != SCHEMA:
+        raise SpoolError("sealed export manifest is absent or malformed")
+    group = _path(manifest["group"])
+    with _lock(group / ".export.lock"):
+        record = _export_record(group, manifest["owner"])
+        if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
+            raise SpoolError("export action does not own this local group")
+        claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
+        if claim.get("claimed_host") != manifest["host"]:
+            raise SpoolError("export is not claimed on the source host")
+        receipt = _read(group / "receipt.json")
+        if receipt is not None:
+            _check_receipt(receipt, manifest, record)
+            return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
+        prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
+                                    f"{manifest['batch_id']}.prewrite.json")
+        if (prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]
+                or prewrite.get("owner_attempt") != manifest["instance"]["owner_attempt"]):
+            raise SpoolError("canonical prewrite authority is absent or changed")
+        class_bytes = {"payload": 0, "checkpoint": 0}
+        for entry in manifest["entries"]:
+            destination = _path(entry["destination_path"], Path(manifest["template"]["output_prefix"]))
+            if str(destination) not in prewrite["paths"] or str(destination) + ".tmp" not in prewrite["paths"]:
+                raise SpoolError("canonical export path is not owned")
+            class_bytes[entry["artifact_class"]] += entry["bytes"]
+        if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+            raise SpoolError("canonical artifact class budget changed or exceeded")
+        landed = [_export_entry(group, entry, index, manifest_sha256)
+                  for index, entry in enumerate(manifest["entries"])]
         receipt = {"schema": SCHEMA, "export_key": export_key,
                    "manifest_sha256": manifest_sha256, "entries": landed}
+        _check_receipt(receipt, manifest, record)
         _write(group / "receipt.json", receipt)
         return {"ok": True, "entries": len(landed)}
 

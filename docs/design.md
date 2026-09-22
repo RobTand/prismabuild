@@ -6040,11 +6040,20 @@ thread or secondary dispatcher moves bytes. The exporter reads only the local
 sources, verifies their recorded identity and the writer's digest, writes each
 canonical temporary, fsyncs it, publishes the canonical name and fsyncs its
 parent directory. First publication never overwrites an unexpected destination.
-Local per-file proofs bind completed canonical incarnations; a completed retry
-adopts those proofs with stat checks and no shared payload read. A crash after
-name publication but before its post-publication proof recopies from the
-unchanged local source and may replace only the recorded owned incarnation.
-Unknown paths, changed bytes, incomplete groups and corrupt records retain.
+Local per-file proofs bind the sealed manifest, entry, writer digest and completed
+canonical incarnation; a completed retry adopts those proofs with stat checks
+and no shared payload read. Actual bytes must fit their canonical artifact
+class's prewrite budget, never another class's credit. The ordinary temporary
+becomes that same payload inode, so it does not require duplicate temp credit.
+A crash after name publication but before its post-publication proof first pins
+the unchanged local source, then removes only the recorded UNACKNOWLEDGED
+canonical incarnation under the export lock before recopying. It never overlaps
+that old copy with a new temporary, and never deletes an acknowledged canonical
+file to recover. This preserves the payload/temp bound even when temp is zero.
+Every source/destination ancestor is opened through the accepted no-follow
+directory walk and payload I/O uses pinned directory descriptors; post-seal
+symlink substitutions refuse. Unknown paths, changed bytes, incomplete groups
+and corrupt records retain.
 
 The group acknowledgement is bound to its sealed manifest and export action.
 Only that verified durable acknowledgement permits existing canonical
@@ -6058,7 +6067,8 @@ reservation; producer memory and local disk ceilings must leave honest capacity
 for it. There is no GPU demand on an exporter.
 
 Completed local files can be removed only against the bound acknowledgement,
-with a source-identity census before unlink. Pending/failed/unknown exports and
+reverified after taking the export lock, with a source-identity census and pinned
+directory-relative unlink. Pending/failed/unknown exports and
 partial writer groups retain their local bytes and reservation for recovery.
 A repeated successful release is idempotent, including interruption after
 unlink but before updating its reservation. Metadata remains as bounded proof;
