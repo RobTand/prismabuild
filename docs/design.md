@@ -2399,7 +2399,11 @@ attempt retains the ceiling under which it started.
 `pbcampaign --max-inflight N` is optional waiting-pool controller policy, outside
 sealed action identity and the resource ledger. One invocation retains at most
 N distinct unfinished action keys and publishes a replacement only after a
-successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
+successful `pbwait` observation and absence of that key's READY/CLAIMED leaves,
+including a finish tombstone or `.late-finish` record under `claimed/`.
+`PoolQueue.finish` entombs the claim before it releases capacity and files the
+ending, and a generation-pinned observation can answer from the attempt archive
+inside that window (#886), so the entombed claim still holds the slot.
 A receipt or withdrawal outcome alone cannot free a slot while queue work or
 claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
 An outcome read that timed out with its reader reaped keeps the key pending and

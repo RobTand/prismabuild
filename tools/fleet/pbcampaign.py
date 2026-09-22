@@ -217,6 +217,7 @@ import contextlib
 import io
 import json
 import math
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -816,6 +817,14 @@ def _pool_slot_occupied(queue, key: str) -> bool:
     Missing leaves are absence; unreadable leaves are not capacity. Check
     ready before claimed so a ready-to-claimed move cannot open a slot.
     This is a controller observation, never permission to release tokens.
+
+    A claim whose finish is in flight is still occupancy.  ``PoolQueue.finish``
+    moves ``claimed/<key>.json`` aside to a finish tombstone, then releases
+    capacity, and only then files the ending; a generation-pinned wait can
+    already answer from the attempt archive inside that window (#886).  An
+    exact-scope ``.late-finish`` record is claim cleanup that has not
+    completed.  Both are read by name, exactly as the pool's claim gate reads
+    them (``already_claimed``).
     """
 
     for state in (pool.READY, pool.CLAIMED):
@@ -824,7 +833,15 @@ def _pool_slot_occupied(queue, key: str) -> bool:
         except FileNotFoundError:
             continue
         return True
-    return False
+    try:
+        names = os.listdir(queue.dir(pool.CLAIMED))
+    except FileNotFoundError:
+        return False
+    return any(
+        name.startswith(f"{key}.")
+        and name.endswith((pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX))
+        for name in names
+    )
 
 
 def run_windowed(rows, *, transport: str, max_inflight: int,
