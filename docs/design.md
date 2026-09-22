@@ -4813,7 +4813,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
 
 #### Terminal occupancy: a batch stays charged until its bytes are gone
 
-The tier invariant is that held tokens equal bytes on the stage at every
+The tier invariant is that held tokens cover the bytes on the stage at every
 instant, so a produced-output mover's terminal releases its tier tokens only
 when the stage is proven empty of its material. `PoolQueue.residency_pin_holds`
 answers the complete case (whole declared range, unrefused receipt);

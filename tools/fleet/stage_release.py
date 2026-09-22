@@ -4,7 +4,11 @@
 The egress node.  It is the only thing that may return a mover's tier tokens,
 because it is the only thing that removes the bytes they stand for, and those
 two have to be one operation: **held tier tokens equal bytes on the stage, at
-every instant**.  Releasing at ``finish`` instead would bound concurrent copies
+every instant**.  The #853 partial prune is the one deliberate slack, and it
+errs the safe way: it unlinks a positively stale destination and releases
+nothing, so through that window the held tokens *cover* the stage's bytes
+rather than equal them, and the whole charge settles when the owner retires.
+Releasing at ``finish`` instead would bound concurrent copies
 rather than resident bytes --- twenty-one movers of 34.4 GB, run one after
 another, leave 722 GB on a 721 GB stage while the ledger reads its full supply
 free at every step --- so a mover keeps its tokens from ``finish`` until an
