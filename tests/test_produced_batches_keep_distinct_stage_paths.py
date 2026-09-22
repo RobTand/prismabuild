@@ -167,6 +167,9 @@ def test_unbound_or_unsafe_output_namespace_refuses_before_copy(tmp_path, mutati
         args.action_key = replacement["action_key"]
     else:
         request["params"]["produced_output_batch"]["batch_namespace"] = "f" * 64
+        # CAS requests are immutable files; replace only this private fixture
+        # to exercise corruption instead of failing on its read-only mode.
+        request_path.unlink()
         request_path.write_text(json.dumps(request))
     before = sorted(str(p.relative_to(world.stage_root)) for p in world.stage_root.rglob("*"))
     with pytest.raises(SystemExit, match="produced_stage_namespace"):
