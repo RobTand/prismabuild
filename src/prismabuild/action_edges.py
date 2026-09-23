@@ -583,6 +583,38 @@ def file_supersession(queue, old: str, *, new: str, new_kind: str
     return record
 
 
+def successor_of(queue_root: str | Path, old: str) -> dict[str, object] | None:
+    """Where a chain of supersessions starting at ``old`` ends, or ``None``.
+
+    ``None`` when nothing supersedes ``old``.  Otherwise ``{"id", "kind",
+    "path"}``: the last submission the chain reaches, following each
+    supersession and each released pending id to the key it was released
+    as.  ``kind`` is ``key``, or ``pending`` for a submission not released
+    yet.  ``path`` lists every link after ``old``.  Raises
+    ``ActionEdgeError`` on an unreadable or malformed record, or a chain that
+    does not end.
+    """
+
+    path: list[str] = []
+    seen = {old}
+    current, kind = old, PRODUCER_KEY
+    for _ in range(MAX_LINKS):
+        successor = read_supersession(queue_root, current)
+        if successor is not None:
+            current, kind = str(successor["new"]), str(successor["new_kind"])
+        elif kind == PRODUCER_PENDING and (
+                published := read_published(queue_root, current)) is not None:
+            current, kind = str(published["action_key"]), PRODUCER_KEY
+        else:
+            return {"id": current, "kind": kind, "path": path} if path else None
+        if current in seen:
+            raise ActionEdgeError(
+                f"the supersessions of {old[:12]} lead back to {current[:12]}")
+        seen.add(current)
+        path.append(current)
+    raise ActionEdgeError(f"the supersessions of {old[:12]} do not end")
+
+
 # --------------------------------------------------------------------------
 # Producers
 # --------------------------------------------------------------------------
@@ -894,6 +926,6 @@ __all__ = [
     "merged_manifest", "parse_edge", "pending_id_of", "producer_kind",
     "published_path", "read_deferred", "read_published", "read_release",
     "read_supersession", "release_path", "require_write_only_template",
-    "resolve_command", "resolve_producer", "supersession_path",
+    "resolve_command", "resolve_producer", "successor_of", "supersession_path",
     "unreleased_ids", "validate_deferred",
 ]

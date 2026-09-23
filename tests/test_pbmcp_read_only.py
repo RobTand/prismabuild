@@ -147,6 +147,7 @@ def _every_tool(session: pbmcp.Session, fleet: fx.Fleet) -> list[dict]:
         session.call("pb_runtime"),
         session.call("pb_starvation"),
         session.call("pb_cursors"),
+        session.call("pb_blocked_origins"),
     ]
 
 

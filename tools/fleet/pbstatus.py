@@ -45,6 +45,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shlex
 import signal
 import stat
 import subprocess
@@ -63,6 +64,7 @@ from prismabuild import (  # noqa: E402
     core as pb, pool, slurm_lane as sl,
 )
 from prismabuild import action_edges  # noqa: E402
+from prismabuild import produced_output  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
@@ -1685,6 +1687,60 @@ def _starvation_gaps() -> list[dict]:
     ]
 
 
+#: Schema of the --blocked-origins JSON blob (#926).
+BLOCKED_ORIGINS_SCHEMA_V1 = "prismabuild.pbstatus.blocked_origins.v1"
+
+
+def blocked_origin_remedies(ref: Mapping[str, object], key: str) -> dict[str, str]:
+    """The two commands that let one blocked consumer's batch go (#926).
+
+    Computed here, at display time, from the batch's ref and the consumer's
+    key; the tick's own report carries neither.  ``release`` is exact.
+    ``resubmit`` names what only the submitter knows as placeholders: the
+    consumer's own options and command, resubmitted with ``--supersedes``.
+    """
+
+    batch = shlex.quote(json.dumps(dict(ref), sort_keys=True,
+                                   separators=(",", ":")))
+    return {
+        "release": (f"pbrun.py --release-origin-consumer {batch} {key} "
+                    "--reason '<why>'"),
+        "resubmit": (f"pbrun.py --priority -10 --supersedes {key} "
+                     "<the consumer's options> -- <its command>"),
+    }
+
+
+def read_blocked_origins(queue_root: str | Path) -> dict:
+    """List the consumed origin batches that only an operator can free (#926).
+
+    A batch is blocked when every declared consumer still holding it failed
+    or was withdrawn (`produced_output.blocked_origin_batches`, which reads
+    the same records the retirement tick does and writes nothing).  Each
+    holding consumer is listed with its state, any ``superseded_by`` that did
+    not apply, and the remedies.  ``complete`` is false when a record could
+    not be read; the unreadable ones are named.
+    """
+
+    queue = pool.PoolQueue(queue_root)
+    found = produced_output.blocked_origin_batches(queue)
+    blocked = []
+    for batch in found["blocked"]:
+        holding = set(batch["holding"])
+        blocked.append({
+            **batch,
+            "remedies": [
+                {"action_key": item["action_key"], "state": item["state"],
+                 **({"superseded_by": item["superseded_by"]}
+                    if "superseded_by" in item else {}),
+                 **blocked_origin_remedies(batch["ref"], str(item["action_key"]))}
+                for item in batch["consumers"]
+                if item["action_key"] in holding],
+        })
+    return {"schema": BLOCKED_ORIGINS_SCHEMA_V1, "blocked": blocked,
+            "unreadable": list(found["unreadable"]),
+            "complete": not found["unreadable"]}
+
+
 def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict:
     """Answer "what is waiting on data" as one JSON-serializable blob.
 
@@ -2825,6 +2881,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print one JSON object with the three lists and any scheduler "
              "notes, and nothing else")
     parser.add_argument(
+        "--blocked-origins", action="store_true",
+        help="print one JSON blob listing every consumed origin batch whose "
+             "remaining consumers all failed or were withdrawn, with the "
+             "pbrun --release-origin-consumer and --supersedes remedies for "
+             "each (#926), and nothing else")
+    parser.add_argument(
         "--starvation", action="store_true",
         help="print one JSON blob answering what is waiting on data "
              "(quiet claimed consumers, residency plan promotion state, "
@@ -2902,6 +2964,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"({read['type']}: {read['error']})", file=sys.stderr)
         else:
             print(f"pbstatus: deferred read did not answer within "
+                  f"{args.timeout_s:g}s", file=sys.stderr)
+        return EXIT_INCOMPLETE
+
+    if args.blocked_origins:
+        # Pool-only: consumed batches and their declarations are pull-queue
+        # records (#914, #926).
+        read = bounded("blocked-origins",
+                       lambda: read_blocked_origins(args.queue_root),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            print(json.dumps(read["value"], sort_keys=True, indent=1))
+            return 0 if read["value"]["complete"] else EXIT_INCOMPLETE
+        if read["status"] == "error":
+            print(f"pbstatus: blocked-origins read failed "
+                  f"({read['type']}: {read['error']})", file=sys.stderr)
+        else:
+            print(f"pbstatus: blocked-origins read did not answer within "
                   f"{args.timeout_s:g}s", file=sys.stderr)
         return EXIT_INCOMPLETE
 
