@@ -361,16 +361,31 @@ def test_a_deferred_plan_names_one_slot_per_edge(
     _announce_tier(queue, mountpoint=tmp_path / "stage")
     edge = f"{producer}:{template['template_id']}"
     other = f"{fx._hexkey('another-producer')}:{template['template_id']}"
+    second = _producer_key(tmp_path, template, "band-m")
+    _publish_producer(queue, template, second)
+    second_edge = f"{second}:{template['template_id']}"
 
-    def refused(manifest: dict, *options: str) -> str:
+    def refused(manifest: dict, *options: str, edges=(edge,)) -> str:
         source = _write(tmp_path / "static.json", manifest)
         return _refused(monkeypatch, "--cwd", str(work), "--wait-s", "0.01",
-                        "--detach", "--after", edge, "--data-manifest",
-                        str(source), *options, "--", "/bin/cat",
-                        ae.DATA_MANIFEST_PLACEHOLDER)
+                        "--detach", *(arg for item in edges
+                                      for arg in ("--after", item)),
+                        "--data-manifest", str(source), *options, "--",
+                        "/bin/cat", ae.DATA_MANIFEST_PLACEHOLDER)
 
     assert "must name the phase each --after edge fills" in refused(
         _static(tmp_path), *PROGRESS)
+    assert f"no slot reads --after {second_edge}" in refused(
+        _static(tmp_path, {"phase": "handoff", "after": edge}), *PROGRESS,
+        edges=(edge, second_edge))
+    two_slots = (("head", [0, 1]), ("handoff", []), ("handoff-2", []),
+                 ("replay-0", [0]), ("replay-1", [1]))
+    assert "two slots name" in refused(
+        _static(tmp_path, {"phase": "handoff", "after": edge},
+                {"phase": "handoff-2", "after": edge}, layout=two_slots),
+        *(arg for name, _ in two_slots
+          for arg in ("--progress-phase", f"{name}=600")),
+        edges=(edge, second_edge))
     assert "not an --after edge" in refused(
         _static(tmp_path, {"phase": "handoff", "after": other}), *PROGRESS)
     assert "already reads static entries" in refused(
