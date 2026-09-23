@@ -5851,15 +5851,21 @@ and the largest of them. It is the most the window will ever hold at once,
 not the plan. The #633 run-ahead bound keeps it at or under the tier's
 capacity. The horizon at each phase is priced at the consumer's rates now:
 
-* Consumption: for a claimed consumer with accepted progress, the fastest
-  rate its claim has measured (the horizon's own measurement, bytes through
-  the accepted phase over the time from the claim to its report). A reader
-  that slowed can speed up again, and its window grows back into the room it
-  gave up, so the footprint never follows the rate down. The tier loop keeps
-  the fastest rate in memory; a restart forgets it and prices each claim at
-  its current rate. Anything else — a newcomer, a ready consumer, a claim
-  with no report — has measured nothing, and the tier's announced fill supply
-  stands in, as it does for the horizon.
+* Consumption: for a claimed consumer with accepted progress, the horizon's
+  own measurement (bytes through the accepted phase over the time from the
+  claim to its report), which is what bounds its window now, or the fastest
+  rate its claim has *attained*, whichever is higher. A reader that slowed
+  can speed up again, and its window grows back into the room it gave up,
+  so the footprint does not follow the rate down past what the reader has
+  shown it can do. Attained counts only the phases before the accepted one,
+  which the reader has certainly read by its report. The horizon's rate
+  counts the whole accepted phase as read, and a first report a few seconds
+  after the claim makes that a whole phase over a few seconds: kept for the
+  claim's lifetime, that peak would refuse every newcomer beside it. The
+  tier loop keeps the attained rate in memory; a restart forgets it and
+  prices each claim at its current rate. Anything else — a newcomer, a
+  ready consumer, a claim with no report — has measured nothing, and the
+  tier's announced fill supply stands in, as it does for the horizon.
 * Landing: the slowest complete copy of the plan, else the smallest fill its
   movers were sealed with, else the fill supply, as for the horizon.
 * Read-ahead: the consumer's reservations (`mem_gb` plus its admission's GPU
@@ -5883,6 +5889,16 @@ of it; an orphan is in no live plan; a queued row is new money once, whether
 or not a window's holding names it. So an admitted window is committed at the
 larger of what it holds and its footprint, and a static holder (a receipt-less
 token, an output owner's held window) at what it holds.
+
+A live consumer the census cannot read is not free room. A plan read fails on
+a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then
+drops out of the pass, and its ranges would count as orphans and its growth
+as nothing. So a range whose receipt names a live queue item is never counted
+evictable, and a tier that a live consumer may be on uncensused (its plan or
+its mover state did not read) refuses its newcomers with
+`advance-deferred-unknown-evidence` until a pass reads it. An unreadable plan
+blinds the tier its queue item declares, or every tier if the item does not
+read either.
 
 `window_credit.gate_commitment` admits a newcomer when the commitment plus its
 own growth fits the tier. Otherwise it is refused with `joint-commitment-stall`,
@@ -5955,6 +5971,11 @@ past the horizon (44). Its 264 GiB past the horizon is evictable.
   all fit the joint-fit gate (264 + 44 + 4 × 25 = 408). The commitment
   admits three (515) and the fourth waits (584).
 
+A newcomer's footprint moves with the announced fill supply, which prices its
+consumption until it reports. At the 144 MB/s the test's own cycle probes,
+R13's footprint is 176 GiB, and 308 + 176 = 484 fits: the same R13 is admitted
+on a stage that announces a slower fill.
+
 **Assumptions and limits.**
 
 * Sound only while what it counts as evictable comes back without another
@@ -5984,6 +6005,15 @@ past the horizon (44). Its 264 GiB past the horizon is evictable.
   than the tier (a claim measured faster than its stand-in), they keep
   running and contend as before; newcomers are refused until the sum fits.
   Nothing reports the overcommit.
+* The horizon's own in-phase over-estimate is real window behavior: a claim
+  whose first report lands seconds after it has a window that runs to the
+  #633 bound until its next report. The footprint follows it while it lasts,
+  so newcomers wait out that interval.
+* The eviction pressure asks the commitment in the gate's priority order but
+  not behind the gate's priority barrier. With mixed priorities, a
+  lower-priority newcomer that the barrier holds back while the commitment
+  admits it can still be given relief it does not use that cycle. Uniform
+  priorities never raise the barrier.
 * The census reads the ready and claimed items, every live window's movers on
   the tier and the output census, on each pass that asks it (at most three a
   cycle, and only when a newcomer is present). Its cost is not measured.
