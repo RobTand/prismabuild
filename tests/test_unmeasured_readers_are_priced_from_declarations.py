@@ -5,8 +5,9 @@ newcomer reports, nothing has measured its reading, and three numbers stood in
 for the missing measurements:
 
 * its consumption rate was the tier's announced fill supply, so the verdict
-  moved as the loop probed the pool: an R12-shaped R13 was refused at 413 MB/s
-  (footprint 308 GiB) and admitted at 144 (264);
+  moved as the loop probed the pool: on main at 81d95cba an R12-shaped R13
+  beside R12 was refused at 413 MB/s (footprint 242 GiB) and admitted at 144
+  (176) -- PB ff200b3dacf1;
 * its landing rate fell back to the same supply when its rows were sealed with
   no fill;
 * its read-ahead was its memory reservation, ``mem_gb`` plus the GPU budget
@@ -14,9 +15,11 @@ for the missing measurements:
   footprint where a reader that holds one or two 22 GiB layers ahead needs 88.
 
 A consumer now declares its reading on its plan (``reader``): how many bytes
-it holds ahead of the phase it reads, and how fast it reads.  A measurement
-still wins where there is one.  Where there is neither, the price is a stated
-bound that does not read the tier's supply.
+it holds ahead of the phase it reads, and how fast it reads.  Beside a
+measured rate the larger of the two prices it: each is a lower bound on how
+fast the consumer reads, and the footprint is a promise that must not come out
+short.  Where there is neither, the price is the window's #633 run-ahead
+bound, which does not read the tier's supply.
 
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
@@ -43,8 +46,10 @@ import test_r12_and_the_capture_replay_under_the_refill_horizon as replay  # noq
 R13 = _hexkey("r13consumer")
 R13_MANIFEST = _hexkey("r13manifest")
 #: R12's reader as PQ's stage-fed reader would declare it: one 22 GiB layer
-#: held ahead, read at the 20.7 MB/s R12 measured.
+#: held ahead, read at the 20.7 MB/s R12 measured, in whole MB/s rounded up.
 DECLARED = {"prefetch_depth_bytes": 22 * GIB, "read_mb_s": 21}
+#: The same reader declaring a rate just under R12's measured 20.72 MB/s.
+SLOWER = {**DECLARED, "read_mb_s": 20}
 #: By ``residency_plan.read_footprint`` over R12's plan with the declaration
 #: above and R12's sealed 144 MB/s landing: the phase being read, one layer of
 #: read-ahead and the refill legs, 88 GiB.  With the memory reservation as
@@ -126,15 +131,18 @@ def test_a_newcomers_verdict_does_not_move_with_the_announced_supply(
         tmp_path: Path, monkeypatch, reader) -> None:
     """R13 beside R12 is decided the same at 413 MB/s as at 144.
 
-    Before the fix its consumption was the announced supply: a 308 GiB
-    footprint at 413, refused (308 + 308 > 530), and 264 at 144, admitted.
-    The loop probes its supply, so the same queue flipped between the two.
+    Before the fix its consumption was the announced supply: a 242 GiB
+    footprint at 413, refused (``joint-commitment-stall``), and 176 at 144,
+    admitted.  The loop probes its supply, so the same queue flipped between
+    the two.  Undeclared, R13 is now priced at the run-ahead bound and
+    refused at both; declared, at its declaration and admitted at both.
     """
 
     fast = _verdict(tmp_path, monkeypatch, 413, reader=reader)
     slow = _verdict(tmp_path, monkeypatch, 144, reader=reader)
     assert fast == slow
-    assert fast["consumption_basis"] != "fill-supply"
+    assert fast["consumption_basis"] == ("declared" if reader else "undeclared")
+    assert fast["admit"] is bool(reader)
 
 
 def test_a_declared_newcomer_is_priced_at_its_declaration(
@@ -151,15 +159,21 @@ def test_a_declared_newcomer_is_priced_at_its_declaration(
 # ------------------------------------------------------ read-ahead is declared
 
 
-def test_r12s_read_ahead_is_its_declared_depth(tmp_path: Path, monkeypatch) -> None:
-    """R12 declared: priced at one layer of read-ahead, not 180 GiB of memory."""
+@pytest.mark.parametrize("reader,basis", [(SLOWER, "measured"), (DECLARED, "declared")],
+                         ids=["declared-under-measured", "declared-over-measured"])
+def test_r12s_read_ahead_is_its_declared_depth(tmp_path: Path, monkeypatch,
+                                               reader, basis) -> None:
+    """R12 declared: priced at one layer of read-ahead, not 180 GiB of memory.
 
-    queue, stage = _r12(tmp_path, monkeypatch, reader=DECLARED)
+    Its rate is the larger of its measured 20.72 MB/s and its declaration:
+    20 leaves the measurement standing, 21 raises it.
+    """
+
+    queue, stage = _r12(tmp_path, monkeypatch, reader=reader)
     window = _census(queue, _tiers(stage, 413))["windows"][replay.R12]  # type: ignore[index]
     assert window["footprint_gib"] == DECLARED_FOOTPRINT
     assert window["readahead_basis"] == "declared"
-    # Measured beats declared for the rate: R12 has reported.
-    assert window["consumption_basis"] == "measured"
+    assert window["consumption_basis"] == basis
 
 
 def test_an_undeclared_reader_keeps_its_memory_reservation(

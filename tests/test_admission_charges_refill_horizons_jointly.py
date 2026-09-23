@@ -25,10 +25,14 @@ The numbers every case here uses, so each assertion can be checked by hand:
   within 30 s (heartbeat) + 60 s (cycle) + 200 s = 290 s, in which it reads
   0.6 GB, so its refill is the one-leg minimum.  Its footprint is the phase it
   reads, 8 GiB of read-ahead and one refill leg: **12 GiB**;
-* a newcomer has no measured rate, so the tier's announced fill supply,
-  10 MB/s, prices both its consumption and its landing: a 2 GiB copy lands in
-  215 s, 305 s with the latency, in which it reads 3.0 GB -- two legs.  Its
-  footprint is 2 + 8 + 4 = **14 GiB**.
+* a newcomer has measured nothing, so its plan's declared read rate,
+  10 MB/s, prices its consumption, and the 10 MB/s its movers were sealed
+  with prices their landing: a 2 GiB copy lands in 215 s, 305 s with the
+  latency, in which it reads 3.0 GB -- two legs.  Its footprint is
+  2 + 8 + 4 = **14 GiB**.  Until #909 the tier's announced fill supply stood
+  in for both, and a newcomer's verdict moved as the loop probed the pool;
+  it prices nothing now, and the readers here declare nothing, since their
+  measured 2.2 MB/s is what prices them.
 
 Each case up to the last section is the smallest state that shows one term.
 The last section replays ``tests/fixtures/r12_stage_20260922.json`` -- R12,
@@ -64,9 +68,13 @@ MEM_GB = 8
 MOVER_SECONDS = 200.0
 CLAIMED_AGO_S = 1000.0
 REPORTED_AGO_S = 10.0
-#: The tier's announced fill supply, MB/s: a newcomer's consumption and
-#: landing before either is measured.
+#: The tier's announced fill supply, MB/s.  It prices nothing since #909.
 SUPPLY_MB_S = 10
+#: What a newcomer declares it reads at, and what its movers were sealed
+#: with: the two rates the supply stood in for before #909.
+NEWCOMER_READ_MB_S = 10
+SEALED_FILL_MB_S = 10
+FILL = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{TIER}"
 #: Footprints by the module docstring's arithmetic.
 READER_FOOTPRINT = 12
 NEWCOMER_FOOTPRINT = 14
@@ -76,12 +84,14 @@ class Consumer:
     """One consumer of its own manifest: ``phases`` phases of ``PHASE_GIB``.
 
     ``output_gib`` is a claim-time stage demand -- a produced-output window --
-    when positive.
+    when positive.  ``read_mb_s`` is its plan's declared read rate (#909),
+    ``None`` for a reader that declares none.
     """
 
     def __init__(self, queue: pool.PoolQueue, stage: Path, label: str, *,
                  phases: int = 10, mem_gb: int = MEM_GB,
-                 output_gib: int = 0) -> None:
+                 output_gib: int = 0,
+                 read_mb_s: int | None = NEWCOMER_READ_MB_S) -> None:
         self.queue, self.stage, self.label = queue, stage, label
         self.key = _hexkey(f"{label}consumer")
         self.manifest = _hexkey(f"{label}manifest")
@@ -95,7 +105,8 @@ class Consumer:
                 "start_bytes": start, "end_bytes": end, "stage_gib": PHASE_GIB,
                 "mover_row": {
                     **_row(queue, self.mover(ordinal),
-                           {STAGE_KIND: PHASE_GIB, "cpu": 1, "mem_gb": 1}),
+                           {STAGE_KIND: PHASE_GIB, "cpu": 1, "mem_gb": 1,
+                            FILL: SEALED_FILL_MB_S}),
                     "residency": {
                         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                         "manifest_sha256": self.manifest,
@@ -108,7 +119,8 @@ class Consumer:
         self.plan = residency_plan.build_plan(
             consumer_action_key=self.key, tier_id=TIER,
             stage_root="/stage/prewarm", manifest_sha256=self.manifest,
-            manifest_bytes=total, phases=built)
+            manifest_bytes=total, phases=built,
+            reader=None if read_mb_s is None else {"read_mb_s": read_mb_s})
         residency_plan.freeze(queue, self.plan)
         resources: dict[str, int] = {"cpu": 1, "mem_gb": mem_gb}
         if output_gib:
@@ -194,7 +206,7 @@ def _reader(queue: pool.PoolQueue, stage: Path, *,
     the tier for nothing more than it gives back as it reads.
     """
 
-    reader = Consumer(queue, stage, "a", phases=phases)
+    reader = Consumer(queue, stage, "a", phases=phases, read_mb_s=None)
     reader.land(*landed)
     reader.claim()
     return reader
@@ -517,7 +529,7 @@ def test_a_reader_that_slows_keeps_the_footprint_it_was_charged(
     """
 
     queue, stage = _fixture_queue(tmp_path, 26)
-    reader = Consumer(queue, stage, "a", phases=16)
+    reader = Consumer(queue, stage, "a", phases=16, read_mb_s=None)
     reader.land(*range(4, 10))
     now = time.time()
     claimed = now - 5000.0
@@ -560,7 +572,7 @@ def test_a_first_report_just_after_the_claim_does_not_freeze_the_footprint(
     """
 
     queue, stage = _fixture_queue(tmp_path, 26)
-    reader = Consumer(queue, stage, "a")
+    reader = Consumer(queue, stage, "a", read_mb_s=None)
     reader.land(*range(6))
     now = time.time()
     claimed = now - 1000.0
@@ -607,13 +619,13 @@ def test_a_newcomer_the_commitment_refuses_evicts_nothing(
     joint-fit shortfall (20 + 2 + 2 - 21 = 3) evicted ``phase-9`` and
     ``phase-8`` and its lead published into 4 GiB beside a reader whose
     window still wants 14.  After it, the commitment refuses the newcomer
-    -- no fill supply is announced here, so its footprint is its whole
-    20 GiB plan -- and nothing is evicted for it.
+    -- it declares no read rate, so its footprint is its run-ahead bound,
+    its whole 20 GiB plan -- and nothing is evicted for it.
     """
 
     queue, stage = _fixture_queue(tmp_path, 21)
     reader = _reader(queue, stage, landed=tuple(range(10)))
-    newcomer = Consumer(queue, stage, "n")
+    newcomer = Consumer(queue, stage, "n", read_mb_s=None)
 
     capsys.readouterr()
     _cycle(queue, stage, gib=21)
@@ -638,18 +650,20 @@ def test_a_newcomer_the_commitment_refuses_evicts_nothing(
 # the horizon (``chain-021``, ``chain-018``, 44 GiB) -- 308 GiB.  The twelve
 # landed ranges past the horizon (264 GiB) are evictable.  Its footprint at
 # its measured 20.7 MB/s is the eleven ranges inside the horizon, 242 GiB, and
-# it holds more than that already, so it has no growth.  A newcomer is priced
-# at the stage's announced 413 MB/s fill supply, with a 90 s report latency
+# it holds more than that already, so it has no growth.  The newcomers here
+# declare no read rate, so each is priced at its window's #633 run-ahead
+# bound, whatever the stage announces (#909); the report latency is 90 s
 # (30 s heartbeat and the 60 s default cycle).
 
 #: What R12 commits at 22:30Z, by the arithmetic above.
 R12_COMMITTED = 264 + 44
-#: An R13 shaped like R12, not yet claimed: 100 GiB of host read-ahead (its
-#: GPU budget is unknown before a claim), landing at R12's sealed 144 MB/s.
-R13_FOOTPRINT = 242
+#: An R13 shaped like R12, not yet claimed and declaring nothing: its
+#: run-ahead bound on the 530 GiB stage.  Declared, it is priced at its
+#: declaration (``test_unmeasured_readers_are_priced_from_declarations``).
+R13_FOOTPRINT = 528
+#: The capture's and a Stage-B quantum's whole plans (a 3 GiB head and three
+#: 22 GiB layer ranges), which their run-ahead bounds hold whole.
 CAPTURE_FOOTPRINT = 20
-#: A Stage-B quantum: a 3 GiB head and three 22 GiB layer ranges, 28 GiB of
-#: host read-ahead.  Its whole plan fits inside its horizon.
 QUANTUM_FOOTPRINT = 3 + 3 * 22
 
 
@@ -700,7 +714,7 @@ def test_the_capture_beside_r12_passes_the_commitment(tmp_path: Path) -> None:
     terms = gate["commitment"]
     assert terms["committed_gib"] == R12_COMMITTED
     assert terms["footprint_gib"] == CAPTURE_FOOTPRINT
-    assert terms["consumption_basis"] == "fill-supply"
+    assert terms["consumption_basis"] == "undeclared"
     assert (tier_loop.window_pressure(queue, tiers=_live_tiers(stage))
             .get(TIER) or 0) > 0
 
@@ -718,17 +732,18 @@ def test_an_r13_shaped_newcomer_waits_for_r12s_footprint(
         tmp_path: Path) -> None:
     """22:30Z with R13 queued: refused on the commitment, and nothing evicted.
 
-    308 + 242 = 550 > 530.  Before the fix the joint-fit gate's shortfall
+    308 + 528 > 530.  Before the fix the joint-fit gate's shortfall
     (528 + 44 + 22 + 22 - 530 = 86) asked the relief for R12's farthest
     ranges, and R13's lead published into them: the two windows then wanted
-    550 GiB of 530 between them, and with every range past R12's horizon
+    more than 530 GiB between them, and with every range past R12's horizon
     gone, each range inside one horizon waits on the other consumer's
     reading.  After it, R13 waits, and no pressure is asked for it, so the
     orphan sweep and the horizon eviction take nothing.
 
-    The refusal is priced at the 413 MB/s the stage announced.  A newcomer's
-    consumption is the fill supply until it reports, so the footprint moves
-    with it: at 144 MB/s R13's is 176 GiB, and 308 + 176 = 484 fits.
+    Until #909 the refusal was priced at the 413 MB/s the stage announced
+    (242 GiB), and at 144 MB/s the same R13 was 176 GiB and admitted
+    (308 + 176 = 484).  Declaring nothing, it is now priced at its run-ahead
+    bound, 528 GiB, whatever the stage announces.
     """
 
     queue, stage = _live_r12(tmp_path)
