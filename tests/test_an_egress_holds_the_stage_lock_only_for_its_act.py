@@ -14,32 +14,42 @@ entries each, and ``evict(whole=True)`` on the landed range, which is what
 the tier loop's beyond-horizon eviction runs.  The publishers start the moment
 the egress first holds the lock, so every one of them meets it.
 
-It asserts three things:
+It asserts what the hold does, not how long it takes, because a hold's
+seconds depend on the box (#1005: 0.25 s alone, 1.22 s beside a second
+20,000-entry egress on the same disk):
 
-* the publishers' p99 per-entry publication latency, over the publications
-  that overlap the egress, stays under ``P99_LIMIT_S``;
-* the longest single hold of the lock by the egress, measured around the
-  lock from outside, stays under ``HOLD_LIMIT_S``;
-* the egress receipt records its own hold (``lock_held_s``, which must match
-  the hold measured from outside), the entries it judged, and the seconds its
-  census took before the lock and its re-check and unlinks took inside it.
+* **Structure, the primary assertion.**  While the egress holds the lock it
+  parses no census document: no fragment, no pin and no material sidecar.
+  The test counts the parses itself, by wrapping the three validators
+  (``residency_map.validate_fragment``, ``reader_lease.validate_pin`` and
+  ``reader_lease.validate_material``) and counting only the calls made
+  while the lock is held, and the receipt must say the same
+  (``locked_parses == 0``, with the landed range's fragment and sidecar
+  reused by their file version, ``locked_reuses >= 2``).  Before #988 the
+  egress parsed every fragment under the lock, so this fails on main
+  whatever the box.
+* **The records.**  One hold; the receipt's ``lock_held_s`` matches the hold
+  measured around the lock from outside; ``entries_judged`` is the range;
+  the census before the lock took time; the re-check and the unlinks fit
+  inside the hold.
+* **A guard against sliding back, not a performance limit.**  The longest
+  hold and the publishers' p99 publication latency during it stay under
+  ``REGRESSION_GUARD_S``, the shortest hold this test measured on main alone
+  (3.52 s, ``RED_MEASURED``).  Only a return to the census-under-lock regime
+  reaches it; a slow or shared box does not.
 
-Thresholds, derived from runs of this test through PrismaBuild on sparky
-(``--tag sparky``, one pytest worker, four CPUs reserved):
+Measured through PrismaBuild on sparky (``--tag sparky``, one pytest worker,
+four CPUs reserved; keys in #1005):
 
-* origin/main ``e9b66ea8cee4``: the egress held the lock once, for 3.52 s,
-  and the publishers that met it waited out the rest of that hold (p99
-  3.52 s; ``RED_MEASURED``);
-* after the fix: the egress held the lock once, for 0.25 s, of which 0.16 s
-  was the 20,000 unlinks, which stay under the lock; its 1.05 s census ran
-  before it (``GREEN_MEASURED``).
+* origin/main: one hold of 3.52 s and 3.74 s alone, 5.45 s beside another
+  20,000-entry egress; the publishers waited out the rest of it;
+* after the fix: one hold of 0.25 s alone (0.16 s of it the 20,000 unlinks,
+  which stay under the lock), 1.22 s beside another egress; the 1.05 s
+  census runs before the hold.
 
-Each limit is the geometric mean of the red and green measurement, rounded
-down: sqrt(3.52 x 0.249) = 0.94 s, so 0.9 s.  The test then fails on the old
-code by a factor of 3.9 and passes on the new code with a factor of 3.6 of
-room for a loaded box.  The hold that remains grows with the range (about
-12 us an entry here), because the unlinks stay under the lock; see
-``docs/design.md``, "The egress holds the lock for its act, not its census".
+The hold that remains grows with the range and with the disk, because the
+unlinks stay under the lock; see ``docs/design.md``, "The egress holds the
+lock for its act, not its census".
 """
 from __future__ import annotations
 
@@ -51,6 +61,8 @@ import multiprocessing
 from pathlib import Path
 import sys
 import time
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -66,14 +78,15 @@ PUBLISHERS = 3
 PER_PUBLISHER = 2_000
 DIGEST = "a" * 64
 
-#: The runs the limits are derived from; see the module docstring.
+#: The runs the guard is taken from; see the module docstring.
 RED_MEASURED = {"tree": "origin/main e9b66ea8cee4", "holds": 1,
                 "longest_hold_s": 3.5196, "p99_overlapping_s": 3.52}
 GREEN_MEASURED = {"tree": "fix/988-egress-lock-scope", "holds": 1,
                   "longest_hold_s": 0.2485, "p99_overlapping_s": 0.2487,
                   "census_s": 1.052, "unlink_s": 0.162}
-P99_LIMIT_S = 0.9
-HOLD_LIMIT_S = 0.9
+#: The shortest hold measured on main alone.  A guard against the old regime
+#: only: the structure assertions carry the test.
+REGRESSION_GUARD_S = RED_MEASURED["longest_hold_s"]
 
 
 def _key(label: str) -> str:
@@ -164,7 +177,7 @@ def _p99(values: list[float]) -> float:
 
 
 def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 8})
@@ -201,6 +214,27 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
     for worker in workers:
         worker.start()
 
+    # Every census document the egress parses while it holds the lock,
+    # counted here from the validators themselves rather than taken from
+    # the receipt.  The publishers were forked before this, so only the
+    # egress, in this process, is counted.
+    holding = [False]
+    parsed_under_lock = {"fragment": 0, "pin": 0, "material": 0}
+
+    def counted(kind: str, validate):
+        def wrapper(*args, **kwargs):
+            if holding[0]:
+                parsed_under_lock[kind] += 1
+            return validate(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(residency_map, "validate_fragment",
+                        counted("fragment", residency_map.validate_fragment))
+    monkeypatch.setattr(reader_lease, "validate_pin",
+                        counted("pin", reader_lease.validate_pin))
+    monkeypatch.setattr(reader_lease, "validate_material",
+                        counted("material", reader_lease.validate_material))
+
     # The lock, measured from outside the egress: every hold's request,
     # grant and release.  The first grant releases the publishers, so each
     # of them meets the egress while it holds the lock.
@@ -212,10 +246,12 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
         asked = time.monotonic()
         with original(stage_root, blocking=blocking) as got:
             granted = time.monotonic()
+            holding[0] = True
             go.set()
             try:
                 yield got
             finally:
+                holding[0] = False
                 holds.append((asked, granted, time.monotonic()))
 
     queue.stage_ownership_lock = measured  # type: ignore[method-assign]
@@ -256,18 +292,23 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
         "publications_overlapping": len(overlapping),
         "p99_overlapping_s": round(_p99(overlapping), 4) if overlapping else None,
         "max_overlapping_s": round(max(overlapping), 4) if overlapping else None,
+        "parsed_under_lock": parsed_under_lock,
         "receipt": {name: receipt.get(name) for name in (
             "lock_wait_s", "lock_held_s", "entries_judged", "census_s",
-            "census_validate_s", "unlink_s", "prune_s")},
+            "census_validate_s", "unlink_s", "prune_s", "locked_parses",
+            "locked_reuses")},
     }
     print("measured-988", json.dumps(measured_summary, sort_keys=True))
     assert len(overlapping) >= PUBLISHERS, (
         f"the publishers never met the egress: {measured_summary}")
 
-    assert _p99(overlapping) < P99_LIMIT_S, (
-        f"a publication waited behind the egress's range: {measured_summary}")
-    assert longest < HOLD_LIMIT_S, (
-        f"the egress held the stage for its whole range: {measured_summary}")
+    # Structure first: under the lock the census is listings and fstats.
+    # Every document it opens there is reused by its file version, because
+    # nothing changed it since the census before the lock.
+    assert parsed_under_lock == {"fragment": 0, "pin": 0, "material": 0}, (
+        f"the egress parsed census documents under the lock: {measured_summary}")
+    assert receipt["locked_parses"] == 0, measured_summary
+    assert receipt["locked_reuses"] >= 2, measured_summary  # fragment, sidecar
 
     # The hold is a record, not only a measurement taken from outside: one
     # hold, the one measured around the lock, and the census before it.
@@ -279,3 +320,12 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
     assert 0.0 <= receipt["census_validate_s"] <= receipt["lock_held_s"], (
         measured_summary)
     assert 0.0 <= receipt["unlink_s"] <= receipt["lock_held_s"], measured_summary
+
+    # A guard against the old regime, not a limit on this box: the shortest
+    # hold main took alone.  A shared disk slows the unlinks that stay in the
+    # hold (1.22 s beside another egress); only a census back under the lock
+    # reaches this.
+    assert longest < REGRESSION_GUARD_S, (
+        f"the egress held the stage as long as main did: {measured_summary}")
+    assert _p99(overlapping) < REGRESSION_GUARD_S, (
+        f"a publication waited as long as it did on main: {measured_summary}")

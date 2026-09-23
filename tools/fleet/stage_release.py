@@ -389,6 +389,10 @@ class _CensusMemo:
     are immutable under their digests; the claim listing and each claim
     record are still read fresh.  One memo lives for one call; nothing
     carries over between calls.
+
+    It counts what it parses and what it reuses (fragments and material
+    sidecars; for pins, what it parses), so a caller can record how much
+    census work ran inside its hold (:func:`_locked_parse_record`).
     """
 
     def __init__(self) -> None:
@@ -397,7 +401,15 @@ class _CensusMemo:
         self.normalized: dict[int, frozenset[str]] = {}
         self.claims: dict[tuple, frozenset[str]] = {}
         self.sources: dict[tuple, frozenset[str]] = {}
-        self.pins: dict[str, object] = {}
+        self.pins = _PinMemo()
+        self.materials: dict[str, tuple[tuple, object]] = {}
+        self.parses = 0     # fragments and material sidecars parsed
+        self.reuses = 0     # fragments and material sidecars reused
+
+    def counts(self) -> tuple[int, int]:
+        """``(parsed, reused)`` so far: every document kind, pins included."""
+
+        return self.parses + self.pins.parses, self.reuses
 
     def paths_of(self, document: Mapping[str, object]) -> frozenset[str] | None:
         """The stage paths a remembered fragment names, or ``None``."""
@@ -424,6 +436,73 @@ class _CensusMemo:
         if old is not None:
             self.paths.pop(id(old[1]), None)
             self.normalized.pop(id(old[1]), None)
+
+
+class _PinMemo(dict):
+    """``reader_lease.live_for``'s pin memo, counting the pins it parses.
+
+    ``live_for`` stores a pin's parse exactly once per parse and never on a
+    reuse, so the number of stores is the number of pins it parsed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parses = 0
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self.parses += 1
+        super().__setitem__(key, value)
+
+
+def _locked_parse_record(memo: "_CensusMemo | None",
+                         before: tuple[int, int] | None) -> dict[str, object]:
+    """How many census documents a hold parsed and reused (#988).
+
+    ``locked_parses`` counts every fragment, pin and material sidecar the
+    pass under the lock parsed; ``locked_reuses`` the fragments and sidecars
+    it reused because their file version had not changed since the census
+    before the lock.  ``None`` when the caller kept no memo.
+    """
+
+    if memo is None or before is None:
+        return {"locked_parses": None, "locked_reuses": None}
+    parsed, reused = memo.counts()
+    return {"locked_parses": parsed - before[0],
+            "locked_reuses": reused - before[1]}
+
+
+def _read_own_material(root: Path, consumer_action_key: str,
+                       mover_action_key: str, memo: "_CensusMemo | None"):
+    """``reader_lease.read_material``, reused while its file version holds.
+
+    The same three answers: the sidecar, ``None`` when it is absent, or the
+    error.  With a ``memo`` the file is still opened, and its ``fstat``
+    version decides whether the earlier parse is reused (#988).
+    """
+
+    if memo is None:
+        return reader_lease.read_material(root, consumer_action_key,
+                                          mover_action_key)
+    path = reader_lease.material_path(root, consumer_action_key,
+                                      mover_action_key)
+    key = str(path)
+    try:
+        with open(path) as stream:
+            version = _metadata_version(os.fstat(stream.fileno()))
+            hit = memo.materials.get(key)
+            if hit is not None and hit[0] == version:
+                memo.reuses += 1
+                return hit[1]
+            memo.parses += 1
+            material = reader_lease.validate_material(json.load(stream))
+    except FileNotFoundError:
+        memo.materials.pop(key, None)
+        return None
+    except (OSError, ValueError) as exc:
+        memo.materials.pop(key, None)
+        return exc
+    memo.materials[key] = (version, material)
+    return material
 
 
 def _fragment_stage_paths(document: Mapping[str, object]) -> frozenset[str]:
@@ -460,7 +539,9 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
                 version = _metadata_version(os.fstat(stream.fileno()))
                 hit = memo.fragments.get(key)
                 if hit is not None and hit[0] == version:
+                    memo.reuses += 1
                     return hit[1]
+                memo.parses += 1
             document = residency_map.validate_fragment(json.load(stream))
     except (OSError, ValueError) as exc:
         if memo is not None:
@@ -1153,6 +1234,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                           consumer_action_key=consumer_action_key,
                           stage=stage, tier_id=tier_id, root=root,
                           entries=entries, memo=memo)
+        _read_own_material(root, consumer_action_key, mover_action_key, memo)
         fences = _entry_fences(stage, entries)
         census_s = time.perf_counter() - census_started
     parents: set[Path] = set()
@@ -1184,9 +1266,11 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
 #: The lock-scope fields an egress receipt carries since #988, in the order
 #: an event copies them: the queue for the lock, the hold, the entries the
 #: hold judged, the census before the lock, the census under it, the
-#: unlinks under it and the prune after it.
+#: unlinks under it and the prune after it, and the census documents the
+#: hold parsed and reused.
 LOCK_SCOPE_FIELDS = ("lock_wait_s", "lock_held_s", "entries_judged",
-                     "census_s", "census_validate_s", "unlink_s", "prune_s")
+                     "census_s", "census_validate_s", "unlink_s", "prune_s",
+                     "locked_parses", "locked_reuses")
 
 
 def lock_scope(receipt: Mapping[str, object]) -> dict[str, object]:
@@ -1486,6 +1570,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
 
     deleted = missing = shared = deferred = 0
     validate_started = time.perf_counter()
+    parse_counts = memo.counts() if memo is not None else None
     bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
@@ -1538,8 +1623,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # generation, never the path: without a sidecar the generation
             # is unknowable, so a pinned legacy range taints instead of
             # filing a mark that could wedge the path's future generations.
-            material = reader_lease.read_material(
-                root, consumer_action_key, mover_action_key)
+            material = _read_own_material(
+                root, consumer_action_key, mover_action_key, memo)
             if isinstance(material, dict):
                 own_generation = str(material.get("generation") or "")
             elif material is not None:
@@ -1555,6 +1640,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         own_generation = None
         blind = False
     census_validate_s = time.perf_counter() - validate_started
+    locked_parses = _locked_parse_record(memo, parse_counts)
     if fences is None and entries and not blind:
         # No fences from before the lock: resolve them here, as before #988.
         fences = _entry_fences(stage, entries)
@@ -1841,10 +1927,12 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # receipt names the key: the egress receipt keeps its shape.
         **({"declined": declined} if whole else {}),
         # What the pass under the lock cost (#988): the entries it judged,
-        # the census it re-took there, and its unlinks.  The caller adds
-        # the hold itself and the census it took before the lock.
+        # the census it re-took there, the documents that census parsed
+        # and reused, and its unlinks.  The caller adds the hold itself and
+        # the census it took before the lock.
         "entries_judged": entries_judged,
         "census_validate_s": round(census_validate_s, 6),
+        **locked_parses,
         "unlink_s": round(unlink_s, 6),
     }
 
@@ -2188,6 +2276,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                           consumer_action_key=consumer_action_key,
                           stage=stage, tier_id=tier_id, root=root,
                           entries=observed_entries, memo=memo)
+        _read_own_material(root, consumer_action_key, mover_action_key, memo)
         hint_fences = _entry_fences(stage, observed_entries)
     census_s = time.perf_counter() - census_started
     emptied: set[Path] = set()
@@ -3637,6 +3726,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         """The decision and the act, under the stage ownership lock."""
 
         validate_started = time.perf_counter()
+        parse_counts = memo.counts()
         in_flight = movers_in_flight(queue, tier_id=tier_id)
         if in_flight:
             receipt["skipped"] = "movers_in_flight"
@@ -3672,6 +3762,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         attributed |= set(pin_owners)
         receipt["census_validate_s"] = round(
             time.perf_counter() - validate_started, 6)
+        receipt.update(_locked_parse_record(memo, parse_counts))
         receipt["entries_judged"] = len(candidates)
         deleted = bytes_deleted = partials = left = 0
         errors: list[str] = list(walk_errors)
@@ -4310,6 +4401,7 @@ def recover_orphaned_range(
                              else queue.root / pool.RESIDENCY)
         scope_paths = {os.path.normpath(str(stage / relative))
                        for relative in names}
+        parse_counts = memo.counts()
         fragment_owners, fragment_taint = _fragment_owners(
             fragment_root, scope_paths, memo=memo)
         if fragment_taint:
@@ -4334,6 +4426,7 @@ def recover_orphaned_range(
                 f"promotion handoff census unreadable: "
                 f"{'; '.join(handoff_taint[:3])}")
         attributed |= {os.path.normpath(str(one)) for one in handoffs}
+        receipt.update(_locked_parse_record(memo, parse_counts))
 
         retained: dict[str, int] = {}
 

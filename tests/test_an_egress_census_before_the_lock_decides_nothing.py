@@ -214,6 +214,7 @@ def test_a_fragment_rewritten_in_place_after_the_hint_is_read_again(
     receipt = _evict(queue, stage)
 
     assert os.stat(fragment).st_ino == inode, "the rewrite kept its inode"
+    assert receipt["locked_parses"] == 1, "the rewritten fragment, only"
     assert receipt["entries_shared"] == 1, receipt
     assert paths[0].exists(), "a stale parse let a co-owned file go"
     assert not paths[1].exists() and not paths[2].exists()
@@ -231,6 +232,10 @@ def test_the_receipt_records_the_census_before_the_lock_and_the_hold(
         assert isinstance(receipt[field], (int, float)), (field, receipt)
     assert receipt["unlink_s"] <= receipt["lock_held_s"]
     assert receipt["census_validate_s"] <= receipt["lock_held_s"]
+    # Nothing changed between the census before the lock and the one under
+    # it, so the hold parsed nothing and reused the egress's own fragment.
+    assert receipt["locked_parses"] == 0, receipt
+    assert receipt["locked_reuses"] >= 1, receipt
 
 
 def _orphan(stage: Path, name: str) -> Path:
@@ -272,6 +277,7 @@ def test_reconcile_leaves_a_file_that_changed_after_its_walk(
     assert receipt["entries_deleted"] == 1, receipt
     assert receipt["entries_judged"] == 2, receipt
     assert receipt["left_since_walk"] == 1, receipt
+    assert receipt["locked_parses"] == 0, receipt
     assert isinstance(receipt["lock_held_s"], float), receipt
 
 

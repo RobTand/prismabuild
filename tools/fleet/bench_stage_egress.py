@@ -448,7 +448,8 @@ def run_bench(args) -> int:
             "receipt": {name: receipt.get(name) for name in (
                 "complete", "entries_deleted", "tokens_released",
                 "lock_wait_s", "lock_held_s", "entries_judged", "census_s",
-                "census_validate_s", "unlink_s", "prune_s")},
+                "census_validate_s", "unlink_s", "prune_s", "locked_parses",
+                "locked_reuses")},
             "profile": analyze(out / "egress.pyspy.txt", args.rate,
                                classify_egress, egress=True),
         },

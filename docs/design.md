@@ -4390,12 +4390,25 @@ other bound.
 
 Each egress receipt records `lock_wait_s`, `lock_held_s`, `entries_judged`,
 `census_s` (before the lock), `census_validate_s` and `unlink_s` (inside
-it) and `prune_s` (after it). The `beyond-horizon-evicted` and
-`beyond-horizon-eviction-declined` events copy them
-(`stage_release.lock_scope`), and the tier loop files those events in the
-consumer's event file, which a kill's ending record reads (#990). Stage and RAM mover receipts record
-`start_gate_wait_s`; the stage mover also records `resume_lock_wait_s`, the
-first lock it waits for, which resumes its own coverage before the gate.
+it) and `prune_s` (after it). It also records what the census under the
+lock parsed: `locked_parses` counts the fragments, pins and material
+sidecars parsed inside the hold, and `locked_reuses` the fragments and
+sidecars reused because their version had not changed. An egress whose
+state did not change between the two censuses parses nothing under the
+lock. `reconcile` and `recover_orphaned_range` record the same two counts.
+The `beyond-horizon-evicted` and `beyond-horizon-eviction-declined` events
+copy these fields (`stage_release.lock_scope`), and the tier loop files
+those events in the consumer's event file, which a kill's ending record
+reads (#990). Stage and RAM mover receipts record `start_gate_wait_s`; the
+stage mover also records `resume_lock_wait_s`, the first lock it waits
+for, which resumes its own coverage before the gate.
+
+The test asserts the structure of the hold, not its length, because the
+length depends on the box: 0.25 s alone and 1.22 s beside a second
+20,000-entry egress on the same disk. It counts every fragment, pin and
+sidecar parse made while the lock is held and requires none. Its timing
+assertion is only a guard against the old regime, set at the shortest hold
+main took alone (3.52 s).
 
 On a 20,000-entry landed range with three publishers of 2,000 entries each
 (`tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py`, sparky),
