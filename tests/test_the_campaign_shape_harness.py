@@ -286,8 +286,11 @@ def test_an_action_key_resolves_by_a_unique_prefix_only(tmp_path: Path) -> None:
     one, two = "ab" * 32, "abcdef" + "0" * 58
     (queue / "done" / f"{one}.json").write_text("{}")
     (queue / "failed" / f"{two}.json").write_text("{}")
-    assert shape_gate.resolve_action_key(queue, one[:12]) == one
-    assert shape_gate.resolve_action_key(queue, two.upper()[:12]) == two
+    assert shape_gate.resolve_action_key(queue, one[:12]) == (
+        one, queue / "done" / f"{one}.json")
+    assert shape_gate.resolve_action_key(queue, two.upper()[:12]) == (
+        two, queue / "failed" / f"{two}.json")
+    assert shape_gate.resolve_action_key(queue, one)[0] == one
     for bad in ("abab", "ab" * 3 + "zz" * 3, "abababababab"[:11], "0" * 12):
         with pytest.raises(shape_gate.ShapeGateFailure):
             shape_gate.resolve_action_key(queue, bad)
@@ -296,17 +299,30 @@ def test_an_action_key_resolves_by_a_unique_prefix_only(tmp_path: Path) -> None:
         shape_gate.resolve_action_key(queue, one[:12])
 
 
-@pytest.mark.parametrize("done", [
-    {"status": "failed", "detail": {"returncode": 1}},
-    {"status": "executed", "detail": {"returncode": 1}},
-    {"status": "executed"},
+@pytest.mark.parametrize("state, done", [
+    ("failed", {"status": "failed", "detail": {"returncode": 1}}),
+    ("done", {"status": "executed", "detail": {"returncode": 1}}),
+    ("done", {"status": "executed"}),
 ])
-def test_a_gate_run_that_did_not_exit_zero_is_refused(tmp_path: Path, done) -> None:
+def test_a_gate_run_that_did_not_exit_zero_is_refused(tmp_path: Path, state, done) -> None:
     queue = tmp_path / "pb-queue"
-    (queue / "done").mkdir(parents=True)
+    (queue / state).mkdir(parents=True)
     key = "cd" * 32
-    (queue / "done" / f"{key}.json").write_text(json.dumps(done))
-    with pytest.raises(shape_gate.ShapeGateFailure, match="did not finish executed"):
+    (queue / state / f"{key}.json").write_text(json.dumps(done))
+    with pytest.raises(shape_gate.ShapeGateFailure,
+                       match=f"did not finish executed.*{done['status']!r}"):
         shape_gate.verify_gate_receipt(
             action_key=key[:12], commit="a" * 40, checkout=tmp_path,
             queue_root=queue, cas_root=tmp_path / "cas")
+
+
+def test_an_unreadable_terminal_record_is_refused_by_name(tmp_path: Path) -> None:
+    queue = tmp_path / "pb-queue"
+    (queue / "done").mkdir(parents=True)
+    key = "ef" * 32
+    (queue / "done" / f"{key}.json").write_text("not json")
+    with pytest.raises(shape_gate.ShapeGateFailure, match="cannot be verified") as caught:
+        shape_gate.verify_gate_receipt(
+            action_key=key[:12], commit="a" * 40, checkout=tmp_path,
+            queue_root=queue, cas_root=tmp_path / "cas")
+    assert caught.value.reason == "receipt_refused"

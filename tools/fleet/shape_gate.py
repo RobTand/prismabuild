@@ -1109,22 +1109,20 @@ def _git(checkout: Path, *argv: str) -> str:
     return completed.stdout
 
 
-def resolve_action_key(queue_root: Path, key: str) -> str:
-    """A full action key from a full key or a unique prefix of 12 or more."""
+def resolve_action_key(queue_root: Path, key: str) -> tuple[str, Path]:
+    """The full action key and terminal record a key or unique prefix names."""
 
     key = key.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{12,64}", key):
         raise ShapeGateFailure("receipt_refused",
                                f"{key!r} is not an action key or a 12-digit prefix")
-    if len(key) == 64:
-        return key
-    matches = sorted({path.stem for state in ("done", "failed")
+    matches = sorted({path for state in ("done", "failed")
                       for path in (queue_root / state).glob(f"{key}*.json")})
     if len(matches) != 1:
         raise ShapeGateFailure(
             "receipt_refused",
-            f"prefix {key} names {len(matches)} finished actions, not one")
-    return matches[0]
+            f"{key[:12]} names {len(matches)} finished actions, not one")
+    return matches[0].stem, matches[0]
 
 
 def judge_outcomes(outcomes: Mapping[str, object] | None, *, where: str) -> None:
@@ -1192,10 +1190,24 @@ def verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
     first fact that does not hold.
     """
 
+    try:
+        return _verify_gate_receipt(action_key=action_key, commit=commit,
+                                    checkout=checkout, queue_root=queue_root,
+                                    cas_root=cas_root)
+    except (pb.PrismaBuildError, pool.PoolContractError, OSError) as exc:
+        # A collected bundle, a tampered blob or an unreadable record is a
+        # receipt that cannot be verified, and says so by name.
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{action_key[:12]}: the receipt cannot be verified: {exc}") from exc
+
+
+def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
+                         queue_root: Path, cas_root: Path) -> dict[str, object]:
     import pbtest_outcomes
 
-    key = resolve_action_key(queue_root, action_key)
-    done = pool._read_json(queue_root / "done" / f"{key}.json")
+    key, terminal = resolve_action_key(queue_root, action_key)
+    done = pool._read_json(terminal)
     detail = done.get("detail") if isinstance(done, dict) else None
     if (not isinstance(done, dict) or done.get("status") != "executed"
             or not isinstance(detail, dict) or detail.get("returncode") != 0):
