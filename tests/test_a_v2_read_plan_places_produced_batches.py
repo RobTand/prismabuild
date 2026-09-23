@@ -267,6 +267,45 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
         manifest["entries"][2]["sha256"]
 
 
+def test_a_crashed_v2_release_resumes_as_pinned(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """A resumed release seals the pinned v2 manifest under the pinned key."""
+
+    queue, work = _env(tmp_path, monkeypatch)
+    _progress_worker(queue, monkeypatch)
+    template = _template(tmp_path / "canonical")
+    producer = _producer_key(tmp_path, template, "crash")
+    _publish_producer(queue, template, producer)
+    edge = f"{producer}:{template['template_id']}"
+    static = _write(tmp_path / "static.json",
+                    _static(tmp_path, {"phase": "handoff", "after": edge}))
+    pending = _submit(work, monkeypatch, capsys, "--after", edge,
+                      "--data-manifest", str(static), *PROGRESS)["pending_id"]
+    instance = _start(queue, template, producer)
+    _path, committed = _commit(queue, template, instance, "b1", PAYLOAD)
+    queue.finish(producer, status="executed")
+
+    publish = pbrun.publish_consumer_row
+
+    def crash(*_args, **_kwargs):
+        raise OSError("the tier host lost power")
+
+    monkeypatch.setattr(pbrun, "publish_consumer_row", crash)
+    [refusal] = [event for event in dr.release_tick(queue)
+                 if event["event"] == dr.REFUSED_EVENT]
+    assert "lost power" in refusal["reason"]
+    pinned = ae.read_release(queue.root, pending)
+    assert pinned is not None and ae.read_published(queue.root, pending) is None
+
+    monkeypatch.setattr(pbrun, "publish_consumer_row", publish)
+    [resumed] = _released(dr.release_tick(queue))
+    assert resumed["resumed"] is True
+    assert resumed["action_key"] == pinned["action_key"]
+    assert resumed["refs"] == [committed["ref"]]
+    manifest = _sealed_manifest(tmp_path, str(resumed["action_key"]))
+    assert manifest == _placed(tmp_path, queue, committed["ref"])
+
+
 def test_an_ordinary_submission_declares_the_same_plan(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """Placed by the submitter, the same plan is accepted and staged alike."""
