@@ -31,6 +31,7 @@ import io
 import json
 from pathlib import Path
 import socket
+import subprocess
 import sys
 
 import pytest
@@ -61,6 +62,11 @@ _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 WORKER = str(fx.REPO / "tools" / "prismabuild_worker.py")
 CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
 PLACEHOLDER = ae.DATA_MANIFEST_PLACEHOLDER
+DIGEST = ae.DATA_MANIFEST_SHA256_PLACEHOLDER
+#: A consumer that verifies its manifest: exit 0 only when the file at the
+#: path hashes to the digest it was given.
+VERIFY = ("import hashlib, sys; sys.exit(hashlib.sha256(open(sys.argv[1], 'rb')"
+          ".read()).hexdigest() != sys.argv[2])")
 TAGS = ("sparky", "gb10")
 
 
@@ -260,6 +266,49 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     assert dr.release_tick(queue) == []
 
 
+def _release_verifier(tmp_path: Path, monkeypatch, capsys, seed: str):
+    """Release one consumer whose command verifies its manifest (#933)."""
+
+    queue, work = _env(tmp_path, monkeypatch)
+    template = _template(tmp_path / "canonical")
+    producer = _producer_key(tmp_path, template, seed)
+    _publish_producer(queue, template, producer)
+    _submit(work, monkeypatch, capsys, "--after",
+            f"{producer}:{template['template_id']}",
+            command=(sys.executable, "-c", VERIFY, PLACEHOLDER, DIGEST))
+    instance = _start(queue, template, producer)
+    _commit(queue, template, instance, "b1", b"handoff bytes")
+    queue.finish(producer, status="executed")
+    [released] = _released(dr.release_tick(queue))
+    return released, _request(tmp_path, released["action_key"])
+
+
+def test_a_released_consumer_receives_its_manifest_path_and_digest(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    released, request = _release_verifier(tmp_path, monkeypatch, capsys, "digest")
+    command = request["params"]["command"]
+    assert command[:3] == [sys.executable, "-c", VERIFY]
+    path, digest = Path(command[3]), command[4]
+    assert PLACEHOLDER not in command and DIGEST not in command
+    assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert digest == request["params"]["data_manifest"]["input"]["sha256"]
+    assert digest == released["manifest_sha256"]
+    assert request["params"]["data_manifest"]["input"] in request["inputs"]
+
+
+def test_a_consumer_detects_a_manifest_changed_after_its_release(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    _released_event, request = _release_verifier(
+        tmp_path, monkeypatch, capsys, "tampered")
+    command = request["params"]["command"]
+    assert subprocess.run(command, check=False).returncode == 0
+
+    manifest = Path(command[3])
+    manifest.chmod(0o644)
+    manifest.write_bytes(manifest.read_bytes() + b" ")
+    assert subprocess.run(command, check=False).returncode == 1
+
+
 def test_a_failed_producer_never_releases_its_consumer(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     queue, work = _env(tmp_path, monkeypatch)
@@ -310,6 +359,9 @@ def test_an_edge_to_an_unknown_key_is_refused_at_submission(
     assert "at most once" in refused(
         "--after", f"{producer}:{template['template_id']}",
         command=("/bin/cat", PLACEHOLDER, PLACEHOLDER))
+    assert "at most once" in refused(
+        "--after", f"{producer}:{template['template_id']}",
+        command=("/bin/cat", PLACEHOLDER, DIGEST, DIGEST))
     # A pbrun outside the generation store (a development checkout) freezes
     # a template no release could seal: refused now, not held for ever.
     current = pbrun.CONTAINER_WRAPPER_DIR
