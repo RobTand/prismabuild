@@ -66,8 +66,14 @@ def _submit(
             "pbrun.py",
             "--cwd",
             str(work),
+            # Zero is one observation with the full read budget, then 75
+            # when nothing has landed.  A positive wait caps the first
+            # forked reader's budget at the time left (``await_outcome``
+            # passes ``min(OUTCOME_READ_TIMEOUT_S, remaining)``), so 10 ms
+            # timed the reader out on a loaded box and the wait ended 74
+            # (#918).
             "--wait-s",
-            "0.01",
+            "0",
             *options,
             "--",
             "/bin/bash",

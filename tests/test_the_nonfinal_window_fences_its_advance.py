@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import socket
 import sys
 import time
 
@@ -243,9 +244,15 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
     if ready.exists():
         item = json.loads(ready.read_text())
         ready.unlink()
+        # ``write_lease`` stamps the lease with this box's hostname, and the
+        # next heartbeat refuses a claim whose ``claimed_host`` contradicts
+        # it (``_check_claim_lease_identity``).  One worker writes both on
+        # a real box, so the claim names this box too.  A literal
+        # "dl380g10" passed only there: on a GB10 the second progress call
+        # raised AmbiguousClaimHolder (#918).
         item.update({"action_key": consumer, "claimed_unix": time.time(),
                      "claimed_by": "nonfinal-fence-fixture",
-                     "claimed_host": "dl380g10"})
+                     "claimed_host": socket.gethostname()})
         claimed.write_text(json.dumps(item))
     else:
         item = json.loads(claimed.read_text())

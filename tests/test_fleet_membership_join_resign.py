@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
+from prismabuild import core as pb_core  # noqa: E402
 from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
@@ -175,7 +176,33 @@ def _incarnation(monkeypatch, host: str) -> str:
     return owner
 
 
-def _active_roster(tmp_path: Path, host: str) -> Path:
+#: What ``core._collect_worker_evidence`` reports on an x86 box with no
+#: CUDA device, which is the platform ``--class x86`` requires.
+X86_EVIDENCE = {"system": "linux", "machine": "x86_64", "accelerators": []}
+
+
+def _attest_x86(monkeypatch) -> None:
+    """Attest the x86 platform that the fixture roster declares.
+
+    ``worker_evidence`` compares the roster's ``--class`` with what
+    ``core._collect_worker_evidence`` reads off the live box, and refuses a
+    mismatch.  These fixtures declare ``--class x86``, so they qualified only
+    on dl380g10.  On a GB10, which attests ``linux-aarch64-sm121``, JOIN
+    stopped at ``qualification`` before it reached the phase under test
+    (#918).  The stub replaces the attestation, not the check, so the class
+    comparison still runs.
+    ``test_join_refuses_a_roster_class_the_live_host_does_not_attest`` keeps
+    the refusal honest against the live box.
+    """
+
+    monkeypatch.setattr(pb_core, "_collect_worker_evidence",
+                        lambda **_kwargs: dict(X86_EVIDENCE))
+
+
+def _active_roster(tmp_path: Path, host: str, monkeypatch) -> Path:
+    """An active x86 roster row for ``host``, with the x86 attestation."""
+
+    _attest_x86(monkeypatch)
     roster = tmp_path / "fleet_boxes.json"
     roster.write_text(json.dumps(
         {"boxes": {host: {"loops": 1, "args": ["--class", "x86"]}}}))
@@ -306,12 +333,47 @@ def test_join_refuses_absent_roster(tmp_path: Path, monkeypatch) -> None:
 def test_join_refuses_unhealthy_broker(tmp_path: Path, monkeypatch) -> None:
     host = socket.gethostname()
     _incarnation(monkeypatch, host)
-    roster = _active_roster(tmp_path, host)
+    roster = _active_roster(tmp_path, host, monkeypatch)
     queue_root = _shared_queue(monkeypatch, tmp_path)
     out = fm.join(host, roster_path=roster, queue_root=queue_root,
                   runtime_root=_runtime_root(tmp_path),
                   broker_call=lambda p: {"ok": False, "error": "down"})
     assert out["status"] == "refused" and out["phase"] == "qualification"
+    # The broker is the refusing check, not an earlier qualification step.
+    assert out["reason"].startswith("broker not healthy"), out
+
+
+def test_join_refuses_a_roster_class_the_live_host_does_not_attest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The host-class check bites on the live box, with nothing stubbed.
+
+    The roster declares the class this box cannot attest: ``gb10`` on an x86
+    box with no CUDA device, ``x86`` everywhere else.  JOIN must refuse at
+    ``qualification`` with the class mismatch as its reason, before it asks
+    the broker anything.
+    """
+
+    host = socket.gethostname()
+    _incarnation(monkeypatch, host)
+    evidence = pb_core._collect_worker_evidence()
+    platform_key = pb_core._platform_key_from_evidence(evidence)
+    attests_x86 = (evidence.get("machine") == "x86_64"
+                   and "-sm" not in platform_key)
+    wrong_class = "gb10" if attests_x86 else "x86"
+    roster = tmp_path / "fleet_boxes.json"
+    roster.write_text(json.dumps(
+        {"boxes": {host: {"loops": 1, "args": ["--class", wrong_class]}}}))
+    queue_root = _shared_queue(monkeypatch, tmp_path)
+
+    def no_broker(payload: dict) -> dict:
+        raise AssertionError(f"qualification reached the broker: {payload}")
+
+    out = fm.join(host, roster_path=roster, queue_root=queue_root,
+                  runtime_root=_runtime_root(tmp_path), broker_call=no_broker)
+    assert out["status"] == "refused" and out["phase"] == "qualification", out
+    assert out["reason"] == (
+        f"roster class {wrong_class} disagrees with attested {platform_key}"), out
 
 
 def test_join_refuses_foreign_host(tmp_path: Path, monkeypatch) -> None:
@@ -336,7 +398,7 @@ def test_join_opens_gate_through_real_broker_protocol(
           f"{broker_mod._proc_starttime(os.getpid())}")
     assert broker_mod._live_supervisor_owner(me) is True
     monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
-    roster = _active_roster(tmp_path, host)
+    roster = _active_roster(tmp_path, host, monkeypatch)
     old = f"{host}:supervisor-4194304:1"
     authority.admin(0, {"op": "maintenance_begin", "reason": "run1",
                         "owner": old})
@@ -370,7 +432,7 @@ def test_join_refuses_unknown_membership_rows(
     me = (f"{host}:supervisor-{os.getpid()}:"
           f"{broker_mod._proc_starttime(os.getpid())}")
     monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
-    roster = _active_roster(tmp_path, host)
+    roster = _active_roster(tmp_path, host, monkeypatch)
     queue_root = _shared_queue(monkeypatch, tmp_path)
     (queue_root / "withdrawn").mkdir(parents=True, exist_ok=True)
     (queue_root / "withdrawn" / ("9" * 64 + ".json")).write_text("{broken")

@@ -145,6 +145,12 @@ def test_only_proven_owned_roles_enter_the_health_census(
     proc.mkdir()
     monkeypatch.setattr(supervise, "MIRROR", mirror)
     monkeypatch.setattr(supervise, "PROC", proc)
+    # The ownership mark names the box that launched the loop, and
+    # ``_is_fleet_loop`` compares it with ``socket.gethostname()``: the
+    # supervisor sets and reads it through the same call.  The fixture marks
+    # its loops for HOST, so this box is HOST.  Unpatched, the test passed
+    # only on dl380g10 and found no owned role anywhere else (#918).
+    monkeypatch.setattr(supervise.socket, "gethostname", lambda: HOST)
 
     def _process(pid: int, argv: list[str], *, mark: str | None) -> int:
         directory = proc / str(pid)
@@ -168,10 +174,16 @@ def test_only_proven_owned_roles_enter_the_health_census(
     _process(7003, [
         "/usr/bin/python3", str(generation / "tools" / "prewarm_loop.py")],
         mark=None)
+    # The fleet's own script, launched by another box's supervisor: the mark
+    # is the only fact that tells it apart from ``owned``.
+    _process(7004, [
+        "/usr/bin/python3", str(generation / "tools" / "prewarm_loop.py"),
+        "--readers", "4"], mark="another-box")
 
     def fake_run(argv, *_args, **_kwargs):
         assert argv[0] == "pgrep", argv
-        return subprocess.CompletedProcess(argv, 0, f"{owned}\n{foreign}\n7003", "")
+        return subprocess.CompletedProcess(
+            argv, 0, f"{owned}\n{foreign}\n7003\n7004", "")
 
     monkeypatch.setattr(supervise.subprocess, "run", fake_run)
 

@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
+from prismabuild import core as pb_core  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
@@ -474,7 +475,28 @@ def test_resign_drained_when_no_leases_namespace(
     assert drained is True and state in {"drained-absent", "refs-drained"}
 
 
-def _busy_roster(tmp_path: Path, host: str, args: list) -> Path:
+#: What ``core._collect_worker_evidence`` reports on an x86 box with no
+#: CUDA device, which is the platform ``--class x86`` requires.
+X86_EVIDENCE = {"system": "linux", "machine": "x86_64", "accelerators": []}
+
+
+def _busy_roster(tmp_path: Path, host: str, args: list, monkeypatch) -> Path:
+    """A roster row for ``host`` declaring ``--class x86``, attested as x86.
+
+    ``worker_evidence`` compares the roster's ``--class`` with what
+    ``core._collect_worker_evidence`` reads off the live box, and refuses a
+    mismatch.  These rows declare x86, so the tests qualified only on
+    dl380g10.  On a GB10, which attests ``linux-aarch64-sm121``, qualification
+    refused before the phase under test (#918).  The stub replaces the
+    attestation, not the check, so the class comparison still runs;
+    ``test_join_refuses_a_roster_class_the_live_host_does_not_attest`` in
+    ``test_fleet_membership_join_resign.py`` keeps the refusal honest against
+    the live box.
+    """
+
+    assert args[args.index("--class") + 1] == "x86", args
+    monkeypatch.setattr(pb_core, "_collect_worker_evidence",
+                        lambda **_kwargs: dict(X86_EVIDENCE))
     roster = tmp_path / "fleet_boxes.json"
     roster.write_text(json.dumps({"boxes": {host: {"loops": 1, "args": args}}}))
     return roster
@@ -517,7 +539,8 @@ def test_qualified_busy_worker_joins_and_admission_decides(
     at placement while admitting fitting work."""
     host = socket.gethostname()
     _incarnation(monkeypatch)
-    roster = _busy_roster(tmp_path, host, ["--class", "x86", "--mem-gb", "96"])
+    roster = _busy_roster(tmp_path, host, ["--class", "x86", "--mem-gb", "96"],
+                          monkeypatch)
     root = _busy_queue(monkeypatch, tmp_path)
     checks = fm.qualify_host(host, queue_root=root, roster_path=roster,
                              broker_call=_healthy_broker(),
@@ -558,7 +581,8 @@ def test_gpu_foreign_load_defers_not_silently_admits(
     host = socket.gethostname()
     _incarnation(monkeypatch)
     roster = _busy_roster(tmp_path, host,
-                          ["--class", "x86", "--gpu", "--mem-gb", "16"])
+                          ["--class", "x86", "--gpu", "--mem-gb", "16"],
+                          monkeypatch)
     root = _busy_queue(monkeypatch, tmp_path)
     now = time.time()
     sample = {
@@ -1012,7 +1036,7 @@ def test_join_refuses_unsettled_handoff_drain(
     auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
                    "owner": old_owner})
     queue.ensure_layout()
-    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     # Join must read the REAL queue (holding the unsettled row) through a
     # namespace that proves shared: patch only the mount identity.
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
@@ -1440,7 +1464,7 @@ def test_unreadable_withdrawn_census_keeps_gate_closed(
     auth.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": owner})
     queue.ensure_layout()
     withdrawn = queue.dir(pool.WITHDRAWN)
-    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
         "mountpoint": "/mnt/shared"})
@@ -1655,7 +1679,7 @@ def test_shape_only_cancellation_is_never_revived(
     auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
                    "owner": old_owner})
     queue.ensure_layout()
-    roster = _busy_roster(tmp_path, host, ["--class", "x86"])
+    roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
         "mountpoint": "/mnt/shared"})
