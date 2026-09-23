@@ -7569,9 +7569,13 @@ stuck, and the worker does not charge any of them to the allowance:
 The credit is granted on evidence the worker confirms itself, never on the
 mover's word. `pool.PoolContentionProbe` reads the `stat` row of each sealed
 member (`pool.POOL_MEMBER_STAT`, `storage_tiers.read_disk_stat`) on every
-progress poll and judges the interval since its last read with the pacer's
-own arithmetic (`storage_tiers.worst_member_interval`, which
-`prewarm_loop.DiskPacer._measure` now calls too):
+progress poll, once a heartbeat, and judges the interval since its last
+read with the pacer's own arithmetic (`storage_tiers.worst_member_interval`,
+which `prewarm_loop.DiskPacer._measure` now calls too). The stall rung takes
+no look of its own: the counters are milliseconds, and a second look in the
+same checkpoint would judge an interval shorter than their resolution.
+Because a mover's grace is more than two heartbeats, a poll always falls
+between the last credit and the rung.
 
 | Verdict | When | Credited |
 |---|---|---|
@@ -7617,7 +7621,8 @@ retires it with them.
 
 **What a stall does.** A copy that lands nothing for a grace of uncredited
 quiet ends at the mover's own `no_progress` rung. The ending record's
-`stall` (from `PoolQueue.ending_diagnosis`) names the allowance
+`stall`, filed beside `PoolQueue.ending_diagnosis`'s fields and outside its
+read so a failed read cannot lose it, names the allowance
 (`allowance_s`), the last landing (`last_landing`: `units_completed`, the
 phase and the unit, which names the range), the quiet, every credit
 (`credited_s`), the delivered rate beside the priced rate

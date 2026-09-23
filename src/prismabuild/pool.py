@@ -1071,6 +1071,11 @@ class ProgressWatch:
     reporter was actually doing.  Launcher liveness and pipe bytes are not
     considered here at all: :func:`_observe_execution` samples those, on
     purpose, as a different source that proves a different thing.
+
+    Quiet the worker proves was not the action's is credited rather than
+    charged, each interval once (:meth:`_credit`): a verified staged-range
+    wait (#989), and for a stage mover the pool over its caps or unreadable
+    and a start-gate wait on a live egress (#1010, :class:`PoolContentionProbe`).
     """
 
     def __init__(
@@ -6374,17 +6379,15 @@ class PoolQueue:
         return events if limit is None else events[-limit:]
 
     def ending_diagnosis(self, action_key: str, *,
-                         published_unix: float | None = None,
-                         stall: Mapping[str, object] | None = None,
-                         ) -> dict[str, object]:
+                         published_unix: float | None = None) -> dict[str, object]:
         """What a kill's ending record carries about what the action waited on.
 
         The rows it depended on (:meth:`dependent_rows`), the newest tier-loop
         verdicts about it (:meth:`consumer_events`), and its own reason ring
         from before it was claimed.  Read once, at the ``no_progress``,
-        ``execution_deadline`` and ``withdrawn`` rungs.  ``stall``, at the
-        ``no_progress`` rung, is what the watch measured the action against
-        (#1010) and is carried as ``stall``.
+        ``execution_deadline`` and ``withdrawn`` rungs.  At the
+        ``no_progress`` rung the record also carries ``stall``: what the
+        watch measured the action against (#1010).
         """
 
         started = time.monotonic()
@@ -6395,7 +6398,6 @@ class PoolQueue:
                 "tier_events_total": len(events),
                 "denial_transitions": self.denial_transitions(
                     action_key, published_unix=published_unix),
-                **({"stall": dict(stall)} if stall is not None else {}),
                 # What the read cost the kill, on the record it delayed.
                 "dependents_read_s": round(time.monotonic() - started, 4)}
 
@@ -18604,6 +18606,10 @@ class PoolQueue:
                                 if contention is not None else None),
                             "pool": (contention.last if contention is not None
                                      else None)}
+                if stall is not None:
+                    # Outside the diagnosis read below, so a failure there
+                    # never loses what the kill was measured against.
+                    outcome["stall"] = stall
                 if (outcome.get("status") == "withdrawn"
                         or outcome.get("termination_reason") in (
                             "no_progress", "execution_deadline")):
@@ -18616,7 +18622,7 @@ class PoolQueue:
                             key, published_unix=(
                                 float(item["published_unix"])
                                 if isinstance(item.get("published_unix"), (int, float))
-                                else None), stall=stall))
+                                else None)))
                     except Exception as exc:          # noqa: BLE001
                         outcome["dependents_error"] = repr(exc)
                 framebuffer = getattr(scope, "_framebuffer_window", None)
@@ -18715,6 +18721,13 @@ class PoolQueue:
                         # an accepted sample after earlier checkpoint I/O and
                         # then refunding it again would grant extra quiet.
                         watch.sample(now=checkpoint_started)
+                        # The pool and the start gate (#1010), judged on this
+                        # cadence only: the counters are milliseconds, so an
+                        # interval must not shrink to the gap between two
+                        # checks in one checkpoint.  The rung needs no look of
+                        # its own: a mover's grace is at least two heartbeats
+                        # (``movement_actions.mover_report_latency_s``), so a
+                        # poll always falls between the last credit and it.
                         credit_contention(checkpoint_started)
                         next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
@@ -18808,9 +18821,6 @@ class PoolQueue:
                                     verdict, now=exempt_checkpoint,
                                     since_monotonic=exempt_checkpoint
                                     - max(0.0, now_unix - since))
-                            # And the pool and the start gate, up to now
-                            # (#1010): quiet they caused is not the action's.
-                            credit_contention(exempt_checkpoint)
                             spent = time.monotonic() - exempt_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
