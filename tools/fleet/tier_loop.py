@@ -1178,8 +1178,33 @@ def _compose_fingerprint(queue: pool.PoolQueue, consumer_action_key: str,
     return (tuple(stamped), overlay)
 
 
+def _emptied_map(path: Path) -> dict[str, object] | bool | None:
+    """A running consumer's map with nothing staged (#908).
+
+    The header the reader already adopted -- tier, stage root, manifest --
+    with no entries, no ram overlay and no leads, because ``leads`` names
+    the movers whose fragments were composed and there are none.
+    ``generation`` is carried over, so the document does not count
+    backwards.  ``True`` when the map on disk is already that document, so
+    an unchanged gap costs no rewrite; ``None`` when there is no readable
+    map to keep, which leaves the old rule (remove it) in charge.
+    """
+
+    try:
+        current = residency_map.read_map(path)
+    except (OSError, ValueError):
+        return None
+    emptied: dict[str, object] = {
+        "schema": current["schema"], "tier_id": current["tier_id"],
+        "stage_root": current["stage_root"],
+        "manifest_sha256": current["manifest_sha256"],
+        "leads": [], "generation": current["generation"], "entries": {}}
+    return True if current == emptied else emptied
+
+
 def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
                 ram_tiers: Mapping[str, Mapping[str, object]] | None = None,
+                running: bool = False,
                 ) -> Path | None:
     """Write one consumer's residency map from its movers' fragments.
 
@@ -1206,12 +1231,30 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
     already vouched for.  Only fragments carrying the epoch the ram tier
     announces now are laid -- the drop below removed the others, and this is
     the belt to that braces.
+
+    **A running consumer keeps its map (#908).**  Between an egress of the
+    last range it read and the landing of the next one, a claimed consumer
+    has nothing staged.  With ``running`` its map is kept rather than
+    removed: the header the reader adopted, naming no range and no mover.
+    The reader answers "not staged yet" from an empty map exactly as from a
+    missing one -- a declared span waits either way -- but a missing map is
+    refused whole and logged as ``residency map is unreadable``, which on
+    2026-09-22 read as the cause of capture ``a92f62783e8f``'s stall when
+    the cause was a range nobody published (#903).  A map stays for as long
+    as its consumer runs, and is composed from fragments again the moment
+    one lands.  A consumer that is not running -- a newcomer, or one
+    requeued into ``ready`` -- still loses its map when nothing is staged,
+    so the claim's residency gate keeps reading ``map_not_composed``.
     """
 
     root = queue.residency_fragment_root()
     path = queue.residency_map_path(consumer_action_key)
     cache_key = (str(queue.root), consumer_action_key)
     fingerprint = _compose_fingerprint(queue, consumer_action_key, ram_tiers)
+    if fingerprint is not None:
+        # Whether the consumer runs decides what an empty fragment set
+        # composes to (#908), so it is an input like the fragments are.
+        fingerprint = (*fingerprint, bool(running))
     if fingerprint is None:
         # Unreadable inputs: compose rather than skip, and drop any memory of
         # what was last written -- skipping against it afterwards could serve
@@ -1237,13 +1280,22 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
         if str(fragment.get("tier_id", "")).startswith(
             storage_tiers.RAM_TIER_PREFIX)]
     if not stage_fragments:
-        # Nothing staged (yet, or any more).  Removing the map is what puts the
-        # consumer back on the pool; leaving a stale one would point it at
-        # deleted files, which reads as corruption rather than as a cache miss.
-        path.unlink(missing_ok=True)
+        # Nothing staged (yet, or any more).  A consumer that is not running
+        # loses its map, which is what the claim gate reads as
+        # ``map_not_composed``.  A running one keeps the header it adopted
+        # and no entries (#908): an entry naming an egressed range would send
+        # the reader to a deleted file, and no map at all is refused whole.
+        kept = _emptied_map(path) if running else None
+        if kept is None:
+            path.unlink(missing_ok=True)
+            if fingerprint is not None:
+                _COMPOSE_FINGERPRINTS[cache_key] = (fingerprint, False)
+            return None
+        if kept is not True:
+            residency_map.write_map(path, kept)
         if fingerprint is not None:
-            _COMPOSE_FINGERPRINTS[cache_key] = (fingerprint, False)
-        return None
+            _COMPOSE_FINGERPRINTS[cache_key] = (fingerprint, True)
+        return path
     mapping = residency_map.compose(stage_fragments)
     if ram_fragments:
         tier_id = str(ram_fragments[0]["tier_id"])
@@ -2155,6 +2207,53 @@ def _unpublished_lead(needs: Mapping[str, object], published: set[str]) -> bool:
     return bool(lead) and str(lead) not in published
 
 
+def _is_newcomer(consumer: Mapping[str, object], needs: Mapping[str, object],
+                 published: set[str]) -> bool:
+    """Whether the joint gate admits this window as a newcomer (#908).
+
+    A newcomer is a consumer that has not been admitted: it is in ``ready``
+    and its lead is unpublished.  The lead is the plan's first range
+    (:func:`residency_plan.advance_needs`), and an egressed range holds no
+    tokens, so it reads as unpublished again once the consumer has passed
+    it.  A claimed consumer passed the claim's residency gate on those
+    leads, so its window is admitted for the rest of its run: its next range
+    is an admitted window's advance, fenced and counted in
+    ``existing_min_next``, never a newcomer's current asking the gate for
+    held + queued + current + next.  On 2026-09-22 that re-check gated the
+    running capture ``a92f62783e8f`` for 60 cycles after its ``head`` egress.
+    """
+
+    if consumer.get("state") == pool.CLAIMED:
+        return False
+    return _unpublished_lead(needs, published)
+
+
+def _unpublished_current_gib(needs: Mapping[str, object], *,
+                             held: Mapping[str, Mapping[str, object]],
+                             rowed: Mapping[str, object], kind: str) -> int:
+    """The GiB an admitted window's current will take from free, or 0 (#908).
+
+    Its first waiting leg, when that leg is in the phase the consumer is
+    reading and is neither queued (queued demand is counted in full) nor
+    holding its tokens (held is counted by the holder scan).  Only a
+    running window's current can be unpublished: a ready consumer's lead is
+    published, or the consumer is a newcomer.
+    """
+
+    waiting = needs.get("waiting")
+    if not isinstance(waiting, list) or not waiting:
+        return 0
+    first = waiting[0]
+    if (not isinstance(first, Mapping)
+            or first.get("phase") != needs.get("reading_phase")):
+        return 0
+    mover = str(first.get("mover_action_key") or "")
+    gib = int(first.get("stage_gib") or 0)
+    if mover in rowed or int(held.get(mover, {}).get(kind, 0)) >= gib:
+        return 0
+    return gib
+
+
 #: Opt-in switch for the produced-output obligation (#747).  ``1`` counts
 #: each tier's unheld producer window (``produced_output.unheld_window_gib``)
 #: in the joint-fit gate, the fence check and the newcomer relief; unset or
@@ -2397,7 +2496,7 @@ def window_pressure(
         stage_needs = residency_plan.advance_needs(
             plan, accepted, published=sorted(already), staged=sorted(staged),
             horizon_end_bytes=horizon_end)
-        stage_newcomer = _unpublished_lead(stage_needs, already)
+        stage_newcomer = _is_newcomer(consumer, stage_needs, already)
         if stage_newcomer:
             newcomers.setdefault(str(tier_id), []).append(stage_needs)
         if waiting:
@@ -2420,12 +2519,15 @@ def window_pressure(
         assert isinstance(wanted, list)
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
-            if not stage_newcomer:
+            if not stage_newcomer and str(wanted[0]["phase"]) != reading:
                 # An admitted window's next is the joint gate's
                 # ``existing_min_next`` term, minimum first, collected so
                 # the newcomer probe asks with the same shape.  Counted
                 # for every progressing window so the probe never asks
-                # for less relief than the real gate will require.
+                # for less relief than the real gate will require.  An
+                # unpublished current is not a next: the gate counts it
+                # only for a window it permits this pass (#908), and once
+                # published it is queued demand the probe counts in full.
                 stage = int(wanted[0]["stage_gib"])
                 landed_next[tier_id] = min(landed_next.get(tier_id, stage),
                                             stage)
@@ -2492,9 +2594,10 @@ def window_pressure(
             ram_needs = residency_plan.advance_needs(
                 plan, accepted, published=sorted(state["already"]),
                 staged=sorted(state["staged"]), mover_role="ram_mover_row")
-            if _unpublished_lead(ram_needs, set(state["already"])):
+            if _is_newcomer(consumer, ram_needs, set(state["already"])):
                 newcomers.setdefault(ram_tier_id, []).append(ram_needs)
-            else:
+            elif str(ram_wanted[0]["phase"]) != reading:
+                # The stage leg's rule: an unpublished current is no next.
                 ram_next = int(ram_wanted[0]["stage_gib"])
                 landed_next[ram_tier_id] = min(
                     landed_next.get(ram_tier_id, ram_next), ram_next)
@@ -2816,8 +2919,9 @@ def _advance_wants(queue: pool.PoolQueue,
             "needs": needs, "already": already_set, "staged": staged_set,
             # Newcomer while its lead is unpublished: the gate blocks the
             # formation event (publishing the lead), not the landing.  Once
-            # the lead is queued, later cycles treat it as admitted.
-            "newcomer": _unpublished_lead(needs, already_set),
+            # the lead is queued, later cycles treat it as admitted, and a
+            # claimed consumer is admitted for good (#908).
+            "newcomer": _is_newcomer(consumer, needs, already_set),
         })
     return wants, unknown
 
@@ -2939,18 +3043,23 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             return value if type(value) is int else 0
 
         def priority_candidate(want):
-            # The original lead can retire while a consumer is running,
-            # making the older credit gate call it a newcomer again. Only
-            # an unstarted current publication participates in admission
-            # priority; CLAIMED read windows neither create nor receive it.
+            # Only an unstarted current publication participates in
+            # admission priority; CLAIMED read windows neither create nor
+            # receive it.  Since #908 a claimed window is never a newcomer
+            # (its original lead retiring no longer re-gates it), so the
+            # state check here is a second statement of that rule.
             return (bool(want["newcomer"])
                     and want["consumer"].get("state") == pool.READY)
 
         # Already-admitted windows keep their advancement authority before
         # new work. Among newcomers, honour priority before spending fresh
         # room; stable sorting preserves the existing order for equal ranks.
+        # Every admitted window sorts before every newcomer, so its
+        # unpublished current is counted before any newcomer is gated
+        # (#908).
         tier_wants = sorted(tier_wants, key=lambda want: (
-            priority_candidate(want), -priority_of(want) if priority_candidate(want) else 0))
+            bool(want["newcomer"]), priority_candidate(want),
+            -priority_of(want) if priority_candidate(want) else 0))
         try:
             ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError, ValueError) as exc:
@@ -3046,6 +3155,16 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     # what the holder scan already counts.
                     if int(held.get(mover_name, {}).get(kind, 0)) >= need_gib:
                         break
+                    if candidate.get("phase") == want["needs"].get(
+                            "reading_phase"):
+                        # The window's own unpublished current is no
+                        # landed window's next (#908).  It pays from free
+                        # when the window publishes it, so it is counted
+                        # below only for a window this pass permits;
+                        # reserving it here would let a window that cannot
+                        # publish at all -- gated on its own fence, say --
+                        # hold every newcomer out (#881).
+                        break
                     covered = 0
                 else:
                     try:
@@ -3062,6 +3181,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         expected_grants: set[str] = set()
         waiting_priority: int | None = None
         waiting_consumer: str | None = None
+        # Admitted windows' unpublished currents, counted once every
+        # admitted window has been decided and before the first newcomer is
+        # gated (#908): the newcomer gate then sees each current a
+        # permitted window is about to publish from free, exactly as it
+        # sees a same-pass newcomer's.  A window that is not permitted
+        # publishes nothing this pass and counts nothing.
+        admitted_currents: dict[str, int] = {}
+        currents_counted = False
         for want in tier_wants:
             key = str(want["key"])
             needs = want["needs"]
@@ -3071,6 +3198,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             nxt = needs.get("next_min_gib")
             next_gib = int(nxt) if isinstance(nxt, int) else 0
             added_extra = 0
+            if want["newcomer"] and not currents_counted:
+                running_extra += sum(
+                    gib for other, gib in admitted_currents.items()
+                    if (other, tier_id) in permitted)
+                currents_counted = True
+            if not want["newcomer"]:
+                admitted_currents[key] = _unpublished_current_gib(
+                    needs, held=held, rowed=ready_by_key, kind=kind)
             if want["newcomer"]:
                 priority = priority_of(want)
                 if (priority_candidate(want) and waiting_priority is not None
@@ -4284,7 +4419,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         try:
             compose_map(queue, key, ram_tiers={
                 tier_id: record for tier_id, record in tiers.items()
-                if record.get("tier") == "ram"})
+                if record.get("tier") == "ram"},
+                running=consumer.get("state") == pool.CLAIMED)
         except (residency_map.ResidencyMapError, OSError) as exc:
             # A map that cannot be composed leaves the previous one in place
             # and the consumer on the pool: slower, never wrong.
