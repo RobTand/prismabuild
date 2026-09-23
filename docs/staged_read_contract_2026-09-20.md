@@ -13,12 +13,13 @@
   RNG-02), and PQ#1080 ended one (PRG-02).
 - **Deployed:** generation `a0fdcd2f7482-1790170897-121d887b4732` (PB main
   through #972, including #948 and #970), canary verified at 13:44:38Z, three
-  workers and the tier role converged. PB#966 is open, with no fix deployed.
+  workers and the tier role converged. PB#966 has a fix in review (branch
+  `fix/966-mover-dead-owner`), not merged and not deployed.
 - **Validated, not deployed:** none of the PB merges the ledger cites; PQ#1079 is
   merged, but whether a campaign has run it is unknown.
 - **Next acceptance step:** run (a), then R13, on `a0fdcd2f7482` until at
-  least one chain completes with `bytes_from_pool == 0` on its bulk legs; fix
-  and deploy PB#966.
+  least one chain completes with `bytes_from_pool == 0` on its bulk legs; merge
+  and deploy the PB#966 fix.
 
 Status: TARGET CONTRACT with honest per-requirement evidence in
 `staged_read_requirements_2026-09-20.json` (schema
@@ -790,7 +791,7 @@ launch attempts and the defects below ran on:
 | PB#929 | R12: the orphan pass released the tokens of 22 completed produced batches (44 GiB) while the bytes stayed staged | SM-02, INV-07, PO-06 | Fixed by #935; deployed; not yet exercised |
 | PB#944 | Movers `68fdb8728f38` and `750a4f8c65eb` of consumer `d54952c1fcac` inherited `task_class: measurement`; refused `measurement_host_not_idle` on 1,596 passes over 134 s | INV-11, PRG-03, LIVE-01 | Fixed by #948 (`abb13ff58bf7`); deployed in `a0fdcd2f7482`; not yet exercised |
 | PB#965 | Chunk mover `8faf2233c63a` (consumer `a7d31a4da9c1`) cut a manifest entry and refused `residency_overran_reservation` on every attempt | SM-02, PRG-02, PRG-03, LIVE-01 | Fixed by #970 (`0411c83330da`); deployed in `a0fdcd2f7482`; not yet exercised; consumers sealed on an older generation need a resubmit |
-| PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Open; no fix merged; WS-RM is working on it |
+| PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Fix in review on branch `fix/966-mover-dead-owner` (Fixes #966): a divergent name is settled by its owners' states; not merged, not deployed |
 | PQ#1080 | Stage A seed `2c164969c33c` did not prefetch its first layer and refused a cold source read, rc 1 after 282 s | PRG-02 (INV-06 held: the reader refused and did not fall back) | Fixed by PQ#1079 (`f12313f9903d`); use in a campaign unknown |
 
 ### Corrections to earlier status
@@ -820,6 +821,6 @@ ledger, not only in `docs/design.md`.
 ### Next acceptance step
 
 Run (a), then R13, on `a0fdcd2f7482` until at least one chain completes with
-`bytes_from_pool == 0` on its bulk legs, and fix and deploy PB#966. Workload
+`bytes_from_pool == 0` on its bulk legs, and merge and deploy the PB#966 fix. Workload
 proof on every row stays as recorded until such a run exercises it. That run is the first candidate
 workload proof for LIVE-01, PRG-03, INV-11 and ACC-06.
