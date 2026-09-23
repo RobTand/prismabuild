@@ -182,6 +182,12 @@ HOLDER_UNRESOLVED_EVENT = "stage-holder-unresolved"
 #: reporting every unresolved holder once more is the right amount of noise.
 _UNRESOLVED_REPORTS: dict[tuple[str, str], dict[str, str]] = {}
 
+#: The record an orphan sweep leaves when it cannot read a tier's ledger
+#: (#1007).  Which held movers still count as attribution is unknown then,
+#: and unknown ownership never deletes: the pass that needed the read is
+#: skipped for the cycle, and this record says which pass and why.
+LEDGER_UNREADABLE_EVENT = "stage-sweep-ledger-unreadable"
+
 #: The event a bounded prune of positively stale mentions publishes (#853).
 #: Unlike a dead-owner eviction this keeps the whole old holder: no charge
 #: moves until the last fragment goes through the ordinary whole-owner egress,
@@ -327,6 +333,35 @@ def _refused_receipt(*, tier_id: str, stage_root: str | Path, refusal: str,
     }
 
 
+def _ledger_unreadable_receipt(*, tier_id: str, stage_root: str | Path,
+                               skipped: str, exc: BaseException,
+                               ) -> dict[str, object]:
+    """What a sweep that could not read its tier ledger skipped, and why (#1007).
+
+    Nothing is deleted and nothing is released: the bytes and the tokens stay
+    where they were until a later cycle can read the ledger.
+    """
+
+    reason = f"tier ledger unreadable: {exc}"
+    return {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1,
+        "event": LEDGER_UNREADABLE_EVENT,
+        "action_key": "",
+        "consumer_action_key": "",
+        "tier_id": tier_id,
+        "stage_root": str(stage_root),
+        "reason": reason,
+        "skipped": skipped,
+        "entries_deleted": 0,
+        "bytes_deleted": 0,
+        "tokens_released": 0,
+        "complete": False,
+        "errors": [reason],
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
+
+
 def _prune_empty(directory: Path, stop: Path) -> None:
     """Remove the directories a deleted range leaves behind, never past the stage."""
 
@@ -370,7 +405,155 @@ def _namespace_shaped(name: str) -> bool:
             and all(character in "0123456789abcdef" for character in name))
 
 
-def _read_fragment(path: Path) -> dict[str, object] | str:
+class _CensusMemo:
+    """Parsed census documents, reused while their file version holds (#988).
+
+    An egress takes its ownership censuses twice: once before the stage
+    ownership lock, as a hint, and again under it, where the delete decision
+    is made.  The pass under the lock lists every directory again and opens
+    every document again, so a file that was added, removed, replaced or
+    rewritten is seen before any decision uses it.  Only a document whose
+    version is unchanged skips its read and parse, and the version is taken
+    with ``fstat`` on the descriptor the pass just opened.  It is the
+    publication gate's own reuse fence (``stage_move._metadata_version``,
+    #761): device, inode, size, mtime and ctime.
+
+    A read that failed is never remembered: unreadable stays freshly
+    unreadable.  A claim's derived stage paths are remembered by claim key,
+    because they come from the sealed request and the data manifest, and both
+    are immutable under their digests; the claim listing and each claim
+    record are still read fresh.  One memo lives for one call; nothing
+    carries over between calls.
+
+    It counts what it parses and what it reuses (fragments and material
+    sidecars; for pins, what it parses), so a caller can record how much
+    census work ran inside its hold (:func:`_locked_parse_record`).
+    """
+
+    def __init__(self) -> None:
+        self.fragments: dict[str, tuple[tuple, dict[str, object]]] = {}
+        self.paths: dict[int, frozenset[str]] = {}
+        self.normalized: dict[int, frozenset[str]] = {}
+        self.claims: dict[tuple, frozenset[str]] = {}
+        self.sources: dict[tuple, frozenset[str]] = {}
+        self.pins = _PinMemo()
+        self.materials: dict[str, tuple[tuple, object]] = {}
+        self.parses = 0     # fragments and material sidecars parsed
+        self.reuses = 0     # fragments and material sidecars reused
+
+    def counts(self) -> tuple[int, int]:
+        """``(parsed, reused)`` so far: every document kind, pins included."""
+
+        return self.parses + self.pins.parses, self.reuses
+
+    def paths_of(self, document: Mapping[str, object]) -> frozenset[str] | None:
+        """The stage paths a remembered fragment names, or ``None``."""
+
+        return self.paths.get(id(document))
+
+    def normalized_paths_of(self, document: Mapping[str, object],
+                            ) -> frozenset[str] | None:
+        """The same paths, ``normpath``-ed once per parse, or ``None``."""
+
+        named = self.paths.get(id(document))
+        if named is None:
+            return None
+        normalized = self.normalized.get(id(document))
+        if normalized is None:
+            normalized = frozenset(os.path.normpath(path) for path in named)
+            self.normalized[id(document)] = normalized
+        return normalized
+
+    def forget(self, key: str) -> None:
+        """Drop one fragment file's parse, and the path set keyed by it."""
+
+        old = self.fragments.pop(key, None)
+        if old is not None:
+            self.paths.pop(id(old[1]), None)
+            self.normalized.pop(id(old[1]), None)
+
+
+class _PinMemo(dict):
+    """``reader_lease.live_for``'s pin memo, counting the pins it parses.
+
+    ``live_for`` stores a pin's parse exactly once per parse and never on a
+    reuse, so the number of stores is the number of pins it parsed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parses = 0
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self.parses += 1
+        super().__setitem__(key, value)
+
+
+def _locked_parse_record(memo: "_CensusMemo | None",
+                         before: tuple[int, int] | None) -> dict[str, object]:
+    """How many census documents a hold parsed and reused (#988).
+
+    ``locked_parses`` counts every fragment, pin and material sidecar the
+    pass under the lock parsed; ``locked_reuses`` the fragments and sidecars
+    it reused because their file version had not changed since the census
+    before the lock.  ``None`` when the caller kept no memo.
+    """
+
+    if memo is None or before is None:
+        return {"locked_parses": None, "locked_reuses": None}
+    parsed, reused = memo.counts()
+    return {"locked_parses": parsed - before[0],
+            "locked_reuses": reused - before[1]}
+
+
+def _read_own_material(root: Path, consumer_action_key: str,
+                       mover_action_key: str, memo: "_CensusMemo | None"):
+    """``reader_lease.read_material``, reused while its file version holds.
+
+    The same three answers: the sidecar, ``None`` when it is absent, or the
+    error.  With a ``memo`` the file is still opened, and its ``fstat``
+    version decides whether the earlier parse is reused (#988).
+    """
+
+    if memo is None:
+        return reader_lease.read_material(root, consumer_action_key,
+                                          mover_action_key)
+    path = reader_lease.material_path(root, consumer_action_key,
+                                      mover_action_key)
+    key = str(path)
+    try:
+        with open(path) as stream:
+            version = _metadata_version(os.fstat(stream.fileno()))
+            hit = memo.materials.get(key)
+            if hit is not None and hit[0] == version:
+                memo.reuses += 1
+                return hit[1]
+            memo.parses += 1
+            material = reader_lease.validate_material(json.load(stream))
+    except FileNotFoundError:
+        memo.materials.pop(key, None)
+        return None
+    except (OSError, ValueError) as exc:
+        memo.materials.pop(key, None)
+        return exc
+    memo.materials[key] = (version, material)
+    return material
+
+
+def _fragment_stage_paths(document: Mapping[str, object]) -> frozenset[str]:
+    """Every ``stage_path`` one validated fragment names, as written."""
+
+    out: set[str] = set()
+    for entry in dict(document["entries"]).values():
+        if isinstance(entry, Mapping):
+            path = entry.get("stage_path")
+            if isinstance(path, str):
+                out.add(path)
+    return frozenset(out)
+
+
+def _read_fragment(path: Path, memo: _CensusMemo | None = None,
+                   ) -> dict[str, object] | str:
     """One validated fragment, or the reason it is not one.  Never a skip.
 
     Skipping is right for a consumer composing its own map
@@ -378,19 +561,39 @@ def _read_fragment(path: Path) -> dict[str, object] | str:
     deletes: a document that cannot be read is unknown ownership, and
     unknown ownership reported as "no owner" is exactly how staged bytes
     are lost.
+
+    With a ``memo``, a document whose version is unchanged since the memo
+    parsed it is returned without a second parse (see :class:`_CensusMemo`).
     """
 
+    key = str(path)
     try:
         with open(path) as stream:
-            return residency_map.validate_fragment(json.load(stream))
+            version = None
+            if memo is not None:
+                version = _metadata_version(os.fstat(stream.fileno()))
+                hit = memo.fragments.get(key)
+                if hit is not None and hit[0] == version:
+                    memo.reuses += 1
+                    return hit[1]
+                memo.parses += 1
+            document = residency_map.validate_fragment(json.load(stream))
     except (OSError, ValueError) as exc:
+        if memo is not None:
+            memo.forget(key)
         return str(exc)
+    if memo is not None:
+        memo.forget(key)
+        memo.fragments[key] = (version, document)
+        memo.paths[id(document)] = _fragment_stage_paths(document)
+    return document
 
 
 def _census_fragment_directory(directory: Path, namespace: str, *,
                                direct: bool,
                                fragments: list[tuple[str, str, dict[str, object], bool]],
-                               tainted: list[str]) -> None:
+                               tainted: list[str],
+                               memo: _CensusMemo | None = None) -> None:
     """Every valid fragment filed directly under one namespace directory.
 
     ``direct`` is true only for a namespace that is an immediate child of the
@@ -425,7 +628,7 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
             tainted.append(
                 f"{namespace}/{entry.name}: not a regular file")
             continue
-        document = _read_fragment(Path(entry.path))
+        document = _read_fragment(Path(entry.path), memo)
         if isinstance(document, str):
             tainted.append(f"{namespace}/{entry.name}: {document}")
             continue
@@ -450,7 +653,8 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
 def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                   fragments: list[tuple[str, str, dict[str, object], bool]],
                   tainted: list[str],
-                  skip: frozenset[str] = frozenset()) -> None:
+                  skip: frozenset[str] = frozenset(),
+                  memo: _CensusMemo | None = None) -> None:
     """Classify one directory level of the fragment store.
 
     One rule for both layouts: reserved bookkeeping is skipped, a
@@ -513,16 +717,17 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                     f"fragment namespace")
                 continue
             _census_level(Path(entry.path), direct=False, allow_nested=False,
-                          fragments=fragments, tainted=tainted)
+                          fragments=fragments, tainted=tainted, memo=memo)
             continue
         if not _namespace_shaped(namespace):
             tainted.append(f"{namespace}: unknown residency directory")
             continue
         _census_fragment_directory(Path(entry.path), namespace, direct=direct,
-                                   fragments=fragments, tainted=tainted)
+                                   fragments=fragments, tainted=tainted,
+                                   memo=memo)
 
 
-def _fragment_census(root: Path,
+def _fragment_census(root: Path, memo: _CensusMemo | None = None,
                      ) -> tuple[list[tuple[str, str, dict[str, object], bool]],
                                 list[str]]:
     """Every fragment under one residency root, and what cannot be read.
@@ -556,19 +761,21 @@ def _fragment_census(root: Path,
     tainted: list[str] = []
     if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
         _census_level(root, direct=True, allow_nested=False,
-                      fragments=fragments, tainted=tainted)
+                      fragments=fragments, tainted=tainted, memo=memo)
         _census_level(root.parent, direct=False, allow_nested=False,
                       fragments=fragments, tainted=tainted,
-                      skip=frozenset({root.name}))
+                      skip=frozenset({root.name}), memo=memo)
     else:
         _census_level(root, direct=True, allow_nested=True,
-                      fragments=fragments, tainted=tainted)
+                      fragments=fragments, tainted=tainted, memo=memo)
     return fragments, tainted
 
 
 def _fragment_owners(root: Path, wanted: set[str], *,
                      except_consumer: str = "",
-                     except_mover: str = "") -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
+                     except_mover: str = "",
+                     memo: _CensusMemo | None = None,
+                     ) -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
     """Which of ``wanted`` paths are still vouched for, and by whom, in one walk.
 
     A single scan of every fragment namespace -- never per entry --
@@ -589,9 +796,16 @@ def _fragment_owners(root: Path, wanted: set[str], *,
     """
 
     owners: dict[str, set[tuple[str, str]]] = {}
-    fragments, tainted = _fragment_census(root)
+    fragments, tainted = _fragment_census(root, memo)
     for namespace, mover, fragment, direct in fragments:
         if direct and namespace == except_consumer and mover == except_mover:
+            continue
+        named = memo.paths_of(fragment) if memo is not None else None
+        if named is not None:
+            # The same exact string intersection as below, over the path
+            # set the memo built when it parsed this version (#988).
+            for path in named & wanted:
+                owners.setdefault(path, set()).add((namespace, mover))
             continue
         for entry in dict(fragment["entries"]).values():
             if not isinstance(entry, Mapping):
@@ -684,6 +898,7 @@ def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
                    cas_root: str | Path | None = None,
                    *, exclude: set[str] | frozenset[str] | None = None,
+                   memo: _CensusMemo | None = None,
                    ) -> tuple[set[str], list[str]]:
     """Staged paths a claimed copy may be writing, by sealed range.
 
@@ -710,7 +925,7 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     """
 
     paths, tainted, _own = _claimed_paths_attributed(
-        queue, tier_id, cas_root, exclude=exclude)
+        queue, tier_id, cas_root, exclude=exclude, memo=memo)
     return paths, tainted
 
 
@@ -718,6 +933,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
                               cas_root: str | Path | None = None, *,
                               exclude: set[str] | frozenset[str] | None = None,
                               own_key: str = "",
+                              memo: _CensusMemo | None = None,
                               ) -> tuple[set[str], list[str], set[str]]:
     """:func:`_claimed_paths`, attributing one key's paths separately.
 
@@ -733,6 +949,11 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     same key is claimed again, and wall-clock stamps are no substitute
     (2026-09-21 root QA).  ``exclude`` keeps its unconditional meaning and is
     checked first.
+
+    With a ``memo``, a range mover's derived stage paths are remembered by
+    claim key and CAS root: they come from its sealed request and its data
+    manifest, both immutable under their digests.  The claim listing and
+    each claim record are still read on every call (#988).
     """
 
     paths: set[str] = set()
@@ -789,6 +1010,11 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
         if tier_id not in kinds:
             continue    # not a movement node on this tier; a consumer is
                         # not a copy
+        memo_key = (key, own_cas, tier_id)
+        remembered = memo.claims.get(memo_key) if memo is not None else None
+        if remembered is not None:
+            (own_paths if own_claim else paths).update(remembered)
+            continue
         try:
             request = pool._read_json(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
@@ -860,7 +1086,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
             # never unowned.
             tainted.append(f"{key[:12]}: range not cuttable: {exc}")
             continue
-        settled = own_paths if own_claim else paths
+        derived: set[str] = set()
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])
             try:
@@ -878,7 +1104,10 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
                 continue
             # Compared against fragment ``stage_path`` values, which join the
             # stage root with this same relative name.
-            settled.update(relatives)
+            derived.update(relatives)
+        (own_paths if own_claim else paths).update(derived)
+        if memo is not None:
+            memo.claims[memo_key] = frozenset(derived)
     return paths, tainted, own_paths
 
 
@@ -998,6 +1227,9 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     stage = Path(stage_root)
     auto_reclaimed: list[str] = []
     auto_retained: dict[str, str] = {}
+    memo = _CensusMemo()
+    fences: dict[str, tuple] | None = None
+    census_s = 0.0
     if entries and tier_id is not None:
         # Containment reclamation runs here, holding no stage ownership lock
         # (#780).  ``auto_reclaim`` walks every pin owner and ``release_refs``
@@ -1018,25 +1250,165 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         # containment evidence lands between it and the lock is not freed on
         # this pass; the entry defers and the next sweep retries, which is the
         # direction this node already fails in.
+        census_started = time.perf_counter()
         hint, hint_tainted = reader_lease.live_for(
-            queue, _wanted_stage_paths(entries), residency_root=root)
+            queue, _wanted_stage_paths(entries), residency_root=root,
+            memo=memo.pins)
         if hint or hint_tainted:
             reclaimed = reader_lease.auto_reclaim(queue, residency_root=root)
             auto_reclaimed.extend(reclaimed["released"])
             for ref_id, why in reclaimed["retained"].items():
                 auto_retained.setdefault(ref_id, why)
+        # The rest of the census, and each entry's containment fence, are
+        # hints too (#988).  They run here, without the lock, so the pass
+        # under it re-reads only what changed (see :class:`_CensusMemo`)
+        # and resolves no path.  Nothing decided here is acted on: every
+        # verdict is judged again under the lock against the census taken
+        # there.
+        _ownership_census(queue, mover_action_key,
+                          consumer_action_key=consumer_action_key,
+                          stage=stage, tier_id=tier_id, root=root,
+                          entries=entries, memo=memo)
+        _read_own_material(root, consumer_action_key, mover_action_key, memo)
+        fences = _entry_fences(stage, entries)
+        census_s = time.perf_counter() - census_started
+    parents: set[Path] = set()
+    asked = time.perf_counter()
     with queue.stage_ownership_lock(str(stage)):
-        return _evict_owned(queue, mover_action_key,
-                            consumer_action_key=consumer_action_key,
-                            stage=stage, tier_id=tier_id, root=root,
-                            fragment_path=fragment_path, entries=entries,
-                            errors=errors, reason=reason,
-                            auto_reclaimed=auto_reclaimed,
-                            auto_retained=auto_retained, whole=whole)
+        granted = time.perf_counter()
+        receipt = _evict_owned(queue, mover_action_key,
+                               consumer_action_key=consumer_action_key,
+                               stage=stage, tier_id=tier_id, root=root,
+                               fragment_path=fragment_path, entries=entries,
+                               errors=errors, reason=reason,
+                               auto_reclaimed=auto_reclaimed,
+                               auto_retained=auto_retained, whole=whole,
+                               memo=memo, fences=fences, prune_after=parents)
+    released = time.perf_counter()
+    # Empty directories go after the lock.  A publisher's rename lands in a
+    # directory that already holds its temporary, so ``rmdir`` cannot take
+    # it from under the rename; its ``mkdir`` runs outside the lock today,
+    # so the window between that and its temporary is no wider for this.
+    pruned_started = time.perf_counter()
+    for parent in sorted(parents, key=lambda one: len(one.parts), reverse=True):
+        _prune_empty(parent, stage)
+    receipt.update(_hold_record(
+        lock_wait_s=granted - asked, lock_held_s=released - granted,
+        census_s=census_s, prune_s=time.perf_counter() - pruned_started))
+    return receipt
+
+
+#: The lock-scope fields an egress receipt carries since #988, in the order
+#: an event copies them: the queue for the lock, the hold, the entries the
+#: hold judged, the census before the lock, the census under it, the
+#: unlinks under it and the prune after it, and the census documents the
+#: hold parsed and reused.
+LOCK_SCOPE_FIELDS = ("lock_wait_s", "lock_held_s", "entries_judged",
+                     "census_s", "census_validate_s", "unlink_s", "prune_s",
+                     "locked_parses", "locked_reuses")
+
+
+def lock_scope(receipt: Mapping[str, object]) -> dict[str, object]:
+    """The :data:`LOCK_SCOPE_FIELDS` one egress receipt carries, for an event."""
+
+    return {field: receipt[field] for field in LOCK_SCOPE_FIELDS
+            if field in receipt}
+
+
+def _hold_record(*, lock_wait_s: float, lock_held_s: float,
+                 census_s: float, prune_s: float = 0.0) -> dict[str, object]:
+    """The lock-scope fields an egress receipt carries (#988).
+
+    ``lock_held_s`` is the one stage ownership hold this call took, from the
+    grant to the release; ``lock_wait_s`` is the time it queued for it.
+    ``census_s`` is the census taken before the lock, as a hint, and
+    ``prune_s`` the empty-directory prune after it.  The census under the
+    lock (``census_validate_s``), the unlinks (``unlink_s``) and
+    ``entries_judged`` come from the pass under the lock itself.
+    """
+
+    return {"lock_wait_s": round(lock_wait_s, 6),
+            "lock_held_s": round(lock_held_s, 6),
+            "census_s": round(census_s, 6),
+            "prune_s": round(prune_s, 6)}
+
+
+def _entry_fences(stage: Path, entries: Mapping[str, object],
+                  ) -> dict[str, tuple]:
+    """Each entry's containment fence, computed once, outside the lock (#988).
+
+    ``("ok", path, norm, resolved, relative)``: the entry's path, its
+    normalized spelling, its resolved spelling and its name relative to the
+    resolved stage root.  ``("error", message)`` for a path that resolves
+    outside the stage or cannot be resolved.
+
+    The fence is the same ``resolve`` the judge made under the lock before
+    #988, taken earlier.  The stage tree's directories are made by movers
+    (``mkdir``) and removed by egresses (``rmdir``); nothing in PrismaBuild
+    makes a symlink in it.  So no PrismaBuild actor can change what a path
+    resolves to between this call and the lock, and nothing outside
+    PrismaBuild takes the lock, so holding it never made the fence atomic
+    with the unlink against one.  The stage root itself is resolved once
+    here instead of twice per entry.
+    """
+
+    fences: dict[str, tuple] = {}
+    try:
+        stage_resolved = stage.resolve()
+    except OSError as exc:
+        return {str(key): ("error", f"{key}: {exc}") for key in entries}
+    for key, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        path = Path(str(entry["stage_path"]))
+        try:
+            resolved = path.resolve()
+        except OSError as exc:
+            fences[str(key)] = ("error", f"{key}: {exc}")
+            continue
+        if stage_resolved not in resolved.parents:
+            # A fragment naming a path outside the stage is not a thing to
+            # act on: the writer validated it, so this is corruption or
+            # someone else's file.
+            fences[str(key)] = ("error", f"{key}: outside {stage}")
+            continue
+        fences[str(key)] = ("ok", path, os.path.normpath(str(path)),
+                            os.path.normpath(str(resolved)),
+                            str(resolved.relative_to(stage_resolved)))
+    return fences
+
+
+def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
+                      consumer_action_key: str, stage: Path, tier_id: str,
+                      root: Path, entries: Mapping[str, object],
+                      memo: _CensusMemo | None = None) -> dict[str, object]:
+    """The four ownership censuses one egress decides on, in snapshot order.
+
+    Claimed movers first, then fragment directories, then pins, then
+    promotion sources: the order :func:`_evict_owned` argues from.  Called
+    twice per egress since #988 -- once before the lock as a hint that fills
+    ``memo``, and once under it, where the result is acted on.
+    """
+
+    wanted = _wanted_stage_paths(dict(entries))
+    claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
+        queue, tier_id, own_key=mover_action_key, memo=memo)
+    owners, fragment_taint = _fragment_owners(
+        root, wanted,
+        except_consumer=consumer_action_key,
+        except_mover=mover_action_key, memo=memo)
+    pins, pin_taint = reader_lease.live_for(
+        queue, wanted, residency_root=root,
+        memo=memo.pins if memo is not None else None)
+    source_paths, source_taint = _claimed_source_paths(queue, stage, memo=memo)
+    return {"claimed": claimed, "own_claimed": own_claimed, "owners": owners,
+            "pins": pins, "source_paths": source_paths,
+            "tainted": fragment_taint + claimed_taint + pin_taint + source_taint}
 
 
 def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
-                          cas_root: str | Path | None = None
+                          cas_root: str | Path | None = None,
+                          memo: _CensusMemo | None = None,
                           ) -> tuple[set[str], list[str]]:
     """Stage paths a live RAM promotion may be reading, by sealed source leg.
 
@@ -1047,7 +1419,9 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     destinations are `_claimed_paths`' job); the sealed `--source-stage-root`
     decides which stage this attribution joins, resolved before comparing.
     Anything unreadable taints the pass, the same fail-closed rule as
-    fragments and destination claims.
+    fragments and destination claims.  With a ``memo``, a promotion's derived
+    source paths are remembered by claim key, as
+    :func:`_claimed_paths_attributed` remembers a mover's (#988).
     """
 
     try:
@@ -1093,6 +1467,11 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
         if not any(kind.startswith(storage_tiers.RAM_TIER_PREFIX)
                    for kind in kinds):
             continue    # not a promotion; stage destinations are elsewhere
+        memo_key = (key, own_cas, stage_real)
+        remembered = memo.sources.get(memo_key) if memo is not None else None
+        if remembered is not None:
+            paths.update(remembered)
+            continue
         try:
             request = pool._read_json(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
@@ -1126,6 +1505,8 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
             continue
         try:
             if os.path.realpath(source_root) != stage_real:
+                if memo is not None:
+                    memo.sources[memo_key] = frozenset()
                 continue    # another stage's source leg, not this egress
         except OSError as exc:
             tainted.append(f"{key[:12]}: {exc}")
@@ -1151,6 +1532,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
         except (ValueError, TypeError) as exc:
             tainted.append(f"{key[:12]}: range not cuttable: {exc}")
             continue
+        derived: set[str] = set()
         for entry in window:
             path, offset = str(entry["path"]), int(entry["offset"])
             try:
@@ -1167,7 +1549,10 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
             except ValueError:
                 continue
             for relative in relatives:
-                paths.add(os.path.normpath(os.path.join(stage_real, relative)))
+                derived.add(os.path.normpath(os.path.join(stage_real, relative)))
+        paths.update(derived)
+        if memo is not None:
+            memo.sources[memo_key] = frozenset(derived)
     return paths, tainted
 
 
@@ -1189,7 +1574,10 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  entries: dict[str, object], errors: list[str],
                  reason: str, auto_reclaimed: list[str],
                  auto_retained: dict[str, str],
-                 whole: bool = False) -> dict[str, object]:
+                 whole: bool = False,
+                 memo: _CensusMemo | None = None,
+                 fences: Mapping[str, tuple] | None = None,
+                 prune_after: set[Path] | None = None) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock.
 
     ``auto_reclaimed``/``auto_retained`` are what containment reclamation did
@@ -1204,9 +1592,20 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     material and charge stay -- and the claim stops being visible at all once
     the worker's terminal transition retires it; the next sweep then deletes
     and releases exactly once.  Foreign claims keep the shared skip unchanged.
+
+    What runs here is the act, not the census (#988).  ``memo`` carries the
+    censuses :func:`_evict_locked` took before the lock, so the census taken
+    here re-lists every directory and re-opens every document but re-parses
+    only what changed.  ``fences`` carries each entry's containment fence,
+    resolved before the lock.  ``prune_after`` collects the directories the
+    unlinks may have emptied, for the caller to prune after the lock.  A
+    caller that passes none of them (``prune_stale_mentions``) gets the
+    same verdicts, computed here.
     """
 
     deleted = missing = shared = deferred = 0
+    validate_started = time.perf_counter()
+    parse_counts = memo.counts() if memo is not None else None
     bytes_deleted = bytes_shared = bytes_gone = 0
     shared_with: list[str] = []
     live_pins: list[str] = []
@@ -1224,17 +1623,16 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # Pins join the same snapshot (same lock) rather than a second
         # unlocked check: delete is blocked by ANY current ref, and the
         # check-and-act is one atomic unit with the unlink below.
-        wanted = _wanted_stage_paths(entries)
-        claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
-            queue, tier_id, own_key=mover_action_key)
-        owners, fragment_taint = _fragment_owners(
-            root, wanted,
-            except_consumer=consumer_action_key,
-            except_mover=mover_action_key)
-        pins, pin_taint = reader_lease.live_for(
-            queue, wanted, residency_root=root)
-        source_paths, source_taint = _claimed_source_paths(queue, stage)
-        tainted = fragment_taint + claimed_taint + pin_taint + source_taint
+        census = _ownership_census(
+            queue, mover_action_key, consumer_action_key=consumer_action_key,
+            stage=stage, tier_id=tier_id, root=root, entries=entries,
+            memo=memo)
+        claimed = census["claimed"]
+        own_claimed = census["own_claimed"]
+        owners = census["owners"]
+        pins = census["pins"]
+        source_paths = census["source_paths"]
+        tainted = census["tainted"]
         if tainted:
             # Ownership is uncertain: behave like the unreadable-fragment
             # case -- nothing is unlinked, no tokens come back, the receipt
@@ -1260,8 +1658,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # generation, never the path: without a sidecar the generation
             # is unknowable, so a pinned legacy range taints instead of
             # filing a mark that could wedge the path's future generations.
-            material = reader_lease.read_material(
-                root, consumer_action_key, mover_action_key)
+            material = _read_own_material(
+                root, consumer_action_key, mover_action_key, memo)
             if isinstance(material, dict):
                 own_generation = str(material.get("generation") or "")
             elif material is not None:
@@ -1276,6 +1674,12 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         pins, source_paths = {}, set()
         own_generation = None
         blind = False
+    census_validate_s = time.perf_counter() - validate_started
+    locked_parses = _locked_parse_record(memo, parse_counts)
+    if fences is None and entries and not blind:
+        # No fences from before the lock: resolve them here, as before #988.
+        fences = _entry_fences(stage, entries)
+
     def judge(key: str, entry: Mapping[str, object]) -> tuple[str, object]:
         """One entry's verdict under this lock, with nothing done yet.
 
@@ -1288,20 +1692,17 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         """
 
         # The sharing check compares validated strings (exact, no metadata);
-        # the resolve below stays as the containment fence before any unlink.
-        path = Path(str(entry["stage_path"]))
-        try:
-            resolved = str(path.resolve())
-            if stage.resolve() not in Path(resolved).parents:
-                # A fragment naming a path outside the stage is not a thing to
-                # act on: the writer validated it, so this is corruption or
-                # someone else's file.
-                return ("error", f"{key}: outside {stage}")
-        except OSError as exc:
-            return ("error", f"{key}: {exc}")
-        norm = os.path.normpath(str(path))
+        # the resolve is the containment fence before any unlink, taken
+        # once per entry by :func:`_entry_fences` (#988).
+        assert fences is not None
+        fence = fences.get(str(key))
+        if fence is None:
+            return ("error", f"{key}: no containment fence")
+        if fence[0] == "error":
+            return ("error", fence[1])
+        _ok, path, norm, resolved_norm, relative = fence
         pinned = pins.get(norm, [])
-        if os.path.normpath(resolved) in source_paths:
+        if resolved_norm in source_paths:
             # A live promotion is reading this source leg into RAM: a pending
             # copy handoff, deferred exactly like a live pin.  The file, this
             # mover's fragment, its material sidecar and its full occupancy
@@ -1329,7 +1730,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # mark is filed; deleting stays safe meanwhile because every pass
             # re-reads claims and pins under this same ownership lock.
             return ("handoff", pinned)
-        if _relative_under(stage, resolved) in own_claimed:
+        if relative in own_claimed:
             # This mover's own copy is still live: its claim is not a
             # distinct co-owner, so this is a deferral, not a shared skip.
             # The file, this mover's fragment, its material and its full
@@ -1339,7 +1740,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # while the bytes stayed behind nothing (#793).
             return ("own", None)
         co_owners = sorted(owners.get(norm, set()))
-        in_flight = _relative_under(stage, resolved) in claimed
+        in_flight = relative in claimed
         if co_owners or in_flight:
             # Another live fragment vouches for these bytes, or a claimed
             # copy is about to land them: keep the file, drop only this
@@ -1358,6 +1759,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     verdicts: dict[str, tuple[str, object]] = (
         {} if blind else {key: judge(key, entry)
                           for key, entry in entries.items()})
+    entries_judged = len(verdicts)
     declined: list[str] = []
     if whole:
         # All or nothing (#903): a range a live consumer will still read is
@@ -1374,6 +1776,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 if verdict in ("handoff", "pinned"):
                     live_pins.extend(detail)              # type: ignore[arg-type]
             verdicts = {}
+    unlink_started = time.perf_counter()
     for key, (verdict, detail) in verdicts.items():
         entry = entries[key]
         if verdict == "error":
@@ -1413,7 +1816,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             continue
         deleted += 1
         bytes_deleted += int(entry["bytes"])
-        _prune_empty(path.parent, stage)
+        if prune_after is not None:
+            prune_after.add(path.parent)
+        else:
+            _prune_empty(path.parent, stage)
+    unlink_s = time.perf_counter() - unlink_started
 
     released = decharged = 0
     if (deferred and not deferred_handoffs and not errors and own_generation
@@ -1554,6 +1961,14 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # Only an all-or-nothing eviction declines (#903), and only its
         # receipt names the key: the egress receipt keeps its shape.
         **({"declined": declined} if whole else {}),
+        # What the pass under the lock cost (#988): the entries it judged,
+        # the census it re-took there, the documents that census parsed
+        # and reused, and its unlinks.  The caller adds the hold itself and
+        # the census it took before the lock.
+        "entries_judged": entries_judged,
+        "census_validate_s": round(census_validate_s, 6),
+        **locked_parses,
+        "unlink_s": round(unlink_s, 6),
     }
 
 
@@ -1883,7 +2298,28 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     fragment_version_before = _path_version(fragment_path)
     material_version_before = _path_version(material_path)
 
-    with queue.stage_ownership_lock(str(stage)):
+    # The censuses and the containment fences go first, as hints, without
+    # the lock (#988): the pass under it re-reads only what changed, and the
+    # observed entries are the ones it acts on, because it retains unless
+    # the fragment under the lock equals ``observed``.
+    memo = _CensusMemo()
+    census_started = time.perf_counter()
+    observed_entries = observed.get("entries")
+    hint_fences: dict[str, tuple] | None = None
+    if isinstance(observed_entries, Mapping) and observed_entries:
+        _ownership_census(queue, mover_action_key,
+                          consumer_action_key=consumer_action_key,
+                          stage=stage, tier_id=tier_id, root=root,
+                          entries=observed_entries, memo=memo)
+        _read_own_material(root, consumer_action_key, mover_action_key, memo)
+        hint_fences = _entry_fences(stage, observed_entries)
+    census_s = time.perf_counter() - census_started
+    emptied: set[Path] = set()
+
+    def _held_prune_stale() -> dict[str, object]:
+        """The transaction itself, under the stage ownership lock."""
+
+        nonlocal retained_reason
         try:
             current = residency_map.validate_fragment(json.loads(
                 pb._read_regular_file_nofollow(
@@ -1968,15 +2404,16 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 retained_reason = "material-key-undated"
                 return receipt(retained=total)
             bound[key] = mention
-        wanted = _wanted_stage_paths(entries)
-        claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
-            queue, tier_id, own_key=mover_action_key)
-        owners, fragment_taint = _fragment_owners(
-            root, wanted, except_consumer=consumer_action_key,
-            except_mover=mover_action_key)
-        pins, pin_taint = reader_lease.live_for(queue, wanted, residency_root=root)
-        source_paths, source_taint = _claimed_source_paths(queue, stage)
-        tainted = claimed_taint + fragment_taint + pin_taint + source_taint
+        census = _ownership_census(
+            queue, mover_action_key, consumer_action_key=consumer_action_key,
+            stage=stage, tier_id=tier_id, root=root, entries=entries,
+            memo=memo)
+        claimed = census["claimed"]
+        own_claimed = census["own_claimed"]
+        owners = census["owners"]
+        pins = census["pins"]
+        source_paths = census["source_paths"]
+        tainted = census["tainted"]
         if tainted:
             retained_reason = "ownership-uncertain"
             errors.extend(f"ownership uncertain: {item}" for item in tainted)
@@ -2121,7 +2558,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 stage=stage, tier_id=tier_id, root=root,
                 fragment_path=fragment_path, entries=entries, errors=errors,
                 reason="stale-mention-prune", auto_reclaimed=[],
-                auto_retained={})
+                auto_retained={}, memo=memo, fences=hint_fences,
+                prune_after=emptied)
         # Partial prune: unlink the positively stale destinations, then write
         # the fragment to its survivors and the material to the same
         # survivors' mentions.  No ledger call: the whole old charge stays.
@@ -2169,7 +2607,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                                        pair_complete=False)
             unlinked.append(key)
             unlinked_bytes += int(info.st_size)
-            _prune_empty(path.parent, stage)
+            emptied.add(path.parent)
         # Survivor material is filtered by the fragment's exact validated key
         # set, never by matching path: an extra material key naming the same
         # path must not survive the rewrite, and safe extra material never
@@ -2197,6 +2635,24 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             return partial_receipt(fragment_committed=True,
                                    pair_complete=False)
         return partial_receipt(fragment_committed=True, pair_complete=True)
+
+    # One hold for the whole transaction, as before #988: its per-entry
+    # ``lstat`` classification is the act's own identity evidence, and a
+    # partial prune rewrites the fragment and material inside it.  What
+    # left the hold is the census parse and the fence (above) and the
+    # empty-directory prune (below).
+    asked = time.perf_counter()
+    with queue.stage_ownership_lock(str(stage)):
+        granted = time.perf_counter()
+        result = _held_prune_stale()
+    released = time.perf_counter()
+    pruned_started = time.perf_counter()
+    for parent in sorted(emptied, key=lambda one: len(one.parts), reverse=True):
+        _prune_empty(parent, stage)
+    result.update(_hold_record(
+        lock_wait_s=granted - asked, lock_held_s=released - granted,
+        census_s=census_s, prune_s=time.perf_counter() - pruned_started))
+    return result
 
 
 def _tokens_for_newly_free_bytes(stage_bytes: int) -> int:
@@ -2658,7 +3114,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             continue
         try:
             held = queue.tier_ledger(tier_id).held_keys()
-        except (OSError, pool.PoolContractError):
+        except (OSError, pool.PoolContractError) as exc:
+            # Neither pass can run without the held set, and a skip is a
+            # record, not a silence (#1007).
+            swept.append(_ledger_unreadable_receipt(
+                tier_id=tier_id, stage_root=stage_root,
+                skipped="held-key pass and reconciliation", exc=exc))
             continue
         orphans: list[tuple[float, str, str]] = []
         retained: list[dict[str, object]] = []
@@ -2760,8 +3221,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         # does name is attribution.
         try:
             still_held = set(queue.tier_ledger(tier_id).held_keys())
-        except (OSError, pool.PoolContractError):
-            still_held = set()
+        except (OSError, pool.PoolContractError) as exc:
+            # Without the held set, a held mover no live plan names is not
+            # attribution, and its bytes would read as unowned.  Unknown
+            # ownership never deletes: skip the reconciliation this cycle
+            # and say so (#1007).
+            swept.append(_ledger_unreadable_receipt(
+                tier_id=tier_id, stage_root=stage_root,
+                skipped="reconciliation", exc=exc))
+            continue
         reconciled = reconcile(
             queue, tier_id=tier_id, stage_root=stage_root,
             wanted=wanted | set(owners) | still_held,
@@ -3143,6 +3611,7 @@ ATTRIBUTION_TAINT_LIMIT = 8
 
 def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
                        residency_root: str | Path | None = None,
+                       memo: _CensusMemo | None = None,
                        ) -> tuple[set[str], list[str]]:
     """The strict attribution census behind :func:`attributed_stage_paths`.
 
@@ -3153,10 +3622,15 @@ def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
 
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
-    fragments, tainted = _fragment_census(root)
+    fragments, tainted = _fragment_census(root, memo)
     out: set[str] = set()
     for _namespace, mover, fragment, _direct in fragments:
         if wanted is not None and mover not in wanted:
+            continue
+        named = (memo.normalized_paths_of(fragment) if memo is not None
+                 else None)
+        if named is not None:
+            out.update(named)
             continue
         for entry in dict(fragment["entries"]).values():
             out.add(os.path.normpath(str(entry["stage_path"])))
@@ -3247,6 +3721,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         "tokens_released": 0,
         "partials_deleted": 0,
         "unowned_left": 0,
+        "left_since_walk": 0,
         "complete": True,
         "errors": [],
         "host": socket.gethostname(),
@@ -3260,24 +3735,52 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         receipt["complete"] = False
         receipt["errors"] = [refusal]
         return receipt
-    # The same ownership guard as the egress, held across query and
-    # delete: a publisher, a reader pin, or a promotion handoff that
-    # lands after this snapshot waits out there (start gate) or is seen
-    # here; nothing unlinks between the check and the act.
-    with queue.stage_ownership_lock(str(stage)):
+    # The walk and the censuses go first, without the lock (#988).  The walk
+    # names candidates; nothing it decides is acted on.  Under the lock,
+    # every candidate is judged again against a fresh mover check, a fresh
+    # attribution census and a fresh pin census, and unlinked only while its
+    # ``lstat`` identity still equals the one the walk saw: a file replaced,
+    # rewritten or re-marked (``setxattr`` moves ctime) since is left for the
+    # next pass.  A file that appears after the walk is not a candidate on
+    # this pass at all.  So the rules below are decided under the lock, as
+    # before; only the listing and the per-file classification left it.
+    early = movers_in_flight(queue, tier_id=tier_id)
+    if early:
+        # A pre-check only: the answer that counts is taken under the lock.
+        # Skipping on it costs nothing, since the pass would skip anyway.
+        receipt["skipped"] = "movers_in_flight"
+        receipt["movers_in_flight"] = sorted(early)
+        return receipt
+    try:
+        stage_resolved = stage.resolve(strict=True)
+    except OSError as exc:
+        receipt["skipped"] = f"stage_root_unreadable: {exc}"
+        receipt["complete"] = False
+        return receipt
+    memo = _CensusMemo()
+    census_started = time.perf_counter()
+    hinted, _hint_taint = _attributed_census(
+        queue, wanted=wanted, residency_root=residency_root, memo=memo)
+    hint_pins, _hint_pin_taint = reader_lease.live_for(
+        queue, None, residency_root=residency_root, memo=memo.pins)
+    hinted |= set(hint_pins)
+    candidates, walk_errors = _unattributed_candidates(
+        stage, stage_resolved, hinted)
+    census_s = time.perf_counter() - census_started
+    emptied: set[Path] = set()
+
+    def _held_reconcile() -> None:
+        """The decision and the act, under the stage ownership lock."""
+
+        validate_started = time.perf_counter()
+        parse_counts = memo.counts()
         in_flight = movers_in_flight(queue, tier_id=tier_id)
         if in_flight:
             receipt["skipped"] = "movers_in_flight"
             receipt["movers_in_flight"] = sorted(in_flight)
-            return receipt
-        try:
-            stage_resolved = stage.resolve(strict=True)
-        except OSError as exc:
-            receipt["skipped"] = f"stage_root_unreadable: {exc}"
-            receipt["complete"] = False
-            return receipt
+            return
         attributed, attribution_taint = _attributed_census(
-            queue, wanted=wanted, residency_root=residency_root)
+            queue, wanted=wanted, residency_root=residency_root, memo=memo)
         if attribution_taint:
             # A fragment that cannot be read, or a directory that cannot be
             # classified, is unknown ownership -- never an unowned file.  The
@@ -3293,74 +3796,133 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                 receipt["errors"].append(
                     f"ownership uncertain: {len(attribution_taint)} entry(ies) "
                     f"unreadable")
-            return receipt
+            return
         pin_owners, pin_taint = reader_lease.live_for(
-            queue, None, residency_root=residency_root)
+            queue, None, residency_root=residency_root, memo=memo.pins)
         if pin_taint:
             receipt["complete"] = False
             receipt["errors"] = [
                 f"ownership uncertain: {item}" for item in pin_taint]
-            return receipt
+            return
         # A live pin is attribution: unattributed bytes nobody accounts for
         # go, pinned bytes never do.
         attributed |= set(pin_owners)
-        deleted = bytes_deleted = partials = unowned_left = 0
-        errors: list[str] = []
-        for base, _directories, names in os.walk(stage):
-            for name in sorted(names):
-                path = Path(base) / name
-                if name == STAGE_ROOT_MARKER and Path(base) == stage:
-                    # The root's own ownership marker: unmarked by the prewarm
-                    # stage and named by no fragment, so without this line the
-                    # sweep would delete the fact that lets it sweep.
-                    continue
-                if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
-                    # The ram root's epoch marker, same rule one tier over
-                    # (#640): unmarked, unnamed, and the one file that dates
-                    # every ram range this queue admits.  Deleting it would mint
-                    # a new epoch and drop every resident range the tmpfs still
-                    # holds.
-                    continue
-                try:
-                    if path.is_symlink() or not path.is_file():
-                        continue
-                    if stage_resolved not in path.resolve().parents:
-                        continue
-                except OSError as exc:
-                    errors.append(f"{path.name}: {exc}")
-                    continue
-                if os.path.normpath(str(path)) in attributed:
-                    continue
-                partial = _is_mover_partial(name)
-                if not partial:
-                    if prewarm_loop._STAGE_TEMPORARY.search(name):
-                        # The prewarm loop reaps its own, once per process, and a
-                        # live one belongs to a copy in flight.
-                        continue
-                    marked = _marked_by_the_prewarm_stage(path)
-                    if marked is None or marked:
-                        unowned_left += 1
-                        continue
-                try:
-                    size = path.stat().st_size
-                    os.unlink(path)
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    errors.append(f"{path.name}: {exc}")
-                    continue
-                deleted += 1
-                bytes_deleted += int(size)
-                partials += 1 if partial else 0
-                _prune_empty(path.parent, stage)
-    receipt["entries_deleted"] = deleted
-    receipt["bytes_deleted"] = bytes_deleted
-    receipt["partials_deleted"] = partials
-    receipt["unowned_left"] = unowned_left
-    receipt["errors"] = errors
-    receipt["complete"] = not errors
+        receipt["census_validate_s"] = round(
+            time.perf_counter() - validate_started, 6)
+        receipt.update(_locked_parse_record(memo, parse_counts))
+        receipt["entries_judged"] = len(candidates)
+        deleted = bytes_deleted = partials = left = 0
+        errors: list[str] = list(walk_errors)
+        for path, identity, partial in candidates:
+            if os.path.normpath(str(path)) in attributed:
+                left += 1   # an owner or a pin named it after the walk
+                continue
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if (not statmod.S_ISREG(info.st_mode)
+                    or _metadata_version(info) != identity):
+                left += 1   # changed since the walk: the next pass decides
+                continue
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            deleted += 1
+            bytes_deleted += int(info.st_size)
+            partials += 1 if partial else 0
+            emptied.add(path.parent)
+        receipt["entries_deleted"] = deleted
+        receipt["bytes_deleted"] = bytes_deleted
+        receipt["partials_deleted"] = partials
+        receipt["unowned_left"] = unowned_left
+        # Candidates the walk found that the locked re-check kept: a
+        # fragment or pin named them, or the file changed, after the walk.
+        receipt["left_since_walk"] = left
+        receipt["errors"] = errors
+        receipt["complete"] = not errors
+
+    unowned_left = sum(1 for _path, identity, _partial in candidates
+                       if identity is None)
+    candidates = [one for one in candidates if one[1] is not None]
+    asked = time.perf_counter()
+    with queue.stage_ownership_lock(str(stage)):
+        granted = time.perf_counter()
+        _held_reconcile()
+    released = time.perf_counter()
+    pruned_started = time.perf_counter()
+    for parent in sorted(emptied, key=lambda one: len(one.parts), reverse=True):
+        _prune_empty(parent, stage)
+    receipt.update(_hold_record(
+        lock_wait_s=granted - asked, lock_held_s=released - granted,
+        census_s=census_s, prune_s=time.perf_counter() - pruned_started))
     return receipt
 
+
+def _unattributed_candidates(stage: Path, stage_resolved: Path,
+                             attributed: set[str],
+                             ) -> tuple[list[tuple[Path, tuple | None, bool]],
+                                        list[str]]:
+    """The files :func:`reconcile` may delete, found without the lock (#988).
+
+    The walk and every per-file rule of the reconciliation, unchanged:
+    the root's own markers are skipped, a symlink or non-regular file is
+    skipped, a path resolving outside the stage is skipped, an attributed
+    path is skipped, a prewarm temporary is skipped, and a file the prewarm
+    stage marked -- or whose mark cannot be read -- is left.  Returns
+    ``(candidates, errors)``: each candidate as ``(path, identity,
+    partial)`` where ``identity`` is the ``lstat`` version the caller must
+    see again under the lock, or ``None`` for a file left as unowned-but-
+    marked (counted, never deleted).
+    """
+
+    candidates: list[tuple[Path, tuple | None, bool]] = []
+    errors: list[str] = []
+    for base, _directories, names in os.walk(stage):
+        for name in sorted(names):
+            path = Path(base) / name
+            if name == STAGE_ROOT_MARKER and Path(base) == stage:
+                # The root's own ownership marker: unmarked by the prewarm
+                # stage and named by no fragment, so without this line the
+                # sweep would delete the fact that lets it sweep.
+                continue
+            if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
+                # The ram root's epoch marker, same rule one tier over
+                # (#640): unmarked, unnamed, and the one file that dates
+                # every ram range this queue admits.  Deleting it would mint
+                # a new epoch and drop every resident range the tmpfs still
+                # holds.
+                continue
+            try:
+                info = os.lstat(path)
+                if not statmod.S_ISREG(info.st_mode):
+                    continue
+                if stage_resolved not in path.resolve().parents:
+                    continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if os.path.normpath(str(path)) in attributed:
+                continue
+            partial = _is_mover_partial(name)
+            if not partial:
+                if prewarm_loop._STAGE_TEMPORARY.search(name):
+                    # The prewarm loop reaps its own, once per process, and a
+                    # live one belongs to a copy in flight.
+                    continue
+                marked = _marked_by_the_prewarm_stage(path)
+                if marked is None or marked:
+                    candidates.append((path, None, False))
+                    continue
+            candidates.append((path, _metadata_version(info), partial))
+    return candidates, errors
 
 def _scope_for_range(cas_root: str, manifest_sha256: str,
                      start: int, end: int,
@@ -3700,37 +4262,42 @@ def recover_orphaned_range(
 
     own_cas = (str(cas_root) if cas_root is not None
                else str(queue.root.parent / "cas"))
-    with queue.stage_ownership_lock(str(stage)):
-        for key, label in ((head_action_key, "head"), (consumer, "consumer")):
-            for state in (pool.READY, pool.CLAIMED):
-                try:
-                    if queue.item_path(state, key).exists():
-                        return refuse(
-                            f"{label} {key[:12]} is still {state}; recovery "
-                            f"acts only on a finished request")
-                except OSError as exc:
-                    return refuse(f"{label} {key[:12]} unreadable: {exc}")
-        in_flight = movers_in_flight(queue, tier_id=tier_id)
-        if in_flight:
-            receipt["movers_in_flight"] = sorted(in_flight)
-            return refuse("movers_in_flight")
+
+    def _scope_outside_the_lock() -> dict[str, object]:
+        """The range's scope and its originals, which no lock guards (#988).
+
+        The manifest window, the staged names it derives and the originals
+        it proves recapturable are read from immutable CAS records and from
+        source files outside the stage.  None of it is state the stage
+        ownership lock orders, and the originals are stats on the shared
+        mount, one or more NFS round trips per entry, so they no longer run
+        under it.  A refusal found here is returned by the pass under the
+        lock, after its own head, consumer and mover checks, so the order
+        in which refusals are reported is unchanged.
+        """
+
+        fields: dict[str, object] = {}
+
+        def scoped(why: str) -> dict[str, object]:
+            return {"refusal": why, "fields": fields}
+
         try:
             stage_resolved = stage.resolve(strict=True)
         except OSError as exc:
-            return refuse(f"stage_root_unreadable: {exc}")
+            return scoped(f"stage_root_unreadable: {exc}")
 
         layout = _cached_manifest_layout(own_cas, manifest_sha256)
         if layout is None:
-            return refuse(
+            return scoped(
                 f"manifest {manifest_sha256[:12]} unreadable; scope "
                 f"undeterminable")
         mount_prefix, entries = layout
         try:
             window = prewarm_loop.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
-            return refuse(f"range not cuttable: {exc}")
+            return scoped(f"range not cuttable: {exc}")
         if not window:
-            return refuse("the recorded range covers no manifest entry")
+            return scoped("the recorded range covers no manifest entry")
         # ``entries_between`` includes a straddling entry whole, so the
         # window is a cover of the range and not a partition of it: it may
         # exceed the span, and must never fall short of it.  The manifest is
@@ -3739,13 +4306,13 @@ def recover_orphaned_range(
         # with the entries one range covers.
         covered = sum(int(one.get("bytes", 0)) for one in window)
         if covered < end - start:
-            return refuse(
+            return scoped(
                 f"the window covers {covered} bytes, short of the "
                 f"{end - start} the head recorded; scope is not the "
                 f"recorded range")
         staged = _bounded_int(head.get("entries_staged"))
         if staged is not None and staged != len(window):
-            return refuse(
+            return scoped(
                 f"the window holds {len(window)} entries, not the {staged} "
                 f"the head recorded staging; scope is not that window")
         names: dict[str, dict[str, object]] = {}
@@ -3770,11 +4337,11 @@ def recover_orphaned_range(
                 # A name that cannot be derived shrinks the scope silently if
                 # it is skipped, and a partial scope is a different question
                 # from the one the receipt asked.
-                return refuse(f"{source}: staged name underivable: {exc}")
+                return scoped(f"{source}: staged name underivable: {exc}")
             names[relative] = entry
             if legacy != relative:
                 pre_range[relative] = legacy
-        receipt["scope_entries"] = len(names)
+        fields["scope_entries"] = len(names)
 
         # Originals first: nothing is destroyed before the inputs they stand
         # for are proven to survive it.  ``exists`` is not that proof -- a
@@ -3787,38 +4354,84 @@ def recover_orphaned_range(
         for entry in window:
             source = str(entry.get("path") or "")
             if not source:
-                return refuse("a window entry names no source path")
+                return scoped("a window entry names no source path")
             offset = _bounded_int(entry.get("offset"))
             span = _bounded_int(entry.get("bytes"))
             if offset is None or span is None:
-                return refuse(
+                return scoped(
                     f"{source}: window entry names an unusable extent")
             checked += 1
             try:
                 original = Path(source)
                 if not original.exists():
-                    return refuse(
+                    return scoped(
                         f"original missing for {source}; the staged copy may "
                         f"be the last surviving input")
                 if stage_resolved in original.resolve().parents:
-                    return refuse(
+                    return scoped(
                         f"original {source} resolves inside the stage root; "
                         f"it is not a separate input")
                 if not original.is_file():
-                    return refuse(
+                    return scoped(
                         f"original {source} is not a regular source file")
                 size = original.stat().st_size
             except OSError as exc:
-                return refuse(f"original {source} unreadable: {exc}")
+                return scoped(f"original {source} unreadable: {exc}")
             if size < offset + span:
-                return refuse(
+                return scoped(
                     f"original {source} holds {size} bytes, short of the "
                     f"{offset + span} its window covers; the staged copy is "
                     f"not proven recapturable")
             present += 1
-        receipt["originals_checked"] = checked
-        receipt["originals_present"] = present
+        fields["originals_checked"] = checked
+        fields["originals_present"] = present
 
+        return {"refusal": "", "fields": fields,
+                "stage_resolved": stage_resolved,
+                "mount_prefix": mount_prefix, "names": names,
+                "pre_range": pre_range}
+
+    scope = _scope_outside_the_lock()
+    memo = _CensusMemo()
+    census_started = time.perf_counter()
+    if not scope["refusal"]:
+        # The censuses once, as hints that fill the memo; the pass under
+        # the lock takes them again and acts only on that.
+        hint_paths = {os.path.normpath(str(stage / relative))
+                      for relative in scope["names"]}
+        _fragment_owners(Path(residency_root if residency_root is not None
+                              else queue.root / pool.RESIDENCY),
+                         hint_paths, memo=memo)
+        reader_lease.live_for(queue, None, residency_root=residency_root,
+                              memo=memo.pins)
+        _claimed_paths(queue, tier_id, own_cas, memo=memo)
+        _claimed_source_paths(queue, stage, own_cas, memo=memo)
+    census_s = time.perf_counter() - census_started
+    emptied: set[Path] = set()
+
+    def _held_recover() -> dict[str, object]:
+        """The ownership decision and the act, under the stage lock."""
+
+        for key, label in ((head_action_key, "head"), (consumer, "consumer")):
+            for state in (pool.READY, pool.CLAIMED):
+                try:
+                    if queue.item_path(state, key).exists():
+                        return refuse(
+                            f"{label} {key[:12]} is still {state}; recovery "
+                            f"acts only on a finished request")
+                except OSError as exc:
+                    return refuse(f"{label} {key[:12]} unreadable: {exc}")
+        in_flight = movers_in_flight(queue, tier_id=tier_id)
+        if in_flight:
+            receipt["movers_in_flight"] = sorted(in_flight)
+            return refuse("movers_in_flight")
+        receipt.update(scope["fields"])
+        if scope["refusal"]:
+            return refuse(str(scope["refusal"]))
+        stage_resolved = scope["stage_resolved"]
+        mount_prefix = scope["mount_prefix"]
+        names = scope["names"]
+        pre_range = scope["pre_range"]
         # Every fragment retains, wanted or not: the question here is not
         # whose bytes these are but whether anything at all still names them.
         # ``_fragment_owners`` -- not ``attributed_stage_paths`` -- because
@@ -3835,28 +4448,32 @@ def recover_orphaned_range(
                              else queue.root / pool.RESIDENCY)
         scope_paths = {os.path.normpath(str(stage / relative))
                        for relative in names}
+        parse_counts = memo.counts()
         fragment_owners, fragment_taint = _fragment_owners(
-            fragment_root, scope_paths)
+            fragment_root, scope_paths, memo=memo)
         if fragment_taint:
             return refuse(f"fragment census unreadable: "
                           f"{'; '.join(fragment_taint[:3])}")
         attributed = set(fragment_owners)
         pin_owners, pin_taint = reader_lease.live_for(
-            queue, None, residency_root=residency_root)
+            queue, None, residency_root=residency_root, memo=memo.pins)
         if pin_taint:
             return refuse(f"pin census unreadable: {'; '.join(pin_taint[:3])}")
         attributed |= set(pin_owners)
-        claimed, claim_taint = _claimed_paths(queue, tier_id, own_cas)
+        claimed, claim_taint = _claimed_paths(queue, tier_id, own_cas,
+                                              memo=memo)
         if claim_taint:
             return refuse(
                 f"claim census unreadable: {'; '.join(claim_taint[:3])}")
         attributed |= {os.path.normpath(str(stage / one)) for one in claimed}
-        handoffs, handoff_taint = _claimed_source_paths(queue, stage, own_cas)
+        handoffs, handoff_taint = _claimed_source_paths(
+            queue, stage, own_cas, memo=memo)
         if handoff_taint:
             return refuse(
                 f"promotion handoff census unreadable: "
                 f"{'; '.join(handoff_taint[:3])}")
         attributed |= {os.path.normpath(str(one)) for one in handoffs}
+        receipt.update(_locked_parse_record(memo, parse_counts))
 
         retained: dict[str, int] = {}
 
@@ -3915,14 +4532,32 @@ def recover_orphaned_range(
                 continue
             retired += 1
             bytes_retired += size
-            _prune_empty(path.parent, stage)
+            emptied.add(path.parent)
         receipt["entries_retired"] = retired
         receipt["bytes_retired"] = bytes_retired
         receipt["entries_already_gone"] = already_gone
         receipt["entries_refused"] = len(errors)
         receipt["errors"] = errors
         receipt["complete"] = not errors
-    return receipt
+        return receipt
+
+    # The per-entry classification and the unlinks stay in one hold.  This
+    # is an operator's repair, run by hand through the CLI and never by a
+    # tier cycle, and each entry's ``exists``/``resolve``/mark reads are the
+    # evidence its unlink stands on; what left the hold is the scope, the
+    # originals and the census parse (above) and the directory prune.
+    asked = time.perf_counter()
+    with queue.stage_ownership_lock(str(stage)):
+        granted = time.perf_counter()
+        result = _held_recover()
+    released = time.perf_counter()
+    pruned_started = time.perf_counter()
+    for parent in sorted(emptied, key=lambda one: len(one.parts), reverse=True):
+        _prune_empty(parent, stage)
+    result.update(_hold_record(
+        lock_wait_s=granted - asked, lock_held_s=released - granted,
+        census_s=census_s, prune_s=time.perf_counter() - pruned_started))
+    return result
 
 
 def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str) -> set[str]:

@@ -873,7 +873,8 @@ def release_incomplete_ram_promotions(
                     "receipt_errors": list(receipt_errors),
                     "entries_deleted": outcome.get("entries_deleted"),
                     "tokens_released": outcome.get("tokens_released"),
-                    "tokens_decharged": outcome.get("tokens_decharged")}
+                    "tokens_decharged": outcome.get("tokens_decharged"),
+                    **stage_release.lock_scope(outcome)}
             if outcome.get("complete") is True and not evict_errors:
                 events.append({"event": "ram-mover-incomplete-released",
                                **base})
@@ -5798,7 +5799,10 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             "tokens_decharged": receipt.get("tokens_decharged"),
             "declined": receipt.get("declined") or [],
             "live_pins": receipt.get("live_pins") or [],
-            "errors": receipt.get("errors") or []}
+            "errors": receipt.get("errors") or [],
+            # What the egress held the stage lock for, and what it did
+            # before and after the hold (#988).
+            **stage_release.lock_scope(receipt)}
 
     def ram_first(row: Mapping[str, object], needed: int) -> bool:
         """Evict a stage row's ram copies; ``False`` keeps the stage row."""

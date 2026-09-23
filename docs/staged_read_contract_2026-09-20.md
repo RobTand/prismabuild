@@ -192,8 +192,8 @@ or recovery requirements.
 |---|---|---|---|---|---|
 | absent → copying | mover | tokens reserved for range ceiling; source readable | bytes copy to temp beside final name | mover row receipt (started) | overrun vs reservation → `residency_overran_reservation`, refused before copy |
 | copying → published | mover | tokens reserved for range ceiling; source readable; length == range length; integrity computed during the necessary copy | atomic rename into place; map names it under epoch with the recorded actual digest plus source change-detection evidence | `movers/` receipt via `record_move` + map fragment | expected digest null → the actual digest is recorded, never claimed as "matches known expected". Mismatch against a present expectation → delete temp, range unpublished. Dev certification unchanged (DEV-04) |
-| published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
-| retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
+| published → retiring | tier loop / egress, under ownership guard | marked retiring: no NEW readers admitted; live leases and pending copy handoffs recorded, as found by the census taken under the guard (a census taken before it is only a hint, #988) | range closed to new leases; charge and pin RETAINED | retiring mark + retained charge | new lease during retiring → refused |
+| retiring → absent | tier loop | last live lease absent AND physical bytes actually deleted; the pin and co-owner censuses that permit the delete are taken under the ownership guard, and the unlinks stay under it (#988) | object gone; ownership released exactly once; tokens freed | safe-deletion record + single release | last live lease still present → deletion forbidden; deletion failure → charge retained with retryable cleanup reason; release-before-reclaim forbidden |
 | copying → absent (failed copy) | mover / reaper | temp and any published orphans safely reclaimed; charge retained until then | range unstaged, tokens released exactly once | reclaim record + single release | charge released before reclaim forbidden; orphan bytes left addressable forbidden |
 | published → readiness-invalid | tier loop | epoch change | readiness statements void; bytes NOT proven gone, resources NOT proven free | new epoch announcement | readers re-verify; no any→absent shortcut |
 | readiness-invalid → published | tier loop / reader | revalidation under the new epoch plus new lease binding | readiness restored under the new epoch only | revalidation record + new lease | old-epoch lease reused → refused |
@@ -250,7 +250,8 @@ row above.
   missing ranges wait boundedly with reason or fail clearly.
 - INV-07 copy/publish/lease/release serialize safely: rename-before-
   fragment (temp beside final name, atomic rename); claim handoff ordered;
-  simultaneous egress serialized with shared-path ownership; last reader
+  simultaneous egress serialized with shared-path ownership (the co-owner
+  census that decides is taken under the ownership lock, #988); last reader
   including pending copy handoff blocks eviction; retiring retains charge
   until actual delete with the last live lease already absent, released
   exactly once (§4 SM-02 ordering; a transfer moves only the logical
@@ -467,7 +468,8 @@ not deployed support; axis-qualified evidence is in
   release ownership, run the existing egress, then re-acquire ownership and
   revalidate the exact batch/materialization/intent before committing the
   retirement record. Late-reader pin censuses stay authoritative (a reader
-  that arrives after the egress decision is still found by the locked census),
+  that arrives after the egress decision is still found by the locked census;
+  the census the egress takes before the lock since #988 is a hint only),
   and unknown, corrupt, or mixed ownership fails closed: retain, never free.
   Evidence of record: PB783 (merge `f5b6bba0358`) moves reclamation outside
   the stage ownership lock, and each certificate-bound release takes only its

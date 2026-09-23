@@ -2943,6 +2943,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                          mount_prefix: str,
                          namespace: str | None = None,
                          named_once: frozenset[str] = frozenset(),
+                         timings: dict[str, float] | None = None,
                          ) -> tuple[dict[str, dict[str, object]],
                                     dict[str, dict[str, object]], str | None]:
     """This mover's own prior coverage, qualified for a same-key retry.
@@ -3013,7 +3014,12 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
 
     fragment_path = residency_map.fragment_path(
         residency_root, consumer_action_key, mover_action_key)
+    asked = time.perf_counter()
     with queue.stage_ownership_lock(str(stage_root)):
+        if timings is not None:
+            # The first time a mover queues for the stage ownership lock:
+            # an egress's hold is paid here before the start gate (#988).
+            timings["resume_lock_wait_s"] = time.perf_counter() - asked
         try:
             with open(fragment_path, "rb") as stream:
                 fragment = residency_map.validate_fragment(json.load(stream))
@@ -3253,6 +3259,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     # path is still decided by the ordinary gate as the copier reaches
     # it.  Seeds add no staged bytes and cannot complete a receipt on
     # their own.
+    lock_timings: dict[str, float] = {}
     staged_seeds, sidecar_seeds, resumed_generation = _resume_own_coverage(
         queue, consumer_action_key=str(args.consumer_action_key),
         mover_action_key=str(args.action_key), tier_id=str(args.tier_id),
@@ -3260,7 +3267,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         manifest_sha256=str(manifest_sha256),
         residency_root=residency_root, window=window,
         mount_prefix=mount_prefix, namespace=namespace,
-        named_once=named_once)
+        named_once=named_once, timings=lock_timings)
     if staged_seeds:
         copier.staged.update(staged_seeds)
         copier.sidecar.update(sidecar_seeds)
@@ -3361,8 +3368,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     started = time.time()
     # The start gate, same as the promotion's: order this copy's first rename
     # against an egress that may be snapshotting right now.  Acquired and
-    # released -- nothing is held during the copy itself.
+    # released -- nothing is held during the copy itself.  Timed, because a
+    # wait here is an egress's hold paid by this copy (#988).
+    gate_started = time.perf_counter()
     pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.stage_root)
+    start_gate_wait_s = time.perf_counter() - gate_started
     copier.run(window, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish,
                named_once=named_once)
@@ -3425,6 +3435,13 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # single call, and how each entry ended (#981).  Totals alone could
         # not split chunk 0's 270 s tail; this can.
         "phase_timings": copier.clock.report(),
+        # How long this mover queued for the stage ownership lock before
+        # its copy began (#988): at the start gate, and before it at the
+        # read of its own prior coverage.  Either is an egress's hold, paid
+        # by a mover; whichever comes first absorbs it.
+        "start_gate_wait_s": round(start_gate_wait_s, 6),
+        "resume_lock_wait_s": round(
+            lock_timings.get("resume_lock_wait_s", 0.0), 6),
         # 0 means "could not be read", which prices nothing, rather than 1.
         storage_tiers.MOVER_CONCURRENCY_FIELD: int(concurrent),
         # What the ledger promised this copy of the pool, beside what the pool

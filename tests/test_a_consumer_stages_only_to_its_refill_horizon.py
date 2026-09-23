@@ -393,7 +393,7 @@ def _assert_farthest_evicted(files: dict[int, list[Path]], queue: pool.PoolQueue
 
 
 def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
-        tmp_path: Path) -> None:
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """The 23:03 capture, on the first cycle after it reported ``layer-3``.
 
     The capture was admitted on its lead and protected next, read ``head``
@@ -421,6 +421,26 @@ def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
         assert queue.item_path(pool.READY, egress).exists(), CAPTURE_NAMES[ordinal]
     _assert_farthest_evicted(files, queue, kept=range(13), evicted=range(13, WIDE))
     assert_ledger_matches_the_stage(queue)
+
+    # Each eviction event says what the egress held the stage lock for
+    # (#988): the hold, the entries it judged, and the census before it.  The
+    # event is on stdout and in the consumer's event file, which a kill's
+    # ending record reads (#990).
+    printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+               if line.startswith("{")]
+    evicted = [event for event in printed
+               if event.get("event") == "beyond-horizon-evicted"]
+    filed = [event for event in queue.consumer_events(READER)
+             if event.get("event") == "beyond-horizon-evicted"]
+    assert len(evicted) == WIDE - 13, printed
+    assert len(filed) == WIDE - 13, filed
+    for event in evicted + filed:
+        assert set(stage_release.LOCK_SCOPE_FIELDS) <= set(event), event
+        assert event["entries_judged"] > 0, event
+        assert 0.0 <= event["lock_held_s"], event
+        assert 0.0 <= event["census_validate_s"] <= event["lock_held_s"], event
+        assert 0.0 <= event["unlink_s"] <= event["lock_held_s"], event
+        assert event["census_s"] > 0.0, event
 
 
 def test_a_running_consumer_regated_after_its_lead_retires_still_preempts(

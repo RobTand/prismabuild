@@ -527,9 +527,9 @@ def test_republication_after_census_retains(fleet, monkeypatch, owner):
     original = stage_release._fragment_census
     published = False
 
-    def census(root):
+    def census(root, *args, **kwargs):
         nonlocal published
-        result = original(root)
+        result = original(root, *args, **kwargs)
         if not published:
             published = True
             queue.publish(action_key=consumer if owner == "consumer" else mover,

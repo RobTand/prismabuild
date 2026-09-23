@@ -4248,7 +4248,8 @@ so forward and reverse passes, or two read phases of one v2 plan, stage the same
 source extent onto one file, and a promotion reads it back from that same staged
 name at offset zero (never the manifest's pool path at the manifest offset). An
 egress deletes only what is exclusively its mover's: under the stage root's
-ownership lock (held across scan-to-release, inside the mover transition lock;
+ownership lock (held from its re-census to its release, inside the mover
+transition lock; the census it takes first, without the lock, is a hint, #988;
 adoption takes them in the same order, declining on contention), it intersects one
 fragment walk against its own paths as validated strings plus the sealed ranges of
 claimed movers -- claims first, then fragments, because a claim exists before its
@@ -4259,7 +4260,9 @@ mover's own tokens come back and its own fragment is dropped; the last owner to
 leave deletes the file. Anything unreadable fails the pass closed with the reason
 on the receipt. Limits, stated: the ownership scan parses every consumer's
 fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
-live corpus -- JSON parsing, linear in corpus size, no global map by design); a
+live corpus -- JSON parsing, linear in corpus size, no global map by design;
+since #988 that parse runs before the lock, and the census under it parses
+again only the fragments whose file version changed); a
 worker killed between rename and fragment publication leaves a recovery interval.
 
 Stage and RAM movers also use this ownership lock when publishing a copied
@@ -4337,6 +4340,103 @@ transition locks are held. This is needed because a resubmitted consumer's
 mover can adopt the old bytes under a name this run has not reached yet.
 Content-keyed stage paths would remove the collision by construction, but
 they are a layout migration; this settles it on the current layout.
+
+The egress holds the lock for its act, not its census (#988). Before this
+change `stage_release.evict` took the stage root's ownership lock and then
+ran the fragment, claim, source and pin censuses, judged every entry with two
+`resolve` calls each, unlinked, and pruned empty directories, all in one
+hold. Every publication, pin and start gate on that root waited for the
+whole range, and the tier loop evicts ranges of 1,680 to 161,572 entries.
+Now the censuses and the per-entry path fences run first, without the lock.
+The fences are the same `resolve` calls taken earlier: nothing in
+PrismaBuild makes a symlink in a stage tree, and nothing outside it takes
+the lock, so the hold never made them atomic with the unlink. The censuses
+are hints. Under the lock the egress takes the censuses again through a
+per-call memo: it lists every directory again and opens every fragment and
+pin again, and reuses a parse only while the file's `fstat` version (device,
+inode, size, `mtime_ns`, `ctime_ns`) is unchanged, the same fence the
+proof-lookup index uses (#761). A pin, a co-owner's fragment or a claim filed
+after the hint is therefore seen by the decision, which is still taken under
+the lock. The memo lives for one call, holds only what that call parsed, and
+is dropped when it returns. The judgement and the unlinks stay in the hold.
+The empty-directory prune runs after it: a publisher renames into a
+directory that already holds its temporary, so `rmdir` cannot remove it, and
+the publisher's `mkdir` already runs outside the lock.
+
+The unlinks stay under the lock because moving them out is not safe without
+new state. Unlinking outside the lock means dropping the ownership in one
+hold and unlinking in a later one. Two co-owners' egresses can then each
+judge a shared path against the other's fragment, which is still present,
+and both drop their ownership. The file is left with no owner, and because
+the mover marked it published, `reconcile` counts it in `unowned_left` and
+does not reclaim it. Closing that gap needs a durable egress-intent record
+and a resumer that finishes the unlinks after a crash. A `fable-high`
+consult on the split design (drop in one hold, then unlink in bounded holds)
+judged it sound with seven fixes, among them liveness for publishers past
+their 30 s grace, and did not find this interleaving.
+
+The hold still grows with the range, and the unlinks in it slow with the
+disk. The locked re-census and the unlinks took 12 to 17 us an entry on a
+quiet box and 61 us beside a second 20,000-entry egress on the same disk.
+Extrapolated linearly, the widest campaign range (161,572 entries) holds
+the lock for about 2 to 3 s quiet and up to 10 s under that contention; the
+same extrapolation of the old hold (176 to 421 us an entry quiet, 272 us
+contended) gives 28 to 68 s.
+The work per tier per cycle is already bounded by a priced number:
+`tier_loop.evict_beyond_horizon` stops once the tier's free tokens cover the
+shortfall its windows' refill horizons price, and evicts nothing when every
+candidate together could not make the room (#632). This change adds no
+other bound.
+
+Each egress receipt records `lock_wait_s`, `lock_held_s`, `entries_judged`,
+`census_s` (before the lock), `census_validate_s` and `unlink_s` (inside
+it) and `prune_s` (after it). It also records what the census under the
+lock parsed: `locked_parses` counts the fragments, pins and material
+sidecars parsed inside the hold, and `locked_reuses` the fragments and
+sidecars reused because their version had not changed. An egress whose
+state did not change between the two censuses parses nothing under the
+lock. `reconcile` and `recover_orphaned_range` record the same two counts.
+The `beyond-horizon-evicted` and `beyond-horizon-eviction-declined` events
+copy these fields (`stage_release.lock_scope`), and the tier loop files
+those events in the consumer's event file, which a kill's ending record
+reads (#990). Stage and RAM mover receipts record `start_gate_wait_s`; the
+stage mover also records `resume_lock_wait_s`, the first lock it waits
+for, which resumes its own coverage before the gate.
+
+The test asserts the structure of the hold, not its length, because the
+length depends on the box: 0.25 s alone and 1.22 s beside a second
+20,000-entry egress on the same disk. It counts every fragment, pin and
+sidecar parse made while the lock is held and requires none. Its timing
+assertion is only a guard against the old regime, set at the shortest hold
+main took alone (3.52 s).
+
+On a 20,000-entry landed range with three publishers of 2,000 entries each
+(`tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py`, sparky),
+the egress's single hold fell from 3.52 s to 0.25 s, and so did the
+publishers' p99 publication latency during it; the 1.05 s census now runs
+before the hold. In `tools/fleet/bench_stage_egress.py`, the same range in a
+live-shaped residency forest, the hold fell from 8.43 s to 0.35 s and a
+publisher's lock wait from 8.67 s to 0.36 s. `py-spy` put the old hold in
+the per-entry judgement (1.79 s), the fragment census (1.15 s), the
+directory prune (1.06 s) and the unlinks (0.33 s), and the new hold in the
+unlinks (0.19 s) and the rest of the act (0.09 s).
+
+The other holders of the lock follow the same pattern where it applies:
+
+* `prune_stale_mentions` takes its census and fences before the lock. One
+  hold judges, drops the stale mentions and unlinks; the prune runs after
+  it. The per-entry `lstat` classification stays in the hold, because it
+  decides which mentions the rewritten fragment keeps.
+* `reconcile` skips without taking the lock while a mover is in flight, and
+  checks again under it. It walks the stage and applies its per-file rules
+  before the lock. Under the lock it reads attribution and pins again and
+  compares each candidate's `lstat` version with the one the walk saw; a
+  file that changed since the walk is left for the next pass.
+* `recover_orphaned_range` resolves its scope (the manifest layout, the
+  window and the names) and takes hint censuses before the lock. Under the
+  lock it checks the READY and CLAIMED rows and the movers again, takes the
+  censuses through the memo, and classifies and unlinks. The prune runs
+  after the hold.
 
 Range adoption also checks the donor's dated material against the current file
 identity under the ownership lock before publishing a successor or transferring
@@ -7451,8 +7551,10 @@ unpin it.
 The egress defers to any live ref: it keeps the file, the fragment and the
 charge, files a retiring mark bound to the material generation (closed to
 new acquires for that generation only), and deletes after the last release.
-The reconciliation holds the same ownership lock across query and delete,
-and treats a live pin as attribution. Lock order is transition, then
+The reconciliation walks the stage before the lock, as a hint, then reads
+attribution and pins again and checks each candidate's file identity under
+the same ownership lock before it deletes (#988); it treats a live pin as
+attribution. Lock order is transition, then
 ownership, then rename/unlink on every path; acquire takes ownership only.
 
 One stage root at a time (#780). That ladder orders the three lock families
@@ -7767,6 +7869,20 @@ reconciliation; `evict` and `reconcile` refuse on the same fact for the callers
 that reach them directly, the egress action row among them. The marker itself
 is the one unmarked, unattributed file at the stage root the reconciliation
 skips: without that line the sweep would delete the fact that lets it sweep.
+
+**A sweep that cannot read its tier ledger deletes nothing (#1007).** The
+sweep reads the tier's held keys twice: for the held-key pass, and again
+after it, so that a held mover's fragment counts as attribution for the
+reconciliation even when no live plan names that mover. Until #1007 a
+failure of the second read left the held set empty and the reconciliation
+still ran, so such a mover's staged bytes read as unowned. Now either
+failure skips what needs the read: the first skips the held-key pass and
+the reconciliation, the second skips the reconciliation. Each skip leaves a
+`stage-sweep-ledger-unreadable` record with the pass it skipped in
+`skipped`, the ledger error in `reason` and `errors`, and `complete:
+false`. The tier loop prints the record with the sweep's other events
+through `_emit`. The first skip was already fail-closed, but it left no
+record.
 
 **Tests use temporary roots, registered.** The three tests that named the real
 mountpoint now name `tmp_path`, and every fixture that drives a sweep or an

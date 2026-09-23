@@ -640,7 +640,8 @@ def clear_retiring(root: str | Path, *, consumer_action_key: str,
 # Pin census (egress/reconcile read this, one walk, string intersection)
 # --------------------------------------------------------------------------
 
-def live_for(queue, wanted: set[str] | None, *, residency_root=None
+def live_for(queue, wanted: set[str] | None, *, residency_root=None,
+             memo: dict[str, object] | None = None,
              ) -> tuple[dict[str, list[str]], list[str]]:
     """Which of ``wanted`` paths a live pin refs (``None``: all pinned paths).
 
@@ -648,6 +649,14 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None
     Retiring marks and ``*.tmp`` temporaries are never pins.  Anything else
     unreadable or invalid taints the pass: its paths are unknowable, so the
     egress deletes nothing and frees nothing on that pass.
+
+    ``memo`` is a caller-owned dict that lets a second census in the same
+    call skip re-parsing a pin whose file is unchanged (#988).  Every pin
+    file is still listed and opened; only a pin whose ``fstat`` version
+    (device, inode, size, mtime and ctime) equals the one its parse was
+    taken under reuses that parse.  A pin gains a ref by an atomic rewrite,
+    which is a new inode, so a new ref is never hidden.  A read that failed
+    is never remembered.
     """
 
     root = leases_root(queue, residency_root)
@@ -677,18 +686,38 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None
             if not name.endswith(".lease.json"):
                 tainted.append(f"{consumer}/{name}: not a pin file")
                 continue
+            key = str(directory / name)
             try:
                 with open(directory / name) as stream:
-                    pin = validate_pin(json.load(stream))
+                    remembered = None
+                    if memo is not None:
+                        info = os.fstat(stream.fileno())
+                        version = (info.st_dev, info.st_ino, info.st_size,
+                                   info.st_mtime_ns,
+                                   int(getattr(info, "st_ctime_ns", 0)))
+                        hit = memo.get(key)
+                        if isinstance(hit, tuple) and hit[0] == version:
+                            remembered = hit[1], hit[2]
+                    if remembered is None:
+                        pin = validate_pin(json.load(stream))
             except (OSError, ValueError) as exc:
+                if memo is not None:
+                    memo.pop(key, None)
                 tainted.append(f"{consumer}/{name}: {exc}")
                 continue
-            pin_id = str(pin["pin_id"])
-            entries = pin["entries"]
-            assert isinstance(entries, list)
-            for entry in entries:
-                assert isinstance(entry, dict)
-                path = os.path.normpath(str(entry["stage_path"]))
+            if remembered is None:
+                pin_id = str(pin["pin_id"])
+                entries = pin["entries"]
+                assert isinstance(entries, list)
+                named: list[str] = []
+                for entry in entries:
+                    assert isinstance(entry, dict)
+                    named.append(os.path.normpath(str(entry["stage_path"])))
+                if memo is not None:
+                    memo[key] = (version, pin_id, tuple(named))
+            else:
+                pin_id, named = remembered
+            for path in named:
                 if wanted is not None and path not in wanted:
                     continue
                 known = owners.setdefault(path, [])

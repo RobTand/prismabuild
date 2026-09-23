@@ -184,6 +184,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "forest and a scratch queue root; it is a record of one measurement "
      "rather than an operator command, and it must never be pointed at the "
      "live stage or the live queue"),
+    ("bench_stage_egress.py",
+     "a standalone profile of a whole-range egress and the publishers "
+     "beside it (#988), run from a checkout through pbrun over a synthetic "
+     "residency forest and a scratch queue root; it is a record of one "
+     "measurement rather than an operator command, and it must never be "
+     "pointed at the live stage or the live queue"),
     ("qualify_record_visibility.py",
      "a standalone timing of how late an NFS client of the queue sees a "
      "record another box files, run from a checkout through pbrun against "
