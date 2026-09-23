@@ -403,6 +403,7 @@ def test_the_blocked_listing_names_each_dead_holder_and_its_exact_remedy(
 
     # A declaration it cannot read is named, and the listing says it is partial.
     broken = po._consumers_dir(queue.root, batches["mixed"][0], "b1") / f"{live}.json"
+    broken.chmod(0o644)
     broken.write_text("{")
     code, partial = listing()
     assert code == pbstatus.EXIT_INCOMPLETE and partial["complete"] is False
