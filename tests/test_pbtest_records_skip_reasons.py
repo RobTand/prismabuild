@@ -198,14 +198,18 @@ def _mocked_shard(tmp_path: Path, monkeypatch, output: str):
 
 
 def test_skips_without_a_record_are_named_as_unrecorded(tmp_path, monkeypatch, capsys):
-    """No record is "reasons unknown", never "nothing skipped"."""
+    """No record is "reasons unknown", never "nothing skipped".
+
+    Since #941 a shard with no record is also unreconciled, so not green.
+    """
 
     code, results = _mocked_shard(
         tmp_path, monkeypatch, "..ss\n2 passed, 2 skipped in 0.10s\n")
     printed = capsys.readouterr().out
-    assert code == 0
+    assert code == 1
     assert results[0]["skipped"] is None
     assert "2 skip(s) with NO RECORDED REASON" in printed
+    assert "no outcome record" in printed
 
 
 def test_a_record_that_disagrees_with_the_summary_is_named(tmp_path, monkeypatch, capsys):
@@ -214,9 +218,10 @@ def test_a_record_that_disagrees_with_the_summary_is_named(tmp_path, monkeypatch
         "collected": ["tests/test_one.py::test_one"],
         "reports": [["tests/test_one.py::test_one", "setup", "skipped", "why", None]],
     })
-    _, results = _mocked_shard(
-        tmp_path, monkeypatch, f"s\n{record}\n0 passed, 2 skipped in 0.10s\n")
+    code, results = _mocked_shard(
+        tmp_path, monkeypatch, f"s\n{record}\n2 skipped in 0.10s\n")
     printed = capsys.readouterr().out
+    assert code == 1
     assert [skip["nodeid"] for skip in results[0]["skipped"]] == ["tests/test_one.py::test_one"]
     assert "records 1 skip(s) and its summary counts 2" in printed
 

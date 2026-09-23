@@ -918,6 +918,20 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+`pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
+carries `reconciliation`: its collected tests matched against the outcomes its
+recorder saw, and its record's counts matched against its summary line. A
+shard is not green, whatever its exit code, when a collected test has no
+outcome, an outcome belongs to no collected test, a node ID is collected twice,
+another shard also collected one of its node IDs, its counts disagree with its
+summary, or it reported a summary and printed no record. A `--collect-only`
+shard is matched on its collected count instead. Two differences are not
+failures, and the report names each: an outcome at collection (a module that
+skipped or failed at import, which the summary counts and a `--collect-only`
+pass does not) and a test the summary counts in more than one phase (a pass
+whose teardown errors or skips). The report's totals line states the sum:
+outcomes equal tests, plus outcomes at collection, plus extra phases.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)

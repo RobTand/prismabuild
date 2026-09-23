@@ -25,6 +25,8 @@ import sys
 
 import pytest
 
+from pbtest_shard_output import ONE_PASS  # noqa: E402
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
@@ -43,7 +45,7 @@ class _FinishedProcess:
     returncode = 0
 
     def communicate(self):
-        return "1 passed in 0.01s\n", None
+        return ONE_PASS, None
 
 
 def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
