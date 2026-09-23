@@ -6810,6 +6810,48 @@ against `/home/rob`: sparky had 138,829,066,240 B free of 1,968,362,958,848 B,
 so 40,410,918,297 B (37.6 GiB) of room above the floor, and sparklina had
 436,092,063,744 B free of 982,819,848,192 B, 360.4 GiB of room.
 
+**Bounded local scratch draws from the same budget (#911).** An action can
+write scratch to a box's local disk: a replay spill, a cotangent sink, or a
+cache. PrismaQuant bounds each one with a pair of sealed variables, a root and
+a byte ceiling, and its launcher refuses a root that is not an identity bind
+of a local path. PrismaBuild could not see those pairs, so it could place two
+large scratch holders on one box, or one on a box whose disk cannot hold it.
+The action then failed closed only after it had taken its claim. An action now
+lists its pairs in one more sealed variable,
+`PRISMABUILD_LOCAL_SCRATCH_PAIRS=ROOT_ENV:MAX_ENV[,ROOT_ENV:MAX_ENV...]`.
+`pbrun` derives ceil(`MAX` / 2^30) for each pair (`local_scratch.scratch_terms`)
+and adds the sum to the same `spool_gb` kind the spool window uses, because
+both use the same disk. A producer that also opts in to the spool window
+reserves the window plus its scratch. The kind keeps the name #747 gave it,
+so boxes, the roster and the ledger need nothing new. Claim charges it
+through the host ledger like `mem_gb`, so two holders on one box can never
+reserve more than its declaration together. An action whose scratch exceeds a
+box's declaration records `never_fits_capacity` there and is claimed on a box
+where it fits.
+
+`pbrun` refuses at submission:
+- a list item that is not `ROOT_ENV:MAX_ENV`, or a name that is not a variable
+  name;
+- a name listed twice, or the list naming itself;
+- the spool window's own pair (`PRISMABUILD_PRODUCED_SPOOL_ROOT` and
+  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`), which
+  `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` already charges; listing it here
+  would charge the same bytes twice;
+- a named variable the sealed environment does not set;
+- a root that is not a canonical absolute path, or is `/`, or appears twice;
+- a ceiling that is not a positive decimal integer;
+- a typed `--demand spool_gb`;
+- any declaration on `--transport slurm`, which has no host ledger.
+
+Freeze derives the demand again from the final environment and refuses a
+sealed `spool_gb` that differs. A pair is never inferred from a variable's
+name: without the list, an environment that carries scratch-shaped variables
+seals exactly the demand it sealed before, and `pbrun` does not import the
+module. PrismaBuild charges the bound; it does not check at run time that a
+root sits on the declared `local_disk` filesystem, or that the action stays
+under its ceiling. PrismaQuant's launcher and the action's own byte bound do
+both.
+
 **Still open.**
 
 * The export's pool-side cost is unmeasured. The receipt records file-side

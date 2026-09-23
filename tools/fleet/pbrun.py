@@ -1155,6 +1155,51 @@ def spool_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[
     return terms
 
 
+#: The sealed variable naming an action's bounded-local scratch pairs (#911).
+#: Spelled here for the same reason as the spool names above; the derivation
+#: is ``local_scratch.scratch_terms``.
+_SCRATCH_PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
+
+
+def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
+    """The host demand a sealed environment's scratch pairs derive, or ``{}``.
+
+    Off -- no ``PRISMABUILD_LOCAL_SCRATCH_PAIRS``, or an empty one -- nothing
+    is imported or read.  On, each declared ``ROOT_ENV:MAX_ENV`` pair charges
+    its ceiling to the box's local-disk kind at claim, which only the pull
+    queue holds.
+    """
+
+    if not variables.get(_SCRATCH_PAIRS_ENV):
+        return {}     # the undeclared path imports and reads nothing new
+    from prismabuild import local_scratch
+
+    try:
+        terms = local_scratch.scratch_terms(variables)
+    except local_scratch.LocalScratchError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+    if terms and transport != "pool":
+        raise SystemExit(
+            f"pbrun: {_SCRATCH_PAIRS_ENV} needs the pull queue: bounded local "
+            f"scratch is a host-ledger reservation, and --transport {transport} "
+            "cannot hold one")
+    return terms
+
+
+def local_disk_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
+    """The one local-disk demand: the spool window plus declared scratch.
+
+    Both draw from the ``spool_gb`` kind a box declares with ``--spool-gb``,
+    because they share the box's disk (#747, #911).  With neither declared
+    this is ``{}``.
+    """
+
+    total = sum(terms.get(_SPOOL_WINDOW_KIND, 0) for terms in (
+        spool_window_terms(variables, transport=transport),
+        scratch_window_terms(variables, transport=transport)))
+    return {_SPOOL_WINDOW_KIND: total} if total else {}
+
+
 def validate_fleet_demand(demand: Mapping[str, object]) -> None:
     """Refuse a ``pbrun`` resource that no live worker offer can hold.
 
@@ -1170,7 +1215,8 @@ def validate_fleet_demand(demand: Mapping[str, object]) -> None:
         # worker can offer, just never a typed one (#747).
         raise SystemExit(
             f"--demand must not name {_SPOOL_WINDOW_KIND!r}: it is derived from "
-            f"the sealed {_SPOOL_WINDOW_ENV}=1 and {_SPOOL_MAX_ENV} environment")
+            f"the sealed {_SPOOL_WINDOW_ENV}=1 and {_SPOOL_MAX_ENV} environment "
+            f"and the pairs {_SCRATCH_PAIRS_ENV} names")
     unsupported = sorted(set(demand) - _FLEET_DEMAND_KINDS)
     if unsupported:
         rendered = ", ".join(repr(kind) for kind in unsupported)
@@ -4742,18 +4788,19 @@ def freeze_action_template(
             data_manifest_summary["content_encoding"] = manifest_encoding
     else:
         data_manifest_summary = None
-    # The spool window demand is derived from the sealed environment, so the
-    # two are checked together here, where both are final (#747).  Off, a
-    # sealed ``spool_gb`` is refused rather than carried unexplained.
-    spool_terms = spool_window_terms(variables, transport=transport)
+    # The local-disk demand -- the spool window and any declared scratch --
+    # is derived from the sealed environment, so the two are checked together
+    # here, where both are final (#747, #911).  Off, a sealed ``spool_gb`` is
+    # refused rather than carried unexplained.
+    spool_terms = local_disk_terms(variables, transport=transport)
     sealed_spool = {kind: int(need) for kind, need in demand.items()
                     if kind == _SPOOL_WINDOW_KIND}
     if sealed_spool != spool_terms:
         raise SystemExit(
             f"pbrun: sealed {_SPOOL_WINDOW_KIND} demand {sealed_spool or 'none'} "
-            f"disagrees with the environment's spool window "
-            f"{spool_terms or 'none'}; {_SPOOL_WINDOW_ENV} and {_SPOOL_MAX_ENV} "
-            "are the only source of it")
+            f"disagrees with the environment's local-disk demand "
+            f"{spool_terms or 'none'}; {_SPOOL_WINDOW_ENV}, {_SPOOL_MAX_ENV} and "
+            f"the pairs {_SCRATCH_PAIRS_ENV} names are the only source of it")
     produced_declaration = None
     produced_validated = None
     if produced_output_template_path is not None:
@@ -6181,10 +6228,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             variables.setdefault(name, str(demand["cpu"]))
     # A produced-output producer's local spool window, when its environment
-    # opts in (#747).  Derived like the template's tier demand, never typed:
-    # ``_parse_demand`` has already refused a typed ``spool_gb``.  Off, this
-    # adds nothing, and the demand is byte-for-byte what it was.
-    demand.update(spool_window_terms(variables, transport=args.transport))
+    # opts in (#747), and any bounded local scratch it declares (#911).
+    # Derived like the template's tier demand, never typed: ``_parse_demand``
+    # has already refused a typed ``spool_gb``.  Off, this adds nothing, and
+    # the demand is byte-for-byte what it was.
+    demand.update(local_disk_terms(variables, transport=args.transport))
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")

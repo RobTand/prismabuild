@@ -3206,6 +3206,31 @@ only for the kinds it offers. Lower a budget by publishing a smaller positive
 value. The producer's own `statvfs` check still refuses a spool group the disk
 cannot hold.
 
+### Declare an action's bounded local scratch
+
+An action that writes scratch to the executing box's local disk declares each
+bound as a pair of sealed variables, a root and a byte ceiling, and lists the
+pairs in `PRISMABUILD_LOCAL_SCRATCH_PAIRS` (#911):
+
+```
+pbrun.py --priority -10 \
+  --env PRISMAQUANT_STAGE_B_SPILL_ROOT=/home/rob/scratch/spill \
+  --env PRISMAQUANT_STAGE_B_SPILL_MAX_BYTES=178000000000 \
+  --env PRISMABUILD_LOCAL_SCRATCH_PAIRS=PRISMAQUANT_STAGE_B_SPILL_ROOT:PRISMAQUANT_STAGE_B_SPILL_MAX_BYTES \
+  -- ...
+```
+
+`pbrun` reserves ceil(178,000,000,000 / 2^30) = 166 GiB of the box's
+`spool_gb` for the whole claim. List several pairs with commas, and list only
+the pairs the action writes. Do not list the produced spool's own pair; set
+`PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` for it, and the window and the
+scratch then add up in one reservation. The action is claimed only on a box
+whose roster declares enough `--spool-gb`. When no matching box declares
+enough, `pbrun` refuses the action at submission. When some box's offer does
+not name the kind, `pbrun` queues it, and every claim records
+`never_fits_capacity`. The refusals are listed in `docs/design.md` under
+"Bounded local scratch draws from the same budget".
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
