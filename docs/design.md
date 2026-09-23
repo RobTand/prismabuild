@@ -7267,7 +7267,10 @@ the smallest sealed fill. The record carries every measured rate beside it
 tier loop rewrites the record only when the queue, the ranges' states or the
 rates change, so `written_unix` dates the last change, not the last cycle.
 An `unpublished` range is listed only inside the consumer's refill horizon;
-a queued range is listed wherever it is.
+a queued range is listed wherever it is. A consumer that is no longer running
+loses its record, and the dead-consumer pass removes it with the plan it
+reaps. Each record carries `publish_s`, what the pass had spent when it
+composed it.
 
 The expectation is information for the reader's log, `pbstatus` and
 pricing. It is never a deadline. A copy that runs slower than every earlier

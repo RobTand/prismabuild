@@ -67,7 +67,8 @@ def _mover(label: str, name: str) -> str:
 
 
 def _plan(queue: pool.PoolQueue, consumer: str, *, label: str, manifest: str,
-          phases: list[dict[str, object]], fill: int) -> dict[str, object]:
+          phases: list[dict[str, object]], fill: int,
+          stage_root: str = "/stage/prewarm") -> dict[str, object]:
     total = int(phases[-1]["end_bytes"])
     built = []
     for phase in phases:
@@ -87,7 +88,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, *, label: str, manifest: str,
                                {"mem_gb": 1}),
         })
     return residency_plan.build_plan(
-        consumer_action_key=consumer, tier_id=TIER, stage_root="/stage/prewarm",
+        consumer_action_key=consumer, tier_id=TIER, stage_root=stage_root,
         manifest_sha256=manifest, manifest_bytes=total, phases=built)
 
 
@@ -316,8 +317,12 @@ def _r12_shaped(queue: pool.PoolQueue, stage: Path, shift: float, name: str, *,
     r12 = DATA["r12"]
     key, manifest = THREE[name], THREE_MANIFESTS[name]
     label = f"three{name}"
+    # The plan names the stage its ranges land on, so a landed range is
+    # resident by the tier's own predicate (``resident_movers``), not only
+    # held.
     plan = _plan(queue, key, label=label, manifest=manifest,
-                 phases=r12["phases"], fill=r12["sealed_fill_mb_s"])
+                 phases=r12["phases"], fill=r12["sealed_fill_mb_s"],
+                 stage_root=str(stage))
     _consumer(queue, key, plan, manifest=manifest,
               mem_gb=r12["resources"]["mem_gb"])
     by_name = {str(phase["name"]): phase for phase in r12["phases"]}

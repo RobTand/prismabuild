@@ -1692,6 +1692,11 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
             queue, key, reason=f"consumer-{state}",
             plan=plan, filing=incarnation)
         if reaped is not None:
+            # The landing record describes a window nobody reads any more
+            # (#989); it goes with the plan, as the event file does.
+            residency_map.landing_path(
+                queue.residency_fragment_root(), key).unlink(missing_ok=True)
+            _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
             events.append({
                 "event": "residency-plan-reaped", "consumer": key,
                 "tier_id": str(plan["tier_id"]),
