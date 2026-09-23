@@ -127,15 +127,22 @@ def test_a_newcomer_behind_a_waiting_window_is_named_with_it(
     item.write_text(json.dumps(body))
     second = Consumer(queue, stage, "m")
 
-    tier_loop.residency_window(queue, tiers=_tiers(stage))
+    events = tier_loop.residency_window(queue, tiers=_tiers(stage))
 
     waiting = _record(queue)["waiting"]
     assert _term(waiting, consumer=first.key)["reason"] == (
         window_credit.REASON_COMMITMENT)
     behind = _term(waiting, consumer=second.key)
     assert behind["reason"] == "higher-priority-window-waiting"
-    assert behind["waiting_on"] == {
-        "consumer": first.key, "reason": window_credit.REASON_COMMITMENT}
+    on = {"consumer": first.key, "reason": window_credit.REASON_COMMITMENT}
+    assert behind["waiting_on"] == on
+    # The cycle's own log says it too, not only the record.
+    [gate] = [event for event in events if event.get("event") == "window-gated"
+              and event.get("consumer") == second.key]
+    assert gate["waiting_on"] == on
+    blob = pbstatus.read_starvation(queue.root)
+    assert {entry["consumer"] for entry in blob["joint_commitment_waits"]} == {
+        first.key, second.key}
 
 
 # ---------------------------------------------------- an over-committed tier

@@ -5308,6 +5308,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 "output_note": str(gate.get("output_note") or ""),
                 **({"commitment": gate["commitment"]}
                    if "commitment" in gate else {}),
+                # A wait behind another newcomer's wait names that one and
+                # its reason, so the log connects it to a commitment stall
+                # as the tier's record does (#930).
+                **({"waiting_on": {
+                    "consumer": str(gate["waiting_consumer"]),
+                    "reason": (gated.get((str(gate["waiting_consumer"]),
+                                          tier_id)) or {}).get("reason")}}
+                   if gate.get("waiting_consumer") else {}),
             })
         if unknown_hit and superseded is None and gate is None:
             published.append({
