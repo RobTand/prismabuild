@@ -6007,6 +6007,13 @@ on a stage that announces a slower fill.
   than the tier (a claim measured faster than its stand-in), they keep
   running and contend as before; newcomers are refused until the sum fits.
   Nothing reports the overcommit.
+* An admitted window that the joint-fit gate has physically stalled still
+  holds its footprint in the commitment. Beside a holder nothing can evict, a
+  tier can be over-committed by that window alone, and then a newcomer that
+  would fit the free room waits behind a window that cannot progress either,
+  until the holder goes. Because nothing reports the overcommit, this looks
+  like a stall to an operator: the newcomer's `window-gated` event carries
+  the terms (`committed_gib` above `capacity_gib`).
 * The horizon's own in-phase over-estimate is real window behavior: a claim
   whose first report lands seconds after it has a window that runs to the
   #633 bound until its next report. The footprint follows it while it lasts,

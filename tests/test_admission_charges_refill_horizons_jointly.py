@@ -339,6 +339,37 @@ def test_a_reader_whose_plan_does_not_read_defers_the_newcomer(
     assert tier_loop.window_pressure(queue, tiers=_tiers(stage)).get(TIER) is None
 
 
+def test_a_ready_window_whose_plan_does_not_read_defers_the_newcomer(
+        tmp_path: Path) -> None:
+    """The same for a window admitted but not yet claimed.
+
+    Its lead has landed, so it is an admitted window (#908): it will claim
+    and grow to its 14 GiB footprint.  With its plan unreadable, only its
+    queue item says so -- the tier its residency names, and a lead that
+    holds tokens -- and that is enough to keep the newcomer out of the room
+    it will grow into.  A ready consumer whose leads are all unpublished is
+    the other case: admitted nowhere, it blinds nothing
+    (``test_unknown_plan_defers_only_its_consumer``).
+    """
+
+    queue, stage = _fixture_queue(tmp_path, 24)
+    admitted = Consumer(queue, stage, "a")
+    admitted.land(0)
+    newcomer = Consumer(queue, stage, "b")
+    plan_path = Path(queue.residency_plan_path(admitted.key))
+    plan_path.unlink()
+    plan_path.write_text("{")
+
+    events = tier_loop.residency_window(queue, tiers=_tiers(stage))
+
+    assert not newcomer.lead_published()
+    gate = _gate(events, newcomer.key)
+    assert gate is not None
+    assert gate["reason"] == window_credit.REASON_DEFER_UNKNOWN
+    assert "not censused" in str(gate["commitment"]["error"])
+    assert tier_loop.window_pressure(queue, tiers=_tiers(stage)).get(TIER) is None
+
+
 def _owes(gib: int):
     def census(_queue, tier_id):
         return {"gib": gib if tier_id == TIER else 0, "owners": {},
