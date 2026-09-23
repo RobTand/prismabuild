@@ -3301,8 +3301,38 @@ as `output-origin-retirement-stalled`, naming the consumer and its state:
 grep '"output-origin-retirement-' <tier-loop log>
 ```
 
-To release the batch, resubmit the same consumer; the batch is deleted after
-that run succeeds. `output-origin-retirement-refused` means the tick would not
+To let the batch go, use one of these (#926):
+
+- **Resubmit the consumer.** A resubmission of the same key clears the hold
+  once it succeeds. A resubmission under a new key, which is what follows any
+  publish, must name the failed or withdrawn key it replaces:
+
+  ```
+  pbrun.py --priority -10 --supersedes <failed consumer key> \
+      --data-manifest manifest.json -- ...
+  ```
+
+  `--supersedes` also works with `--after`. The old declaration stops holding
+  the batch once the new key has declared the same batch, and the batch is
+  deleted after the new key succeeds. In the retirement line the old key's
+  state is `superseded`, with `superseded_by` naming the new key.
+- **Release the declaration.** When the consumer will not run again, release
+  it. BATCH_REF is the `ref` object from the stall line, as JSON or as a file:
+
+  ```
+  pbrun.py --release-origin-consumer '<ref JSON>' <consumer key> \
+      --reason "band L-1 abandoned"
+  ```
+
+  `pbrun` refuses while that consumer is queued, claimed or being moved, and
+  refuses a key that did not declare the batch. The batch is then deleted as
+  soon as every other declared consumer has succeeded.
+
+A stall line whose consumers are all `failed` or `withdrawn`, with no
+`superseded_by` that applied, is a blocked batch: it is held until one of the
+above happens. `superseded_by` on a stall line means a supersession exists
+but its new key has not declared this batch yet, for example a deferred retry
+that is not released yet. `output-origin-retirement-refused` means the tick would not
 delete: the output prefix is not mounted on dl380g10, or a file is no longer
 the one the batch committed. The line names the reason and the path. A
 `retain` batch is never deleted by PB, even after its producer fails. To free

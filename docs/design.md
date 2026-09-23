@@ -4843,7 +4843,9 @@ output-prefix lock and decides:
   record in `failed/`, so the terminal record with the latest
   `published_unix` answers for the key. The claim-intent marker outlives its
   claim and is not read. Each key's state is read twice, and two reads that
-  disagree read as unknown.
+  disagree read as unknown. A failed or withdrawn consumer stops holding the
+  batch in two cases (#926), listed below under "Replacing a failed
+  consumer".
 - If no consumer is declared, the batch is an orphan once its producer
   attempt is dead: the owner's claim names another attempt, or its latest
   generation ended `failed` or `withdrawn`, or it is `done` by another
@@ -4885,6 +4887,47 @@ the step raised, is remembered by the tier-loop process instead and prints
 again once after a restart. A cycle with nothing to retire and nothing new to
 report prints nothing.
 
+**Replacing a failed consumer (#926).** Every publish moves every key, so a
+failed consumer is usually resubmitted under a new key, and its first
+declaration can never succeed. A failed or withdrawn declaration is resolved
+in either of two ways:
+
+- **Superseded.** `pbrun --supersedes OLD` files `supersessions/<OLD>.json`
+  (#913), which is allowed only once OLD is failed or withdrawn. The tick
+  follows that chain, through further supersessions and through a deferred
+  submission's release to the key it was released as
+  (`action_edges.successor_of`). When the chain ends at a key that is also
+  declared against this batch, the old consumer's state is `superseded`, with
+  `superseded_by` naming that key, and the successor holds the batch in its
+  place: it must succeed. An ordinary `pbrun --supersedes` files its
+  declaration before its supersession, so the successor is never missing from
+  the batch in between. A chain that ends at a submission not yet released,
+  or at a key that did not declare this batch, resolves nothing; the stall
+  names it as `superseded_by`. A deferred retry is also held by #913's rule
+  until it is released.
+- **Released.** `pbrun --release-origin-consumer BATCH_REF CONSUMER_KEY`
+  calls `release_origin_consumer`, which files
+  `released-consumers/<batch_id>/<consumer_key>.json` beside the
+  declarations, with the consumer's state, who released it, and `--reason`.
+  Under the output-prefix lock it refuses a batch that is `retain`,
+  uncommitted, retiring or reclaimed; a key that did not declare the batch;
+  and a consumer that is queued, claimed or being moved
+  (`origin-consumer-live`), or whose state is anything but failed or
+  withdrawn. The consumer's state then reads `released`. The declaration
+  file stays.
+
+Either way, the old consumer's own state answers first while it is queued,
+running or has succeeded, so a key that runs again is never released under
+itself. A batch retires once every declared consumer is `succeeded`,
+`superseded` or `released`, with the same delete as above. The other
+declared consumers still hold it.
+
+A batch whose non-succeeded consumers are all `failed` or `withdrawn` with
+neither remedy is blocked. Its stall line names each consumer's terminal
+state, and `superseded_by` where a supersession did not apply, once per
+change. That line and the remedies above are how the leak is found and
+cleared.
+
 **Where it runs.** Only dl380g10 runs the tiers role. There `/mnt/shared` is
 the local ZFS dataset, so the tick stats origin paths as they are written;
 the tier loop takes no `--mount-map`.
@@ -4894,10 +4937,16 @@ Limits:
 - A consumer that `pbrun` declared and that never reached the queue (the
   submitter died in between) holds the batch, and the stall names it
   `unpublished`. Submitting the same key again clears it.
-- Every declared key must succeed. A failed consumer resubmitted under a
-  different key does not clear the first one, and the stall keeps naming it.
-  PB has no command yet that retires such a batch; an operator deletes its
-  files and calls `reclaim_origin`.
+- Every declared key must succeed, be superseded by a key declared against
+  the same batch, or be released. A failed consumer resubmitted under a
+  different key without `--supersedes` keeps holding the batch until an
+  operator releases it (#926).
+- A supersession is followed only from a failed or withdrawn consumer, and
+  only to a key that declared the same batch. A resubmission that reads a
+  different batch of the same producer, for example after the producer was
+  retried, leaves the first batch's declaration to an operator release.
+- The stall line is logged once per change. A batch that stays blocked is
+  not logged again until something about it changes.
 - A consumer submitted by a `pbrun` older than this change files no
   declaration, and the orphan sweep can delete a consumed batch under it once
   the producer is dead. Only a producer running this change can commit a
@@ -5107,9 +5156,9 @@ Limits:
 - The deadline is checked before every release, including the first. A tier
   loop whose earlier work routinely takes the whole cycle interval releases
   nothing; the `carried` count in `deferred-release-tick` is the only sign.
-- The origin retirement tick does not read supersessions. A released
-  consumer that fails and is resubmitted under `--supersedes` still holds its
-  batch through its first declaration (#926).
+- A released consumer that fails and is resubmitted with `--supersedes`
+  gives up its declaration once the successor is released and declared
+  against the same batch (#926, "Replacing a failed consumer").
 
 #### Repeat materialization: one batch, one charge, many windows
 
