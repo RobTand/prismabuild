@@ -94,7 +94,11 @@ PUBLISHED_RUNTIME = Path(
 
 def _submit(monkeypatch, work: Path, *tags: str) -> int:
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    argv = ["pbrun.py", "--cwd", str(work), "--wait-s", "0.01"]
+    # Zero is one observation with the full read budget, then 75 when
+    # nothing has landed.  A positive wait caps the first forked reader's
+    # budget at the time left, so 10 ms timed it out on a loaded box and the
+    # wait ended 74 (#918).
+    argv = ["pbrun.py", "--cwd", str(work), "--wait-s", "0"]
     for tag in tags:
         argv += ["--tag", tag]
     monkeypatch.setattr(sys, "argv", [*argv, "--", "echo", "hi"])
