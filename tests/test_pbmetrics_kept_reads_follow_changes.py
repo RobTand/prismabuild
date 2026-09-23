@@ -16,9 +16,12 @@ exporter on that box from scanning the queue again.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import errno
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import time
 from unittest import mock
@@ -28,7 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_pbmetrics_kept_reads as shaped  # noqa: E402
 from test_pbmetrics_kept_reads import (  # noqa: E402
-    LIMIT, SMALL_SHAPE, STAGE_TIER, WINDOW_S, _key, _put, _replace,
+    HOSTS, LIMIT, SMALL_SHAPE, STAGE_TIER, WINDOW_S, _key, _put, _replace,
     build_queue, frozen_clock, settle,
 )
 
@@ -170,6 +173,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
 
 def test_the_cursor_follows_the_lease(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
     _land(queue)
     settle()
     assert _sample(scrapes.check("landed"), STAGED) == "1"
@@ -187,6 +191,7 @@ def test_heartbeats_and_announcements_are_followed(queue_and_scrapes):
     """Records rewritten every few seconds: nothing kept may shadow them."""
 
     queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
     scrapes.check("initial")
 
     def heartbeat() -> None:
@@ -206,6 +211,7 @@ def test_heartbeats_and_announcements_are_followed(queue_and_scrapes):
 
 def test_plans_follow_their_consumers_and_their_files(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
     ready_plans = (f'prismabuild_residency_plans'
                    f'{{state="ready",tier="{STAGE_TIER}"}}')
     before = _sample(scrapes.check("initial"), ready_plans)
@@ -225,6 +231,7 @@ def test_plans_follow_their_consumers_and_their_files(queue_and_scrapes):
 
 def test_history_follows_new_records(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
     jobs = f'prismabuild_tier_move_jobs{{tier="{STAGE_TIER}"}}'
     window = "prismabuild_terminal_outcomes_window_jobs"
     before = scrapes.check("initial")
@@ -265,6 +272,7 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     """What is kept is bounded by what is on disk, not by history."""
 
     queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
     scrapes.check("initial")
     records = scrapes.reader.records
     decisions = queue.root / pool.WITHDRAWN / "decisions"
@@ -283,6 +291,175 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     assert len(movers) == len(receipts) - len(receipts) // 2
     derived = scrapes.reader._derived_entries.get("receipt", {})
     assert len(derived) <= len(movers)
+
+
+# --------------------------------------------------------------------------
+# Failures: a kept scrape fails exactly where a fresh one does
+# --------------------------------------------------------------------------
+
+TERMINAL_OK = "prismabuild_terminal_collection_success"
+COLLECTION_OK = "prismabuild_collection_success"
+
+
+@contextmanager
+def _fails(name: str, target: Path, error: int):
+    """``os.<name>`` of exactly ``target`` fails with ``error``; nothing else does.
+
+    A permission change is how a real listing or ``stat`` fails, but these
+    tests may run as root, which no mode refuses.  The failure is injected
+    where the filesystem call is made, so what is tested is what the exporter
+    does with the error, not how the error was produced.
+    """
+
+    real = getattr(os, name)
+    wanted = os.fspath(target)
+
+    def failing(path, *args, **kwargs):
+        if os.fspath(path) == wanted:
+            raise OSError(error, os.strerror(error), wanted)
+        return real(path, *args, **kwargs)
+
+    with mock.patch.object(os, name, failing):
+        yield
+
+
+def _new_ending(queue: pool.PoolQueue, now: float, index: int = 0) -> Path:
+    key = _key("late-ending", index)
+    path = queue.root / pool.DONE / f"{key}.json"
+    _put(path, shaped._ending(key, "executed", "sparky", now - 1.0, profiled=True),
+         now - 1.0)
+    return path
+
+
+def test_a_record_that_cannot_be_stat_ed_fails_the_scrape(queue_and_scrapes):
+    """The fresh read raises on it (``pbstatus._ending_paths``); so does the kept one."""
+
+    queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
+    assert _sample(scrapes.check("initial"), TERMINAL_OK) == "1"
+    path = _new_ending(queue, scrapes.now)
+    settle()
+    with _fails("stat", path, errno.EIO):
+        failed = _collect(queue.root, scrapes.now, scrapes.reader)
+        fresh = _collect(queue.root, scrapes.now, None)
+    assert _sample(fresh, TERMINAL_OK) == "0"
+    assert _sample(failed, TERMINAL_OK) == "0"
+    assert _sample(failed, COLLECTION_OK) == "0"
+    # Nothing of the failed scrape was kept: with the queue unchanged and
+    # the record readable again, the next scrape reads it and recovers.
+    text = scrapes.check("the record readable again")
+    assert _sample(text, TERMINAL_OK) == "1"
+    assert _sample(text, COLLECTION_OK) == "1"
+
+
+def test_a_receipt_that_cannot_be_stat_ed_fails_the_move_window(queue_and_scrapes):
+    """Main's receipt walk reports an incomplete window on any ``stat`` error."""
+
+    queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
+    complete = "prismabuild_tier_move_window_complete"
+    assert _sample(scrapes.check("initial"), complete) == "1"
+    receipt = queue.root / pool.MOVERS / f"{_key('late-receipt', 0)}.json"
+    _put(receipt, {"schema": pool.POOL_MOVE_SCHEMA_V1, "unix": scrapes.now - 1.0,
+                   "tier_id": STAGE_TIER}, scrapes.now - 1.0)
+    settle()
+    with _fails("stat", receipt, errno.EIO):
+        failed = _collect(queue.root, scrapes.now, scrapes.reader)
+    assert _sample(failed, complete) == "0"
+    assert _sample(failed, COLLECTION_OK) == "0"
+    assert _sample(scrapes.check("the receipt readable again"), complete) == "1"
+
+
+def test_a_directory_that_cannot_be_listed_fails_the_scrape(queue_and_scrapes):
+    queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
+    scrapes.check("initial")
+    done = queue.root / pool.DONE
+    # A permission change moves the directory's ctime, as a real one would.
+    os.chmod(done, os.stat(done).st_mode)
+    settle()
+    with _fails("scandir", done, errno.EACCES):
+        failed = _collect(queue.root, scrapes.now, scrapes.reader)
+        fresh = _collect(queue.root, scrapes.now, None)
+    assert _sample(fresh, TERMINAL_OK) == "0"
+    assert _sample(failed, TERMINAL_OK) == "0"
+    assert _sample(failed, COLLECTION_OK) == "0"
+    text = scrapes.check("listable again")
+    assert _sample(text, TERMINAL_OK) == "1"
+    assert _sample(text, COLLECTION_OK) == "1"
+
+
+def test_a_directory_that_leaves_and_returns_is_followed(queue_and_scrapes):
+    queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
+    window = "prismabuild_terminal_outcomes_window_jobs"
+    before = scrapes.check("initial")
+    done = queue.root / pool.DONE
+    away = queue.root / "done.away"
+    text = scrapes.after("done/ gone", lambda: done.rename(away))
+    assert _sample(text, TERMINAL_OK) == "0"
+    assert int(_sample(text, window)) < int(_sample(before, window))
+    text = scrapes.after("done/ back", lambda: away.rename(done))
+    assert _sample(text, TERMINAL_OK) == "1"
+    assert _sample(text, window) == _sample(before, window)
+    # A new directory under the old name: new inode, same names.
+    def rebuilt() -> None:
+        done.rename(away)
+        done.mkdir()
+        for path in sorted(away.iterdir()):
+            os.link(path, done / path.name)
+    text = scrapes.after("done/ rebuilt", rebuilt)
+    assert _sample(text, window) == _sample(before, window)
+    text = scrapes.after("done/ rebuilt empty", lambda: [
+        path.unlink() for path in sorted(done.iterdir())])
+    assert int(_sample(text, window)) < int(_sample(before, window))
+
+
+def test_telemetry_and_claim_denials_are_followed(queue_and_scrapes):
+    """The sidecars a scrape reads per claim and per host, kept by stamp."""
+
+    queue, scrapes = queue_and_scrapes
+    shaped._require_trusted(queue.root)
+    host = HOSTS[1]
+    cpu = f'prismabuild_attempt_observed_resources{{host="{host}",resource="cpu"}}'
+    before = _sample(scrapes.check("initial"), cpu)
+    assert before is not None
+    key = _key("claimed", 1)
+    telemetry = queue.root / pool.RESERVATIONS / host / "telemetry" / f"{key}.json"
+    record = json.loads(telemetry.read_text())
+    text = scrapes.after("telemetry sampled again", lambda: _replace(
+        telemetry, {**record, "cpu_seconds": record["cpu_seconds"] + 10.0}))
+    assert float(_sample(text, cpu)) == float(before) + 1.0
+    text = scrapes.after("telemetry torn", lambda: _file_raw(telemetry, "{"))
+    assert _sample(text, cpu) is None
+    text = scrapes.after("telemetry whole again",
+                         lambda: _replace(telemetry, record))
+    assert _sample(text, cpu) == before
+
+    denials = queue.root / pool.RESERVATIONS / "dl380g10" / "adaptive" / pool.CLAIM_DENIALS
+    snapshot = json.loads(denials.read_text())
+    denied = snapshot["records"]["recent"]
+    series = 'prismabuild_claim_denials{host="dl380g10",reason="%s"}'
+    assert _sample(before_text := scrapes.check("denials"),
+                   series % denied["reason"]) == "1"
+    text = scrapes.after("a denial for another reason", lambda: _replace(
+        denials, {**snapshot, "records": {**snapshot["records"], "other": {
+            **denied, "action_key": _key("ready", 1),
+            "reason": "memory_unavailable"}}}))
+    assert _sample(text, series % "memory_unavailable") == "1"
+    assert _sample(text, series % denied["reason"]) == "1"
+    text = scrapes.after("denials cleared", denials.unlink)
+    assert _sample(text, series % denied["reason"]) is None
+    assert before_text != text
+    # A host that files its first snapshot: a new reservation directory.
+    fresh_host = queue.root / pool.RESERVATIONS / "newbox" / "adaptive"
+    def first_snapshot() -> None:
+        fresh_host.mkdir(parents=True)
+        _replace(fresh_host / pool.CLAIM_DENIALS, {**snapshot, "records": {
+            "recent": {**denied, "host": "newbox"}}})
+    text = scrapes.after("a new host's first denials", first_snapshot)
+    assert _sample(text, 'prismabuild_claim_denials{host="newbox",reason="%s"}'
+                   % denied["reason"]) == "1"
 
 
 # --------------------------------------------------------------------------
@@ -341,3 +518,31 @@ def test_once_takes_no_lock(tmp_path, capsys):
         with worker_loop.role_singleton(Path(pbmetrics.__file__)):
             assert pbmetrics.main(["--once", "--queue-root", str(tmp_path / "q")]) == 0
     assert "prismabuild_collection_success" in capsys.readouterr().out
+
+
+def test_a_port_in_use_refuses_with_a_record(tmp_path, capsys):
+    """EADDRINUSE refuses as a held lock does: exit 3, one record, no traceback."""
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+            code = pbmetrics.main(["--listen", "127.0.0.1", "--port", str(port),
+                                   "--queue-root", str(tmp_path / "q")])
+            # The refusal let the role lock go with the process's attempt.
+            assert worker_loop.role_singleton_holder(
+                Path(pbmetrics.__file__)) == (False, None)
+    finally:
+        holder.close()
+    assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    record = json.loads(err.strip().splitlines()[-1])
+    assert record["schema"] == pbmetrics.REFUSAL_SCHEMA
+    assert record["role"] == "metrics"
+    assert record["reason"] == "port-in-use"
+    assert (record["listen"], record["port"]) == ("127.0.0.1", port)
+    assert record["holder_pid"] == os.getpid()
+    assert record["exit"] == worker_loop.ROLE_SINGLETON_HELD_EXIT
