@@ -1,0 +1,271 @@
+# HELP prismabuild_active_jobs Claims with fresh leases by host and mutually exclusive cpu or gpu job kind.
+# TYPE prismabuild_active_jobs gauge
+prismabuild_active_jobs{host="dl380g10",kind="cpu"} 1
+prismabuild_active_jobs{host="dl380g10",kind="gpu"} 0
+prismabuild_active_jobs{host="gx10-6b77",kind="cpu"} 0
+prismabuild_active_jobs{host="gx10-6b77",kind="gpu"} 2
+prismabuild_active_jobs{host="sparky",kind="cpu"} 0
+prismabuild_active_jobs{host="sparky",kind="gpu"} 2
+# HELP prismabuild_admission_evidence_age_seconds Age of the last persisted admission evidence; this is not continuous hardware monitoring.
+# TYPE prismabuild_admission_evidence_age_seconds gauge
+prismabuild_admission_evidence_age_seconds{host="dl380g10",resource="cpu"} 1
+prismabuild_admission_evidence_age_seconds{host="gx10-6b77",resource="cpu"} 1
+prismabuild_admission_evidence_age_seconds{host="gx10-6b77",resource="gpu"} 2
+prismabuild_admission_evidence_age_seconds{host="sparky",resource="cpu"} 1
+prismabuild_admission_evidence_age_seconds{host="sparky",resource="gpu"} 2
+# HELP prismabuild_admission_plateau Whether the last persisted GPU admission decision recorded a power-response plateau; this is not live hardware state.
+# TYPE prismabuild_admission_plateau gauge
+prismabuild_admission_plateau{host="gx10-6b77",resource="gpu"} 1
+prismabuild_admission_plateau{host="sparky",resource="gpu"} 1
+# HELP prismabuild_attempt_observed_resources Aggregate complete fresh exact-scope observations for every live claim on a host; cpu is lifetime-average cores and memory is current bytes.
+# TYPE prismabuild_attempt_observed_resources gauge
+prismabuild_attempt_observed_resources{host="dl380g10",resource="cpu"} 2.2
+prismabuild_attempt_observed_resources{host="dl380g10",resource="memory_bytes"} 3221225472
+prismabuild_attempt_observed_resources{host="gx10-6b77",resource="cpu"} 4.5
+prismabuild_attempt_observed_resources{host="gx10-6b77",resource="memory_bytes"} 7516192768
+prismabuild_attempt_observed_resources{host="sparky",resource="cpu"} 4.3
+prismabuild_attempt_observed_resources{host="sparky",resource="memory_bytes"} 5368709120
+# HELP prismabuild_attempt_peak_resources What the host's live claims have used at their heaviest: memory_peak_bytes is the largest single claim's peak, and the io_ figures are the bytes they have moved between them. Absent rather than zero where the sampler measured nothing.
+# TYPE prismabuild_attempt_peak_resources gauge
+prismabuild_attempt_peak_resources{host="dl380g10",resource="io_read_bytes"} 2000
+prismabuild_attempt_peak_resources{host="dl380g10",resource="io_write_bytes"} 20
+prismabuild_attempt_peak_resources{host="dl380g10",resource="memory_peak_bytes"} 4294967296
+prismabuild_attempt_peak_resources{host="gx10-6b77",resource="io_read_bytes"} 5000
+prismabuild_attempt_peak_resources{host="gx10-6b77",resource="io_write_bytes"} 50
+prismabuild_attempt_peak_resources{host="gx10-6b77",resource="memory_peak_bytes"} 6442450944
+prismabuild_attempt_peak_resources{host="sparky",resource="io_read_bytes"} 3000
+prismabuild_attempt_peak_resources{host="sparky",resource="io_write_bytes"} 30
+prismabuild_attempt_peak_resources{host="sparky",resource="memory_peak_bytes"} 5368709120
+# HELP prismabuild_attempt_recent_cores Cores used by the host's live claims since the previous refresh, differenced per attempt; absent until a second refresh has something to difference.
+# TYPE prismabuild_attempt_recent_cores gauge
+# HELP prismabuild_attempt_recent_cores_jobs Live claims the host's recent-cores figure was differenced over; it is the denominator, not a total.
+# TYPE prismabuild_attempt_recent_cores_jobs gauge
+# HELP prismabuild_attempt_telemetry_age_seconds Age of the oldest credible resource-scope sample among the host's live claims; reported even when the aggregate is withheld.
+# TYPE prismabuild_attempt_telemetry_age_seconds gauge
+prismabuild_attempt_telemetry_age_seconds{host="dl380g10"} 1
+prismabuild_attempt_telemetry_age_seconds{host="gx10-6b77"} 1
+prismabuild_attempt_telemetry_age_seconds{host="sparky"} 1
+# HELP prismabuild_attempt_telemetry_jobs Live claims represented in the host's complete aggregate attempt telemetry.
+# TYPE prismabuild_attempt_telemetry_jobs gauge
+prismabuild_attempt_telemetry_jobs{host="dl380g10"} 1
+prismabuild_attempt_telemetry_jobs{host="gx10-6b77"} 2
+prismabuild_attempt_telemetry_jobs{host="sparky"} 2
+# HELP prismabuild_attempt_telemetry_unavailable_jobs Live claims on the host whose resource-scope telemetry could not be used; the aggregate is withheld whenever this is above zero.
+# TYPE prismabuild_attempt_telemetry_unavailable_jobs gauge
+prismabuild_attempt_telemetry_unavailable_jobs{host="dl380g10"} 0
+prismabuild_attempt_telemetry_unavailable_jobs{host="gx10-6b77"} 0
+prismabuild_attempt_telemetry_unavailable_jobs{host="sparky"} 0
+# HELP prismabuild_claim_denial_window_seconds Configured lookback window for the per-host claim-denial gauges.
+# TYPE prismabuild_claim_denial_window_seconds gauge
+prismabuild_claim_denial_window_seconds 3600
+# HELP prismabuild_claim_denials Latest claim denial per action generation observed in the window, by host and reason; this is a restart-safe gauge, not a counter.
+# TYPE prismabuild_claim_denials gauge
+prismabuild_claim_denials{host="dl380g10",reason="tier_reservation_unavailable"} 1
+# HELP prismabuild_cleanup_pending_claims Claims on the host retained because their payload could not be proved stopped; the reservation is still held.
+# TYPE prismabuild_cleanup_pending_claims gauge
+prismabuild_cleanup_pending_claims{host="dl380g10"} 0
+prismabuild_cleanup_pending_claims{host="gx10-6b77"} 0
+prismabuild_cleanup_pending_claims{host="sparky"} 0
+# HELP prismabuild_cleanup_pending_oldest_seconds Age of the oldest unproven cleanup on the host, from its first failure; absent when nothing is pending.
+# TYPE prismabuild_cleanup_pending_oldest_seconds gauge
+# HELP prismabuild_collection_success Whether critical queue inputs and selected terminal records were read and validated for this snapshot.
+# TYPE prismabuild_collection_success gauge
+prismabuild_collection_success 1
+# HELP prismabuild_execution_seconds Mean or maximum claim-to-finish time among terminal records with usable timestamps in the bounded window.
+# TYPE prismabuild_execution_seconds gauge
+prismabuild_execution_seconds{host="gx10-6b77",stat="max"} 120
+prismabuild_execution_seconds{host="gx10-6b77",stat="mean"} 120
+prismabuild_execution_seconds{host="sparky",stat="max"} 120
+prismabuild_execution_seconds{host="sparky",stat="mean"} 120
+# HELP prismabuild_mover_queue_depth Active actions with movement-node shape (a residency range to stage), by queue state.
+# TYPE prismabuild_mover_queue_depth gauge
+prismabuild_mover_queue_depth{state="claimed"} 1
+prismabuild_mover_queue_depth{state="ready"} 1
+# HELP prismabuild_mover_queue_depth_tier Active actions with movement-node shape (a residency range to stage), by tier and queue state. Known tiers always read, zero included; the single unknown tier reads only when a record names no usable tier.
+# TYPE prismabuild_mover_queue_depth_tier gauge
+prismabuild_mover_queue_depth_tier{state="claimed",tier="prismabuild-stage:dl380g10"} 1
+prismabuild_mover_queue_depth_tier{state="ready",tier="prismabuild-stage:dl380g10"} 1
+# HELP prismabuild_queue_items Readable pull-queue records by active state.
+# TYPE prismabuild_queue_items gauge
+prismabuild_queue_items{state="claimed"} 5
+prismabuild_queue_items{state="ready"} 4
+# HELP prismabuild_queue_oldest_age_seconds Age of the oldest readable record in each active queue state; zero means that readable state is empty.
+# TYPE prismabuild_queue_oldest_age_seconds gauge
+prismabuild_queue_oldest_age_seconds{state="claimed"} 200
+prismabuild_queue_oldest_age_seconds{state="ready"} 43
+# HELP prismabuild_queue_unstarted_releases Releases without an attempt carried by readable records now in each active queue state; this counts what the queue is still holding, not what happened in a window.
+# TYPE prismabuild_queue_unstarted_releases gauge
+prismabuild_queue_unstarted_releases{state="claimed"} 0
+prismabuild_queue_unstarted_releases{state="ready"} 0
+# HELP prismabuild_queue_wait_seconds Mean or maximum publish-to-claim time among terminal records with usable timestamps in the bounded window.
+# TYPE prismabuild_queue_wait_seconds gauge
+prismabuild_queue_wait_seconds{host="gx10-6b77",stat="max"} 180
+prismabuild_queue_wait_seconds{host="gx10-6b77",stat="mean"} 180
+prismabuild_queue_wait_seconds{host="sparky",stat="max"} 180
+prismabuild_queue_wait_seconds{host="sparky",stat="mean"} 180
+# HELP prismabuild_reserved_resources Declared resources in valid claimed queue records; units follow worker capacity.
+# TYPE prismabuild_reserved_resources gauge
+prismabuild_reserved_resources{host="dl380g10",resource="cpu"} 2
+prismabuild_reserved_resources{host="dl380g10",resource="gpu"} 0
+prismabuild_reserved_resources{host="dl380g10",resource="memory_bytes"} 4294967296
+prismabuild_reserved_resources{host="gx10-6b77",resource="cpu"} 4
+prismabuild_reserved_resources{host="gx10-6b77",resource="gpu"} 2
+prismabuild_reserved_resources{host="gx10-6b77",resource="memory_bytes"} 8589934592
+prismabuild_reserved_resources{host="sparky",resource="cpu"} 4
+prismabuild_reserved_resources{host="sparky",resource="gpu"} 2
+prismabuild_reserved_resources{host="sparky",resource="memory_bytes"} 8589934592
+# HELP prismabuild_residency_plans Filed residency plans by tier and consumer queue state; the invalid state counts unreadable or rejected plans under the unknown tier.
+# TYPE prismabuild_residency_plans gauge
+prismabuild_residency_plans{state="absent",tier="prismabuild-stage:dl380g10"} 3
+prismabuild_residency_plans{state="claimed",tier="prismabuild-stage:dl380g10"} 1
+prismabuild_residency_plans{state="ready",tier="prismabuild-stage:dl380g10"} 0
+# HELP prismabuild_residency_staged_phases Plan phases at or behind the read cursor the tier ledger says are staged, by tier and leg: the promoted frontier behind the cursor.
+# TYPE prismabuild_residency_staged_phases gauge
+prismabuild_residency_staged_phases{leg="ram",tier="prismabuild-stage:dl380g10"} 0
+prismabuild_residency_staged_phases{leg="stage",tier="prismabuild-stage:dl380g10"} 0
+# HELP prismabuild_residency_unstaged_bytes Bytes in the promotion backlog, by tier and leg.
+# TYPE prismabuild_residency_unstaged_bytes gauge
+prismabuild_residency_unstaged_bytes{leg="ram",tier="prismabuild-stage:dl380g10"} 0
+prismabuild_residency_unstaged_bytes{leg="stage",tier="prismabuild-stage:dl380g10"} 8589934592
+# HELP prismabuild_residency_unstaged_phases Plan phases at or ahead of the read cursor the tier ledger does not say are staged, by tier and leg: the promotion backlog.
+# TYPE prismabuild_residency_unstaged_phases gauge
+prismabuild_residency_unstaged_phases{leg="ram",tier="prismabuild-stage:dl380g10"} 0
+prismabuild_residency_unstaged_phases{leg="stage",tier="prismabuild-stage:dl380g10"} 8
+# HELP prismabuild_starvation_waiting_consumers Claimed consumers the quiet/grace rule reads as waiting on data, by the tier their frozen plan names. Known tiers always read, zero included; the unknown tier counts waiters with no readable plan.
+# TYPE prismabuild_starvation_waiting_consumers gauge
+prismabuild_starvation_waiting_consumers{tier="prismabuild-stage:dl380g10"} 1
+# HELP prismabuild_starvation_waiting_quiet_max_seconds Longest progress quiet among the tier's waiting consumers; absent, not zero, where none is waiting.
+# TYPE prismabuild_starvation_waiting_quiet_max_seconds gauge
+prismabuild_starvation_waiting_quiet_max_seconds{tier="prismabuild-stage:dl380g10"} 800
+# HELP prismabuild_terminal_box_window Heaviest per-action resource reading among the host's terminal records in the bounded window; GPU power is measured against the GPU-only reference named by the scope label, and every metric is absent rather than zero where no record carried it.
+# TYPE prismabuild_terminal_box_window gauge
+prismabuild_terminal_box_window{host="sparky",metric="gpu_power_peak_fraction",scope="measured_peak"} 0.428571428571429
+prismabuild_terminal_box_window{host="sparky",metric="gpu_power_peak_watts",scope="measured_peak"} 60
+prismabuild_terminal_box_window{host="sparky",metric="gpu_power_reference_watts",scope="measured_peak"} 140
+prismabuild_terminal_box_window{host="sparky",metric="io_read_bytes",scope=""} 5000000
+prismabuild_terminal_box_window{host="sparky",metric="io_write_bytes",scope=""} 7000000
+prismabuild_terminal_box_window{host="sparky",metric="memory_peak_bytes",scope=""} 2000000000
+# HELP prismabuild_terminal_collection_success Whether terminal directories and every selected terminal record were readable for this snapshot.
+# TYPE prismabuild_terminal_collection_success gauge
+prismabuild_terminal_collection_success 1
+# HELP prismabuild_terminal_outcomes Terminal outcomes observed in the bounded recent window; this is a restart-safe gauge, not a counter.
+# TYPE prismabuild_terminal_outcomes gauge
+prismabuild_terminal_outcomes{host="gx10-6b77",outcome="executed"} 1
+prismabuild_terminal_outcomes{host="gx10-6b77",outcome="failed"} 1
+prismabuild_terminal_outcomes{host="gx10-6b77",outcome="withdrawn"} 1
+prismabuild_terminal_outcomes{host="sparky",outcome="executed"} 1
+prismabuild_terminal_outcomes{host="sparky",outcome="failed"} 1
+prismabuild_terminal_outcomes{host="sparky",outcome="withdrawn"} 1
+# HELP prismabuild_terminal_outcomes_window_complete Whether the terminal record scan proved the configured window was not truncated by its record limit.
+# TYPE prismabuild_terminal_outcomes_window_complete gauge
+prismabuild_terminal_outcomes_window_complete 1
+# HELP prismabuild_terminal_outcomes_window_jobs Terminal records included in the current bounded lookback window.
+# TYPE prismabuild_terminal_outcomes_window_jobs gauge
+prismabuild_terminal_outcomes_window_jobs 6
+# HELP prismabuild_terminal_outcomes_window_seconds Configured lookback window for recent terminal outcome gauges.
+# TYPE prismabuild_terminal_outcomes_window_seconds gauge
+prismabuild_terminal_outcomes_window_seconds 3600
+# HELP prismabuild_terminal_timing_window_jobs Terminal records contributing to each timing gauge in the bounded window.
+# TYPE prismabuild_terminal_timing_window_jobs gauge
+prismabuild_terminal_timing_window_jobs{host="gx10-6b77",phase="execution"} 3
+prismabuild_terminal_timing_window_jobs{host="gx10-6b77",phase="queue_wait"} 3
+prismabuild_terminal_timing_window_jobs{host="sparky",phase="execution"} 3
+prismabuild_terminal_timing_window_jobs{host="sparky",phase="queue_wait"} 3
+# HELP prismabuild_tier_fill_supply_mb_s Learned pool-side fill bandwidth per tier from the tier loop's latest announcement; best is the highest delivery since the last ceiling, ceiling the most recent measured shortfall, and probe_offer the live selected offer over a standing ceiling -- the larger of the fold's ceiling-plus-median reader and the ceiling plus the oldest ready mover's sealed demand. Absent, not zero, where the tier announced none.
+# TYPE prismabuild_tier_fill_supply_mb_s gauge
+prismabuild_tier_fill_supply_mb_s{stat="best",tier="prismabuild-stage:dl380g10"} 300
+prismabuild_tier_fill_supply_mb_s{stat="ceiling",tier="prismabuild-stage:dl380g10"} 250
+prismabuild_tier_fill_supply_mb_s{stat="probe_offer",tier="prismabuild-stage:dl380g10"} 324
+# HELP prismabuild_tier_move_jobs Movement receipts filed in the window, by tier; a restart-safe gauge, not a counter.
+# TYPE prismabuild_tier_move_jobs gauge
+prismabuild_tier_move_jobs{tier="prismabuild-stage:dl380g10"} 2
+# HELP prismabuild_tier_move_measured_jobs In-window receipts whose window read the staged bytes off the pool, by tier, under the fill fold's own share test; the remainder is adoption served resident. Jobs beside measured is the hit rate.
+# TYPE prismabuild_tier_move_measured_jobs gauge
+prismabuild_tier_move_measured_jobs{tier="prismabuild-stage:dl380g10"} 1
+# HELP prismabuild_tier_move_pool_rate_mb_s Pool-side delivery the tier's movers demonstrated in the window, by tier: best is the highest pool delivery any receipt measured, mean the average over receipts. Absent, not zero, with no measured rate.
+# TYPE prismabuild_tier_move_pool_rate_mb_s gauge
+prismabuild_tier_move_pool_rate_mb_s{stat="best",tier="prismabuild-stage:dl380g10"} 101
+prismabuild_tier_move_pool_rate_mb_s{stat="mean",tier="prismabuild-stage:dl380g10"} 100.5
+# HELP prismabuild_tier_move_pool_read_bytes Pool sector reads during movers' windows in the window, by tier, over the same receipts as the staged sum. It counts every pool reader, not one copy's bytes, so it can exceed the staged sum; read it beside measured jobs, never as a ratio's denominator.
+# TYPE prismabuild_tier_move_pool_read_bytes gauge
+prismabuild_tier_move_pool_read_bytes{tier="prismabuild-stage:dl380g10"} 1073741824
+# HELP prismabuild_tier_move_rate_jobs Receipts contributing to the tier's pool-rate gauge in the window.
+# TYPE prismabuild_tier_move_rate_jobs gauge
+prismabuild_tier_move_rate_jobs{tier="prismabuild-stage:dl380g10"} 2
+# HELP prismabuild_tier_move_staged_bytes Bytes movers reported staging in the window, by tier, over receipts carrying both byte counters; absent, not zero, where none did.
+# TYPE prismabuild_tier_move_staged_bytes gauge
+prismabuild_tier_move_staged_bytes{tier="prismabuild-stage:dl380g10"} 4294967296
+# HELP prismabuild_tier_move_window_complete Whether the mover-receipt scan proved the window was not truncated by its file cap and every selected receipt was readable.
+# TYPE prismabuild_tier_move_window_complete gauge
+prismabuild_tier_move_window_complete 1
+# HELP prismabuild_tier_move_window_seconds Configured lookback window for the per-tier movement receipt gauges.
+# TYPE prismabuild_tier_move_window_seconds gauge
+prismabuild_tier_move_window_seconds 3600
+# HELP prismabuild_tier_tokens Tier ledger tokens by kind and state; capacity kinds count GiB, the fill kind counts pool-side MB/s, and held is capacity less available.
+# TYPE prismabuild_tier_tokens gauge
+prismabuild_tier_tokens{resource="stage_gib",state="available",tier="prismabuild-stage:dl380g10"} 63
+prismabuild_tier_tokens{resource="stage_gib",state="capacity",tier="prismabuild-stage:dl380g10"} 64
+prismabuild_tier_tokens{resource="stage_gib",state="held",tier="prismabuild-stage:dl380g10"} 1
+# HELP prismabuild_unstarted_release_events Claims released without an attempt in the bounded recent window, by the box that held the claim; this is a restart-safe gauge, not a counter.
+# TYPE prismabuild_unstarted_release_events gauge
+prismabuild_unstarted_release_events{host="gx10-6b77"} 1
+prismabuild_unstarted_release_events{host="sparky"} 1
+# HELP prismabuild_unstarted_release_events_complete Whether the unstarted-release scan proved the configured window was not truncated by its record limit and every selected filing was readable.
+# TYPE prismabuild_unstarted_release_events_complete gauge
+prismabuild_unstarted_release_events_complete 1
+# HELP prismabuild_worker_capacity Configured fresh-worker capacity; cpu is cores, gpu is devices, and memory resources are bytes.
+# TYPE prismabuild_worker_capacity gauge
+prismabuild_worker_capacity{host="dl380g10",resource="cpu"} 16
+prismabuild_worker_capacity{host="dl380g10",resource="gpu"} 0
+prismabuild_worker_capacity{host="dl380g10",resource="memory_bytes"} 103079215104
+prismabuild_worker_capacity{host="gx10-6b77",resource="cpu"} 16
+prismabuild_worker_capacity{host="gx10-6b77",resource="gpu"} 1
+prismabuild_worker_capacity{host="gx10-6b77",resource="memory_bytes"} 103079215104
+prismabuild_worker_capacity{host="sparky",resource="cpu"} 16
+prismabuild_worker_capacity{host="sparky",resource="gpu"} 1
+prismabuild_worker_capacity{host="sparky",resource="memory_bytes"} 103079215104
+# HELP prismabuild_worker_loops PrismaBuild worker loops running on the box that wrote this fresh offer; absent, not zero, when the offer did not measure it.
+# TYPE prismabuild_worker_loops gauge
+prismabuild_worker_loops{host="dl380g10"} 3
+prismabuild_worker_loops{host="gx10-6b77"} 3
+prismabuild_worker_loops{host="sparky"} 3
+# HELP prismabuild_worker_memory_available_bytes Coarse available host memory from the fresh worker offer, converted from integer GiB.
+# TYPE prismabuild_worker_memory_available_bytes gauge
+prismabuild_worker_memory_available_bytes{host="dl380g10"} 85899345920
+prismabuild_worker_memory_available_bytes{host="gx10-6b77"} 85899345920
+prismabuild_worker_memory_available_bytes{host="sparky"} 85899345920
+# HELP prismabuild_worker_memory_domain_info Fresh worker GPU memory domains; value is always one.
+# TYPE prismabuild_worker_memory_domain_info gauge
+prismabuild_worker_memory_domain_info{domain="shared_system",host="gx10-6b77"} 1
+prismabuild_worker_memory_domain_info{domain="shared_system",host="sparky"} 1
+# HELP prismabuild_worker_observed_capacity Windowed fresh-worker capacity after foreign work; units follow worker capacity.
+# TYPE prismabuild_worker_observed_capacity gauge
+prismabuild_worker_observed_capacity{host="dl380g10",resource="cpu"} 14
+prismabuild_worker_observed_capacity{host="dl380g10",resource="gpu"} 0
+prismabuild_worker_observed_capacity{host="dl380g10",resource="memory_bytes"} 96636764160
+prismabuild_worker_observed_capacity{host="gx10-6b77",resource="cpu"} 14
+prismabuild_worker_observed_capacity{host="gx10-6b77",resource="gpu"} 1
+prismabuild_worker_observed_capacity{host="gx10-6b77",resource="memory_bytes"} 96636764160
+prismabuild_worker_observed_capacity{host="sparky",resource="cpu"} 14
+prismabuild_worker_observed_capacity{host="sparky",resource="gpu"} 1
+prismabuild_worker_observed_capacity{host="sparky",resource="memory_bytes"} 96636764160
+# HELP prismabuild_worker_offer_age_seconds Age of a valid worker's last offer.
+# TYPE prismabuild_worker_offer_age_seconds gauge
+prismabuild_worker_offer_age_seconds{host="dl380g10"} 2
+prismabuild_worker_offer_age_seconds{host="gx10-6b77"} 2
+prismabuild_worker_offer_age_seconds{host="retired-0003"} 86403
+prismabuild_worker_offer_age_seconds{host="retired-0004"} 86404
+prismabuild_worker_offer_age_seconds{host="retired-0005"} 86405
+prismabuild_worker_offer_age_seconds{host="retired-0006"} 86406
+prismabuild_worker_offer_age_seconds{host="retired-0007"} 86407
+prismabuild_worker_offer_age_seconds{host="sparky"} 2
+# HELP prismabuild_worker_up Whether a syntactically valid worker offer is fresh enough for pool placement.
+# TYPE prismabuild_worker_up gauge
+prismabuild_worker_up{host="dl380g10"} 1
+prismabuild_worker_up{host="gx10-6b77"} 1
+prismabuild_worker_up{host="retired-0003"} 0
+prismabuild_worker_up{host="retired-0004"} 0
+prismabuild_worker_up{host="retired-0005"} 0
+prismabuild_worker_up{host="retired-0006"} 0
+prismabuild_worker_up{host="retired-0007"} 0
+prismabuild_worker_up{host="sparky"} 1

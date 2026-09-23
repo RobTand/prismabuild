@@ -38,6 +38,8 @@ not an atomic scheduler snapshot or a process-liveness proof.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import contextvars
 import importlib.util
 import json
 import math
@@ -602,8 +604,38 @@ def _name_the_job_ahead(jobs: list[dict]) -> None:
         job["note"] = f"{job['note']}; {note}" if job.get("note") else note
 
 
+#: The reader that serves this census's queue reads while one is installed
+#: (:func:`kept_reads`), or ``None`` for the plain reads below.  ``pbmetrics``
+#: installs the one it keeps between scrapes, so a directory nothing was filed
+#: in since the last scrape is not listed again and a record whose version
+#: holds is not read again (#1020).  Every other caller reads plainly.
+_KEPT_READS: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "pbstatus_kept_reads", default=None)
+
+
+@contextmanager
+def kept_reads(reader):
+    """Serve the census's directory and sidecar reads from ``reader``.
+
+    ``reader`` answers :func:`_pool_records`, :func:`_pool_sidecar`,
+    :func:`_starvation_sidecar`, :func:`read_endings` and the claim-denial
+    host listing with the same values and the same failures the plain reads
+    return.  ``pbmetrics`` passes the reader it keeps between scrapes
+    (#1020); nothing else sets one, so every other caller reads afresh.
+    """
+
+    token = _KEPT_READS.set(reader)
+    try:
+        yield reader
+    finally:
+        _KEPT_READS.reset(token)
+
+
 def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
     """Audit a live directory without treating failed reads as an empty queue."""
+    reader = _KEPT_READS.get()
+    if reader is not None:
+        return reader.pool_records(directory)
     records: dict[str, dict | None] = {}
     notes: list[str] = []
     try:
@@ -755,6 +787,9 @@ def _child_note(child: object) -> str:
 
 def _pool_sidecar(path: Path) -> dict | None | Exception:
     """Retain read failures for the row that owns this observation."""
+    reader = _KEPT_READS.get()
+    if reader is not None:
+        return reader.sidecar(path)
     try:
         return pool._read_json(path)
     except (OSError, ValueError) as exc:
@@ -785,18 +820,29 @@ def _valid_pool_item(key: str, record: dict | None) -> bool:
             and record.get('action_key') == key and record.get('schema') == pool.POOL_ITEM_SCHEMA_V1)
 
 
+def _reservation_hosts(queue: pool.PoolQueue, notes: list[str]) -> list[Path]:
+    """The host directories under ``reservations/``, one listing."""
+
+    hosts = []
+    with os.scandir(queue.root / pool.RESERVATIONS) as entries:
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    hosts.append(Path(entry.path))
+            except OSError as exc:
+                notes.append(f"pool claim denials {entry.name}: {exc}")
+    return hosts
+
+
 def _pool_claim_denials(queue: pool.PoolQueue) -> tuple[list[dict], list[str]]:
     """Read optional host snapshots without turning a bad diagnostic into a bad job."""
     denials, notes = [], []
+    reader = _KEPT_READS.get()
     try:
-        with os.scandir(queue.root / pool.RESERVATIONS) as entries:
-            hosts = []
-            for entry in entries:
-                try:
-                    if entry.is_dir():
-                        hosts.append(Path(entry.path))
-                except OSError as exc:
-                    notes.append(f"pool claim denials {entry.name}: {exc}")
+        if reader is not None:
+            hosts = reader.subdirectories(queue.root / pool.RESERVATIONS)
+        else:
+            hosts = _reservation_hosts(queue, notes)
     except FileNotFoundError:
         return denials, notes
     except OSError as exc:
@@ -1073,6 +1119,9 @@ STARVATION_CHILD_SILENT_S = 30.0
 def _starvation_sidecar(path: Path) -> dict | None | Exception:
     """One claim-adjacent record for the starvation census, failures retained."""
 
+    reader = _KEPT_READS.get()
+    if reader is not None:
+        return reader.sidecar(path)
     try:
         return pool._read_json(path)
     except (OSError, ValueError) as exc:
@@ -2242,86 +2291,97 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
         naming its path and why, rather than left out.
     """
 
-    rows: list[dict] = []
-    for entry in _ending_paths(queue_root, limit):
-        try:
-            record = _read_ending(entry, queue_root)
-        except (OSError, ValueError, pool.PoolContractError) as exc:
-            # Not dropped. ``limit`` sliced the newest records before any of
-            # them was read, so dropping one printed the same empty table a
-            # fleet that had filed nothing prints, and the two states call for
-            # opposite responses.
-            rows.append(_unreadable_row(entry, _unreadable_reason(exc)))
-            continue
-        if not isinstance(record, dict):
-            rows.append(_unreadable_row(entry, "not a JSON object"))
-            continue
-        detail = record.get("detail")
-        detail = detail if isinstance(detail, dict) else {}
-        slurm = detail.get("slurm")
-        slurm = slurm if isinstance(slurm, dict) else {}
-        try:
-            mtime = entry.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        finished = record.get("finished_unix")
-        rows.append({
-            "action_key": str(record.get("action_key") or entry.name[:-5]),
-            "status": str(record.get("status") or UNKNOWN),
-            "transport": _transport(record),
-            # The box the action was ON, not the box that filed its ending.
-            # ``reap_stale`` stamps itself as ``finished_host`` -- correctly,
-            # since the reaper is who filed the record -- and it files most of
-            # the fleet's lost claims, so preferring that field named
-            # whichever box happened to sweep.  That is how a diagnosis
-            # started on the wrong box, and why the bias is not cosmetic: the
-            # box that reaps most is the box that runs most, so misattributed
-            # failures pile onto the machine that already looks busiest.
-            #
-            # ``finished_host`` stays as the fallback rather than being
-            # dropped, because it is the only box an ending with no claimant
-            # names at all -- a cache hit, or a SLURM record filed by the
-            # waiter (#227, #262).
-            "host": record.get("claimed_host") or record.get("finished_host"),
-            "elapsed_s": detail.get("elapsed_s"),
-            "returncode": detail.get("returncode"),
-            # The action's own ending, on the records that carry one: the
-            # launcher's status above is 1 for every failure.
-            "action_returncode": detail.get("action_returncode"),
-            "action_signal": detail.get("action_signal"),
-            # The pull queue's records carry no receipt field at all, which is
-            # a different thing from a receipt that was not published.
-            "receipt_published": detail.get("receipt_published"),
-            "slurm_state": slurm.get("state"),
-            # Why a withdrawal happened, when admission rather than an operator
-            # made it: the foreground action this one yielded the box to
-            # (#364).  A field rather than prose in ``reason`` so a reader can
-            # test it, and present as ``None`` everywhere else for the same
-            # reason ``unreadable`` is.
-            "preempted_by": record.get("preempted_by"),
-            # What the run cost and how loaded its box was (#372 Tier 0).
-            # Absent, not zero, on every record filed before it existed.
-            **pool.resource_profile_summary(detail),
-            # Where a profiled run left its profile (#372 Tier 1).  ``None``
-            # on every other row, which is most of them.
-            "profile": detail.get("profile"),
-            # Present on every row so a reader of the JSON can test one field
-            # rather than the absence of one.
-            "unreadable": None,
-            "finished_unix": (
-                float(finished)
-                if isinstance(finished, (int, float)) else mtime
-            ),
-            # Keep the record's own value separate from the filesystem-mtime
-            # fallback above. The fallback orders and selects status rows; it
-            # is not evidence of when execution finished.
-            "timing_finished_unix": finished,
-            "published_unix": record.get("published_unix"),
-            "claimed_unix": record.get("claimed_unix"),
-            "path": entry.path,
-        })
+    reader = _KEPT_READS.get()
+    if reader is not None:
+        return reader.endings(Path(queue_root), limit)
+    rows = [ending_row(entry, queue_root)
+            for entry in _ending_paths(queue_root, limit)]
     rows.sort(key=lambda row: row["finished_unix"], reverse=True)
     return rows
+
+
+def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
+    """One selected terminal record as :func:`read_endings` reports it.
+
+    ``entry`` is anything with the ``path``, ``name`` and ``stat()`` of an
+    ``os.DirEntry``: ``pbmetrics`` passes the entries it keeps between
+    scrapes, so both readers project a record through this one function.
+    """
+
+    try:
+        record = _read_ending(entry, queue_root)
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        # Not dropped. ``limit`` sliced the newest records before any of
+        # them was read, so dropping one printed the same empty table a
+        # fleet that had filed nothing prints, and the two states call for
+        # opposite responses.
+        return _unreadable_row(entry, _unreadable_reason(exc))
+    if not isinstance(record, dict):
+        return _unreadable_row(entry, "not a JSON object")
+    detail = record.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    slurm = detail.get("slurm")
+    slurm = slurm if isinstance(slurm, dict) else {}
+    try:
+        mtime = entry.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    finished = record.get("finished_unix")
+    return {
+        "action_key": str(record.get("action_key") or entry.name[:-5]),
+        "status": str(record.get("status") or UNKNOWN),
+        "transport": _transport(record),
+        # The box the action was ON, not the box that filed its ending.
+        # ``reap_stale`` stamps itself as ``finished_host`` -- correctly,
+        # since the reaper is who filed the record -- and it files most of
+        # the fleet's lost claims, so preferring that field named
+        # whichever box happened to sweep.  That is how a diagnosis
+        # started on the wrong box, and why the bias is not cosmetic: the
+        # box that reaps most is the box that runs most, so misattributed
+        # failures pile onto the machine that already looks busiest.
+        #
+        # ``finished_host`` stays as the fallback rather than being
+        # dropped, because it is the only box an ending with no claimant
+        # names at all -- a cache hit, or a SLURM record filed by the
+        # waiter (#227, #262).
+        "host": record.get("claimed_host") or record.get("finished_host"),
+        "elapsed_s": detail.get("elapsed_s"),
+        "returncode": detail.get("returncode"),
+        # The action's own ending, on the records that carry one: the
+        # launcher's status above is 1 for every failure.
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
+        # The pull queue's records carry no receipt field at all, which is
+        # a different thing from a receipt that was not published.
+        "receipt_published": detail.get("receipt_published"),
+        "slurm_state": slurm.get("state"),
+        # Why a withdrawal happened, when admission rather than an operator
+        # made it: the foreground action this one yielded the box to
+        # (#364).  A field rather than prose in ``reason`` so a reader can
+        # test it, and present as ``None`` everywhere else for the same
+        # reason ``unreadable`` is.
+        "preempted_by": record.get("preempted_by"),
+        # What the run cost and how loaded its box was (#372 Tier 0).
+        # Absent, not zero, on every record filed before it existed.
+        **pool.resource_profile_summary(detail),
+        # Where a profiled run left its profile (#372 Tier 1).  ``None``
+        # on every other row, which is most of them.
+        "profile": detail.get("profile"),
+        # Present on every row so a reader of the JSON can test one field
+        # rather than the absence of one.
+        "unreadable": None,
+        "finished_unix": (
+            float(finished)
+            if isinstance(finished, (int, float)) else mtime
+        ),
+        # Keep the record's own value separate from the filesystem-mtime
+        # fallback above. The fallback orders and selects status rows; it
+        # is not evidence of when execution finished.
+        "timing_finished_unix": finished,
+        "published_unix": record.get("published_unix"),
+        "claimed_unix": record.get("claimed_unix"),
+        "path": entry.path,
+    }
 
 
 # --------------------------------------------------------------------------
