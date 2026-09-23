@@ -1485,9 +1485,10 @@ def _scan_visible(directory: Path):
     (``capacity``, ``available``) keep the tolerant :func:`_scan`, and a
     holder they cannot read is counted as HELD, never as free (#936):
     ``capacity`` becomes a lower bound, and the shrink
-    (``retire_free_capacity``) retires every free token of the kind,
-    because an under-counted held total would retire too few.  Neither
-    direction reads an unreadable holder's tokens as free.
+    (``retire_free_capacity``) counts the holder as holding every minted
+    name that is neither free nor dead, because an under-counted held
+    total would retire too few.  Neither reads an unreadable holder's
+    tokens as free.
     """
 
     return sorted(directory.iterdir())
@@ -2585,32 +2586,53 @@ class ResourceLedger:
         reservation it is executing under; the total falls as holders finish
         and their tokens are not re-created.  Returns what was retired.
 
-        An unreadable holder counts as HELD with a count nobody can read
-        (#936), so every free token of each kind asked about is retired.
-        The arithmetic is why: ``excess = free + held - target``, so a held
-        count that is too low retires too few.  With free 5, held 3 and
-        target 4, skipping the holder retires 1 instead of 4 and the
-        total stays at 7, which over-admits against the shrink.
-        The ledger cannot grow back meanwhile: ``ensure_capacity`` refuses
-        to mint while a holder is unreadable, and mints the retired indices
-        again once every holder reads.
+        An unreadable holder counts as HELD, never as free (#936).  The
+        arithmetic is why it cannot be skipped: ``excess = free + held -
+        target``, so a held count that is too low retires too few.  With
+        free 5, held 3 and target 4, skipping the holder retires 1 instead
+        of 4 and the true total stays at 7, over-admitting against the
+        shrink.  So the held count becomes the most the ledger's own mint
+        authority allows it to be: every minted name that is neither free
+        nor dead (``minted/`` less ``free/`` less ``minted/dead/``), plus any
+        held name a readable holder shows.  That retires at least what the
+        truth requires, and in a steady state it retires nothing valid: the
+        R6 case (3 markers, 1 dead, 1 free, 1 held, target 2) keeps its
+        free token.  If the markers cannot be listed either, there is no
+        bound, and every free token of each kind asked about is retired.
+        The one miss is a transient duplicate (a host-ledger artifact,
+        see ``ensure_capacity``) held inside the unreadable holder.
         """
 
         retired: dict[str, int] = {}
         held_paths, unreadable = self._held_census()
+        minted: tuple[set[str], set[str]] | None = None
+        if unreadable:
+            try:
+                minted = self._minted_and_dead_names()
+            except OSError:
+                minted = None
         for kind, count in sorted(capacity.items()):
             target = int(count)
             if target < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
             free = _glob(self.free_dir, f"{kind}-*")
+            pattern = f"{kind}-*"
             if not unreadable:
                 held = sum(1 for path in held_paths
-                           if fnmatch.fnmatchcase(path.name, f"{kind}-*"))
+                           if fnmatch.fnmatchcase(path.name, pattern))
                 # Never retire below what is already held: those tokens exist.
                 excess = max(0, len(free) + held - target)
-            else:
-                # Held is unknown and may be any size: under-count free.
+            elif minted is None:
+                # No mint authority to bound the holder by: under-count free.
                 excess = len(free)
+            else:
+                markers, dead = minted
+                free_names = {path.name for path in free}
+                held_names = {name for name in markers
+                              if fnmatch.fnmatchcase(name, pattern)} - free_names - dead
+                held_names |= {path.name for path in held_paths
+                               if fnmatch.fnmatchcase(path.name, pattern)}
+                excess = max(0, len(free) + len(held_names) - target)
             # Retire the HIGHEST-indexed free tokens, not the lowest.
             #
             # ``ensure_capacity`` runs on every claim attempt and fills the
@@ -2813,6 +2835,24 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts, unreadable
 
+    def _minted_and_dead_names(self) -> tuple[set[str], set[str]]:
+        """The mint markers and the destroyed names, error-visible.
+
+        The bound :meth:`retire_free_capacity` counts an unreadable holder
+        by: every token has a marker, and ``retire_held`` files a destroyed
+        one under ``minted/dead/`` without touching its marker.  A ledger
+        with no dead namespace (every host ledger) has no dead names; any
+        other listing error propagates, and the retire then has no bound.
+        """
+
+        markers = {path.name for path in _scan_visible(self.minted_dir)
+                   if path.name != "dead"}
+        try:
+            dead = {path.name for path in _scan_visible(self.minted_dir / "dead")}
+        except FileNotFoundError:
+            dead = set()
+        return markers, dead
+
     @property
     def census_report_path(self) -> Path:
         """This ledger's unreadable-holder report (#936)."""
@@ -2825,13 +2865,14 @@ class ResourceLedger:
     ) -> dict[str, object] | None:
         """Record, or clear, why this ledger's census was not exact.
 
-        A holder that stays unreadable retires this ledger's free capacity
-        on every shrink (see :meth:`retire_free_capacity`), which is a
-        stall, so it must be loud: the report names the ledger, each
-        unreadable holder with its errno, the kinds the retire was asked
-        about and what it retired, and counts consecutive inexact
-        censuses.  ``pbstatus --starvation`` reads it.  An exact census
-        removes the report.  Returns the report, or ``None`` when exact.
+        A holder that stays unreadable blocks every mint on this ledger
+        (the strict census refuses) and makes every shrink retire against
+        a bound instead of the truth (see :meth:`retire_free_capacity`),
+        so it must be loud: the report names the ledger, each unreadable
+        holder with its errno, the kinds the retire was asked about and
+        what it retired, and counts consecutive inexact censuses.
+        ``pbstatus --starvation`` reads it.  An exact census removes the
+        report.  Returns the report, or ``None`` when exact.
         """
 
         path = self.census_report_path

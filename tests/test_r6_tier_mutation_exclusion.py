@@ -100,13 +100,14 @@ def _shaped_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
     return queue, dead[0]
 
 
-def _publish_claimant(queue: pool.PoolQueue) -> None:
+def _publish_claimant(queue: pool.PoolQueue, *, key: str = CLAIM_KEY,
+                      tokens: int = 3) -> None:
     """A real READY mover demanding more than the two backed credits."""
     queue.publish(
-        action_key=CLAIM_KEY, cas_root=str(queue.root / "cas"),
+        action_key=key, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
         worker_script=str(queue.root / "worker.py"),
-        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 3},
+        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": tokens},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": "f" * 64, "manifest_bytes": MIB,
                    "range_start_bytes": 0, "range_end_bytes": MIB},
@@ -292,17 +293,17 @@ def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
     # The unknown census reissued nothing: the dead name stays dead.
     assert result["reclaimed"] == {}
     assert (ledger.minted_dir / "dead" / dead_name).exists()
-    # H counted as HELD: the one free token was retired, never read as
-    # headroom, and the report names H with its errno.
-    assert result["retired"] == {KIND: 1}
-    assert free_during == 0
+    # H counted as HELD by the mint markers (3 minted - 1 dead - 1 free =
+    # 1 held): at wanted 2 nothing is unbacked, so the valid free token is
+    # kept, and the report names H with its errno.
+    assert result["retired"] == {}
+    assert free_during == 1
     assert result["census_unreadable"]["unreadable"] == [_eio(holder)]
-    assert result["census_unreadable"]["retired"] == {KIND: 1}
-    # The books never exceed the backing of 2: only H's live token is left.
-    assert ledger.capacity().get(KIND) == 1
-    # Readable again: the next mint restores exactly the backed two and
-    # removes the report.
+    assert result["census_unreadable"]["retired"] == {}
+    assert ledger.capacity().get(KIND) == 2
+    # Readable again: the books are exact and the report is removed.
     result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    assert result["reclaimed"] == {}
     assert ledger.capacity().get(KIND) == 2
     assert ledger.available().get(KIND) == 1
     assert result["census_unreadable"] is None
@@ -334,17 +335,22 @@ def test_unreadable_holder_still_retires_under_a_falling_wanted(
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
 def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
         tmp_path, monkeypatch, path_impl):
-    """Loud, not silent: a persistent fault is a stall with a named cause.
+    """Loud, not silent -- and a steady state that does not stall.
 
     Every mint cycle reports the ledger, the holder, its errno, the kinds
-    asked and what was retired, with a consecutive-cycle count; the claim
-    that the stall refuses is denied as ``tier_census_unreadable`` naming
-    the holder; and ``pbstatus --starvation`` attributes the stall to it.
+    asked and what was retired, with a consecutive-cycle count.  At a
+    steady wanted nothing valid is retired, so a mover that fits the one
+    backed free token is still admitted while H stays unreadable; the
+    mover that cannot fit is denied as ``tier_census_unreadable`` naming
+    the holder (the lower-bound total cannot call it never-fits); and
+    ``pbstatus --starvation`` attributes the refusal to the holder.
     """
     queue, _dead = _shaped_queue(tmp_path)
     ledger = queue.tier_ledger(TIER)
     holder = ledger.held_dir / HOLDER_H
+    small = "s" * 64
     _publish_claimant(queue)
+    _publish_claimant(queue, key=small, tokens=1)
     reports = []
     with monkeypatch.context() as guarded:
         _unreadable(guarded, [holder], path_impl)
@@ -358,9 +364,12 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
         assert report["ledger"] == str(ledger.base)
         assert report["unreadable"] == [_eio(holder)]
         assert report["kinds_asked"] == [KIND]
-    assert [report["retired"] for report in reports] == [{KIND: 1}, {}, {}]
-    # The claim is refused, and the refusal names the holder.
-    assert row is None
+    # Nothing is unbacked at wanted 2, so no cycle retires a valid token.
+    assert [report["retired"] for report in reports] == [{}, {}, {}]
+    # No stall: the mover that fits takes the backed free token.
+    assert row is not None and row["action_key"] == small
+    assert ledger.holder_tokens(small) == {KIND: 1}
+    # The one that cannot fit is refused, and the refusal names the holder.
     denials = adaptive_cpu.read_json(
         adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
     (denial,) = [value for value in denials.get("records", {}).values()
@@ -378,44 +387,72 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     assert any(str(holder) in note for note in starvation["notes"])
 
 
+def _free5_held3(root: Path, host: str, key: str) -> pool.ResourceLedger:
+    ledger = pool.ResourceLedger(root, host)
+    ledger.ensure_capacity({"cpu": 8, "mem_gb": 4})
+    assert ledger.acquire(key, {"cpu": 3}) is True
+    return ledger
+
+
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
-def test_retire_all_touches_only_the_unreadable_ledger_and_kinds_asked(
+def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
         tmp_path, monkeypatch, path_impl):
-    """Blast radius: one ledger, the kinds its retire was asked about.
+    """Arithmetic and blast radius of the shrink.
 
     Two host ledgers in the same state -- free cpu 5, held cpu 3 -- asked
-    the same shrink to cpu 4.  The readable one retires exactly 4
-    (``excess = 5 + 3 - 4``).  The one with the unreadable holder counts it
-    as held with an unknown count and retires all 5 free cpu, and leaves
-    mem_gb, which it was not asked about, alone.  Skipping the holder
-    instead would retire 1 and leave the true total at 7.  A second tier
-    ledger is untouched by the first tier's fault.
+    the same shrink to cpu 4.  ``excess = 5 + 3 - 4 = 4`` for both: the
+    unreadable holder is counted as held by the mint markers, not skipped
+    (skipping retires 1 and leaves the true total at 7).  The kind the
+    retire was not asked about (mem_gb) is untouched, the report lands on
+    the sick ledger only, and a second tier ledger is untouched by the
+    first tier's fault.  RED on pre-#936 main: 3.12 raises the EIO; the
+    3.14 emulation skips the holder and retires 1.
     """
     root = tmp_path / "reservations"
-    sick, well = pool.ResourceLedger(root, "boxa"), pool.ResourceLedger(root, "boxb")
     key = "k" * 64
-    for ledger in (sick, well):
-        ledger.ensure_capacity({"cpu": 8, "mem_gb": 4})
-        assert ledger.acquire(key, {"cpu": 3}) is True
+    sick, well = _free5_held3(root, "boxa", key), _free5_held3(root, "boxb", key)
     queue, _dead = _shaped_queue(tmp_path)
     other_tier = "prismabuild-stage:r6other"
     queue.mint_tier_capacity(other_tier, {KIND: 2})
     with monkeypatch.context() as guarded:
         _unreadable(guarded, [sick.held_dir / key,
                               queue.tier_ledger(TIER).held_dir / HOLDER_H], path_impl)
-        assert sick.retire_free_capacity({"cpu": 4}) == {"cpu": 5}
+        assert sick.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
         assert well.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
-        queue.mint_tier_capacity(TIER, dict(WANTED))
-    assert sick.available() == {"mem_gb": 4}
+        queue.mint_tier_capacity(TIER, {KIND: 1})
+    assert sick.available() == {"cpu": 1, "mem_gb": 4}
     assert well.available() == {"cpu": 1, "mem_gb": 4}
     report = pool._read_json(sick.census_report_path)
     assert report["kinds_asked"] == ["cpu"]
-    assert report["retired"] == {"cpu": 5}
+    assert report["retired"] == {"cpu": 4}
     assert report["unreadable"] == [_eio(sick.held_dir / key)]
     assert not well.census_report_path.exists()
     other = queue.tier_ledger(other_tier)
     assert other.available() == {KIND: 2}
     assert not other.census_report_path.exists()
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_retire_without_a_marker_census_retires_every_free_token(
+        tmp_path, monkeypatch, path_impl):
+    """No mint authority to bound the unreadable holder by: refuse fully.
+
+    With the markers unlistable too, the held count has no upper bound,
+    so every free token of the kind asked about goes (under-count free),
+    and the kind not asked about stays.
+    """
+    key = "k" * 64
+    ledger = _free5_held3(tmp_path / "reservations", "boxa", key)
+
+    def no_markers(self):
+        raise OSError(errno.EIO, "injected marker listing I/O error")
+
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [ledger.held_dir / key], path_impl)
+        guarded.setattr(pool.ResourceLedger, "_minted_and_dead_names",
+                        no_markers, raising=False)
+        assert ledger.retire_free_capacity({"cpu": 4}) == {"cpu": 5}
+    assert ledger.available() == {"mem_gb": 4}
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
