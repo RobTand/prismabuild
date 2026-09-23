@@ -53,6 +53,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
+from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
@@ -3493,7 +3494,7 @@ def _commitment_report(tier_id: str, census: Mapping[str, object] | None,
             field: claim_order.get(field) for field in (
                 "head", "target_free_gib", "free_gib", "ranked_unix",
                 "landing_bytes_per_s", "expected_landing_basis", "unranked",
-                "relief")}
+                "relief", "stuck_victim")}
         record["claim_order"]["entries"] = [                # type: ignore[index]
             dict(entry) for entry in claim_order.get("entries") or ()  # type: ignore[union-attr]
             if isinstance(entry, Mapping)]
@@ -3588,13 +3589,16 @@ def _over_committed_tiers(commitments: Mapping[str, Mapping[str, object]] | None
 def _claim_of(key: str, consumer: Mapping[str, object],
               horizon: Mapping[str, object] | None, *, reading: str | None,
               leg: tuple[str, int, str, int, int] | None,
-              published: bool) -> dict[str, object]:
+              published: bool, blocked_since: float | None = None,
+              ) -> dict[str, object]:
     """One claimed window's entry for :func:`window_credit.claim_order`.
 
     ``leg`` is the next leg the window asks the tier for, ``(mover, gib,
     phase, start, end)``, or ``None`` when it asks for nothing.
     ``published`` says that leg is already queued: it will take its tokens
     from free when it claims, but the window publishes nothing more for it.
+    ``blocked_since`` (:func:`_blocked_since`) ranks a blocked window among
+    the blocked ones.
     """
 
     stamp = consumer.get("claimed_unix")
@@ -3611,7 +3615,38 @@ def _claim_of(key: str, consumer: Mapping[str, object],
             "publish_gib": 0 if published else int(gib),
             "need_mover": mover, "need_phase": phase,
             "need_start_bytes": int(start), "need_end_bytes": int(end)})
+        if phase == reading and blocked_since is not None:
+            claim["blocked_since_unix"] = float(blocked_since)
     return claim
+
+
+def _blocked_since(queue: pool.PoolQueue, key: str,
+                   consumer: Mapping[str, object]) -> float | None:
+    """When claimed consumer ``key`` became blocked on its reading range.
+
+    For the claim order's rank among blocked consumers (#1022 review, item
+    2): the later of its reader's staged-wait record (``since_unix``, the
+    time the reader itself began to wait, #989), its last accepted report
+    (it was not blocked before it last advanced) and its claim.  A
+    staged-wait record from before the claim is an earlier attempt's and
+    is not used.  ``None`` when the claim time does not read.
+    """
+
+    claimed = consumer.get("claimed_unix")
+    if isinstance(claimed, bool) or not isinstance(claimed, (int, float)):
+        return None
+    stamps = [float(claimed)]
+    reported = consumer.get("reported_unix")
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+        stamps.append(float(reported))
+    try:
+        since = pool.staged_wait_since(Path(pb_progress.staged_wait_path(
+            str(queue.action_progress_path(key)))))
+    except (OSError, ValueError, pool.PoolContractError):
+        since = None
+    if since is not None and math.isfinite(since) and since >= float(claimed):
+        stamps.append(since)
+    return max(stamps)
 
 
 def _rank_claims(queue: pool.PoolQueue, tier_id: str,
@@ -3653,7 +3688,7 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
     for entry in order["entries"]:                       # type: ignore[union-attr]
         claim = by_key[str(entry["consumer"])]
         for field in ("need_mover", "need_phase", "need_start_bytes",
-                      "need_end_bytes", "publish_gib"):
+                      "need_end_bytes", "publish_gib", "landing_bytes_per_s"):
             if field in claim:
                 entry[field] = claim[field]
         if "need_end_bytes" in claim:
@@ -3699,6 +3734,11 @@ def _claim_order_entry(claim_order: Mapping[str, Mapping[str, object]] | None,
     return order, None
 
 
+#: The basis of a claim-order eviction from a blocked consumer's reading
+#: phase (#1022 review, item 4).
+PREEMPT_READING_PHASE = "preempt-reading-phase"
+
+
 def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                             tier_record: Mapping[str, object] | None,
                             consumers: list,
@@ -3712,23 +3752,38 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     2. the head's own legs past the one it needs;
     3. when the head is blocked on the range it is reading, the read-ahead
        of every consumer ranked before it, the lowest ranked first: a
-       blocked range comes before any read-ahead.
+       blocked range comes before any read-ahead;
+    4. last, the landed chunks of the phase each blocked consumer ranked
+       after the head is reading, the lowest ranked first
+       (``preempt-reading-phase``, #1022 review item 4).  Its reader cannot
+       finish that phase until its own blocked chunk lands, which by rank
+       is after the head's, so the chunks are room it holds while it waits.
+       Without them, consumers that each hold part of their reading phase
+       deadlock once the tier's room is less than what they hold plus the
+       head's chunk.  They go whole and are copied again on their
+       consumer's turn.  They come last, so a pass takes them only when
+       the rest cannot make the room.
 
-    A leg goes only when its reader needs it later than the head needs its
-    own (Belady's rule, in seconds at each reader's measured consumption,
-    the unit ``_landed_past`` compares readers in).  A blocked head needs
-    its range now, so any read-ahead is later.  A head that is not blocked
-    needs its leg ``(start - read_through) / rate`` from now, and a leg its
-    reader needs no later than that stays: evicting it would trade one
-    reader's read-ahead for another's and copy the bytes twice.  A reader
-    whose rate is not measured offers nothing to a head that is not
-    blocked.
+    Belady's rule, in seconds at each reader's measured consumption (the
+    unit ``_landed_past`` compares readers in): a leg goes only when its
+    reader needs it later than the head can use what the room is for.  For
+    a head that is not blocked that is when its reader reaches its leg,
+    ``(start - read_through) / rate``.  For a blocked head it is when its
+    range can land, ``need_bytes / rate`` at its landing rate (#1022 review
+    item 3): a range a granted reader needs sooner is worth more than one
+    that is not there yet, and that reader may already have seen it hit.
+    A leg whose reader's rate is not measured, or any leg under the rule
+    when the head's rate is not, offers nothing.  Two kinds of leg are
+    needed later by construction and skip the rule for a blocked head: the
+    head's own legs past its need, and the legs of a blocked consumer
+    ranked after it, which cannot read past its own blocked range before
+    the head is served.
 
-    Never the phase a consumer is reading, never a leg whose copy is
-    incomplete or queued, whose egress is queued or running, or whose
-    promotion holds the ram tier (#640), and never a leg in ``taken``.
-    Each row carries its ``basis``, its ``seconds_until_needed`` and the
-    head it is evicted for.
+    Never the phase the head or a consumer ranked before it is reading,
+    never a leg whose copy is incomplete or queued, whose egress is queued
+    or running, or whose promotion holds the ram tier (#640), and never a
+    leg in ``taken``.  Each row carries its ``basis``, its
+    ``seconds_until_needed`` and the head it is evicted for.
     """
 
     entries = [entry for entry in order.get("entries") or ()  # type: ignore[union-attr]
@@ -3746,13 +3801,16 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                    key=lambda entry: -int(entry["rank"]))
     before = sorted((entry for entry in entries if int(entry["rank"]) < head_rank),
                     key=lambda entry: -int(entry["rank"]))
+    blocked = bool(head_entry.get("blocked"))
     groups: list[tuple[str, Mapping[str, object], int | None]] = [
         ("ranked-after-head", entry, None) for entry in after]
     groups.append(("head-past-its-need", head_entry,
                    int(head_entry.get("need_start_bytes") or 0)))
-    if head_entry.get("blocked"):
+    if blocked:
         groups.extend(("read-ahead-before-blocked-head", entry, None)
                       for entry in before)
+    groups.extend((PREEMPT_READING_PHASE, entry, None)
+                  for entry in after if entry.get("blocked"))
     try:
         ledger = queue.tier_ledger(tier_id)
     except (OSError, pool.PoolContractError, ValueError):
@@ -3783,14 +3841,33 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         return (int(start) - position[0]) / position[1]
 
     head_key = str(head)
-    blocked = bool(head_entry.get("blocked"))
     head_needs_s: float | None = None
-    if not blocked:
+    if blocked:
+        rate = head_entry.get("landing_bytes_per_s")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+            rate = order.get("landing_bytes_per_s")
+        need = (int(head_entry.get("need_end_bytes") or 0)
+                - int(head_entry.get("need_start_bytes") or 0))
+        if (isinstance(rate, (int, float)) and not isinstance(rate, bool)
+                and float(rate) > 0 and need > 0):
+            head_needs_s = need / float(rate)
+    else:
         if head_key not in plans or head_entry.get("need_start_bytes") is None:
             return []
         head_needs_s = when_needed(head_key, int(head_entry["need_start_bytes"]))  # type: ignore[arg-type]
         if head_needs_s is None:
             return []
+
+    def ruled(basis: str, entry: Mapping[str, object]) -> bool:
+        """Whether Belady's rule decides this group's legs."""
+
+        if basis == PREEMPT_READING_PHASE:
+            return False
+        if blocked and basis == "head-past-its-need":
+            return False
+        return not (blocked and basis == "ranked-after-head"
+                    and bool(entry.get("blocked")))
+
     rows: list[dict[str, object]] = []
     for basis, entry, past in groups:
         key = str(entry["consumer"])
@@ -3804,10 +3881,12 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         names = [str(phase["name"]) for phase in ahead]
         if not names:
             continue
+        phases = names[:1] if basis == PREEMPT_READING_PHASE else names[1:]
         legs = [leg for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                         mover_role="mover_row")
-                if leg["phase"] in names[1:]
+                if leg["phase"] in phases
                 and (past is None or int(leg["start_bytes"]) > past)]
+        under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
             if mover in taken:
@@ -3828,8 +3907,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                                 int(leg["end_bytes"])) != []:
                 continue
             needed_s = when_needed(key, int(leg["start_bytes"]))
-            if head_needs_s is not None and (
-                    needed_s is None or needed_s <= head_needs_s):
+            if under_rule and (head_needs_s is None or needed_s is None
+                               or needed_s <= head_needs_s):
                 continue
             taken.add(mover)
             rows.append({
@@ -3839,6 +3918,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                 "start_bytes": int(leg["start_bytes"]),
                 "end_bytes": int(leg["end_bytes"]),
                 "seconds_until_needed": needed_s,
+                "head_needs_s": head_needs_s,
                 "basis": basis, "for_consumer": head})
     return rows
 
@@ -4030,7 +4110,8 @@ def window_pressure(
                 first = next(leg for leg in legs if leg[0] == waiting[0])
                 claims.setdefault(tier_id, []).append(_claim_of(
                     _key, consumer, horizon, reading=reading,
-                    leg=first, published=True))
+                    leg=first, published=True,
+                    blocked_since=_blocked_since(queue, _key, consumer)))
             continue
         unbounded = sum(gib for _key, gib, _phase, _start, _end in legs)
         decision = residency_plan.window(
@@ -4047,7 +4128,8 @@ def window_pressure(
                       int(wanted[0]["stage_gib"]), str(wanted[0]["phase"]),
                       int(wanted[0]["start_bytes"]), int(wanted[0]["end_bytes"]))
                      if wanted else None),
-                published=False))
+                published=False,
+                blocked_since=_blocked_since(queue, _key, consumer)))
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
             if not stage_newcomer and str(wanted[0]["phase"]) != reading:
@@ -5258,6 +5340,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "grant": grant, "need_gib": demand,
                     }
                     continue
+                if claim_permit is not None:
+                    # A ranked window takes no fresh fence (#1022 review,
+                    # item 2): the rank's walk over free is its
+                    # reservation.  A fence for its next phase would take
+                    # from free the room the walk gave its current range,
+                    # which then cannot claim.
+                    permitted[(key, tier_id)] = _claim_order_permit(
+                        tier_id, mover_role, mover, demand, claim_permit)
+                    continue
                 if not window_credit.fence_fits(
                         held_gib=held_total + running_extra + running_fence,
                         ready_gib=ready_new_money, output_gib=output_gib,
@@ -5325,6 +5416,12 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     admitted_newcomers.discard(key)
                 continue
             if int(demand) - grant_have > 0:
+                if claim_permit is not None:
+                    # No fresh fence on a ranked tier: the rank is the
+                    # reservation (see the blind branch above).
+                    permitted[(key, tier_id)] = _claim_order_permit(
+                        tier_id, mover_role, mover, demand, claim_permit)
+                    continue
                 # Fresh take: the peak must fit before committing new money.
                 if not window_credit.fence_fits(
                         held_gib=held_total + running_extra + running_fence,
@@ -5879,37 +5976,12 @@ def _mover_report(queue: pool.PoolQueue, mover: str
                   ) -> dict[str, object] | None:
     """A claimed stage mover's last landed-bytes report, or ``None`` (#1010).
 
-    The progress record the mover writes for the worker's stall check
-    (``stage_move._ProgressReporter``), read once, bounded and without
-    following links, the way the worker reads it.  Its token is not checked:
-    this prices an expectation and gates nothing, and the worker unlinks the
-    file at every ending, so a report here is the running attempt's.
-    ``None`` for no report, one that does not read, or one that is not a
-    mover's (another schema or phase, a count that is not whole bytes).
+    :meth:`pool.PoolQueue.mover_report`, which the staged-wait verdict reads
+    too (#1022 review, item 1).  Here it prices an expectation and gates
+    nothing.
     """
 
-    try:
-        raw = pb._read_regular_file_nofollow(
-            queue.action_progress_path(mover), where="mover progress report",
-            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
-        record = json.loads(raw)
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError, RecursionError,
-            pb.ActionContractError, pb.CASTamperError,
-            pb.CASUnavailableError):
-        return None
-    if not isinstance(record, Mapping):
-        return None
-    units, at = record.get("units_completed"), record.get("reported_unix")
-    if (record.get("schema") != pb.PROGRESS_RECORD_SCHEMA_V1
-            or record.get("phase") not in movement_actions.MOVER_PROGRESS_PHASES
-            or isinstance(units, bool) or not isinstance(units, int) or units < 0
-            or isinstance(at, bool) or not isinstance(at, (int, float))
-            or not math.isfinite(float(at))):
-        return None
-    return {"landed_bytes": units, "reported_unix": float(at),
-            "landed_phase": str(record["phase"])}
+    return queue.mover_report(mover)
 
 
 def publish_landing_expectations(
@@ -6681,11 +6753,14 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     rank's ``target_free_gib``, the ranges past any horizon that are left go
     first, then :func:`_claim_order_candidates` -- the legs ranked after
     the head, then the head's own legs past its need, then, for a head
-    blocked on its reading range, the read-ahead ranked before it.  The
-    same rules hold: whole or declined, farthest first within a consumer,
+    blocked on its reading range, the read-ahead ranked before it, and last
+    the landed reading-phase chunks of blocked consumers ranked after the
+    head (preemption, #1022 review item 4).  The same rules hold: whole or declined, farthest first within a consumer,
     and nothing at all when every candidate together could not reach the
     target.  Its events are ``claim-order-evicted``, ``-declined`` and
-    ``-futile``, and each names the head it was for.
+    ``-futile``, and each names the head it was for.  ``-futile`` is told
+    when the futile state starts or changes head or victim, not every cycle
+    it lasts (:func:`_futile_is_news`).
     """
 
     events: list[dict[str, object]] = []
@@ -6867,39 +6942,74 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
         if free + offered < target:
             _stamp_relief(order, "futile")
-            events.append({"event": "claim-order-eviction-futile",
-                           "tier_id": tier_id, "for_consumer": order["head"],
-                           "needed_gib": target, "free_gib": free,
-                           "offered_gib": offered})
+            if _futile_is_news(queue, tier_id, order):
+                # Told on the transition only (#1022 review, item 6): the
+                # event is filed into every consumer's event file on the
+                # tier, and one line a cycle rotates real evidence out.
+                events.append({"event": "claim-order-eviction-futile",
+                               "tier_id": tier_id, "for_consumer": order["head"],
+                               "needed_gib": target, "free_gib": free,
+                               "offered_gib": offered,
+                               "stuck_victim": order.get("stuck_victim")})
             continue
+        preempted = False
         for row in rows:
             if free >= target:
                 break
             if row.get("ram_first") and not ram_first(row, target):
                 continue
-            _done, event = evicted(row, tier_id, stage_root, target,
-                                   prefix="claim-order")
+            done, event = evicted(row, tier_id, stage_root, target,
+                                  prefix="claim-order")
             events.append(event)
+            preempted = preempted or (done and row.get("basis") == PREEMPT_READING_PHASE)
             try:
                 free = int(ledger.available().get(kind, 0))
             except (OSError, pool.PoolContractError, ValueError):
                 break
-        _stamp_relief(order, "evicted" if free >= target else "short")
+        _stamp_relief(order, ("preempted" if preempted else "evicted")
+                      if free >= target else "short")
     return events
+
+
+def _futile_is_news(queue: pool.PoolQueue, tier_id: str,
+                    order: Mapping[str, object]) -> bool:
+    """Whether this cycle's futile relief differs from the last one filed.
+
+    The tier's commitment record from the previous cycle (filed after this
+    pass, by the window) carries its order's ``relief``, ``head`` and
+    ``stuck_victim``.  The same futile state with the same head and the same
+    victim is not news.  A record that does not read is news.
+    """
+
+    try:
+        record = queue.tier_commitment(tier_id)
+    except (OSError, pool.PoolContractError, ValueError):
+        return True
+    before = (record or {}).get("claim_order")
+    if not isinstance(before, Mapping):
+        return True
+    return (before.get("relief") != "futile"
+            or before.get("head") != order.get("head")
+            or before.get("stuck_victim") != order.get("stuck_victim"))
 
 
 def _stamp_relief(order: Mapping[str, object], outcome: str) -> None:
     """Say on the cycle's claim order what the head's relief came to (#1011).
 
     ``not-needed`` (free already covered the target), ``evicted`` (the
-    pass reached it), ``short`` (declines left it below), ``futile`` (every
-    candidate together could not reach it, so nothing went), ``refused``
-    (the stage root refused) or ``unknown`` (the ledger did not read).
-    Carried onto the tier's commitment record, where ``pbstatus`` reads it.
+    pass reached it), ``preempted`` (it reached it and took a blocked
+    consumer's reading-phase chunks to do so), ``short`` (declines left it
+    below), ``futile`` (every candidate together could not reach it, so
+    nothing went), ``refused`` (the stage root refused) or ``unknown`` (the
+    ledger did not read).  Also stamps the stuck rule's one victim
+    (:func:`window_credit.stuck_victim`, ``None`` unless the order is
+    stuck), so the record every consumer's rung reads names it.  Carried
+    onto the tier's commitment record, where ``pbstatus`` reads it.
     """
 
     if isinstance(order, dict):
         order["relief"] = outcome
+        order["stuck_victim"] = window_credit.stuck_victim(order)
 
 
 def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:

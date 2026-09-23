@@ -438,9 +438,13 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
     progress_path = _waiting_consumer(queue, mover, total=total, digest=digest,
                                       tmp_path=tmp_path)
     consumer = _hexkey("waiting-consumer")
-    before = queue.staged_wait_verdict(consumer, progress_path, token="t" * 32)
+    # Judged at the claim: a claimed mover with no report yet is exempt
+    # while its claim is within two heartbeats (#1022 review, item 1).
+    before = queue.staged_wait_verdict(consumer, progress_path, token="t" * 32,
+                                       now=float(item["claimed_unix"]))
     assert before["exempt"] is True
-    assert before["movers"] == [{"key": mover, "state": "claimed"}]
+    assert [(entry["key"], entry["state"], entry["evidence"])
+            for entry in before["movers"]] == [(mover, "claimed", "claimed")]
 
     outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
                             timeout_grace_s=0.5)

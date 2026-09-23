@@ -113,11 +113,14 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     """The copy is slower than every earlier receipt, and the mover is alive.
 
     Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
-    mover for its own range.  On main the rung kills it at 0.4 s.
+    mover for its own range.  On main the rung kills it at 0.4 s.  The
+    mover's landed-bytes report is fresh (within two heartbeats), which is
+    the evidence the exemption now needs (#1022 review, item 1).
     """
 
     queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="slow")
     _hand_to_claimed(queue, row)
+    _mover_reports(queue, row, units=1 << 30, reported_unix=time.time())
 
     outcome = _execute(queue, item)
 
@@ -126,7 +129,9 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     assert observed["staged_wait_exempt_s"] > 0.4
     wait = observed["staged_wait"]
     assert wait["exempt"] is True
-    assert wait["movers"] == [{"key": str(row["action_key"]), "state": "claimed"}]
+    (mover,) = wait["movers"]
+    assert (mover["key"], mover["state"], mover["evidence"]) == (
+        str(row["action_key"]), "claimed", "progress")
 
 
 def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path) -> None:
