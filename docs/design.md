@@ -3951,14 +3951,25 @@ the default, seals the leg when a ram tier is live on the stage's host;
 frozen with). A phase bigger than the tier's effective chunk seals one
 promotion node plus one egress node *per chunk* instead (`ram_chunks`, in
 read order, each carrying its phase, its chunk index and its chunk range —
-#673): at window 160 the chunk is 40 GiB, so a 123 GiB phase seals 4
-chunks and the movement node shape is otherwise today's. The stage leg
+#673): at window 160 the chunk is 40 GiB, so a 123 GiB phase of small
+entries seals 4 chunks and the movement node shape is otherwise today's. The stage leg
 slides the same way (#675): a phase bigger than the stage record's
 effective chunk seals one movement node plus one egress node *per chunk*
 instead (`stage_chunks`, in read order, under the stage's own role names),
 because there is one chunk family across tiers — the stage record announces
 the same `promotion_chunk_gib` the ram tier on its host announces, and the
-submitter cuts both legs at that size. A phase that fits
+submitter cuts both legs at that size. Cuts fall only on the manifest's entry
+boundaries in read order (#965): a mover stages every entry its range
+touches, so a cut inside an entry made both neighbouring movers overrun their
+reservations and refuse `residency_overran_reservation` on every attempt. A
+chunk is therefore whole entries, packed up to the chunk size and reserved at
+their bytes, so a phase's chunks tile its entry bytes exactly (their tokens
+round up per chunk, like every reservation). An entry larger than the chunk
+is a chunk of its own. An entry larger than the window a tier announces could
+never be admitted, so the submission refuses at seal
+(`residency_entry_exceeds_window`) before anything is sealed or published;
+the stage record announces no window, so only the ram leg checks one. A
+phase that fits
 in one chunk seals the whole-phase pair, and a plan sealed before chunks
 keeps the leg it was frozen with — a node whose range is its phase's whole
 range follows the whole-phase rules, byte-identically. A promotion holds

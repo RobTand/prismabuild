@@ -47,33 +47,40 @@ def test_a_tiny_window_still_cuts_a_positive_chunk() -> None:
 
 
 def test_a_phase_splits_into_quarters_with_a_short_last_chunk() -> None:
-    """123 GiB at a 40 GiB chunk is 4 chunks, the last one short."""
+    """123 GiB at a 40 GiB chunk is 4 chunks, the last one short.
+
+    The phase is 123 one-GiB entries, so every quarter edge is also an
+    entry boundary: the splitter cuts only there (#965), and here that is
+    exactly the window-quarter arithmetic.
+    """
 
     chunks = storage_tiers.split_range_into_chunks(
-        0, 123 * GIB, 40 * GIB)
+        0, 123 * GIB, 40 * GIB, entry_bytes=[GIB] * 123)
 
     assert chunks == [(0, 40 * GIB), (40 * GIB, 80 * GIB),
                       (80 * GIB, 120 * GIB), (120 * GIB, 123 * GIB)]
 
 
 def test_an_exact_multiple_needs_no_short_chunk() -> None:
-    assert storage_tiers.split_range_into_chunks(0, 80 * GIB, 40 * GIB) == [
+    assert storage_tiers.split_range_into_chunks(
+        0, 80 * GIB, 40 * GIB, entry_bytes=[GIB] * 80) == [
         (0, 40 * GIB), (40 * GIB, 80 * GIB)]
 
 
 def test_a_phase_that_fits_is_one_chunk_whole() -> None:
     """A range at or under the chunk seals one node over the whole phase."""
 
-    assert storage_tiers.split_range_into_chunks(0, 40 * GIB, 40 * GIB) == [
-        (0, 40 * GIB)]
-    assert storage_tiers.split_range_into_chunks(0, 3 * GIB, 40 * GIB) == [
-        (0, 3 * GIB)]
+    assert storage_tiers.split_range_into_chunks(
+        0, 40 * GIB, 40 * GIB, entry_bytes=[GIB] * 40) == [(0, 40 * GIB)]
+    assert storage_tiers.split_range_into_chunks(
+        0, 3 * GIB, 40 * GIB, entry_bytes=[3 * GIB]) == [(0, 3 * GIB)]
 
 
 def test_chunks_cover_without_gap_or_overlap() -> None:
     """Contiguity is the property the plan validator will recheck at freeze."""
 
-    chunks = storage_tiers.split_range_into_chunks(7, 100 * GIB + 7, 30 * GIB)
+    chunks = storage_tiers.split_range_into_chunks(
+        7, 100 * GIB + 7, 30 * GIB, entry_bytes=[7] + [GIB] * 100)
 
     assert chunks[0][0] == 7
     assert chunks[-1][1] == 100 * GIB + 7
@@ -88,7 +95,8 @@ def test_an_empty_range_and_a_non_positive_chunk_refuse() -> None:
     for start, end, chunk in ((5, 5, 40 * GIB), (9, 5, 40 * GIB),
                               (0, 40 * GIB, 0), (0, 40 * GIB, -1)):
         with pytest.raises(ValueError):
-            storage_tiers.split_range_into_chunks(start, end, chunk)
+            storage_tiers.split_range_into_chunks(
+                start, end, chunk, entry_bytes=[GIB] * 40)
 
 
 def _policy(extra: dict) -> Path:

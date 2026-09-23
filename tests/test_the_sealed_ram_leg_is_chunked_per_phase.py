@@ -39,13 +39,21 @@ READERS = 4
 
 
 def _manifest() -> dict[str, object]:
-    sizes = [BIG_PHASE_GIB * GIB, SMALL_PHASE_GIB * GIB]
+    """The big phase is six 20 GiB entries and a 3 GiB tail.
+
+    Chunks are cut only at entry boundaries (#965), and here every 40 GiB
+    edge is one, so the chunk table is the window-quarter arithmetic.
+    """
+
+    phases = [[20 * GIB] * 6 + [3 * GIB], [SMALL_PHASE_GIB * GIB]]
+    assert sum(phases[0]) == BIG_PHASE_GIB * GIB
     entries, table, running = [], [], 0
-    for index, size in enumerate(sizes):
-        entries.append({"path": f"/mnt/shared/part-{index}", "offset": 0,
-                        "bytes": size, "sha256": None})
-        running += size
-        table.append({"name": f"phase-{index}", "bytes": size,
+    for index, sizes in enumerate(phases):
+        for size in sizes:
+            entries.append({"path": f"/mnt/shared/part-{len(entries)}",
+                            "offset": 0, "bytes": size, "sha256": None})
+            running += size
+        table.append({"name": f"phase-{index}", "bytes": sum(sizes),
                       "cumulative_bytes": running})
     return {
         "schema": "prismaquant.prismabuild.data_manifest.v1",
