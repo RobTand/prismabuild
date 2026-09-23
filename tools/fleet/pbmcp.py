@@ -1789,6 +1789,8 @@ class Session:
         withdrawn, and each such consumer comes with the release and
         resubmit-with-supersede commands.  ``census_complete`` is false when
         a record could not be read; ``unreadable`` names them.
+        ``orphaned_prewrites`` lists each ended attempt's write-only prewrite
+        whose present files no committed batch owns (#949), with its remedy.
         """
 
         blob = call.read(
@@ -1800,6 +1802,7 @@ class Session:
             "blocked_origins_schema": blob.get("schema"),
             "census_complete": blob.get("complete"),
             "blocked": blob.get("blocked"),
+            "orphaned_prewrites": blob.get("orphaned_prewrites"),
             "unreadable": blob.get("unreadable"),
         }
 
@@ -2434,7 +2437,10 @@ TOOLS: tuple[dict, ...] = (
                        "listed with its state, any supersession that did not "
                        "apply, and the two remedies: the exact pbrun "
                        "--release-origin-consumer command, and the "
-                       "resubmission with --supersedes. Read-only and "
+                       "resubmission with --supersedes. Also lists each "
+                       "ended attempt's write-only prewrite (#949) whose "
+                       "files no committed batch owns, under "
+                       "`orphaned_prewrites`. Read-only and "
                        "deadline-bounded; check `census_complete`.",
         "inputSchema": {"type": "object", "properties": {},
                         "additionalProperties": False},

@@ -4868,7 +4868,10 @@ Limits:
   identity recheck at submission, the manifest refuses a path named twice,
   and the mover verifies digests. For a `consumed` batch, #914's orphan
   sweep releases the earlier attempt's charge (next section); a `retain`
-  batch keeps it until its files are gone and `reclaim_origin` runs.
+  batch keeps it until its files are gone and `reclaim_origin` runs. An
+  attempt that ended before it committed leaves a prewrite and no batch;
+  the retirement tick sweeps that prewrite ("A producer attempt that ended
+  before committing (#949)").
 - A `retain` batch records no consumers, so a producer that deletes its
   origins and reclaims can strand a consumer frozen before the deletion: its
   mover finds the origin gone. A `consumed` batch is held until its declared
@@ -5171,6 +5174,114 @@ Limits:
 - The tick unlinks files only, never directories. An instance whose
   commitments cannot be read is skipped, as the other scope scans skip it:
   its batches stay on disk and charged.
+
+#### A producer attempt that ended before committing (#949)
+
+A write-only producer prewrites its origin paths, writes them, and then
+commits them (#912). An attempt that dies in between leaves its prewrite
+record in its own instance directory, and the files it wrote belong to no
+batch. A retry of the same key gets a new nonce, so a new instance, and
+usually reuses the batch id.
+
+**The retry.** Path ownership is per attempt (`_live_path_owner` reads only
+its own instance), so the dead attempt's prewrite does not refuse the
+retry's prewrite of the same paths. The retry writes the files again and
+commits; the batch record holds its bytes and sha256. The dead attempt's
+late commit is refused (`stale-superseded-owner`), because the owner's
+claim names the retry.
+
+**What the dead record costs.** A prewrite is the attempt's reservation
+against its own instance's durable maxima (`_outstanding_sums`). No gate of
+another attempt reads it, so a dead attempt's record blocks nothing. Before
+#949, nothing ever removed it, and nothing reported files that no batch
+owned.
+
+**The sweep.** `origin_retirement_tick` now also reads each write-only
+instance's outstanding prewrites, those whose batch id has no commitments
+entry. `_sweep_ended_prewrites` decides for one instance under the
+output-prefix lock, which `require_prewrite` and `commit_origin_batch` also
+take:
+
+- While the attempt can still commit (its state is `live` or `unknown`, as
+  `_producer_attempt_state` reads it), the prewrites are its own and are
+  kept, with no lock taken and no record read. Once the attempt is `dead` or
+  `succeeded`, its owner gate refuses any commit, and the planned paths
+  decide (`_ended_prewrite_dispositions`).
+- The output prefix must be a directory on this host, or an absent file
+  proves nothing: `output-origin-retirement-refused` with
+  `output-prefix-unreachable`, once per change.
+- Every planned path absent: the record is removed and the tick returns
+  `output-prewrite-reclaimed` with reason `absent`. This is the rule
+  `abort_prewrite` applies.
+- Every present path belongs to a committed, unreclaimed origin batch of
+  another attempt of the same key and template: removed, reason
+  `superseded`, with each path's `{path, nonce, batch_id}`. That attempt
+  wrote the file again and its commit recorded the file's identity, so the
+  file is that batch's and is charged once, there.
+- A present path that another attempt still plans, and that could still
+  commit, holds the record, silently, until that attempt commits or ends.
+- Otherwise the files belong to no batch: `output-prewrite-orphaned`, once
+  per change, with the orphaned `paths` and the `superseded` and `held`
+  ones. PB never deletes a file whose identity no commit recorded. The
+  record stays until an operator removes the files; the next tick then
+  removes it as `absent` or `superseded`.
+
+`pbstatus --blocked-origins` lists each orphaned prewrite under
+`orphaned_prewrites` with its coordinates (`owner/template.nonce/batch`),
+`class_bytes`, the three path lists and a `remedy`. It reads through
+`produced_output.blocked_origin_batches`, applies the same dispositions and
+takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
+
+**What one tick reads.** The owner key's generation is read once per owner
+for all its attempts (`_attempt_state` over one `_key_generation`), both for
+an instance's own state and for its siblings'. Per ended instance, the
+output prefix is statted once, and the sibling scan runs at most once, only
+when some planned path is present. Every scope costs one more directory
+listing than before (its `prewrites`). A scope with outstanding prewrites
+and nothing due is skipped on its attempt's state before its instance or
+template is read, because the scope directory is named for the attempt's
+nonce, so a running producer costs only that listing and its share of the
+owner's one read. An orphaned prewrite is examined again on each tick,
+because an operator's removal of its files is only seen that way; it is
+reported only when what the tick finds changes.
+
+One read is still repeated. The scope loop reads every sibling's
+`commitments.json` and lists its `prewrites`, and the sibling scan of an
+ended instance reads them again. It happens only for an attempt that ended
+with a prewrite outstanding and a planned file present, once per such
+instance per tick. Removing it needs the tick to gather an owner's scopes
+before it sweeps any of them.
+
+The attempt's state is read before the output-prefix lock is taken. That is
+safe because `dead` and `succeeded` are final for a nonce: a superseded or
+finished attempt never holds the claim again. The same read answers for the
+siblings, and a sibling that ends or starts after it can change only a
+report or a hold, never a removal. A removal depends only on what the lock
+protects: which planned files are present, and which sibling batches are
+committed. The next tick corrects the report.
+
+Limits:
+
+- Only write-only templates are swept. `commit_origin_batch` accepts only
+  them, so an origin batch never comes from a read-back template. A
+  read-back prewrite can be cited by a staged funding intent
+  (`_output_precommit_authority`), and its lifecycle is the mover's.
+- An attempt that stays `unknown` holds its prewrite with no report: a
+  record without the attempt's nonce, a key requeued as `ready`, or a cache
+  hit by another attempt. The sweep acts once the key reaches a state that
+  says whether the attempt ended.
+- A sibling attempt that is `unknown` holds another attempt's prewrite in
+  the same way, and the hold is not listed.
+- An attempt that died after its commitments entry was filed and before
+  its prewrite was removed leaves that record, and `_outstanding_sums`
+  counts the batch twice for that dead instance. The sweep reads only
+  prewrites without an entry, and no gate reads a dead instance's sums.
+- The same mount assumption as the retirement tick applies. A prefix that
+  is itself the mount point of an unmounted file system is still an empty
+  directory, so its files read as absent: the record is removed, and the
+  files on that file system are never reported. A prefix directory that was
+  never created reads as unreachable, and the prewrite is reported as
+  refused until it exists.
 
 #### Deferred consumers: action edges (#913)
 
@@ -7739,7 +7850,8 @@ and the progress record's own timestamp for the accepted phase. Both keep
 the census's own completeness under its own name beside the envelope's,
 because "the mount answered" and "every record answered" are different
 facts. `pb_blocked_origins` serves `pbstatus --blocked-origins`'s reader the
-same way, with its completeness as `census_complete` (#926).
+same way, with its completeness as `census_complete` (#926), and its
+`orphaned_prewrites` (#949).
 
 `pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
 the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.
