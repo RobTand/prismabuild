@@ -367,7 +367,9 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
     main = collections.Counter()
     if not profile.exists():
         return {"missing": str(profile)}
-    for raw in profile.read_text().splitlines():
+    # py-spy can write a frame name that is not UTF-8; one bad byte must not
+    # cost the scenario its summary.
+    for raw in profile.read_text(errors="replace").splitlines():
         stack, _, count = raw.rpartition(" ")
         try:
             samples = int(count)
