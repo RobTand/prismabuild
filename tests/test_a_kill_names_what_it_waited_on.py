@@ -23,9 +23,7 @@ import os
 from pathlib import Path
 import socket
 import sys
-import time
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -236,35 +234,46 @@ def test_a_busy_transition_lock_defers_the_entry_rather_than_racing_the_holder(t
         "host_pressure", "transition_busy", "measurement_holder"]
 
 
-def test_the_ring_write_costs_the_steady_claim_pass_nothing_measurable(tmp_path):
-    """The claim loop runs at 1 s on every box: an unchanged reason, which is
-    every pass of a starved row but its first, adds a dictionary lookup.
-
-    The bound is relative, against the latest-only write the pass already
-    pays, so it holds on any box; the absolute numbers are printed for the
-    PR's before/after table.
-    """
+def test_a_retired_keys_ring_is_swept_and_a_live_ones_is_kept(tmp_path):
+    """The ring's retirement path (checklist 17): the prewarm loop's sweep."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    item = _publish_export(queue, _hexkey("owner"), "bench")
-    queue.record_denial(item, "host_pressure")
-    passes = 400
-
-    started = time.perf_counter()
-    for _ in range(passes):
+    live = _publish_export(queue, _hexkey("owner"), "live")
+    gone = _publish_export(queue, _hexkey("owner"), "gone")
+    for item in (live, gone):
         queue.record_denial(item, "host_pressure")
-    steady = (time.perf_counter() - started) / passes
+    gone_key = str(gone["action_key"])
+    Path(queue.item_path(pool.READY, gone_key)).rename(queue.item_path(pool.FAILED, gone_key))
 
-    started = time.perf_counter()
-    for index in range(passes):
-        queue.record_denial(item, "host_pressure" if index % 2 else "measurement_holder")
-    flapping = (time.perf_counter() - started) / passes
+    rows = queue.sweep_denial_transitions({str(live["action_key"])})
 
-    print(f"record_denial per call: steady {steady * 1e6:.1f} us, "
-          f"every-call-a-transition {flapping * 1e6:.1f} us")
-    # A transition adds one small read and one atomic write beside the
-    # latest-only file's own read and rewrite; the steady call adds none.
-    assert steady < flapping
+    assert rows == [{"action_key": gone_key, "pruned": True, "reason": "terminal"}]
+    assert queue.denial_transitions(str(live["action_key"]))
+    assert not queue.denial_transitions_path(gone_key).exists()
+
+
+def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, monkeypatch):
+    """The runbook's one command: the producer, its export, why, and since when."""
+
+    import pbstatus
+
+    queue, consumer = progress_fx._claimed(tmp_path, mode="silent", seconds=1,
+                                           policy=None)
+    owner = str(consumer["action_key"])
+    export = _publish_export(queue, owner, "export-status")
+    _refuse_with(monkeypatch, ["measurement_holder", "host_pressure"])
+    assert _claim_pass(queue) is None
+    assert _claim_pass(queue) is None
+
+    blob = pbstatus.read_starvation(queue.root)
+
+    [entry] = [row for row in blob["claimed_dependents"] if row["action_key"] == owner]
+    [row] = entry["dependents"]
+    assert row["key"] == export["action_key"]
+    assert row["role"] == "produced_export"
+    assert row["last_denial"]["decision_reason"] == "host_pressure"
+    assert [value["decision_reason"] for value in row["denial_transitions"]] == [
+        "measurement_holder", "host_pressure"]
 
 
 # -- #990: the tier loop's verdicts reach the consumer's own record -------
@@ -297,6 +306,8 @@ def test_a_window_stalled_verdict_is_readable_from_the_consumers_event_file(
             "mountpoint": str(stage),
             "capacity_bytes": stall_fx.STAGE_CAPACITY_GIB * storage_tiers.GIB}}
 
+    # A fresh loop: no verdict carried over from another test's cycles.
+    monkeypatch.setattr(tier_loop, "_VERDICT_SINCE", {})
     for _ in range(2):
         tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                         receipts=tier_loop.ReceiptCache(), discover=discover)
@@ -311,3 +322,47 @@ def test_a_window_stalled_verdict_is_readable_from_the_consumers_event_file(
     # A wait is a duration: the second cycle says how long it has lasted.
     assert stalled[0]["waited_s"] == 0.0
     assert stalled[-1]["waited_s"] > 0.0
+
+
+def test_the_event_file_is_bounded_and_keeps_the_newest(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    consumer = _hexkey("consumer")
+    monkeypatch.setattr(tier_loop, "_EVENT_LINES", {})
+    total = 2 * pool.MAX_CONSUMER_EVENT_LINES + 3
+    for index in range(total):
+        tier_loop._emit(queue, "sparky", {"event": "window-stalled",
+                                          "consumer": consumer, "ordinal": index})
+
+    events = queue.consumer_events(consumer)
+
+    assert len(events) <= 2 * pool.MAX_CONSUMER_EVENT_LINES
+    assert events[-1]["ordinal"] == total - 1
+    assert [event["ordinal"] for event in events] == sorted(
+        event["ordinal"] for event in events)
+
+
+def test_a_tier_verdict_naming_no_consumer_is_filed_for_the_tiers_consumers(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    consumer = _hexkey("consumer")
+    tier_loop._emit(queue, "dl380g10",
+                    {"event": "beyond-horizon-eviction-futile", "tier_id": "t",
+                     "needed_gib": 9, "free_gib": 1, "beyond_horizon_gib": 2},
+                    tier_consumers={"t": [consumer]})
+
+    [event] = queue.consumer_events(consumer)
+
+    assert event["event"] == "beyond-horizon-eviction-futile"
+    assert event["attributed_by"] == "tier_id"
+    assert event["waited_s"] >= 0.0
+
+
+def test_reaping_the_plan_retires_the_consumers_event_file(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    consumer = _hexkey("consumer")
+    tier_loop._emit(queue, "dl380g10", {"event": "window-stalled", "consumer": consumer})
+    assert queue.consumer_events(consumer)
+
+    tier_loop._emit(queue, "dl380g10", {"event": "residency-plan-reaped",
+                                        "consumer": consumer, "tier_id": "t"})
+
+    assert not queue.consumer_events_dir(consumer).exists()

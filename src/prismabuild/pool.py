@@ -567,6 +567,37 @@ MAX_CLAIM_DENIALS = 256
 MAX_DENIAL_VALUE_DEPTH = 6
 MAX_DENIAL_VALUE_ITEMS = 32
 MAX_DENIAL_VALUE_TEXT = 256
+#: Per action, the reasons its claim denials changed through (#991): one
+#: small file per key in the queue root, beside ``passes``, written only when
+#: a host's reason for the key changes.  ``claim-denials.json`` keeps the
+#: latest verdict; this keeps the sequence that diagnoses a starvation.
+DENIAL_TRANSITIONS = "denial-transitions"
+DENIAL_TRANSITIONS_SCHEMA_V1 = "prismabuild.denial_transitions.v1"
+#: The ring's length: the newest reason transitions kept per action (the
+#: WS-DA audit's finding 5 sized it at 16).  A starvation that changed reason
+#: more often than this in one generation is flapping, and its newest
+#: transitions are the ones that name what it died on.
+MAX_DENIAL_TRANSITIONS = 16
+#: How long a ring outlives a key that no state directory names any more,
+#: when no terminal or withdrawal record says why.  The same safety valve,
+#: for the same reason, as ``PREWARM_RECEIPT_RETENTION_S`` (defined below).
+DENIAL_TRANSITIONS_RETENTION_S = 7 * 24 * 3600.0
+#: How many dependent rows a kill's ending record names (#990), the same
+#: bound every other list in denial evidence has.  The record says how many
+#: there were and that it was cut.
+MAX_ENDING_DEPENDENTS = MAX_DENIAL_VALUE_ITEMS
+#: Per consumer, what the tier loops decided about it (#990):
+#: ``residency-events/<consumer>/<host>.jsonl``, one file per writing host so
+#: every file has one writer (the host's tier-loop singleton) and no append
+#: crosses the NFS client boundary.
+RESIDENCY_EVENTS = "residency-events"
+#: Lines one host's event file keeps.  The writer rewrites the file to its
+#: newest ``MAX_CONSUMER_EVENT_LINES`` once it holds twice that, so a file
+#: never exceeds ``2 * MAX_CONSUMER_EVENT_LINES`` lines.  At one verdict per
+#: 5 s cycle that is 21 minutes of a single standing verdict.
+MAX_CONSUMER_EVENT_LINES = 256
+#: The newest events a kill's ending record carries, across hosts.
+MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
 WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
@@ -3562,6 +3593,16 @@ def _serialized_key(method):
     return invoke
 
 
+#: The reason ring's in-process memo (#991), per ``(queue root, action key,
+#: generation)``: the reason this process last saw on file for its own host.
+#: It lets an unchanged reason -- every pass of a starved row but its first --
+#: skip the ring entirely.  Pruned to the ready queue once per claim pass.
+_DENIAL_SEEN: dict[tuple[str, str, str], tuple[str, str | None]] = {}
+#: Ring entries recorded without the key's transition lock, held in order
+#: until the next verdict this process records for the key under the lock.
+_DENIAL_PENDING: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -5520,18 +5561,41 @@ class PoolQueue:
 
     def record_denial(
         self, item: Mapping[str, object], reason: str, evidence: Mapping[str, object] | None = None,
+        *, locked: bool = True,
     ) -> None:
-        """Best-effort, coalesced claim evidence; never admission authority.
+        """Record one claim denial: its latest verdict, and any change of reason.
 
-        This deliberately has no shared queue write.  A host records its latest
-        verdict for an action generation locally; the existing independent
-        snapshot publisher copies this bounded file no more than once a second.
-        A contended local diagnostics lock drops an observation rather than
-        delaying or changing a claim.
+        Never admission authority.  Two records, with different guarantees:
+
+        * **Latest verdict, best-effort and latest-only.**  A host records its
+          latest verdict for an action generation locally; the independent
+          snapshot publisher copies this bounded file no more than once a
+          second.  A contended local diagnostics lock drops the observation
+          rather than delaying or changing a claim, and every pass overwrites
+          the one before it.  This file is never the only evidence of a
+          decision: the reason ring below keeps each change.
+        * **Reason transitions, kept (#991).**  :meth:`_record_denial_transition`
+          appends ``{unix, host, reason, decision_reason}`` to the key's ring
+          in ``denial-transitions/`` when this host's reason changes.  It takes
+          no lock of its own: every caller in the claim scan already holds the
+          key's transition lock, which serializes writers of that key across
+          the fleet.  The one caller that does not -- ``transition_busy``,
+          recorded *because* another loop holds that lock -- passes
+          ``locked=False``, and its entry waits in this process until the next
+          verdict this process records for the key under the lock.
+
+        A steady reason costs the claim pass one dictionary lookup here; see
+        :meth:`_record_denial_transition`.
         """
         if not isinstance(item.get("published_unix"), (int, float)):
             return
         host = socket.gethostname()
+        decision = (evidence or {}).get("decision") if isinstance(evidence, Mapping) else None
+        decision_reason = decision.get("reason") if isinstance(decision, Mapping) else None
+        self._record_denial_transition(
+            item, host=host, reason=reason,
+            decision_reason=decision_reason if isinstance(decision_reason, str) else None,
+            locked=locked)
         ledger = self.ledger()
         ledger_name = str(ledger.base)
         base = self._claim_denial_bases.get(ledger_name)
@@ -5581,6 +5645,397 @@ class PoolQueue:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    # -- denial history and a kill's dependents (#990, #991) ----------------
+
+    def denial_transitions_path(self, action_key: str) -> Path:
+        """The key's reason ring: ``denial-transitions/<key>.json``."""
+
+        return self.root / DENIAL_TRANSITIONS / f"{_residency_action_key(action_key)}.json"
+
+    def _record_denial_transition(
+        self, item: Mapping[str, object], *, host: str, reason: str,
+        decision_reason: str | None, locked: bool,
+    ) -> None:
+        """Append to the key's ring when this host's reason changed (#991).
+
+        What makes this free on the claim pass: an in-process memo of the
+        reason this process last saw on file for its host, per key and
+        generation.  A starved row's reason is the same for hours, so every
+        pass but the first answers from the memo with no I/O at all.  On a
+        change -- or the first sight of a key -- one small read and, only if
+        the file's newest entry for this host differs, one atomic write.
+
+        The memo only ever suppresses a write the file would also refuse:
+        the check against the file is the newest entry *for this host*, and
+        two loops on one host that disagree write each reason once and then
+        stay quiet, rather than flapping the file every pass.
+
+        Survives contention by construction.  It shares no lock with the
+        latest-only file (whose ``flock`` drops observations by design), and
+        its writers are serialized by the key's transition lock, which the
+        claim scan holds around every other ``record_denial`` call.  An entry
+        recorded without that lock (``locked=False``) is held here, in
+        order, and written with the next locked verdict for the key.  A write
+        that fails leaves the memo and the held entries as they were, so the
+        next pass retries.  Best-effort in one respect: entries held by a
+        process that exits before its next locked verdict for the key are
+        lost with it.
+        """
+
+        try:
+            key = _residency_action_key(item.get("action_key"))
+            generation = float(item["published_unix"])  # type: ignore[arg-type]
+        except (PoolContractError, KeyError, TypeError, ValueError):
+            return
+        memo = (str(self.root), key, repr(generation))
+        verdict = (reason, decision_reason)
+        held = _DENIAL_PENDING.get(memo)
+        if _DENIAL_SEEN.get(memo) == verdict and not held:
+            return
+        entry = {"unix": _now(), "host": host, "reason": reason,
+                 "decision_reason": decision_reason, "published_unix": generation}
+        if not locked:
+            if _DENIAL_SEEN.get(memo) != verdict:
+                queued = _DENIAL_PENDING.setdefault(memo, [])
+                queued.append(entry)
+                del queued[:-MAX_DENIAL_TRANSITIONS]
+                _DENIAL_SEEN[memo] = verdict
+            return
+        path = self.denial_transitions_path(key)
+        try:
+            try:
+                prior = _read_json(path) or {}
+            except PoolContractError:
+                prior = {}    # an unparsable ring is replaced, not trusted
+            ring = [dict(value) for value in prior.get("transitions", [])
+                    if isinstance(value, Mapping)] if isinstance(prior, Mapping) else []
+            changed = False
+            for candidate in [*(held or []), entry]:
+                last = next((value for value in reversed(ring)
+                             if value.get("host") == host
+                             and value.get("published_unix") == generation), None)
+                if last is None or (last.get("reason"), last.get("decision_reason")) != (
+                        candidate["reason"], candidate["decision_reason"]):
+                    ring.append(candidate)
+                    changed = True
+            if changed:
+                ring.sort(key=lambda value: float(value.get("unix", 0.0))
+                          if isinstance(value.get("unix"), (int, float)) else 0.0)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomic(path, {
+                    "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
+                    "transitions": ring[-MAX_DENIAL_TRANSITIONS:]})
+        except (OSError, PoolContractError, TypeError, ValueError):
+            return
+        _DENIAL_SEEN[memo] = verdict
+        _DENIAL_PENDING.pop(memo, None)
+
+    def _retire_denial_memo(self, live: "set[tuple[str, str]]") -> None:
+        """Forget this queue's memo entries for generations no longer ready.
+
+        Called once per claim pass with the pass's own ``(key, generation)``
+        set, so the memo is bounded by the ready queue, not by a worker's
+        lifetime.
+        """
+
+        root = str(self.root)
+        for memo in [memo for memo in _DENIAL_SEEN if memo[0] == root
+                     and (memo[1], memo[2]) not in live]:
+            _DENIAL_SEEN.pop(memo, None)
+            _DENIAL_PENDING.pop(memo, None)
+
+    def denial_transitions(
+        self, action_key: str, *, published_unix: float | None = None,
+    ) -> list[dict[str, object]]:
+        """The key's reason transitions, oldest first; ``[]`` if none.
+
+        ``published_unix`` narrows the answer to one generation.
+        """
+
+        try:
+            record = _read_json(self.denial_transitions_path(action_key)) or {}
+        except (OSError, PoolContractError):
+            return []
+        ring = record.get("transitions") if isinstance(record, Mapping) else None
+        if not isinstance(ring, list):
+            return []
+        out = [dict(value) for value in ring if isinstance(value, Mapping)
+               and (published_unix is None
+                    or value.get("published_unix") == float(published_unix))]
+        return sorted(out, key=lambda value: float(value.get("unix", 0.0))
+                      if isinstance(value.get("unix"), (int, float)) else 0.0)
+
+    def sweep_denial_transitions(
+        self, live_keys: "set[str] | frozenset[str]", *, now: float | None = None,
+    ) -> list[dict[str, object]]:
+        """Retire the rings of keys the queue no longer runs (#991).
+
+        The same rules as :meth:`prune_prewarm_receipt`, minus the stage band:
+        a live key keeps its ring; a key with a terminal record or a
+        withdrawal marker loses it (a kill's ending record already carries
+        its dependents' rings); anything else is kept until its ring is
+        ``DENIAL_TRANSITIONS_RETENTION_S`` old.  One listing per call.
+        """
+
+        moment = _now() if now is None else float(now)
+        rows: list[dict[str, object]] = []
+        root = self.root / DENIAL_TRANSITIONS
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return rows
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            key = name[: -len(".json")]
+            if key in live_keys:
+                continue
+            path = root / name
+            try:
+                if (self.item_path(READY, key).exists()
+                        or self.item_path(CLAIMED, key).exists()):
+                    continue      # live, whatever the caller's set covered
+                if (self.item_path(DONE, key).exists() or self.item_path(FAILED, key).exists()
+                        or self.item_path(WITHDRAWN, key).exists()):
+                    why = "terminal"
+                elif moment - path.stat().st_mtime > DENIAL_TRANSITIONS_RETENTION_S:
+                    why = "retention"
+                else:
+                    continue
+                path.unlink()
+            except OSError:
+                continue
+            rows.append({"action_key": key, "pruned": True, "reason": why})
+        return rows
+
+    def latest_denials(self, keys: "set[str]") -> dict[str, list[dict[str, object]]]:
+        """Each host's latest denial verdict for ``keys``, newest host first.
+
+        This host's own latest-only file first, then every host's published
+        snapshot (``reservations/<host>/adaptive/claim-denials.json``) for the
+        rest.  Both are best-effort, latest-only records; a missing or
+        unreadable one contributes nothing.
+        """
+
+        found: dict[str, dict[str, dict[str, object]]] = {}
+
+        def take(records: object) -> None:
+            if not isinstance(records, Mapping):
+                return
+            for record in records.values():
+                if not isinstance(record, Mapping):
+                    continue
+                key = record.get("action_key")
+                host = record.get("host")
+                stamp = record.get("denied_unix")
+                if (key not in keys or not isinstance(host, str)
+                        or not isinstance(stamp, (int, float))):
+                    continue
+                slot = found.setdefault(str(key), {})
+                if host not in slot or float(slot[host]["denied_unix"]) < float(stamp):
+                    slot[host] = dict(record)
+
+        if not keys:
+            return {}
+        try:
+            local = cpu_admission.local_state_base(self.ledger().base) / CLAIM_DENIALS
+            take(cpu_admission.read_json(local).get("records"))
+        except (OSError, ValueError, TypeError, RuntimeError, PoolContractError):
+            pass
+        try:
+            hosts = sorted(os.listdir(self.root / RESERVATIONS))
+        except OSError:
+            hosts = []
+        for host in hosts:
+            take(cpu_admission.read_json(
+                self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records"))
+        return {key: sorted(slot.values(), key=lambda value: -float(value["denied_unix"]))
+                for key, slot in found.items()}
+
+    def live_records(self) -> tuple[dict[str, tuple[str, dict[str, object]]], list[str]]:
+        """Every ready and claimed record, by key, and what could not be listed.
+
+        One listing and one read per record: what a single claim pass reads.
+        A census for :meth:`dependent_rows`, taken once by a caller that asks
+        about several actions.
+        """
+
+        live: dict[str, tuple[str, dict[str, object]]] = {}
+        errors: list[str] = []
+        for state in (READY, CLAIMED):
+            try:
+                names = sorted(os.listdir(self.dir(state)))
+            except OSError as exc:
+                errors.append(f"{state}: {exc!r}")
+                continue
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                try:
+                    record = _read_json(self.dir(state) / name, tolerate_stale=True)
+                except (OSError, PoolContractError):
+                    continue
+                if isinstance(record, dict):
+                    live[str(record.get("action_key", ""))] = (state, record)
+        return live, errors
+
+    def dependent_rows(
+        self, action_key: str, *, now: float | None = None,
+        live_records: "tuple[Mapping[str, tuple[str, dict[str, object]]], list[str]] | None" = None,
+    ) -> dict[str, object]:
+        """The rows ``action_key`` waits on, with their state and last denial (#990).
+
+        Two sources, both named by the queue's own records:
+
+        * its residency plan's children -- stage movers and egresses and RAM
+          promotions and their egresses -- read from the frozen plan, with a
+          ready or claimed state from one listing of each directory and a
+          ``failed`` state from one existence check per other child;
+        * its produced-output exports: every ready or claimed row whose
+          ``dependent_of`` names it (#998).  One read of each ready and claimed
+          record, which is what a single claim pass already reads.
+
+        Rows are ordered ready first (longest waiting first), then claimed,
+        then failed, and cut at ``MAX_ENDING_DEPENDENTS``;
+        ``dependents_total`` and ``dependents_truncated`` say so.  Each shown
+        row carries its latest denial and its reason ring.  Read-only.
+        ``live_records`` is a census from :meth:`live_records` the caller
+        already took, so a reader asking about many actions lists once.
+        """
+
+        from . import residency_plan as plan_mod
+
+        key = _residency_action_key(action_key)
+        moment = _now() if now is None else float(now)
+        live, listed = live_records if live_records is not None else self.live_records()
+        errors: list[str] = list(listed)
+        roles: dict[str, str] = {
+            child: "produced_export" for child, (_state, record) in sorted(live.items())
+            if record.get("dependent_of") == key and child != key}
+        refusals: list[Exception] = []
+        try:
+            plan = plan_mod.read(self, key, on_unreadable=refusals.append)
+        except (OSError, ValueError, PoolContractError) as exc:
+            plan, refusals = None, [exc]
+        if refusals:
+            errors.append(f"residency plan: {refusals[0]!r}")
+        if plan is not None:
+            for phase in plan.get("phases") or []:
+                if not isinstance(phase, Mapping):
+                    continue
+                for role, table in (("mover_row", "stage_chunks"), ("egress_row", "stage_chunks"),
+                                    ("ram_mover_row", "ram_chunks"),
+                                    ("ram_egress_row", "ram_chunks")):
+                    legs = phase.get(table)
+                    legs = legs if isinstance(legs, list) else [phase]
+                    for leg in legs:
+                        row = leg.get(role) if isinstance(leg, Mapping) else None
+                        if isinstance(row, Mapping) and isinstance(row.get("action_key"), str):
+                            roles.setdefault(str(row["action_key"]), role)
+        rows: list[dict[str, object]] = []
+        for child, role in roles.items():
+            state, record = live.get(child, (None, None))
+            if state is None:
+                try:
+                    if not self.item_path(FAILED, child).exists():
+                        continue      # unpublished, done, or withdrawn: not waited on
+                except OSError:
+                    continue
+                state = FAILED
+            since = record.get("published_unix") if isinstance(record, Mapping) else None
+            row: dict[str, object] = {
+                "key": child, "role": role, "state": state,
+                "ready_since_unix": float(since) if isinstance(since, (int, float)) else None,
+                "ready_age_s": (moment - float(since)
+                                if isinstance(since, (int, float)) else None),
+            }
+            if state == CLAIMED and isinstance(record, Mapping):
+                row["claimed_unix"] = record.get("claimed_unix")
+                row["claimed_host"] = record.get("claimed_host")
+            rows.append(row)
+        order = {READY: 0, CLAIMED: 1, FAILED: 2}
+        rows.sort(key=lambda row: (order.get(str(row["state"]), 3),
+                                   row["ready_since_unix"] if row["ready_since_unix"] is not None
+                                   else math.inf, str(row["key"])))
+        shown = rows[:MAX_ENDING_DEPENDENTS]
+        denials = self.latest_denials({str(row["key"]) for row in shown})
+        for row in shown:
+            latest = denials.get(str(row["key"])) or []
+            row["last_denial"] = None
+            if latest:
+                newest = latest[0]
+                evidence = newest.get("evidence")
+                decision = evidence.get("decision") if isinstance(evidence, Mapping) else None
+                subreason = decision.get("reason") if isinstance(decision, Mapping) else None
+                row["last_denial"] = {
+                    "reason": newest.get("reason"),
+                    "decision_reason": subreason if isinstance(subreason, str) else None,
+                    "host": newest.get("host"), "denied_unix": newest.get("denied_unix"),
+                    "age_s": moment - float(newest["denied_unix"]),
+                    "hosts": len(latest)}
+            generation = row["ready_since_unix"]
+            row["denial_transitions"] = self.denial_transitions(
+                str(row["key"]), published_unix=generation)
+        return {"dependents": shown, "dependents_total": len(rows),
+                "dependents_truncated": len(rows) > len(shown),
+                "dependents_errors": errors}
+
+    def consumer_events_dir(self, action_key: str) -> Path:
+        """``residency-events/<consumer>/``: one ``<host>.jsonl`` per tier loop."""
+
+        return self.root / RESIDENCY_EVENTS / _residency_action_key(action_key)
+
+    def consumer_events(
+        self, action_key: str, *, limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        """What every host's tier loop decided about this consumer, oldest first.
+
+        Best-effort: each file is bounded by its writer and keeps only the
+        newest ``2 * MAX_CONSUMER_EVENT_LINES`` verdicts, a line that does not
+        parse is skipped, and a missing directory is no events.
+        """
+
+        events: list[dict[str, object]] = []
+        try:
+            names = sorted(os.listdir(self.consumer_events_dir(action_key)))
+        except OSError:
+            return events
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                text = (self.consumer_events_dir(action_key) / name).read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        events.sort(key=lambda value: float(value.get("unix", 0.0))
+                    if isinstance(value.get("unix"), (int, float)) else 0.0)
+        return events if limit is None else events[-limit:]
+
+    def ending_diagnosis(self, action_key: str, *,
+                         published_unix: float | None = None) -> dict[str, object]:
+        """What a kill's ending record carries about what the action waited on.
+
+        The rows it depended on (:meth:`dependent_rows`), the newest tier-loop
+        verdicts about it (:meth:`consumer_events`), and its own reason ring
+        from before it was claimed.  Read once, at the ``no_progress``,
+        ``execution_deadline`` and ``withdrawn`` rungs.
+        """
+
+        found = self.dependent_rows(action_key)
+        events = self.consumer_events(action_key)
+        return {**found,
+                "tier_events": events[-MAX_ENDING_EVENTS:],
+                "tier_events_total": len(events),
+                "denial_transitions": self.denial_transitions(
+                    action_key, published_unix=published_unix)}
 
     def withhold_age(self, action_key: str) -> float:
         """Seconds since this item was first denied admission; 0.0 if never."""
@@ -12511,6 +12966,10 @@ class PoolQueue:
             for generation in list(deferrals):
                 if generation not in live_generations:
                     deferrals.pop(generation, None)
+        # The reason ring's memo, bounded the same way (#991).
+        self._retire_denial_memo({
+            (str(item.get("action_key", "")), repr(float(item["published_unix"])))
+            for item in ready if isinstance(item.get("published_unix"), (int, float))})
         preempted = False
         #: The item withholding this box, once one does (#924).  The scan used
         #: to end there; it now goes on for the rows that can run without
@@ -12524,7 +12983,9 @@ class PoolQueue:
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     if key:
-                        self.record_denial(item, "transition_busy")
+                        # Another loop holds this key's lock, and may be
+                        # writing its reason ring: the entry waits (#991).
+                        self.record_denial(item, "transition_busy", locked=False)
                     continue
                 # Refresh the directory under exclusion before consulting names:
                 # a cached negative lookup can outlive another NFS client's claim.
@@ -17342,6 +17803,21 @@ class PoolQueue:
                 if watch is not None:
                     outcome["progress_observation"] = watch.as_record(
                         now=time.monotonic())
+                if (outcome.get("status") == "withdrawn"
+                        or outcome.get("termination_reason") in (
+                            "no_progress", "execution_deadline")):
+                    # A kill names what it was waiting on (#990): the rows it
+                    # depended on, the tier loops' verdicts about it, and the
+                    # reason rings.  Diagnostics only, so a failure to read
+                    # them is recorded beside the kill and never replaces it.
+                    try:
+                        outcome.update(self.ending_diagnosis(
+                            key, published_unix=(
+                                float(item["published_unix"])
+                                if isinstance(item.get("published_unix"), (int, float))
+                                else None)))
+                    except Exception as exc:          # noqa: BLE001
+                        outcome["dependents_error"] = repr(exc)
                 framebuffer = getattr(scope, "_framebuffer_window", None)
                 if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
                     group = framebuffer.group()
