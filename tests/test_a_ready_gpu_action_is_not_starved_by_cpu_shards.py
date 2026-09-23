@@ -235,7 +235,6 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     _publish(queue, clock, r12, {"cpu": 9, "gpu": 1, "mem_gb": 100},
              cas_root=cas_root, checkout_root=checkout)
     assert _key_of(queue.claim(capacity=capacity)) == r12
-    assert queue.holder_bound(r12)["bound"] == "unbounded"
 
     clock[0] = T0
     shard = _publish(queue, clock, _key("12gb-shard"), {"cpu": 1, "mem_gb": 12})
@@ -246,6 +245,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
 
     assert _key_of(queue.claim(capacity=capacity)) == small, (
         "a day-long holder held the box shut for a shard that cannot fit beside it")
+    assert queue.holder_bound(r12)["bound"] == "unbounded"
     denial = _denial(queue, shard)
     assert denial["reason"] == "reservation_unavailable_starved"
     starved = denial["evidence"]["starved"]
@@ -300,12 +300,12 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     behind = _publish(queue, clock, _key("behind"), {"cpu": 1, "mem_gb": 1})
 
     if withholds:
-        assert queue.holder_bound(holder)["bound"] == "transient"
         assert claim() is None
+        assert queue.holder_bound(holder)["bound"] == "transient"
         assert _denial(queue, measurement)["reason"] == "adaptive_cpu_refused_withholding"
     else:
-        assert queue.holder_bound(holder)["bound"] == "long"
         assert claim() == behind
+        assert queue.holder_bound(holder)["bound"] == "long"
         denial = _denial(queue, measurement)
         assert denial["reason"] == "adaptive_cpu_refused_starved"
         assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
