@@ -45,6 +45,7 @@ dirty to anything else.
 from __future__ import annotations
 
 import argparse
+import bisect
 import contextlib
 import getpass
 import hashlib
@@ -5272,6 +5273,7 @@ def seal_movement_action(
     tags: Sequence[str],
     log_name: str,
     retry_policy: Mapping[str, object] | None = None,
+    extra_params: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Seal one movement or egress node off the submission that needs it.
 
@@ -5287,7 +5289,7 @@ def seal_movement_action(
     return movement_actions.seal_movement_action(
         template, command=command, demand=demand, tags=tags,
         log_name=log_name, retry_policy=retry_policy,
-        container_owner_fn=container_owner)
+        container_owner_fn=container_owner, extra_params=extra_params)
 
 
 def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
@@ -5681,6 +5683,43 @@ def residency_stage_rows(
         # verified.
         "retry_safe": True,
     }
+    # A stage mover's stall grace (#1010): the time its next landing takes
+    # at the slowest measured landing of this manifest on this tier, plus
+    # the time a report takes to reach the worker's stall check
+    # (``movement_actions.mover_progress_policy``).  Measured means the
+    # ``landing`` basis only: a median share of other manifests' copies is
+    # not a landing of this one.  The sealed fill caps it from below when an
+    # offer capped the seal, so the grace errs long.  With nothing measured
+    # the mover is sealed as before, with no stall grace, and
+    # ``demand_source.mover_progress`` says ``unmeasured``.
+    landing_bytes_per_s: float | None = None
+    if fill_price.get("basis") == "landing" and fill_price.get("mb_s"):
+        slowest = int(fill_price["mb_s"])                  # type: ignore[arg-type]
+        if fill is not None:
+            slowest = min(slowest, int(fill))
+        landing_bytes_per_s = float(slowest * storage_tiers.MB)
+    entry_sizes = [int(read_entry.get("bytes", 0) or 0)
+                   for read_entry in read_entries]
+    entry_starts: list[int] = []
+    position = 0
+    for size in entry_sizes:
+        entry_starts.append(position)
+        position += size
+    mover_progress: dict[str, object] = {}
+
+    def chunk_entry_bytes(cstart: int, cend: int) -> list[int]:
+        """The sizes of the read-order entries a chunk stages.
+
+        Chunks are cut on entry boundaries (#965), so this is exactly the
+        window ``stage_move`` copies (``prewarm_loop.entries_between``).
+        """
+
+        low = bisect.bisect_right(entry_starts, cstart) - 1
+        return [entry_sizes[index]
+                for index in range(max(0, low), len(entry_sizes))
+                if entry_starts[index] < cend
+                and entry_starts[index] + entry_sizes[index] > cstart]
+
     phases: list[dict[str, object]] = []
     for ordinal, span in enumerate(ranges):
         start, end = int(span["start_bytes"]), int(span["end_bytes"])
@@ -5708,6 +5747,9 @@ def residency_stage_rows(
             # were read and which field fell back to a declared bound.
             chunk_demand["cpu"] = int(priced["cpu"])
             chunk_demand["mem_gb"] = int(priced["mem_gb"])
+            progress, derivation = movement_actions.mover_progress_policy(
+                chunk_entry_bytes(cstart, cend),
+                landing_bytes_per_s=landing_bytes_per_s)
             chunk_mover = seal_movement_action(
                 template,
                 command=[mover_python, mover_tool,
@@ -5728,9 +5770,17 @@ def residency_stage_rows(
                            # what the copy achieved, and a shortfall is the
                            # measured ceiling on how many movers the pool feeds.
                            ["--fill-mb-s-pool-side", str(fill)]),
-                demand=chunk_demand, tags=tags,
+                demand=chunk_demand,
+                # A progress-governed action is placed only on a worker
+                # that enforces the contract and exports the helper
+                # environment the mover reports through.
+                tags=(tags if progress is None
+                      else [*tags, *progress_required_tags(progress)]),
                 retry_policy=mover_retry_policy,
-                log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log")
+                log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
+                extra_params=(None if progress is None
+                              else {pb.PROGRESS_PARAM: progress}))
+            mover_progress[str(chunk_mover["action_key"])] = derivation
             chunk_egress = seal_movement_action(
                 template,
                 command=[mover_python, egress_tool,
@@ -5951,7 +6001,12 @@ def residency_stage_rows(
                        "fill_mb_s_pool_side": fill,
                        "fill": fill_basis,
                        "fill_measured": dict(fill_price),
-                       "tier_offer_mb_s": offered_fill})
+                       "tier_offer_mb_s": offered_fill,
+                       # Each stage mover's stall grace and every term of it
+                       # (#1010), by mover key: ``basis`` is ``landing`` when
+                       # a measured landing priced it, ``unmeasured`` when
+                       # the mover was sealed with no grace.
+                       "mover_progress": mover_progress})
     return {
         "plan": plan,
         "residency": {

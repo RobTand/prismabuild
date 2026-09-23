@@ -7361,13 +7361,17 @@ bytes and one state:
 
 | State | Meaning | `expected_landing_unix` |
 |---|---|---|
-| `claimed` | the mover is copying | claim time + own bytes / rate |
+| `claimed` | the mover is copying | its last progress report + remaining bytes / its live rate (`basis: reported`, #1010); with no report, claim time + own bytes / rate (`basis: claim`) |
 | `ready` | the mover is queued | now + (bytes ahead + own bytes) / rate |
 | `unpublished` | the window has not published it, or will recopy a failed copy (#627) | null, with `waiting_for` |
 | `evicted` | in `done/` with no tokens on the tier ledger: evicted, and published again when the range is back inside the horizon (`evict_beyond_horizon`) | null, with `waiting_for` |
 | `done-not-resident` | in `done/` and holding its tokens, but not resident yet: waiting for adoption, briefly under adoption lag | null, with `waiting_for` |
 | `terminal-no-receipt` | the plan is superseded, so nothing will publish it | null |
 
+Every range with an expectation carries `basis`: `reported`, `claim` or
+`queue` (a queued range). A `reported` range also carries `landed_bytes`,
+`reported_unix` and `live_bytes_per_s`, the bytes landed since its claim over
+the time they took (see "A mover reports what it has landed" below).
 A queued range also carries its `queue_position` and `bytes_ahead`: every
 claimed mover's remaining bytes on the tier, then every earlier ready
 mover's, in the queue's own order (`_queue_order_of`).
@@ -7456,15 +7460,111 @@ not cover their unpublished waits while the tier is over-committed.
 
 **Limits.**
 
-* A claimed mover's landed bytes are not observable without walking the
-  stage, so its expectation is its claim time plus its own bytes at the
-  tier's rate, not its live rate.
+* A claimed mover sealed before #1010, or one with no measured landing
+  rate, reports nothing, so its expectation is its claim time plus its own
+  bytes at the tier's rate, not its live rate.
 * The replay is serial. Movers that copy in parallel land sooner than the
   expectation says, and a withheld or isolation-refused mover later.
-* A mover carries no execution bound and reports no progress, so a claimed
-  mover whose copy stops holds its claim until the box's announced ceiling,
-  and the reader waits that long. The fix belongs to the mover (report
-  landed bytes as progress), not to a reader clock.
+* A mover with no measured landing rate carries no stall grace (`basis:
+  unmeasured`), so if its copy stops it holds its claim until the box's
+  announced ceiling, and the reader waits that long. Every mover of a plan
+  whose manifest has landed once on the tier is bounded (next section).
+
+### A mover reports what it has landed, and a stalled copy ends (#1010)
+
+Since #1009, a consumer blocked on its own staged range is exempt from its
+`no_progress` rung while that range's mover is `claimed`. A mover sealed no
+progress phases and no execution bound, so a copy that stopped (a hung pool
+read, a stuck mount) held its claim, and the consumer's GPU, until the
+worker's announced ceiling: 86400 s on both Sparks.
+
+**What the mover reports.** `stage_move.py` runs a reporter thread
+(`_ProgressReporter`) beside the copy when the worker gives it a progress
+channel. Every `--progress-interval-s` (default `pool.HEARTBEAT_S`, 30 s)
+it reads the copier's landed byte count under the copier's lock and commits
+it through `progress.commit` in phase `copy`, with the unit `bytes landed of
+read-order range [start, end)`. An entry counts once it is copied, verified
+and renamed into place, which is the durable unit the progress contract asks
+for. The read-back that warms the file server's cache reports in phase
+`warm`. The copy loop itself never touches the channel: it pays one lock
+acquisition per interval, not per entry. The reporter commits only when the
+count grows or the phase advances, and a refused commit is recorded in the
+receipt's `progress_report`, never raised into the copy.
+
+**What the mover is sealed with.** `pbrun.residency_stage_rows` seals each
+stage chunk with a `params.progress` policy of two phases, `copy` and `warm`
+(`movement_actions.MOVER_PROGRESS_PHASES`), both with the same grace:
+
+```text
+unit    = sum of the copy_depth largest entries in the chunk
+grace_s = ceil(unit / landing_bytes_per_s + 2 * pool.HEARTBEAT_S)
+```
+
+* `landing_bytes_per_s` is the plan's measured landing rate on the tier:
+  `storage_tiers.mover_fill_price` with basis `landing`, capped by the
+  tier's sealed fill, the same term that prices the mover's seal. It is the
+  slowest complete copy of the manifest that the tier has receipted.
+* `copy_depth` is `MOVER_MAX_READERS` (16), the mover's `--max-readers`.
+  Each copy worker holds one entry in flight and they share the rate, so a
+  healthy copy may land none of the 16 until it has read all of them. The
+  unit is the most bytes that can be in flight before the next entry lands.
+* The report latency is two heartbeats (`movement_actions.
+  mover_report_latency_s`): the reporter commits at most one interval after
+  an entry lands, and the worker's progress poll (`PoolQueue.execute`)
+  samples the file at most one heartbeat after that. The tier loop's cycle
+  is not on this path: the worker judges the mover's progress file directly.
+  The brief for #1010 named `HEARTBEAT_S + CYCLE_INTERVAL_S`; the cycle
+  bounds how late the landing record sees a report, not how late the rung
+  does.
+* A plan whose manifest has no landing receipt on the tier (basis
+  `single-reader-share` or `none`) is sealed with no policy, which is what
+  every mover had before. The plan's `demand_source.mover_progress` records
+  each chunk's derivation (`basis`, `landing_bytes_per_s`, `copy_depth`,
+  `unit_bytes`, `report_latency_s`, `grace_s`), with `basis: unmeasured`
+  and `grace_s: null` for these.
+
+The policy is part of the action key, so a measured mover's key changes
+with #1010, and its placement needs `progress-v1` and
+`progress-helper-v1`, which the live worker offers announce.
+
+**What a stall does.** A copy that lands nothing for a grace ends at the
+mover's own `no_progress` rung. The terminal record names the last accepted
+report: `units_completed` (the bytes landed), the phase and the unit, which
+names the range. The ending follows the worker's existing path: while
+attempts remain the mover returns to `ready` and is retried (it is
+`retry_safe`); at its attempt limit it goes to `failed`, and the window
+recopies it (#627). The consumer's staged-wait verdict then reads a
+`failed` mover, which is exempt only while the tier loop is alive and the
+tier is within its commitment, and never on the claim alone.
+
+The first phase's grace starts at launch, so a mover's wait at its start
+gate (`ownership_start_gate`, an egress hold) counts against it. A hold that
+outlasts the grace ends the mover and it is retried, which is the same
+outcome the consumer would see from a slow copy.
+
+**What the landing record does with it.** `publish_landing_expectations`
+reads each claimed mover's progress file (`claimed/<key>.progress`, bounded,
+without following links) and passes its `units_completed`, `reported_unix`
+and phase to `residency_plan.expected_landings`. The live rate is the bytes
+landed over the time from the claim to the report, and the expectation is
+the report time plus the remaining bytes at that rate. A report in `warm`,
+or one that covers the range, prices the copy as landed at the report. The
+report is part of the record's fingerprint, so a new report rewrites the
+record. A claimed mover with no usable report keeps the claim-time price.
+
+**What is not covered, and why.**
+
+* **Egress** (`stage_release.py`) is not sealed with progress. A consumer's
+  staged wait never names an egress, so a stalled egress never exempts a
+  consumer's rung, which is the failure #1010 fixes. A stalled egress that
+  holds the stage ownership lock does block movers; see the unfiled findings
+  in the #1010 PR.
+* **The ram leg** and **produced-output movers** are not named in staged
+  waits either, and seal as before.
+* **A pacer hold** (the copier's `pacer.wait`, which holds pool reads while
+  another reader contends) that stops a copy for longer than the grace ends
+  a healthy mover. The retry adopts the entries that already landed without
+  copying them, and copies the rest.
 
 ### Adopting a resident range, and when an orphan is evicted
 

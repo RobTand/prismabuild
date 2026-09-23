@@ -101,7 +101,14 @@ _LANDING_KEYS = frozenset({
 _LANDING_RANGE_KEYS = frozenset({
     "mover_action_key", "phase", "chunk_index", "range_start_bytes",
     "range_end_bytes", "state", "queue_position", "bytes_ahead",
-    "expected_landing_unix", "claimed_unix", "waiting_for"})
+    "expected_landing_unix", "claimed_unix", "waiting_for",
+    # What priced a queued range's expectation (#1010): ``reported`` from a
+    # claimed mover's own landed-bytes report, ``claim`` from its claim
+    # time, ``queue`` for a ready range.  A ``reported`` range also carries
+    # the report's bytes, time and the rate they landed at.
+    "basis", "landed_bytes", "reported_unix", "live_bytes_per_s"})
+#: The values ``basis`` may take (#1010).
+LANDING_BASES = ("reported", "claim", "queue")
 
 
 def residency_map_key(path: str, offset: int = 0) -> str:
@@ -650,6 +657,17 @@ def validate_landing(value: object) -> dict[str, object]:
                                             where="claimed_unix"),
             "waiting_for": str(entry.get("waiting_for") or ""),
         }
+        if "basis" in entry:
+            if entry["basis"] not in LANDING_BASES:
+                raise ResidencyMapError(
+                    f"landing range basis must be one of {LANDING_BASES}")
+            row["basis"] = entry["basis"]
+        if "landed_bytes" in entry:
+            row["landed_bytes"] = _nonnegative(entry["landed_bytes"],
+                                               where="landed_bytes")
+        for name in ("reported_unix", "live_bytes_per_s"):
+            if name in entry:
+                row[name] = _finite_or_none(entry[name], where=name)
         if state in ("ready", "claimed"):
             if expected is None:
                 raise ResidencyMapError("a queued range carries its expected landing")

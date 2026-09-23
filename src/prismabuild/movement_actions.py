@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -48,6 +49,95 @@ MOVEMENT_TASK = {"task_class": "generation", "artifact_family": "generic",
                  "artifact_kind": "generic"}
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
+
+#: The progress phases a stage mover reports in (#1010), in the order it
+#: enters them: the copy, then the optional read-back that warms the file
+#: server's cache (``stage_move.warm_staged``).  The sealer and the reporter
+#: import these names, because ``progress.commit`` refuses a phase the
+#: submission did not declare.
+MOVER_COPY_PHASE = "copy"
+MOVER_WARM_PHASE = "warm"
+MOVER_PROGRESS_PHASES = (MOVER_COPY_PHASE, MOVER_WARM_PHASE)
+
+#: How many entries a stage mover copies at once while nobody else reads the
+#: pool: ``stage_move.py --max-readers``' default, which pbrun does not
+#: override.  Each copy worker holds one entry in flight, so this is also how
+#: many entries can be part-copied with none of them landed yet.
+MOVER_MAX_READERS = 16
+
+
+def mover_report_latency_s() -> float:
+    """How late a mover's progress can reach the worker's stall check (#1010).
+
+    Two heartbeats: the mover reports at most one ``pool.HEARTBEAT_S`` after
+    an entry lands (``stage_move --progress-interval-s``), and the worker
+    samples the report at most one ``pool.HEARTBEAT_S`` after that
+    (``PoolQueue.execute``'s progress poll).  Read at call time so a test
+    that shortens the heartbeat shortens the grace with it.
+    """
+
+    return 2.0 * float(pool.HEARTBEAT_S)
+
+
+def mover_progress_policy(
+    entry_bytes: Sequence[int], *,
+    landing_bytes_per_s: float | None,
+    copy_depth: int = MOVER_MAX_READERS,
+    report_latency_s: float | None = None,
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    """The progress policy a stage mover is sealed with, and its derivation.
+
+    A mover reports the bytes it has landed: an entry counts once it is
+    copied, verified and renamed into place, which is the durable unit
+    ``progress.commit`` asks for.  So the longest a healthy copy can go
+    without a new report is the time until its next entry lands.  Up to
+    ``copy_depth`` entries are in flight at once and share the copy's rate,
+    so none of them may land until the bytes of all of them have been read:
+    the unit is the sum of the ``copy_depth`` largest entries of the range.
+    A copy running at ``landing_bytes_per_s`` or faster lands one within
+    ``unit / rate``, and its report reaches the stall check within
+    ``report_latency_s`` more (:func:`mover_report_latency_s`).  The grace is
+    their sum, rounded up to a whole second so float noise never moves a
+    key.
+
+    ``landing_bytes_per_s`` is the slowest measured landing of the plan's
+    manifest on this tier (``storage_tiers.mover_fill_price`` with basis
+    ``landing``).  ``None`` means nothing measured one.  The policy is then
+    ``None`` and the mover is sealed with no stall grace at all, which is
+    what every mover had before #1010; the derivation says
+    ``basis: "unmeasured"``.
+
+    Both declared phases get the same grace.  The read-back in ``warm`` reads
+    the stage the copy just wrote, in the same number of workers, which is no
+    slower than the pool read the rate measured.
+
+    Returns ``(policy, derivation)``.  ``policy`` is in the normalized form
+    ``core.seal_action`` requires; ``derivation`` is for the plan's
+    ``demand_source`` and names every term.
+    """
+
+    latency = (mover_report_latency_s() if report_latency_s is None
+               else float(report_latency_s))
+    sizes = sorted((int(size) for size in entry_bytes if int(size) > 0),
+                   reverse=True)
+    depth = max(1, int(copy_depth))
+    unit = sum(sizes[:depth])
+    derivation: dict[str, object] = {
+        "basis": "unmeasured", "landing_bytes_per_s": None,
+        "copy_depth": depth, "unit_bytes": unit,
+        "report_latency_s": latency, "grace_s": None}
+    if (landing_bytes_per_s is None or isinstance(landing_bytes_per_s, bool)
+            or not math.isfinite(float(landing_bytes_per_s))
+            or float(landing_bytes_per_s) <= 0 or unit <= 0):
+        return None, derivation
+    rate = float(landing_bytes_per_s)
+    grace = int(math.ceil(unit / rate + latency))
+    derivation.update({"basis": "landing", "landing_bytes_per_s": rate,
+                       "grace_s": grace})
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+              "phases": [{"name": name, "grace_s": grace}
+                         for name in MOVER_PROGRESS_PHASES]}
+    return pb.validate_progress_policy(policy), derivation
 
 
 def movement_tools(tier: Mapping[str, object], *,

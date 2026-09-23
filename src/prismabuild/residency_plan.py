@@ -2003,8 +2003,20 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
     errs long, as the horizon does.  It is an expectation for records and
     readers, never a deadline.
 
+    A claimed copy that has reported its landed bytes (#1010) carries
+    ``landed_bytes``, ``reported_unix`` and ``landed_phase``, the mover's own
+    last progress report.  It is priced from them instead: the rest of its
+    range at the rate it has landed at since its claim
+    (``live_bytes_per_s``), from the time of the report.  A report in the
+    ``warm`` phase, or one that covers the range, has landed.  A claimed
+    copy with no report, or none that prices a rate, keeps the claim-time
+    expectation.  ``basis`` says which: ``reported`` or ``claim``; a queued
+    range's is ``queue``.
+
     Returns, per mover, ``queue_position`` (its place in that order),
-    ``bytes_ahead`` and ``expected_landing_unix``.
+    ``bytes_ahead``, ``expected_landing_unix`` and ``basis``, and for a
+    ``reported`` copy ``landed_bytes``, ``reported_unix`` and
+    ``live_bytes_per_s``.
     """
 
     rate = float(landing_bytes_per_s)
@@ -2015,16 +2027,47 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
         key = str(mover["mover_action_key"])
         if mover.get("state") == "claimed" and _finite_number(mover.get("claimed_unix")):
             claimed = float(mover["claimed_unix"])            # type: ignore[arg-type]
-            expected = claimed + landing_seconds(own, rate)
-            out[key] = {"queue_position": position, "bytes_ahead": 0,
-                        "expected_landing_unix": expected}
+            reported = _reported_landing(mover, own=own, claimed=claimed)
+            if reported is None:
+                expected = claimed + landing_seconds(own, rate)
+                out[key] = {"queue_position": position, "bytes_ahead": 0,
+                            "expected_landing_unix": expected, "basis": "claim"}
+            else:
+                expected = float(reported["expected_landing_unix"])  # type: ignore[arg-type]
+                out[key] = {"queue_position": position, "bytes_ahead": 0,
+                            **reported, "basis": "reported"}
             ahead += max(0.0, expected - float(now)) * rate
             continue
         out[key] = {"queue_position": position, "bytes_ahead": int(round(ahead)),
                     "expected_landing_unix": float(now) + landing_seconds(
-                        ahead + own, rate)}
+                        ahead + own, rate), "basis": "queue"}
         ahead += own
     return out
+
+
+def _reported_landing(mover: Mapping[str, object], *, own: int,
+                      claimed: float) -> dict[str, object] | None:
+    """A claimed copy's expectation from its own progress report, or ``None``.
+
+    ``None`` when the entry carries no report, or one that prices nothing:
+    no bytes landed yet, or a report no later than the claim.
+    """
+
+    landed = mover.get("landed_bytes")
+    at = mover.get("reported_unix")
+    if (isinstance(landed, bool) or not isinstance(landed, int) or landed < 0
+            or not _finite_number(at)):
+        return None
+    at = float(at)                                            # type: ignore[arg-type]
+    if mover.get("landed_phase") == "warm" or landed >= own:
+        return {"expected_landing_unix": at, "landed_bytes": min(landed, own),
+                "reported_unix": at, "live_bytes_per_s": None}
+    if landed == 0 or at <= claimed:
+        return None
+    live = landed / (at - claimed)
+    return {"expected_landing_unix": at + landing_seconds(own - landed, live),
+            "landed_bytes": landed, "reported_unix": at,
+            "live_bytes_per_s": live}
 
 
 def _finite_number(value: object) -> bool:
