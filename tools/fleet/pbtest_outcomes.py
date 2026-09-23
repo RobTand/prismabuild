@@ -49,19 +49,27 @@ def skip_reason(report) -> str:
     return "" if reason == "Skipped" else reason
 
 
-def skip_location(report) -> str | None:
+def skip_location(report, start: Path | None = None) -> str | None:
     """``path:line`` of the skip as ``-rs`` prints it, or ``None``.
 
     pytest stores the line already 1-based in a skip's ``longrepr``: from
     the raising frame for an imperative or collection skip, and from the
-    test's own definition for a marker.
+    test's own definition for a marker.  The path is absolute there; like
+    ``-rs``, this prints it relative to ``start`` when it lies under it, so
+    a shard's location does not name the worker's private checkout.
     """
 
     longrepr = report.longrepr
-    if isinstance(longrepr, tuple) and len(longrepr) == 3:
-        path, lineno, _ = longrepr
-        return f"{path}:{lineno}" if isinstance(lineno, int) else str(path)
-    return None
+    if not (isinstance(longrepr, tuple) and len(longrepr) == 3):
+        return None
+    path, lineno, _ = longrepr
+    shown = Path(str(path))
+    if start is not None:
+        try:
+            shown = shown.relative_to(start)
+        except ValueError:
+            pass
+    return f"{shown}:{lineno}" if isinstance(lineno, int) else str(shown)
 
 
 #: The fields of one ``reports`` row, in order.  ``reason`` is the skip reason
@@ -122,6 +130,9 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
         def pytest_configure(self, config) -> None:
             self.config = config
 
+        def location(self, report) -> str | None:
+            return skip_location(report, self.config.invocation_params.dir)
+
         def pytest_collection_finish(self, session) -> None:
             self.collected = [item.nodeid for item in session.items]
 
@@ -137,7 +148,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                 self.reports.append([report.nodeid, "collect", "error", None, None])
             elif report.skipped:
                 self.reports.append([report.nodeid, "collect", "skipped",
-                                     skip_reason(report), skip_location(report)])
+                                     skip_reason(report), self.location(report)])
 
         def pytest_runtest_logreport(self, report) -> None:
             status = self.config.hook.pytest_report_teststatus(
@@ -147,7 +158,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                 return  # a passing setup or teardown: the summary counts nothing
             reason = location = None
             if category == "skipped":
-                reason, location = skip_reason(report), skip_location(report)
+                reason, location = skip_reason(report), self.location(report)
             elif hasattr(report, "wasxfail"):
                 reason = str(report.wasxfail or "") or None
             self.reports.append([report.nodeid, report.when, category,

@@ -99,8 +99,15 @@ EXPECTED = {
 def _checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
+    # Its own rootdir, as a real project has: an ini file in an ancestor of
+    # the temporary directory would otherwise root the node IDs above it.
+    (checkout / "pytest.ini").write_text("[pytest]\n")
     (checkout / "tests" / "test_a_skips.py").write_text(SKIPS)
     (checkout / "tests" / "test_b_module_skip.py").write_text(MODULE_SKIP)
+    # Two shards take files round-robin, so the module skip shares its shard
+    # with a test that runs: a shard that only skips at collection exits 5.
+    for name in ("test_c_passes.py", "test_d_passes.py"):
+        (checkout / "tests" / name).write_text("def test_passes():\n    pass\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     return checkout
 
