@@ -1,4 +1,4 @@
-"""Keep every test off the fleet's live store, and say so if one gets there.
+"""Keep every test off the fleet's live store, and refuse it at the call.
 
 Several modules default a root to the shared mount: ``pbrun.SH``,
 ``pbstatus.SHARED_ROOT``, ``pool_reset.SH``, ``fleet_submit.SH``,
@@ -13,18 +13,38 @@ receipts into the live store that way, because their fixture never overrode
 ``pbrun.SH``. Those files were moved to ``quarantine/pytest-leak-2026-09-05``
 on the mount.
 
-Two guards, because neither is complete on its own:
+Two guards run on every test, and a third is opt-in:
 
 *   ``_off_the_live_store`` repoints every such default at the test's own
     ``tmp_path`` before each test. It cannot reach a default bound at function
     definition, such as ``PoolQueue(root=DEFAULT_POOL_ROOT)``, so a test that
     calls one of those without a root still gets the live path.
-*   ``pytest_sessionstart`` and ``pytest_sessionfinish`` census the live store
-    in an abandonable reader, and fail the session when complete before/after
-    observations find a new entry naming this session's ``basetemp``. A new
-    entry that does not is reported but not counted: the fleet may file real
-    work while the suite runs. An unavailable or partial observation says so;
-    it is never treated as a clean leak check.
+*   An audit hook (``sys.addaudithook``, installed in ``pytest_configure``)
+    refuses the call itself. ``open``, ``os.listdir``, ``os.scandir``, the
+    ``os`` calls that create, rename, remove, link or change an entry, and
+    ``shutil.rmtree`` raise ``RuntimeError`` naming the event and the path when
+    that path lies under ``LIVE_ROOT``. The comparison is lexical and costs no
+    filesystem lookup, so the guard adds no NFS traffic of its own. The failing
+    test is the one that made the call, and its traceback names the path and
+    the line. A test that must read the store says so with
+    ``@pytest.mark.live_store(reason=...)``. What the hook cannot see:
+    ``os.stat`` and ``os.access`` (CPython raises no audit event for them), and
+    child processes, which start without the hook.
+*   The census. ``pytest_sessionstart`` and ``pytest_sessionfinish`` walk the
+    whole store in an abandonable reader and fail the session when complete
+    before/after observations find a new entry naming this session's
+    ``basetemp``. It is off unless ``PRISMABUILD_TEST_LIVE_CENSUS=1`` asks for
+    it, or ``PRISMABUILD_TEST_LIVE_ROOT`` points the guard at a scratch store.
+    Every pbtest shard used to run it twice, and a recursive walk of the store
+    over NFS is a lookup storm: on 2026-09-23 five concurrent shards made
+    about 16,000 lookups each in 10 s, 29,345 lookups/s in all, against the
+    nfsd that also carries the campaign's data (#1019). The #643 fix had raised
+    the census budget to 180 s rather than shrink the walk. The hook refuses
+    what the census could only report afterwards, so the census is kept as an
+    audit, not as the per-session gate. A new entry that does not name the
+    basetemp is reported but not counted, because the fleet may file real work
+    while the suite runs. An unavailable or partial observation says so; it is
+    never treated as a clean leak check.
 """
 from __future__ import annotations
 
@@ -53,6 +73,184 @@ import prismabuild.core as pb_core  # noqa: E402
 LIVE_ROOT = Path(
     os.environ.get("PRISMABUILD_TEST_LIVE_ROOT") or "/mnt/shared/prismabuild-fleet"
 )
+
+#: Whether this session walks the store before and after (see the module
+#: docstring). A scratch ``PRISMABUILD_TEST_LIVE_ROOT`` turns it on because
+#: that is how the guard's own tests exercise it.
+LIVE_CENSUS = (os.environ.get("PRISMABUILD_TEST_LIVE_CENSUS") == "1"
+               or bool(os.environ.get("PRISMABUILD_TEST_LIVE_ROOT")))
+
+#: The fleet's own store, guarded even when ``PRISMABUILD_TEST_LIVE_ROOT``
+#: points ``LIVE_ROOT`` at a scratch store.
+DEFAULT_LIVE_ROOT = "/mnt/shared/prismabuild-fleet"
+
+
+def _guarded_roots(*roots: str | Path) -> tuple[tuple[str, str], ...]:
+    """Each root as ``(path, path + "/")``, absolute and normalized, not resolved."""
+
+    out: list[tuple[str, str]] = []
+    for root in roots:
+        text = os.path.normpath(os.path.abspath(os.fspath(root)))
+        if (text, text + "/") not in out:
+            out.append((text, text + "/"))
+    return tuple(out)
+
+
+#: What the audit hook refuses. Tests of the hook repoint it at a scratch store.
+GUARDED = _guarded_roots(DEFAULT_LIVE_ROOT, LIVE_ROOT)
+
+#: Audited events whose arguments name a path, as ``(path index, dir_fd
+#: index)`` pairs; ``None`` where the event carries no ``dir_fd``. CPython
+#: audits ``os.replace`` as ``os.rename`` and ``os.unlink`` as ``os.remove``;
+#: both spellings are listed so neither depends on that. ``os.symlink`` is
+#: checked at the link it creates, not at the target it names, because making
+#: a link reads nothing through it.
+AUDITED_PATHS: dict[str, tuple[tuple[int, int | None], ...]] = {
+    "open": ((0, None),),
+    "os.listdir": ((0, None),),
+    "os.scandir": ((0, None),),
+    "os.mkdir": ((0, 2),),
+    "os.rename": ((0, 2), (1, 3)),
+    "os.replace": ((0, 2), (1, 3)),
+    "os.link": ((0, 2), (1, 3)),
+    "os.remove": ((0, 1),),
+    "os.unlink": ((0, 1),),
+    "os.rmdir": ((0, 1),),
+    "os.symlink": ((1, 2),),
+    "os.chmod": ((0, 2),),
+    "os.truncate": ((0, None),),
+    "os.utime": ((0, 3),),
+    "shutil.rmtree": ((0, 1),),
+    # ``PrismaBuildCAS`` and the SLURM lane open directories by descending
+    # from ``/`` one dir_fd-relative component at a time, so the ``open``
+    # events of that walk name only ``mnt``, ``shared`` and so on. They
+    # announce the absolute directory in this event first.
+    pb_core.NOFOLLOW_DIRECTORY_AUDIT_EVENT: ((0, None),),
+}
+
+#: ``dir_fd`` values that mean "relative to the working directory".
+_CWD_DIR_FDS = (None, -1, getattr(os, "AT_FDCWD", -100))
+
+#: How many callers currently let the hook through: the census, and a test
+#: marked ``live_store``.
+_live_access_depth = 0
+
+#: Every refusal this process made, so a test that catches the ``RuntimeError``
+#: still fails.
+REFUSALS: list[str] = []
+
+
+class _LiveAccess:
+    """Let the hook through for the duration of a ``with`` block."""
+
+    def __enter__(self) -> None:
+        global _live_access_depth
+        _live_access_depth += 1
+
+    def __exit__(self, *_exc: object) -> None:
+        global _live_access_depth
+        _live_access_depth -= 1
+
+
+def _live_store_audit(event: str, args: tuple) -> None:
+    """Refuse a call whose path lies under a guarded root.
+
+    One dict lookup for every event outside ``AUDITED_PATHS``, and string
+    work only for the rest: no ``stat``, no ``realpath``, nothing that would
+    itself look a name up on the mount. A relative path is absolutized
+    against ``os.getcwd()`` (the kernel answers that from its own dentry,
+    without an NFS lookup). A path relative to a ``dir_fd`` cannot be placed
+    lexically and is let through here: it is caught where its directory FD
+    was opened, which was an audited ``open`` of an absolute path or a
+    no-follow descent that raised ``NOFOLLOW_DIRECTORY_AUDIT_EVENT``. The
+    ``open`` event carries no ``dir_fd``, so an ``os.open(name, dir_fd=fd)``
+    is placed against the working directory; that can only err towards a
+    refusal, and only when the working directory is itself in the store.
+    """
+
+    spec = AUDITED_PATHS.get(event)
+    if spec is None or _live_access_depth:
+        return
+    for path_index, dir_fd_index in spec:
+        if path_index >= len(args):
+            continue
+        path = args[path_index]
+        if path is None or isinstance(path, int):
+            # A file descriptor: it was opened by a call this hook saw.
+            continue
+        try:
+            text = os.fsdecode(path)
+        except TypeError:
+            continue
+        if not text.startswith("/"):
+            if (dir_fd_index is not None and dir_fd_index < len(args)
+                    and args[dir_fd_index] not in _CWD_DIR_FDS):
+                continue
+            try:
+                text = os.getcwd() + "/" + text
+            except OSError:
+                continue
+        text = os.path.normpath("/" + text.lstrip("/"))
+        for root, prefix in GUARDED:
+            if text == root or text.startswith(prefix):
+                message = (
+                    f"live-store guard: {event} on {text} refused: it lies under "
+                    f"{root}, the fleet's live store. Give the test a root under "
+                    "tmp_path, or mark it @pytest.mark.live_store(reason=...) if "
+                    "it must read the store (#1019)."
+                )
+                REFUSALS.append(message)
+                raise RuntimeError(message)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "live_store(reason): the test reads the fleet's live store on purpose; "
+        "the call-time live-store guard lets it through (#1019)",
+    )
+    # An audit hook cannot be removed, so install it once per process even if
+    # this module is configured again (a nested in-process pytest run).
+    if not getattr(sys, "_prismabuild_live_store_hook", False):
+        sys.addaudithook(_live_store_audit)
+        sys._prismabuild_live_store_hook = True  # type: ignore[attr-defined]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    if item.get_closest_marker("live_store") is None:
+        yield
+        return
+    with _LiveAccess():
+        yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    outcome = yield
+    if outcome.get_result().failed:
+        item._pb_live_guard_failed = True  # type: ignore[attr-defined]
+
+
+@pytest.fixture(autouse=True)
+def _live_store_refusals(request: pytest.FixtureRequest):
+    """Fail a test whose refused call was swallowed by its own ``except``.
+
+    The refusal is an exception, so code under test that catches broadly
+    (``except Exception``) would otherwise turn it into a pass.
+    """
+
+    del REFUSALS[:]
+    yield
+    refused = list(REFUSALS)
+    del REFUSALS[:]
+    if refused and not getattr(request.node, "_pb_live_guard_failed", False):
+        pytest.fail(
+            f"{len(refused)} call(s) into the live store were refused and the "
+            "refusal was caught: " + "; ".join(refused[:3]),
+            pytrace=False,
+        )
+
 
 #: How long the session guard will wait to find out whether ``LIVE_ROOT`` is
 #: there. The mount is ``hard`` with ``timeo=600``, so when the NFS server is
@@ -198,19 +396,26 @@ LIVE_ENV = (
 def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     root = tmp_path / "live-guard"
     root.mkdir(exist_ok=True)
-    # Worker tests also import private module names after this fixture starts.
-    # Keep their new host-local publication lock off the production lock inode.
+    # Tests also load fleet tools under private module names after this
+    # fixture starts (``spec_from_file_location("wl_census", WORKER_LOOP)``).
+    # Repoint such a module's live defaults as it is loaded, matched by file
+    # name. Before #1019 only worker_loop's two lock roots were covered, and
+    # 31 tests read the fleet's live ``repo/RUNTIME_VERSION.json`` through a
+    # privately loaded worker_loop; the call-time guard found them.
     import importlib.machinery
     load = importlib.machinery.SourceFileLoader.exec_module
-    def isolated_worker_import(loader, module):
+    def isolated_import(loader, module):
         load(loader, module)
-        if (Path(getattr(module, "__file__", "")).name == "worker_loop.py"
-                and hasattr(module, "PUBLICATION_LOCK_ROOT")):
-            module.PUBLICATION_LOCK_ROOT = root / "offer-publication"
-            if hasattr(module, "ROLE_LOCK_ROOT"):
-                module.ROLE_LOCK_ROOT = root / "role-locks"
+        stem = Path(getattr(module, "__file__", "") or "").stem
+        for module_name, attr, sub in LIVE_DEFAULTS:
+            if module_name.rsplit(".", 1)[-1] != stem or not hasattr(module, attr):
+                continue
+            replacement = root / sub
+            if isinstance(getattr(module, attr), str):
+                replacement = str(replacement)
+            setattr(module, attr, replacement)
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
-                        isolated_worker_import)
+                        isolated_import)
     for name, sub in LIVE_ENV:
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:
@@ -343,13 +548,14 @@ def _census(live_root: Path) -> dict:
     """Read the full inventory and retain whether every directory answered."""
 
     root = Path(live_root)
-    top_level, complete, errors = _top_level(root)
-    out: dict[str, set[str]] = {"": top_level}
-    for name in sorted(top_level | set(WATCHED)):
-        found, walked, walk_errors = _walk(root / name)
-        out[name] = found
-        complete = complete and walked
-        errors.extend(walk_errors)
+    with _LiveAccess():
+        top_level, complete, errors = _top_level(root)
+        out: dict[str, set[str]] = {"": top_level}
+        for name in sorted(top_level | set(WATCHED)):
+            found, walked, walk_errors = _walk(root / name)
+            out[name] = found
+            complete = complete and walked
+            errors.extend(walk_errors)
     return {"listing": out, "complete": complete, "errors": errors}
 
 
@@ -490,6 +696,18 @@ def _leaked_entries(
 ) -> tuple[list[str], list[str], bool, list[str]]:
     """Like ``leaked_entries``, but retain incomplete attribution evidence."""
 
+    with _LiveAccess():
+        return _attribute_entries(before, after, live_root=live_root,
+                                  basetemp=basetemp)
+
+
+def _attribute_entries(
+    before: dict[str, set[str]],
+    after: dict[str, set[str]],
+    *,
+    live_root: Path,
+    basetemp: str,
+) -> tuple[list[str], list[str], bool, list[str]]:
     leaked: list[str] = []
     unattributed: list[str] = []
     complete = True
@@ -616,6 +834,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if hasattr(session.config, "workerinput"):
         session.config._pb_live_guard_worker = True  # type: ignore[attr-defined]
         return
+    if not LIVE_CENSUS:
+        # Not even the reachability probe: it is a lookup on the mount too.
+        session.config._pb_live_census_off = True  # type: ignore[attr-defined]
+        return
     available = reachable(LIVE_ROOT)
     session.config._pb_live_reachable = available  # type: ignore[attr-defined]
     observation = (
@@ -648,6 +870,10 @@ def _guard_evidence(observation: dict) -> str:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if getattr(session.config, "_pb_live_guard_worker", False):
+        return
+    if getattr(session.config, "_pb_live_census_off", False):
+        # Silent by design: a note on every shard is the wallpaper #643 was
+        # about, and the call-time hook is the per-session guard.
         return
     before = getattr(session.config, "_pb_live_before", None)
     if before is None:

@@ -2978,6 +2978,15 @@ def _absolute_nofollow_path(path: Path, *, where: str) -> Path:
     return candidate
 
 
+#: The audit event a no-follow descent raises with the absolute directory it is
+#: about to walk.  The descent opens ``/`` and then one ``dir_fd``-relative
+#: component at a time, and CPython's ``open`` audit event carries no
+#: ``dir_fd``, so without this no audit hook can tell which directory the walk
+#: reaches.  ``tests/conftest.py`` refuses it under the fleet's live store
+#: (#1019).  With no audit hook installed, ``sys.audit`` returns at once.
+NOFOLLOW_DIRECTORY_AUDIT_EVENT = "prismabuild.open_directory_nofollow"
+
+
 def _open_directory_nofollow(
     path: Path,
     *,
@@ -2988,6 +2997,7 @@ def _open_directory_nofollow(
     """Open/create an absolute directory using only mkdirat/openat operations."""
 
     path = _absolute_nofollow_path(path, where=where)
+    sys.audit(NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         descriptor = os.open(path.anchor, flags)
