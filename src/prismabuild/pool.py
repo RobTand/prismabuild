@@ -112,6 +112,7 @@ from __future__ import annotations
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
 from contextlib import contextmanager, nullcontext, suppress
+import contextvars
 import errno
 import fcntl
 import fnmatch
@@ -3945,6 +3946,26 @@ def _serialized_key(method):
 _DENIAL_SEEN: dict[tuple[str, str, str], tuple[str, str | None]] = {}
 
 
+#: A claimant's ``(tags, has_gpu)`` while it lists ``ready/`` for a claim
+#: pass; :meth:`PoolQueue.ready_items` skips the ``passes/`` read of every
+#: record it could not place (#993).
+_READY_PLACEMENT: contextvars.ContextVar[
+    "tuple[frozenset[str], bool] | None"] = contextvars.ContextVar(
+        "pool_ready_placement", default=None)
+
+
+@contextmanager
+def ready_placement(tags: Iterable[str], has_gpu: bool) -> Iterator[None]:
+    """List ``ready/`` for the claimant ``(tags, has_gpu)`` inside the block."""
+
+    token = _READY_PLACEMENT.set((frozenset(str(tag) for tag in tags),
+                                  bool(has_gpu)))
+    try:
+        yield
+    finally:
+        _READY_PLACEMENT.reset(token)
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -5279,6 +5300,38 @@ class PoolQueue:
             return False
         return host == cpu_admission.EXPORT_DEMAND
 
+    def _claim_record_present(self, key: str) -> tuple[bool, str | None]:
+        """Whether ``claimed/<key>.json`` exists, asked fresh (#993).
+
+        The claim pass lists ``claimed/`` once and consults that listing for
+        every candidate, so a claim record filed for a later candidate after
+        the listing is not in it.  ``os.rename`` replaces its destination, so
+        the claim asks again for exactly the name it is about to rename onto,
+        under that key's transition lock: the parent is opened first, which
+        is the close-to-open revalidation a cached negative lookup needs
+        (:func:`_read_json_fresh`, #808), and then the one name is looked up
+        -- two round trips, not a listing of every claim.
+
+        Returns ``(present, why)``.  A lookup that fails for any reason but
+        absence answers present, with the error: an unknown claim record is
+        never renamed over.
+        """
+
+        try:
+            descriptor = os.open(self.dir(CLAIMED),
+                                 os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except OSError as exc:
+            return True, f"claimed/ could not be opened: {exc}"
+        try:
+            os.stat(f"{key}.json", dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return False, None
+        except OSError as exc:
+            return True, f"claimed/{key}.json could not be looked up: {exc}"
+        finally:
+            os.close(descriptor)
+        return True, None
+
     def _placement_matches(
         self, item: Mapping[str, object], *, tags: frozenset[str], has_gpu: bool
     ) -> bool:
@@ -5334,6 +5387,35 @@ class PoolQueue:
                 float(record.get("published_unix", 0.0)))
 
     def ready_items(self) -> list[dict[str, object]]:
+        """Every orderable ready record, in claim order, with its aging count.
+
+        Inside :func:`ready_placement` -- a claimant's ``(tags, has_gpu)`` --
+        a record that claimant cannot place is listed without its ``passes/``
+        sidecar read (#993): the claim skips it on placement whatever its
+        aging count, and its place among the records the claimant *can* place
+        is decided by those records' own counts, so reading it cost one
+        sidecar read per foreign item per poll for nothing.  Such a record
+        carries no ``passes`` field at all rather than an invented zero.  A
+        record whose placement cannot be judged (a foreign ``tags`` shape) is
+        read in full, and the claim denies it as before.  Outside that scope
+        every sidecar is read, as it always was.  The scope is a context
+        value, not a parameter, so every stand-in for this method keeps its
+        signature.
+        """
+
+        placement = _READY_PLACEMENT.get()
+        placeable = None
+        if placement is not None:
+            tagset = frozenset(str(tag) for tag in placement[0])
+            has_gpu = bool(placement[1])
+
+            def placeable(record: Mapping[str, object]) -> bool:
+                try:
+                    return self._placement_matches(record, tags=tagset,
+                                                   has_gpu=has_gpu)
+                except PoolContractError:
+                    return True
+
         ordered: list[tuple[tuple[int, int, float], dict[str, object]]] = []
         ready = self.dir(READY)
         if not ready.is_dir():
@@ -5357,7 +5439,9 @@ class PoolQueue:
                 # next claim.
                 continue
             if record is not None:
-                record["passes"] = self.passes(str(record.get("action_key", "")))
+                if placeable is None or placeable(record):
+                    record["passes"] = self.passes(
+                        str(record.get("action_key", "")))
                 order = self._queue_order_of(record)
                 if order is None:
                     # A record the queue cannot place in its own order is a
@@ -13687,7 +13771,8 @@ class PoolQueue:
                 ledger.ensure_capacity(capacity)
                 total = ledger.capacity()
         if ready is None:
-            ready = self.ready_items()
+            with ready_placement(tagset, has_gpu):
+                ready = self.ready_items()
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
         for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals):
@@ -13704,6 +13789,18 @@ class PoolQueue:
         #: taking anything that item waits for -- a dependent on its
         #: producer's allowance -- and for nothing else (#985).
         withheld_for: str | None = None
+        #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
+        #: first transition lock the pass takes, not before it, and a
+        #: ``READDIR`` is itself the revalidation a cached negative lookup
+        #: needs (#808), so the listing post-dates every transition that
+        #: finished before the pass reached its first candidate.  It is a
+        #: hint for the rest of the pass: the one decision it could get wrong
+        #: -- renaming over a claim record filed after it -- is checked again
+        #: for its own key, fresh, just before the rename
+        #: (:meth:`_claim_record_present`).  Listed again only after a rename
+        #: of this pass's own changed the directory.
+        claimed_listed: set[str] | None = None
+        claimed_marks: list[str] = []
         for item in ready:
             key = str(item.get("action_key", ""))
             if withheld_for is not None and not self._may_serve_a_producer(item):
@@ -13715,13 +13812,15 @@ class PoolQueue:
                         # writing its reason ring: the entry waits (#991).
                         self.record_denial(item, "transition_busy")
                     continue
-                # Refresh the directory under exclusion before consulting names:
-                # a cached negative lookup can outlive another NFS client's claim.
-                claimed_names = os.listdir(self.dir(CLAIMED))
-                if (f"{key}.json" in claimed_names
+                if claimed_listed is None:
+                    names = os.listdir(self.dir(CLAIMED))
+                    claimed_listed = set(names)
+                    claimed_marks = [
+                        name for name in names
+                        if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
+                if (f"{key}.json" in claimed_listed
                         or any(name.startswith(f"{key}.")
-                               and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
-                               for name in claimed_names)):
+                               for name in claimed_marks)):
                     self.record_denial(item, "already_claimed")
                     continue
                 if key in released and self._refuse_released_origin_consumer(
@@ -14240,6 +14339,23 @@ class PoolQueue:
                             "action_key": key,
                         })
                         continue
+                    # The pass listing is a hint (#993): a claim record filed
+                    # for this key since would be replaced by the rename below,
+                    # so it is asked for again, fresh, under this key's lock.
+                    # The unwind is the resign fence's, above.
+                    present, why = self._claim_record_present(key)
+                    if present:
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller,
+                                                   gpu_probe)
+                        self.record_denial(item, "already_claimed",
+                                           {"checked": "before_rename",
+                                            **({"error": why} if why else {})})
+                        continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
                     dst = self.item_path(CLAIMED, key)
@@ -14275,6 +14391,9 @@ class PoolQueue:
                             "had_reservation": handle is not None,
                         })
                         continue
+                    # This pass renamed into ``claimed/``: a later candidate
+                    # of the same pass lists it again (#993).
+                    claimed_listed = None
                     moved = _read_json(dst) or item
                     if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                             or self.demand_of(moved) != sealed_demand):

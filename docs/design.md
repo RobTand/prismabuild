@@ -155,6 +155,29 @@ in-process scan was: an intervening claim wins at the rename. This removes
 scan stalls from the worker's wait, but shared transition, lease and token I/O
 remain synchronous and still need ownership-safe recovery qualification (#266).
 
+A claim pass lists `claimed/` once, and discovery reads `passes/` only for
+records the box could place (#993). Before this, `_claim` listed `claimed/`
+under each ready item's transition lock, so a pass over 40 ready items was 40
+listings of one directory on the NFS export, on every loop of every box, and
+discovery read the aging sidecar of every ready record, though a record the
+box cannot place is skipped whatever its aging count. Now the pass takes one
+listing after its first lock acquisition and uses it for every item. The one
+decision a stale listing could get wrong, a rename onto a claim record filed
+after the listing, is checked again for that key alone, just before the
+rename, and refused as `already_claimed`, as the fresh listing refused it.
+`pool.ready_placement(tags, has_gpu)` scopes discovery to this loop's
+placement (a context variable, so `ready_items` keeps its signature), and
+the claim pass scopes its own read the same way. The order among the records
+the box can place is unchanged. Measured with `tools/fleet/bench_claim_pass.py`
+over the live shape (40 foreign ready records, 28 claimed, 1,324 aging
+sidecars) and counted with `strace` on sparky, a steady poll's directory
+listings fell from 43 to 4 (`claimed/` from 40 to 1, `getdents64` calls
+from 86 to 8) and its per-key path lookups from 120 to 80: the 40 `passes/`
+reads are gone, and the 40 `ready/` record reads and 40 transition-lock
+opens remain (actions d7efe085bd3c and 7576d4b3a638). On the NFS export a
+listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
+the client's dentry cache answers it.
+
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
 changing it requires stopped workers and drained reservations. A missing map
