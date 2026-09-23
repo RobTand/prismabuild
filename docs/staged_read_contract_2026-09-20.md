@@ -580,11 +580,13 @@ Budget and durability requirements for produced workloads:
   A queued mover exempts its consumer only on evidence (PB#1011, in
   review): a ready row the claim pass refuses or withholds on every host
   exempts nothing, and otherwise the bytes queued ahead of it must fall
-  within the evidence window; a claimed mover's report must be within two
-  heartbeats or have grown since the previous check. On a stage tier whose
-  claimed consumers are over-committed, a range the tier's claim order
-  holds back is `held-by-claim-order` in the landing record, naming the
-  consumer ahead of it, the GiB and a priced landing. The wait is exempt
+  within the evidence window, or a mover queued ahead of it at the wait's
+  first check must be claimed with a live lease; a claimed mover's report
+  must be within two heartbeats or have grown since the previous check, or
+  its lease must be live (a pacer hold freezes the report, not the lease).
+  On a stage tier whose claimed consumers are over-committed, a range the
+  tier's claim order holds back is `unpublished` in the landing record,
+  naming the consumer ahead of it, the GiB and a priced landing. The wait is exempt
   while that consumer shows growth (accepted reports, credited waits or an
   exempt wait of its own) within the evidence window, and not once a whole
   window passes without any; its own rung then ends it.

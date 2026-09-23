@@ -7553,7 +7553,9 @@ Every range with an expectation carries `basis`: `reported`, `claim` or
 the time they took (see "A mover reports what it has landed" below).
 A queued range also carries its `queue_position` and `bytes_ahead`: every
 claimed mover's remaining bytes on the tier, then every earlier ready
-mover's, in the queue's own order (`_queue_order_of`).
+mover's, in the queue's own order (`_queue_order_of`). It names those movers
+in `movers_ahead` (#1022 review round 2), which the staged-wait verdict reads
+while a pacer hold keeps the bytes from moving.
 `residency_plan.expected_landings` replays that queue serially at one rate.
 The rate is the refill horizon's landing term, not a second model: the
 slowest complete copy among the tier's live plans (`_plan_landing`), else
@@ -7625,8 +7627,32 @@ on (`evidence`, `evidence_unix`):
 | Mover | Evidence | Exempt |
 |---|---|---|
 | `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) or a withhold (`deferred_behind_withholding`, `*_withholding`) | `refused` or `withheld`; the entry names the reason as `refusal` or `withhold` and the host | no, and the hold accrues nothing |
-| `ready`, otherwise | `baseline` on the wait's first check; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
-| `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `none` otherwise | yes, except `none` |
+| `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
+| `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `lease-live` when its own lease is live (below); `none` otherwise | yes, except `none` |
+
+**A pacer hold is not a stall** (#1022 review round 2). A mover commits its
+report only when its landed bytes grow, and the tier loop rewrites a landing
+record only when the queue print changes. A pacer hold on a copy freezes
+both. A verdict that read only them ended a consumer one evidence window
+into a hold that the mover's worker was crediting, and holds run several
+of the campaign's 900 s chunk graces. So both readings also read the mover's
+lease (`PoolQueue._mover_lease`). A lease is live when it belongs to the
+mover's current claim and its heartbeat is within `LEASE_TIMEOUT_S`, the
+bound `reap_stale` applies before it takes a claim back. The worker
+heartbeats the lease whatever the copy lands. It credits a pacer hold or
+pool contention on evidence it samples itself (`pool_contention_exempt_s`,
+`start_gate_exempt_s`, #1010), and it ends a copy that stalls by its own
+`no_progress` rung. A live lease therefore says that the mover's own judge
+has not ended it. The entry records the heartbeat age and the credited
+seconds (`lease_heartbeat_age_s` and `hold_credited_s`; for a ready mover,
+`copy_ahead`, `copy_ahead_heartbeat_age_s` and `copy_ahead_hold_credited_s`),
+and its `evidence_unix` is the heartbeat, not the check. `waiting_behind` is
+fixed at the wait's first check and carried on the verdict, so a copy
+claimed later, one the claim pass placed instead of this mover, does not
+renew it. Recomputing `bytes_ahead` from the live queue at each check was
+the alternative. It falls on wall-clock alone, so it keeps falling for a
+mover that died. A ready mover with nothing queued ahead of it at the first
+check has no copy to read a lease from, and it keeps the `bytes_ahead` rule.
 
 `placement_mismatch` (the word of a box the row is not for) is neutral, and a
 host whose latest reason is anything else is transient, so the row goes to
@@ -8015,6 +8041,30 @@ guarantees nothing after the room shrinks. A preempted chunk goes whole and
 is copied again when its consumer's turn comes. It is last, so a pass takes
 it only when nothing else reaches the target.
 
+Preemption does not take chunks from a consumer that reads backward (#1022
+review round 2): one that holds a landed chunk of its reading phase past the
+chunk it is blocked on (`need_start_bytes`), or whose `need_start_bytes` or
+tier ledger does not read. A reader reads in byte order, so that shape is a
+gather that lost a chunk and is waiting for it again, or copies that landed
+out of order. The first is the reader's one retry after
+`StagedRangeNotLanded` (PrismaQuant `StreamingContext._await_prefetch`, one
+retry a layer), and a second loss ends the run, so its chunks stay. When
+nothing else makes the room, the stuck rule ends one consumer, which is a
+recorded kill. The consumers kept whole are named in the order's
+`preempt_protected`, on the commitment record and in the futile event.
+
+The review asked for preempting only legs that end at or before the
+reader's `read_through_bytes`. That filter keeps every leg:
+`read_through_bytes` is the end of the reading phase
+(`residency_plan.refill_horizon`), and PrismaBuild knows no reader position
+inside a phase. The reader's staged wait names only the movers it still
+waits for, so a gather that spans a landed chunk and the blocked one looks
+like a reader past the landed one, and one preemption can still cost the
+reader its retry. The rule protects that retry only while the lost chunk is
+missing. A gather that spans three chunks can see the lost chunk land again
+while a later one is still coming. It then reads forward again and can lose
+a second time.
+
 The head's reading phase, and the reading phase of any consumer ranked
 before it, a leg whose copy or egress is queued or running, and a leg whose
 promotion holds the ram tier (#640) are never candidates. Each eviction is
@@ -8063,9 +8113,14 @@ for and when its range can land:
 
 * the `window-gated` event, reason `held-by-claim-order`, in its tier-event
   file (`residency-events/<consumer>/<host>.jsonl`, #1002);
-* its landing record: the range it waits for is `held-by-claim-order`, with
+* its landing record: the range it waits for is `unpublished`, with
   `held_back_by`, `waiting_on`, `waiting_gib`, `claim_rank` and the priced
-  `expected_landing_unix`;
+  `expected_landing_unix`. It is not a state of its own (#1022 review
+  round 2). PrismaQuant's reader (`residency_map._read_landing`) drops a
+  whole record that lists a state it does not know and falls back to its
+  bounded wait. Its `landing_verdict` waits on an `unpublished` range while
+  the tier loop lives and declares the range's mover, so the verdict below
+  decides;
 * the tier's commitment record, whose `claim_order` carries every claimed
   consumer's rank, standing and leg, the head, the target and the relief.
   The `no_progress` verdict reads it.
@@ -8123,6 +8178,14 @@ it, and the stuck rule ends consumers one a cycle until the head is alone
 and is ended too; and when a pin is held forever (a reader that hangs
 holding its lease), I2 declines the eviction and relief stays short. The
 second is bounded by the reader's own `no_progress` rung.
+
+I5 does not cover three relief outcomes: `short` with nothing evicted,
+`refused` and `unknown`. In those, the head and granted consumers stay
+exempt with no bound. The verdict gives them `exempt` whatever the relief
+(`PoolQueue._tier_commitment_standing`), the window gives them their claim
+permit (`residency_window`), and `window_credit.stuck_victim` names a victim
+only when relief is `futile`. This predates #1022's round 2 and is tracked
+as a separate issue.
 
 A tier that stays over-committed once no consumer is blocked also reports
 `futile`, with one `claim-order-eviction-futile` event when it becomes so:
