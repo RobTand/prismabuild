@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import copy
 import functools
 import json
 import math
@@ -260,36 +261,71 @@ def _prefill_depth(policy: Mapping[str, object] | None) -> int | None:
     return None
 
 
+def _receipt_name(entry: os.DirEntry) -> bool:
+    """A receipt file, as ``glob("*.json")`` selected one: no dotfile."""
+
+    return entry.name.endswith(".json") and not entry.name.startswith(".")
+
+
 class ReceiptCache:
-    """Receipts read once per (path, mtime); the pool's fill history is append-only."""
+    """What the tier loop reads every cycle and keeps from one to the next (#992).
+
+    Three things, all re-read only where they changed:
+
+    * ``records`` (:class:`stage_release.DirectoryRecords`): the movement
+      and prewarm receipts the fill supply is folded from, every ``ready/``
+      and ``claimed/`` record (:func:`stage_release.queue_records`, inside a
+      cycle), and the tier and epoch of every residency fragment
+      (:func:`drop_prior_ram_epochs`).  A directory nothing was filed in
+      since its last listing is not listed again, and a file whose version
+      is unchanged is not read again.
+    * ``census`` (:class:`stage_release.CensusIndex`): the validated fragment
+      census every sweep and reconciliation takes.
+    * The fill-supply fold per pool identity, remembered while the receipts
+      it was folded from are the same records (:meth:`fill_supply`): the fold
+      is a pure function of them.
+
+    The receipt set itself is every receipt on disk, as before.  Bounding it
+    by the oldest live plan would change the fold's answer, not only its cost
+    (#992 item 2 stays open for a fold that carries its state across the cut).
+    """
 
     def __init__(self) -> None:
-        self._records: dict[str, tuple[float, dict[str, object]]] = {}
+        self.records = stage_release.DirectoryRecords()
+        self.census = stage_release.CensusIndex()
+        self._directories: tuple[Path, ...] = ()
+        self._records: list[dict[str, object]] = []
+        self._folds: dict[str, tuple[tuple[int, ...], dict[str, object]]] = {}
 
     def read(self, directories: list[Path]) -> list[dict[str, object]]:
-        seen: set[str] = set()
+        out: list[dict[str, object]] = []
         for directory in directories:
-            try:
-                entries = sorted(directory.glob("*.json"))
-            except OSError:
-                continue
-            for path in entries:
-                try:
-                    mtime = path.stat().st_mtime
-                except OSError:
-                    continue
-                name = str(path)
-                seen.add(name)
-                cached = self._records.get(name)
-                if cached is not None and cached[0] == mtime:
-                    continue
-                record = pool._read_json(path)
+            for _path, record in self.records.read(
+                    directory, select=_receipt_name, parse=pool._read_json):
                 if isinstance(record, dict):
-                    self._records[name] = (mtime, record)
-        for name in list(self._records):
-            if name not in seen:
-                self._records.pop(name)
-        return [record for _, record in self._records.values()]
+                    out.append(record)
+        self._directories = tuple(directories)
+        self._records = out
+        return out
+
+    def fill_supply(self, pool_identity: Mapping[str, object] | None,
+                    ) -> dict[str, object]:
+        """``storage_tiers.fill_supply_from_records`` over the last :meth:`read`.
+
+        Folded again only when a receipt directory's records changed, or for
+        an identity not folded since; a copy is returned, so nothing a caller
+        does to it reaches the next cycle.
+        """
+
+        generations = tuple(self.records.generation(directory)
+                            for directory in self._directories)
+        key = json.dumps(pool_identity, sort_keys=True, default=str)
+        kept = self._folds.get(key)
+        if kept is None or kept[0] != generations:
+            kept = (generations, storage_tiers.fill_supply_from_records(
+                self._records, pool_identity=pool_identity))
+            self._folds[key] = kept
+        return copy.deepcopy(kept[1])
 
 
 def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | None:
@@ -345,8 +381,10 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     released = queue.released_origin_consumer_keys()
     for state in (pool.READY, pool.CLAIMED):
-        for path in pool._scan(queue.dir(state)):
-            item = pool._read_json(path)
+        # Inside a cycle, the listing and the bytes are the loop's own read,
+        # shared with the sweep's and the reconciliation's (#992); each record
+        # is still parsed fresh for this caller.
+        for _path, item in stage_release.queue_records(queue, state):
             if not isinstance(item, dict):
                 continue
             residency = item.get("residency")
@@ -484,6 +522,26 @@ def _withdrawn_keys(queue: pool.PoolQueue,
     """
 
     return queue.withdrawn_keys() if withdrawn is None else frozenset(withdrawn)
+
+
+def _cycle_withdrawn_keys(queue: pool.PoolQueue, receipts) -> frozenset[str]:
+    """``queue.withdrawn_keys()``, listed only when ``withdrawn/`` moved (#992).
+
+    The same set: every name ending in ``.json``, empty only when the
+    directory is absent, loud on any other error.  Through the tier loop's
+    kept reader the directory is listed again only when its stamp moved,
+    which a new, removed or renamed marker always does; on a filesystem whose
+    stamps cannot be trusted -- the NFS export, where ``withdrawn_keys``
+    lists rather than stats for the negative-cache reason it records -- it
+    is listed every cycle, as before.
+    """
+
+    records = getattr(receipts, "records", None)
+    if not isinstance(records, stage_release.DirectoryRecords):
+        return queue.withdrawn_keys()
+    names = records.names(queue.dir(pool.WITHDRAWN),
+                          select=lambda name: name.endswith(".json"))
+    return frozenset(name[: -len(".json")] for name in names)
 
 
 def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
@@ -647,9 +705,41 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
     return "unknown", "unconsumed funding has incomplete token evidence"
 
 
+def _fragment_tier_epoch(path: Path) -> tuple[str, str] | None:
+    """A fragment's raw ``(tier_id, epoch)``, or ``None`` when unreadable.
+
+    Read raw, never validated, for :func:`drop_prior_ram_epochs`.
+    """
+
+    try:
+        with open(path) as stream:
+            raw = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return ("", "")
+    return (str(raw.get("tier_id") or ""), str(raw.get("epoch") or ""))
+
+
+def _fragment_json(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_file() and entry.name.endswith(".json")
+    except OSError:
+        return False
+
+
+def _fragment_dir(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
 def drop_prior_ram_epochs(
         queue: pool.PoolQueue,
-        tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+        tiers: Mapping[str, Mapping[str, object]], *,
+        reader: stage_release.DirectoryRecords | None = None,
+) -> list[dict[str, object]]:
     """Drop every ram fragment and ghost token the current epoch does not cover.
 
     tmpfs empties on reboot; the fragments and the ledger on the shared mount
@@ -668,6 +758,13 @@ def drop_prior_ram_epochs(
     will.  A ram tier that is not announced at all has no current epoch, so
     every fragment of it is a prior one and every unclaimed holder is a ghost
     (#640).
+
+    ``reader`` is the tier loop's :class:`stage_release.DirectoryRecords`:
+    with it, a namespace nothing was filed in since the last cycle is not
+    listed, and a fragment whose version is unchanged is not read, because
+    only its ``(tier_id, epoch)`` matters here and that is fixed by its
+    bytes (#992).  An unreadable fragment is never remembered, so it is read
+    again next cycle, as before.
     """
 
     current = {
@@ -676,30 +773,25 @@ def drop_prior_ram_epochs(
         if record.get("tier") == "ram"}
     events: list[dict[str, object]] = []
     root = queue.residency_fragment_root()
+    reader = reader if reader is not None else stage_release.DirectoryRecords()
     try:
-        consumers = sorted(entry.name for entry in os.scandir(root)
-                           if entry.is_dir())
+        consumers = [path.name for path, _ in reader.read(
+            root, select=_fragment_dir, parse=lambda _path: None)]
     except OSError:
         consumers = []
     for consumer in consumers:
         try:
-            names = sorted(entry.name for entry in os.scandir(root / consumer)
-                           if entry.is_file() and entry.name.endswith(".json"))
+            fragments = reader.read(root / consumer, select=_fragment_json,
+                                    parse=_fragment_tier_epoch,
+                                    keep=lambda found: found is not None)
         except OSError:
             continue
-        for name in names:
-            path = root / consumer / name
-            try:
-                with open(path) as stream:
-                    raw = json.load(stream)
-            except (OSError, ValueError):
+        for path, found in fragments:
+            if found is None:
                 continue      # not ours to interpret; compose already skips it
-            if not isinstance(raw, Mapping):
-                continue
-            tier_id = str(raw.get("tier_id") or "")
+            tier_id, epoch = found
             if not tier_id.startswith(storage_tiers.RAM_TIER_PREFIX):
                 continue
-            epoch = str(raw.get("epoch") or "")
             live = current.get(tier_id, "")
             if live and epoch == live:
                 continue
@@ -1606,16 +1698,20 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
         return events
     if not filed_keys:
         return events
+    # Each filed key looked up in each terminal directory, never the
+    # directories listed (#992): they hold every action the fleet ever
+    # finished (38,000 names on 2026-09-23) and only a filed plan's key can
+    # be a candidate.  A terminal directory that cannot be read skips its
+    # state for this pass, as the listing's failure did.
     for state in (pool.FAILED, pool.WITHDRAWN, pool.DONE):
-        try:
-            paths = list(pool._scan(queue.dir(state)))
-        except OSError:
-            continue
-        for path in paths:
-            name = path.name
-            key = name[:-len(".json")] if name.endswith(".json") else name
-            if key not in filed_keys:
+        for key in sorted(filed_keys):
+            path = queue.item_path(state, key)
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
                 continue
+            except OSError:
+                break
             _sweep_dead_consumer(queue, key=key, state=state, path=path,
                                  events=events)
     return events
@@ -5991,6 +6087,7 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
 def sweep_orphans(queue: pool.PoolQueue,
                   tiers: Mapping[str, Mapping[str, object]],
                   *, pressure: Mapping[str, int] | None = None,
+                  index: stage_release.CensusIndex | None = None,
                   ) -> list[dict[str, object]]:
     """Take back the stage from movers no live consumer still plans to read.
 
@@ -6018,7 +6115,8 @@ def sweep_orphans(queue: pool.PoolQueue,
     }
     if not stage_roots:
         return []
-    return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure)
+    return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure,
+                               index=index)
 
 
 def evict_beyond_horizon(queue: pool.PoolQueue,
@@ -6382,6 +6480,41 @@ def _tier_admits_movers(tier_record: Mapping[str, object]) -> bool:
     return tier_record.get("stage_root_admits") is not False
 
 
+#: What the last :func:`cycle` cost, phase by phase, and what it read (#992):
+#: the ``tier-cycle`` line carries it, and so does the bench.  Rebound to a
+#: new dict at the end of every cycle, completed or not, so a record a caller
+#: kept is never rewritten under it.
+LAST_CYCLE: dict[str, object] = {}
+
+
+class _Phases:
+    """Seconds per cycle step, taken as laps of one clock."""
+
+    def __init__(self) -> None:
+        self.started = time.perf_counter()
+        self._mark = self.started
+        self.seconds: dict[str, float] = {}
+
+    def lap(self, name: str) -> None:
+        now = time.perf_counter()
+        self.seconds[name] = self.seconds.get(name, 0.0) + (now - self._mark)
+        self._mark = now
+
+
+def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
+    """The kept records' and census's running counters, for a per-cycle delta."""
+
+    records = getattr(receipts, "records", None)
+    census = getattr(receipts, "census", None)
+    counts: dict[str, int] = {}
+    for prefix, source in (("records", records), ("census", census)):
+        for field in ("listed", "kept", "parsed", "parses", "reuses"):
+            value = getattr(source, field, None)
+            if isinstance(value, int):
+                counts[f"{prefix}_{field}"] = value
+    return counts
+
+
 def cycle(
     queue: pool.PoolQueue,
     *,
@@ -6391,7 +6524,55 @@ def cycle(
     now: float | None = None,
     discover=storage_tiers.discover_tiers,
 ) -> list[dict[str, object]]:
-    """Discover, mint, announce; returns the records it announced."""
+    """Discover, mint, announce; returns the records it announced.
+
+    Every step reads through ``receipts``, the loop's reads kept from one
+    cycle to the next (#992): the ``ready/`` and ``claimed/`` records every
+    step shares, the receipts, the residency fragments.  What the cycle cost,
+    per step, and how much it listed, parsed and reused, is left in
+    :data:`LAST_CYCLE` whether the cycle completes or raises.
+    """
+
+    phases = _Phases()
+    before = _read_counts(receipts)
+    completed = False
+    records = getattr(receipts, "records", None)
+    try:
+        if isinstance(records, stage_release.DirectoryRecords):
+            with stage_release.queue_records_from(records):
+                announced = _cycle(queue, host=host, source_pool=source_pool,
+                                   receipts=receipts, now=now,
+                                   discover=discover, phases=phases)
+        else:
+            announced = _cycle(queue, host=host, source_pool=source_pool,
+                               receipts=receipts, now=now, discover=discover,
+                               phases=phases)
+        completed = True
+        return announced
+    finally:
+        global LAST_CYCLE
+        after = _read_counts(receipts)
+        LAST_CYCLE = {
+            "cycle_seconds": round(time.perf_counter() - phases.started, 6),
+            "completed": completed,
+            "phases": {name: round(value, 6)
+                       for name, value in phases.seconds.items()},
+            "reads": {name: after[name] - before.get(name, 0)
+                      for name in after},
+        }
+
+
+def _cycle(
+    queue: pool.PoolQueue,
+    *,
+    host: str,
+    source_pool: str,
+    receipts: ReceiptCache,
+    now: float | None,
+    discover,
+    phases: _Phases,
+) -> list[dict[str, object]]:
+    """The body of :func:`cycle`; ``phases`` is lapped after every step."""
 
     cycle_started = time.monotonic()
     _begin_verdict_cycle()
@@ -6402,7 +6583,9 @@ def cycle(
     # both see the bandwidth a finished copy is no longer drawing (#636).
     for event in reclaim_idle_rates(queue):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("reclaim_idle_rates")
     fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
+    phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
     # is picked up by the statvfs read inside the same cycle (#640).
@@ -6416,6 +6599,7 @@ def cycle(
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
                      now=now, ram_policy=ram_policy,
                      worker_mem_gb=worker_mem_gb)
+    phases.lap("discover")
     # The records this box announced last cycle, read before this cycle
     # overwrites them: the ram tier's epoch is compared against its own
     # previous announcement, so a change is said once rather than inferred.
@@ -6533,9 +6717,14 @@ def cycle(
         # generation, which is every record until this one -- folds every
         # usable receipt, exactly as before.
         tier_identity = record.get("pool_identity")
-        supply = storage_tiers.fill_supply_from_records(
-            fill_records, pool_identity=(
-                tier_identity if isinstance(tier_identity, Mapping) else None))
+        identity = (tier_identity if isinstance(tier_identity, Mapping)
+                    else None)
+        # Folded again only when the receipts changed (#992); a stand-in
+        # receipt reader without the memo folds every cycle, as before.
+        supply = (receipts.fill_supply(identity)
+                  if isinstance(receipts, ReceiptCache)
+                  else storage_tiers.fill_supply_from_records(
+                      fill_records, pool_identity=identity))
         record["fill_supply"] = {key: value for key, value in supply.items()
                                  if key != "ceiling_receipt"}
         if supply["ceiling_receipt"]:
@@ -6687,6 +6876,7 @@ def cycle(
             record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)
+    phases.lap("mint_announce")
     # Minting first, windowing second, on purpose: the window publishes what
     # the tier's *current* free capacity covers, so it must see this cycle's
     # supply rather than the last one's.
@@ -6697,8 +6887,11 @@ def cycle(
     # idempotent -- a steady cycle finds nothing to drop -- and it holds:
     # nothing reads as ram-resident until a promotion lands under the current
     # epoch.
-    for event in drop_prior_ram_epochs(queue, announced_tiers):
+    for event in drop_prior_ram_epochs(
+            queue, announced_tiers,
+            reader=getattr(receipts, "records", None)):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("drop_prior_ram_epochs")
     # Incomplete promotions before anything prices the tier (#644): a
     # half-landed promotion squats on its full-range tokens until its phase
     # passes, so its tokens come back here -- partial files deleted first,
@@ -6707,6 +6900,7 @@ def cycle(
     # the whole range through the ordinary publish path.
     for event in release_incomplete_ram_promotions(queue, announced_tiers):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("release_incomplete_ram_promotions")
     # Adopt, then evict under pressure, then publish.  The order is the policy
     # (#598): a range a live consumer's window names is taken over rather than
     # deleted and re-copied, what is left over is deleted only when a window
@@ -6724,31 +6918,39 @@ def cycle(
         ram_tier = consumer_plan.get("ram_tier_id")
         if isinstance(ram_tier, str) and ram_tier != consumer_tier:
             tier_consumers.setdefault(ram_tier, []).append(consumer_key)
+    phases.lap("planned_consumers")
     # One snapshot of the live withdrawal markers for every step below, so a
     # cancellation filed mid-cycle cannot have the adoption, the pressure
     # probe and the two windows disagree about it (#708).
-    withdrawn = queue.withdrawn_keys()
+    withdrawn = _cycle_withdrawn_keys(queue, receipts)
+    phases.lap("withdrawn_keys")
     # Dead consumers' movers first: a consumer that failed with movers
     # published would otherwise keep staging for nobody all cycle (#620).
     # Withdrawing only stops queued work, so adoption below still sees every
     # resident range it could take.
     for event in withdraw_dead_consumer_movers(queue):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("withdraw_dead_consumer_movers")
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
                                        consumers=planned, withdrawn=withdrawn,
                                        unknown=planned_unknown):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("adopt_resident_ranges")
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
                                withdrawn=withdrawn, unknown=planned_unknown)
+    phases.lap("window_pressure")
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
     # below sees both the room being made and the recopy it must hold back.
     for event in reclaim_failed_mover_partials(queue, planned, pressure):
         _emit(queue, host, event, tier_consumers=tier_consumers)
-    for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
+    phases.lap("reclaim_failed_mover_partials")
+    for event in sweep_orphans(queue, announced_tiers, pressure=pressure,
+                               index=getattr(receipts, "census", None)):
         _emit(queue, host, {"event": "stage-orphan-evicted", **event},
               stamp_unix=False)
+    phases.lap("sweep_orphans")
     # Orphans first, then the ranges past their readers' refill horizons
     # (#903): an orphan is nobody's, a range past a horizon is somebody's
     # later, so the sweep that returns what nobody will read goes first.
@@ -6756,6 +6958,7 @@ def cycle(
                                       consumers=planned, pressure=pressure,
                                       withdrawn=withdrawn):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("evict_beyond_horizon")
     # The ram window before the stage's, so a phase's ram egress is published
     # before its stage egress: the tokens that bound the smaller tier come
     # back first, and a ram range never outlives the stage range that feeds
@@ -6763,9 +6966,11 @@ def cycle(
     for event in ram_residency_window(queue, tiers=announced_tiers, now=now,
                                       withdrawn=withdrawn):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("ram_residency_window")
     for event in residency_window(queue, tiers=announced_tiers, now=now,
                                   withdrawn=withdrawn):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("residency_window")
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes
@@ -6774,12 +6979,14 @@ def cycle(
     if retired_funding.get("retired") or retired_funding.get("unreadable"):
         print(json.dumps({"unix": time.time(), "event": "output-funding-retired",
                           **retired_funding}), flush=True)
+    phases.lap("retire_terminal_output_funding")
     # Consumed produced-output origins whose declared consumers have all
     # succeeded, and consumed ones a dead producer attempt left undeclared
     # (#914).  Silent when it retires nothing; a stalled or refused
     # retirement is reported once per change.
     for event in produced_output.origin_retirement_tick(queue):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("origin_retirement_tick")
     # Deferred consumers whose producers have committed (#913): sealed over
     # the committed batches and published, until this cycle's interval runs
     # out or MAX_RELEASES_PER_CYCLE have gone.  After window publication, so a
@@ -6787,6 +6994,7 @@ def cycle(
     for event in deferred_release.release_tick(
             queue, deadline=cycle_started + CYCLE_INTERVAL_S):
         _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("deferred_release")
     # What the admission commitment's census cost this cycle (#909): the one
     # admission read whose cost grows with the number of windows.
     census_cost = census_cost_report()
@@ -6807,6 +7015,7 @@ def cycle(
             "capacity_bytes": 0, "retired": True, "ledger": ledger,
             "sampled_unix": time.time() if now is None else now,
         })
+    phases.lap("census_cost_and_retired_tiers")
     return announced
 
 
@@ -6876,8 +7085,10 @@ def _serve(args) -> int:
         try:
             records = cycle(queue, host=host, source_pool=args.source_pool, receipts=receipts)
         except (OSError, pool.PoolContractError) as exc:
+            # What the failed cycle cost up to the raise, phase by phase
+            # (#992): a slow failure is still a slow cycle.
             print(json.dumps({"event": "tier-cycle-failed", "error": repr(exc),
-                              "unix": time.time()}), flush=True)
+                              "unix": time.time(), **LAST_CYCLE}), flush=True)
             records = []
         else:
             print(json.dumps({
@@ -6886,6 +7097,9 @@ def _serve(args) -> int:
                                                     storage_tiers.FILL_RECORD_FIELD, "fill_source",
                                                     "fill_supply", "tokens")}
                           for r in records],
+                # ``cycle_seconds``, the seconds of every step, and what the
+                # cycle listed, parsed and reused (#992).
+                **LAST_CYCLE,
             }), flush=True)
         if args.once:
             print(json.dumps(records, indent=1, default=str))
