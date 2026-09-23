@@ -1,5 +1,24 @@
 # Staged-read contract: allowed tiers, leases, and readiness (target + status ledger)
 
+**Current state, 2026-09-23 13:30Z** (evidence in §12 and the ledger):
+
+- **Workload-proven:** nothing end to end. No staged-only campaign output exists
+  (ACC-06 `no`). Bounded partial evidence only: R12 was admitted on a resident
+  lead (INV-02), published produced batches and promoted them to RAM (PO-01),
+  and was withdrawn from claimed (SM-01); PQ action `2c164969c33c` refused a
+  cold source read instead of falling back (INV-06).
+- **Live violations:** R12 released 44 GiB of produced-batch charge before
+  reclaim (PB#929; SM-02, INV-07, PO-06). On the live generation, PB#944,
+  PB#965 and PB#966 stalled the R13 launch attempts (LIVE-01, PRG-03, PRG-04,
+  INV-11, RNG-02), and PQ#1080 ended one (PRG-02).
+- **Deployed:** generation `81d95cba8d91-1790160372-5d100532e024` (PB merges
+  through #935), canary verified, three workers and the tier role converged.
+- **Validated, not deployed:** #943, #947, #948, #951, #953, #956, #957, #962,
+  #967, #968, #969 and #970, including the fixes for #944 (#948) and #965 (#970).
+- **Next acceptance step:** publish a generation that contains #948 and #970,
+  fix and deploy PB#966, then run R13 until at least one chain completes with
+  `bytes_from_pool == 0` on its bulk legs.
+
 Status: TARGET CONTRACT with honest per-requirement evidence in
 `staged_read_requirements_2026-09-20.json` (schema
 `pb.staged_read_requirements.v3`). This document is normative for what it
@@ -385,7 +404,8 @@ not deployed support; axis-qualified evidence is in
   implementation gap (historical, 8ca attempt): the strict reader rejected a
   newly produced batch absent from the static input map
   (`stage-a-8ca-attempt-review.json`); the current PQ881 branch carries bridge
-  component tests, and the global cycle is not qualified. PR781 is merged at
+  component tests, and the global cycle is not qualified. (Correction,
+  2026-09-23: PQ#881 merged on 2026-09-21T16:38Z as `f20cccb0e953`; see §12.) PR781 is merged at
   source level (`dd5523dd3ff66025170f1e2248d8b32d180d7a78`) and its acceptance
   is not a live-cycle proof. The one actual global produced-output live
   attempt failed before any read: the child mover request lost the producer's
@@ -682,7 +702,8 @@ own-copy egress repair had no accepted commit at this snapshot (PR795 merged
 later at 2026-09-21T06:33:58Z; source-merge acceptance recorded, deployment
 and global behavior proof pending); the
 produced-output strict-read/progress gate is unqualified; PQ881 is unmerged and
-no upgraded Stage A has completed. Consequently no PO, BUD, or DUR
+no upgraded Stage A has completed. (Correction, 2026-09-23: PQ#881 merged later
+that day, at 16:38Z; §12 carries the current status.) Consequently no PO, BUD, or DUR
 requirement is deployed-with-behavior or workload-proven beyond the PB783
 lower cross-root egress edge of PO-07 and the scoped PR781/PR792
 source-and-component acceptance records. Deployment facts stay on their own axes: PB782 deployed
@@ -691,3 +712,79 @@ activated at generation `43b790cce88c-1789962578-9e60f8c7ea49` (publication
 verified 2026-09-21T04:07:13Z; three live nodes converged and the rollout idle
 at 2026-09-21T04:09:13Z). A source merge is not deployment (ID-08); a deployed
 generation is not workload proof.
+
+## 12. Status on 2026-09-23
+
+This section records the status at 2026-09-23 13:30Z, against PB main
+`0411c83330da` and PQ main `f12313f9903d`. It weakens no obligation. The ledger
+carries the per-row evidence: every row changed today has a dated
+`2026-09-23 update` sentence on each axis it changes, and a `live_defects`
+list where a live run violated it. Earlier dated paragraphs above stay as
+written, with in-place corrections where they are now wrong.
+
+### Live runtime generation
+
+- Generation `81d95cba8d91-1790160372-5d100532e024`: commit
+  `81d95cba8d911907ca85db5618d34c0c0855e7bf` (the #935 merge), not dirty,
+  published from sparky at 1790160374 (2026-09-23 about 10:46Z).
+- Canary: `runtime-generations/81d95cba8d91-1790160372-5d100532e024.canary.json`
+  reads `canary_status: verified` ("every leg executed and every receipt
+  verified"), recorded at 1790160559.
+- Role convergence: the worker offers from sparky, sparklina and dl380g10
+  announce `runtime_commit` `81d95cba8d91` at 1790169703. The dl380g10 tier role
+  runs `tools/tier_loop.py` from this generation's tree, without
+  `--output-windows`, so the #895 output-window obligation is deployed and off.
+  DESKTOP-P5UOGNJ is offline by decision (PB#900) and still announces
+  `a80eea97`.
+- Spool budget (#917, #921) is live: sparky offers `spool_gb` 36 and sparklina
+  360.
+- Merged after this generation, so not deployed: #943, #947, #948, #951, #953,
+  #956, #957, #962, #967, #968, #969 and #970. A source merge is not deployment
+  (ID-08).
+
+### Campaign runs
+
+- R12 (action `683cb3caa5ea`), submitted on generation
+  `c2bda68758a3-1790110205-9e9735511db2` and claimed on sparky at 1790112229,
+  with residency verdict `resident` on one lead at tier
+  `prismabuild-stage:dl380g10` and produced-output template
+  `pq-stagea-boundary-entries-512-20260922-w24-r11`. Rob withdrew it from
+  claimed at chain-016 (2026-09-23T10:43:47Z) to relaunch as R13; its sealed
+  checkpoints remain as bounded evidence. It ran without #902 and #904: it
+  waited 25 minutes beside 484 GiB of orphan cache (PB#901) and held 528 of
+  565 GiB of stage (PB#903). Whether it read only from staged tiers
+  (`bytes_from_pool == 0`) is not recorded.
+- R13 launch attempts on the live generation stalled or failed on the four
+  defects below. No campaign has yet exercised the fixes deployed in
+  `81d95cba8d91`.
+
+### Live-run defects and the requirements they violate
+
+| Defect | Observed | Violates | Status |
+|---|---|---|---|
+| PB#929 | R12: the orphan pass released the tokens of 22 completed produced batches (44 GiB) while the bytes stayed staged | SM-02, INV-07, PO-06 | Fixed by #935; deployed; not yet exercised |
+| PB#944 | Movers `68fdb8728f38` and `750a4f8c65eb` of consumer `d54952c1fcac` inherited `task_class: measurement`; refused `measurement_host_not_idle` on 1,596 passes over 134 s | INV-11, PRG-03, LIVE-01 | Fixed by #948 (`abb13ff58bf7`); not deployed |
+| PB#965 | Chunk mover `8faf2233c63a` (consumer `a7d31a4da9c1`) cut a manifest entry and refused `residency_overran_reservation` on every attempt | SM-02, PRG-02, PRG-03, LIVE-01 | Fixed by #970 (`0411c83330da`); not deployed; affected consumers need a resubmit |
+| PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Open; no fix |
+| PQ#1080 | Stage A seed `2c164969c33c` did not prefetch its first layer and refused a cold source read, rc 1 after 282 s | PRG-02 (INV-06 held: the reader refused and did not fall back) | Fixed by PQ#1079 (`f12313f9903d`); use in a campaign unknown |
+
+### Corrections to earlier status
+
+- PQ#881 merged on 2026-09-21T16:38Z (`f20cccb0e953`), and PQ#883 merged on
+  2026-09-21T04:22Z (`8c204ea24a05`). Both are in R12's PQ checkout (snapshot
+  `f008a76ee425`, parent `34a07e0f2ebc`). The ledger called both unmerged.
+- TIER-05's fix merged as PB#763 (`bb54907e53be`, 2026-09-20T18:46Z) and is in
+  both `c2bda68758a3` and `81d95cba8d91`. The ledger called it source only.
+
+### Keeping the ledger current
+
+From this update on, a PB PR that changes a requirement's status updates that
+requirement's ledger row in the same PR (PB#971). Status detail belongs in the
+ledger, not only in `docs/design.md`.
+
+### Next acceptance step
+
+Publish a generation that contains #948 and #970, fix and deploy PB#966, and
+run R13 on that generation until at least one chain completes with
+`bytes_from_pool == 0` on its bulk legs. That run is the first candidate
+workload proof for LIVE-01, PRG-03, INV-11 and ACC-06.

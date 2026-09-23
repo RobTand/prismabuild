@@ -1,7 +1,7 @@
 {
  "contract": "docs/staged_read_contract_2026-09-20.md",
  "ledger_schema": "pb.staged_read_requirements.v3",
- "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation. Updated 2026-09-21: rows PO-01 through PO-07, BUD-01 through BUD-03, DUR-01, and ACC-07 carry the produced-output origin/materialization, budget, and durability requirements from contract section 7; dated evidence qualification is in docs/staged_read_produced_output_addendum_2026-09-21.md; the section 4 SM-03 prose was reconciled to the SM-03 row without promoting workload proof. New rows are target requirements unless their detail says otherwise: being listed here does not itself establish implementation, deployment or workload proof. Current-status reconciliation 2026-09-21 (later): PB781 merged dd5523dd and its produced-output module and pbrun --produced-output-template are present in deployed generation d794839c589d-1789966072-c66c7f0568d0; PB788/#784 merged c9af8233; PB792 merged aa03c0bd and its code is present in the active runtime generation d1c640e74d97-1790008584-459339399864 (observed active 2026-09-21T22:45:34Z); the own-copy egress repair is source-merge accepted as PR795 (merge 3641e293, root acceptance pb795-root-acceptance.json) and its code is present in that generation. The source and deployment observations in this note do not establish produced-output lifecycle execution, a PQ881 result, or any PO/BUD/DUR workload proof; merged source and deployed code presence are not workload proof, and a scoped repair of one component does not satisfy its whole requirement. Root review later retracted the GB10-local-tier reading: a stage tier need not belong to the consumer host (pbrun.resolve_stage_tier, tools/fleet/pbrun.py:4949); the existing prismabuild-stage:dl380g10 NFS tier serves the Sparks, with the original 8ca attempt and baseline canary action e44c5a11 as actual proof, so no new tier, capacity, infrastructure or permission decision is required. The statement that the tiny global Docker cycle waits on deployment of PB792 and PB795 and on the bounded retirement adapter is historical: PR803 (produced retirement on the tier host, merge 94d3b28e0611, 2026-09-21T15:04:49Z) merged and its code is present in that active generation, and PR795 (own-copy egress, merge 3641e29332bfd7a091f35b5bd3875b6de294c86e, 2026-09-21T06:33:58Z) merged with its root source-merge acceptance recorded (pb795-root-acceptance.json) and its code present there too. The private one-token library acceptance may be re-run on the accepted immutable PR795 candidate (head 83e8d502). Library and component cycles did run; the observations in this note do not establish a successful global lifecycle or a global produced-retirement acceptance.",
+ "note": "Per requirement: accountable subsystem owner; implementation {state, commit, path} with repo-qualified reviewed base PB:ca0f5555 / PQ:95dbb24a, else unknown; validation/deployment/workload_proof each {state, detail} with exact keys or unknown; proposed rows carry target_enforcement plus acceptance IDs; referenced-but-unrun tests sit in planned_acceptance with validation unknown (planned != executed); every requirement carries a concrete acceptance_assertion (manual-review kind where governance-only); ACC rows name their actual assertion, never a self-reference as sole check. Target stands irrespective of partial support; unknown is owed work, never a claim. planned_acceptance is never executed validation. Updated 2026-09-21: rows PO-01 through PO-07, BUD-01 through BUD-03, DUR-01, and ACC-07 carry the produced-output origin/materialization, budget, and durability requirements from contract section 7; dated evidence qualification is in docs/staged_read_produced_output_addendum_2026-09-21.md; the section 4 SM-03 prose was reconciled to the SM-03 row without promoting workload proof. New rows are target requirements unless their detail says otherwise: being listed here does not itself establish implementation, deployment or workload proof. Current-status reconciliation 2026-09-21 (later): PB781 merged dd5523dd and its produced-output module and pbrun --produced-output-template are present in deployed generation d794839c589d-1789966072-c66c7f0568d0; PB788/#784 merged c9af8233; PB792 merged aa03c0bd and its code is present in the active runtime generation d1c640e74d97-1790008584-459339399864 (observed active 2026-09-21T22:45:34Z); the own-copy egress repair is source-merge accepted as PR795 (merge 3641e293, root acceptance pb795-root-acceptance.json) and its code is present in that generation. The source and deployment observations in this note do not establish produced-output lifecycle execution, a PQ881 result, or any PO/BUD/DUR workload proof; merged source and deployed code presence are not workload proof, and a scoped repair of one component does not satisfy its whole requirement. Root review later retracted the GB10-local-tier reading: a stage tier need not belong to the consumer host (pbrun.resolve_stage_tier, tools/fleet/pbrun.py:4949); the existing prismabuild-stage:dl380g10 NFS tier serves the Sparks, with the original 8ca attempt and baseline canary action e44c5a11 as actual proof, so no new tier, capacity, infrastructure or permission decision is required. The statement that the tiny global Docker cycle waits on deployment of PB792 and PB795 and on the bounded retirement adapter is historical: PR803 (produced retirement on the tier host, merge 94d3b28e0611, 2026-09-21T15:04:49Z) merged and its code is present in that active generation, and PR795 (own-copy egress, merge 3641e29332bfd7a091f35b5bd3875b6de294c86e, 2026-09-21T06:33:58Z) merged with its root source-merge acceptance recorded (pb795-root-acceptance.json) and its code present there too. The private one-token library acceptance may be re-run on the accepted immutable PR795 candidate (head 83e8d502). Library and component cycles did run; the observations in this note do not establish a successful global lifecycle or a global produced-retirement acceptance. 2026-09-23 update (PB #971): rows touched since 2026-09-21 carry a dated '2026-09-23 update' sentence on each axis they change, against PB main 0411c83330da and PQ main f12313f9903d, live generation 81d95cba8d91-1790160372-5d100532e024 as of 2026-09-23 13:30Z. Optional field live_defects (additive; schema stays v3) lists live-run defects against the row they violate: {issue, observed, violation, status}.",
  "requirements": [
   {
    "acceptance_assertion": "Manual review: each lifecycle-affecting change names its PB decision point; no PQ-side placement knob lands.",
@@ -259,8 +259,8 @@
   {
    "acceptance_assertion": "Manual review: behavior deltas cite (runtime_commit, generation_id), never source merge alone.",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): Offers from sparky, sparklina and dl380g10 announce runtime_commit 81d95cba8d91 (announced 1790169703); the dl380g10 tier role runs the 81d95cba8d91-1790160372-5d100532e024 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+    "state": "partial"
    },
    "id": "ID-08",
    "implementation": {
@@ -339,12 +339,12 @@
    ],
    "acceptance_assertion": "Republished same-epoch/path/length bytes refuse the old lease (ABA negative); prefetch/mmap lifetime pinned (planned ACC-04).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #890 is in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "RNG-02",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:30Z): PB:0979fbb6a590 (#890) names every staged input by the exact range it holds.",
     "path": "src/prismabuild/reader_lease.py material sidecars (reader_material.v1, per-publish uuid generation, portable ino/size/mtime/ctime identity, never st_dev); acquire/open_pinned enforce generation+identity with ABA refusal; fragment schema v1 unchanged",
     "state": "partial"
    },
@@ -352,13 +352,21 @@
    "target_enforcement": "ABA-negative plus prefetch/mmap lifetime tests",
    "text": "Staged-object identity (tier, epoch, name, length, materialization generation, content identity); same epoch/path/length MUST NOT ABA-rebind new bytes. Lease pins the physical object; acquisition/open validates bound identity and pins lifetime including async prefetch/mmap with no stat/open race.",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:30Z): #890 red f31eab248f88 (3 failed), targeted 0ec938560175, ccf248e04cc8, ba09b0fd059f, ecd323447846.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. On 81d95cba8d91-1790160372-5d100532e024 a staged destination keyed by source path held a failed consumer's copy the next mover could not invalidate (PB#966).",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#966",
+     "status": "OPEN, no fix merged",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
+     "violation": "one staged destination name, two owners' bytes"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -420,12 +428,12 @@
    ],
    "acceptance_assertion": "Lifecycle/race suite: atomic claim rename, withdrawal only by policy with containment plus attempt terminal first (planned ACC-02).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #794, #831 and #887 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "partial"
    },
    "id": "SM-01",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
     "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
     "state": "partial"
    },
@@ -433,12 +441,12 @@
    "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
    "text": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run.",
+    "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn from claimed by rob@sparky; the record is pb-queue/withdrawn/683cb3caa5ea....json. That exercises one transition on a real campaign; the other transitions have no workload record.",
+    "state": "partial"
    }
   },
   {
@@ -447,12 +455,12 @@
    ],
    "acceptance_assertion": "Retiring-mark, charge-to-delete, exactly-once release, and epoch-invalidation paths covered incl. deletion-failure retention (planned ACC-02).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): Every merge listed is in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "SM-02",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:30Z): PB:3641e29332bf (#795), 793bc4238141 (#799), 94fc96b6924b (#826), 94d3b28e0611 (#803), 6f90a2304765 (#842), a1ac630ad421 (#868), f5111291c1bb (#877), 42a6ac156158 (#894), 81d95cba8d91 (#935) merged. PB#966 (a dead owner's copy that cannot be invalidated) has no fix.",
     "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
     "state": "partial"
    },
@@ -460,13 +468,33 @@
    "target_enforcement": "retiring-mark, delete-only absent, epoch revalidation paths",
    "text": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:30Z): #935 red 3c021314a259 (5 failed, 1 passed), focus fb4782667af5, 67114f94e382, 648502090230; #894 red 658caf9436cd, green cb7e98cc927b; #842 fail-before fc2ac9132507; #826 fail-before 17c2829f77ad, green 24bb24c3e6cc. Component tests only.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. During R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) completed produced batches lost their tokens while their bytes stayed staged (PB#929). On 81d95cba8d91-1790160372-5d100532e024, PB#966 left a dead owner's copy that was never released. The #935 fix has not been exercised by a campaign.",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#929",
+     "status": "fixed by PB#935 (81d95cba8d91), deployed; not yet exercised by a campaign",
+     "observed": "on c2bda68758a3-1790110205-9e9735511db2 during R12: the orphan pass released the tokens of 22 completed produced batches (44 GiB) while their bytes stayed on the stage",
+     "violation": "charge released before the bytes were reclaimed"
+    },
+    {
+     "issue": "PB#966",
+     "status": "OPEN, no fix merged",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
+     "violation": "a dead owner's copy is never retired and its tokens are never released"
+    },
+    {
+     "issue": "PB#965",
+     "status": "fixed by PB#970 (0411c83330da), not deployed; affected consumers need a resubmit after publication",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: chunk mover 8faf2233c63a for consumer a7d31a4da9c1 cut a manifest entry and refused residency_overran_reservation on every attempt (16,308,005 B over a 40 GiB chunk)",
+     "violation": "a copy exceeded the reservation ceiling that materialization assumes"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -499,47 +527,47 @@
   {
    "acceptance_assertion": "Manual review: claim fits box+tier ledgers simultaneously; one release helper concludes both.",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #840 through #931 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out); #947, #951 and #956 are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "partial"
    },
    "id": "INV-01",
    "implementation": {
-    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8",
+    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8; 2026-09-23 update (snapshot 13:30Z): PB:3f0f752d4211 (#840), bb939e987ab9 (#845), 288a9d90fe4e (#865), 7d618325ad4b (#875), a926a4e0c81b (#880), 1e51518108d3 (#882), b50c4b9124be (#902), 5a972f1d3e35 (#904), 0bb9de9001c1 (#922), 97faa0e67200 (#928), 2c55b69482ef (#931) deployed; ee2420db7dfd (#947), bce50d049cfd (#951), 4448dd9dcec5 (#956) merged, not deployed",
     "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
     "state": "partial"
    },
    "owner": "PB:pool-claim",
    "text": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
    "validation": {
-    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence.",
+    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence. 2026-09-23 update (snapshot 13:30Z): #902 red dde768fd5a5f, green e49d2a53bd39; #904 red ff0ee178b3ad, green d6869b9de62d; #922 red eba0a352840d; #928 red e05102b65674 and ee8e749f8fa2 (live-number replay); #951 base 2d22f6ac1fcd (12 failed), head 6593cbc4676f (20 passed); #947 red on main ff200b3dacf1 (R13 beside R12 refused at 413 MB/s supply). Component and replay tests only.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) ran without #902 and #904: it waited 25 minutes beside 484 GiB of orphan cache (PB#901) and held 528 of 565 GiB of stage in 24 landed ranges (PB#903). No campaign has run on 81d95cba8d91-1790160372-5d100532e024 long enough to show the repaired windows.",
+    "state": "no"
    }
   },
   {
    "acceptance_assertion": "Lead-executed/same-manifest/pinned admission plus not_resident-vs-terminal denial split observed (partial: denial_top evidence only).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): All five merges are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out); #883, #890, #896 and #824 were also in c2bda68758a3-1790110205-9e9735511db2.",
+    "state": "yes"
    },
    "id": "INV-02",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:4cd167ad0118 (#883), 0979fbb6a590 (#890), c2bda68758a3 (#896), 3d3ba8f5aae3 (#919), b268a38d2883 (#824).",
     "path": "src/prismabuild/pool.py PoolQueue.residency_verdict",
     "state": "yes"
    },
    "owner": "PB:pool-claim",
    "text": "Claim requires executed+same-manifest+pinned leads; adoption counts; no-byte cache_hit does not.",
    "validation": {
-    "detail": "residency_lead_not_resident vs residency_lead_terminal observed in tmp/cache-takeover-20260920/pbmcp-starvation-20260920T043112Z.json denial_top (read in-lane, not a test verdict)",
+    "detail": "residency_lead_not_resident vs residency_lead_terminal observed in tmp/cache-takeover-20260920/pbmcp-starvation-20260920T043112Z.json denial_top (read in-lane, not a test verdict) 2026-09-23 update (snapshot 13:30Z): #890 red f31eab248f88; #896 red 1b83404f12ab, measurement 251ba91ce1b7 (covers_for_keys 159 ms to 11.5 ms per call on R11's queue); #919 red 25f4477e7e3a (5 failed); #824 review actions a31b6249af02, 0f5ffeaf46cd.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): Partial. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was claimed on sparky with residency verdict resident on one lead (275a4ef3...) at tier prismabuild-stage:dl380g10. That is one admission on a real campaign, not conformance.",
+    "state": "partial"
    }
   },
   {
@@ -649,8 +677,8 @@
     "state": "unknown"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): Partial. PB action 2c164969c33c (a Stage A seed on sparklina) refused 'synchronous cold source read' and ended rc 1 after 282 s, with no fallback read (PQ#1080). This proves the refusal path on one real run, not staged-only reading.",
+    "state": "partial"
    }
   },
   {
@@ -659,12 +687,12 @@
    ],
    "acceptance_assertion": "Simultaneous-egress exactly-once; last-reader blocks eviction; retiring charge ordering (planned ACC-02).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #894 and #935 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "INV-07",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:30Z): PB:81d95cba8d91 (#935) keeps a live producer's completed batch and retires a dead producer's held mover; 42a6ac156158 (#894) retires withdrawn and receipt-less holders.",
     "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard; PR742/e534da78 shared capacity retirement/reissue and cache-tier mutation exclusion now component-qualified; PR752/357f32bba915 adds shared publication/adoption under the ownership lock, including null-digest dev reuse and changed-origin refusal.",
     "state": "partial"
    },
@@ -672,13 +700,21 @@
    "target_enforcement": "separate egress-ownership lane acceptance",
    "text": "Serialize copy/publish/lease/release; last reader incl. pending handoff blocks eviction; retiring charge ordering per SM-02 (delete-only absent, logical owner release distinct from physical state).",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. PR742 adds real claim/mint exclusion, shared-file decharge, atomic dead-token recovery and visible census-error coverage; root integrated78-pass gate. PR752 component qualification: d41b52fa2255 and 4807513ec8ec pass 174 tests, then 347dc83097f4 passes the four final dev-source tests (three overlap). The changed-origin regression fails before the fix (67f9a9b62004). Real tiny files exercise two-consumer stage/RAM reuse; live two-Spark execution remains owed. See shared_publication_acceptance_2026-09-20.json.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. PR742 adds real claim/mint exclusion, shared-file decharge, atomic dead-token recovery and visible census-error coverage; root integrated78-pass gate. PR752 component qualification: d41b52fa2255 and 4807513ec8ec pass 174 tests, then 347dc83097f4 passes the four final dev-source tests (three overlap). The changed-origin regression fails before the fix (67f9a9b62004). Real tiny files exercise two-consumer stage/RAM reuse; live two-Spark execution remains owed. See shared_publication_acceptance_2026-09-20.json. 2026-09-23 update (snapshot 13:30Z): #935 red 3c021314a259, focus fb4782667af5; #894 red 658caf9436cd, green cb7e98cc927b.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. During R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) the orphan pass released 44 GiB of tokens with the bytes still staged (PB#929).",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#929",
+     "status": "fixed by PB#935 (81d95cba8d91), deployed; not yet exercised by a campaign",
+     "observed": "on c2bda68758a3-1790110205-9e9735511db2 during R12: the orphan pass released the tokens of 22 completed produced batches (44 GiB) while their bytes stayed on the stage",
+     "violation": "retirement released tokens before reclaim"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -770,12 +806,12 @@
    ],
    "acceptance_assertion": "Class-tag conjunction admits; host-pair tags admitting neither box refused at dispatch (planned ACC-02).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #948 is merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "no"
    },
    "id": "INV-11",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:abb13ff58bf7 (#948) seals movers as portable generation work whatever the consumer is.",
     "path": "src/prismabuild/pool.py tag-conjunction claim (conjunction support does not itself prove bad-pair dispatch refusal)",
     "state": "partial"
    },
@@ -783,13 +819,21 @@
    "target_enforcement": "bad-pair dispatch-refusal proof",
    "text": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #948 base 06f967048e46 (3 failed), head 6c5341cc569c (5558 passed, 1 skipped, 1 failed, against 4 on control 39e0177350e2), targeted 80ec1a0ed1bc (32 passed), mutant e55d70da5570 (3 failed).",
+    "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. PB#944 was observed on 81d95cba8d91-1790160372-5d100532e024.",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#944",
+     "status": "fixed by PB#948 (abb13ff58bf7), not deployed",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: movers 68fdb8728f38 and 750a4f8c65eb of PQ consumer d54952c1fcac inherited task_class measurement and were refused measurement_host_not_idle on 1,596 passes over 134 s",
+     "violation": "a mover's eligibility came from its consumer's class, which admits no stage-host placement"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -929,12 +973,12 @@
   {
    "acceptance_assertion": "tests/test_a_reserved_range_is_not_resident_until_published.py (reserve -> no RAM; half a two-entry copy -> no full-range readiness; publish complete -> window offers RAM -> real promote, exact read, clean release; old receipt + new partial refused) and tests/test_unreadable_residency_evidence_is_not_a_clean_unstaged.py (malformed and unreadable fragments raise ResidencyEvidenceUnreadable, the window emits ram-window-unknown and publishes nothing, the census reports staged: null). Both demonstrated RED before the change and GREEN after, through PrismaBuild at --priority -10; keys in the lane acceptance record. The unreadable test also asserts the AGGREGATE cursor_gap (unknown_phases/unknown_bytes carry the phase, unstaged_* stay empty) and the reservation test asserts known-unstaged still counts as backlog; that pair was RED on the pre-fix aggregate, which reported unstaged_phases ['head'] / unstaged_bytes 65536 for evidence it could not read.",
    "deployment": {
-    "detail": "Source only: branch unmerged, unpushed, no PR; no runtime generation published. Issue #759 stays open through validated repair and deployed adoption.",
-    "state": "no"
+    "detail": "Source only: branch unmerged, unpushed, no PR; no runtime generation published. Issue #759 stays open through validated repair and deployed adoption. 2026-09-23 update (snapshot 13:30Z): Corrected: bb54907e53be is an ancestor of c2bda68758a3-1790110205-9e9735511db2 and of 81d95cba8d91, so it is in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out). The earlier 'source only' text was stale.",
+    "state": "yes"
    },
    "id": "TIER-05",
    "implementation": {
-    "commit": "PB:branch fix/published-readiness-20260920 on a5c1eee5ef202ded7720cb9e45c0535fda812058 (unmerged)",
+    "commit": "PB:branch fix/published-readiness-20260920 on a5c1eee5ef202ded7720cb9e45c0535fda812058 (unmerged); 2026-09-23 update (snapshot 13:30Z): PB:bb54907e53be (PR #763 merge of fix/published-readiness-20260920, 2026-09-20T18:46Z). Issue #759 closed 2026-09-20T18:46:47Z.",
     "path": "src/prismabuild/residency_plan.py resident_movers/_plan_fragments/_sealed_spans; tools/fleet/tier_loop.py _resident_movers and _ram_window_state; tools/fleet/pbstatus.py _starvation_plan_entry; tools/fleet/pbstatus.py _starvation_cursor_gap/_starvation_leg_staged/_starvation_chunked_staged/_starvation_leg_present",
     "state": "yes"
    },
@@ -945,8 +989,8 @@
     "state": "yes"
    },
    "workload_proof": {
-    "detail": "Not yet exercised against the live Stage A campaign; the flow ran on an isolated tiny real corpus, not on the 10.9 GB head range the defect was observed on.",
-    "state": "no"
+    "detail": "Not yet exercised against the live Stage A campaign; the flow ran on an isolated tiny real corpus, not on the 10.9 GB head range the defect was observed on. 2026-09-23 update (snapshot 13:30Z): The predicate was deployed during R11, R12 and the R13 attempts, but no record read for this update ties a gate or census verdict on those runs to the cases this row names. The 10.9 GB head-range case was not re-observed.",
+    "state": "unknown"
    },
    "gaps": [
     "pbmetrics.py exports no unknown family, so unknown bytes are visible in the census (cursor_gap.unknown_bytes) but not in the Prometheus series; outside this lane's ownership and left to astra.",
@@ -986,26 +1030,40 @@
    ],
    "acceptance_assertion": "Lookahead fit proven pre-admission or unsupported-workset refused (planned ACC-06).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): PB#968 is merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot. Whether any Stage A action has run on PQ f12313f9 or later is unknown.",
+    "state": "no"
    },
    "id": "PRG-02",
    "implementation": {
-    "commit": null,
+    "commit": "PQ:f12313f9903d (PR #1079) prefetches the chain's first layers on a seed or resume; PB:5d37518b0ca2 (#968) places v2 read-plan produced batches where they are read.",
     "path": null,
-    "state": "no"
+    "state": "partial"
    },
    "owner": "PQ:planner",
    "target_enforcement": "plan seal lookahead-fit proof",
    "text": "Exact read plan with repeats; lookahead fit proven pre-admission or unsupported-workset refused.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): PQ#1079 red 31f8c825a7ff (4 failed) and adce7dca16f7 (9 failed), green 30f7dd2e978a, 5e6638120816, 0cb25d29fc79, 138d4412c023, 59d593963f50, 5eac7040b7e9 (452 passed); PB#968 receipts under /home/rob/tmp/ws-po-20260923/receipts/946-*.json (head 72c60d5c8b80, 12/12 shards).",
+    "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. PQ#1080 was observed on PB action 2c164969c33c; PB#965 showed an oversize entry that should have refused at seal as unsupported-workset.",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PQ#1080",
+     "status": "fixed by PQ#1079 (f12313f9903d, merged 2026-09-23T11:28Z); use in a campaign unknown",
+     "observed": "Stage A seed from R12 checkpoint 045, PB action 2c164969c33c on sparklina: the chain did not prefetch its first layer and raised 'streamed layer 44 is not resident after its required prefetch; refusing synchronous cold source read', rc 1 after 282 s",
+     "violation": "the read plan's lookahead did not cover the chain's first layers"
+    },
+    {
+     "issue": "PB#965",
+     "status": "fixed by PB#970 (0411c83330da), not deployed; affected consumers need a resubmit after publication",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: chunk mover 8faf2233c63a for consumer a7d31a4da9c1 cut a manifest entry and refused residency_overran_reservation on every attempt (16,308,005 B over a 40 GiB chunk)",
+     "violation": "an entry larger than its chunk was not refused at seal"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -1013,12 +1071,12 @@
    ],
    "acceptance_assertion": "Typed waits observed: fit-lack waits with owner, oversize refuses, mid-phase stall terminates with reason.",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #948, #969 and #970 are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "no"
    },
    "id": "PRG-03",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:abb13ff58bf7 (#948) and 0411c83330da (#970) remove two refusal loops; f5ae2a06efc9 (#969) starts no read on an expired wait. PB#966 (a deterministic refusal rerun forever) has no fix.",
     "path": "src/prismabuild/pool.py residency_verdict pending paths; mover retry/timeout policy",
     "state": "partial"
    },
@@ -1026,13 +1084,33 @@
    "target_enforcement": "mid-phase grace and stall-terminal semantics observed",
    "text": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f.",
+    "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. On 81d95cba8d91-1790160372-5d100532e024 a mover waited on the wrong typed refusal for 1,596 passes (PB#944); an oversize chunk looped instead of refusing at seal as unsupported-workset (PB#965); a deterministic refusal reran without end (PB#966).",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#944",
+     "status": "fixed by PB#948 (abb13ff58bf7), not deployed",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: movers 68fdb8728f38 and 750a4f8c65eb of PQ consumer d54952c1fcac inherited task_class measurement and were refused measurement_host_not_idle on 1,596 passes over 134 s",
+     "violation": "a mover's wait was typed as a measurement-host wait it can never leave"
+    },
+    {
+     "issue": "PB#965",
+     "status": "fixed by PB#970 (0411c83330da), not deployed; affected consumers need a resubmit after publication",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: chunk mover 8faf2233c63a for consumer a7d31a4da9c1 cut a manifest entry and refused residency_overran_reservation on every attempt (16,308,005 B over a 40 GiB chunk)",
+     "violation": "an oversize entry looped instead of refusing at seal"
+    },
+    {
+     "issue": "PB#966",
+     "status": "OPEN, no fix merged",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
+     "violation": "a deterministic refusal is not terminal"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -1040,12 +1118,12 @@
    ],
    "acceptance_assertion": "Inequality proved over competing consumers or deterministic next-step policy demonstrated (planned ACC-02).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #928 and #931 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out); #956 is merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "partial"
    },
    "id": "PRG-04",
    "implementation": {
-    "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420",
+    "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420; 2026-09-23 update (snapshot 13:30Z): PB:97faa0e67200 (#928) charges refill horizons and owed outputs jointly; 2c55b69482ef (#931) withholds per holder; 4448dd9dcec5 (#956) reports joint-commitment stalls (not deployed).",
     "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked.",
     "state": "partial"
    },
@@ -1053,13 +1131,21 @@
    "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
    "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
    "validation": {
-    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate.",
+    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate. 2026-09-23 update (snapshot 13:30Z): #928 red e05102b65674, ee8e749f8fa2; #956 red 30bd4d48e56f.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. On 81d95cba8d91-1790160372-5d100532e024 consumer a7d31a4da9c1 was never admitted while a rerunning mover held 365 of 730 fill tokens (PB#966).",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#966",
+     "status": "OPEN, no fix merged",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
+     "violation": "no admissible consumer while one mover holds fill without progress"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -1112,9 +1198,29 @@
     "state": "unknown"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. Three R13 launch attempts on 81d95cba8d91-1790160372-5d100532e024 stalled: PB#944, PB#965 and PB#966. PQ#1080 ended a fourth attempt with a refusal, not a stall.",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#944",
+     "status": "fixed by PB#948 (abb13ff58bf7), not deployed",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: movers 68fdb8728f38 and 750a4f8c65eb of PQ consumer d54952c1fcac inherited task_class measurement and were refused measurement_host_not_idle on 1,596 passes over 134 s",
+     "violation": "no progress for 134 s of refusals"
+    },
+    {
+     "issue": "PB#965",
+     "status": "fixed by PB#970 (0411c83330da), not deployed; affected consumers need a resubmit after publication",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: chunk mover 8faf2233c63a for consumer a7d31a4da9c1 cut a manifest entry and refused residency_overran_reservation on every attempt (16,308,005 B over a 40 GiB chunk)",
+     "violation": "no progress; every attempt refused"
+    },
+    {
+     "issue": "PB#966",
+     "status": "OPEN, no fix merged",
+     "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
+     "violation": "no progress; a consumer never admitted"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -1305,19 +1411,19 @@
   {
    "acceptance_assertion": "PB720 repro shows terminal record plus receipt on exit 0 for PB records; wrapper/shard counts alone complete nothing (PB side only).",
    "deployment": {
-    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0",
+    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 2026-09-23 update (snapshot 13:30Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "SAFE-03",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:d1e217607942 (#957) records every skip's node ID and reason; d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID.",
     "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
     "state": "yes"
    },
    "owner": "PB:queue",
    "text": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
    "validation": {
-    "detail": "single admitted CPU repro attests PB-side rule only",
+    "detail": "single admitted CPU repro attests PB-side rule only 2026-09-23 update (snapshot 13:30Z): #957 c749c91fcae9, cfb88c896310 (20 passed), 37-file set 35bedc758b9c (549 passed); #967 b31c34b551fd (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1483,8 +1589,8 @@
     "state": "unknown"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn before completion; whether it read only from staged tiers (bytes_from_pool == 0) is not recorded. Every R13 attempt on 81d95cba8d91-1790160372-5d100532e024 stalled or failed (PB#944, PB#965, PB#966, PQ#1080).",
+    "state": "no"
    }
   },
   {
@@ -1495,12 +1601,12 @@
    ],
    "acceptance_assertion": "Manual review plus later ACC-06/ACC-07: origin publication is charged once and separable from staged copies; every produced-byte bulk read opens only RAM or allowed SSD under a lease; no producer waiver or parallel cache path lands.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-01",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); main src/prismabuild/reader_lease.py lease path",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); main src/prismabuild/reader_lease.py lease path; 2026-09-23 update (snapshot 13:30Z): PB:4c3e5e099e8a (#850), 603839dc0ee0 (#861), 497f5cc4e889 (#917), 8771490e6d2f (#921); opt-in ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898).",
     "path": "target src/prismabuild/produced_output.py origin-batch split; src/prismabuild/reader_lease.py acquire/open_pinned; PQ writer prismaquant/perturbed_x_cache.py and cost_streaming.py (referenced, not re-read in this lane)",
     "state": "partial"
    },
@@ -1515,8 +1621,8 @@
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): Partial. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) ran with produced-output template pq-stagea-boundary-entries-512-20260922-w24-r11; 22 completed produced batches (44 GiB) were live on the stage when #935 was written, and its RAM leg promoted chain-029..024 with 23 complete promotion receipts at 231-544 MB/s (#922). Bounded evidence: no produced-output lifecycle completed.",
+    "state": "partial"
    }
   },
   {
@@ -1525,12 +1631,12 @@
    ],
    "acceptance_assertion": "Lifecycle acceptance shows a same-action self-read completing from the published batch rather than the action terminal record, and a phantom-output dependency refused.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot. Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
     "state": "partial"
    },
    "id": "PO-02",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40)",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); 2026-09-23 update (snapshot 13:30Z): PB:7a45a92add6e (#932) releases deferred consumers once their producers commit; 6ee921283f8c (#934) passes their manifest digest; 5d37518b0ca2 (#968, not deployed). Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
     "path": "target src/prismabuild/produced_output.py batch publication records plus pool movement/funding; dependency carried by existing records",
     "state": "partial"
    },
@@ -1542,10 +1648,10 @@
    "text": "Produced-byte readiness anchors on immutable data-ready proof, not on an ACTION terminal record. Existing first publication seals the immutable manifest, stages, publishes, and funds the mover, and records the batch accounting entry; a same-action self-read depends on the immutable published batch and its ready staged data, not on the whole action terminal, which cannot exist before the action finishes. Semantic dependency: immutable batch publication -> funded PB staging -> reader acquisition/use -> reader release -> cached-copy retirement. No phantom output hash, no rerun-the-producer to conjure inputs, no new application dispatcher, and no new mandatory wire schema or ready-record API. Recorded gap (historical, 8ca attempt): the strict reader rejected a newly produced batch absent from the static input map (stage-a-8ca-attempt-review.json); the current PQ881 branch carries bridge component tests and the global cycle is not qualified. PR781 is merged at source level and PQ881 is unmerged.",
    "validation": {
     "state": "partial",
-    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). Library and component cycles did run, but no successful global lifecycle has completed. The one actual global live attempt failed at the mover preflight, not at the read: child params.checkout_snapshot was missing, mover 6fbc96301c6c claimed then failed in 0.76 s, owner 0dedb066 failed closed at 600 s, no full Stage A launched (produced-mover-snapshot-root-diagnosis.json); At the 06:18 evidence snapshot PR792 was merged but not deployed; the 07:11 dated addendum records subsequent 8990 adoption without global acceptance. Same-action self-read not exercised."
+    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). Library and component cycles did run, but no successful global lifecycle has completed. The one actual global live attempt failed at the mover preflight, not at the read: child params.checkout_snapshot was missing, mover 6fbc96301c6c claimed then failed in 0.76 s, owner 0dedb066 failed closed at 600 s, no full Stage A launched (produced-mover-snapshot-root-diagnosis.json); At the 06:18 evidence snapshot PR792 was merged but not deployed; the 07:11 dated addendum records subsequent 8990 adoption without global acceptance. Same-action self-read not exercised. 2026-09-23 update (snapshot 13:30Z): #932 PR head 36a9ad2db762 (16 shards, 329 files); #934 head 11e32f344bbe, mutant b985ab5b63c4 (2 failed); #968 head 72c60d5c8b80 (12/12 shards)."
    },
    "workload_proof": {
-    "detail": "unknown",
+    "detail": "2026-09-23 update (snapshot 13:30Z): unknown: no record read for this update shows a same-action self-read completing from a published batch.",
     "state": "unknown"
    }
   },
@@ -1555,12 +1661,12 @@
    ],
    "acceptance_assertion": "Repeat-materialization acceptance reads the same unchanged origin twice through fresh PB-derived movers, with one durable origin charge, one live-or-pending materialization, spent fences never reopened to authorize a fresh materialization, and an identical replay answering without new tokens or copy.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. The PR792 repair also forwards the child's source snapshot; its deployment is pending.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. The PR792 repair also forwards the child's source snapshot; its deployment is pending. 2026-09-23 update (snapshot 13:30Z): #943 is merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-03",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); head commit 'Materialize a committed produced-output batch again'; PR792 snapshot-forwarding repair merged aa03c0bde1b52138b02be2b13083bf3e8274d9ac (not deployed)",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); head commit 'Materialize a committed produced-output batch again'; PR792 snapshot-forwarding repair merged aa03c0bde1b52138b02be2b13083bf3e8274d9ac (not deployed); 2026-09-23 update (snapshot 13:30Z): PB:39e0177350e2 (#943) makes consumed batches follow supersessions and operator releases.",
     "path": "target src/prismabuild/produced_output.py ensure/restage transition; tools/fleet/stage_move.py movers; pool funding fences",
     "state": "partial"
    },
@@ -1571,7 +1677,7 @@
    "target_enforcement": "one origin charge across generations; one pending/live materialization; PB-derived successor identity; spent fences never reopened to authorize a fresh materialization",
    "text": "Repeat materialization: after a staged copy of an unchanged committed logical batch fully retires, the batch may be materialized again on demand. One origin charge covers every generation; at most one pending or live materialization exists per logical batch; each successor gets a PB-derived mover identity and sequence filed under the existing lifecycle state, never a caller- or random-nonce identity. A spent mover or funding fence is never reopened or reused to authorize a fresh materialization and never refunded, though an identical replay may answer from the recorded outcome without new tokens or a new copy. PB publishes no successor until the predecessor's retirement commits.",
    "validation": {
-    "detail": "PB792 (merge aa03c0bd, head 444e9743c591855b18da68bcd236bb1f21d5e200) root-accepted this scoped component: 75 actual PB CPU checks over five action keys (deac2fa86026d0492f2a4b31005f583db6d47982dd292fcf7a4554c4a5df0e91, 43c1af437f7333e26d66b9ba8420987af73bb19db3b069aa010b03150a2922e6, be8113ac1e4ef9a9d341be4fb3db1e54a442cdc3efd39ce97fb5a493667f294c, 933513335a81ce21e37e2faba2774facdf3313cfc2be450af82982d6a1035bf0, 97372f7292bfb57f3362b41c9bc0148dac93c307bc0cf681564b14b42edf3149) plus actual RED 1f10f71c7cd5f0d960ff77391c7df37ae5b94f883313105f04208a5264138bdb (4 behavioral failures against base dd5523dd). Root acceptance: this fixes child source addressing and does not independently close the entire repeat-materialization requirement. PR781 merge acceptance also scopes the row (231 checks). Restage lifecycle not executed on the fleet.",
+    "detail": "PB792 (merge aa03c0bd, head 444e9743c591855b18da68bcd236bb1f21d5e200) root-accepted this scoped component: 75 actual PB CPU checks over five action keys (deac2fa86026d0492f2a4b31005f583db6d47982dd292fcf7a4554c4a5df0e91, 43c1af437f7333e26d66b9ba8420987af73bb19db3b069aa010b03150a2922e6, be8113ac1e4ef9a9d341be4fb3db1e54a442cdc3efd39ce97fb5a493667f294c, 933513335a81ce21e37e2faba2774facdf3313cfc2be450af82982d6a1035bf0, 97372f7292bfb57f3362b41c9bc0148dac93c307bc0cf681564b14b42edf3149) plus actual RED 1f10f71c7cd5f0d960ff77391c7df37ae5b94f883313105f04208a5264138bdb (4 behavioral failures against base dd5523dd). Root acceptance: this fixes child source addressing and does not independently close the entire repeat-materialization requirement. PR781 merge acceptance also scopes the row (231 checks). Restage lifecycle not executed on the fleet. 2026-09-23 update (snapshot 13:30Z): #943 head 0074da49bd12 (344 files, 4876 passed), control 81d95cba8d91 (4868 passed), mutants 94625d8276b3, a6a9acdb1d71, bfe6b806a958.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1601,7 +1707,7 @@
    "target_enforcement": "publisher-time identity recheck before funding; changed/same-size refusal; missing-proof refusal; DEV digest reuse without an extra payload pass",
    "text": "Change detection on reuse: first publication captures the existing change-detection identity (origin stat identity on the normalized bound path plus the writer-provided digest/identity evidence already sealed with the batch) as an immutable producer record. Every materialization revalidates that exact identity before funding a copy and refuses a changed original, including a same-size mutation; a batch lacking the first-publication proof refuses instead of blessing the bytes it finds. DEV reuses existing producer digest/identity evidence and adds no separate full-payload hash pass (DEV-01/DEV-02).",
    "validation": {
-    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). PR781 records 'same-size changed origin proof and missing proof refusal' among the validated repairs; the PQ881 mutated-origin live test proves refusal BEFORE staging only, per that lane's own recorded scope.",
+    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). PR781 records 'same-size changed origin proof and missing proof refusal' among the validated repairs; the PQ881 mutated-origin live test proves refusal BEFORE staging only, per that lane's own recorded scope. 2026-09-23 update (snapshot 13:30Z): Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
     "state": "partial"
    },
    "workload_proof": {
@@ -1616,12 +1722,12 @@
    ],
    "acceptance_assertion": "Crash prefixes before and after funding resume the exact intent without duplicate quota, and a partial retirement keeps the old materialization's credits until safe reclaim.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-05",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40)",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); 2026-09-23 update (snapshot 13:30Z): PB:5339005d60a9 (#852) makes spent funding terminal; a1ac630ad421 (#868), f5111291c1bb (#877), 42a6ac156158 (#894), 81d95cba8d91 (#935).",
     "path": "target src/prismabuild/produced_output.py materialization intent and recovery; tools/fleet/stage_release.py retirement",
     "state": "partial"
    },
@@ -1647,12 +1753,12 @@
    ],
    "acceptance_assertion": "Cached-copy retirement leaves the origin charge intact; the origin charge clears only with proven authorized origin deletion.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-06",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40)",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40); 2026-09-23 update (snapshot 13:30Z): PB:c4f2d02b9735 (#923) commits write-only outputs at their origin; a3ef749f4ce8 (#925) retires consumed origin batches after their consumers commit; 81d95cba8d91 (#935).",
     "path": "target src/prismabuild/produced_output.py class sums and reclaim_origin path; tools/fleet/stage_release.py egress",
     "state": "partial"
    },
@@ -1663,13 +1769,21 @@
    "target_enforcement": "origin charge released only after proven authorized origin deletion; cached-copy retirement releases only the materialization",
    "text": "Origin charge release follows proven origin deletion only. Retiring a cached copy releases that materialization's physical lifetime; it never releases the origin charge. The origin charge is released only after authorized origin deletion is proven absent, never by cached-copy eviction or a stale receipt.",
    "validation": {
-    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). Origin-charge release after proven origin deletion was not executed live. The own-copy egress defect concerns the stage-token lifetime, a distinct quantity under BUD-01, and is source-merge accepted under PR795; global behavior proof remains pending.",
+    "detail": "PR781 merge acceptance scopes this row (pb781-root-acceptance.json): 231 final focused checks on head 42f2cfb8 plus closure-only, and 30 candidate-only failure identities matched a same-harness baseline; source/component validation only; no successful global produced-output lifecycle acceptance: library and component cycles ran, and the global 0dedb066 attempt failed before any read; no produced-output strict read (ACC-07 unqualified). Origin-charge release after proven origin deletion was not executed live. The own-copy egress defect concerns the stage-token lifetime, a distinct quantity under BUD-01, and is source-merge accepted under PR795; global behavior proof remains pending. 2026-09-23 update (snapshot 13:30Z): #923 head 0ac5995f1900 (193 files, 3068 passed); #925 head f19bb78549b9 (283 files); #935 red 3c021314a259.",
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
-    "state": "unknown"
-   }
+    "detail": "2026-09-23 update (snapshot 13:30Z): No. During R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) the charge of 22 completed produced batches was released while their bytes stayed staged (PB#929).",
+    "state": "no"
+   },
+   "live_defects": [
+    {
+     "issue": "PB#929",
+     "status": "fixed by PB#935 (81d95cba8d91), deployed; not yet exercised by a campaign",
+     "observed": "on c2bda68758a3-1790110205-9e9735511db2 during R12: the orphan pass released the tokens of 22 completed produced batches (44 GiB) while their bytes stayed on the stage",
+     "violation": "a charge was released before its copy was deleted"
+    }
+   ]
   },
   {
    "acceptance": [
@@ -1679,11 +1793,11 @@
    "acceptance_assertion": "A targeted assertion shows produced retirement holds no output-prefix ownership while calling egress, plus a concurrent pin/retire/successor-retry fixture; unknown or corrupt ownership retains.",
    "deployment": {
     "state": "partial",
-    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The PR781 outer-caller ordering source is present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; no global produced-output retirement has been accepted (library and component cycles ran; a separate admitted private-queue diagnostic, action 83264d103a2a iteration 1, exposed the own-copy defect); PR795 merged 2026-09-21T06:33:58Z after the snapshot with root source-merge acceptance recorded (pb795-root-acceptance.json), deployment and global behavior proof pending, and PR792 (aa03c0bd) is merged but not deployed."
+    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The PR781 outer-caller ordering source is present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; no global produced-output retirement has been accepted (library and component cycles ran; a separate admitted private-queue diagnostic, action 83264d103a2a iteration 1, exposed the own-copy defect); PR795 merged 2026-09-21T06:33:58Z after the snapshot with root source-merge acceptance recorded (pb795-root-acceptance.json), deployment and global behavior proof pending, and PR792 (aa03c0bd) is merged but not deployed. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot."
    },
    "id": "PO-07",
    "implementation": {
-    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40) outer-caller edge; present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; PB:main f5b6bba0358a684f96a44251b21c77f0aabf1784 (PB783 lower edge, merged)",
+    "commit": "PB:main dd5523dd3ff66025170f1e2248d8b32d180d7a78 (PR781 merged 2026-09-21T04:46:51Z; branch head 42f2cfb874077da66c27401e718d3636903a8a40) outer-caller edge; present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; PB:main f5b6bba0358a684f96a44251b21c77f0aabf1784 (PB783 lower edge, merged); 2026-09-23 update (snapshot 13:30Z): PB:94d3b28e0611 (#803) runs a produced batch's egress on the tier host when the stage is elsewhere.",
     "path": "tools/fleet/stage_release.py egress reclaim; target src/prismabuild/produced_output.py retire_batch ordering",
     "state": "partial"
    },
@@ -1708,12 +1822,12 @@
    ],
    "acceptance_assertion": "Manual review plus the PQ budget tests: plan and receipt keep the retained-artifact budget, tier windows, resident RAM, and serialization holds distinct.",
    "deployment": {
-    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
-    "state": "no"
+    "detail": "Unmerged PQ branch; no runtime generation carries this row. 2026-09-23 update (snapshot 13:30Z): PQ has no runtime generation; R12's sealed PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc) contains 8c204ea24a05, so the preflight ran in R12's code. Its behavior there is not recorded.",
+    "state": "partial"
    },
    "id": "BUD-01",
    "implementation": {
-    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported); PB tier/window ledgers referenced",
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported); PB tier/window ledgers referenced; 2026-09-23 update (snapshot 13:30Z): Correction: PQ:8c204ea24a05 is the PR #883 merge (2026-09-21T04:22Z, head 6dfb2ec631b2); the branch is no longer unmerged.",
     "path": "prismaquant/joint_cost_stage_a.py budget seam; tools/dispatch_joint_quanta.py forwarding; PB residency_plan.py and tools/fleet/tier_loop.py ledgers",
     "state": "partial"
    },
@@ -1738,12 +1852,12 @@
    ],
    "acceptance_assertion": "The floor is computed from the actual remainder, retained boundaries, live planes, and checkpoint copies; planning allowances are labeled assumptions; the preflight refuses below the floor and the runtime reserve and commit guards stay authoritative.",
    "deployment": {
-    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
-    "state": "no"
+    "detail": "Unmerged PQ branch; no runtime generation carries this row. 2026-09-23 update (snapshot 13:30Z): PQ has no runtime generation; R12's sealed PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc) contains 8c204ea24a05, so the preflight ran in R12's code. Its behavior there is not recorded.",
+    "state": "partial"
    },
    "id": "BUD-02",
    "implementation": {
-    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported)",
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported); 2026-09-23 update (snapshot 13:30Z): Correction: PQ:8c204ea24a05 is the PR #883 merge (2026-09-21T04:22Z, head 6dfb2ec631b2); the branch is no longer unmerged.",
     "path": "prismaquant/joint_cost_stage_a.py estimate_stage_a_artifact_demand/preflight; prismaquant core boundary_artifact_bytes guard and receipt stamp",
     "state": "partial"
    },
@@ -1768,12 +1882,12 @@
    ],
    "acceptance_assertion": "An override is recorded with the sealed limit and effective budget, the plan and calibration identities are unchanged, and the sealed plan is not rewritten.",
    "deployment": {
-    "detail": "Unmerged PQ branch; no runtime generation carries this row.",
-    "state": "no"
+    "detail": "Unmerged PQ branch; no runtime generation carries this row. 2026-09-23 update (snapshot 13:30Z): PQ has no runtime generation; R12's sealed PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc) contains 8c204ea24a05, so the preflight ran in R12's code. Its behavior there is not recorded.",
+    "state": "partial"
    },
    "id": "BUD-03",
    "implementation": {
-    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported)",
+    "commit": "PQ:branch fix/stagea-artifact-budget-20260921 @ ea65a52736a714c04e2a13859bdf4107a3d123ca (unmerged, issue882/PR883 executor-reported); 2026-09-23 update (snapshot 13:30Z): Correction: PQ:8c204ea24a05 is the PR #883 merge (2026-09-21T04:22Z, head 6dfb2ec631b2); the branch is no longer unmerged.",
     "path": "prismaquant/joint_cost_stage_a.py resolve_artifact_budget_override and receipt stamp; tools/dispatch_joint_quanta.py --stage-a-artifact-budget-bytes",
     "state": "partial"
    },
@@ -1830,7 +1944,7 @@
    },
    "id": "ACC-07",
    "implementation": {
-    "commit": "PB:main c9af82333eeb8900b139e6c593fa6258b0421d63 (PR788 #784 staged-reader stack merged; branch head 1f91e3923b2a41cba8119e2d78a6af1eb7783022), present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; produced-output application of this row (PQ881) unmerged",
+    "commit": "PB:main c9af82333eeb8900b139e6c593fa6258b0421d63 (PR788 #784 staged-reader stack merged; branch head 1f91e3923b2a41cba8119e2d78a6af1eb7783022), present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; produced-output application of this row (PQ881) unmerged; 2026-09-23 update (snapshot 13:30Z): Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
     "path": "tools/fleet/pbcanary_legs/leg3.py; tools/fleet/pbcanary_verdict.py; tools/fleet/pbcanary.py terminal accepted-progress binding; src/prismabuild/reader_lease.py",
     "state": "partial"
    },
@@ -1845,7 +1959,7 @@
     "state": "partial"
    },
    "workload_proof": {
-    "detail": "unknown",
+    "detail": "2026-09-23 update (snapshot 13:30Z): unknown: no strict produced-output read acceptance was recorded on R12 or on 81d95cba8d91-1790160372-5d100532e024.",
     "state": "unknown"
    }
   },
