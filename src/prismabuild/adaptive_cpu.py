@@ -32,6 +32,8 @@ MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
 MAX_ACTIONS = 256
 METADATA = '.adaptive.json'
+#: ``decision`` has not been told the item's :func:`dependent_owner`.
+_UNREAD = object()
 
 
 def read_json(path):
@@ -101,6 +103,40 @@ def action_identity(item):
 
 def shape_key(item):
     return action_identity(item)[0]
+
+
+def dependent_owner(item):
+    """The measurement this item's sealed request says it serves, or ``None``.
+
+    A measurement holds its host alone, but its produced-output spool exports
+    run on that same host and its progress is counted when they land (#982).
+    ``produced_spool.ProducedSpool.submit_group`` seals each export with
+    ``params.produced_spool.owner``, the action key of the producer that owns
+    the spool.  The key is content-addressed over the whole request, so the
+    link is as trustworthy as the request itself.  Only a ``generation`` action
+    can be a dependent: a measurement never runs beside another holder.
+    Anything unreadable is no link.
+    """
+    from . import core
+    try:
+        key = str(item['action_key'])
+        raw = read_json(Path(str(item['cas_root'])) / 'requests' / key[:2] / f'{key}.json')
+    except (KeyError, TypeError):
+        return None
+    if not raw:
+        return None
+    try:
+        action = core.validate_action(raw)
+    except (ValueError, TypeError, KeyError):
+        return None
+    if action['action_key'] != key or action['task'].get('task_class') != 'generation':
+        return None
+    link = action.get('params', {}).get('produced_spool')
+    owner = link.get('owner') if isinstance(link, dict) else None
+    if (not isinstance(owner, str) or len(owner) != 64
+            or any(c not in '0123456789abcdef' for c in owner)):
+        return None
+    return owner
 
 
 def counters(cpus):
@@ -500,6 +536,7 @@ class Controller:
 
     def decision(self, item, demand, *, identity=None):
         """Decide under admission; callers may pre-read sealed action identity."""
+        owner = _UNREAD
         self.last_decision = {"reason": "not_evaluated"}
         if self._host_sample is None:
             self._host_sample = self.sample()
@@ -593,6 +630,7 @@ class Controller:
         profiles = read_json(self.base / 'profiles.json')
         recent = read_json(self.base / 'jobs.json')
         next_recent = {}
+        serves = None
         pending = 0.
         lendable = False
         lending_cpus = set()
@@ -606,8 +644,20 @@ class Controller:
                 if meta or any(holder.iterdir()):
                     return refuse("holder_reservation_unknown", holder=holder.name)
                 continue
-            if measurement or meta.get('measurement'):
+            if measurement:
                 return refuse("measurement_holder", holder=holder.name)
+            if meta.get('measurement'):
+                # A measurement's own spool exports run under its isolation;
+                # everything else waits (#982).  Read only here, where a
+                # measurement holds the host: this path used to refuse every
+                # sibling, so the one CAS read it adds under the lock is paid
+                # only while nothing else could be admitted anyway.
+                if owner is _UNREAD:
+                    owner = dependent_owner(item)
+                if owner != holder.name:
+                    return refuse("measurement_holder", holder=holder.name,
+                                  dependent_of=owner)
+                serves = holder.name
             # ``self.base`` rather than ``local_telemetry_path``: that helper
             # resolves the ledger path, which is three stats on the mount per
             # call, and this loop runs once per holder under the lock.
@@ -630,7 +680,9 @@ class Controller:
                     cpu = cpu_delta / wall_delta
                     record['_cpu'] = cpu
                     next_recent[holder.name] = record
-                    if meta.get('shape'):
+                    # Measurements are never learned from (``record_completion``);
+                    # one is read here only beside its own dependents (#982).
+                    if meta.get('shape') and not meta.get('measurement'):
                         old = profiles.get(meta['shape'], {})
                         # Decay slowly; increases apply immediately. A changed
                         # phase must promptly undo a previous cheap estimate.
@@ -650,7 +702,9 @@ class Controller:
             # the ledger's own read and its own refusal on a torn record.
             allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
             assigned = set(allocation['preferred'] + allocation['fallback'])
-            if cpu is not None and meta.get('shape') and cost < reserved:
+            # A measurement's CPUs are never lent, not even to its own
+            # dependents (#982): they are admitted beside it, on free tokens.
+            if cpu is not None and meta.get('shape') and not meta.get('measurement') and cost < reserved:
                 lending_cpus.update(assigned)
             else:
                 protected_cpus.update(assigned)
@@ -728,7 +782,8 @@ class Controller:
         self.last_decision = {"reason": "admitted", "sample": sample}
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'unbounded_cpu': unbounded_cpu,
-                'measurement': measurement, 'admitted_unix': now,
+                'measurement': measurement, 'serves_measurement': serves,
+                'admitted_unix': now,
                 'preferred_borrow': preferred_borrow,
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
                 'host_busy_cpus': sample.get('busy_cpus'), 'host_psi_some': sample.get('psi_some'),
