@@ -59,7 +59,11 @@ def action_identity(item):
     """
     from . import core
     key = str(item['action_key'])
-    raw = read_json(Path(str(item['cas_root'])) / 'requests' / key[:2] / f'{key}.json')
+    path = Path(str(item['cas_root'])) / 'requests' / key[:2] / f'{key}.json'
+    raw = read_json(path)
+    # Remembered whatever it held, an unreadable request included, so the
+    # #985 lookups that follow never read the same path a second time.
+    _LAST_REQUEST[0] = (str(path), None)
     if not raw:
         return None, False
     try:
@@ -68,6 +72,7 @@ def action_identity(item):
         return None, False
     if action['action_key'] != key:
         return None, False
+    _LAST_REQUEST[0] = (str(path), action)
     # Exclude only destination/provenance, never normalize arbitrary command
     # arguments or caller parameters into an unrelated workload.
     shape = {name: action.get(name) for name in ('task', 'code_closure', 'inputs', 'environment')}
@@ -105,38 +110,93 @@ def shape_key(item):
     return action_identity(item)[0]
 
 
-def dependent_owner(item):
-    """The measurement this item's sealed request says it serves, or ``None``.
+#: A produced-output producer's export allowance (#985).  Every producer
+#: whose sealed environment configures a local spool reserves, at claim and
+#: with its own reservation, room for ``slots`` concurrent spool exports of
+#: :data:`EXPORT_DEMAND` each.  Its exports are admitted against that
+#: allowance, never the free pool: a foreign action cannot take the room, and
+#: host pressure the producer creates on its own CPUs cannot refuse them.
+#: Spelled here, the lowest layer, because ``produced_spool`` imports the pool.
+SPOOL_ROOT_ENV = 'PRISMABUILD_PRODUCED_SPOOL_ROOT'
+EXPORT_SLOTS_ENV = 'PRISMABUILD_PRODUCED_SPOOL_EXPORT_SLOTS'
+#: What ``ProducedSpool.submit_group`` seals for one export.
+EXPORT_DEMAND = {'cpu': 1, 'mem_gb': 1}
+#: One export at a time: an export takes 6-21 s against one group per ~41 s
+#: on the Stage A chain (2026-09-23).  ``EXPORT_SLOTS_ENV=0`` opts out.
+DEFAULT_EXPORT_SLOTS = 1
 
-    A measurement holds its host alone, but its produced-output spool exports
-    run on that same host and its progress is counted when they land (#982).
-    ``produced_spool.ProducedSpool.submit_group`` seals each export with
-    ``params.produced_spool.owner``, the action key of the producer that owns
-    the spool.  The key is content-addressed over the whole request, so the
-    link is as trustworthy as the request itself.  Only a ``generation`` action
-    can be a dependent: a measurement never runs beside another holder.
-    Anything unreadable is no link.
-    """
+
+#: The last sealed request :func:`action_identity` read, as ``(path, action)``
+#: (``action`` is ``None`` when it was unreadable).  The claim path reads each candidate's request once, for
+#: its identity, and the #985 facts about the same candidate -- the producer an
+#: export serves, a producer's allowance -- come from those bytes rather than a
+#: second read.  A request is content-addressed, so a hit is never stale.
+_LAST_REQUEST = [None]
+
+
+def _sealed_request(item):
+    """The item's validated sealed request, or ``None`` if unreadable."""
     from . import core
     try:
         key = str(item['action_key'])
-        raw = read_json(Path(str(item['cas_root'])) / 'requests' / key[:2] / f'{key}.json')
+        path = Path(str(item['cas_root'])) / 'requests' / key[:2] / f'{key}.json'
     except (KeyError, TypeError):
         return None
+    last = _LAST_REQUEST[0]
+    if last is not None and last[0] == str(path):
+        return last[1]
+    raw = read_json(path)
     if not raw:
         return None
     try:
         action = core.validate_action(raw)
     except (ValueError, TypeError, KeyError):
         return None
-    if action['action_key'] != key or action['task'].get('task_class') != 'generation':
+    return action if action['action_key'] == key else None
+
+
+def _is_key(value):
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in '0123456789abcdef' for c in value))
+
+
+def dependent_owner(item):
+    """The producer this item's sealed request says it serves, or ``None``.
+
+    A producer's spool exports run on its host, and its progress is counted
+    when they land (#982, #985).  ``produced_spool.ProducedSpool.submit_group``
+    seals each export with ``params.produced_spool.owner``, the action key of
+    the producer that owns the spool.  The key is content-addressed over the
+    whole request, so the link is as trustworthy as the request itself.  Only
+    a ``generation`` action can be a dependent: a measurement never runs beside
+    another holder.  Anything unreadable is no link.
+    """
+    action = _sealed_request(item)
+    if action is None or action['task'].get('task_class') != 'generation':
         return None
     link = action.get('params', {}).get('produced_spool')
     owner = link.get('owner') if isinstance(link, dict) else None
-    if (not isinstance(owner, str) or len(owner) != 64
-            or any(c not in '0123456789abcdef' for c in owner)):
+    return owner if _is_key(owner) else None
+
+
+def producer_allowance(item):
+    """The export allowance this item's sealed environment declares, or ``None``.
+
+    ``{'slots': k, 'cpu': k, 'mem_gb': k}`` for a producer whose sealed
+    environment names a spool root (#985), ``None`` for everything else, for
+    ``EXPORT_SLOTS_ENV=0`` and for anything unreadable or malformed.
+    """
+    action = _sealed_request(item)
+    if action is None:
         return None
-    return owner
+    variables = action.get('environment', {}).get('variables', {})
+    if not isinstance(variables, dict) or not variables.get(SPOOL_ROOT_ENV):
+        return None
+    raw = variables.get(EXPORT_SLOTS_ENV, str(DEFAULT_EXPORT_SLOTS))
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
+        return None
+    slots = int(raw)
+    return {'slots': slots, **{kind: need * slots for kind, need in EXPORT_DEMAND.items()}}
 
 
 def counters(cpus):
@@ -534,9 +594,53 @@ class Controller:
         self.write_state('cpu-sample.json', current)
         return observation
 
-    def decision(self, item, demand, *, identity=None):
-        """Decide under admission; callers may pre-read sealed action identity."""
-        owner = _UNREAD
+    def _funding(self, owner, holders, demand):
+        """Whether ``owner``'s export allowance covers this dependent (#985).
+
+        Returns ``(funded, None)`` -- the allowance CPUs and memory this
+        dependent runs on -- or ``(None, why)``.  Read under the admission
+        lock from the holders' metadata, which the holder loop reads anyway;
+        a slot is in use while any holder, committed or still acquiring, names
+        ``owner`` in ``funded_by``.
+        """
+        if set(demand) - set(EXPORT_DEMAND) or not int(demand.get('cpu', 0)):
+            return None, 'demand_outside_allowance'
+        meta_of_owner = read_json(self.ledger.held_dir / owner / METADATA)
+        allowance = meta_of_owner.get('dependent_allowance')
+        if not isinstance(allowance, dict):
+            return None, 'owner_holds_no_allowance'
+        cpus, mem, slots = allowance.get('cpus'), allowance.get('mem_gb'), allowance.get('slots')
+        if (not isinstance(cpus, list) or not all(type(c) is int for c in cpus)
+                or type(mem) is not int or type(slots) is not int or slots <= 0):
+            return None, 'owner_allowance_malformed'
+        used, in_use = set(), 0
+        for holder in holders:
+            if holder.name == owner:
+                continue
+            meta = read_json(holder / METADATA)
+            if meta.get('measurement'):
+                return None, 'measurement_holder'
+            if meta.get('funded_by') == owner:
+                in_use += 1
+                used.update((meta.get('funded') or {}).get('cpus') or [])
+        if in_use >= slots:
+            return None, 'allowance_in_use'
+        need_cpu, need_mem = int(demand.get('cpu', 0)), int(demand.get('mem_gb', 0))
+        spare = [cpu for cpu in cpus if cpu not in used]
+        if need_cpu > len(spare) or need_cpu > len(cpus) // slots or need_mem > mem // slots:
+            return None, 'demand_exceeds_allowance'
+        return {'cpus': spare[:need_cpu], 'mem_gb': need_mem,
+                'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
+
+    def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None):
+        """Decide under admission; callers may pre-read sealed action identity.
+
+        ``owner`` is the producer a dependent serves, when the caller knows it
+        (the pool reads it from the sealed request, outside this lock); left unread it is
+        read only if a measurement holds the host (#982).  ``allowance`` is the
+        export allowance a producer's claim reserves with itself (#985).
+        """
+        funding_refusal = None
         self.last_decision = {"reason": "not_evaluated"}
         if self._host_sample is None:
             self._host_sample = self.sample()
@@ -545,7 +649,15 @@ class Controller:
         def refuse(reason, **values):
             # The claimant publishes this exact decision after it releases
             # admission.  Do not sample or reread state for diagnostics.
-            self.last_decision = {"reason": reason, "sample": sample, **values}
+            # A dependent's refusal names its producer, and why its allowance
+            # did not cover it, so a starved producer's evidence reads in one
+            # place (#985).
+            extra = {}
+            if owner is not _UNREAD:
+                extra['dependent_of'] = owner
+            if funding_refusal is not None:
+                extra['allowance'] = funding_refusal
+            self.last_decision = {"reason": reason, "sample": sample, **extra, **values}
             return None
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                  and sample.get('cpu_count') == len(self.cpus)
@@ -560,13 +672,32 @@ class Controller:
         # stands alone; what follows only decides whether a high "some" reading
         # is this action's problem or a pinned neighbour's local contention.
         holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
-        if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
-            return refuse("host_pressure", fresh=fresh)
         # Resolved once, before the pressure decision reads the demand.  The
         # caller may have pre-read the sealed identity, and the measurement and
         # ownership paths below all need the same answer rather than a second
         # read of the same CAS record.
         shape, measurement = action_identity(item) if identity is None else identity
+        if isinstance(owner, str) and not measurement:
+            # A dependent runs on the room its producer reserved (#985).  Host
+            # pressure is not its gate: its CPUs are reserved, so nothing the
+            # pool admits runs there, and the pressure its producer makes on
+            # its own CPUs is the producer's.  No free token is taken.
+            funded, funding_refusal = self._funding(owner, holders, demand)
+            if funded is not None:
+                serves_measurement = funded.pop('owner_measurement')
+                self.last_decision = {"reason": "admitted_on_allowance", "sample": sample,
+                                      "dependent_of": owner}
+                return {'declared_cpu': int(demand.get('cpu', 0)),
+                        'cost': float(int(demand.get('cpu', 0))), 'shape': shape,
+                        'unbounded_cpu': False, 'measurement': False,
+                        'serves_measurement': owner if serves_measurement else None,
+                        'funded_by': owner, 'funded': funded, 'admitted_unix': now,
+                        'preferred_borrow': 0, 'sampled_unix': sample.get('sampled_unix', 0),
+                        'borrowing': False, 'host_busy_cpus': sample.get('busy_cpus'),
+                        'host_psi_some': sample.get('psi_some'),
+                        'active_cpu_cost': 0., 'pending_cpu_cost': 0., 'borrowable_cpus': []}
+        if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
+            return refuse("host_pressure", fresh=fresh)
         declared = int(demand.get('cpu', 0))
         unbounded_cpu = not declared
         # True only when a high "some" was believed because the CPUs this
@@ -663,7 +794,7 @@ class Controller:
                     owner = dependent_owner(item)
                 if owner != holder.name:
                     return refuse("measurement_holder", holder=holder.name,
-                                  isolated_by=holder.name, dependent_of=owner)
+                                  isolated_by=holder.name)
                 serves = holder.name
             # ``self.base`` rather than ``local_telemetry_path``: that helper
             # resolves the ledger path, which is three stats on the mount per
@@ -711,7 +842,10 @@ class Controller:
             assigned = set(allocation['preferred'] + allocation['fallback'])
             # A measurement's CPUs are never lent, not even to its own
             # dependents (#982): they are admitted beside it, on free tokens.
-            if cpu is not None and meta.get('shape') and not meta.get('measurement') and cost < reserved:
+            # Nor are CPUs a dependent runs on from its producer's allowance
+            # (#985): they are the producer's reservation, not idle credit.
+            if (cpu is not None and meta.get('shape') and not meta.get('measurement')
+                    and not meta.get('funded_by') and cost < reserved):
                 lending_cpus.update(assigned)
             else:
                 protected_cpus.update(assigned)
@@ -721,7 +855,8 @@ class Controller:
             # same headroom in concurrent admissions.
             if cpu is None:
                 pending += cost
-            elif meta.get('shape') and not meta.get('measurement') and cost < reserved:
+            elif (meta.get('shape') and not meta.get('measurement')
+                  and not meta.get('funded_by') and cost < reserved):
                 lendable = True
         self.write_state('jobs.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
@@ -790,6 +925,7 @@ class Controller:
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
+                'dependent_allowance': dict(allowance) if allowance else None,
                 'admitted_unix': now,
                 'preferred_borrow': preferred_borrow,
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,

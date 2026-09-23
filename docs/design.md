@@ -280,7 +280,12 @@ by the token rule. Every other adaptive refusal is overtaken as before. A
 `measurement_holder` refusal whose decision names `isolated_by` -- a
 measurement already holds the box -- never withholds: that box admits only the
 measurement's own dependents, so a veto would block just the work its progress
-waits on, and it would never drain (#982). An item
+waits on, and it would never drain (#982). While an item withholds, the scan
+goes on only for rows that may be a producer's export (the rows above): one
+admitted on its producer's allowance takes nothing the withholding item waits
+for. Any other row is left unevaluated, with no pass, as the withhold always
+left it; a real dependent among them is denied `deferred_behind_withholding`,
+naming `withheld_for` (#985). An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
@@ -3235,13 +3240,55 @@ sealed request names the holder in `params.produced_spool.owner` -- the spool
 export `ProducedSpool.submit_group` seals for each finished group, pinned to
 the producer's host -- is its dependent and is admitted beside it. The
 measurement's progress is counted when those exports land, so refusing them
-starved it until its stall watchdog ended it. A dependent is fitted into the
-host's remaining capacity on its own tokens, priced like any sibling; nothing
-is charged to the measurement's reservation, its CPUs are never lent, and its
-telemetry never trains a learned profile. Only a generation action can be a
-dependent. Every other action is refused `measurement_holder`, and the
-decision names the holder, `isolated_by` and the owner the item claimed, if
-any (`dependent_of`). One sample cannot authorize an
+starved it until its stall watchdog ended it. A dependent not covered by an
+export allowance (below) is fitted into the host's remaining capacity on its
+own tokens, priced like any sibling; nothing is charged to the measurement's
+reservation, the measurement's CPUs are never lent to it, and its telemetry
+never trains a learned profile. Only a generation action can be a dependent.
+Every other action is refused `measurement_holder`, and the decision names the
+holder and `isolated_by`.
+
+**Export allowance (#985).** Any producer's exports, measurement or not, run
+on room the producer reserved with its own claim. A claimed row carrying a
+`produced_output` reference whose sealed environment names
+`PRISMABUILD_PRODUCED_SPOOL_ROOT` is charged, at claim and with its own
+reservation, `k` times the export demand (`adaptive_cpu.EXPORT_DEMAND`, one CPU
+and one GiB), where `k` is `PRISMABUILD_PRODUCED_SPOOL_EXPORT_SLOTS` (default
+1; `0` opts out). The allowance is derived from the sealed request, like the
+#747 `spool_gb` window, but at claim rather than at seal, so already sealed
+producers get it when a runtime carrying it claims them; a producer claimed
+before that keeps no allowance. The last `k` CPUs the claim takes are kept out
+of the producer's own affinity and recorded in its holder metadata as
+`dependent_allowance` (`slots`, `cpus`, `mem_gb`); the tokens stay under the
+producer, so nothing else is admitted onto them and the producer pays for the
+room while it is idle. A producer with unbounded CPU demand, or one that fits
+the box only without the allowance, is claimed without it, as before.
+
+`submit_group` publishes each export with `dependent_of` set to its producer.
+The row field is only a hint for which rows are worth a read: for a row that
+carries it, or whose host demand is exactly the export demand (an export an
+older generation published without it), the claim path reads the owner from
+the sealed request (`params.produced_spool.owner`) outside the admission lock,
+and `adaptive_cpu.Controller.decision` admits that dependent on a free
+allowance slot before any pressure gate or CPU projection: host PSI on the
+producer's CPUs is the producer's own, and the allowance CPUs are reserved.
+Such a dependent's holder takes no token; its metadata (`funded_by`, `funded`)
+is the slot it occupies and pins it to the allowance CPUs. Its CPUs are never
+lent, and nothing is returned to the producer when it ends. A dependent past
+the allowance -- the slots are in use, its demand exceeds a slot, or its
+producer holds none -- falls back to ordinary admission on free tokens, and
+beside a measurement it is fitted into the remaining capacity and priced like
+any sibling, as #982 left it. Every refusal of a dependent names its producer
+(`dependent_of`, in the decision and in the denial evidence) and, when the
+allowance did not cover it, why (`allowance`). The allowance covers the host
+kinds `cpu` and `mem_gb` only. A paced export's fill rate
+(`fill_mb_s_pool_side:<tier>`) is still taken from the tier's pool after host
+admission, so the producer's own movers can refuse it
+`tier_reservation_unavailable`; that denial names `dependent_of` too. A
+dependent never holds `gpu`: a demand outside the allowance's kinds is
+`demand_outside_allowance` and takes ordinary admission, where the GPU
+controller refuses any GPU demand beside a measurement `exclusive_holder`.
+One sample cannot authorize an
 unbounded burst: a successful borrowing decision consumes its freshness for the
 next borrower. That consumption is recorded under the host admission lock, in
 the same block as the decision and the reservation it belongs to, before the
