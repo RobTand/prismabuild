@@ -1858,10 +1858,19 @@ a cause the next step cannot see (#351).
     admission-gate holder/waiter leg before deciding where the fault is.
 *   **Is the wait the isolation working?** A `--measurement` action is
     admitted only against a fresh near-idle host sample, so on a busy fleet it
-    waits, by design, while other work drains. An idle GPU beside a waiting
-    measurement is the precondition holding, not starvation. Dropping
-    `--measurement` to get admitted buys a number measured against other
-    tenants' noise.
+    waits, by design, while other work drains. Past the starvation floor it
+    also withholds its box, so a stream of small admissions cannot keep the
+    host busy indefinitely (#924): `adaptive_cpu_refused_withholding` means it
+    is holding the box while transient holders drain, and then through one
+    CPU sample window of the last holder's tail. An idle GPU beside a waiting
+    measurement is the precondition holding, not starvation. It is starvation
+    when the denial ends `_starved` or `_past_ceiling`: the holders in its way
+    do not drain soon (a progress-governed campaign action with no timeout, a
+    bounded one past `WITHHOLD_CEILING_S` with no end inside it), the load is
+    not the pool's, or work ahead of it kept refilling the box.
+    `pbstatus --starvation` lists these under `starved`, with the holders
+    named. Dropping `--measurement` to get admitted buys a number measured
+    against other tenants' noise.
 
 ### File the endings nobody asked for
 
@@ -2077,7 +2086,9 @@ The tools:
     consumers the quiet/grace rule reads as waiting (with the payload scope's
     silence beside the verdict, never the verdict alone), each residency
     plan's promotion state and cursor gap, what every tier offers and holds,
-    and which claim denials block movers. This is `pbstatus --starvation`'s
+    which claim denials block movers, and which ready items a box refused and
+    will not withhold for (`starved`, #924: the reason, why, and the holders
+    that do not drain soon). This is `pbstatus --starvation`'s
     own reader served whole, so the tool and the command cannot disagree
     about who is waiting. `census_complete` is the census's own completeness
     -- every record it tried to read answered -- beside the envelope's

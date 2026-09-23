@@ -167,7 +167,16 @@ def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
 
     events = _sweep(world.queue, world.stage)
 
-    assert events == [], events
+    # The only lines are the operator report of the two fixture movers no
+    # record can place (#929): the legacy one names a consumer the queue never
+    # saw, and the produced one is named only by its batch's fragment, with no
+    # funding record to name its producer.  The live producer's own window is
+    # named by its claim and is not reported.  Nothing is deleted or tainted.
+    reported = {str(event.get("action_key")): event.get("event")
+                for event in events}
+    assert reported == {
+        LEGACY_MOVER: stage_release.HOLDER_UNRESOLVED_EVENT,
+        PRODUCED_MOVER: stage_release.HOLDER_UNRESOLVED_EVENT}, events
     assert world.legacy_path.exists()
     assert world.produced_path.exists()
     assert world.queue.tier_ledger(TIER).holder_tokens(

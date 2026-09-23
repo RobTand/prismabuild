@@ -255,9 +255,40 @@ counts it. The filed record names the offending field and the value it stated,
 and the original bytes stay beside it in `superseded/`. Values `int`/`float`
 accept keep the place they have always had: the guard turns a raise into an
 answer and changes no reading the sort already made. A denied item past `STARVATION_FLOOR` may withhold its
-host until `WITHHOLD_CEILING_S`, but higher-priority items have already been
-considered before that veto is reached. The existing withholding rule still
-protects large items within each band. Priority defaults to 0 and is queue
+host, but higher-priority items have already been considered before that veto
+is reached. The withholding rule protects large items within each band, and
+since #924 it withholds only while the box will drain soon. That is judged per
+holder from what the holder declared (`PoolQueue.holder_bound`), not from a new
+constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
+`execution_timeout_s` ends inside it, is transient; a bounded holder past that
+line is long; a progress-governed holder with no total timeout is unbounded;
+a raw ledger holder with no readable claim is judged by the waiting item's own
+first-denial clock, as every holder was before #924. The age half of
+"transient" is a presumption, not a declaration: a young deadline-governed
+holder with no requested timeout may yet run for hours, and it becomes long by
+itself once it passes the line, so a veto resting on it ends on its own. A
+token shortage withholds when transient holders cover every short kind. An
+adaptive refusal that draining resolves withholds too: an exclusive need (a
+measurement's `measurement_host_not_idle`/`measurement_holder`, unbounded or
+full-width CPU demand on a pressured host, and the GPU refusals for a
+measurement) when every holder is transient, and the adaptive CPU refusals
+that stand for a CPU token shortage (`borrow_evidence_unavailable`,
+`pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
+by the token rule. Every other adaptive refusal is overtaken as before. An item
+whose holders do not drain soon keeps its passes and its place, is denied
+`..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
+veto expired under refills), and is listed under `starved` by
+`pbstatus --starvation` and `pb_starvation`. Three bounds keep a veto finite:
+holders age; a veto refilled by work ahead of it in the ready order expires
+`WITHHOLD_CEILING_S` into the episode until those refills have gone; and an
+exclusive need with no holder in the way withholds only for one CPU sample
+window (`adaptive_cpu.MAX_INTERVAL_S + MAX_SAMPLE_AGE_S`) of the last holder's
+tail, after which the load is treated as foreign and the item does not withhold
+for `WITHHOLD_CEILING_S`, as it does not whenever a GPU refusal names processes
+the pool does not own. An item that needs a GPU on a box whose GPU is free is
+eligible on its first denial rather than at the floor, because every admission
+behind it takes CPU or memory it needs; "free" is the token and, where the box
+samples its GPU, a fresh sample naming no foreign process. Priority defaults to 0 and is queue
 metadata outside action identity; `pbtest --priority` forwards it to every
 shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
 first. A denied foreground item may also preempt one admitted background holder
@@ -6369,9 +6400,49 @@ fixture is that shape, and the first version of this change deleted its
 bytes. A retained holder is reported as a `stage-receiptless-holder-retained`
 receipt naming the reason only when the tier's window still lacks room after
 the pass; otherwise it waits quietly, so an unresolvable holder does not add
-a line to every tier cycle. A prepaid produced-output mover withdrawn before
-it ran is the no-fragment shape; its tokens stay with its batch's funding
-lane, which keeps such intents on purpose.
+a line to every tier cycle.
+
+**A funded produced-output mover is its lane's, receipt or no receipt (#929).**
+A prepaid produced-output mover holds its tokens from publication, and neither
+its failure nor a withdrawal releases them: the only release is its producer's
+own `retire_batch`. On 2026-09-21 the one-shot Stage A producer `0dedb066f868`
+failed closed on `BoundaryStagingTimeout`, an operator withdrew its stranded
+mover `6fbc96301c6c` from `ready`, and the mover kept 1 stage GiB with no
+receipt, fragment or plan. The rules above could not see whose it was, and
+`retire_terminal_output_funding` kept the mover's funding record because the
+mover still held the token, so each leak pinned the other. The sweep now asks
+the output funding record first. For a key it funds on this tier:
+
+- **Kept** when the producer attempt still holds its claim, or the mover itself
+  is ready, claimed or in a transition.
+- **Retired at once** when the producer attempt has ended (`dead`, or
+  `succeeded` without retiring the batch), the mover has one outcome record,
+  its funding is `consumed`, and its batch's active copy is this mover's and
+  is not retired. The sweep runs the producer's own `retire_batch` for it, on
+  the tier host only, whatever the tier's pressure: a retried producer binds a
+  new instance and batch namespace, so no one can read this copy again and
+  keeping it is not a cache (#598).
+- **Unknown** otherwise, and kept. An absent producer is unknown, not dead: no
+  outcome record is not an ending (#798).
+
+The same question fixes the opposite exposure. A completed produced mover's
+receipt names its batch namespace, not a queue action, and its fragment is in
+the produced store, so the orphan pass used to take a live producer's
+completed batch for an orphan, look for its fragment in the flat store, find
+none, and release its tokens while its bytes stayed on the stage.
+
+Every held key the pass can prove neither live nor an orphan is reported as
+`stage-holder-unresolved`, naming the reason, once per change of that reason
+and whatever the tier's pressure. A holder nothing can classify is therefore
+seen once, not never and not on every cycle. A live item's own holding is not
+such a holder, and neither report names it: a producer's output window, whose
+row carries no residency, and a window's `advance-` fence grant for a live
+consumer are both named by a live claim. The joint-commitment census
+still counts a receipt-less holder as held. The one shape the sweep frees
+from that group, it frees before the cycle's windows admit. The pressure and
+adoption passes that run before the sweep still count it, so for one cycle a
+tier's pressure can read higher by that holder's size. That errs toward
+evicting one more orphan, never toward admitting onto occupied room.
 
 Two limits, stated rather than hidden. A direct call to the sweep with no
 pressure named still takes every orphan, which is what an operator means. And

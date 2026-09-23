@@ -112,6 +112,23 @@ def test_denial_top_separates_the_reasons_that_block_movers(
         {"reason": "tier_reservation_unavailable", "count": 1}]
 
 
+def test_starved_ready_items_travel_with_the_answer(
+    session: pbmcp.Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The items a box will not withhold for arrive as pbstatus lists them (#924)."""
+
+    assert session.call("pb_starvation")["starved"] == []
+    reader = pbmcp.pbstatus.read_starvation
+    row = {"action_key_prefix": "aaaaaaaaaaaa", "host": "fixture-box",
+           "reason": "reservation_unavailable_starved",
+           "why": "holder_does_not_drain_soon",
+           "holders": [{"action_key": "683cb3caa5ea", "bound": "unbounded"}]}
+    monkeypatch.setattr(pbmcp.pbstatus, "read_starvation",
+                        lambda *args, **kwargs: {**reader(*args, **kwargs),
+                                                 "starved": [row]})
+    assert session.call("pb_starvation")["starved"] == [row]
+
+
 def test_the_gap_list_travels_with_the_answer(session: pbmcp.Session) -> None:
     """What no record carries is a deliverable, not an error."""
 
