@@ -55,6 +55,7 @@ import os
 from pathlib import Path
 import queue as queuelib
 import resource
+import select
 import socket
 import stat as statmod
 import struct
@@ -422,6 +423,176 @@ def _metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
     """
 
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            int(getattr(info, "st_ctime_ns", 0)))
+
+
+#: The clock a local Linux filesystem stamps a directory's mtime and ctime
+#: from: ``current_time()`` reads the coarse realtime clock (a multigrain
+#: filesystem may read the fine one, which is never behind it).  Python names
+#: the constant on some builds only; its value is 5 on every Linux ABI.
+_COARSE_REALTIME: int | None = (
+    int(getattr(time, "CLOCK_REALTIME_COARSE", 5))
+    if sys.platform.startswith("linux") else None)
+
+#: Filesystems whose directory timestamps this kernel writes from that clock
+#: at nanosecond granularity.  A network filesystem is not among them: its
+#: timestamps come from the server's clock, and its client may answer from
+#: an attribute cache.  Anything unlisted lists every directory every time.
+_LOCAL_CLOCK_FILESYSTEMS = frozenset({"zfs", "ext4", "xfs", "btrfs", "tmpfs"})
+
+#: The mount table :func:`_filesystem_type` reads, and the file whose
+#: ``POLLPRI`` says the table changed.
+_MOUNTINFO = "/proc/self/mountinfo"
+
+#: ``major:minor`` answers remembered since the mount table last changed.
+_filesystem_types: dict[int, str | None] = {}
+
+#: ``(pid, descriptor, poller)`` watching :data:`_MOUNTINFO`, or ``None``.
+_mount_watch: tuple[int, int, "select.poll"] | None = None
+_mount_lock = threading.Lock()
+
+
+def _mount_table_changed() -> bool:
+    """Whether the mount table may have changed since this was last asked.
+
+    The kernel marks an open ``/proc/self/mountinfo`` with ``POLLPRI`` and
+    ``POLLERR`` after any mount or unmount in the process's namespace, and
+    the poll that reports the mark clears it.  The watch is opened on first
+    use and again in a forked child, which must not clear its parent's mark
+    on a shared open file.  A first call, or a table that cannot be watched,
+    answers ``True``: nothing remembered before a watch existed is trusted.
+    """
+
+    global _mount_watch
+    watch = _mount_watch
+    if watch is None or watch[0] != os.getpid():
+        try:
+            descriptor = os.open(_MOUNTINFO, os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            return True
+        poller = select.poll()
+        poller.register(descriptor, select.POLLPRI | select.POLLERR)
+        _mount_watch = (os.getpid(), descriptor, poller)
+        return True
+    try:
+        events = watch[2].poll(0)
+    except OSError:
+        return True
+    return any(mask & (select.POLLPRI | select.POLLERR)
+               for _descriptor, mask in events)
+
+
+def _filesystem_type(device: int) -> str | None:
+    """The filesystem type ``/proc/self/mountinfo`` names for ``device``.
+
+    Matched on the ``major:minor`` field, so a bind mount answers with its
+    source's type and nothing is inferred from a path prefix.  ``None`` when
+    no mount names the device or the table cannot be read.  Remembered per
+    device only until the mount table changes (:func:`_mount_table_changed`):
+    anonymous device numbers (``0:N``) are shared by ZFS datasets, tmpfs,
+    NFS, overlay and FUSE mounts and handed out again after an unmount, so a
+    number once seen as ``zfs`` may later name a network mount.  The caller
+    has already taken its ``lstat``, so a change before it is always seen.
+    """
+
+    with _mount_lock:
+        if _mount_table_changed():
+            _filesystem_types.clear()
+        if device in _filesystem_types:
+            return _filesystem_types[device]
+        wanted = f"{os.major(device)}:{os.minor(device)}"
+        found: str | None = None
+        try:
+            with open(_MOUNTINFO) as stream:
+                for line in stream:
+                    fields = line.split()
+                    if (len(fields) > 2 and fields[2] == wanted
+                            and " - " in line):
+                        tail = line.split(" - ", 1)[1].split()
+                        found = tail[0] if tail else None
+                        break
+        except OSError:
+            found = None
+        _filesystem_types[device] = found
+        return found
+
+
+def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
+    """A directory version a listing taken after this call may be reused under.
+
+    ``(device, inode, mtime, ctime)``, or ``None`` when no listing of this
+    directory may ever be reused (#992).  The argument that a later ``lstat``
+    returning the same version proves the listing still current:
+
+    * The coarse realtime clock ``T0`` is read first, then the directory's
+      ``lstat``.  The version is refused unless both its mtime and its ctime
+      are strictly before ``T0``.
+    * Every change to a directory's entries -- a create, an unlink, a rename
+      in or out -- stamps its mtime and ctime with the filesystem's current
+      time.  On a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS` that time is
+      read from the same clock, and a change made after ``T0`` reads a value
+      at or after ``T0``.  So once a version with both stamps before ``T0`` is
+      observed, any later entry change moves the version off it, and a
+      directory replaced by another has another inode.
+    * A listing taken after this call is therefore still the directory's
+      entries for as long as a fresh ``lstat`` returns this version.
+
+    The refusal closes the one hole a bare stat comparison leaves: two
+    changes in one clock tick share a timestamp (a coarse tick is 1 ms on
+    the Sparks), so a listing taken between them would carry a version the
+    second change does not move.  A refused directory is listed again on
+    every pass until a tick has gone by with no change to it.
+
+    Two things are outside the argument and stated here.  A file rewritten in
+    place does not touch its directory; every writer of the documents this
+    guards writes by rename (``residency_map.write_fragment``, the queue's
+    ``_write_json_atomic``), which does.  And a backward step of the realtime
+    clock could in principle stamp a later change with an earlier value; to
+    reproduce a remembered version it would have to land on the same
+    nanosecond in both mtime and ctime.
+    """
+
+    if _COARSE_REALTIME is None:
+        return None
+    try:
+        before = time.clock_gettime_ns(_COARSE_REALTIME)
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if not statmod.S_ISDIR(info.st_mode):
+        return None
+    if _filesystem_type(info.st_dev) not in _LOCAL_CLOCK_FILESYSTEMS:
+        return None
+    ctime = int(getattr(info, "st_ctime_ns", 0))
+    if info.st_mtime_ns >= before or ctime >= before:
+        return None
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, ctime)
+
+
+def _current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
+    """The same four fields as :func:`_trusted_directory_stamp`, unguarded.
+
+    What a remembered stamp is compared with.  ``None`` for anything that is
+    not a directory or cannot be stat-ed, which never equals a stamp.
+    """
+
+    return _directory_version_at(os.fspath(path))
+
+
+def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
+    """:func:`_current_directory_version` of a path already a string.
+
+    The census compares one of these per directory per decision, so the
+    comparison costs a bare ``lstat`` and no path object.
+    """
+
+    try:
+        info = os.lstat(name)
+    except OSError:
+        return None
+    if not statmod.S_ISDIR(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino, info.st_mtime_ns,
             int(getattr(info, "st_ctime_ns", 0)))
 
 
@@ -968,6 +1139,14 @@ class _StagedPublisher:
         self._census_done = 0
         self._census_running = False
         self._census: tuple | None = None
+        #: What the last census listed, each directory under the stamp taken
+        #: before its listing (#1004 item 4, the #992 index): the residency
+        #: root's children, and each child's fragment names and paths.  A
+        #: census compares each directory with its stamp and lists again only
+        #: the ones that moved (:meth:`_forest_census`); records are looked
+        #: up afresh every census.  Touched only by the one running census.
+        self._listed_root: tuple[tuple, list[str]] | None = None
+        self._listed_children: dict[str, tuple[tuple, tuple[tuple[str, Path], ...]]] = {}
         #: Whether a divergent name is settled by its owners' states (#966).
         #: A stage mover names its consumer and does; a ram promotion names
         #: none and keeps the retryable refusal it always had.
@@ -2190,41 +2369,87 @@ class _StagedPublisher:
         index would not keep is held here as :data:`_LOOK_AGAIN`, never as
         a copy: an oversized table stays out of memory between decisions,
         as it did before.
+
+        A directory is listed only when it moved (#1004 item 4, #992).  Each
+        listing's names are remembered under the stamp
+        :func:`_trusted_directory_stamp` took before it, and a later census
+        whose ``lstat`` of the directory still returns that stamp reuses the
+        names without listing: no entry was created, removed or renamed
+        since.  Every fragment is still stat-ed and looked up through the
+        reuse index on every census, exactly as a fresh listing's are, so a
+        fragment rewritten in place, made unreadable or restored to an older
+        mtime is seen by the next decision (#761).  That turns the census a
+        divergent name's re-decision takes under the stage lock into one
+        ``lstat`` per directory and one ``stat`` per fragment -- the
+        fingerprint of the judgment's census -- rather than a listing of the
+        forest per name.  A listing with an unreadable fragment, and any
+        listing on a filesystem whose stamps cannot be trusted, is never
+        remembered, so both are listed fresh every time, as before.
         """
 
-        try:
-            children = sorted(
-                e.name for e in os.scandir(self.residency_root)
-                if e.is_dir() and not e.name.startswith(".")
-                and e.name not in _NON_FRAGMENT_DIRS)
-        except FileNotFoundError:
-            return ("absent",)
-        except OSError as exc:
-            return ("unreadable", f"{self.residency_root}: {exc}")
-        slots: list[tuple] = []
-        for child in children:
-            cdir = self.residency_root / child
+        root = self.residency_root
+        kept_root = self._listed_root
+        if (kept_root is not None
+                and _current_directory_version(root) == kept_root[0]):
+            children = kept_root[1]
+        else:
+            self._listed_root = None
+            stamp = _trusted_directory_stamp(root)
             try:
-                names = sorted(
-                    e.name for e in os.scandir(cdir)
-                    if e.is_file() and e.name.endswith(".json")
-                    and not e.name.endswith(".retiring.json")
-                    and not e.name.endswith(".tmp"))
+                children = sorted(
+                    e.name for e in os.scandir(root)
+                    if e.is_dir() and not e.name.startswith(".")
+                    and e.name not in _NON_FRAGMENT_DIRS)
             except FileNotFoundError:
-                continue
+                self._listed_children.clear()
+                return ("absent",)
             except OSError as exc:
-                slots.append((child, None, f"{child}: {exc}", None))
-                continue
-            for name in names:
-                path = cdir / name
+                return ("unreadable", f"{root}: {exc}")
+            for gone in set(self._listed_children) - set(children):
+                del self._listed_children[gone]
+            if stamp is not None and _current_directory_version(root) == stamp:
+                self._listed_root = (stamp, children)
+        slots: list[tuple] = []
+        # The comparison runs once per directory per decision, under the
+        # stage lock for a re-decision: a string path and a bare ``lstat``
+        # rather than a path object per directory.
+        prefix = os.fspath(root) + os.sep
+        for child in children:
+            kept = self._listed_children.get(child)
+            if (kept is not None
+                    and _directory_version_at(prefix + child) == kept[0]):
+                stamp, paths = None, kept[1]
+            else:
+                self._listed_children.pop(child, None)
+                cdir = root / child
+                stamp = _trusted_directory_stamp(cdir)
+                try:
+                    paths = tuple(
+                        (name, cdir / name) for name in sorted(
+                            e.name for e in os.scandir(cdir)
+                            if e.is_file() and e.name.endswith(".json")
+                            and not e.name.endswith(".retiring.json")
+                            and not e.name.endswith(".tmp")))
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    slots.append((child, None, f"{child}: {exc}", None))
+                    continue
+            listed: list[tuple] = []
+            for name, path in paths:
                 observed = _observe(path)
                 with self._lookup_lock:
                     record = self._fragment_record(path, observed)
                     if isinstance(record, tuple) and record[1].keys:
-                        kept = self._fragments.get(str(path))
-                        if kept is None or kept[1] is not record:
+                        retained = self._fragments.get(str(path))
+                        if retained is None or retained[1] is not record:
                             record = _LOOK_AGAIN
-                slots.append((child, name, path, record))
+                listed.append((child, name, path, record))
+            slots.extend(listed)
+            if (stamp is not None
+                    and all(slot[3] != "tainted" for slot in listed)
+                    and _current_directory_version(root / child) == stamp):
+                self._listed_children[child] = (stamp, paths)
         return ("listed", tuple(slots))
 
     def _proof_candidate(self, fragment_path: Path, consumer: str,

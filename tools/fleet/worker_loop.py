@@ -933,11 +933,15 @@ def _retained_reader(abandoned: list) -> tuple[int, str] | None:
 
 
 def discover_ready_snapshot(queue, *, budget_s: float,
-                            abandoned: list) -> DiscoveryResult:
+                            abandoned: list,
+                            placement: tuple | None = None) -> DiscoveryResult:
     """Read the claim scan's candidate list through an abandonable child.
 
     The child runs ``queue.ready_items`` -- ready records plus their
-    ``passes/`` sidecars -- and the parent stops waiting at ``budget_s``.  A
+    ``passes/`` sidecars -- and the parent stops waiting at ``budget_s``.
+    ``placement`` is this loop's ``(tags, has_gpu)``: given, the child reads
+    the sidecar only of a record this loop could place (#993), because the
+    claim skips every other record whatever its aging count.  A
     scan that completes is passed to ``serve_once`` as its ``ready`` snapshot;
     anything else skips the poll: the loop returns to its generation and
     maintenance checks after the normal poll delay and never publishes an
@@ -953,7 +957,13 @@ def discover_ready_snapshot(queue, *, budget_s: float,
         return DiscoveryResult(
             "busy", None, retained,
             "an earlier discovery reader is still unreaped")
-    result = bounded("queue-discovery", queue.ready_items,
+    if placement is None:
+        read = queue.ready_items
+    else:
+        def read():  # type: ignore[no-untyped-def]
+            with pool.ready_placement(*placement):
+                return queue.ready_items()
+    result = bounded("queue-discovery", read,
                      deadline=Deadline(budget_s), abandoned=abandoned,
                      cap_s=budget_s)
     elapsed = round(time.monotonic() - started, 3)
@@ -1446,7 +1456,8 @@ def _run_loop(stop_requested):
         # loops while the mount is down and slow the recovery after it.
         discovery = discover_ready_snapshot(
             queue, budget_s=DISCOVERY_TIMEOUT_S,
-            abandoned=abandoned_discoveries)
+            abandoned=abandoned_discoveries,
+            placement=(tuple(offered), gpu_capable))
         if discovery.status != "ready":
             identity = (f" retained reader pid={discovery.retained[0]}"
                         f" starttime={discovery.retained[1]}"

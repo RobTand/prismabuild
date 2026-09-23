@@ -155,6 +155,37 @@ in-process scan was: an intervening claim wins at the rename. This removes
 scan stalls from the worker's wait, but shared transition, lease and token I/O
 remain synchronous and still need ownership-safe recovery qualification (#266).
 
+A claim pass lists `claimed/` once, and discovery reads `passes/` only for
+records the box could place (#993). Before this, `_claim` listed `claimed/`
+under each ready item's transition lock, so a pass over 40 ready items was 40
+listings of one directory on the NFS export, on every loop of every box, and
+discovery read the aging sidecar of every ready record, though a record the
+box cannot place is skipped whatever its aging count. Now the pass takes one
+listing after its first lock acquisition and uses it, as a hint that only
+denies, for every item. A claim is decided on a fresh listing: under the
+key's transition lock, just before the rename, `claimed/` is listed again
+and the key refused as `already_claimed` on a claim record or on either
+finish mark (a tombstone or a late-finish record) filed since the pass
+listing, which is the check the per-candidate listing made. A mark's name
+carries a time, host, pid and uuid, or an identity digest, so no lookup by
+name can find it; the cost is one listing per claim rather than one per
+candidate, and almost every candidate is denied before that point.
+`pool.ready_placement(tags, has_gpu)` scopes discovery to this loop's
+placement (a context variable, so `ready_items` keeps its signature), and
+the claim pass scopes its own read the same way. A snapshot handed to a
+claim whose placement differs from the one it was listed under loses no
+aging: the claim reads the count of every record it can place that arrived
+without one, and restores the order. The order among the records the box
+can place is unchanged. Measured with `tools/fleet/bench_claim_pass.py`
+over the live shape (40 foreign ready records, 28 claimed, 1,324 aging
+sidecars) and counted with `strace` on sparky, a steady poll's directory
+listings fell from 43 to 4 (`claimed/` from 40 to 1, `getdents64` calls
+from 86 to 8) and its per-key path lookups from 120 to 80: the 40 `passes/`
+reads are gone, and the 40 `ready/` record reads and 40 transition-lock
+opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
+listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
+the client's dentry cache answers it.
+
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
 changing it requires stopped workers and drained reservations. A missing map
@@ -4546,7 +4577,11 @@ The other holders of the lock follow the same pattern where it applies:
   checks again under it. It walks the stage and applies its per-file rules
   before the lock. Under the lock it reads attribution and pins again and
   compares each candidate's `lstat` version with the one the walk saw; a
-  file that changed since the walk is left for the next pass.
+  file that changed since the walk is left for the next pass. Called from
+  the tier loop, it reads attribution through the loop's census index
+  (#992), so the census under the lock lists only the directories that
+  moved since the one before it; pins are still listed and read fresh (see
+  "What the tier loop reads per cycle" below).
 * `recover_orphaned_range` resolves its scope (the manifest layout, the
   window and the names) and takes hint censuses before the lock. Under the
   lock it checks the READY and CLAIMED rows and the movers again, takes the
@@ -4638,6 +4673,146 @@ same name. A consumer prefers the ram copy and falls back to the staged
 copy the map already vouched for, which is what makes a stale ram entry a
 cache miss rather than an ENOENT. The map's header names the ram tier, root
 and epoch, which is what the verdict compares.
+
+### What the tier loop reads per cycle (#992, #1004)
+
+The tier loop runs one cycle every 5 s on the tier host. Until this change
+each cycle read the queue as if for the first time: it listed `done/`,
+`failed/` and `withdrawn/` (38,000 names on 2026-09-23), listed every
+residency namespace and parsed every fragment (429 namespaces, 1,957
+produced-output directories, 240,705 fragment entries), read every movement
+and prewarm receipt, and read every `ready/` and `claimed/` record three
+times, although almost nothing had changed since the cycle before. #944
+recorded the loop at about 99% of one core.
+
+The loop now keeps what it read from one cycle to the next, on its
+`ReceiptCache`, in two readers that share one rule:
+
+- `stage_release.DirectoryRecords` holds the queue records: the receipt
+  directories, `ready/`, `claimed/`, the `withdrawn/` names and the RAM tier's
+  fragment records. Every step of a cycle that reads `ready/` or `claimed/`
+  reads through it (`stage_release.queue_records`, served for the cycle by
+  `queue_records_from`), so the three reads per cycle are one.
+- `stage_release.CensusIndex` holds the residency census: each namespace's
+  fragments and each level's classified children. The dead-owner sweep, the
+  orphan sweep's `reconcile` and the held-mover census read through it.
+
+**A directory is listed again only when it moved.** Each listing is kept
+under a stamp, `(device, inode, mtime_ns, ctime_ns)`, taken by
+`stage_move._trusted_directory_stamp` before the listing. A later read whose
+`lstat` of the directory returns the same four fields reuses the listing. The
+argument:
+
+1. The stamp is taken only after reading the coarse realtime clock `T0`
+   (`CLOCK_REALTIME_COARSE`, the clock the kernel stamps directory times
+   from), and is refused unless both `mtime` and `ctime` are strictly before
+   `T0`.
+2. Every create, unlink or rename in a directory sets its `mtime` and `ctime`
+   to the current time. After `T0`, that time is at or after `T0`, so any
+   later change moves the version off the stamp. A directory replaced by
+   another has another inode.
+3. The stamp is kept only when a second `lstat` after the listing returns it
+   unchanged, and only when no entry in the listing was unreadable.
+
+The refusal in step 1 closes the gap a bare `stat` comparison leaves: two
+changes in one clock tick share a timestamp. Stamps are trusted only on
+filesystems whose directory times come from this kernel's clock (`zfs`,
+`ext4`, `xfs`, `btrfs`, `tmpfs`, matched on the device's `major:minor` in
+`/proc/self/mountinfo`). An answer is remembered only until the kernel
+signals a mount or unmount (`POLLPRI` on `/proc/self/mountinfo`), because
+anonymous device numbers are shared by ZFS, tmpfs, NFS, overlay and FUSE
+mounts and handed out again after an unmount. On the NFS export every
+directory is listed every time, as before. Two things are outside the
+argument. A file rewritten in place does not touch its directory. Every
+writer of these records files by rename (`pool._write_json_atomic`,
+`residency_map.write_fragment`), and the two readers differ in what they
+rely on:
+
+- The residency census still `stat`s every fragment of a kept directory and
+  compares its #761 version, so a fragment rewritten in place, made
+  unreadable or restored to an older `mtime` is seen by the next census. The
+  #988 census under the stage lock and the #761 proof lookup both promised
+  that, and it costs one `stat` per fragment, about 145 on the live forest.
+- `DirectoryRecords` does not `stat` the records of a kept directory: that
+  is the 6,434 receipts a cycle no longer touches. It relies on rename-only
+  writers, as `_compose_fingerprint` (#604) does.
+
+A backward step of the realtime clock could stamp a later change with an
+earlier time; to reproduce a kept stamp it would have to land on the same
+nanosecond in both fields.
+
+**A changed directory is read by record version.** When a directory's stamp
+moved, it is listed and every entry is `stat`-ed. A record whose #761 version
+(device, inode, size, `mtime_ns`, `ctime_ns`) is unchanged is not parsed
+again. Every entry is `stat`-ed, not only names the reader has not seen,
+because a receipt is replaced under its own name (a mover re-run under the
+same key files its receipt again, and a prewarm receipt is pruned and filed
+afresh) and a new file can reuse an unlinked file's inode number. Neither the
+name nor the inode number says a record is unchanged; the full version does.
+
+**The terminal directories are never listed.** A step that asks whether a
+key has ended looks the key up: `withdraw_dead_consumer_movers` does one
+`lstat` per filed plan key per terminal state, and the dead-owner sweep does
+one per candidate owner (`stage_release._TerminalNames`). The `withdrawn/`
+set, which the cycle hands to every step as one snapshot, is listed through
+`DirectoryRecords.names`, so it is listed again only when a marker was
+added, removed or renamed.
+
+**The fill-supply fold is remembered, not bounded.** `ReceiptCache.fill_supply`
+remembers `storage_tiers.fill_supply_from_records` per pool identity and
+per generation of the receipt directories, a number that moves whenever a
+receipt is added, removed or changed. An unchanged receipt set returns a copy
+of the remembered result. The receipt set itself still grows without bound
+(#992 item 2): capping it would change the fold's output, which is a
+fill-policy change. A fold checkpointed per pool identity would bound it
+without changing the output.
+
+**Under the stage lock, a census compares stamps (#1004 item 4).** A stage
+mover's publisher decides a divergent name again under the stage ownership
+lock, against a census of the residency forest that began after the
+owners' judgment. That census listed the whole forest once per name under the
+lock every mover and egress on the stage root waits for: 38 to 66 ms for 429
+namespaces on dl380g10, about 100 s for a 2,048-name range whose names all
+diverge from one dead owner. `_StagedPublisher._forest_census` keeps each
+directory's fragment names under the same stamp, so the census under the lock
+is one `lstat` per directory and one `stat` and index lookup per fragment,
+with no listing. Records are still looked up through the #761 index on every
+census, so the #778 byte budget and the index's fail-closed answers are
+unchanged.
+
+**What a cycle reports.** `tier_loop.LAST_CYCLE`, carried on each
+`tier-cycle` line, holds `cycle_seconds`, the seconds of each step
+(`phases`), and `reads`: directories listed and reused and records parsed,
+for both readers. `receipts_unreadable` names any receipt directory the
+cycle could not read, with the error. Such a directory is skipped, as the
+plain read skipped it, and the fill supply is folded from the receipts that
+were read; failing the cycle instead would stop the windows and landing
+records the loop publishes until someone repaired the directory. On a
+steady cycle nothing is listed or parsed, and the reused counts show what
+was compared instead.
+
+**Measured.** `tools/fleet/bench_tier_cycle.py` at the live shape (28,943
+done, 7,142 failed, 1,877 withdrawn, 6,434 receipts, 404 empty namespaces,
+145 fragments with 240,705 entries), through pbrun on sparky, each run on two
+Cortex-X925 cores: a steady cycle's median fell from 1.826 s to 0.173 s of
+wall time and from 1.821 s to 0.166 s of CPU (actions e718e3eb1ab5 and
+c6a484937627). Netdata `system.cpu` had the box 14% busy in the before
+window and 47% busy in the after one, which shared it with this change's own
+test shards. py-spy over ten steady cycles attributes 16.4 s of samples
+before the change, 11.4 s of them to `sweep_orphans` (the fragment parse),
+2.0 s to `withdraw_dead_consumer_movers` (the terminal listings) and 1.5 s to
+`drop_prior_ram_epochs`; after it, 1.32 s, 0.62 s of them to
+`residency_window`, 0.18 s to `window_pressure`, 0.17 s to
+`mint_tier_capacity` and 0.16 s to `sweep_orphans`. About half of what
+remains is the tier ledger's `capacity_census` and `available`, which glob
+the ledger's token directory and which this change does not touch.
+In `tests/test_an_arbitration_rereads_only_what_moved.py`, 2,000 names that
+diverge from one dead owner in a 406-directory forest on local ext4: before
+the change the publisher listed the forest 810,000 times under the lock and
+held it 13.2 s in all, longest hold 64 ms; after it, the forest is listed
+once, never under the lock, and the lock is held 3.3 s, longest hold 2.3 ms
+(pbtest shard 7bcd96891b36 and action 1e0a9b624335). The fixture's forest
+lists in about 3 ms; the live one took 38 to 66 ms.
 
 ### What a stage tier's capacity counts
 
