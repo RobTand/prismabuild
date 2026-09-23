@@ -52,7 +52,9 @@ Runs under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -61,7 +63,9 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import adaptive_cpu, pool  # noqa: E402
+import pbstatus  # noqa: E402
 
 TIER = "prismabuild-stage:r6excl"
 KIND = "stage_gib"
@@ -212,24 +216,235 @@ def _brief(observed: dict) -> tuple:
             if isinstance(result, dict) else None)
 
 
-def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch):
-    """An unreadable holder type is unknown, not proof it holds no tokens."""
+# --- An unreadable holder (#936) ------------------------------------------
+#
+# The fleet runs two interpreters whose ``Path.is_dir`` disagree: Python
+# 3.12 (the Sparks) re-raises an EIO from ``stat``, and Python 3.14
+# (dl380g10, where the tier loop runs) is ``os.path.isdir``, which returns
+# False on every ``OSError``.  So the fault is injected at ``os.stat``,
+# which both ``Path.stat`` and ``os.path.isdir`` call, and every test runs
+# twice: on this interpreter's own ``Path.is_dir``, and on dl380g10's,
+# emulated verbatim (its source, read off the box, is below).  The
+# emulation is what shows the live tier-loop host's failure on any
+# interpreter: before #936 the strict census there read an unreadable
+# holder as absent and reissued a dead name with no backing.
+
+EIO_TEXT = "injected holder metadata I/O error"
+
+
+def _python314_is_dir(self, *, follow_symlinks=True):
+    """``pathlib.Path.is_dir`` exactly as Python 3.14.4 on dl380g10 has it."""
+    if follow_symlinks:
+        return os.path.isdir(self)
+    try:
+        return stat.S_ISDIR(self.stat(follow_symlinks=follow_symlinks).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
+def _python314_exists(self, *, follow_symlinks=True):
+    """``pathlib.Path.exists`` exactly as Python 3.14.4 has it."""
+    if follow_symlinks:
+        return os.path.exists(self)
+    return os.path.lexists(self)
+
+
+PATH_IMPLS = ("interpreter", "python314")
+
+
+def _unreadable(guarded, paths, path_impl: str) -> None:
+    """Make ``stat`` of each path fail with EIO, on the chosen ``Path``."""
+    targets = {os.fspath(path) for path in paths}
+    original = os.stat
+
+    def failing(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) in targets:
+            raise OSError(errno.EIO, EIO_TEXT, os.fspath(path))
+        return original(path, *args, **kwargs)
+
+    guarded.setattr(os, "stat", failing)
+    if path_impl == "python314":
+        guarded.setattr(Path, "is_dir", _python314_is_dir)
+        guarded.setattr(Path, "exists", _python314_exists)
+
+
+def _eio(holder: Path) -> dict:
+    return {"holder": str(holder), "errno": errno.EIO, "error": EIO_TEXT}
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
+                                                       path_impl):
+    """An unreadable holder type is unknown, not proof it holds no tokens.
+
+    RED on pre-#936 main: on 3.12 the mint raises the EIO out of
+    ``capacity()`` (the tier loop loses the whole cycle); on the 3.14
+    emulation the strict reclaim reads H as absent and reissues the dead
+    name with no backing (``reclaimed == {stage_gib: 1}``).
+    """
     queue, dead_name = _shaped_queue(tmp_path)
     ledger = queue.tier_ledger(TIER)
     holder = ledger.held_dir / HOLDER_H
-    original_stat = Path.stat
-
-    def failing_stat(path, *args, **kwargs):
-        if path == holder:
-            raise OSError(5, "injected holder metadata I/O error")
-        return original_stat(path, *args, **kwargs)
-
     with monkeypatch.context() as guarded:
-        guarded.setattr(Path, "stat", failing_stat)
+        _unreadable(guarded, [holder], path_impl)
         result = queue.mint_tier_capacity(TIER, dict(WANTED))
+        free_during = ledger.available().get(KIND, 0)
+    # The unknown census reissued nothing: the dead name stays dead.
     assert result["reclaimed"] == {}
     assert (ledger.minted_dir / "dead" / dead_name).exists()
+    # H counted as HELD: the one free token was retired, never read as
+    # headroom, and the report names H with its errno.
+    assert result["retired"] == {KIND: 1}
+    assert free_during == 0
+    assert result["census_unreadable"]["unreadable"] == [_eio(holder)]
+    assert result["census_unreadable"]["retired"] == {KIND: 1}
+    # The books never exceed the backing of 2: only H's live token is left.
+    assert ledger.capacity().get(KIND) == 1
+    # Readable again: the next mint restores exactly the backed two and
+    # removes the report.
+    result = queue.mint_tier_capacity(TIER, dict(WANTED))
     assert ledger.capacity().get(KIND) == 2
+    assert ledger.available().get(KIND) == 1
+    assert result["census_unreadable"] is None
+    assert not ledger.census_report_path.exists()
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_unreadable_holder_still_retires_under_a_falling_wanted(
+        tmp_path, monkeypatch, path_impl):
+    """A lower-bound total must not skip the shrink.
+
+    wanted falls 2 -> 1 while H (1 live token) is unreadable.  The truth
+    is held 1, free 1, wanted 1: the free token is unbacked and must go.
+    RED on pre-#936 main: 3.12 raises out of ``capacity()``; on the 3.14
+    emulation the total reads 1 (H hidden), ``1 > 1`` is false, the
+    retire never runs and the unbacked free token stays admissible.
+    """
+    queue, _dead = _shaped_queue(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    holder = ledger.held_dir / HOLDER_H
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [holder], path_impl)
+        result = queue.mint_tier_capacity(TIER, {KIND: 1})
+    assert result["retired"] == {KIND: 1}
+    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.capacity().get(KIND) == 1
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
+        tmp_path, monkeypatch, path_impl):
+    """Loud, not silent: a persistent fault is a stall with a named cause.
+
+    Every mint cycle reports the ledger, the holder, its errno, the kinds
+    asked and what was retired, with a consecutive-cycle count; the claim
+    that the stall refuses is denied as ``tier_census_unreadable`` naming
+    the holder; and ``pbstatus --starvation`` attributes the stall to it.
+    """
+    queue, _dead = _shaped_queue(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    holder = ledger.held_dir / HOLDER_H
+    _publish_claimant(queue)
+    reports = []
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [holder], path_impl)
+        for _cycle in range(3):
+            reports.append(queue.mint_tier_capacity(TIER, dict(WANTED))["census_unreadable"])
+        row = queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
+                          tags=["dl380g10"])
+        starvation = pbstatus.read_starvation(queue.root)
+    assert [report["cycles"] for report in reports] == [1, 2, 3]
+    for report in reports:
+        assert report["ledger"] == str(ledger.base)
+        assert report["unreadable"] == [_eio(holder)]
+        assert report["kinds_asked"] == [KIND]
+    assert [report["retired"] for report in reports] == [{KIND: 1}, {}, {}]
+    # The claim is refused, and the refusal names the holder.
+    assert row is None
+    denials = adaptive_cpu.read_json(
+        adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
+    (denial,) = [value for value in denials.get("records", {}).values()
+                 if value["action_key"] == CLAIM_KEY]
+    assert denial["reason"] == "tier_census_unreadable"
+    shortage = denial["evidence"]["tier_shortage"]
+    assert shortage["tier_id"] == TIER
+    assert shortage["census_unreadable"] == [_eio(holder)]
+    # The starvation census attributes the stall to the holder.
+    (entry,) = [entry for entry in starvation["census_unreadable"]
+                if entry["ledger_id"] == TIER]
+    assert entry["ledger_kind"] == "tier"
+    assert entry["cycles"] == 3
+    assert entry["unreadable"] == [_eio(holder)]
+    assert any(str(holder) in note for note in starvation["notes"])
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_retire_all_touches_only_the_unreadable_ledger_and_kinds_asked(
+        tmp_path, monkeypatch, path_impl):
+    """Blast radius: one ledger, the kinds its retire was asked about.
+
+    Two host ledgers in the same state -- free cpu 5, held cpu 3 -- asked
+    the same shrink to cpu 4.  The readable one retires exactly 4
+    (``excess = 5 + 3 - 4``).  The one with the unreadable holder counts it
+    as held with an unknown count and retires all 5 free cpu, and leaves
+    mem_gb, which it was not asked about, alone.  Skipping the holder
+    instead would retire 1 and leave the true total at 7.  A second tier
+    ledger is untouched by the first tier's fault.
+    """
+    root = tmp_path / "reservations"
+    sick, well = pool.ResourceLedger(root, "boxa"), pool.ResourceLedger(root, "boxb")
+    key = "k" * 64
+    for ledger in (sick, well):
+        ledger.ensure_capacity({"cpu": 8, "mem_gb": 4})
+        assert ledger.acquire(key, {"cpu": 3}) is True
+    queue, _dead = _shaped_queue(tmp_path)
+    other_tier = "prismabuild-stage:r6other"
+    queue.mint_tier_capacity(other_tier, {KIND: 2})
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [sick.held_dir / key,
+                              queue.tier_ledger(TIER).held_dir / HOLDER_H], path_impl)
+        assert sick.retire_free_capacity({"cpu": 4}) == {"cpu": 5}
+        assert well.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
+        queue.mint_tier_capacity(TIER, dict(WANTED))
+    assert sick.available() == {"mem_gb": 4}
+    assert well.available() == {"cpu": 1, "mem_gb": 4}
+    report = pool._read_json(sick.census_report_path)
+    assert report["kinds_asked"] == ["cpu"]
+    assert report["retired"] == {"cpu": 5}
+    assert report["unreadable"] == [_eio(sick.held_dir / key)]
+    assert not well.census_report_path.exists()
+    other = queue.tier_ledger(other_tier)
+    assert other.available() == {KIND: 2}
+    assert not other.census_report_path.exists()
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_an_unreadable_token_check_never_strands_a_mint_marker(
+        tmp_path, monkeypatch, path_impl):
+    """Host ledger grow: an unknown held check removes its marker.
+
+    ``ensure_capacity`` creates the index marker before asking whether a
+    holder has the name.  Answering "held" would leave a marker with no
+    token, which is skipped forever; answering "not held" would mint a
+    free duplicate of a name the holder may hold.  RED on pre-#936 main:
+    3.12 raised with the marker left behind (the index lost for good), and
+    3.14 answered "not held" and minted without knowing.
+    """
+    ledger = pool.ResourceLedger(tmp_path / "reservations", "boxa")
+    key = "k" * 64
+    ledger.ensure_capacity({"cpu": 1})
+    assert ledger.acquire(key, {"cpu": 1}) is True
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [ledger.held_dir / key / "cpu-0001"], path_impl)
+        with pytest.raises(OSError) as raised:
+            ledger.ensure_capacity({"cpu": 2})
+    assert raised.value.errno == errno.EIO
+    assert not (ledger.minted_dir / "cpu-0001").exists()
+    assert ledger.available() == {}
+    # Readable again: the index is minted, not lost.
+    ledger.ensure_capacity({"cpu": 2})
+    assert ledger.capacity() == {"cpu": 2}
+    assert ledger.available() == {"cpu": 1}
 
 
 def test_r6_reclaim_headroom_atomic_with_exclusion(tmp_path: Path,
