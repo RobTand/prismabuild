@@ -4214,7 +4214,8 @@ worker killed between rename and fragment publication leaves a recovery interval
 Stage and RAM movers also use this ownership lock when publishing a copied
 file (#751/#752). Copying stays outside the lock. Publication adopts an
 existing incarnation when its material record and file identity still match,
-replaces an absent name, and retains a divergent or ambiguously owned name.
+replaces an absent name, and retains an ambiguously owned name. A
+divergent name is settled by its owners' states (#966, below).
 A slow live publisher remains an owner after the bounded wait expires;
 elapsed time alone never permits replacement. Residue can be replaced only
 after the fragment, pin, live-claim and partial-copy censuses show no owner.
@@ -4242,6 +4243,48 @@ adopters from 85 to 3,571 entries/s. Each mover receipt carries
 `phase_timings`: thread-seconds, calls and the longest call per phase (copy
 read and write, hash, fsync, pacing, proof, lock wait and hold, publication),
 plus how each entry ended.
+
+A divergent name is settled by the states of its owners, not refused forever
+(#966). Before this change, a name whose recorded owner held different bytes
+was a retryable refusal. The retry met the same owner, the tier loop
+republished a mover that was neither queued nor pinned, and a mover whose
+owner had long ended reran every cycle while holding fill. A stage mover now
+collects every other consumer and mover whose fragment names the divergent
+path, and judges each owner under its transition locks. The locks are taken
+without blocking, in the usual order: consumer, then mover, then the stage
+ownership lock. An owner has ended when its consumer is neither queued nor
+claimed and has exactly one outcome record (`stage_release._unended_owner`,
+the dead-owner sweep's proof), and its mover is neither queued nor claimed. A
+consumer whose queue record is in `ready/` or `claimed/` is live. Anything
+else is uncertain: no outcome, a lease without its record, a queued mover, or
+an unreadable fragment. Under the ownership lock the name is decided again.
+An owner that was not judged sends the decision back for another judgment.
+So does a remembered ending whose consumer or mover has a queue record again.
+
+- Every owner has ended: the copy replaces the name by rename over the old
+  file, once the pin, live-claim and partial-copy censuses read clean.
+  Nothing is unlinked before the copy. Unlinking first let the new file
+  reuse the freed inode number, so the old owner's dated material read as an
+  in-place write. The receipt lists each replaced name with its owners
+  (`entries_invalidated`, `invalidated`, outcome `replaced_ended_owner`). The
+  old mention goes stale, and the #853 prune retires it.
+- A live owner: a terminal refusal, `staged_destination_conflict`, raised at
+  the adoption proof before any copy. The receipt's `conflict` names the
+  path, both owners and both digests. The mover exits 1 and marks its window
+  superseded with the #708 record, so the tier loop stops republishing it.
+  The live copy is never touched.
+- An unproven ending: the retryable refusal it always was, now raised before
+  any copy.
+
+An owner proven ended is remembered for the run, so a range whose names one
+dead owner holds costs one judgment per owner, not one per name. A judgment
+costs two stats and, on a miss, one listing each of `ready/` and `claimed/`
+for the consumer and for the mover, plus the outcome records. A remembered
+ending is re-checked at each act with four stats, while the owners'
+transition locks are held. This is needed because a resubmitted consumer's
+mover can adopt the old bytes under a name this run has not reached yet.
+Content-keyed stage paths would remove the collision by construction, but
+they are a layout migration; this settles it on the current layout.
 
 Range adoption also checks the donor's dated material against the current file
 identity under the ownership lock before publishing a successor or transferring
