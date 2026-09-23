@@ -213,8 +213,37 @@ def test_unverified_proxy_package_code_refuses(fleet_store, fault) -> None:
                            worker_script=worker)
 
 
+class _LaunchOnlySubprocess:
+    """``subprocess`` as pool.py resolves it, with only its ``Popen`` stubbed.
+
+    The launch under test is pool.py's own ``subprocess.Popen`` call.
+    Stubbing the global ``subprocess.Popen`` also captured every other
+    child this process started meanwhile, and ``(argv,) = seen`` then
+    failed on two argvs (#937).  The one that did it in broad runs is the
+    finish path's GPU power reference: when the box's pqteld recorder (2
+    Hz, live on the GB10s) has a row inside the action's window,
+    ``box_window.read_window`` asks ``gpu_capacity.devices``, whose
+    ``subprocess.run`` builds a ``Popen`` for ``nvidia-smi``.  A longer
+    window under load makes that row likelier, which is why the test
+    passed in isolation.  Any other module's child, such as an adaptive
+    snapshot publisher, reached ``seen`` the same way.  Everything but
+    ``Popen`` resolves to the real module.
+    """
+
+    def __init__(self, popen):
+        self.Popen = popen
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+
 def _contained_harness(monkeypatch, tmp_path, queue, item, seen):
-    """Fake broker authority plus a Popen that records the launch argv."""
+    """Fake broker authority plus a Popen that records the launch argv.
+
+    Only pool.py's ``subprocess`` is replaced (see
+    :class:`_LaunchOnlySubprocess`), so ``seen`` holds the launches pool
+    starts and nothing another module starts meanwhile.
+    """
 
     def request(scope, op, **extra):
         if op == "create":
@@ -250,7 +279,7 @@ def _contained_harness(monkeypatch, tmp_path, queue, item, seen):
     monkeypatch.setattr(resource_scope.ResourceScope, "sample", sample)
     monkeypatch.setattr(pool.cpu_admission, "record_completion",
                         lambda *args: None)
-    monkeypatch.setattr(pool.subprocess, "Popen", Process)
+    monkeypatch.setattr(pool, "subprocess", _LaunchOnlySubprocess(Process))
 
 
 def _retained_item(tmp_path, worker: str):
@@ -306,6 +335,7 @@ def test_real_contained_launch_uses_retained_proxy(
     _contained_harness(monkeypatch, tmp_path, queue, item, seen)
     outcome = queue.execute(item, containment=True)
     assert outcome["status"] == "executed"
+    assert len(seen) == 1, seen
     (argv,) = seen
     assert argv[1] == str(gen_a / "tools" / "resource_exec.py")
     inner = argv[argv.index("--") + 1:]
@@ -313,6 +343,67 @@ def test_real_contained_launch_uses_retained_proxy(
         assert inner[:3] == ["/usr/bin/taskset", "--cpu-list",
                              str(min(os.sched_getaffinity(0)))]
     assert worker in inner
+
+
+@pytest.mark.parametrize("bystander", ["gpu_power_reference", "snapshot_publisher"])
+def test_a_bystander_child_never_reaches_the_launch_capture(
+        fleet_store, tmp_path, monkeypatch, bystander) -> None:
+    """Another module's child during the launch is not the launch (#937).
+
+    Forces, deterministically, what the broad runs hit by timing:
+    ``gpu_power_reference`` is ``read_window`` finding a pqteld row inside
+    the action's window, so it asks for the GPU reference and
+    ``gpu_capacity`` runs ``nvidia-smi``; ``snapshot_publisher`` is
+    ``adaptive_snapshot.publish`` starting its coalesced copy child while
+    the launch is under way.  Both run for real.  RED on the global stub:
+    ``seen`` holds two argvs.
+    """
+
+    gen_a = _published_generation(fleet_store, "gen-a-0004")
+    worker = str(gen_a / "tools" / "prismabuild_worker.py")
+    queue, item = _retained_item(tmp_path, worker)
+    seen: list = []
+    _contained_harness(monkeypatch, tmp_path, queue, item, seen)
+    if bystander == "gpu_power_reference":
+        real_read_window = pool.box_window.read_window
+        asked: list = []
+
+        def read_window(start_unix, end_unix, **kwargs):
+            # A pqteld row inside the window: the reference is asked for.
+            reference = kwargs.get("gpu_reference")
+            assert reference is not None
+            asked.append(reference(timeout_s=1.0))
+            return real_read_window(start_unix, end_unix, **kwargs)
+
+        monkeypatch.setattr(pool.box_window, "read_window", read_window)
+    else:
+        local, shared = tmp_path / "snapshot-local", tmp_path / "snapshot-shared"
+        local.mkdir()
+        shared.mkdir()
+        (local / "jobs.json").write_text("{}")
+        real_execute = pool.PoolQueue._execute_in_checkout
+        started: list = []
+
+        def execute_in_checkout(self, *args, **kwargs):
+            started.append(pool.cpu_admission.adaptive_snapshot.publish(local, shared))
+            return real_execute(self, *args, **kwargs)
+
+        monkeypatch.setattr(pool.PoolQueue, "_execute_in_checkout",
+                            execute_in_checkout)
+    outcome = queue.execute(item, containment=True)
+    assert outcome["status"] == "executed"
+    assert len(seen) == 1, seen
+    (argv,) = seen
+    assert argv[1] == str(gen_a / "tools" / "resource_exec.py")
+    assert worker in argv[argv.index("--") + 1:]
+    # The bystander really ran: the reference was asked for, and the
+    # publisher started a real child, not the stub.
+    if bystander == "gpu_power_reference":
+        assert len(asked) == 1
+    else:
+        (child,) = started
+        assert child is not None and child.pid != 999999999
+        child.wait(timeout=60)
 
 
 def _proxy_env(proxy: Path, key: str, nonce: str) -> dict:
