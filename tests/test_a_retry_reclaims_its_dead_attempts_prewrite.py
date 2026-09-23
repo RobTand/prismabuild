@@ -383,6 +383,53 @@ def test_an_unreachable_output_prefix_is_never_read_as_absent(
     assert [e["event"] for e in po.origin_retirement_tick(queue)] == [ORPHANED]
 
 
+# -- what one pass reads ------------------------------------------------------
+
+
+def test_one_pass_reads_each_owner_key_and_sibling_set_once(
+        tmp_path: Path, monkeypatch) -> None:
+    """The coordinator's review rule: no state is read twice in one pass."""
+
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    owner = fx._hexkey("one-read")
+    first, claimed = _first_attempt(queue, template, owner)
+    prefix = Path(template["output_prefix"])
+    for batch_id in ("b1", "b2"):
+        path = prefix / f"{batch_id}.bin"
+        assert _prewrite(queue, first, template, batch_id, [path], 4)["ok"]
+        _write(path, b"dead")
+    second = _attempt(queue, template, owner, claimed)
+    assert _prewrite(queue, second, template, "b3", [prefix / "b3.bin"], 4)["ok"]
+    running = fx._hexkey("still-writing")
+    other, _other_claim = _first_attempt(queue, template, running)
+    assert _prewrite(queue, other, template, "b1", [prefix / "other.bin"], 4)["ok"]
+    # A running producer's instance is never read: a read would report it.
+    (po.instance_dir(queue.root, other) / "instance.json").write_text("{")
+
+    reads: list[str] = []
+    scans: list[str] = []
+    key_generation = po._key_generation
+    sibling_path_owners = po._sibling_path_owners
+    monkeypatch.setattr(po, "_key_generation", lambda q, key: (
+        reads.append(key), key_generation(q, key))[1])
+    monkeypatch.setattr(po, "_sibling_path_owners", lambda *args: (
+        scans.append(_nonce(args[1])), sibling_path_owners(*args))[1])
+
+    events = po.origin_retirement_tick(queue)
+
+    assert sorted((e["event"], e["prewrite"].rsplit("/", 1)[1]) for e in events) == [
+        (ORPHANED, "b1"), (ORPHANED, "b2")]
+    assert (sorted(reads), scans) == (sorted([owner, running]), [_nonce(first)])
+    reads.clear()
+    scans.clear()
+    listed = pbstatus.read_blocked_origins(queue.root)
+    assert listed["complete"] is True
+    assert sorted(item["prewrite"].rsplit("/", 1)[1]
+                  for item in listed["orphaned_prewrites"]) == ["b1", "b2"]
+    assert (sorted(reads), scans) == (sorted([owner, running]), [_nonce(first)])
+
+
 # -- off the write-only path ---------------------------------------------------
 
 

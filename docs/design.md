@@ -5185,13 +5185,15 @@ owned.
 
 **The sweep.** `origin_retirement_tick` now also reads each write-only
 instance's outstanding prewrites, those whose batch id has no commitments
-entry. `_sweep_ended_prewrite` decides under the output-prefix lock, which
-`require_prewrite` and `commit_origin_batch` also take:
+entry. `_sweep_ended_prewrites` decides for one instance under the
+output-prefix lock, which `require_prewrite` and `commit_origin_batch` also
+take:
 
-- While the attempt can still commit (`_producer_attempt_state` is `live`
-  or `unknown`), the prewrite is its own and is kept. Once the attempt is
-  `dead` or `succeeded`, its owner gate refuses any commit, and the planned
-  paths decide.
+- While the attempt can still commit (its state is `live` or `unknown`, as
+  `_producer_attempt_state` reads it), the prewrites are its own and are
+  kept, with no lock taken and no record read. Once the attempt is `dead` or
+  `succeeded`, its owner gate refuses any commit, and the planned paths
+  decide (`_ended_prewrite_dispositions`).
 - The output prefix must be a directory on this host, or an absent file
   proves nothing: `output-origin-retirement-refused` with
   `output-prefix-unreachable`, once per change.
@@ -5214,8 +5216,22 @@ entry. `_sweep_ended_prewrite` decides under the output-prefix lock, which
 `pbstatus --blocked-origins` lists each orphaned prewrite under
 `orphaned_prewrites` with its coordinates (`owner/template.nonce/batch`),
 `class_bytes`, the three path lists and a `remedy`. It reads through
-`produced_output.blocked_origin_batches` and takes no lock. The MCP tool
-`pb_blocked_origins` serves the same list.
+`produced_output.blocked_origin_batches`, applies the same dispositions and
+takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
+
+**What one tick reads.** The owner key's generation is read once per owner
+for all its attempts (`_attempt_state` over one `_key_generation`), both for
+an instance's own state and for its siblings'. Per ended instance, the
+output prefix is statted once, and the sibling attempts' commitments,
+batch records and prewrites are read at most once, only when some planned
+path is present. Every scope costs one more directory listing than before
+(its `prewrites`). A scope with outstanding prewrites and nothing due is
+skipped on its attempt's state before its instance or template is read,
+because the scope directory is named for the attempt's nonce, so a running
+producer costs only that listing and its share of the owner's one read. An
+orphaned prewrite is
+examined again on each tick, because an operator's removal of its files is
+only seen that way; it is reported only when what the tick finds changes.
 
 Limits:
 
