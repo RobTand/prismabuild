@@ -1171,11 +1171,28 @@ def retirement_tick(queue, cas_root, *, host=None, roots=None):
                                                         in item.get("groups_kept", [])]}
                         for item in namespaces if not item.get("namespace_removed")],
                "seconds": round(time.monotonic() - started, 4)}
+    _write_tick(records, host, summary)
+    return {**summary, "records": namespaces}
+
+
+def _write_tick(records, host, summary):
     records.mkdir(parents=True, exist_ok=True)
     temporary = records / f".{host}.tick.json.{os.getpid()}.tmp"
     temporary.write_text(json.dumps(summary, sort_keys=True) + "\n")
     os.replace(temporary, records / f"{host}.tick.json")
-    return {**summary, "records": namespaces}
+
+
+def record_failed_tick(queue, host, error):
+    """Replace ``<host>.tick.json`` with a tick that raised, so it is not stdout-only.
+
+    ``error`` is the exception the tick raised.  The record keeps the tick
+    schema, with ``failed`` naming the exception, so ``retirement_records``
+    and ``pbstatus`` show the failure where they show every other tick.
+    """
+
+    _write_tick(Path(queue.root) / RETIREMENTS_SUBDIR, host,
+                {"schema": TICK_SCHEMA, "host": host, "unix": round(time.time(), 3),
+                 "failed": f"{type(error).__name__}: {error}"})
 
 
 def retirement_records(queue, *, limit=None):

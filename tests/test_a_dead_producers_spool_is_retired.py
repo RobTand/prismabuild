@@ -178,3 +178,22 @@ def test_the_worker_loop_ticks_once_per_interval_on_one_loop(tmp_path, monkeypat
     assert worker_loop.spool_retirement(
         queue, host="h", cas_root=tmp_path, now=now + ps.RETIRE_INTERVAL_S)
     assert calls == ["h", "h"]
+
+
+def test_a_tick_that_raises_is_recorded_beside_the_ticks(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles")
+
+    def broken(queue, cas_root, host):
+        raise OSError(5, "spool root unreadable")
+
+    monkeypatch.setattr(ps, "retirement_tick", broken)
+    queue = fx._queue(tmp_path)
+    try:
+        worker_loop.spool_retirement(queue, host="h", cas_root=tmp_path, now=1_000_000.0)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("the tick's exception must reach the loop")
+    tick = ps.retirement_records(queue)["ticks"]["h"]
+    assert tick["schema"] == ps.TICK_SCHEMA
+    assert tick["failed"] == "OSError: [Errno 5] spool root unreadable"

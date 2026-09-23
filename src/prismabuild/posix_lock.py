@@ -14,7 +14,10 @@ holders in.
 2. *Check after locking.*  :func:`held` reads the inode it locked
    (``fstat``) *after* ``lockf`` returns.  An inode with no link, or whose
    bytes are :data:`TOMBSTONE`, was retired while this caller waited; the
-   caller unlocks, closes and opens the name again.
+   caller unlocks, closes and opens the name again.  If the name still names
+   that tombstoned inode, step 1 was cut off before its unlink (a killed
+   retirer, a refused unlink); the caller unlinks the name before it
+   unlocks, finishing step 1 under the lock.
 
 **Why two holders cannot both proceed.**  Say ``H`` holds inode ``I`` and has
 passed step 2.  ``H`` opened ``I`` by name, so the name named ``I`` then.  A
@@ -99,6 +102,36 @@ def _retired(descriptor: int, path: Path) -> bool:
     return os.pread(descriptor, len(TOMBSTONE), 0) == TOMBSTONE
 
 
+def _finish_retirement(descriptor: int, path: Path) -> None:
+    """Unlink the name of the tombstoned inode this caller holds, if it still names it.
+
+    A retirer killed between its tombstone and its unlink, or one whose
+    unlink the server refused, leaves the name naming a linked, tombstoned
+    inode.  Every opener of the name would then meet that inode, let it go
+    and open it again, without end, and :func:`retire` would find it
+    non-empty.  So the holder that meets it finishes step 1: under the lock,
+    on an inode already tombstoned, exactly as the retirer would have.  A name
+    that no longer names the inode (the retirer's unlink landed, or an NFS
+    client renamed a file still open) is left alone.
+    """
+
+    observed = os.fstat(descriptor)
+    if observed.st_nlink == 0:
+        return
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            named = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
+            return
+        os.unlink(path.name, dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 @contextmanager
 def held(path: Path, *, blocking: bool = True):
     """Yield acquisition status, with same-thread nesting and crash release.
@@ -111,7 +144,10 @@ def held(path: Path, *, blocking: bool = True):
     An inode :func:`retire` retired while this caller waited for it is let
     go, and the name is opened again (step 2 of the module's protocol).  A
     non-blocking caller that meets a retired inode opens the name again too:
-    a retired inode is not contention.
+    a retired inode is not contention.  A tombstoned inode the name still
+    names is the residue of a retirement cut off before its unlink; the
+    caller finishes that unlink under the lock before it lets go
+    (:func:`_finish_retirement`).
     """
     path = Path(path)
     path = path.parent.resolve() / path.name
@@ -147,7 +183,10 @@ def held(path: Path, *, blocking: bool = True):
                 break
             acquired = False
             try:
-                fcntl.lockf(descriptor, fcntl.LOCK_UN)
+                try:
+                    _finish_retirement(descriptor, path)
+                finally:
+                    fcntl.lockf(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
                 descriptor = None
@@ -173,9 +212,11 @@ def retire(path: Path) -> str:
 
     Step 1 of the module's protocol: the lock is taken non-blocking, the
     locked inode is checked to be the one the name still names, and it is
-    tombstoned, synced and unlinked before the lock is released.  A held
-    lock, a missing file, a file that is not an empty regular single-link
-    file, and a name that moved are all kept, with the reason.
+    tombstoned, synced and unlinked before the lock is released.  A
+    tombstoned file the name still names -- a retirement cut off before its
+    unlink -- is unlinked the same way.  A held lock, a missing file, a file
+    that is neither empty nor a tombstone, and a name that moved are all
+    kept, with the reason.
     """
 
     path = Path(path)
@@ -212,13 +253,18 @@ def retire(path: Path) -> str:
                     return f"cannot lock: {exc}"
                 try:
                     observed = os.fstat(descriptor)
-                    if observed.st_nlink != 1 or observed.st_size != 0:
+                    # A tombstoned inode still linked is a retirement cut off
+                    # before its unlink: finish it rather than keep it.
+                    residue = (observed.st_size == len(TOMBSTONE)
+                               and os.pread(descriptor, len(TOMBSTONE), 0) == TOMBSTONE)
+                    if observed.st_nlink != 1 or (observed.st_size != 0 and not residue):
                         return "not an empty live lock file"
                     named = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
                     if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
                         return "the name moved to another inode"
-                    os.pwrite(descriptor, TOMBSTONE, 0)
-                    os.fsync(descriptor)
+                    if not residue:
+                        os.pwrite(descriptor, TOMBSTONE, 0)
+                        os.fsync(descriptor)
                     os.unlink(path.name, dir_fd=directory)
                     os.fsync(directory)
                 except OSError as exc:

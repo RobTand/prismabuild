@@ -699,6 +699,8 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
     a loop that finds it held, or the stamp younger than the interval, does
     nothing.  The stamp is touched before the tick runs, so a tick that
     raises is retried an interval later, not on every poll of every loop.
+    A tick that raises replaces ``<host>.tick.json`` with its failure
+    (``produced_spool.record_failed_tick``) before the exception propagates.
     """
 
     from prismabuild import produced_spool
@@ -720,7 +722,17 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
             pass
         stamp.touch()
         os.utime(stamp, (now, now))
-        return produced_spool.retirement_tick(queue, cas_root, host=host)
+        try:
+            return produced_spool.retirement_tick(queue, cas_root, host=host)
+        except Exception as exc:
+            # A tick that raised is recorded where every tick is, not only
+            # on the loop's stdout; the caller still sees the exception.
+            try:
+                produced_spool.record_failed_tick(queue, host, exc)
+            except Exception as record_exc:                      # noqa: BLE001
+                print(f"[{host}] spool retirement failure not recorded: "
+                      f"{type(record_exc).__name__}: {record_exc}", flush=True)
+            raise
     finally:
         os.close(descriptor)
 
@@ -1566,6 +1578,7 @@ def _run_loop(stop_requested):
         except Exception as exc:                                 # noqa: BLE001
             print(f"[{host}] spool retirement skipped this poll: "
                   f"{type(exc).__name__}: {exc}", flush=True)
+
         # The claim-time handshake.  Everything above -- offer publication,
         # queue discovery -- may have taken seconds, and a publisher can
         # activate a successor generation inside exactly that window, so the
