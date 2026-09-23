@@ -2177,17 +2177,6 @@ def _plan_landing(queue: pool.PoolQueue, plan: Mapping[str, object], *,
     return None, "none"
 
 
-def _measurable(consumer: Mapping[str, object]) -> bool:
-    """Whether a consumer's claim and report time a rate (#903)."""
-
-    claimed = consumer.get("claimed_unix")
-    reported = consumer.get("reported_unix")
-    return (isinstance(claimed, (int, float)) and not isinstance(claimed, bool)
-            and isinstance(reported, (int, float)) and not isinstance(reported, bool)
-            and math.isfinite(float(claimed)) and math.isfinite(float(reported))
-            and float(reported) > float(claimed))
-
-
 def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
                       plan: Mapping[str, object],
                       tier_record: Mapping[str, object] | None, *,
@@ -2199,10 +2188,10 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     reservations), the slowest complete copy of this leg of its plan for the
     landing rate (:func:`_plan_landing`), its measured consumption, and one
     heartbeat plus one cycle for the time an accepted phase takes to reach a
-    decision.  Before a report times a rate, the plan's declared read rate
-    stands in (#909).  ``None`` -- a ready consumer, no accepted progress,
-    nothing measured or declared -- leaves every decision what it was before
-    the horizon existed.  The tier's announced fill supply is never a stand-in
+    decision.  The plan's declared read rate stands in before a report times
+    a rate, and raises a slower measured one (#909).  ``None`` -- a ready
+    consumer, no accepted progress, nothing measured or declared -- leaves
+    every decision what it was before the horizon existed.  The tier's announced fill supply is never a stand-in
     for either rate: it moves as the loop probes the pool (#909), so
     ``tier_record`` no longer prices anything here; it stays in the signature
     the stage and ram callers share.
@@ -2229,19 +2218,18 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
         return None
     landing, _landing_basis = _plan_landing(
         queue, plan, ram=mover_role == "ram_mover_row")
-    # Measured when the claim and its report time one; declared otherwise.
-    consumption = (None if _measurable(consumer)
-                   else residency_plan.declared_read_bytes_per_s(plan))
-    if consumption is None and not _measurable(consumer):
-        return None
     try:
+        # Measured when the claim and its report time one, declared when the
+        # plan declares one, and the larger when both: each is a lower bound
+        # on how fast the consumer reads (#909).
         return residency_plan.refill_horizon(
             plan, accepted,                                      # type: ignore[arg-type]
             claimed_unix=consumer.get("claimed_unix"),
             reported_unix=consumer.get("reported_unix"),
             readahead_bytes=readahead, landing_bytes_per_s=landing,
             report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
-            mover_role=mover_role, consumption_bytes_per_s=consumption)
+            mover_role=mover_role,
+            declared_bytes_per_s=residency_plan.declared_read_bytes_per_s(plan))
     except (residency_plan.ResidencyPlanError, KeyError, TypeError,
             ValueError):
         return None
@@ -2623,11 +2611,13 @@ def _footprint_consumption(queue: pool.PoolQueue,
     rate its claim has attained if that is higher.  The attained rate counts
     only the phases before the accepted one, which the reader has certainly
     read by its report, so it is a lower bound on how fast it went and never
-    the horizon's in-phase over-estimate.  Anything else -- a newcomer, a
-    ready consumer, a claim that has reported nothing -- has measured no
-    rate, and its plan's declared read rate stands in (#909).  ``(None,
-    "undeclared")`` when it declares none: the footprint is then the window's
-    #633 run-ahead bound, which no rate can exceed.
+    the horizon's in-phase over-estimate.  A declared read rate above the
+    measured one wins: both are lower bounds on need, and the footprint is a
+    promise that must not come out short (#909).  Anything else -- a
+    newcomer, a ready consumer, a claim that has reported nothing -- has
+    measured no rate, and its plan's declared read rate stands in (#909).
+    ``(None, "undeclared")`` when it declares none: the footprint is then the
+    window's #633 run-ahead bound, which no rate can exceed.
 
     Never the tier's announced fill supply, which stood in before #909.  It
     moves as the loop probes the pool, so the same newcomer was refused on
@@ -2655,7 +2645,11 @@ def _footprint_consumption(queue: pool.PoolQueue,
             key = (str(queue.root), str(consumer.get("action_key")), float(claimed))
             fastest = max(attained, _FASTEST_CONSUMPTION.get(key, 0.0))
             _FASTEST_CONSUMPTION[key] = fastest
-            return max(rate, fastest), "measured"
+            measured = max(rate, fastest)
+            declared = residency_plan.declared_read_bytes_per_s(plan)
+            if declared is not None and declared > measured:
+                return declared, "declared"
+            return measured, "measured"
     declared = residency_plan.declared_read_bytes_per_s(plan)
     if declared is not None:
         return declared, "declared"

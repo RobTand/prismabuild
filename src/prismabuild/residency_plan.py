@@ -1831,7 +1831,7 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
                    readahead_bytes: int | None,
                    landing_bytes_per_s: float | None,
                    report_latency_s: float,
-                   fill_supply_mb_s: float | None = None,
+                   declared_bytes_per_s: float | None = None,
                    mover_role: str = "mover_row",
                    consumption_bytes_per_s: float | None = None,
                    ) -> dict[str, object] | None:
@@ -1860,11 +1860,15 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     whole accepted phase as read over-estimates the rate while the consumer
     is inside it, which errs toward a longer horizon.
 
-    Before a rate can be measured -- no report time after the claim --
-    ``fill_supply_mb_s`` stands in.  A consumer that reads staged bytes
-    cannot keep up a rate above what the tier refills them at, so the tier's
-    fill supply bounds its steady consumption from above, and a horizon
-    priced at it is at least as long as the measured one would be.
+    ``declared_bytes_per_s`` is the rate the consumer's plan declares
+    (:func:`declared_read_bytes_per_s`, #909).  Before a rate can be
+    measured -- no report time after the claim -- it is the rate; beside a
+    measurement the larger of the two is.  Both are lower bounds on how fast
+    the consumer reads, and a faster rate only lengthens the horizon.  With
+    neither, the horizon is undefined.  The tier's announced fill supply
+    stood in here before #909 and no longer can: it moves as the tier loop
+    probes the pool, so the same consumer's horizon, and the admission
+    verdict priced from it, moved with it.
 
     ``consumption_bytes_per_s``, when given, is the rate, and neither of the
     two above is computed: :func:`read_footprint` asks for the horizon at
@@ -1905,14 +1909,17 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
                 and float(consumption_bytes_per_s) > 0):     # type: ignore[arg-type]
             rate = float(consumption_bytes_per_s)            # type: ignore[arg-type]
             basis = "given"
-    elif (_finite_number(claimed_unix) and _finite_number(reported_unix)
-            and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
-        rate = (read_through - first_start) / (
-            float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
-        basis = "measured"
-    elif _finite_number(fill_supply_mb_s) and float(fill_supply_mb_s) > 0:  # type: ignore[arg-type]
-        rate = float(fill_supply_mb_s) * storage_tiers.MB      # type: ignore[arg-type]
-        basis = "fill-supply"
+    else:
+        if (_finite_number(claimed_unix) and _finite_number(reported_unix)
+                and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
+            rate = (read_through - first_start) / (
+                float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
+            basis = "measured"
+        if (_finite_number(declared_bytes_per_s)
+                and float(declared_bytes_per_s) > 0               # type: ignore[arg-type]
+                and (rate is None or float(declared_bytes_per_s) > rate)):  # type: ignore[arg-type]
+            rate = float(declared_bytes_per_s)                    # type: ignore[arg-type]
+            basis = "declared"
     if rate is None or rate <= 0:
         return None
     future = [leg for leg in _legs(plan, mover_role=mover_role)

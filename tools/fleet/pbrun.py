@@ -5544,13 +5544,16 @@ def residency_stage_rows(
     # The pool bandwidth a mover reserves, once anything has measured it.  It
     # is what makes concurrency a ledger decision rather than an accident: the
     # tier mints what the disks delivered plus one probe mover's worth, and a
-    # mover that reserves nothing can never be rationed against another.  None
-    # until both sides of the bound exist, because a guessed bandwidth is the
-    # habit this replaces.  The tier's *current* offer caps it: a fresh seal
-    # asks no more than admission will honour on this cycle (#708).
-    measured_fill = storage_tiers.mover_fill_demand_from_receipts(
-        receipts, tier_id=tier_id, pool_identity=tier_identity)
-    fill, offered_fill, fill_basis = current_fill_offer(tier, measured_fill)
+    # mover that reserves nothing can never be rationed against another.  One
+    # copy's measured rate (#909): the slowest landing of this manifest's
+    # latest window onto this tier, else the median single-reader share, never
+    # the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
+    # asks no more than admission will honour on this cycle (#708), and with
+    # nothing measured the offer is the stated bound, named in demand_source.
+    fill_price = storage_tiers.mover_fill_price(
+        receipts, tier_id=tier_id, pool_identity=tier_identity,
+        manifest_sha256=digest)
+    fill, offered_fill, fill_basis = current_fill_offer(tier, fill_price["mb_s"])
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
@@ -5862,6 +5865,7 @@ def residency_stage_rows(
         demand_source={**priced["demand_source"],
                        "fill_mb_s_pool_side": fill,
                        "fill": fill_basis,
+                       "fill_measured": dict(fill_price),
                        "tier_offer_mb_s": offered_fill})
     return {
         "plan": plan,

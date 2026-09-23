@@ -1233,12 +1233,14 @@ def current_fill_offer(tier: Mapping[str, object],
 
     A sealed row is never rewritten, so the only moment the price can follow
     the tier is when the node is sealed (#708, #710).  The tier's announced
-    tokens are the offer admission will honour on this cycle; the
-    receipts-derived single-reader share is the fallback for a tier that
-    announces none.  When both exist the smaller wins: never ask more than
-    the tier offers, and never ask more than a reader has been measured
-    drawing.  The tier's own probe rule sizes its offer, so a fresh node
-    sealed here is admissible without the tier having to grow past it.
+    tokens are the offer admission will honour on this cycle; one copy's
+    measured rate (:func:`mover_fill_price`, #909) is the fallback for a
+    tier that announces none.  When both exist the smaller wins: never ask
+    more than the tier offers, and never ask more than one copy has been
+    measured taking.  With no measurement the offer itself is the seal: the
+    stated bound, named ``tier-offer``, which runs one copy at a time.  The
+    tier's own probe rule sizes its offer, so a fresh node sealed here is
+    admissible without the tier having to grow past it.
 
     Shared by every sealer of a pool-side movement node: pbrun's movers and
     the produced-output exporter (#747), so a copy into the pool and a copy
@@ -1267,47 +1269,118 @@ def current_fill_offer(tier: Mapping[str, object],
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
     pool_identity: Mapping[str, object] | None = None,
+    manifest_sha256: str | None = None,
 ) -> int | None:
-    """The pool bandwidth a next mover reserves, or ``None`` with nothing measured.
+    """The pool fill a next mover seals, or ``None`` with nothing measured.
 
-    Priced per receipt and maximised across them, never mixed: each receipt
-    bounds *one* mover's draw two ways, and the smaller bound is that receipt's
-    answer.
-
-    * Its own file-side rate is what a copy of this shape achieved -- but a warm
-      one achieved it out of the ARC and the disks never produced it (a live
-      receipt: 1478 MB/s for 3.3 GB off four spindles).
-    * Its window's pool delivery over the movers that shared that window is what
-      one of them can have drawn on average.  The division is the point.
-      ``mean_pool_read_mb_s`` is the *pool's* number: a window shared by three
-      copies reports three copies' worth, and reading it as one mover's rate
-      would reserve the whole pool for each of them -- which re-serializes
-      movers through the fill token, the same failure the CPU demand fixes,
-      arriving by another resource kind.
-
-    A receipt missing either side, or missing its concurrency count, prices
-    nothing; with no receipt priced the answer is ``None`` and the mover
-    reserves no fill, because a guessed bandwidth is the habit this replaces.
+    ``mover_fill_price(...)["mb_s"]``; see there for the rule and its basis.
     """
 
-    best: float | None = None
-    for record in usable_mover_receipts(records, tier_id=tier_id,
-                                        pool_identity=pool_identity):
-        rate = record.get("mb_per_s_file_side")
-        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
-            continue
-        delivered = _delivered(record)
-        if delivered is None:
-            continue
-        sharers = record.get(MOVER_CONCURRENCY_FIELD)
-        if isinstance(sharers, bool) or not isinstance(sharers, int) or sharers < 1:
-            continue
-        share = min(float(rate), delivered / sharers)
-        best = share if best is None else max(best, share)
-    if best is None:
+    return mover_fill_price(records, tier_id=tier_id,
+                            pool_identity=pool_identity,
+                            manifest_sha256=manifest_sha256)["mb_s"]
+
+
+def _landing_mb_s(record: Mapping[str, object]) -> float | None:
+    """What one complete copy landed at, in MB/s, or ``None``.
+
+    ``bytes_staged`` over ``seconds``: the rate the tier loop prices a leg's
+    landing at (``tier_loop._landing_rate``), so a mover sealed at it
+    reserves what the horizon will assume it takes.
+    """
+
+    if record.get("complete") is not True:
         return None
-    demand = int(best)
-    return demand if demand > 0 else None
+    staged = record.get("bytes_staged")
+    seconds = record.get("seconds")
+    if (isinstance(staged, bool) or not isinstance(staged, (int, float))
+            or not math.isfinite(float(staged)) or staged <= 0):
+        return None
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(float(seconds)) or seconds <= 0):
+        return None
+    return float(staged) / MB / float(seconds)
+
+
+def mover_fill_price(
+    records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
+    manifest_sha256: str | None = None,
+) -> dict[str, object]:
+    """The pool fill one next mover reserves, and what measured it (#909).
+
+    One copy's rate, never the tier's.  The seal is three things at once: the
+    fill tokens the copy holds, so the offer over the seal is how many copies
+    run together; the rate ``_fell_short`` holds the copy's own delivery
+    against, which reads as the pool saturating only when the seal is one
+    copy's worth; and the landing rate the tier loop assumes for the plan
+    until its first copy lands (``tier_loop._sealed_fill_bytes_per_s``).  A
+    seal at the whole offer made each copy the only one and was also the
+    rate every horizon assumed.  First of:
+
+    * ``landing``: the slowest landing among the copies of this manifest
+      onto this tier in its most recent window -- the consumer whose last
+      receipt is the newest -- each copy at its latest complete receipt.  The
+      slowest, because the horizon it stands in for errs long when landing
+      is slow.  The latest window and the latest receipt, never every
+      window: receipts are append-only, and the slowest copy ever measured
+      would ratchet the seal down across generations; a remembered first
+      rate would price a slower re-copy too fast (``tier_loop._landing_rate``
+      follows the same rule).  Only receipts that read the pool
+      (``_measured_the_pool``): an adoption window staged from the stage.
+    * ``single-reader-share``: with no copy of this manifest measured, the
+      median over this tier's pool-reading receipts of one reader's share,
+      ``min(file-side rate, window delivery / sharers)`` -- the same "one
+      reader's worth" :func:`fill_supply_from_records` probes the pool by.
+      The median, not the maximum: the maximum was one window's best share
+      (440 MB/s live on 2026-09-23, over a 428 offer), so the offer capped
+      every seal and each copy ran alone.
+    * ``none``: nothing on this tier prices a reader, and the caller's cap
+      (:func:`current_fill_offer`) decides.
+
+    A copy that landed under 1 MB/s prices nothing, and neither does a
+    median share under it: the ledger counts whole MB/s, and a zero seal
+    reserves no fill at all.  Returns ``{"mb_s", "basis",
+    "receipts_priced", "window_consumer"}``.
+    """
+
+    usable = usable_mover_receipts(records, tier_id=tier_id,
+                                   pool_identity=pool_identity)
+    if manifest_sha256:
+        latest: dict[str, Mapping[str, object]] = {}
+        for record in usable:
+            if str(record.get("manifest_sha256") or "") != str(manifest_sha256):
+                continue
+            rate = _landing_mb_s(record)
+            if not _measured_the_pool(record) or rate is None or rate < 1:
+                continue
+            key = str(record.get("action_key") or "")
+            held = latest.get(key)
+            if held is None or (float(record.get("unix", 0.0) or 0.0)
+                                >= float(held.get("unix", 0.0) or 0.0)):
+                latest[key] = record
+        newest: dict[str, float] = {}
+        for record in latest.values():
+            consumer = str(record.get("consumer_action_key") or "")
+            when = float(record.get("unix", 0.0) or 0.0)
+            newest[consumer] = max(when, newest.get(consumer, when))
+        if newest:
+            window = max(newest, key=lambda consumer: (newest[consumer], consumer))
+            rates = [_landing_mb_s(record) for record in latest.values()
+                     if str(record.get("consumer_action_key") or "") == window]
+            return {"mb_s": int(min(rate for rate in rates if rate is not None)),
+                    "basis": "landing", "receipts_priced": len(rates),
+                    "window_consumer": window}
+    shares = [share for share in (_single_reader_share(record) for record in usable
+                                  if _measured_the_pool(record))
+              if share is not None]
+    if shares:
+        median = int(statistics.median(shares))
+        if median >= 1:
+            return {"mb_s": median, "basis": "single-reader-share",
+                    "receipts_priced": len(shares), "window_consumer": None}
+    return {"mb_s": None, "basis": "none", "receipts_priced": 0,
+            "window_consumer": None}
 
 
 def fill_supply_from_records(
@@ -2008,6 +2081,7 @@ __all__ = [
     "PROMOTION_CHUNKS_PER_WINDOW",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
+    "mover_fill_price",
     "manifest_phase_ranges",
     "capacity_kind_of",
     "promotion_chunk_gib_for_window",

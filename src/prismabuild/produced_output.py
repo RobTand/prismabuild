@@ -3449,13 +3449,16 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     fill: int | None = None
     fill_basis: str | None = None
     if reserve_fill:
-        # pbrun's mover rule, unchanged: the receipts' single-reader share,
-        # capped by what the tier offers on this cycle (#708). Receipts from
-        # another pool behind the same tier id price nothing (#611).
+        # pbrun's mover rule, unchanged: one copy's measured rate -- this
+        # batch's slowest landing in its latest window, else the median
+        # single-reader share (#909) -- capped by what the tier offers on this
+        # cycle (#708). Receipts from another pool behind the same tier id
+        # price nothing (#611).
         identity = record.get("pool_identity")
         measured = tiers_mod.mover_fill_demand_from_receipts(
             queue.move_records(), tier_id=tier,
-            pool_identity=identity if isinstance(identity, Mapping) else None)
+            pool_identity=identity if isinstance(identity, Mapping) else None,
+            manifest_sha256=manifest_digest)
         priced, _offer, fill_basis = tiers_mod.current_fill_offer(
             record, measured)
         if priced is not None and int(priced) > 0:
