@@ -396,19 +396,26 @@ LIVE_ENV = (
 def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     root = tmp_path / "live-guard"
     root.mkdir(exist_ok=True)
-    # Worker tests also import private module names after this fixture starts.
-    # Keep their new host-local publication lock off the production lock inode.
+    # Tests also load fleet tools under private module names after this
+    # fixture starts (``spec_from_file_location("wl_census", WORKER_LOOP)``).
+    # Repoint such a module's live defaults as it is loaded, matched by file
+    # name. Before #1019 only worker_loop's two lock roots were covered, and
+    # 31 tests read the fleet's live ``repo/RUNTIME_VERSION.json`` through a
+    # privately loaded worker_loop; the call-time guard found them.
     import importlib.machinery
     load = importlib.machinery.SourceFileLoader.exec_module
-    def isolated_worker_import(loader, module):
+    def isolated_import(loader, module):
         load(loader, module)
-        if (Path(getattr(module, "__file__", "")).name == "worker_loop.py"
-                and hasattr(module, "PUBLICATION_LOCK_ROOT")):
-            module.PUBLICATION_LOCK_ROOT = root / "offer-publication"
-            if hasattr(module, "ROLE_LOCK_ROOT"):
-                module.ROLE_LOCK_ROOT = root / "role-locks"
+        stem = Path(getattr(module, "__file__", "") or "").stem
+        for module_name, attr, sub in LIVE_DEFAULTS:
+            if module_name.rsplit(".", 1)[-1] != stem or not hasattr(module, attr):
+                continue
+            replacement = root / sub
+            if isinstance(getattr(module, attr), str):
+                replacement = str(replacement)
+            setattr(module, attr, replacement)
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
-                        isolated_worker_import)
+                        isolated_import)
     for name, sub in LIVE_ENV:
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:
