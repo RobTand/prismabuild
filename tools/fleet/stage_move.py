@@ -55,6 +55,7 @@ import os
 from pathlib import Path
 import queue as queuelib
 import resource
+import select
 import socket
 import stat as statmod
 import struct
@@ -439,7 +440,46 @@ _COARSE_REALTIME: int | None = (
 #: an attribute cache.  Anything unlisted lists every directory every time.
 _LOCAL_CLOCK_FILESYSTEMS = frozenset({"zfs", "ext4", "xfs", "btrfs", "tmpfs"})
 
+#: The mount table :func:`_filesystem_type` reads, and the file whose
+#: ``POLLPRI`` says the table changed.
+_MOUNTINFO = "/proc/self/mountinfo"
+
+#: ``major:minor`` answers remembered since the mount table last changed.
 _filesystem_types: dict[int, str | None] = {}
+
+#: ``(pid, descriptor, poller)`` watching :data:`_MOUNTINFO`, or ``None``.
+_mount_watch: tuple[int, int, "select.poll"] | None = None
+_mount_lock = threading.Lock()
+
+
+def _mount_table_changed() -> bool:
+    """Whether the mount table may have changed since this was last asked.
+
+    The kernel marks an open ``/proc/self/mountinfo`` with ``POLLPRI`` and
+    ``POLLERR`` after any mount or unmount in the process's namespace, and
+    the poll that reports the mark clears it.  The watch is opened on first
+    use and again in a forked child, which must not clear its parent's mark
+    on a shared open file.  A first call, or a table that cannot be watched,
+    answers ``True``: nothing remembered before a watch existed is trusted.
+    """
+
+    global _mount_watch
+    watch = _mount_watch
+    if watch is None or watch[0] != os.getpid():
+        try:
+            descriptor = os.open(_MOUNTINFO, os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            return True
+        poller = select.poll()
+        poller.register(descriptor, select.POLLPRI | select.POLLERR)
+        _mount_watch = (os.getpid(), descriptor, poller)
+        return True
+    try:
+        events = watch[2].poll(0)
+    except OSError:
+        return True
+    return any(mask & (select.POLLPRI | select.POLLERR)
+               for _descriptor, mask in events)
 
 
 def _filesystem_type(device: int) -> str | None:
@@ -448,25 +488,33 @@ def _filesystem_type(device: int) -> str | None:
     Matched on the ``major:minor`` field, so a bind mount answers with its
     source's type and nothing is inferred from a path prefix.  ``None`` when
     no mount names the device or the table cannot be read.  Remembered per
-    device for the life of the process.
+    device only until the mount table changes (:func:`_mount_table_changed`):
+    anonymous device numbers (``0:N``) are shared by ZFS datasets, tmpfs,
+    NFS, overlay and FUSE mounts and handed out again after an unmount, so a
+    number once seen as ``zfs`` may later name a network mount.  The caller
+    has already taken its ``lstat``, so a change before it is always seen.
     """
 
-    if device in _filesystem_types:
-        return _filesystem_types[device]
-    wanted = f"{os.major(device)}:{os.minor(device)}"
-    found: str | None = None
-    try:
-        with open("/proc/self/mountinfo") as stream:
-            for line in stream:
-                fields = line.split()
-                if len(fields) > 2 and fields[2] == wanted and " - " in line:
-                    tail = line.split(" - ", 1)[1].split()
-                    found = tail[0] if tail else None
-                    break
-    except OSError:
-        found = None
-    _filesystem_types[device] = found
-    return found
+    with _mount_lock:
+        if _mount_table_changed():
+            _filesystem_types.clear()
+        if device in _filesystem_types:
+            return _filesystem_types[device]
+        wanted = f"{os.major(device)}:{os.minor(device)}"
+        found: str | None = None
+        try:
+            with open(_MOUNTINFO) as stream:
+                for line in stream:
+                    fields = line.split()
+                    if (len(fields) > 2 and fields[2] == wanted
+                            and " - " in line):
+                        tail = line.split(" - ", 1)[1].split()
+                        found = tail[0] if tail else None
+                        break
+        except OSError:
+            found = None
+        _filesystem_types[device] = found
+        return found
 
 
 def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:

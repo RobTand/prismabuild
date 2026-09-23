@@ -4718,11 +4718,15 @@ The refusal in step 1 closes the gap a bare `stat` comparison leaves: two
 changes in one clock tick share a timestamp. Stamps are trusted only on
 filesystems whose directory times come from this kernel's clock (`zfs`,
 `ext4`, `xfs`, `btrfs`, `tmpfs`, matched on the device's `major:minor` in
-`/proc/self/mountinfo`). On the NFS export every directory is listed every
-time, as before. Two things are outside the argument. A file rewritten in
-place does not touch its directory. Every writer of these records files by
-rename (`pool._write_json_atomic`, `residency_map.write_fragment`), and
-the two readers differ in what they rely on:
+`/proc/self/mountinfo`). An answer is remembered only until the kernel
+signals a mount or unmount (`POLLPRI` on `/proc/self/mountinfo`), because
+anonymous device numbers are shared by ZFS, tmpfs, NFS, overlay and FUSE
+mounts and handed out again after an unmount. On the NFS export every
+directory is listed every time, as before. Two things are outside the
+argument. A file rewritten in place does not touch its directory. Every
+writer of these records files by rename (`pool._write_json_atomic`,
+`residency_map.write_fragment`), and the two readers differ in what they
+rely on:
 
 - The residency census still `stat`s every fragment of a kept directory and
   compares its #761 version, so a fragment rewritten in place, made
@@ -4779,8 +4783,13 @@ unchanged.
 **What a cycle reports.** `tier_loop.LAST_CYCLE`, carried on each
 `tier-cycle` line, holds `cycle_seconds`, the seconds of each step
 (`phases`), and `reads`: directories listed and reused and records parsed,
-for both readers. On a steady cycle nothing is listed or parsed, and the
-reused counts show what was compared instead.
+for both readers. `receipts_unreadable` names any receipt directory the
+cycle could not read, with the error. Such a directory is skipped, as the
+plain read skipped it, and the fill supply is folded from the receipts that
+were read; failing the cycle instead would stop the windows and landing
+records the loop publishes until someone repaired the directory. On a
+steady cycle nothing is listed or parsed, and the reused counts show what
+was compared instead.
 
 **Measured.** `tools/fleet/bench_tier_cycle.py` at the live shape (28,943
 done, 7,142 failed, 1,877 withdrawn, 6,434 receipts, 404 empty namespaces,

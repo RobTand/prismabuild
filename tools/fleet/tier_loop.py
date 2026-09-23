@@ -288,6 +288,15 @@ class ReceiptCache:
     The receipt set itself is every receipt on disk, as before.  Bounding it
     by the oldest live plan would change the fold's answer, not only its cost
     (#992 item 2 stays open for a fold that carries its state across the cut).
+
+    A receipt directory that cannot be read is skipped, as the plain read
+    skipped it, and named in :attr:`unreadable` for the cycle's record
+    (``receipts_unreadable`` on :data:`LAST_CYCLE`).  Failing the cycle
+    instead would fail every cycle until an operator fixed the directory,
+    and a failed cycle publishes no windows and no landing records, which
+    consumers read as a silent tier loop.  The fill supply is folded from
+    the receipts that were read, and folded again when the directory
+    becomes readable.
     """
 
     def __init__(self) -> None:
@@ -295,17 +304,28 @@ class ReceiptCache:
         self.census = stage_release.CensusIndex()
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
-        self._folds: dict[str, tuple[tuple[int, ...], dict[str, object]]] = {}
+        self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
+        #: Receipt directories the last :meth:`read` could not read, and why.
+        self.unreadable: dict[str, str] = {}
 
     def read(self, directories: list[Path]) -> list[dict[str, object]]:
         out: list[dict[str, object]] = []
+        read: list[Path] = []
+        unreadable: dict[str, str] = {}
         for directory in directories:
-            for _path, record in self.records.read(
-                    directory, select=_receipt_name, parse=pool._read_json):
+            try:
+                kept = self.records.read(
+                    directory, select=_receipt_name, parse=pool._read_json)
+            except OSError as exc:
+                unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
+                continue
+            read.append(directory)
+            for _path, record in kept:
                 if isinstance(record, dict):
                     out.append(record)
-        self._directories = tuple(directories)
+        self._directories = tuple(read)
         self._records = out
+        self.unreadable = unreadable
         return out
 
     def fill_supply(self, pool_identity: Mapping[str, object] | None,
@@ -317,7 +337,8 @@ class ReceiptCache:
         does to it reaches the next cycle.
         """
 
-        generations = tuple(self.records.generation(directory)
+        generations = tuple((str(directory),
+                             self.records.generation(directory))
                             for directory in self._directories)
         key = json.dumps(pool_identity, sort_keys=True, default=str)
         kept = self._folds.get(key)
@@ -6559,6 +6580,7 @@ def cycle(
                        for name, value in phases.seconds.items()},
             "reads": {name: after[name] - before.get(name, 0)
                       for name in after},
+            "receipts_unreadable": dict(getattr(receipts, "unreadable", {})),
         }
 
 
