@@ -4375,10 +4375,13 @@ consult on the split design (drop in one hold, then unlink in bounded holds)
 judged it sound with seven fixes, among them liveness for publishers past
 their 30 s grace, and did not find this interleaving.
 
-The hold still grows with the range. Measured at 12 to 17 us an entry for
-the locked re-census and the unlinks, the widest campaign range (161,572
-entries) would hold the lock for about 2 to 3 s; the same linear
-extrapolation of the old hold (176 to 421 us an entry) gives 28 to 68 s.
+The hold still grows with the range, and the unlinks in it slow with the
+disk. The locked re-census and the unlinks took 12 to 17 us an entry on a
+quiet box and 61 us beside a second 20,000-entry egress on the same disk.
+Extrapolated linearly, the widest campaign range (161,572 entries) holds
+the lock for about 2 to 3 s quiet and up to 10 s under that contention; the
+same extrapolation of the old hold (176 to 421 us an entry quiet, 272 us
+contended) gives 28 to 68 s.
 The work per tier per cycle is already bounded by a priced number:
 `tier_loop.evict_beyond_horizon` stops once the tier's free tokens cover the
 shortfall its windows' refill horizons price, and evicts nothing when every
