@@ -292,7 +292,10 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
                       if first_consumer == CONSUMER_A else CONSUMER_A)
     gate = _gated(first)
     assert set(gate) == {gated_consumer}
-    assert gate[gated_consumer]["reason"] == "joint-fit-stall"
+    # Both gates refuse (1+1 held against 3 beside a 1+1 minimum; 2 committed
+    # beside a 2 GiB footprint), and since #907 the commitment names it:
+    # no eviction admits the second window while the first is running.
+    assert gate[gated_consumer]["reason"] == "joint-commitment-stall"
     assert gate[gated_consumer]["permanent"] is False
     P, Q = first_consumer, gated_consumer
     ptag = "aa" if P == CONSUMER_A else "bb"

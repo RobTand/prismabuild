@@ -1768,7 +1768,9 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
                    landing_bytes_per_s: float | None,
                    report_latency_s: float,
                    fill_supply_mb_s: float | None = None,
-                   mover_role: str = "mover_row") -> dict[str, object] | None:
+                   mover_role: str = "mover_row",
+                   consumption_bytes_per_s: float | None = None,
+                   ) -> dict[str, object] | None:
     """How far ahead of a reading consumer its window must be staged (#903).
 
     The horizon is three spans of the plan's read order, which is its byte
@@ -1800,6 +1802,11 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     fill supply bounds its steady consumption from above, and a horizon
     priced at it is at least as long as the measured one would be.
 
+    ``consumption_bytes_per_s``, when given, is the rate, and neither of the
+    two above is computed: :func:`read_footprint` asks for the horizon at
+    phases the consumer has not reached, where the bytes through that phase
+    over the time to *its* report would be a rate nobody measured (#907).
+
     Returns ``None`` when the horizon is undefined: no accepted progress (the
     window's own no-progress regime already publishes one step), no
     read-ahead or landing rate, or no consumption rate.  ``None`` keeps the window's
@@ -1829,7 +1836,12 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     read_through = int(reading["end_bytes"])
     rate: float | None = None
     basis = ""
-    if (_finite_number(claimed_unix) and _finite_number(reported_unix)
+    if consumption_bytes_per_s is not None:
+        if (_finite_number(consumption_bytes_per_s)
+                and float(consumption_bytes_per_s) > 0):     # type: ignore[arg-type]
+            rate = float(consumption_bytes_per_s)            # type: ignore[arg-type]
+            basis = "given"
+    elif (_finite_number(claimed_unix) and _finite_number(reported_unix)
             and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
         rate = (read_through - first_start) / (
             float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
@@ -1892,6 +1904,58 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
 def _finite_number(value: object) -> bool:
     return (not isinstance(value, bool) and isinstance(value, (int, float))
             and math.isfinite(float(value)))
+
+
+def read_footprint(plan: Mapping[str, object], accepted_phase: str | None, *,
+                   capacity_gib: int,
+                   readahead_bytes: int | None,
+                   landing_bytes_per_s: float | None,
+                   consumption_bytes_per_s: float | None,
+                   report_latency_s: float,
+                   mover_role: str = "mover_row") -> int:
+    """The most tier GiB this consumer's window will publish at once (#907).
+
+    The window's own answer, asked at every phase the consumer has still to
+    read: at each, the stage GiB :func:`window` publishes from an empty tier
+    of ``capacity_gib`` with the refill horizon recomputed at that phase, and
+    the largest of them.  So it is exactly the window's rule -- the phase
+    being read, the in-horizon legs, and the #633 run-ahead bound, which
+    keeps it at or under ``capacity_gib`` -- summed over what the window can
+    hold at once, not over the plan.
+
+    The horizon at each phase is priced at one ``consumption_bytes_per_s``
+    and one ``landing_bytes_per_s``: rates measured now stand for the rest
+    of the plan.  Where the horizon is undefined -- no read-ahead, landing or
+    consumption rate -- the window has only the run-ahead bound, and the
+    footprint is what that bound lets it publish.
+
+    A consumer that has not accepted a phase is asked from its first phase
+    as though it had: the footprint is what its window grows to once it
+    reads, not the one step it publishes before (#632).
+    """
+
+    if mover_role not in _MOVEMENT_ROLES:
+        raise ResidencyPlanError(
+            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+            f"not {mover_role!r}")
+    capacity = int(capacity_gib)
+    largest = 0
+    for phase in remaining(plan, accepted_phase):
+        name = str(phase["name"])
+        horizon = refill_horizon(
+            plan, name, claimed_unix=None, reported_unix=None,
+            readahead_bytes=readahead_bytes,
+            landing_bytes_per_s=landing_bytes_per_s,
+            report_latency_s=report_latency_s, mover_role=mover_role,
+            consumption_bytes_per_s=consumption_bytes_per_s)
+        end = None if horizon is None else horizon["horizon_end_bytes"]
+        decision = window(plan, accepted_phase=name, free_gib=capacity,
+                          capacity_gib=capacity, mover_role=mover_role,
+                          horizon_end_bytes=end)             # type: ignore[arg-type]
+        publish = decision["publish"]
+        assert isinstance(publish, list)
+        largest = max(largest, sum(int(row["stage_gib"]) for row in publish))
+    return largest
 
 
 #: Which chunk table a window decision reads, by mover role: the stage
@@ -2303,6 +2367,7 @@ __all__ = [
     "mover_keys",
     "ram_mover_keys",
     "read",
+    "read_footprint",
     "refill_horizon",
     "remaining",
     "runahead_budget_gib",

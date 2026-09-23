@@ -5749,8 +5749,9 @@ is an admitted window's advance, which the would-publish term covers.
   waits `STAGED_RANGE_WAIT_S` (300 s) for the window to publish it again.
 * Since #906 the ram window is bounded by its own horizon as well (next
   section).
-* The horizon does not jointly admit consumers: two readers whose horizons
-  together exceed the tier still contend through the joint gate, as before.
+* Since #907 admission charges the horizons jointly: a newcomer is admitted
+  only when its read footprint fits beside every admitted window's (see
+  "Admission charges refill horizons jointly" below).
 * A consumer claimed before #903 keeps its landed ranges until another
   window needs the room. Its movers already in `ready/` past its horizon stay
   queued: withdrawing one would retire the whole plan (#708). Such a row
@@ -5829,6 +5830,204 @@ room its advance publishes into (#745). `_ram_window_state` took the same
 figure as `own_fence_gib` and did not add it. On a tmpfs with room for
 exactly the current promotion and its advance, the advance could then never
 publish. It now adds it.
+
+### Admission charges refill horizons jointly (#907)
+
+#903 bounded each window by its refill horizon, and admission did not follow.
+The joint-fit gate (`window_credit.gate_newcomer`) admits a newcomer when its
+*minimum* fits: held + queued + its current + its next. The window then grows
+into whatever room is free, up to its horizon. Nothing bounded the *sum* of
+the horizons, so two admitted windows could between them want more of the
+stage than it has. Ranges inside a horizon are never evicted, so one reader
+then waits on the other's reading: a range miss, a 300 s range wait, a stall.
+No incident has shown this yet. It is the soundness gap the #903 review named,
+and the fixtures in `tests/test_admission_charges_refill_horizons_jointly.py`
+reproduce it.
+
+**The read footprint.** `residency_plan.read_footprint` asks a window's own
+rule at every phase the consumer still has to read: the stage GiB `window`
+publishes from an empty tier with the refill horizon recomputed at that phase,
+and the largest of them. It is the most the window will ever hold at once,
+not the plan. The #633 run-ahead bound keeps it at or under the tier's
+capacity. The horizon at each phase is priced at the consumer's rates now:
+
+* Consumption: for a claimed consumer with accepted progress, the horizon's
+  own measurement (bytes through the accepted phase over the time from the
+  claim to its report), which is what bounds its window now, or the fastest
+  rate its claim has *attained*, whichever is higher. A reader that slowed
+  can speed up again, and its window grows back into the room it gave up,
+  so the footprint does not follow the rate down past what the reader has
+  shown it can do. Attained counts only the phases before the accepted one,
+  which the reader has certainly read by its report. The horizon's rate
+  counts the whole accepted phase as read, and a first report a few seconds
+  after the claim makes that a whole phase over a few seconds: kept for the
+  claim's lifetime, that peak would refuse every newcomer beside it. The
+  tier loop keeps the attained rate in memory; a restart forgets it and
+  prices each claim at its current rate. Anything else — a newcomer, a
+  ready consumer, a claim with no report — has measured nothing, and the
+  tier's announced fill supply stands in, as it does for the horizon.
+* Landing: the slowest complete copy of the plan, else the smallest fill its
+  movers were sealed with, else the fill supply, as for the horizon.
+* Read-ahead: the consumer's reservations (`mem_gb` plus its admission's GPU
+  budget), as for the horizon.
+
+With no consumption or landing rate the horizon is undefined, and the
+footprint is what the #633 bound alone lets the window publish.
+
+**The commitment.** `tier_loop._commitment_census` is, per stage tier, what
+admission has already promised:
+
+* every held token nothing can evict: held, less the tier's orphans, less each
+  window's passed legs and legs past its horizon;
+* queued new money: ready rows' tier demand no funding record covers;
+* the unheld produced-output windows (`produced_output.unheld_window_gib`);
+* each admitted window's **growth**: its read footprint less what it already
+  holds toward it (its in-horizon legs held or queued, and its fence grants).
+
+Every token is in exactly one term. A leg is passed, past the horizon or ahead
+of it; an orphan is in no live plan; a queued row is new money once, whether
+or not a window's holding names it. So an admitted window is committed at the
+larger of what it holds and its footprint, and a static holder (a receipt-less
+token, an output owner's held window) at what it holds.
+
+A live consumer the census cannot read is not free room. A plan read fails on
+a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then
+drops out of the pass, and its ranges would count as orphans and its growth
+as nothing. So a range whose receipt names a live queue item is never counted
+evictable, and a tier that an admitted window may be on uncensused (its plan
+or its mover state did not read) refuses its newcomers with
+`advance-deferred-unknown-evidence` until a pass reads it. An unreadable plan
+blinds the tier its queue item declares, or every tier if the item does not
+read either. A consumer that is certainly a newcomer (ready, none of the leads
+its item declares published) blinds nothing: it is admitted nowhere, so it
+commits nothing, and it waits for its own plan anyway.
+
+`window_credit.gate_commitment` admits a newcomer when the commitment plus its
+own growth fits the tier. Otherwise it is refused with `joint-commitment-stall`,
+a transient wait for admitted windows to finish, and the `window-gated` event
+carries every term under `commitment`. One exception: a newcomer with no other
+admitted window, owed output or queued demand on the tier is admitted under
+the joint-fit gate alone. What is committed then is holders that never grow,
+so the newcomer contends only with itself: its window runs short of its
+footprint, as every window did before #907, and a refusal would be one no later
+cycle could lift.
+
+**Where it is asked.** A newcomer's formation event is the one admission
+point, and it has three spellings:
+
+* The joint-fit gate in `_protect_tier_advances`. The commitment is asked
+  unless the joint-fit gate refused for good (`joint-fit-oversize`), and when
+  both refuse the reason is `joint-commitment-stall`, because no eviction can
+  admit what the commitment refuses. Newcomers are asked in the gate's own
+  order, and each admitted one is committed before the next. A commitment
+  wait sets the priority barrier as a joint-fit wait does.
+* Adoption. Taking a newcomer's lead over from a withdrawn donor admits it,
+  and adoption moves tokens rather than acquiring them, so no joint-fit gate
+  saw it: a successor over its predecessor's ranges (R13 over R12's) would
+  have been admitted without any gate. `adopt_resident_ranges` now asks the
+  commitment before a ready consumer's first adoption, and files
+  `adoption-deferred` when it refuses. The donor's range stays an orphan.
+* The eviction pressure. A newcomer the commitment refuses publishes nothing
+  this cycle, so `window_pressure` counts neither its lead nor its admission
+  shortfall (#632: no eviction for room nobody will use).
+
+**Owed outputs (#905).** The unheld produced-output windows are charged in the
+commitment whether or not `--output-windows` is set: the producer takes that
+room back from free, and a newcomer admitted into it would be squeezed by it.
+An output census that does not read refuses the tier's newcomers
+(`advance-deferred-unknown-evidence`, the error under `commitment`) rather than
+counting zero; admitted windows keep publishing. `--output-windows` now decides
+only whether the joint-fit gate, the fence check and the relief count the owed
+window as well.
+
+**On R12's recorded state** (`tests/fixtures/r12_stage_20260922.json`)
+against the 585 GiB stage of 2026-09-23, with the live 5 s cycle:
+
+* R12, claimed at `chain-043`, has a footprint of 242 GiB (measured
+  20.7 MB/s, 180 GiB of read-ahead, one 22 GiB refill leg) and a 48 GiB
+  output window.
+* An R12-shaped newcomer (R13) has 220 GiB before its claim: 100 GiB of
+  host read-ahead (its 80 GiB GPU budget is set at claim), with the refill
+  priced at the 413 MB/s fill supply. Beside R12 it is admitted:
+  242 + 48 + 220 + 48 = 558 GiB. Once claimed and reporting at R12's rate it
+  is R12's 242, and the two commit 580.
+* A native capture's footprint is its whole 20 GiB plan, and a Stage-B
+  quantum's (a 3 GiB head and three 22 GiB layers) its whole 69 GiB.
+* R13 alone, at R12's rate, commits 290 GiB and leaves 295: four Stage-B
+  quanta or fourteen captures beside it, where the joint-fit gate alone
+  admitted any number whose current and next fit.
+
+The last section of the test file replays the same state on the 530 GiB the
+stage had for windows on 2026-09-22 (R12's claim reservation and the
+receipt-less holder folded out), with the 60 s default cycle. R12 commits
+308 GiB: 264 inside its horizon and at its advance, and its two queued rows
+past the horizon (44). Its 264 GiB past the horizon is evictable.
+
+* The capture passes the commitment (308 + 20 = 328). The joint-fit gate
+  refuses it until the relief gives back ranges past R12's horizon, as
+  before #907, and then its lead publishes.
+* An R13 newcomer (242 GiB at this latency) is refused: 308 + 242 = 550.
+  Before #907 the relief gave back R12's farthest ranges for its lead; now
+  nothing is evicted for it.
+* After the relief took R12's ranges past its horizon, four Stage-B quanta
+  all fit the joint-fit gate (264 + 44 + 4 × 25 = 408). The commitment
+  admits three (515) and the fourth waits (584).
+
+A newcomer's footprint moves with the announced fill supply, which prices its
+consumption until it reports. At the 144 MB/s the test's own cycle probes,
+R13's footprint is 176 GiB, and 308 + 176 = 484 fits: the same R13 is admitted
+on a stage that announces a slower fill.
+
+**Assumptions and limits.**
+
+* Sound only while what it counts as evictable comes back without another
+  reader's progress: reader pins release independently of progress, egress
+  rows run, and no mover key is in two live plans.
+* A newcomer's read-ahead is its host reservation only. The GPU budget is set
+  at claim and enters its footprint from then on, so a newcomer admitted
+  beside it before then was not charged for it. R13 above is charged 220 GiB
+  at admission and needs 242 at R12's measured rate: 22 GiB admitted
+  uncharged. (Between its claim and its first report the fill supply still
+  prices its consumption and its footprint reads 308, but its window
+  publishes one step until that report, #632.)
+* The read-ahead is the reservation, not a declared prefetch depth. R12's
+  180 GiB over-states a one-phase (22 GiB) lookahead by about 150 GiB. In the
+  horizon that error only cached more; here it refuses work that would fit.
+  A newcomer's supply-priced refill is the second-order term (R13 with its
+  GPU budget: 76 GiB against 4 measured).
+* A consumer whose state does not read publishes nothing while it stays
+  unknown and is not counted.
+* A leg left past the horizon that no eviction took becomes the window's
+  advance, which is not charged until it is inside: at most one leg.
+* A window's rows queued past its horizon (R12's `chain-021` and
+  `chain-018`, published before #903) are committed as queued new money
+  until they are withdrawn or land, although once landed they are evictable.
+  This errs toward refusing.
+* Footprints are recomputed each pass. If admitted windows later want more
+  than the tier (a claim measured faster than its stand-in), they keep
+  running and contend as before; newcomers are refused until the sum fits.
+  Nothing reports the overcommit.
+* An admitted window that the joint-fit gate has physically stalled still
+  holds its footprint in the commitment. Beside a holder nothing can evict, a
+  tier can be over-committed by that window alone, and then a newcomer that
+  would fit the free room waits behind a window that cannot progress either,
+  until the holder goes. Because nothing reports the overcommit, this looks
+  like a stall to an operator: the newcomer's `window-gated` event carries
+  the terms (`committed_gib` above `capacity_gib`).
+* The horizon's own in-phase over-estimate is real window behavior: a claim
+  whose first report lands seconds after it has a window that runs to the
+  #633 bound until its next report. The footprint follows it while it lasts,
+  so newcomers wait out that interval.
+* The eviction pressure asks the commitment in the gate's priority order but
+  not behind the gate's priority barrier. With mixed priorities, a
+  lower-priority newcomer that the barrier holds back while the commitment
+  admits it can still be given relief it does not use that cycle. Uniform
+  priorities never raise the barrier.
+* The census reads the ready and claimed items, every live window's movers on
+  the tier and the output census, on each pass that asks it (at most three a
+  cycle, and only when a newcomer is present). Its cost is not measured.
+* Stage tiers only. A ram miss is a read from the stage, slower but never a
+  stall (#906), and the ram leg keeps the joint-fit gate alone.
 
 ### Adopting a resident range, and when an orphan is evicted
 
@@ -6999,7 +7198,9 @@ asks for no relief, because its publication defers.
 
 The tier loop counts the obligation only when it runs with `--output-windows`
 (or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
-made before, with the same note. Any other value of the variable stops the
+made before, with the same note. Since #907 that is true of the joint-fit
+gate, the fence check and the relief only: the admission commitment charges
+the owed window whatever the switch says (#905). Any other value of the variable stops the
 loop at start. The supervisor restarts a role whose argv differs from its
 declaration, and a role inherits the supervisor's environment, so the switch
 is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published
