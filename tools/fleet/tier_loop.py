@@ -2662,10 +2662,11 @@ def _commitment_census(queue: pool.PoolQueue,
     stall (#906).
 
     ``unknown`` is every live consumer the caller could not census -- an
-    unreadable plan (``tier_id`` empty: any tier) or unreadable state on a
-    named tier.  Its ranges are still counted, as a live item's, but its
-    growth is not known, and the next pass that reads its plan may find it
-    wants its footprint back.  So its tier is not censused either.
+    unreadable plan (``tier_id`` empty) or unreadable state on a named tier.
+    Its ranges are still counted, as a live item's.  If it may be an
+    admitted window (:func:`_uncensused_tier`), its growth is not known and
+    the next pass that reads its plan may find it wants its footprint back,
+    so its tier is not censused either.  A certain newcomer commits nothing.
 
     Returns ``{tier_id: {...}}``; a tier whose ledger, queue or output
     census does not read, or that a live consumer may be on uncensused,
@@ -2692,8 +2693,11 @@ def _commitment_census(queue: pool.PoolQueue,
     uncensused: dict[str, str] = {}
     for entry in unknown:
         consumer_key = str(entry.get("consumer") or "")
-        entry_tier = str(entry.get("tier_id") or "") or _declared_tier(
-            queue, consumer_key)
+        entry_tier: str | None = str(entry.get("tier_id") or "")
+        if not entry_tier:
+            entry_tier = _uncensused_tier(queue, consumer_key)
+        if entry_tier is None:
+            continue
         uncensused.setdefault(entry_tier, (
             f"{consumer_key[:12] or '(census)'}: {entry.get('error', '')}"))
     for tier_id in tier_ids:
@@ -2821,12 +2825,16 @@ def _commitment_census(queue: pool.PoolQueue,
     return out
 
 
-def _declared_tier(queue: pool.PoolQueue, key: str) -> str:
-    """The stage tier a live item's residency declares, or ``""`` when unknown.
+def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
+    """The tier a live consumer the census could not read may hold room on.
 
-    What the commitment census reads for a consumer whose plan did not: the
-    queue item names its tier as well, so an unreadable plan blinds only the
-    tier it is on.  ``""`` -- no key, no item, no tier -- blinds every tier.
+    Read from its queue item, which names the tier and the leads without
+    the plan.  ``None`` when it is certainly a newcomer -- ready, and none
+    of its leads published: it has been admitted nowhere, so it commits
+    nothing, and it waits for its own plan anyway.  Otherwise the tier its
+    residency declares, or ``""`` (every tier) when the item does not say
+    or does not read: a claimed consumer, or a ready one whose lead is
+    published, is an admitted window whose growth the census cannot know.
     """
 
     if not key:
@@ -2840,8 +2848,25 @@ def _declared_tier(queue: pool.PoolQueue, key: str) -> str:
             return ""
         residency = item.get("residency") if isinstance(item, dict) else None
         tier_id = residency.get("tier_id") if isinstance(residency, dict) else None
-        return tier_id if isinstance(tier_id, str) else ""
-    return ""
+        if not isinstance(tier_id, str) or not tier_id:
+            return ""
+        if state == pool.CLAIMED:
+            return tier_id
+        leads = residency.get("leads")                     # type: ignore[union-attr]
+        if not isinstance(leads, list):
+            return ""
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            for lead in leads:
+                lead = str(lead)
+                if (queue.item_path(pool.READY, lead).exists()
+                        or queue.item_path(pool.CLAIMED, lead).exists()
+                        or ledger.holder_tokens(lead)):
+                    return tier_id
+        except (OSError, ValueError, pool.PoolContractError):
+            return ""
+        return None
+    return None       # no longer live: nothing to wait for
 
 
 def _priority(consumer: Mapping[str, object]) -> int:

@@ -5894,11 +5894,13 @@ A live consumer the census cannot read is not free room. A plan read fails on
 a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then
 drops out of the pass, and its ranges would count as orphans and its growth
 as nothing. So a range whose receipt names a live queue item is never counted
-evictable, and a tier that a live consumer may be on uncensused (its plan or
-its mover state did not read) refuses its newcomers with
+evictable, and a tier that an admitted window may be on uncensused (its plan
+or its mover state did not read) refuses its newcomers with
 `advance-deferred-unknown-evidence` until a pass reads it. An unreadable plan
 blinds the tier its queue item declares, or every tier if the item does not
-read either.
+read either. A consumer that is certainly a newcomer (ready, none of the leads
+its item declares published) blinds nothing: it is admitted nowhere, so it
+commits nothing, and it waits for its own plan anyway.
 
 `window_credit.gate_commitment` admits a newcomer when the commitment plus its
 own growth fits the tier. Otherwise it is refused with `joint-commitment-stall`,
