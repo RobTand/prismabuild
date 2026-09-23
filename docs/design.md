@@ -5,8 +5,8 @@ LIVE; SLURM LANE BUILT BUT PAUSED AND INSTALLED ON NO BOX; DAGSTER AND
 OBSERVABILITY LAYERS NOT DEPLOYED.** The dependency-free action-key,
 immutable-CAS, and local-worker core lives in `src/prismabuild/core.py`. The
 shared CAS, the NFS pull queue, and the worker loops on Sparky, Sparklina, and
-dl380g10 are the live execution plane. At 2026-09-23 13:30Z they run runtime
-generation `81d95cba8d91-1790160372-5d100532e024` (canary verified).
+dl380g10 are the live execution plane. At 2026-09-23 13:50Z they run runtime
+generation `a0fdcd2f7482-1790170897-121d887b4732` (canary verified).
 `docs/staged_read_contract_2026-09-20.md` and its ledger
 `docs/staged_read_requirements_2026-09-20.json` are the acceptance measure for
 the staged-read work: the contract's top summary says what is workload-proven,
