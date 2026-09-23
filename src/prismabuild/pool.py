@@ -6843,23 +6843,6 @@ class PoolQueue:
         return (aged <= float(grace) + CLAIM_ORDER_AHEAD_SLACK_S,
                 round(aged, 3), float(grace))
 
-    def _tier_over_committed_gib(self, tier_id: str) -> int | None:
-        """The tier's filed ``over_committed_gib``, or ``None`` when unknown.
-
-        Read once per verdict from the tier loop's own commitment record
-        (:meth:`tier_commitment`, #930).  ``None`` for no record, a record
-        that does not read, or a field that is not a whole number.
-        """
-
-        try:
-            record = self.tier_commitment(tier_id)
-        except (OSError, ValueError, PoolContractError):
-            return None
-        value = None if record is None else record.get("over_committed_gib")
-        if isinstance(value, bool) or not isinstance(value, int):
-            return None
-        return value
-
     def _tier_loop_alive(self, tier_id: str, *, now: float
                          ) -> tuple[bool, float | None]:
         """Whether the loop that announces ``tier_id`` announced it lately.

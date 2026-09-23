@@ -8013,6 +8013,9 @@ and at most one candidate walk a cycle, and at most two censuses.
   cannot recall it.
 * One head is served a cycle, so N blocked consumers take N cycles to
   drain, whatever the room.
+* Only claimed consumers are ranked. A ready consumer whose leads are
+  published is bounded by the commitment it was admitted on (#907), not by
+  the order.
 * The priced landing is a lower bound (above).
 * A range several claimed consumers read is charged once per consumer: see
   the finding below.
