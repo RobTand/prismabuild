@@ -306,3 +306,90 @@ def test_a_cas_request_naming_the_basetemp_is_a_leak(tmp_path: Path) -> None:
     )
     assert leaked == ["cas/requests/ab/cd.json"]
     assert unattributed == []
+
+
+# --------------------------------------------------------------------------
+# The call-time guard (#1019)
+#
+# Each case runs a child session against a scratch store named by
+# ``PRISMABUILD_TEST_LIVE_ROOT``, so a guard that fails to refuse writes into
+# ``tmp_path`` and never into the fleet's real store.
+# --------------------------------------------------------------------------
+
+#: The directory holding this file, so a child session can import the suite's
+#: own helpers (``test_core._action``) and the fleet tools.
+_TESTS = Path(__file__).resolve().parent
+
+
+def _child_session(tmp_path: Path, source: str) -> tuple[Path, subprocess.CompletedProcess]:
+    """Run ``source`` as a one-file suite whose live store is a scratch store."""
+
+    live = _store(tmp_path / "scratch-live")
+    suite = tmp_path / "suite"
+    tests = suite / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").symlink_to(Path(conftest.__file__).resolve())
+    (tests / "test_child.py").write_text(source)
+    env = dict(os.environ, PRISMABUILD_TEST_LIVE_ROOT=str(live),
+               PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S="5")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
+         "--basetemp", str(tmp_path / "child-basetemp"), "tests"],
+        cwd=suite, env=env, text=True, capture_output=True, timeout=120,
+    )
+    return live, result
+
+
+def test_a_write_into_the_live_store_fails_at_the_call(tmp_path: Path) -> None:
+    """The failing test is named, with the path, before any byte is written.
+
+    Before #1019 this write succeeded and only the finish census could report
+    it, after the fact, as a session failure that named no test.
+    """
+
+    live, result = _child_session(tmp_path, (
+        "import os\nfrom pathlib import Path\n"
+        "def test_write():\n"
+        "    root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    with open(root / 'pb-queue/done/x.json', 'w') as handle:\n"
+        "        handle.write('{}')\n"
+    ))
+    output = result.stdout + result.stderr
+    target = live / "pb-queue/done/x.json"
+    assert not target.exists(), output
+    assert result.returncode == 1, output
+    assert "1 failed" in result.stdout, output
+    assert str(target) in result.stdout, output
+    assert "live-store guard" in result.stdout, output
+
+
+def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
+        tmp_path: Path) -> None:
+    """The September leak's shape: ``pbrun.SH`` left at the store, a CAS request.
+
+    ``PrismaBuildCAS`` opens every directory through ``_open_directory_nofollow``,
+    which starts at ``/`` and descends one ``dir_fd``-relative component at a
+    time, so no audited call sees an absolute path under the store. The
+    request must be refused anyway.
+    """
+
+    live, result = _child_session(tmp_path, (
+        "import os, sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(_TESTS)!r})\n"
+        "import pbrun\n"
+        "from prismabuild import core as pb\n"
+        "from test_core import _action\n"
+        "def test_file_a_request(tmp_path):\n"
+        "    # The default the per-test fixture did not reach.\n"
+        "    pbrun.SH = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    checkout = tmp_path / 'checkout'\n"
+        "    checkout.mkdir()\n"
+        "    pb.PrismaBuildCAS(pbrun.SH / 'cas').publish_action_request(\n"
+        "        _action(checkout))\n"
+    ))
+    output = result.stdout + result.stderr
+    assert not (live / "cas/requests").exists(), output
+    assert result.returncode == 1, output
+    assert "1 failed" in result.stdout, output
+    assert str(live / "cas") in result.stdout, output
+    assert "live-store guard" in result.stdout, output
