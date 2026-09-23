@@ -2893,6 +2893,91 @@ same marker. These checks establish no cross-host quorum and do not enable
 barrier activation. The #458 protocol still needs fresh epoch participation
 and a generation-uniform rotation proof that includes this reader.
 
+### The pre-publish shape gate (#987)
+
+The #965 defect reached production because nothing before a publish staged a
+real campaign's manifest through the tiers.  Unit fixtures used whole-GiB
+entries, so a splitter that cut chunks at byte offsets passed every test and
+then refused `residency_overran_reservation` on the first real read plan,
+whose entries end 16 MB past a GiB.  The shape gate runs that read plan
+before the bytes become a generation.
+
+**What it runs.**  `tools/fleet/shape_gate.py` stages a committed manifest
+table through the stage tier and the RAM tier on a queue of its own and reads
+every entry back through a reader-lease pin on RAM.  The table records each
+entry's file, offset, length and phase; the harness writes seeded source
+files of the same shape at 1/1024 scale (a campaign GiB is 1 MiB), with
+`storage_tiers.GIB` scaled to match, so every chunk boundary, window and
+reservation lands where production would put it.  Nothing is simulated
+past the data: the real `tier_loop.cycle` mints the tiers and admits the
+movers, the real `stage_move`, `ram_promote` and `stage_release` nodes run
+in-process under a claimed action key, and the reader uses the published
+residency map.  An audit hook counts every open of the source pool outside
+a stage mover.  The run passes only when each tier moved every unique
+byte of the manifest at least once and no byte more often than the read
+plan reads it, every entry the plan reads read back bit-exactly from RAM, the
+pool was never opened during a promotion or a read, the RAM tier never held
+more than its window, and a plan that reads more than the window egressed
+from RAM.  Every
+root is under the test's `tmp_path`; the gate refuses a shared root other
+than the one the test fixture installs, and never touches `/stage/*`,
+`/ram/*` or the live queue.
+
+**The reference tables** live in `tools/fleet/shape_gate_tables/` and are
+registered, with their sha256, in `shape_gate.REFERENCE_TABLES`:
+
+| Table | Source | Entries | Phases | Unique bytes | Read bytes | Chunk edge in an entry | RAM slide |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `682e7b0a859f` | PQ consumer `a7d31a4da9c1`, the #965 read plan | 9,255 | 6 | 175.71 GiB | 175.71 GiB | yes (two phases over a chunk) | yes |
+| `bc2a3bc8ad11` | GLM layer-44 Stage B executable readset | 10,344 | 22 | 138.08 GiB | 162.08 GiB | no | yes |
+
+Each table carries a `chunk_edge_inside_entry` flag, checked against the
+table's own coverage under the checkout's RAM policy, and the registry must
+hold at least one table where it is true: a gate that cannot put a chunk
+edge inside an entry did not test the defect it exists for.  The layer-44
+table is the breadth and revisit table: four of its phases read one 8 GiB
+spill plane, and no phase exceeds a chunk.  A revisit is staged and read
+again, because each tier's window and frontier are linear in the plan's read
+bytes, so the gate requires each tier to move between the manifest's unique
+bytes and its read bytes, and the reader to read every phase's entries.  Add
+a table with `shape_gate.py extract <manifest>` and register it.
+
+**How a publish consumes it.**  The gate is one pbtest shard of
+`tests/gate_campaign_shape.py`, a file the ordinary suite does not collect,
+run at priority 0 because it is short and blocks a publish:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+    --checkout <tree> --python <venv>/bin/python --tag gb10 \
+    --priority 0 --timeout-s 3600 --shards 1 --json <receipt>.json \
+    tests/gate_campaign_shape.py
+```
+
+A fresh publication (`--stage-only` and `--dry-run` included) then names
+the shard's action key with `publish_runtime.py --shape-gate-action KEY`.
+`shape_gate.verify_gate_receipt` accepts it only when the queue finished it
+`executed` with exit 0; its sealed checkout snapshot differs from the
+commit being published by nothing but pbrun's closure stamp; its CAS receipt
+verifies; and the log's `pbtest_outcomes` record collected exactly one test
+per registered table, each of which passed.  A dirty tree cannot ride a
+receipt.  The verdict is written into the generation's
+`RUNTIME_VERSION.json` as `shape_gate`, into the rollout canary's record,
+and printed by both.
+
+`--shape-gate-waiver REASON` publishes without a receipt.  It is never a
+default and never silent: the reason is recorded in `RUNTIME_VERSION.json`
+and in the canary record, and the publisher and the canary both print it.
+`--activate-generation` and barrier recovery take neither flag, because an
+existing generation keeps the gate record it was published with.
+`fleet/slurm/cutover.sh` passes `PB_SHAPE_GATE_ACTION` or
+`PB_SHAPE_GATE_WAIVER` through to both its dry-run preflight and its
+publish.
+
+The harness's own tests, `tests/test_the_campaign_shape_harness.py`, run in
+the ordinary suite on a small shape of the same kind.  One of them puts the
+pre-#965 byte-cut splitter back into the driver and requires the gate to
+fail with `movement_refused` and `residency_overran_reservation`.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the

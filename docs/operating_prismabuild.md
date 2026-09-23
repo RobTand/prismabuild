@@ -2705,10 +2705,19 @@ private NFS actors simulate host services and cannot qualify real reboot or
 service lifecycle behavior. Ordinary maintenance publication still requires a
 reviewed rolling compatibility reason and an idle queue.
 
-    tools/fleet/publish_runtime.py --rollout barrier --dry-run
+    tools/fleet/publish_runtime.py --rollout barrier --dry-run \
+        --shape-gate-action <gate action key>
 
 `--dry-run` checks the selected rollout policy, prints the commit and every
 file that would be published, and writes nothing when its preflight succeeds.
+
+Every fresh publication, `--dry-run` and `--stage-only` included, names how
+its commit passed the pre-publish shape gate (#987): `--shape-gate-action`
+with the key of a passing pbtest shard of `tests/gate_campaign_shape.py` run
+against this commit, or `--shape-gate-waiver REASON`.  A waiver is recorded
+in the generation's receipt and printed by the rollout canary.  The gate's
+command and what the receipt check requires are in `docs/design.md`, "The
+pre-publish shape gate".
 
 `barrier` is the default. Its `--dry-run` checks historical updater attestations
 for the target bytes and reports missing hosts and previous versions. It does

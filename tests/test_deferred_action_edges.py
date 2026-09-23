@@ -738,7 +738,7 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
                             _fake_git_and_probe(commit))
         monkeypatch.setattr(sys, "argv", [
             "publish_runtime.py", "--rollout", "rolling", "--no-canary",
-            "--rollout-reason", "fixture publication"])
+            "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
         try:
             assert publish_runtime.main() == 0
         finally:

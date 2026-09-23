@@ -97,6 +97,7 @@ def test_barrier_dry_run_reports_history_without_proving_participation(
     if operation == "activate":
         argv += ["--activate-generation", target.name]
     else:
+        argv += ["--shape-gate-waiver", "fixture publication"]
         monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
         monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
         monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {

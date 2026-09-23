@@ -664,7 +664,10 @@ It refuses unless all six of these hold:
    checkout. Step 5 below is the only step with no cheap retry -- by the time
    it runs, cron is edited and every loop on all three boxes is dead -- and
    `publish_runtime.py` refuses a dirty tree. Commit or stash first;
-   `git status` must be clean where you run this.
+   `git status` must be clean where you run this.  The publish also needs
+   the pre-publish shape gate (#987): set `PB_SHAPE_GATE_ACTION` to a passing
+   gate run's action key, or `PB_SHAPE_GATE_WAIVER` to the reason to publish
+   without one, and `cutover.sh` passes it to both the preflight and step 5.
 4. No `pbrun` is waiting anywhere in the fleet. Each one is somebody watching
    for a result the loops are about to stop producing.
 5. `sinfo -h -N -o '%N %T'` reports every box -- `dl380g10`, `sparky` and

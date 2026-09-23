@@ -92,6 +92,12 @@ Publication requires PB_ROLLOUT_REASON: a reviewed explanation of why this
 transition is safe with independent host convergence. It is recorded in the
 new runtime generation. The cutover's drain and stop checks still apply.
 
+Publication also requires the pre-publish shape gate (#987): set
+PB_SHAPE_GATE_ACTION to the action key of a passing gate run of this commit,
+or PB_SHAPE_GATE_WAIVER to the reason to publish without one.  Either is
+passed to publish_runtime.py, whose --dry-run preflight refuses before any
+step if neither is set.
+
 Environment, for the tests and for nothing else:
   PB_QUEUE_ROOT   the pull queue (default /mnt/shared/prismabuild-fleet/pb-queue)
   PB_RUNTIME_DIR  the fleet runtime directory (default /mnt/shared/prismabuild-fleet)
@@ -123,6 +129,15 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # one step that happens after every loop is already stopped.
 PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 ROLLOUT_REASON="${PB_ROLLOUT_REASON:-}"
+# The pre-publish shape gate's receipt or waiver, passed through untouched;
+# publish_runtime.py judges both, and refuses neither or both.
+SHAPE_GATE=()
+if [ -n "${PB_SHAPE_GATE_ACTION:-}" ]; then
+    SHAPE_GATE+=(--shape-gate-action "$PB_SHAPE_GATE_ACTION")
+fi
+if [ -n "${PB_SHAPE_GATE_WAIVER:-}" ]; then
+    SHAPE_GATE+=(--shape-gate-waiver "$PB_SHAPE_GATE_WAIVER")
+fi
 # The configuration this checkout would have the fleet run.  Same spelling as
 # verify.sh's CONF, because the marker below records a hash of this file and
 # the two have to be talking about the same one.
@@ -629,7 +644,8 @@ finish, then re-run."
     # there.  (--activate-generation returns before those checks, which is why
     # rollback.sh needs no clean tree to undo this.)
     if ! preflight="$($PUBLISH --dry-run --default-transport slurm \
-            --rollout rolling --rollout-reason "$ROLLOUT_REASON" 2>&1)"; then
+            --rollout rolling --rollout-reason "$ROLLOUT_REASON" \
+            ${SHAPE_GATE[@]+"${SHAPE_GATE[@]}"} 2>&1)"; then
         die "publish_runtime.py refuses this checkout, and step 5 would hit the
 same refusal with the crontab already edited and every loop already dead:
 $(printf '%s\n' "$preflight" | sed 's/^/  /')
@@ -859,9 +875,14 @@ fi
 say ""
 say "# step 5: publish a runtime generation whose default transport is slurm"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$PUBLISH --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")"
+    gate_words=""
+    if [ "${#SHAPE_GATE[@]}" -gt 0 ]; then
+        gate_words="$(printf ' %q' "${SHAPE_GATE[@]}")"
+    fi
+    say "$PUBLISH --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")$gate_words"
 else
     $PUBLISH --default-transport slurm --rollout rolling --rollout-reason "$ROLLOUT_REASON" \
+        ${SHAPE_GATE[@]+"${SHAPE_GATE[@]}"} \
         || die "publication failed; the loops are stopped and the fleet is still on the previous generation. Fix the publication and re-run, or run fleet/slurm/rollback.sh"
 fi
 
