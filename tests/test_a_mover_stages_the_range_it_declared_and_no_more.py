@@ -440,3 +440,55 @@ def test_a_declared_path_that_spells_a_range_name_stages_apart(
     assert (stage / "shard.bin.pbrange" / "0-2048").read_bytes() == payload[:2048]
     assert (stage / "shard.bin.pbrange" / "0-2048.pbrange"
             / "0-2048").read_bytes() == b"b" * 2048
+
+
+def test_the_receipt_says_how_long_the_start_gate_queued(tmp_path: Path) -> None:
+    """A wait at the start gate is an egress's hold, paid by this copy (#988).
+
+    Another holder keeps the stage ownership lock for a measured stretch
+    while the mover starts; the receipt must carry that stretch, so a mover
+    slowed by an egress says so.  The mover queues for the lock twice before
+    its copy: reading its own prior coverage, then at the start gate.  The
+    first absorbs the hold, so the two fields together carry it.
+    """
+
+    import threading
+    import time
+
+    mount, entries = _three_files(tmp_path)
+    args = _args(tmp_path, _manifest(mount, entries), start=0, end=4096)
+    queue = pool.PoolQueue(Path(args.pool_root))
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with queue.stage_ownership_lock(str(args.stage_root)):
+            holding.set()
+            release.wait(60)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert holding.wait(60)
+    timer = threading.Timer(0.5, release.set)
+    started = time.perf_counter()
+    timer.start()
+    try:
+        receipt = stage_move.move(args)
+    finally:
+        release.set()
+        holder.join(60)
+    elapsed = time.perf_counter() - started
+
+    assert receipt["complete"] is True, receipt
+    queued = receipt["resume_lock_wait_s"] + receipt["start_gate_wait_s"]
+    assert 0.25 <= queued <= elapsed, receipt
+
+
+def test_an_uncontended_start_gate_is_recorded_as_near_zero(tmp_path: Path) -> None:
+    mount, entries = _three_files(tmp_path)
+    args = _args(tmp_path, _manifest(mount, entries), start=0, end=4096)
+
+    receipt = stage_move.move(args)
+
+    assert 0.0 <= receipt["start_gate_wait_s"] < 0.4, receipt
+    assert 0.0 <= receipt["resume_lock_wait_s"] < 0.4, receipt

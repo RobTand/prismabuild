@@ -236,7 +236,10 @@ def promote(args, *, stop=None) -> dict[str, object]:
     # that snapshots after this point attributes the copy through the claim;
     # one that snapshotted before waits out here until its delete completes.
     # Acquired and released -- nothing is held during the copy itself.
+    # Timed, because a wait here is an egress's hold paid by this copy (#988).
+    gate_started = time.perf_counter()
     pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.ram_root)
+    start_gate_wait_s = time.perf_counter() - gate_started
     copier.run(window, stop=stop)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
@@ -260,6 +263,8 @@ def promote(args, *, stop=None) -> dict[str, object]:
         "complete": copier.bytes_staged == declared and not copier.errors,
         "epoch": str(epoch["epoch"]),
         "seconds": round(elapsed, 3),
+        # The stage ownership lock's queue at the start gate (#988).
+        "start_gate_wait_s": round(start_gate_wait_s, 6),
         # File-side and named so: what the copy saw.  No pool-side pacing
         # block rides with it, because no pool was drained -- the fill
         # measurement reads only receipts that carry one.
