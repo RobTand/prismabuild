@@ -261,7 +261,9 @@ since #924 it withholds only while the box will drain soon. That is judged per
 holder from what the holder declared (`PoolQueue.holder_bound`), not from a new
 constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
 `execution_timeout_s` ends inside it, is transient; a bounded holder past that
-line is long; a progress-governed holder with no total timeout is unbounded;
+line is long; a holder past its own sealed end is overdue, which outranks age,
+since a holder that outlived what it declared is no evidence of a drain (#939);
+a progress-governed holder with no total timeout is unbounded;
 a raw ledger holder with no readable claim is judged by the waiting item's own
 first-denial clock, as every holder was before #924. The age half of
 "transient" is a presumption, not a declaration: a young deadline-governed
@@ -279,7 +281,7 @@ whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
 `pbstatus --starvation` and `pb_starvation`. Three bounds keep a veto finite:
-holders age; a veto refilled by work ahead of it in the ready order expires
+holders age, and none stays transient past its declared end; a veto refilled by work ahead of it in the ready order expires
 `WITHHOLD_CEILING_S` into the episode until those refills have gone; and an
 exclusive need with no holder in the way withholds only for one CPU sample
 window (`adaptive_cpu.MAX_INTERVAL_S + MAX_SAMPLE_AGE_S`) of the last holder's

@@ -5537,6 +5537,12 @@ class PoolQueue:
           own line between a transient hold and a multi-hour one.
         * ``long`` -- bounded, but already older than that line with no
           declared end inside it: the 2026-09-04 multi-hour holder.
+        * ``overdue`` -- its requested timeout has already ended.  Its worker
+          is killing it, or is gone and its lease is expiring; either way it
+          has outlived what it declared, and that is no evidence it drains
+          soon.  This outranks age.  Before #939 an end in the past counted
+          as "inside the ceiling from now", so such a holder read
+          ``transient`` for as long as its claim stood.
         * ``unknown`` -- no readable claim names it (a raw ledger holder, or a
           record this read could not use).  The caller falls back to the
           item's own withhold clock for these, which is the behavior every
@@ -5545,7 +5551,8 @@ class PoolQueue:
         Age only grows, so a ``transient`` holder becomes ``long`` by itself
         and a veto that rests on it expires with no clock of the item's own.
         The one way back is real: a holder whose requested timeout now ends
-        inside the ceiling is going to release soon, whatever its age.
+        inside the ceiling is going to release soon, whatever its age -- until
+        that end passes, when it is ``overdue``.
         """
 
         moment = _now() if now is None else float(now)
@@ -5570,8 +5577,11 @@ class PoolQueue:
         if governed_by == "progress" and requested is None:
             answer["bound"] = "unbounded"
             return answer
-        ends_soon = (requested is not None
-                     and float(claimed_unix) + requested - moment <= WITHHOLD_CEILING_S)
+        left = None if requested is None else float(claimed_unix) + requested - moment
+        if left is not None and left < 0:
+            answer["bound"] = "overdue"
+            return answer
+        ends_soon = left is not None and left <= WITHHOLD_CEILING_S
         answer["bound"] = ("transient" if age <= WITHHOLD_CEILING_S or ends_soon
                            else "long")
         return answer
@@ -5608,8 +5618,10 @@ class PoolQueue:
 
         Three things bound a veto that rests on transient holders:
 
-        * **Age.**  Holders only age, so a veto on a fixed set of holders ends
-          within ``WITHHOLD_CEILING_S`` of the youngest one's claim.
+        * **Age.**  Holders only age, and none is transient past its own
+          declared end, so a veto on a fixed set of holders ends within
+          ``WITHHOLD_CEILING_S`` of the youngest one's claim or at the latest
+          declared end among them, whichever is later.
         * **Refill.**  While the item withholds, only work ahead of it in the
           ready order is admitted.  A holder claimed during the veto is such
           work refilling the box, and a veto that is being refilled cannot
