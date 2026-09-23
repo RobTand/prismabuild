@@ -5666,10 +5666,12 @@ class PoolQueue:
         change -- or the first sight of a key -- one small read and, only if
         the file's newest entry for this host differs, one atomic write.
 
-        The memo only ever suppresses a write the file would also refuse:
-        the check against the file is the newest entry *for this host*, and
-        two loops on one host that disagree write each reason once and then
-        stay quiet, rather than flapping the file every pass.
+        The memo is this process's view, and the file check is the newest
+        entry *for this host*.  So two loops on one host that disagree about
+        a key -- a GPU loop and a CPU loop can -- write each reason once and
+        then stay quiet, rather than rewriting the file every pass; the ring
+        then holds both reasons, and the latest-only record says which one
+        was said last.
 
         Survives contention by construction.  It shares no lock with the
         latest-only file (whose ``flock`` drops observations by design), and
@@ -5968,7 +5970,11 @@ class PoolQueue:
         denials = self.latest_denials({str(row["key"]) for row in shown},
                                       include_local=include_local)
         for row in shown:
-            latest = denials.get(str(row["key"])) or []
+            generation = row["ready_since_unix"]
+            # This generation's verdicts only, as ``pbstatus`` reads them: a
+            # republished key's older denials are about another request.
+            latest = [record for record in denials.get(str(row["key"])) or []
+                      if generation is None or record.get("published_unix") == generation]
             row["last_denial"] = None
             if latest:
                 newest = latest[0]
@@ -5981,7 +5987,6 @@ class PoolQueue:
                     "host": newest.get("host"), "denied_unix": newest.get("denied_unix"),
                     "age_s": moment - float(newest["denied_unix"]),
                     "hosts": len(latest)}
-            generation = row["ready_since_unix"]
             row["denial_transitions"] = self.denial_transitions(
                 str(row["key"]), published_unix=generation)
         return {"dependents": shown, "dependents_total": len(rows),
