@@ -6041,13 +6041,16 @@ class PoolQueue:
         ``execution_deadline`` and ``withdrawn`` rungs.
         """
 
+        started = time.monotonic()
         found = self.dependent_rows(action_key)
         events = self.consumer_events(action_key)
         return {**found,
                 "tier_events": events[-MAX_ENDING_EVENTS:],
                 "tier_events_total": len(events),
                 "denial_transitions": self.denial_transitions(
-                    action_key, published_unix=published_unix)}
+                    action_key, published_unix=published_unix),
+                # What the read cost the kill, on the record it delayed.
+                "dependents_read_s": round(time.monotonic() - started, 4)}
 
     def withhold_age(self, action_key: str) -> float:
         """Seconds since this item was first denied admission; 0.0 if never."""

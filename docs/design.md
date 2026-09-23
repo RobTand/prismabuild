@@ -2344,7 +2344,8 @@ adds three things to the outcome that `finish` files:
 
 The enumeration reads `ready/` and `claimed/` once, which is what one claim
 pass already reads, plus one existence check per plan child that is not live.
-It runs only at the kill rungs. A failure to read it is filed as
+It runs only at the kill rungs, and `dependents_read_s` records what it cost
+the kill. A failure to read it is filed as
 `dependents_error` beside the kill and never replaces the kill's own record.
 
 ### Progress-bounded execution
