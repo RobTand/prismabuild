@@ -608,6 +608,12 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
     assert judged["intervals"]["over"] > 0 and judged["intervals"]["under"] == 0
     assert judged["last"]["verdict"] == "over"
     assert judged["last"]["read_await_ms"] == OVER
+    # One credited stretch, announced once.
+    queue = pool.PoolQueue(base / "queue")
+    events = [event for event in queue.consumer_events(_only_key(queue))
+              if event.get("event") == "mover-pool-over"]
+    assert judged["over_starts"] == 1 and len(events) == 1
+    assert events[0]["read_await_ms"] == OVER
 
 
 def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
@@ -666,6 +672,86 @@ def test_the_same_slow_copy_on_a_pool_under_its_caps_ends_at_its_allowance(
     assert stall["delivered_bytes_per_s"] == 0.0
     assert stall["pool"]["verdict"] == "under"
     assert stall["pool"]["read_await_ms"] == UNDER
+
+
+class _Schedule(_Disks):
+    """``_Disks`` whose read await follows ``plan``: ``[(seconds, await_ms),
+    ...]`` from the first read, the last entry holding for good."""
+
+    def __init__(self, plan: list[tuple[float, float]]) -> None:
+        super().__init__(plan[0][1])
+        self.plan = plan
+        self.first: float | None = None
+
+    def __call__(self, device: str) -> list[int] | None:
+        import time as _time
+
+        now = _time.monotonic()
+        if self.first is None:
+            self.first = now
+        elapsed, left = now - self.first, 0.0
+        for seconds, await_ms in self.plan:
+            left += seconds
+            self.await_ms = await_ms
+            if elapsed < left:
+                break
+        return super().__call__(device)
+
+
+def test_the_probe_releases_at_the_pacers_release_fraction() -> None:
+    """Review of f769c2daec8b on #1016.  The pacer holds once a member is
+    over a cap and releases only when both fall below the release fraction
+    of their caps (``DiskPacer._pool_is_hurting``).  The probe judges with
+    the same state and rule: over, then 0.7 of the cap, stays credited; 0.4
+    of the cap releases; 0.7 after the release is under the cap and is not
+    credited."""
+
+    disks = _Disks(OVER)
+    spec = _contention(Path("/stage"))
+    pool.POOL_MEMBER_STAT, saved = disks, pool.POOL_MEMBER_STAT
+    try:
+        probe = pool.PoolContentionProbe(spec, now=0.0)
+        verdicts = []
+        for step, await_ms in enumerate((OVER, 7.0, 7.0, 4.0, 7.0), start=1):
+            disks.await_ms = await_ms
+            verdicts.append(probe.judge(now=float(step))["verdict"])
+    finally:
+        pool.POOL_MEMBER_STAT = saved
+    assert verdicts == ["over", "over", "over", "under", "under"]
+
+
+def test_a_pool_held_in_the_pacers_release_band_is_credited(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review of f769c2daec8b on #1016.  The pool is over its caps for the
+    first second, then sits at 0.7 of the read-await cap while the mover's
+    pacer holds for three graces.  The pacer is still holding there, so the
+    worker still credits it and the mover completes.  Red before the probe
+    shared the pacer's hysteresis: 0.7 of the cap read ``under``, and the
+    hold was charged and killed at one grace."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT",
+                        _Schedule([(1.0, OVER), (1.0, 7.0)]), raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    hold = 3.0 * grace
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+
+    outcome, receipt = _run_mover(
+        base, _mover_source(argv, hold_on=2, hold=hold), _policy(grace),
+        contention=_contention(base), ceiling=60.0)
+
+    assert outcome["status"] == "executed", _brief(outcome)
+    assert receipt["complete"] is True
+    observed = outcome["progress_observation"]
+    assert observed["pool_contention_exempt_s"] >= hold - grace
+    judged = observed["pool_contention"]
+    assert judged["intervals"]["under"] == 0
+    assert judged["last"]["read_await_ms"] == 7.0
+    assert judged["last"]["release_band"] is True
+    # The band continues the stretch the over interval started.
+    assert judged["over_starts"] == 1
 
 
 def test_a_mover_that_holds_itself_on_a_pool_under_its_caps_earns_nothing(
@@ -777,6 +863,9 @@ def test_a_start_gate_held_by_a_live_egress_is_credited(
     observed = outcome["progress_observation"]
     assert observed["start_gate_exempt_s"] >= held_for - 2 * grace
     assert observed["pool_contention"]["start_gate_held_s"] >= held_for - 2 * grace
+    # The entry edge, at least, is granted its heartbeat; the exit edge is
+    # granted only if a look saw the lock free before the mover reported.
+    assert observed["pool_contention"]["start_gate_edges"] >= 1
     assert observed["pool_contention_exempt_s"] == 0.0
 
 

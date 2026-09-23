@@ -7579,15 +7579,29 @@ between the last credit and the rung.
 
 | Verdict | When | Credited |
 |---|---|---|
-| `over` | the worst member's read await or backlog is over its sealed cap | yes |
-| `blind` | a member's row is missing or unreadable, at either end of the interval | yes, and the start of each blind stretch is filed as an event |
-| `under` | every member is at or under both caps | no |
+| `over` | the worst member's read await or backlog is over its sealed cap; or, after an `over` or `blind` interval, still over `HOLD_RELEASE_FRACTION` (0.5) of it (`release_band`) | yes, and the start of each stretch is filed as a `mover-pool-over` event |
+| `blind` | a member's row is missing or unreadable, at either end of the interval | yes, and the start of each blind stretch is filed as a `mover-pool-blind` event |
+| `under` | every member is under both caps, or under half of both once over | no |
+
+The release band is the pacer's own hysteresis and state
+(`storage_tiers.pool_is_hurting`, with `HOLD_RELEASE_FRACTION` defined once
+in `storage_tiers` for both): the pacer keeps holding until both numbers
+fall to half their caps, and a blind interval leaves it holding. Without the
+same rule, a copy the pacer still held at 0.5 to 1.0 of a cap would be
+charged and killed at one grace, and the retry's pacer would start again
+from not holding.
 
 While the action has not reported past its first phase, the worker also
 tries the stage's ownership lock without blocking
 (`PoolQueue.stage_ownership_lock(stage_root, blocking=False)`). An interval
 at both ends of which the lock was held by someone else is credited as a
-start-gate wait. The try takes the lock for as long as one `lockf` call when
+start-gate wait. That two-sample rule leaves up to one heartbeat uncredited
+at each edge of a held stretch: before the first look that saw it held, and
+after the last. The watch grants one `pool.HEARTBEAT_S` at each edge it
+sees (`ProgressWatch.grant_start_gate_edge`, counted as `start_gate_edges`).
+An exit edge is seen only if a look finds the lock free before the mover
+reports; otherwise the mover's report restarts its clock and there is
+nothing to grant. The try takes the lock for as long as one `lockf` call when
 it is free, and the worker holds no other stage lock while it runs.
 
 Every credit uses `ProgressWatch.exempt_staged_wait`'s rule
@@ -7612,10 +7626,11 @@ reads as `blind`, which is credited and announced.
 count and seconds of each verdict, the last verdict with the worst member's
 `read_await_ms`, `backlog_ms`, `util_pct` and `in_flight`, the blind starts,
 the priced rate, and `start_gate_held_s`, the seconds the worker saw the
-lock held at both ends of an interval. A blind start is appended to
-`residency-events/<mover>/<host>-stall-watch.jsonl` (event
-`mover-pool-blind`, at most `pool.MAX_BLIND_EVENTS` per launch) and printed
-on the worker's stderr. `consumer_events` reads that file with the tier
+lock held at both ends of an interval, and `start_gate_edges`. The start
+of each blind stretch and of each credited over stretch is appended to
+`residency-events/<mover>/<host>-stall-watch.jsonl` (events
+`mover-pool-blind` and `mover-pool-over`, at most `pool.MAX_BLIND_EVENTS`
+of each per launch) and printed on the worker's stderr. `consumer_events` reads that file with the tier
 loop's, so a kill's ending record carries it, and `sweep_consumer_events`
 retires it with them.
 
@@ -7641,7 +7656,7 @@ uncredited quiet before it reaches `failed`: the grace per attempt, and the
 time each retry waits in `ready` to be claimed again. Credited intervals add
 to that without bound while the pool stays over its caps or blind, or an
 egress keeps the lock; that is the point of the credit, and the record and
-the blind events are what make it visible. `progress_no_progress_bound_s`
+the blind and over events are what make it visible. `progress_no_progress_bound_s`
 bounds only the charged quiet for such an action.
 
 **What the landing record does with it.** `publish_landing_expectations`

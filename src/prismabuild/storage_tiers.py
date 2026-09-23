@@ -315,6 +315,34 @@ STAT_IO_TICKS = 9
 STAT_WEIGHTED_IO_MS = 10
 
 
+#: A hold ends at half the number that started it.  A disk sitting exactly on
+#: a cap otherwise flaps the reader once per sample, and those bursts are what
+#: the pacer exists to smooth.  This is a property of the control loop rather
+#: than of any pool, which is why it is a constant and not an argument.  One
+#: definition for the pacer (``prewarm_loop.DiskPacer``) and the worker's
+#: pool-contention check (``pool.PoolContentionProbe``, #1010), so a copy the
+#: pacer still holds is never one the worker charges.
+HOLD_RELEASE_FRACTION = 0.5
+
+
+def pool_is_hurting(measured: Mapping[str, float], *, max_read_await_ms: float,
+                    max_backlog_ms: float, over: bool) -> bool:
+    """Service time or backlog over its cap, with hysteresis on the way out.
+
+    ``over`` is the verdict of the previous interval: once over, the pool
+    stays over until both numbers fall to :data:`HOLD_RELEASE_FRACTION` of
+    their caps or below.  A cap of 0 or less is off.  Utilization is
+    deliberately absent: it is recorded, and it never holds.
+    """
+
+    scale = HOLD_RELEASE_FRACTION if over else 1.0
+    return bool(
+        (max_read_await_ms > 0
+         and measured["read_await_ms"] > max_read_await_ms * scale)
+        or (max_backlog_ms > 0
+            and measured["backlog_ms"] > max_backlog_ms * scale))
+
+
 def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None:
     """One block device's ``stat`` row as integers, or ``None`` if unreadable."""
 

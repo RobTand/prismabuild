@@ -2011,7 +2011,10 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
     ``warm`` phase, or one that covers the range, has landed.  A claimed
     copy with no report, or none that prices a rate, keeps the claim-time
     expectation.  ``basis`` says which: ``reported`` or ``claim``; a queued
-    range's is ``queue``.
+    range's is ``queue``.  On a resumed attempt, ``reported`` overstates the
+    live rate: the entries it adopted from an earlier attempt count as
+    landed at once.  That is harmless because the price is informational
+    and gates nothing.
 
     Returns, per mover, ``queue_position`` (its place in that order),
     ``bytes_ahead``, ``expected_landing_unix`` and ``basis``, and for a

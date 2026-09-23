@@ -1296,6 +1296,19 @@ class ProgressWatch:
         self.start_gate_exempt_s += credit
         return credit
 
+    def grant_start_gate_edge(self, seconds: float) -> None:
+        """Extend the allowance by one start-gate edge (#1010).
+
+        A held stretch is credited only between two looks that both saw the
+        lock held, so up to one heartbeat before its first look and after
+        its last is left uncredited.  The watch grants that heartbeat at
+        each edge instead: derived from the look's own cadence, recorded
+        with the gate's credit.
+        """
+
+        self.last_advance_monotonic += float(seconds)
+        self.start_gate_exempt_s += float(seconds)
+
     def delivered_units_per_s(self, *, now: float) -> float | None:
         """Units committed per second since the first accepted report."""
 
@@ -1338,8 +1351,9 @@ class ProgressWatch:
 #: (#1010).  A module attribute so a test can supply the disks; production
 #: reads the kernel's.
 POOL_MEMBER_STAT: Callable[[str], "list[int] | None"] = storage_tiers.read_disk_stat
-#: The most blind-start events one launch files (#1010).  A member that
-#: flaps every heartbeat is still counted on the record past this.
+#: The most blind-start events, and the most over-start events, one launch
+#: files (#1010).  A member that flaps every heartbeat is still counted on
+#: the record past this.
 MAX_BLIND_EVENTS = 64
 
 
@@ -1358,15 +1372,21 @@ class PoolContentionProbe:
     against the pacer's own caps, with the pacer's own arithmetic
     (``storage_tiers.worst_member_interval``):
 
-    * ``over``: the worst member's read await or backlog is over its cap.
-      Credited.
+    * ``over``: the worst member's read await or backlog is over its cap,
+      or, after an ``over`` or ``blind`` interval, still over
+      ``storage_tiers.HOLD_RELEASE_FRACTION`` of it: the pacer's own
+      hysteresis and state (``storage_tiers.pool_is_hurting``), so a copy
+      the pacer still holds is never charged (``release_band`` marks such an
+      interval).  Credited, and the start of each stretch is filed as a
+      ``mover-pool-over`` event.
     * ``blind``: a member's row is missing or unreadable, now or at the
       start of the interval.  Credited, as the pacer holds on it, and the
-      start of each blind stretch is filed as an event
-      (``residency-events/<mover>/<host>-stall-watch.jsonl``), because a
-      mover that is never killed while its pool cannot be read is exactly
-      what nobody would otherwise notice.
-    * ``under``: every member at or under both caps.  Not credited.
+      start of each blind stretch is filed as a ``mover-pool-blind`` event.
+      Both go to ``residency-events/<mover>/<host>-stall-watch.jsonl``,
+      because a mover that is never killed while its pool is busy or cannot
+      be read is exactly what nobody would otherwise notice.
+    * ``under``: every member under both caps, or under the release
+      fraction of both once over.  Not credited.
 
     It judges no throughput threshold.  What the pool delivered over the
     interval (sectors read, all readers) and the worst member's utilization
@@ -1390,11 +1410,16 @@ class PoolContentionProbe:
         self.seconds = {"over": 0.0, "under": 0.0, "blind": 0.0}
         self.blind_starts = 0
         self.blind = False
+        #: Whether the last interval was over (or blind): the pacer's
+        #: ``_over``, which sets where the next interval releases.
+        self.over = False
+        self.over_starts = 0
         self.missing: list[str] = []
         self.last: dict[str, object] | None = None
         self.peak_pool_bytes_per_s: float | None = None
         self.gate_held_s = 0.0
         self.gate_probes = 0
+        self.gate_edges = 0
         self._previous: dict[str, list[int]] | None = None
         self._previous_at = float(now)
         self._read(now)
@@ -1434,9 +1459,17 @@ class PoolContentionProbe:
         if interval is not None:
             worst, sectors = interval
             pool_rate = sectors * 512 / elapsed
-            over = (worst["read_await_ms"] > self.max_read_await_ms
-                    or worst["backlog_ms"] > self.max_backlog_ms)
+            # The pacer's own rule and state: once over (or blind), the pool
+            # stays over until both numbers fall to the release fraction of
+            # their caps, so a copy the pacer still holds is never charged.
+            released = not self.over
+            over = storage_tiers.pool_is_hurting(
+                worst, max_read_await_ms=self.max_read_await_ms,
+                max_backlog_ms=self.max_backlog_ms, over=self.over)
             verdict.update({"verdict": "over" if over else "under",
+                            "release_band": bool(over and not released and not (
+                                worst["read_await_ms"] > self.max_read_await_ms
+                                or worst["backlog_ms"] > self.max_backlog_ms)),
                             **{key: round(value, 3) for key, value in worst.items()},
                             "pool_bytes_per_s": round(pool_rate, 1)})
             self.peak_pool_bytes_per_s = max(self.peak_pool_bytes_per_s or 0.0,
@@ -1451,7 +1484,13 @@ class PoolContentionProbe:
         verdict["blind_start"] = state == "blind" and not self.blind
         if verdict["blind_start"]:
             self.blind_starts += 1
+        verdict["over_start"] = state == "over" and not self.over
+        if verdict["over_start"]:
+            self.over_starts += 1
         self.blind = state == "blind"
+        # A blind interval holds the pacer too (``DiskPacer._refresh_locked``
+        # sets ``_over``), so the next readable interval releases from it.
+        self.over = state in ("over", "blind")
         self.last = {key: value for key, value in verdict.items()
                      if key != "since_monotonic"}
         return verdict
@@ -1464,6 +1503,8 @@ class PoolContentionProbe:
                 "seconds": {key: round(value, 3)
                             for key, value in self.seconds.items()},
                 "blind_starts": self.blind_starts,
+                "over_starts": self.over_starts,
+                "hold_release_fraction": storage_tiers.HOLD_RELEASE_FRACTION,
                 "last": self.last,
                 # The most the pool delivered to all readers over one
                 # interval: the measured ceiling, when nothing was over a cap.
@@ -1471,7 +1512,8 @@ class PoolContentionProbe:
                 "priced_bytes_per_s": self.priced_bytes_per_s,
                 "stage_root": self.stage_root,
                 "start_gate_held_s": round(self.gate_held_s, 3),
-                "start_gate_probes": self.gate_probes}
+                "start_gate_probes": self.gate_probes,
+                "start_gate_edges": self.gate_edges}
 
 
 def read_staged_wait(path: Path, *, token: str
@@ -18546,8 +18588,23 @@ class PoolQueue:
                         "action_key": key, "missing": verdict.get("missing"),
                         "members": list(contention.members),
                         "blind_starts": contention.blind_starts})
+                if (verdict.get("over_start")
+                        and contention.over_starts <= MAX_BLIND_EVENTS):
+                    # A credited stretch nobody would otherwise hear about:
+                    # a dead copy on a busy pool is never killed while it
+                    # lasts, so its start is on the record like a blind one.
+                    self._file_stall_watch_event(key, {
+                        "unix": _now(), "event": "mover-pool-over",
+                        "action_key": key,
+                        **{field: verdict.get(field) for field in (
+                            "read_await_ms", "backlog_ms", "util_pct",
+                            "pool_bytes_per_s")},
+                        "max_read_await_ms": contention.max_read_await_ms,
+                        "max_backlog_ms": contention.max_backlog_ms,
+                        "over_starts": contention.over_starts})
                 if watch.accepted or watch.phase_index != 0:
-                    # Past the start gate: the mover has reported.
+                    # Past the start gate: the mover has reported, and that
+                    # advance restarts its clock.
                     gate_held_since[0] = None
                     return
                 contention.gate_probes += 1
@@ -18558,6 +18615,13 @@ class PoolQueue:
                 except OSError:
                     held = False
                 if not held:
+                    if gate_held_since[0] is not None:
+                        # The exit edge: the lock was released somewhere in
+                        # the heartbeat since it was last seen held, and the
+                        # two-sample rule credited none of it.  One heartbeat
+                        # is the most that interval can be.
+                        watch.grant_start_gate_edge(heartbeat_s)
+                        contention.gate_edges += 1
                     gate_held_since[0] = None
                     return
                 if gate_held_since[0] is not None:
@@ -18566,6 +18630,11 @@ class PoolQueue:
                     contention.gate_held_s += max(0.0, now - gate_held_since[0])
                     watch.exempt_start_gate(now=now,
                                             since_monotonic=gate_held_since[0])
+                else:
+                    # The entry edge: taken somewhere in the heartbeat since
+                    # the last look, which the two-sample rule cannot credit.
+                    watch.grant_start_gate_edge(heartbeat_s)
+                    contention.gate_edges += 1
                 gate_held_since[0] = now
 
             def ending(outcome: dict[str, object]) -> dict[str, object]:

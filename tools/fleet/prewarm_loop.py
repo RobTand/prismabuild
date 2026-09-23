@@ -271,11 +271,10 @@ EXPORT_STATS = "/proc/fs/nfsd/export_stats"
 #: curve was measured at, and it is a property of the pool, which is why it
 #: is an argument with a measured default and not a law in the loop.
 MAX_READERS = 16
-#: A hold ends at half the number that started it.  A disk sitting exactly on
-#: a cap otherwise flaps the reader once per sample, and those bursts are what
-#: the pacer exists to smooth.  This is a property of the control loop rather
-#: than of any pool, which is why it is a constant and not an argument.
-HOLD_RELEASE_FRACTION = 0.5
+#: A hold ends at half the number that started it; defined once in
+#: :mod:`prismabuild.storage_tiers`, which the worker's pool-contention check
+#: shares (#1010).
+HOLD_RELEASE_FRACTION = storage_tiers.HOLD_RELEASE_FRACTION
 #: Default for ``--client-active-mb-s``.  A client that has read nothing this
 #: host served is a client no hold protects.  The threshold has to sit *below*
 #: the slowest read worth protecting, because a client already slowed by the
@@ -2066,12 +2065,9 @@ class DiskPacer:
         Utilization is deliberately absent: it is recorded, and it never holds.
         """
 
-        scale = HOLD_RELEASE_FRACTION if self._over else 1.0
-        return bool(
-            (self.max_read_await_ms > 0
-             and measured["read_await_ms"] > self.max_read_await_ms * scale)
-            or (self.max_backlog_ms > 0
-                and measured["backlog_ms"] > self.max_backlog_ms * scale))
+        return storage_tiers.pool_is_hurting(
+            measured, max_read_await_ms=self.max_read_await_ms,
+            max_backlog_ms=self.max_backlog_ms, over=self._over)
 
     def _refresh_locked(self, now: float) -> None:
         measured = self._measure(now)
