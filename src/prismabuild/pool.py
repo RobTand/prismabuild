@@ -5809,13 +5809,16 @@ class PoolQueue:
             rows.append({"action_key": key, "pruned": True, "reason": why})
         return rows
 
-    def latest_denials(self, keys: "set[str]") -> dict[str, list[dict[str, object]]]:
+    def latest_denials(self, keys: "set[str]", *,
+                       include_local: bool = True) -> dict[str, list[dict[str, object]]]:
         """Each host's latest denial verdict for ``keys``, newest host first.
 
-        This host's own latest-only file first, then every host's published
-        snapshot (``reservations/<host>/adaptive/claim-denials.json``) for the
-        rest.  Both are best-effort, latest-only records; a missing or
-        unreadable one contributes nothing.
+        This host's own latest-only file first (``include_local``), then every
+        host's published snapshot
+        (``reservations/<host>/adaptive/claim-denials.json``).  Both are
+        best-effort, latest-only records; a missing or unreadable one
+        contributes nothing.  ``include_local=False`` is for a reader that
+        must not create this box's local admission-state directory.
         """
 
         found: dict[str, dict[str, dict[str, object]]] = {}
@@ -5839,9 +5842,11 @@ class PoolQueue:
         if not keys:
             return {}
         try:
+            if not include_local:
+                raise LookupError
             local = cpu_admission.local_state_base(self.ledger().base) / CLAIM_DENIALS
             take(cpu_admission.read_json(local).get("records"))
-        except (OSError, ValueError, TypeError, RuntimeError, PoolContractError):
+        except (LookupError, OSError, ValueError, TypeError, RuntimeError, PoolContractError):
             pass
         try:
             hosts = sorted(os.listdir(self.root / RESERVATIONS))
@@ -5883,6 +5888,7 @@ class PoolQueue:
     def dependent_rows(
         self, action_key: str, *, now: float | None = None,
         live_records: "tuple[Mapping[str, tuple[str, dict[str, object]]], list[str]] | None" = None,
+        include_local: bool = True,
     ) -> dict[str, object]:
         """The rows ``action_key`` waits on, with their state and last denial (#990).
 
@@ -5959,7 +5965,8 @@ class PoolQueue:
                                    row["ready_since_unix"] if row["ready_since_unix"] is not None
                                    else math.inf, str(row["key"])))
         shown = rows[:MAX_ENDING_DEPENDENTS]
-        denials = self.latest_denials({str(row["key"]) for row in shown})
+        denials = self.latest_denials({str(row["key"]) for row in shown},
+                                      include_local=include_local)
         for row in shown:
             latest = denials.get(str(row["key"])) or []
             row["last_denial"] = None

@@ -1723,7 +1723,8 @@ def _starvation_dependents(queue: pool.PoolQueue, *, notes: list[str],
         if key not in owners and not planned:
             continue
         try:
-            found = queue.dependent_rows(key, now=now, live_records=(live, []))
+            found = queue.dependent_rows(key, now=now, live_records=(live, []),
+                                         include_local=False)
         except (OSError, ValueError, pool.PoolContractError) as exc:
             notes.append(f"starvation dependents {key[:12]}: {exc}")
             unreadable.append(f"starvation dependents {key[:12]}: {exc}")

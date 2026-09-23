@@ -181,6 +181,28 @@ claiming an item does not erase its diagnostic history. Status exposes each
 host's record on ready and claimed rows only when it matches that submission,
 with the original observation age. A malformed diagnostic makes the census
 partial without making its valid job unreadable or erasing queue counts.
+
+That latest-only record is not the only evidence of a denial (#991). Each
+action also has a reason ring, `denial-transitions/<key>.json` in the queue
+root, which keeps the newest 16 `{unix, host, reason, decision_reason,
+published_unix}` entries. An entry is appended only when the reason (the
+branch plus the controller decision's own reason) differs from that host's
+newest entry for the same generation, so the sequence that diagnoses a
+starvation, for example `measurement_holder` then `host_pressure`, survives
+every pass that overwrites the latest record. The ring takes no lock of its
+own: every `record_denial` call in the claim scan runs under the key's
+transition lock, which already serializes that key's writers across the
+fleet. The one exception, `transition_busy`, is recorded because another loop
+holds that lock, so its entry waits in the recording process and is written, in
+time order, with that process's next locked verdict for the key. The ring
+shares nothing with the latest record's local `flock`, so a busy diagnostic
+lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
+lookup for an unchanged reason: an in-process memo holds the reason each
+process last saw on file for its host, pruned to the ready queue every pass.
+A change costs one small read and one atomic write, the same kind and size as
+the `passes/` write the pass already makes for that denial. The prewarm loop's
+receipt sweep retires the rings of terminal and withdrawn keys on the same
+live set, and a ring no state directory names is kept for seven days.
 An unfunded token acquisition also retains `token_shortage`: the first failing
 resource, the physical tokens requested after any CPU borrowing adjustment,
 and the tokens actually obtainable before rollback. This is evidence from the
@@ -2298,6 +2320,32 @@ Contract:
   `--container-image` is refused on the SLURM lane, and so is a sealed
   action that declares one when another producer submits it there, because
   that lane has no inventory to verify.
+
+### A kill names what it waited on
+
+An ending at the `no_progress`, `execution_deadline` or `withdrawn` rung
+carries what the action was waiting on (#990). `PoolQueue.ending_diagnosis`
+adds three things to the outcome that `finish` files:
+
+*   `dependents`: the rows the action depends on, each with `key`, `role`,
+    `state`, `ready_since_unix`, `ready_age_s`, `last_denial` (the newest
+    host's latest verdict, with its `decision_reason`) and
+    `denial_transitions` (the row's reason ring). The rows are the residency
+    plan's children (`mover_row`, `egress_row`, `ram_mover_row`,
+    `ram_egress_row`) that are ready, claimed or failed, and every ready or
+    claimed row whose `dependent_of` names the action (`produced_export`,
+    #998). Ready rows come first, longest waiting first. The list stops at
+    `MAX_ENDING_DEPENDENTS` (32); `dependents_total` and
+    `dependents_truncated` say when it was cut.
+*   `tier_events`: the newest 32 tier-loop verdicts about the action, from
+    every host's event file.
+*   `denial_transitions`: the action's own reason ring from before it was
+    claimed.
+
+The enumeration reads `ready/` and `claimed/` once, which is what one claim
+pass already reads, plus one existence check per plan child that is not live.
+It runs only at the kill rungs. A failure to read it is filed as
+`dependents_error` beside the kill and never replaces the kill's own record.
 
 ### Progress-bounded execution
 
@@ -6130,6 +6178,21 @@ against the budget, and what it is waiting for — and `residency_window` files 
 as a `window-stalled` event beside `mover-published` and `egress-published`. Not
 a claim denial: the consumer is not denied, it is running and reporting nothing.
 A silent stall would reproduce the incident in the other direction.
+
+**The verdict is a record, not a log line (#990).** The tier loop prints every
+cycle event, and files each one that names a consumer in
+`residency-events/<consumer>/<host>.jsonl`. Each host's tier-loop singleton is
+the only writer of its own file, so an append needs no lock and never crosses
+the NFS client boundary. A file is rewritten to its newest 256 lines once it
+holds 512. A tier-level verdict that names no consumer, such as
+`beyond-horizon-eviction-futile` or `ram-credit-cleanup-deferred`, is filed for
+every planned consumer on its tier with `attributed_by: tier_id`. A standing
+verdict (a stall, decline, refusal, deferral or busy lock) carries `waited_s`
+and `verdict_since_unix`: how long this loop has seen the same verdict in
+consecutive cycles. That clock is the loop's own observation, so a restarted
+loop starts it again at zero and it never reads long. The plan reaper's
+`residency-plan-reaped` event removes the consumer's directory. A kill's ending
+record and `pbstatus --starvation` read these files.
 
 **It does not fight #598's deferred eviction.** `window_pressure` now asks the
 window what it *would publish given room*, rather than reading the first phase
