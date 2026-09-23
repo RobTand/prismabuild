@@ -6482,6 +6482,12 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     (`_outstanding_sums`), and returns ``output-prewrite-reclaimed``. An
     ``orphaned`` or ``refused`` prewrite is reported once per change
     (``output-prewrite-orphaned``, ``output-origin-retirement-refused``).
+
+    ``generation`` is read before the lock. That is safe because ``dead``
+    and ``succeeded`` are final for a nonce. A sibling that ends or starts
+    after the read can change only a report or a hold, never a removal,
+    which depends only on the files present and the batches committed, both
+    read under the lock.
     """
 
     keys = {batch_id: f"{_batch_report_key(instance, batch_id)}.prewrite"

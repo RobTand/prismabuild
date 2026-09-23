@@ -5222,16 +5222,30 @@ takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
 an instance's own state and for its siblings'. Per ended instance, the
-output prefix is statted once, and the sibling attempts' commitments,
-batch records and prewrites are read at most once, only when some planned
-path is present. Every scope costs one more directory listing than before
-(its `prewrites`). A scope with outstanding prewrites and nothing due is
-skipped on its attempt's state before its instance or template is read,
-because the scope directory is named for the attempt's nonce, so a running
-producer costs only that listing and its share of the owner's one read. An
-orphaned prewrite is
-examined again on each tick, because an operator's removal of its files is
-only seen that way; it is reported only when what the tick finds changes.
+output prefix is statted once, and the sibling scan runs at most once, only
+when some planned path is present. Every scope costs one more directory
+listing than before (its `prewrites`). A scope with outstanding prewrites
+and nothing due is skipped on its attempt's state before its instance or
+template is read, because the scope directory is named for the attempt's
+nonce, so a running producer costs only that listing and its share of the
+owner's one read. An orphaned prewrite is examined again on each tick,
+because an operator's removal of its files is only seen that way; it is
+reported only when what the tick finds changes.
+
+One read is still repeated. The scope loop reads every sibling's
+`commitments.json` and lists its `prewrites`, and the sibling scan of an
+ended instance reads them again. It happens only for an attempt that ended
+with a prewrite outstanding and a planned file present, once per such
+instance per tick. Removing it needs the tick to gather an owner's scopes
+before it sweeps any of them.
+
+The attempt's state is read before the output-prefix lock is taken. That is
+safe because `dead` and `succeeded` are final for a nonce: a superseded or
+finished attempt never holds the claim again. The same read answers for the
+siblings, and a sibling that ends or starts after it can change only a
+report or a hold, never a removal. A removal depends only on what the lock
+protects: which planned files are present, and which sibling batches are
+committed. The next tick corrects the report.
 
 Limits:
 
