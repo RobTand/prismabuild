@@ -780,13 +780,16 @@ def _read_and_pass(queue: pool.PoolQueue, stage: Path, n: int, *, phase: str,
     ``phase`` back (its egress ran) and blocks on ``following``."""
 
     key = _key(n)
-    item = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
-    queue.write_lease(key, owner="replay-fixture", claim_snapshot=item,
-                      progress_observation={
-                          "source": "action-progress",
-                          "last_accepted": {"phase": following,
-                                            "units_completed": 1,
-                                            "reported_unix": now}})
+    # The lease its worker refreshes, written in place: ``write_lease`` is
+    # the claiming worker's, and after its first write the lease names this
+    # box, which the fixture's claim does not.
+    path = queue.lease_path(key)
+    lease = json.loads(path.read_text())
+    lease.update({"heartbeat_unix": now, "progress_observation": {
+        "source": "action-progress",
+        "last_accepted": {"phase": following, "units_completed": 1,
+                          "reported_unix": now}}})
+    path.write_text(json.dumps(lease))
     receipt = stage_release.evict(queue, _mover(n, phase), consumer_action_key=key,
                                   stage_root=str(stage), reason="egress")
     assert receipt.get("tokens_released") or receipt.get("complete"), receipt
