@@ -114,6 +114,7 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
@@ -164,6 +165,22 @@ DEAD_OWNER_EVENT = "stage-dead-owner-evicted"
 #: no single direct fragment naming a consumer that has ended (#892), when the
 #: tier's window still lacks room after the pass.
 RECEIPTLESS_HOLDER_EVENT = "stage-receiptless-holder-retained"
+
+#: The event an orphan sweep publishes when it retires a produced-output batch
+#: whose producer attempt has ended (#929): the ``retire_batch`` its producer
+#: never ran, run for it.
+PRODUCED_ORPHAN_EVENT = "stage-produced-orphan-retired"
+
+#: The operator report of a held key the sweep can prove neither live nor an
+#: orphan (#929).  Published once per change of the reason, whatever the
+#: tier's pressure, so a holder nothing can classify is seen once rather than
+#: never or on every cycle.
+HOLDER_UNRESOLVED_EVENT = "stage-holder-unresolved"
+
+#: The reason each unresolved holder was last reported with, per queue and
+#: tier.  Process-local on purpose: the tier loop is long-lived, and a restart
+#: reporting every unresolved holder once more is the right amount of noise.
+_UNRESOLVED_REPORTS: dict[tuple[str, str], dict[str, str]] = {}
 
 #: The event a bounded prune of positively stale mentions publishes (#853).
 #: Unlike a dead-owner eviction this keeps the whole old holder: no charge
@@ -2597,6 +2614,20 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     only when the tier's window still lacks room after the pass; otherwise it
     waits quietly, as it did before.
 
+    **A funded produced-output mover is its lane's (#929).**  Before either
+    rule above, :func:`produced_holder` asks the output funding record whether
+    the key is a produced mover on this tier.  If it is, the lane decides:
+    a live producer attempt, or a mover still queued, keeps it; a producer
+    attempt that has ended, with the mover ended too, is retired at once
+    through the producer's own ``retire_batch``, pressure or none, because a
+    retried producer binds a new batch namespace and nothing can read this
+    copy again (the live ``6fbc96301c6c`` held 1 GiB that way after its
+    producer failed and its mover was withdrawn from ``ready``).  Everything
+    else is kept.  Every held key the pass can prove neither live nor an
+    orphan is reported as ``stage-holder-unresolved`` once per change of its
+    reason, whatever the pressure: a holder nothing can classify is seen
+    once, not never and not every cycle.
+
     **Dead owners are retired unconditionally (#839).**  A failed consumer's
     withdrawn mover holds no tokens and filed no receipt, so the held-key
     pass above can never see it -- yet its fragment still forbids publication
@@ -2631,8 +2662,37 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             continue
         orphans: list[tuple[float, str, str]] = []
         retained: list[dict[str, object]] = []
+        unresolved: dict[str, str] = {}
         for key in held:
             if key in wanted or key in owners:
+                continue
+            # A funded produced-output mover is its lane's, receipt or no
+            # receipt (#929).  Its receipt names a batch namespace, not a
+            # queue action, and its fragment lives in the produced store, so
+            # neither rule below can read it: asked of the flat store, a live
+            # producer's completed batch looks unowned and would lose its
+            # tokens while its bytes stayed.
+            verdict = produced_holder(queue, tier_id, key)
+            if verdict is not None:
+                if verdict["class"] == "dead":
+                    # Not pressure-gated: nothing can read this copy again,
+                    # so keeping it is not a cache (#598), and its token pins
+                    # its funding record (`retire_terminal_output_funding`).
+                    outcome = _retire_produced_orphan(
+                        queue, key, verdict, tier_id=tier_id,
+                        stage_root=stage_root,
+                        residency_root=Path(
+                            residency_root if residency_root is not None
+                            else queue.root / pool.RESIDENCY))
+                    if outcome["complete"]:
+                        swept.append(outcome)
+                    else:
+                        unresolved[key] = (
+                            "its producer attempt has ended and its batch "
+                            "retirement did not complete: "
+                            + "; ".join(str(e) for e in outcome["errors"]))
+                elif verdict["class"] == "unknown":
+                    unresolved[key] = str(verdict["why"])
                 continue
             receipt = queue.move_record(key)
             consumer = (str(receipt.get("consumer_action_key")) if isinstance(receipt, dict)
@@ -2649,8 +2709,13 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                     if why:
                         consumer = ""
                 if not consumer:
-                    retained.append(_receiptless_refusal(
-                        key, tier_id=tier_id, stage_root=stage_root, why=why))
+                    # A live item's own holding is named by a live claim:
+                    # kept, and not reported as anybody's mystery (#929).
+                    if not _held_by_a_live_item(queue, key, owners):
+                        retained.append(_receiptless_refusal(
+                            key, tier_id=tier_id, stage_root=stage_root,
+                            why=why))
+                        unresolved[key] = why
                     continue
             staged_unix = 0.0
             if isinstance(receipt, dict):
@@ -2675,12 +2740,18 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             swept.append(evict(queue, key, consumer_action_key=consumer,
                                stage_root=stage_root,
                                residency_root=residency_root, reason="orphan-sweep"))
+        reported: set[str] = set()
         if retained and _still_short(queue, tier_id, kind, needed):
             # A retained receipt-less holder is reported only when keeping it
             # costs something: the tier's window still lacks room after every
             # orphan that could go has gone.  Otherwise it is a quiet wait, as
             # before #892, rather than a line on every cycle.
             swept.extend(retained)
+            reported = {str(entry["action_key"]) for entry in retained}
+        # And every holder the pass could prove neither live nor an orphan is
+        # reported once per change of its reason, pressure or none (#929).
+        swept.extend(_unresolved_reports(queue, tier_id, stage_root, unresolved,
+                                         reported=reported))
         # Held keys first, then the rest of the stage: the evictions above turn
         # held bytes into absent ones, so the reconciliation below sees the same
         # directory the ledger now describes rather than one eviction behind it.
@@ -2732,9 +2803,9 @@ def _receiptless_owner(owners: dict[str, list[tuple[str, bool]]] | str,
     after, and ``evict`` rechecks co-owners, claims, pins and handoffs under
     its own locks.  Anything else is not an owner (#892):
 
-    * no fragment: no document names one.  A produced-output mover prepaid
-      at publication is this shape, and its tokens belong to its batch's
-      funding lane, which retains them on purpose (``safe_release_instance``);
+    * no fragment: no document names one.  A funded produced-output mover
+      never reaches this question: :func:`produced_holder` decides it first
+      (#929), from its funding record;
     * more than one fragment: two documents disagree;
     * a produced-output fragment: its batch's lifecycle owns the mover.
     """
@@ -2812,6 +2883,231 @@ def _receiptless_refusal(mover: str, *, tier_id: str, stage_root: str,
         "complete": False, "errors": [why],
         "host": socket.gethostname(), "unix": time.time(),
     }
+
+
+def _is_action_key(value: str) -> bool:
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
+                         owners: Mapping[str, str]) -> bool:
+    """Whether a live item holds this key's tokens as its own (#929).
+
+    Two holders a live claim names that are not movers: a live item's own
+    reservation -- a producer's output window, say, whose row carries no
+    residency and so is not among ``owners`` -- and a window's fence grant,
+    held under ``advance-<consumer>-...`` for a consumer that is.  The sweep
+    keeps both, as before; this only keeps the reports -- the pressure-driven
+    ``stage-receiptless-holder-retained`` and ``stage-holder-unresolved`` --
+    from calling them unresolved.
+    """
+
+    if key.startswith(window_credit.GRANT_PREFIX):
+        prefix = key[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
+        return bool(prefix) and any(owner.startswith(prefix) for owner in owners)
+    if not _is_action_key(key):
+        return False
+    try:
+        return any(not _metadata_absent(queue.item_path(state, key))
+                   for state in (pool.READY, pool.CLAIMED))
+    except OSError:
+        return False
+
+
+def produced_holder(queue: pool.PoolQueue, tier_id: str,
+                    mover: str) -> dict[str, object] | None:
+    """The produced-output lane's verdict on one held mover (#929), or ``None``.
+
+    ``None`` means no output funding record on this tier names the key: it is
+    not a produced mover here, and the ordinary receipt and fragment rules
+    apply to it.  A funded mover is the lane's, receipt or no receipt, and
+    the answer is one of three classes:
+
+    * ``live``: its producer attempt holds its claim, or the mover itself is
+      ready, claimed or in a transition.  The producer may still retire or
+      restage the batch, and a queued mover may still copy into the tokens it
+      holds;
+    * ``dead``: the producer attempt has ended -- ``dead`` (failed, withdrawn
+      or superseded) or ``succeeded`` without retiring this batch -- and so
+      has the mover, and its funding is ``consumed``.  Nothing can read the
+      copy again: a producer's retry binds a new instance, and with it a new
+      batch namespace (#912).  The verdict carries what ``retire_batch``
+      needs;
+    * ``unknown``: anything else, with the reason.  An absent producer is
+      unknown, not dead: no outcome at all is not an ending (#798), and a
+      queue whose records are not all visible yet looks the same.
+
+    Every record is read at its own address -- the funding record, the
+    instance and template it names, the two keys' queue states -- so the cost
+    is a handful of reads per funded holder, and none for any other key.
+    """
+
+    if not _is_action_key(mover):
+        return None
+
+    def unknown(why: str) -> dict[str, object]:
+        return {"class": "unknown", "why": why}
+
+    try:
+        record, file_state = queue.output_funding_file_state(mover, tier_id)
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        return unknown(f"its output funding is unreadable: {exc}")
+    if file_state == "absent":
+        return None
+    if file_state != "ok" or not isinstance(record, Mapping):
+        return unknown(f"its output funding record is {file_state}")
+    owner = str(record.get("owner_action_key") or "")
+    nonce = str(record.get("owner_nonce") or "")
+    template_id = str(record.get("template_id") or "")
+    batch_id = str(record.get("batch_id") or "")
+    if (str(record.get("mover_action_key") or "") != mover
+            or str(record.get("tier_id") or "") != tier_id
+            or not _is_action_key(owner) or not nonce or not template_id
+            or not batch_id):
+        return unknown("its output funding record does not name this mover's batch")
+    residency = queue.root / pool.RESIDENCY
+    scope = (residency / produced_output.OUTPUT_SCOPES_SUBDIR / owner
+             / f"{template_id}.{nonce}")
+    try:
+        instance = produced_output.validate_instance(
+            json.loads((scope / "instance.json").read_text()))
+    except (OSError, ValueError) as exc:
+        return unknown(f"its producer's instance is unreadable: {exc}")
+    try:
+        template = produced_output.validate_template(json.loads(
+            (residency / produced_output.OUTPUT_TEMPLATES_SUBDIR
+             / f"{template_id}.json").read_text()))
+    except (OSError, ValueError) as exc:
+        return unknown(f"its producer's template is unreadable: {exc}")
+    attempt = instance.get("owner_attempt")
+    if (produced_output.instance_dir(queue.root, instance) != scope
+            or not isinstance(attempt, Mapping)
+            or str(attempt.get("nonce")) != nonce
+            or str(attempt.get("scope_id")) != str(record.get("owner_scope_id"))
+            or produced_output.template_sha256(template)
+            != instance.get("template_sha256")
+            or str(record.get("template_sha256")) != instance.get("template_sha256")):
+        return unknown("its funding, instance and template disagree")
+    try:
+        producer = produced_output._producer_attempt_state(queue, instance)
+        mover_state, _row = produced_output._key_generation(queue, mover)
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        return unknown(f"a queue state is unreadable: {exc}")
+    if producer == "live":
+        return {"class": "live",
+                "why": f"its producer attempt {owner[:12]} holds its claim"}
+    if mover_state in (pool.READY, pool.CLAIMED, "moving"):
+        return {"class": "live", "why": f"the mover itself is {mover_state}"}
+    if producer not in ("dead", "succeeded"):
+        return unknown(f"its producer attempt {owner[:12]} is {producer}")
+    if mover_state not in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        return unknown(f"the mover's own queue state is {mover_state}")
+    if str(record.get("state")) != "consumed":
+        return unknown(f"its output funding is {record.get('state')}, not consumed")
+    try:
+        commitments = produced_output._read_commitments(
+            scope / "commitments.json")
+        entry = commitments["batches"].get(batch_id)   # type: ignore[union-attr]
+        if not isinstance(entry, Mapping):
+            return unknown(f"its batch {batch_id} is not committed")
+        active = produced_output._active_materialization(entry)
+    except (OSError, ValueError) as exc:
+        return unknown(f"its batch's commitments are unreadable: {exc}")
+    if str(active.get("mover_key") or "") != mover:
+        return unknown(f"its batch {batch_id}'s active copy is another mover's")
+    if active.get("retired"):
+        return unknown(f"its batch {batch_id} is retired and it still holds tokens")
+    return {"class": "dead", "why": f"its producer attempt {owner[:12]} is {producer}",
+            "instance": instance, "template": template, "batch_id": batch_id,
+            "producer_action_key": owner, "producer_state": producer}
+
+
+def _retire_produced_orphan(queue: pool.PoolQueue, mover: str,
+                            verdict: Mapping[str, object], *, tier_id: str,
+                            stage_root: str, residency_root: Path) -> dict[str, object]:
+    """Run the dead producer's ``retire_batch`` for it, and say what happened.
+
+    The lane's own retirement, never the flat orphan path: it validates the
+    batch record against its commitments, runs the ordinary ``evict`` on the
+    batch's fragment root -- co-owners, claims, pins and handoffs rechecked
+    under its locks, files deleted only against their fragment's identity --
+    and files the batch ``retired``.  A mover that never published a fragment
+    staged nothing the egress can name, so its tokens come back and any
+    unfragmented bytes are the reconciliation's, as for the producer's own
+    call (``test_a_mover_killed_before_filing_anything_keeps_its_charge``).
+    """
+
+    # Only in this process: off the tier host `retire_batch` would publish an
+    # egress action, and a sweep publishes nothing.  The tier loop runs on the
+    # tier host, so this is the case there.
+    if not produced_output._egress_runs_in_process(
+            produced_output._announced_tier_record(queue, tier_id)):
+        result: dict[str, object] = {
+            "ok": False, "refusal": "this sweep is not on the tier host"}
+    else:
+        result = produced_output.retire_batch(
+            queue, verdict["instance"], verdict["template"],  # type: ignore[arg-type]
+            str(verdict["batch_id"]), stage_root=str(stage_root),
+            residency_root=produced_output.output_fragment_root(residency_root))
+    egress = result.get("receipt") if isinstance(result.get("receipt"), Mapping) else {}
+    errors: list[str] = []
+    if result.get("ok") is not True:
+        errors.append(str(result.get("refusal") or "retirement refused"))
+        if isinstance(egress, Mapping):
+            errors.extend(str(error) for error in egress.get("errors") or [])
+    elif result.get("duplicate"):
+        errors.append("its batch was already retired")
+    return {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": PRODUCED_ORPHAN_EVENT,
+        "action_key": mover,
+        "consumer_action_key": str((egress or {}).get("consumer_action_key") or ""),
+        "tier_id": tier_id, "stage_root": str(stage_root),
+        "reason": "dead-producer", "batch_id": str(verdict["batch_id"]),
+        "producer_action_key": str(verdict["producer_action_key"]),
+        "producer_state": str(verdict["producer_state"]),
+        "entries_deleted": int((egress or {}).get("entries_deleted") or 0),
+        "bytes_deleted": int((egress or {}).get("bytes_deleted") or 0),
+        "tokens_released": int((egress or {}).get("tokens_released") or 0),
+        "complete": not errors, "errors": errors,
+        "host": socket.gethostname(), "unix": time.time(),
+    }
+
+
+def _unresolved_reports(queue: pool.PoolQueue, tier_id: str, stage_root: str,
+                        unresolved: dict[str, str], *,
+                        reported: set[str]) -> list[dict[str, object]]:
+    """The operator report: each unresolved holder once per change of reason.
+
+    ``reported`` names holders this pass already reported another way (the
+    pressure-driven ``stage-receiptless-holder-retained`` receipt); they are
+    recorded but not repeated.  A holder that resolves, or leaves the tier,
+    is forgotten, so it is reported again if it comes back.
+    """
+
+    seen = _UNRESOLVED_REPORTS.setdefault((str(queue.root), tier_id), {})
+    for key in [key for key in seen if key not in unresolved]:
+        del seen[key]
+    events: list[dict[str, object]] = []
+    for key, why in sorted(unresolved.items()):
+        if seen.get(key) == why:
+            continue
+        seen[key] = why
+        if key in reported:
+            continue
+        events.append({
+            "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": HOLDER_UNRESOLVED_EVENT,
+            "action_key": key, "consumer_action_key": "", "tier_id": tier_id,
+            "stage_root": str(stage_root), "reason": "orphan-sweep",
+            "complete": False, "errors": [why],
+            "host": socket.gethostname(), "unix": time.time(),
+        })
+    return events
+
+
+def reset_holder_reports() -> None:
+    """Forget which unresolved holders were reported (tests, and restarts)."""
+
+    _UNRESOLVED_REPORTS.clear()
 
 
 def _is_mover_partial(name: str) -> bool:

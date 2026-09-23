@@ -6351,9 +6351,49 @@ fixture is that shape, and the first version of this change deleted its
 bytes. A retained holder is reported as a `stage-receiptless-holder-retained`
 receipt naming the reason only when the tier's window still lacks room after
 the pass; otherwise it waits quietly, so an unresolvable holder does not add
-a line to every tier cycle. A prepaid produced-output mover withdrawn before
-it ran is the no-fragment shape; its tokens stay with its batch's funding
-lane, which keeps such intents on purpose.
+a line to every tier cycle.
+
+**A funded produced-output mover is its lane's, receipt or no receipt (#929).**
+A prepaid produced-output mover holds its tokens from publication, and neither
+its failure nor a withdrawal releases them: the only release is its producer's
+own `retire_batch`. On 2026-09-21 the one-shot Stage A producer `0dedb066f868`
+failed closed on `BoundaryStagingTimeout`, an operator withdrew its stranded
+mover `6fbc96301c6c` from `ready`, and the mover kept 1 stage GiB with no
+receipt, fragment or plan. The rules above could not see whose it was, and
+`retire_terminal_output_funding` kept the mover's funding record because the
+mover still held the token, so each leak pinned the other. The sweep now asks
+the output funding record first. For a key it funds on this tier:
+
+- **Kept** when the producer attempt still holds its claim, or the mover itself
+  is ready, claimed or in a transition.
+- **Retired at once** when the producer attempt has ended (`dead`, or
+  `succeeded` without retiring the batch), the mover has one outcome record,
+  its funding is `consumed`, and its batch's active copy is this mover's and
+  is not retired. The sweep runs the producer's own `retire_batch` for it, on
+  the tier host only, whatever the tier's pressure: a retried producer binds a
+  new instance and batch namespace, so no one can read this copy again and
+  keeping it is not a cache (#598).
+- **Unknown** otherwise, and kept. An absent producer is unknown, not dead: no
+  outcome record is not an ending (#798).
+
+The same question fixes the opposite exposure. A completed produced mover's
+receipt names its batch namespace, not a queue action, and its fragment is in
+the produced store, so the orphan pass used to take a live producer's
+completed batch for an orphan, look for its fragment in the flat store, find
+none, and release its tokens while its bytes stayed on the stage.
+
+Every held key the pass can prove neither live nor an orphan is reported as
+`stage-holder-unresolved`, naming the reason, once per change of that reason
+and whatever the tier's pressure. A holder nothing can classify is therefore
+seen once, not never and not on every cycle. A live item's own holding is not
+such a holder, and neither report names it: a producer's output window, whose
+row carries no residency, and a window's `advance-` fence grant for a live
+consumer are both named by a live claim. The joint-commitment census
+still counts a receipt-less holder as held. The one shape the sweep frees
+from that group, it frees before the cycle's windows admit. The pressure and
+adoption passes that run before the sweep still count it, so for one cycle a
+tier's pressure can read higher by that holder's size. That errs toward
+evicting one more orphan, never toward admitting onto occupied room.
 
 Two limits, stated rather than hidden. A direct call to the sweep with no
 pressure named still takes every orphan, which is what an operator means. And
