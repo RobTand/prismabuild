@@ -6254,7 +6254,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "instead of submitting (#926).  BATCH_REF is the batch's ref, as "
              "JSON or a path to a JSON file (output-origin-retirement-stalled "
              "prints it); CONSUMER_KEY is the declared consumer, which must "
-             "have failed or been withdrawn.  The tier loop then retires the "
+             "have failed or been withdrawn, or be unpublished with nothing "
+             "left that can publish it (#945).  The tier loop then retires the "
              "batch once every other declared consumer has succeeded")
     ap.add_argument(
         "--transport", choices=TRANSPORTS,
@@ -7366,7 +7367,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
 
 def release_origin_consumer_cli(batch_ref: str, consumer_key: str, *,
                                 reason: str, by: str) -> int:
-    """``--release-origin-consumer``: release one declaration (#926)."""
+    """``--release-origin-consumer``: release one declaration (#926, #945)."""
 
     from prismabuild import produced_output as produced_mod
 
