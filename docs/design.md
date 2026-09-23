@@ -5444,7 +5444,10 @@ accepted phase can be) plus one tier-loop cycle (`--interval-s`) plus the
 landing time: the largest range still ahead at the slowest rate a copy of
 this plan has landed at (`bytes_staged / seconds` from its receipts). It is
 priced by throughput rather than by a receipt's duration, so a plan whose
-landed copies were small ranges does not under-price its large ones. The
+landed copies were small ranges does not under-price its large ones. A
+range copied again replaces its receipt, and the tier loop reads the new one,
+so a range is always priced at its latest copy. A remembered first rate would
+price a slower second copy too fast and make the horizon short. The
 consumption rate is the bytes through the end of the accepted phase over the
 time from the claim to that phase's report. Counting the whole accepted phase
 as read over-states the rate, which errs toward a longer horizon.

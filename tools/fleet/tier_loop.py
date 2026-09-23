@@ -1906,24 +1906,36 @@ def adopt_resident_ranges(
 
 
 #: Landing rates of complete stage copies, in bytes per second, by queue and
-#: mover.  Read once per mover: a receipt that says the copy completed is
-#: not rewritten while the range stays landed (#903).
-_LANDING_RATES: dict[tuple[str, str], float] = {}
+#: mover, each beside the identity of the receipt it was read from (#903).  A
+#: range evicted past its horizon and copied again files a new receipt under
+#: the same mover key; the identity is what notices it, so the rate is always
+#: the last copy's.  A remembered first rate would price a slower second copy
+#: too fast and make the horizon short.  One stat per call, one read per new
+#: receipt.
+_LANDING_RATES: dict[tuple[str, str], tuple[tuple[int, int, int], float]] = {}
 
 
 def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
-    """The rate one complete stage copy landed at, or ``None`` (#903).
+    """The rate the mover's last complete stage copy landed at, or ``None`` (#903).
 
     ``bytes_staged`` over ``seconds`` from the mover's own receipt, which is
     what ``stage_move`` measured while it copied.  ``None`` for no receipt,
     an incomplete one, or one that does not read: an unlanded copy measured
-    nothing.
+    nothing.  The receipt is read again whenever its file changed, because
+    a re-staged range replaces it (``record_move`` writes atomically).
     """
 
     cache_key = (str(queue.root), str(mover_action_key))
+    try:
+        status = os.stat(queue.move_path(str(mover_action_key)))
+    except (OSError, pool.PoolContractError, ValueError):
+        status = None
+    identity = ((int(status.st_ino), int(status.st_mtime_ns),
+                 int(status.st_size)) if status is not None else None)
     cached = _LANDING_RATES.get(cache_key)
-    if cached is not None:
-        return cached
+    if identity is not None and cached is not None and cached[0] == identity:
+        return cached[1]
+    _LANDING_RATES.pop(cache_key, None)
     try:
         record = queue.move_record(str(mover_action_key))
     except (OSError, pool.PoolContractError, ValueError):
@@ -1938,7 +1950,8 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
     if staged <= 0 or not math.isfinite(seconds) or seconds <= 0:
         return None
     rate = staged / seconds
-    _LANDING_RATES[cache_key] = rate
+    if identity is not None:
+        _LANDING_RATES[cache_key] = (identity, rate)
     return rate
 
 
