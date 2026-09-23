@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import array
 import bisect
+from contextlib import contextmanager
 import errno
 from collections.abc import Mapping
 import hashlib
@@ -435,6 +436,23 @@ def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
         return version, stream.read()
 
 
+def _observe(path: Path) -> "tuple[int, int, int, int, int] | OSError":
+    """One metadata file's version, or the ``OSError`` its ``stat`` raised.
+
+    The per-lookup stat of the reuse index (#761), taken before the
+    publisher's lookup lock rather than under it (#981): once the proof left
+    the stage ownership lock, sixteen copy workers proving at once would
+    otherwise queue one ``stat`` at a time behind that small lock.  The
+    version compare, and any read and parse a changed version needs, still
+    run under it, so one file is still parsed once per version.
+    """
+
+    try:
+        return _metadata_version(os.stat(path))
+    except OSError as exc:
+        return exc
+
+
 def _origin_id_of(path_str: str) -> str | None:
     """``st_size:st_mtime_ns:st_ino`` of a copy source, or ``None``.
 
@@ -549,6 +567,12 @@ class _PackedPaths:
 #: never charged a table cost (the per-record overhead already prices the
 #: row, and the one object is process-wide).
 _EMPTY_PATHS = _PackedPaths([])
+
+#: A census slot whose fragment record the reuse index would not keep (#981):
+#: its packed table is too big for the budget, so the census holds no copy of
+#: it, and each decision that reaches the slot looks the file up again, as
+#: every decision did before the census was shared.
+_LOOK_AGAIN = object()
 
 
 def _pack_mention(mention: tuple) -> bytes:
@@ -675,6 +699,59 @@ class _PublicationRefused(OSError):
     pass
 
 
+class _PhaseClock:
+    """Thread-seconds a mover spends in each phase, for its receipt (#981).
+
+    A receipt that reports only totals cannot say where a multi-minute
+    window went: chunk 0 of ``234d662cdc4f`` ran 368.7 s, landed its bytes in
+    the first 90, and nothing on it split the other 270.  Each phase here is
+    summed across the copy workers -- thread-seconds, not wall -- with its
+    call count and its longest single call, so a phase that is slow on
+    average and a phase that is slow once both show.  The copy's own phases
+    (``pace_wait``, ``copy_read``, ``copy_write``, ``hash``, ``fsync``) are
+    added once per entry; the publisher's (``adopt_proof``,
+    ``publish_decide``, ``ownership_lock_wait``, ``ownership_lock_held``,
+    ``publish_poll_sleep``) once per call.  ``outcomes`` counts how each
+    entry ended: adopted before any copy, published by its own rename, or
+    adopted at publication after copying.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._phases: dict[str, list[float]] = {}
+        self._outcomes: dict[str, int] = {}
+
+    def add(self, phase: str, seconds: float, calls: int = 1) -> None:
+        with self._lock:
+            row = self._phases.setdefault(phase, [0.0, 0, 0.0])
+            row[0] += seconds
+            row[1] += calls
+            if seconds > row[2]:
+                row[2] = seconds
+
+    @contextmanager
+    def timing(self, phase: str):
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.add(phase, time.perf_counter() - started)
+
+    def outcome(self, name: str) -> None:
+        with self._lock:
+            self._outcomes[name] = self._outcomes.get(name, 0) + 1
+
+    def report(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "thread_seconds": {
+                    phase: {"seconds": round(row[0], 6), "calls": int(row[1]),
+                            "max_s": round(row[2], 6)}
+                    for phase, row in sorted(self._phases.items())},
+                "outcomes": dict(sorted(self._outcomes.items())),
+            }
+
+
 class _StagedPublisher:
     """Linearize staged-path publication under the stage ownership lock.
 
@@ -683,9 +760,23 @@ class _StagedPublisher:
     and invalidates every other consumer's published material identity
     (and any live cover proof or pin fenced on it). The payload copy
     into the private owner-keyed temp stays outside every lock; this
-    gate runs immediately before destination publication, under the
-    existing stage-ownership exclusion (the same lock egress holds
-    across snapshot-to-release), and decides metadata-only:
+    gate runs immediately before destination publication and decides
+    metadata-only.  What it decides *acts* under the existing
+    stage-ownership exclusion (the same lock egress holds across
+    snapshot-to-release); what it only *reads* does not hold it (#981).
+    The proof search and the pin, claim and in-flight censuses are
+    reads -- they run first, without the lock -- and a verdict that acts
+    is then re-established under the lock before it acts: an adoption
+    commits only while the destination still carries every field of the
+    ``file_id`` its proof dated, and a replacement or a refusal is decided
+    again, in full, under the lock, exactly as before.  One lock for the
+    whole stage root held across every proof made every mover on the
+    host prove one entry at a time (about 100 ms each on dl380g10,
+    2026-09-23).  The lock never excluded the fragment *writers* --
+    ``write_fragment`` runs outside it -- so a search under it was never
+    a snapshot of the forest either; what it excludes is the egress's
+    scan-to-unlink and a racing first publication's rename, and both are
+    what the commit re-checks.  The verdicts:
 
     * absent destination: this copy publishes (concurrent absentees
       serialize here, so exactly one first publication wins; a loser
@@ -791,6 +882,31 @@ class _StagedPublisher:
         self._interned_cost = 0
         self._fragment_cost = 0
         self._material_cost = 0
+        #: Where this publisher's time goes, for the mover's receipt.
+        self.clock = _PhaseClock()
+        # The single-flight forest census (#981), see :meth:`_shared_census`.
+        # ``_census`` is the latest finished census and ``_census_done`` its
+        # number; ``_census_started`` counts censuses begun.  Only one runs
+        # at a time, so the numbers finish in order.
+        self._census_cond = threading.Condition(threading.Lock())
+        self._census_started = 0
+        self._census_done = 0
+        self._census_running = False
+        self._census: tuple | None = None
+
+    @contextmanager
+    def _ownership(self):
+        """The stage ownership lock, with its wait and its hold timed."""
+
+        asked = time.perf_counter()
+        with self.queue.stage_ownership_lock(str(self.stage_root)):
+            granted = time.perf_counter()
+            self.clock.add("ownership_lock_wait", granted - asked)
+            try:
+                yield
+            finally:
+                self.clock.add("ownership_lock_held",
+                               time.perf_counter() - granted)
 
     def begin_material(self, resumed: str | None = None) -> str:
         """Start this run's material generation, optionally resuming one.
@@ -835,11 +951,22 @@ class _StagedPublisher:
                   ) -> tuple[int, str, dict[str, int]] | None:
         """Adopt an already-published incarnation without copying, if proven.
 
-        Metadata-only, under one ownership-lock hold: the same proof the
-        publish gate requires, minus the copy-compare path (no computed
-        digest exists yet).  Returns ``(want, digest, file_id)`` or
-        ``None`` to proceed with the copy.  Raises ``_PublicationRefused``
-        for provably divergent bytes, failing fast before any copy.
+        Metadata-only: the same proof the publish gate requires, minus the
+        copy-compare path (no computed digest exists yet).  Returns
+        ``(want, digest, file_id)`` or ``None`` to proceed with the copy.
+        Raises ``_PublicationRefused`` for provably divergent bytes, failing
+        fast before any copy.
+
+        The proof runs without the stage ownership lock (#981); only the
+        commit takes it.  Under the lock, a proof adopts only while the
+        destination still carries every field of the ``file_id`` the proof
+        dated -- the same identity check every strict reader makes -- so the
+        bytes adopted are the bytes the proof's sidecar digest describes.
+        Anything else that would act -- a divergence, or a proof whose
+        incarnation moved after the search -- is searched again under the
+        lock and decided exactly as before.  An unknown, owned or clean
+        answer acts on nothing: the copy proceeds, and its publication is
+        gated under the lock.
         """
 
         want = int(entry["bytes"])
@@ -851,7 +978,15 @@ class _StagedPublisher:
             return None
         if not statmod.S_ISREG(present.st_mode):
             return None
-        with self.queue.stage_ownership_lock(str(self.stage_root)):
+        with self.clock.timing("adopt_proof"):
+            proof, standing, detail = self._proof_search(
+                norm, want, declared, source_id=source_id)
+        if proof is None and standing != "divergent":
+            return None
+        with self._ownership():
+            if proof is not None and reader_lease.file_id_matches(
+                    proof[1], reader_lease.stat_identity(norm)):
+                return want, proof[0], proof[1]
             proof, standing, detail = self._proof_search(
                 norm, want, declared, source_id=source_id)
             if standing == "unknown":
@@ -867,31 +1002,55 @@ class _StagedPublisher:
                 stop: threading.Event | None = None,
                 source_id: str | None = None,
                 ) -> tuple[int, str, dict[str, int] | None]:
-        """Decide one entry's publication; copy already verified in temp."""
+        """Decide one entry's publication; copy already verified in temp.
+
+        Each poll decides first without the stage ownership lock (#981):
+        the proof search and the pin, claim and in-flight censuses only
+        read, and a ``wait`` acts on nothing, so a waiting poll never takes
+        the lock at all.  A verdict that acts takes it and is re-established
+        there before it acts: an adoption commits only while the destination
+        still carries every field of the ``file_id`` its proof dated, and
+        anything else -- a replacement, a refusal, or an adoption whose
+        incarnation moved -- is decided again, in full, under the lock,
+        exactly as before.  A fresh destination's rename therefore holds the
+        lock for one ``lstat`` and the rename, not for anybody's proof.
+        """
 
         want = int(entry["bytes"])
         declared = entry.get("sha256")
+        norm = os.path.normpath(str(destination))
         deadline = time.monotonic() + _PUBLISH_GRACE_S
         while True:
             now = time.monotonic()
-            with self.queue.stage_ownership_lock(str(self.stage_root)):
-                verdict = self._decide(
-                    destination, want, declared, computed, source_id,
-                    heal=now >= deadline)
-                if verdict[0] == "replace":
-                    os.replace(temp_path, destination)
-                    self._note_replacement()
-                    return want, computed, self._identity(destination)
-                if verdict[0] == "adopt":
-                    temp_path.unlink(missing_ok=True)
-                    return want, verdict[1], verdict[2]
-                if verdict[0] == "refuse":
-                    temp_path.unlink(missing_ok=True)
-                    raise _PublicationRefused(verdict[1])
+            heal = now >= deadline
+            with self.clock.timing("publish_decide"):
+                verdict = self._decide(destination, want, declared, computed,
+                                       source_id, heal=heal)
+            if verdict[0] != "wait":
+                with self._ownership():
+                    if not (verdict[0] == "adopt"
+                            and reader_lease.file_id_matches(
+                                verdict[2], reader_lease.stat_identity(norm))):
+                        verdict = self._decide(
+                            destination, want, declared, computed, source_id,
+                            heal=heal)
+                    if verdict[0] == "replace":
+                        os.replace(temp_path, destination)
+                        self._note_replacement()
+                        self.clock.outcome("renamed")
+                        return want, computed, self._identity(destination)
+                    if verdict[0] == "adopt":
+                        temp_path.unlink(missing_ok=True)
+                        self.clock.outcome("adopted_at_publication")
+                        return want, verdict[1], verdict[2]
+                    if verdict[0] == "refuse":
+                        temp_path.unlink(missing_ok=True)
+                        raise _PublicationRefused(verdict[1])
             if stop is not None and stop.is_set():
                 temp_path.unlink(missing_ok=True)
                 raise OSError(f"stopping before {destination} publishes")
-            time.sleep(_PUBLISH_POLL_S)
+            with self.clock.timing("publish_poll_sleep"):
+                time.sleep(_PUBLISH_POLL_S)
 
     @staticmethod
     def _identity(path: Path) -> dict[str, int] | None:
@@ -1214,7 +1373,7 @@ class _StagedPublisher:
         self._fragments[key] = (version, record, charge)
         self._fragment_cost += charge
 
-    def _fragment_record(self, path: Path) -> object:
+    def _fragment_record(self, path: Path, observed: object = None) -> object:
         """One fragment file's reusable record, parsed once per version.
 
         ``None`` for a file that is gone or is not a residency fragment,
@@ -1231,16 +1390,17 @@ class _StagedPublisher:
         transient, and the pre-fix code re-attempted it on every lookup, so
         unreadable stays freshly unreadable rather than becoming a held
         verdict.  The stat happens on every lookup, so an added, changed or
-        removed file is seen before any decision uses it.
+        removed file is seen before any decision uses it; ``observed`` is
+        that stat when the caller took it before the lookup lock
+        (:func:`_observe`).
         """
 
         key = str(path)
-        try:
-            current = _metadata_version(os.stat(path))
-        except FileNotFoundError:
+        current = _observe(path) if observed is None else observed
+        if isinstance(current, FileNotFoundError):
             self._forget_fragment(key)
             return None
-        except OSError:
+        if isinstance(current, OSError):
             self._forget_fragment(key)
             return "tainted"
         cached = self._fragments.get(key)
@@ -1295,7 +1455,8 @@ class _StagedPublisher:
         self._keep_fragment(key, version, record, base)
         return record
 
-    def _material_record(self, consumer: str, mover: str) -> object:
+    def _material_record(self, consumer: str, mover: str,
+                         observed: object = None) -> object:
         """One sidecar's reusable record, validated once per version.
 
         ``None`` (absent -- an undated vouch), ``"tainted"`` (unreadable or
@@ -1310,17 +1471,17 @@ class _StagedPublisher:
         A validated mention the fixed record cannot carry exactly -- an
         arbitrary-size integer identity -- is decided from the freshly
         parsed object, uncached and unretained, never truncated.  As with
-        fragments, an ``OSError`` never caches.
+        fragments, an ``OSError`` never caches, and ``observed`` is the
+        per-lookup stat when the caller took it before the lookup lock.
         """
 
         cache_key = (consumer, mover)
         path = reader_lease.material_path(self.residency_root, consumer, mover)
-        try:
-            current = _metadata_version(os.stat(path))
-        except FileNotFoundError:
+        current = _observe(path) if observed is None else observed
+        if isinstance(current, FileNotFoundError):
             self._forget_material(cache_key)
             return None
-        except OSError:
+        if isinstance(current, OSError):
             self._forget_material(cache_key)
             return "tainted"
         cached = self._materials.get(cache_key)
@@ -1417,6 +1578,115 @@ class _StagedPublisher:
 
         No payload is hashed here: the sidecar digest is the copy-time
         content proof, and stat stability is the change detection.
+
+        The forest is read through :meth:`_shared_census`: one directory
+        census, begun after this call began, serves every search waiting on
+        it (#981).  Each search then decides its own path from that census
+        in the same order, with the same verdicts, and takes the sidecar and
+        the live destination stat itself, fresh.
+        """
+
+        census = self._shared_census()
+        if census[0] == "absent":
+            return None, "clean", None
+        if census[0] == "unreadable":
+            return None, "unknown", census[1]
+        standing = "clean"
+        unknown: str | None = None
+        found: tuple[str, dict[str, int]] | None = None
+        for child, name, path, fragment in census[1]:
+            if name is None:
+                # The child directory itself could not be listed.
+                unknown = path
+                continue
+            if fragment is _LOOK_AGAIN:
+                observed = _observe(path)
+                with self._lookup_lock:
+                    fragment = self._fragment_record(path, observed)
+            candidate = self._candidate_from_record(
+                fragment, child, norm, want, declared,
+                computed=computed, source_id=source_id)
+            if candidate == "tainted":
+                unknown = f"{child}/{name}: unreadable"
+            elif candidate == "divergent":
+                return None, "divergent", (
+                    f"staged destination holds different bytes than "
+                    f"manifest digest for {norm}; refusing to "
+                    f"invalidate its owner")
+            elif candidate in ("owned", "stale"):
+                # ``owned``: a vouch without a usable date.  ``stale``:
+                # a date for an incarnation this name no longer carries
+                # -- not evidence that the current bytes differ, so a
+                # later record may still prove them.  Neither adopts
+                # and neither permits replacement.
+                standing = "owned"
+            elif candidate is not None and found is None:
+                found = candidate
+        if unknown is not None:
+            return None, "unknown", unknown
+        if found is not None:
+            return found, "proof", None
+        return None, standing, None
+
+    def _shared_census(self) -> tuple:
+        """A census of the residency forest that began after this call did.
+
+        Single flight (#981).  If no census is running, this caller runs
+        one.  If one is running, it began before this call, so it is not
+        fresh enough: the caller waits for it to finish and for the next
+        one, which the first waiter to find no census running starts.  Every
+        caller that arrived while a census ran shares that next census.  A
+        search therefore sees every fragment added, changed or removed
+        before it began, as each search did when it listed the forest
+        itself; what goes away is the same listing repeated once per entry.
+
+        Measured on the synthetic forest (434 directories, 145 fragments):
+        one census costs about 5 ms of one core.  Sixteen copy workers each
+        listing it for themselves spent 45 ms of CPU per entry, because
+        ``os.scandir`` gives up the GIL around every ``readdir`` and sixteen
+        threads contending for it turn each handoff into a futex round
+        trip.  Before #981 the stage ownership lock serialized those
+        listings, one entry at a time for the whole host.
+        """
+
+        with self._census_cond:
+            wanted = self._census_started + 1
+            while self._census_done < wanted:
+                if not self._census_running:
+                    self._census_running = True
+                    self._census_started += 1
+                    number = self._census_started
+                    break
+                self._census_cond.wait()
+            else:
+                return self._census  # type: ignore[return-value]
+        try:
+            census = self._forest_census()
+        except BaseException:
+            with self._census_cond:
+                self._census_running = False
+                self._census_cond.notify_all()
+            raise
+        with self._census_cond:
+            self._census = census
+            self._census_done = number
+            self._census_running = False
+            self._census_cond.notify_all()
+        return census
+
+    def _forest_census(self) -> tuple:
+        """List the residency forest once, with each fragment's record.
+
+        ``("absent",)`` when the residency root does not exist,
+        ``("unreadable", detail)`` when it cannot be listed, otherwise
+        ``("listed", slots)``: one ``(child, name, path, record)`` slot per
+        fragment file, in the order the search visits them, and a
+        ``(child, None, detail, None)`` slot for a child directory that
+        could not be listed.  Each record comes from the reuse index (#761),
+        stat first, so an unchanged file is not parsed again.  A record the
+        index would not keep is held here as :data:`_LOOK_AGAIN`, never as
+        a copy: an oversized table stays out of memory between decisions,
+        as it did before.
         """
 
         try:
@@ -1425,12 +1695,10 @@ class _StagedPublisher:
                 if e.is_dir() and not e.name.startswith(".")
                 and e.name not in _NON_FRAGMENT_DIRS)
         except FileNotFoundError:
-            return None, "clean", None
+            return ("absent",)
         except OSError as exc:
-            return None, "unknown", f"{self.residency_root}: {exc}"
-        standing = "clean"
-        unknown: str | None = None
-        found: tuple[str, dict[str, int]] | None = None
+            return ("unreadable", f"{self.residency_root}: {exc}")
+        slots: list[tuple] = []
         for child in children:
             cdir = self.residency_root / child
             try:
@@ -1442,33 +1710,19 @@ class _StagedPublisher:
             except FileNotFoundError:
                 continue
             except OSError as exc:
-                unknown = f"{child}: {exc}"
+                slots.append((child, None, f"{child}: {exc}", None))
                 continue
             for name in names:
-                candidate = self._proof_candidate(
-                    cdir / name, child, norm, want, declared,
-                    computed=computed, source_id=source_id)
-                if candidate == "tainted":
-                    unknown = f"{child}/{name}: unreadable"
-                elif candidate == "divergent":
-                    return None, "divergent", (
-                        f"staged destination holds different bytes than "
-                        f"manifest digest for {norm}; refusing to "
-                        f"invalidate its owner")
-                elif candidate in ("owned", "stale"):
-                    # ``owned``: a vouch without a usable date.  ``stale``:
-                    # a date for an incarnation this name no longer carries
-                    # -- not evidence that the current bytes differ, so a
-                    # later record may still prove them.  Neither adopts
-                    # and neither permits replacement.
-                    standing = "owned"
-                elif candidate is not None and found is None:
-                    found = candidate
-        if unknown is not None:
-            return None, "unknown", unknown
-        if found is not None:
-            return found, "proof", None
-        return None, standing, None
+                path = cdir / name
+                observed = _observe(path)
+                with self._lookup_lock:
+                    record = self._fragment_record(path, observed)
+                    if isinstance(record, tuple) and record[1].keys:
+                        kept = self._fragments.get(str(path))
+                        if kept is None or kept[1] is not record:
+                            record = _LOOK_AGAIN
+                slots.append((child, name, path, record))
+        return ("listed", tuple(slots))
 
     def _proof_candidate(self, fragment_path: Path, consumer: str,
                          norm: str, want: int, declared: object,
@@ -1492,21 +1746,42 @@ class _StagedPublisher:
         per version rather than once per destination.  What is decided is
         unchanged -- same order, same verdicts, same fail-closed answers --
         and the live destination stat below is still taken fresh on every
-        call.
+        call.  Each file's per-lookup stat is taken before the lookup lock
+        and only the compare, read and parse run under it (#981); a record
+        handed out of the index is immutable, so it is read outside.
         """
 
+        observed = _observe(fragment_path)
         with self._lookup_lock:
-            fragment = self._fragment_record(fragment_path)
-            if fragment is None:
-                return None
-            if fragment == "tainted":
-                return "tainted"
-            mover, staged_paths = fragment
-            if norm not in staged_paths:
-                return None
-            if not mover:
-                return "owned"
-            sidecar = self._material_record(consumer, mover)
+            fragment = self._fragment_record(fragment_path, observed)
+        return self._candidate_from_record(
+            fragment, consumer, norm, want, declared,
+            computed=computed, source_id=source_id)
+
+    def _candidate_from_record(self, fragment: object, consumer: str,
+                               norm: str, want: int, declared: object,
+                               computed: str | None = None,
+                               source_id: str | None = None,
+                               ) -> tuple[str, dict[str, int]] | str | None:
+        """:meth:`_proof_candidate`'s verdict for an already looked-up record.
+
+        ``fragment`` is what :meth:`_fragment_record` returned for the file;
+        the sidecar and the live destination stat are taken here, fresh.
+        """
+
+        if fragment is None:
+            return None
+        if fragment == "tainted":
+            return "tainted"
+        mover, staged_paths = fragment
+        if norm not in staged_paths:
+            return None
+        if not mover:
+            return "owned"
+        observed = _observe(reader_lease.material_path(
+            self.residency_root, consumer, mover))
+        with self._lookup_lock:
+            sidecar = self._material_record(consumer, mover, observed)
         if sidecar is None:
             # Published vouch without a date: unprovable either way.
             return "owned"
@@ -1592,6 +1867,9 @@ class _Copier:
         self.workers = max(1, workers)
         self.owner = str(owner or "")
         self.publisher = publisher
+        #: Per-phase thread-seconds for the receipt, shared with the
+        #: publisher so one clock sees the copy and its publication (#981).
+        self.clock = publisher.clock if publisher is not None else _PhaseClock()
         #: Read the copy's bytes from an already-staged tree instead of the
         #: pool: a promotion's source is the stage, where split ranges live
         #: under their staged names from byte zero rather than under the
@@ -1694,9 +1972,15 @@ class _Copier:
                 # owner-keyed temp for this destination must still go:
                 # it is never the published bytes.
                 temporary.unlink(missing_ok=True)
+                self.clock.outcome("adopted")
                 return adopted
         digest = hashlib.sha256()
         written = 0
+        # Per-entry phase sums, added to the receipt's clock once the copy
+        # ends: a clock lock per block would cost more than it measures.
+        spent = {"pace_wait": 0.0, "copy_read": 0.0, "copy_write": 0.0,
+                 "hash": 0.0, "fsync": 0.0}
+        now = time.perf_counter
         # O_NOFOLLOW at the leaf and a regular-file check, for the reason the
         # prewarm loop gives: the manifest is submitter-supplied and a symlink
         # swapped in after validation must fail here rather than send this copy
@@ -1711,34 +1995,49 @@ class _Copier:
                 buffer = bytearray(self.block)
                 view = memoryview(buffer)
                 while written < want and not stop.is_set():
+                    mark = now()
                     if not admission.acquire(
                             self.limit, stop,
                             self.pacer.hold_s if self.pacer is not None else 0.25):
+                        spent["pace_wait"] += now() - mark
                         break
                     try:
                         if self.pacer is not None:
                             self.pacer.wait(stop)
                             if stop.is_set():
                                 break
+                        read_at = now()
+                        spent["pace_wait"] += read_at - mark
                         chunk = os.readv(fd, [view[:min(self.block, want - written)]])
+                        mark = now()
+                        spent["copy_read"] += mark - read_at
                     finally:
                         admission.release()
                     if not chunk:
                         break
                     sink.write(view[:chunk])
+                    hashed_at = now()
+                    spent["copy_write"] += hashed_at - mark
                     digest.update(view[:chunk])
+                    spent["hash"] += now() - hashed_at
                     written += chunk
+                mark = now()
                 sink.flush()
                 os.fsync(sink.fileno())
+                spent["fsync"] += now() - mark
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         finally:
             os.close(fd)
+            for phase, seconds in spent.items():
+                self.clock.add(phase, seconds)
         if written != want:
             temporary.unlink(missing_ok=True)
             raise OSError(f"short read on {source}: {written} of {want} bytes")
+        mark = now()
         computed = digest.hexdigest()
+        self.clock.add("hash", now() - mark, calls=0)
         declared = entry.get("sha256")
         if isinstance(declared, str) and declared != computed:
             # Before the rename, not after.  These bytes are not the manifest's
@@ -1762,9 +2061,11 @@ class _Copier:
             except OSError:
                 pass
         if self.publisher is not None:
-            return self.publisher.publish(entry, destination, temporary,
-                                          computed, stop, source_id)
+            with self.clock.timing("publish"):
+                return self.publisher.publish(entry, destination, temporary,
+                                              computed, stop, source_id)
         os.replace(temporary, destination)
+        self.clock.outcome("renamed")
         try:
             info = os.stat(destination)
             identity = {"ino": info.st_ino, "size": info.st_size,
@@ -1895,7 +2196,8 @@ class _Copier:
                                 if on_entry else None)
                 if snapshot is not None:
                     try:
-                        on_entry(*snapshot)
+                        with self.clock.timing("fragment_publication"):
+                            on_entry(*snapshot)
                     except (OSError, ValueError) as exc:
                         # A fragment that will not write is a degradation, not
                         # a reason to stop copying, and least of all a reason
@@ -2609,6 +2911,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # the number a next submission can declare and the controller can
         # learn down from.
         "cpu_seconds": round(cpu_used, 3),
+        # Where the copy's time went, phase by phase, summed across the copy
+        # workers (thread-seconds, not wall), with call counts, the longest
+        # single call, and how each entry ended (#981).  Totals alone could
+        # not split chunk 0's 270 s tail; this can.
+        "phase_timings": copier.clock.report(),
         # 0 means "could not be read", which prices nothing, rather than 1.
         storage_tiers.MOVER_CONCURRENCY_FIELD: int(concurrent),
         # What the ledger promised this copy of the pool, beside what the pool
