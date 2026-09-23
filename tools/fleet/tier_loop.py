@@ -3494,7 +3494,7 @@ def _commitment_report(tier_id: str, census: Mapping[str, object] | None,
             field: claim_order.get(field) for field in (
                 "head", "target_free_gib", "free_gib", "ranked_unix",
                 "landing_bytes_per_s", "expected_landing_basis", "unranked",
-                "relief", "stuck_victim")}
+                "relief", "stuck_victim", "preempt_protected")}
         record["claim_order"]["entries"] = [                # type: ignore[index]
             dict(entry) for entry in claim_order.get("entries") or ()  # type: ignore[union-attr]
             if isinstance(entry, Mapping)]
@@ -3769,6 +3769,27 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
        consumer's turn.  They come last, so a pass takes them only when
        the rest cannot make the room.
 
+       Not from a consumer that reads backward: one that holds a landed
+       chunk of its reading phase past the chunk it is blocked on
+       (``need_start_bytes``).  A reader reads in byte order, so that is a
+       gather that already lost a chunk and is waiting for it again -- the
+       reader's one retry after ``StagedRangeNotLanded``, PQ
+       ``_pq_availability_retried`` -- or copies that landed out of order.
+       A second loss ends the run, so its chunks stay, and when nothing else
+       makes the room the stuck rule ends one consumer instead, a recorded
+       kill (#1022 review round 2).  The consumer is named in the order's
+       ``preempt_protected``.  PrismaBuild does not know where in its
+       reading phase a reader is (``refill_horizon``'s ``read_through_bytes``
+       is the phase's end, and the reader's staged wait names only the
+       movers it still waits for), so a gather that spans a landed chunk
+       and the blocked one looks like a reader past the landed one, and a
+       preemption can cost the reader its one retry.  The rule protects the
+       retry while the lost chunk is still missing.  Not after: once the
+       lost chunk lands again while a later chunk of the same gather is
+       still coming, the retry holds only chunks before the one it is
+       blocked on, reads forward again, and can lose a second time.  A
+       gather must span three chunks for that.
+
     Belady's rule, in seconds at each reader's measured consumption (the
     unit ``_landed_past`` compares readers in): a leg goes only when its
     reader needs it later than the head can use what the room is for.  For
@@ -3874,6 +3895,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                     and bool(entry.get("blocked")))
 
     rows: list[dict[str, object]] = []
+    protected: list[str] = []
     for basis, entry, past in groups:
         key = str(entry["consumer"])
         if key not in plans:
@@ -3891,6 +3913,20 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                                                         mover_role="mover_row")
                 if leg["phase"] in phases
                 and (past is None or int(leg["start_bytes"]) > past)]
+        if basis == PREEMPT_READING_PHASE:
+            blocked_at = entry.get("need_start_bytes")
+            try:
+                backward = (not isinstance(blocked_at, int)
+                            or isinstance(blocked_at, bool)
+                            or any(int(leg["start_bytes"]) > blocked_at
+                                   and int(ledger.holder_tokens(str(
+                                       leg["mover_row"]["action_key"])  # type: ignore[index]
+                                   ).get(kind, 0)) > 0 for leg in legs))
+            except (OSError, pool.PoolContractError, ValueError):
+                backward = True
+            if backward:
+                protected.append(key)
+                continue
         under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
@@ -3925,6 +3961,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                 "seconds_until_needed": needed_s,
                 "head_needs_s": head_needs_s,
                 "basis": basis, "for_consumer": head})
+    if isinstance(order, dict):
+        order["preempt_protected"] = protected
     return rows
 
 
@@ -6984,7 +7022,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                                "tier_id": tier_id, "for_consumer": order["head"],
                                "needed_gib": target, "free_gib": free,
                                "offered_gib": offered,
-                               "stuck_victim": order.get("stuck_victim")})
+                               "stuck_victim": order.get("stuck_victim"),
+                               "preempt_protected": order.get("preempt_protected")})
             continue
         preempted = False
         for row in rows:
@@ -7038,7 +7077,9 @@ def _stamp_relief(order: Mapping[str, object], outcome: str) -> None:
     ledger did not read).  Also stamps the stuck rule's one victim
     (:func:`window_credit.stuck_victim`, ``None`` unless the order is
     stuck), so the record every consumer's rung reads names it.  Carried
-    onto the tier's commitment record, where ``pbstatus`` reads it.
+    onto the tier's commitment record, where ``pbstatus`` reads it, with
+    the consumers the backward-reader rule kept whole
+    (``preempt_protected``, from :func:`_claim_order_candidates`).
     """
 
     if isinstance(order, dict):
