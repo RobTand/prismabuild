@@ -5463,8 +5463,9 @@ there is no horizon, and the #632 regime (one step) stands.
 
 For R12 at 22:30Z: 81.2 GB read in 3919 s (20.7 MB/s), 180 GiB of read-ahead
 reaching to 274.5 GB (`chain-042` to `chain-034`), a 174 s landing for a
-23.4 GB range at 134 MB/s, so 5.5 GB of refill and one range, `chain-033`.
-The horizon ends where `chain-032` starts. The refill term is one range for
+23.4 GB range at 134 MB/s, so 4.3 GB of refill with the live 5 s cycle
+(5.5 GB at the parser's 60 s default, which the tests use), and one range,
+`chain-033`, either way. The horizon ends where `chain-032` starts. The refill term is one range for
 any consumer whose rate is small beside its ranges; the read-ahead term is
 what sets R12's horizon.
 
