@@ -195,13 +195,17 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
     eviction that was futile or refused) is filed for every consumer
     ``tier_consumers`` lists on its tier, marked ``attributed_by: tier_id``.
     A standing verdict carries ``waited_s`` (:func:`_stamp_standing`).  The
-    plan reaper's own event retires the consumer's file instead.
+    filed copy adds ``host`` (the reader merges every host's file); stdout is
+    unchanged apart from that stamp.  The plan reaper's own event retires the
+    consumer's directory, and the prewarm sweep
+    (:meth:`pool.PoolQueue.sweep_consumer_events`) retires any directory a
+    late append recreated.
     """
 
     record = {"unix": time.time(), **event} if stamp_unix else dict(event)
-    record.setdefault("host", host)
     _stamp_standing(record)
     print(json.dumps(record, default=str), flush=True)
+    record.setdefault("host", host)    # the file is merged across hosts
     consumer = record.get("consumer")
     if record.get("event") == "residency-plan-reaped":
         if isinstance(consumer, str):

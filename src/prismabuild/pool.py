@@ -3598,9 +3598,6 @@ def _serialized_key(method):
 #: It lets an unchanged reason -- every pass of a starved row but its first --
 #: skip the ring entirely.  Pruned to the ready queue once per claim pass.
 _DENIAL_SEEN: dict[tuple[str, str, str], tuple[str, str | None]] = {}
-#: Ring entries recorded without the key's transition lock, held in order
-#: until the next verdict this process records for the key under the lock.
-_DENIAL_PENDING: dict[tuple[str, str, str], list[dict[str, object]]] = {}
 
 
 class PoolQueue:
@@ -5561,7 +5558,6 @@ class PoolQueue:
 
     def record_denial(
         self, item: Mapping[str, object], reason: str, evidence: Mapping[str, object] | None = None,
-        *, locked: bool = True,
     ) -> None:
         """Record one claim denial: its latest verdict, and any change of reason.
 
@@ -5577,12 +5573,12 @@ class PoolQueue:
         * **Reason transitions, kept (#991).**  :meth:`_record_denial_transition`
           appends ``{unix, host, reason, decision_reason}`` to the key's ring
           in ``denial-transitions/`` when this host's reason changes.  It takes
-          no lock of its own: every caller in the claim scan already holds the
-          key's transition lock, which serializes writers of that key across
-          the fleet.  The one caller that does not -- ``transition_busy``,
-          recorded *because* another loop holds that lock -- passes
-          ``locked=False``, and its entry waits in this process until the next
-          verdict this process records for the key under the lock.
+          no lock of its own: every caller that reaches it holds the key's
+          transition lock, which serializes writers of that key across the
+          fleet.  ``transition_busy`` -- recorded *because* another loop holds
+          that lock -- is not an admission verdict about the item, only a
+          sibling loop evaluating it this instant, and stays out of the ring
+          (as #998 kept ``deferred_behind_withholding`` out of ``passes``).
 
         A steady reason costs the claim pass one dictionary lookup here; see
         :meth:`_record_denial_transition`.
@@ -5592,10 +5588,10 @@ class PoolQueue:
         host = socket.gethostname()
         decision = (evidence or {}).get("decision") if isinstance(evidence, Mapping) else None
         decision_reason = decision.get("reason") if isinstance(decision, Mapping) else None
-        self._record_denial_transition(
-            item, host=host, reason=reason,
-            decision_reason=decision_reason if isinstance(decision_reason, str) else None,
-            locked=locked)
+        if reason != "transition_busy":
+            self._record_denial_transition(
+                item, host=host, reason=reason,
+                decision_reason=decision_reason if isinstance(decision_reason, str) else None)
         ledger = self.ledger()
         ledger_name = str(ledger.base)
         base = self._claim_denial_bases.get(ledger_name)
@@ -5655,7 +5651,7 @@ class PoolQueue:
 
     def _record_denial_transition(
         self, item: Mapping[str, object], *, host: str, reason: str,
-        decision_reason: str | None, locked: bool,
+        decision_reason: str | None,
     ) -> None:
         """Append to the key's ring when this host's reason changed (#991).
 
@@ -5675,14 +5671,9 @@ class PoolQueue:
 
         Survives contention by construction.  It shares no lock with the
         latest-only file (whose ``flock`` drops observations by design), and
-        its writers are serialized by the key's transition lock, which the
-        claim scan holds around every other ``record_denial`` call.  An entry
-        recorded without that lock (``locked=False``) is held here, in
-        order, and written with the next locked verdict for the key.  A write
-        that fails leaves the memo and the held entries as they were, so the
-        next pass retries.  Best-effort in one respect: entries held by a
-        process that exits before its next locked verdict for the key are
-        lost with it.
+        its writers are serialized by the key's transition lock, which every
+        caller holds.  A write that fails leaves the memo as it was, so the
+        next pass retries the same transition.
         """
 
         try:
@@ -5692,18 +5683,10 @@ class PoolQueue:
             return
         memo = (str(self.root), key, repr(generation))
         verdict = (reason, decision_reason)
-        held = _DENIAL_PENDING.get(memo)
-        if _DENIAL_SEEN.get(memo) == verdict and not held:
+        if _DENIAL_SEEN.get(memo) == verdict:
             return
         entry = {"unix": _now(), "host": host, "reason": reason,
                  "decision_reason": decision_reason, "published_unix": generation}
-        if not locked:
-            if _DENIAL_SEEN.get(memo) != verdict:
-                queued = _DENIAL_PENDING.setdefault(memo, [])
-                queued.append(entry)
-                del queued[:-MAX_DENIAL_TRANSITIONS]
-                _DENIAL_SEEN[memo] = verdict
-            return
         path = self.denial_transitions_path(key)
         try:
             try:
@@ -5712,18 +5695,11 @@ class PoolQueue:
                 prior = {}    # an unparsable ring is replaced, not trusted
             ring = [dict(value) for value in prior.get("transitions", [])
                     if isinstance(value, Mapping)] if isinstance(prior, Mapping) else []
-            changed = False
-            for candidate in [*(held or []), entry]:
-                last = next((value for value in reversed(ring)
-                             if value.get("host") == host
-                             and value.get("published_unix") == generation), None)
-                if last is None or (last.get("reason"), last.get("decision_reason")) != (
-                        candidate["reason"], candidate["decision_reason"]):
-                    ring.append(candidate)
-                    changed = True
-            if changed:
-                ring.sort(key=lambda value: float(value.get("unix", 0.0))
-                          if isinstance(value.get("unix"), (int, float)) else 0.0)
+            last = next((value for value in reversed(ring)
+                         if value.get("host") == host
+                         and value.get("published_unix") == generation), None)
+            if last is None or (last.get("reason"), last.get("decision_reason")) != verdict:
+                ring.append(entry)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 _write_json_atomic(path, {
                     "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
@@ -5731,7 +5707,6 @@ class PoolQueue:
         except (OSError, PoolContractError, TypeError, ValueError):
             return
         _DENIAL_SEEN[memo] = verdict
-        _DENIAL_PENDING.pop(memo, None)
 
     def _retire_denial_memo(self, live: "set[tuple[str, str]]") -> None:
         """Forget this queue's memo entries for generations no longer ready.
@@ -5745,7 +5720,6 @@ class PoolQueue:
         for memo in [memo for memo in _DENIAL_SEEN if memo[0] == root
                      and (memo[1], memo[2]) not in live]:
             _DENIAL_SEEN.pop(memo, None)
-            _DENIAL_PENDING.pop(memo, None)
 
     def denial_transitions(
         self, action_key: str, *, published_unix: float | None = None,
@@ -5807,6 +5781,53 @@ class PoolQueue:
                     continue
                 path.unlink()
             except OSError:
+                continue
+            rows.append({"action_key": key, "pruned": True, "reason": why})
+        return rows
+
+    def sweep_consumer_events(
+        self, live_keys: "set[str] | frozenset[str]", *, now: float | None = None,
+    ) -> list[dict[str, object]]:
+        """Retire the tier-loop event directories of consumers that are gone (#990).
+
+        The plan reaper's ``residency-plan-reaped`` event removes a
+        consumer's directory on the host that reaps it, but another host's
+        tier loop may append once more and recreate it.  This sweep retires
+        such a directory on the rules of :meth:`sweep_denial_transitions`: a
+        live key, or one whose residency plan still exists, keeps its
+        directory; a key with a terminal record or a withdrawal marker loses
+        it; anything else is kept until its newest file is
+        ``DENIAL_TRANSITIONS_RETENTION_S`` old.  One listing per call.
+        """
+
+        moment = _now() if now is None else float(now)
+        rows: list[dict[str, object]] = []
+        root = self.root / RESIDENCY_EVENTS
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return rows
+        for key in names:
+            if key in live_keys:
+                continue
+            directory = root / key
+            try:
+                if (len(key) != 64 or not directory.is_dir()
+                        or self.item_path(READY, key).exists()
+                        or self.item_path(CLAIMED, key).exists()
+                        or self.residency_plan_path(key).exists()):
+                    continue
+                if (self.item_path(DONE, key).exists() or self.item_path(FAILED, key).exists()
+                        or self.item_path(WITHDRAWN, key).exists()):
+                    why = "terminal"
+                else:
+                    newest = max((entry.stat().st_mtime for entry in directory.iterdir()),
+                                 default=directory.stat().st_mtime)
+                    if moment - newest <= DENIAL_TRANSITIONS_RETENTION_S:
+                        continue
+                    why = "retention"
+                shutil.rmtree(directory)
+            except (OSError, PoolContractError):
                 continue
             rows.append({"action_key": key, "pruned": True, "reason": why})
         return rows
@@ -13000,7 +13021,7 @@ class PoolQueue:
                     if key:
                         # Another loop holds this key's lock, and may be
                         # writing its reason ring: the entry waits (#991).
-                        self.record_denial(item, "transition_busy", locked=False)
+                        self.record_denial(item, "transition_busy")
                     continue
                 # Refresh the directory under exclusion before consulting names:
                 # a cached negative lookup can outlive another NFS client's claim.

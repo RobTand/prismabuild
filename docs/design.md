@@ -190,12 +190,12 @@ branch plus the controller decision's own reason) differs from that host's
 newest entry for the same generation, so the sequence that diagnoses a
 starvation, for example `measurement_holder` then `host_pressure`, survives
 every pass that overwrites the latest record. The ring takes no lock of its
-own: every `record_denial` call in the claim scan runs under the key's
-transition lock, which already serializes that key's writers across the
-fleet. The one exception, `transition_busy`, is recorded because another loop
-holds that lock, so its entry waits in the recording process and is written, in
-time order, with that process's next locked verdict for the key. The ring
-shares nothing with the latest record's local `flock`, so a busy diagnostic
+own: every `record_denial` call in the claim scan that reaches it runs under
+the key's transition lock, which already serializes that key's writers across
+the fleet. `transition_busy`, recorded because another loop holds that lock,
+stays out of the ring: it is a sibling loop evaluating the item this instant,
+not a verdict about the item, and several loops per box would otherwise fill
+the ring with it. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
 lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
 lookup for an unchanged reason: an in-process memo holds the reason each
 process last saw on file for its host, pruned to the ready queue every pass.
@@ -6192,8 +6192,10 @@ verdict (a stall, decline, refusal, deferral or busy lock) carries `waited_s`
 and `verdict_since_unix`: how long this loop has seen the same verdict in
 consecutive cycles. That clock is the loop's own observation, so a restarted
 loop starts it again at zero and it never reads long. The plan reaper's
-`residency-plan-reaped` event removes the consumer's directory. A kill's ending
-record and `pbstatus --starvation` read these files.
+`residency-plan-reaped` event removes the consumer's directory, and the
+prewarm loop's sweep removes a directory that another host's late append
+recreated once its consumer is terminal and unplanned. A kill's ending record
+and `pbstatus --starvation` read these files.
 
 **It does not fight #598's deferred eviction.** `window_pressure` now asks the
 window what it *would publish given room*, rather than reading the first phase

@@ -212,26 +212,24 @@ def test_the_ring_keeps_only_the_newest_transitions(tmp_path):
     assert history[0]["reason"] == f"reason_{total - pool.MAX_DENIAL_TRANSITIONS}"
 
 
-def test_a_busy_transition_lock_defers_the_entry_rather_than_racing_the_holder(tmp_path):
-    """``transition_busy`` is recorded without the key's transition lock.
+def test_a_busy_transition_lock_is_not_a_transition(tmp_path):
+    """``transition_busy`` stays out of the ring.
 
-    Another loop holds that lock and may be writing the ring, so the busy
-    verdict waits in this process and lands, in time order, with the next
-    verdict this process records for the key under the lock.
+    It says only that a sibling loop is evaluating the item this instant,
+    which several loops on one box do every second.  Were it a transition,
+    that lock noise would fill the ring and push out the admission verdicts
+    the ring exists to keep.
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
     item = _publish_export(queue, _hexkey("owner"), "busy")
     key = str(item["action_key"])
-    queue.record_denial(item, "host_pressure")
-    queue.record_denial(item, "transition_busy", locked=False)
-    assert [entry["reason"] for entry in queue.denial_transitions(key)] == [
-        "host_pressure"]
-
-    queue.record_denial(item, "measurement_holder")
+    for reason in ("host_pressure", "transition_busy", "host_pressure",
+                   "transition_busy", "measurement_holder"):
+        queue.record_denial(item, reason)
 
     assert [entry["reason"] for entry in queue.denial_transitions(key)] == [
-        "host_pressure", "transition_busy", "measurement_holder"]
+        "host_pressure", "measurement_holder"]
 
 
 def test_a_retired_keys_ring_is_swept_and_a_live_ones_is_kept(tmp_path):
@@ -250,6 +248,34 @@ def test_a_retired_keys_ring_is_swept_and_a_live_ones_is_kept(tmp_path):
     assert rows == [{"action_key": gone_key, "pruned": True, "reason": "terminal"}]
     assert queue.denial_transitions(str(live["action_key"]))
     assert not queue.denial_transitions_path(gone_key).exists()
+
+
+def test_a_retired_consumers_event_directory_is_swept_and_a_planned_ones_is_kept(tmp_path):
+    """The event directory's second retirement path (checklist 17).
+
+    A late append from another host's tier loop can recreate a directory the
+    plan reaper removed; the prewarm loop's sweep retires it once the
+    consumer is terminal, and keeps it while the consumer is live or planned.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    gone, planned, live = _hexkey("gone"), _hexkey("planned"), _hexkey("live")
+    for key in (gone, planned, live):
+        directory = queue.consumer_events_dir(key)
+        directory.mkdir(parents=True)
+        (directory / "sparky.jsonl").write_text('{"event": "window-stalled"}\n')
+    queue.item_path(pool.FAILED, gone).parent.mkdir(parents=True, exist_ok=True)
+    queue.item_path(pool.FAILED, gone).write_text("{}")
+    queue.item_path(pool.FAILED, planned).write_text("{}")
+    queue.residency_plan_path(planned).parent.mkdir(parents=True, exist_ok=True)
+    queue.residency_plan_path(planned).write_text("{}")
+
+    rows = queue.sweep_consumer_events({live})
+
+    assert rows == [{"action_key": gone, "pruned": True, "reason": "terminal"}]
+    assert not queue.consumer_events_dir(gone).exists()
+    assert queue.consumer_events_dir(planned).exists()
+    assert queue.consumer_events_dir(live).exists()
 
 
 def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, monkeypatch):

@@ -4080,6 +4080,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # terminal or withdrawn key's ring goes, a live key's stays.
     event["denial_rings_pruned"] = (queue.sweep_denial_transitions(live_keys)
                                     if not args.dry_run else [])
+    # The tier loop's per-consumer event directories retire the same way
+    # (#990), plus a live residency plan keeps its consumer's directory.
+    event["consumer_events_pruned"] = (queue.sweep_consumer_events(live_keys)
+                                       if not args.dry_run else [])
     event["summary"] = summarize_cycle(event)
     return event
 
