@@ -428,6 +428,34 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
     assert (served + own) / rate > 300
 
 
+def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
+        tmp_path: Path) -> None:
+    """PR #1009 review: a mover in ``done/`` whose range is not resident is
+    not waiting on the window.  It waits on adoption, and says so."""
+
+    shift = time.time() - SAMPLE_UNIX
+    capacity = DATA["tier"]["capacity_gib"]
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    holding = [f"chain-{n:03d}" for n in range(43, 33, -1)]
+    _r12_shaped(queue, stage, shift, "a", landed=holding, ready=["chain-033"])
+    _r12_shaped(queue, stage, shift, "b", landed=holding, ready=["chain-033"])
+    plan = _r12_shaped(queue, stage, shift, "c", landed=["chain-043"], ready=[])
+    finished = _mover("threec", "chain-042")
+    row = next(phase["mover_row"] for phase in plan["phases"]  # type: ignore[union-attr]
+               if phase["name"] == "chain-042")
+    queue.item_path(pool.DONE, finished).parent.mkdir(parents=True, exist_ok=True)
+    queue.item_path(pool.DONE, finished).write_text(json.dumps(
+        {**dict(row), "status": "done"}))
+
+    _cycle(queue, stage, gib=capacity)
+
+    entry = next(entry for entry in _landing(queue, THREE["c"])["ranges"]
+                 if entry["mover_action_key"] == finished)
+    assert entry["state"] == "done-not-resident"
+    assert entry["expected_landing_unix"] is None
+    assert "adoption" in entry["waiting_for"]
+
+
 def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(
         tmp_path: Path) -> None:
     """#989 point 2 is #907/#930's commitment gate, already on main.

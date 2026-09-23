@@ -192,3 +192,82 @@ def test_the_helper_writes_the_record_the_worker_reads(tmp_path: Path,
                                  token="t" * 32)[0]["movers"] == ["a" * 64]
     assert progress.clear_staged_wait() is True
     assert not Path(progress.staged_wait_path(str(path))).exists()
+
+
+# -- the verdict itself: finished movers and an over-committed tier ----------
+#
+# PR #1009 review.  A mover in ``done/`` or ``withdrawn`` is not coming, so a
+# consumer still quiet after it is not waiting on a dependency.  And a range
+# the window has not published is only coming while the tier can fit it: on
+# an over-committed tier (#1011) the claimed consumers wait on each other,
+# and exempting that wait would turn it into a deadlock.
+
+
+TOKEN = "t" * 32
+
+
+def _verdict_fixture(tmp_path: Path, *, over_committed_gib: int | None):
+    """A claimed consumer's plan, a live tier loop, the tier's commitment
+    record, and a staged-wait record naming the plan's mover."""
+
+    queue, item, plan, row = _consumer_with_mover(tmp_path, mover_seed="verdict")
+    queue.announce_tier({"tier_id": TIER, "tier": "stage"})
+    if over_committed_gib is not None:
+        queue.file_tier_commitment({
+            "tier_id": TIER, "capacity_gib": 565,
+            "committed_gib": 565 + over_committed_gib,
+            "over_committed_gib": over_committed_gib})
+    progress_path = tmp_path / "consumer.progress"
+    Path(progress.staged_wait_path(str(progress_path))).write_text(json.dumps({
+        "schema": progress.STAGED_WAIT_SCHEMA_V1, "token": TOKEN,
+        "since_unix": 1.0, "movers": [str(row["action_key"])]}))
+    return queue, item, row, progress_path
+
+
+def _verdict(queue, item, progress_path):
+    return queue.staged_wait_verdict(str(item["action_key"]), progress_path,
+                                     token=TOKEN)
+
+
+@pytest.mark.parametrize("finished", ["done", "withdrawn"])
+def test_a_finished_mover_is_not_waited_on(tmp_path: Path, finished: str) -> None:
+    """Its copy ended, the plan is live and the tier loop is alive."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    key = str(row["action_key"])
+    state = pool.DONE if finished == "done" else pool.WITHDRAWN
+    queue.item_path(state, key).parent.mkdir(parents=True, exist_ok=True)
+    queue.item_path(state, key).write_text(json.dumps({**dict(row), "status": finished}))
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False
+    assert verdict["movers"] == [{"key": key, "state": finished}]
+
+
+@pytest.mark.parametrize("over,exempt", [(0, True), (161, False), (None, False)])
+def test_an_unpublished_range_is_exempt_only_on_a_tier_within_commitment(
+        tmp_path: Path, over: int | None, exempt: bool) -> None:
+    """The same unpublished range, the same live tier loop: only the tier's
+    filed commitment differs.  No record filed reads as not exempt."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=over)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["movers"][0]["state"] == "unpublished"
+    assert verdict["exempt"] is exempt
+    assert verdict["tier_over_committed_gib"] == over
+
+
+def test_a_queued_mover_stays_exempt_on_an_over_committed_tier(
+        tmp_path: Path) -> None:
+    """A published mover already holds its room."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    queue.publish(**dict(row))
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is True
+    assert verdict["movers"][0]["state"] == "ready"
