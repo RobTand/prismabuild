@@ -311,6 +311,108 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
         assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
 
 
+# -- #939: a shard that seals its deadline ------------------------------------
+
+#: The deadline a pbtest shard seals when its claimants announce 3600 s, as
+#: dl380g10 does: ``pbtest.shard_ceiling``, sealed as ``execution_timeout_s``.
+SHARD_DEADLINE_S = 3600.0
+
+
+def _gpu_action_behind_a_shard(queue, clock, tmp_path: Path, *, timeout_s, age_s):
+    """A 2-CPU shard claimed ``age_s`` ago, then a GPU action that needs its CPUs.
+
+    The box has four CPUs and a free GPU.  The GPU action needs all four, so
+    the shard is in its way; a 1-CPU item behind it fits beside the shard and
+    is what the box admits unless the GPU action withholds.
+    """
+
+    capacity = {"cpu": 4, "gpu": 1, "mem_gb": 16}
+    shard, cas_root, checkout = _sealed(tmp_path, "shard", timeout_s=timeout_s)
+    clock[0] = T0 - age_s
+    _publish(queue, clock, shard, {"cpu": 2, "mem_gb": 4},
+             cas_root=cas_root, checkout_root=checkout)
+    assert _key_of(queue.claim(capacity=capacity)) == shard
+    clock[0] = T0 - 1
+    gpu_action = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1, "mem_gb": 4})
+    behind = _publish(queue, clock, _key("behind"), {"cpu": 1, "mem_gb": 1})
+    # ``_publish`` steps the clock; the shard was claimed ``age_s`` before T0
+    # to within that step, and the claim pass below runs at T0 exactly.
+    clock[0] = T0
+    return (lambda: _key_of(queue.claim(capacity=capacity))), shard, gpu_action, behind
+
+
+def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longer(
+    queue: pool.PoolQueue, clock, tmp_path: Path,
+) -> None:
+    """#939's acceptance fixture.
+
+    The shard is older than ``WITHHOLD_CEILING_S``, so its age no longer says
+    it drains soon.  Its sealed deadline does: one second before its declared
+    end the GPU action withholds the box.  One second after that end the shard
+    has outlived what it declared -- its worker is killing it, or is gone and
+    the lease is expiring -- and the GPU action stops withholding, so the box
+    admits the item behind it.
+    """
+
+    claim, shard, gpu_action, behind = _gpu_action_behind_a_shard(
+        queue, clock, tmp_path, timeout_s=SHARD_DEADLINE_S,
+        age_s=SHARD_DEADLINE_S - 1)
+    assert claim() is None, "the GPU action did not withhold behind a shard about to end"
+    denial = _denial(queue, gpu_action)
+    assert denial["reason"] == "reservation_unavailable_withholding"
+    assert denial["evidence"]["withhold"]["why"] == "drains_soon"
+    bound = queue.holder_bound(shard)
+    assert bound["bound"] == "transient"
+    assert bound["governed_by"] == "deadline"
+    assert bound["requested_timeout_s"] == SHARD_DEADLINE_S
+    assert queue.item_path(pool.READY, behind).exists()
+
+    clock[0] = T0 + 2
+    assert claim() == behind, (
+        "the GPU action kept the box shut behind a shard past its declared end")
+    denial = _denial(queue, gpu_action)
+    assert denial["reason"] == "reservation_unavailable_starved"
+    assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
+    [named] = denial["evidence"]["starved"]["holders"]
+    assert named["action_key"] == shard[:12] and named["bound"] == "overdue"
+    assert queue.item_path(pool.READY, gpu_action).exists()
+
+
+@pytest.mark.parametrize("timeout_s,age_s,withholds,bound", [
+    (SHARD_DEADLINE_S, SHARD_DEADLINE_S - pool.WITHHOLD_CEILING_S + 100, True, "transient"),
+    (SHARD_DEADLINE_S, SHARD_DEADLINE_S, True, "transient"),
+    (SHARD_DEADLINE_S, SHARD_DEADLINE_S + 1, False, "overdue"),
+    (SHARD_DEADLINE_S, pool.WITHHOLD_CEILING_S + 100, False, "long"),
+    (None, SHARD_DEADLINE_S - 1, False, "long"),
+    (600.0, 700.0, False, "overdue"),
+], ids=["end-inside-the-ceiling", "at-its-end", "past-its-end",
+        "end-beyond-the-ceiling", "unsealed-pre-939-shard", "past-a-short-end-while-young"])
+def test_a_sealed_shard_is_read_by_its_declared_end(
+    queue: pool.PoolQueue, clock, tmp_path: Path,
+    timeout_s, age_s: float, withholds: bool, bound: str,
+) -> None:
+    """Where a shard's declared end puts it, one moment at a time.
+
+    ``unsealed-pre-939-shard`` is the same shard as it was submitted before
+    #939: no declared end, so past ``WITHHOLD_CEILING_S`` of age it reads
+    ``long`` however close it is to the deadline it actually runs under.
+    ``end-beyond-the-ceiling`` is #924's own line, unchanged: a bounded holder
+    whose end is further off than ``WITHHOLD_CEILING_S`` does not drain soon.
+    ``past-a-short-end-while-young`` is why ``overdue`` outranks age: a young
+    holder is presumed to drain soon, and a holder past its own declared end
+    has already broken that presumption.
+    """
+
+    claim, shard, gpu_action, behind = _gpu_action_behind_a_shard(
+        queue, clock, tmp_path, timeout_s=timeout_s, age_s=age_s)
+
+    assert claim() == (None if withholds else behind)
+    assert queue.holder_bound(shard)["bound"] == bound
+    assert _denial(queue, gpu_action)["reason"] == (
+        "reservation_unavailable_withholding" if withholds
+        else "reservation_unavailable_starved")
+
+
 # -- the measurement's exclusive need ----------------------------------------
 
 
