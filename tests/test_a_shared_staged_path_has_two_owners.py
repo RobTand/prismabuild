@@ -450,8 +450,13 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     would miss it on both reads and unlink a file whose fragment lands a
     moment later.  The wrapper rendezvouses the flip between the real first
     and second reads -- no sleeps, timeouts are deadlock tripwires only.
+
+    Since #988 the egress takes the same census once before the lock, as a
+    hint, and again under it, where it acts.  The rendezvous is on the reads
+    under the lock, the ones the delete decision stands on.
     """
 
+    import contextlib
     import threading
 
     queue, stage = fleet
@@ -470,9 +475,24 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     real_claimed_paths = stage_release._claimed_paths_attributed
     read_first = threading.Event()
     flipped = threading.Event()
+    owned = threading.Event()
+    real_lock = queue.stage_ownership_lock
+
+    @contextlib.contextmanager
+    def ownership(*args, **kwargs):
+        with real_lock(*args, **kwargs) as got:
+            owned.set()
+            try:
+                yield got
+            finally:
+                owned.clear()
+
+    monkeypatch.setattr(queue, "stage_ownership_lock", ownership)
 
     def rendezvous(*args, **kwargs):
         result = real_claimed_paths(*args, **kwargs)
+        if not owned.is_set():
+            return result    # the hint before the lock (#988)
         read_first.set()
         assert flipped.wait(timeout=60), "flip never ran: deadlock"
         return result

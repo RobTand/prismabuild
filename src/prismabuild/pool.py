@@ -6475,7 +6475,11 @@ class PoolQueue:
         The lock covers the check-and-act pairs that decide a shared staged
         file's fate: an egress's scan-then-unlink-then-drop-fragment-then-
         release, an adoption's reissue-then-transfer-then-drop, and a mover's
-        start gate before its first rename.  Per stage root (stage and ram
+        start gate before its first rename.  It guards the act, not the
+        proof (#981, #988): a holder may read the same census before taking
+        the lock, as a hint, but the census it acts on is taken again under
+        the lock, and each document is re-opened there, so nothing it acts on
+        predates the grant.  Per stage root (stage and ram
         roots are different paths) so tiers do not contend; the lock file
         lives beside the queue.  Lock order is transition-then-ownership
         everywhere: ``evict`` already holds the mover transition lock when it
@@ -6509,7 +6513,9 @@ class PoolQueue:
         nothing is held during the copy itself, so movers keep their full
         concurrency and this costs one lock round trip per mover, not per
         entry.  Both movers call it; the egress holds the same lock throughout
-        its snapshot-to-release.
+        its snapshot-to-release -- the snapshot it acts on, taken under the
+        lock.  The census an egress takes before the lock is a hint and
+        decides nothing (#988), so a claim filed after it is still seen.
         """
 
         with self.stage_ownership_lock(str(stage_root)):
