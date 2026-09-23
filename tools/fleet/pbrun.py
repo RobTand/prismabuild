@@ -3289,7 +3289,9 @@ def await_outcome(
     (75). ``wait_s=0`` retains its useful historical meaning: one immediate
     observation with a finite read budget, and 74 if that read is unavailable.
     A preemption handoff after that probe cannot start another observation
-    once caller patience is exhausted.
+    once caller patience is exhausted.  With ``wait_s > 0``, no read ever gets
+    more than the time left, and a deadline that passed before the first read
+    starts no read at all: the wait exits 75 at once (#938).
 
     With ``wait_s > 0``, a read that timed out and whose reader was reaped
     (``OutcomeObservationTimedOut``) is repeated at the next poll, inside the
@@ -3330,13 +3332,18 @@ def await_outcome(
                 budget_s = OUTCOME_READ_TIMEOUT_S
             else:
                 remaining = deadline - time.monotonic()
-                if not first_observation and remaining <= 0:
+                # An expired deadline is expired on the first read too (#938).
+                # This used to preserve one observation with the full read
+                # budget when the deadline passed before the loop began.  That
+                # gave a caller past its deadline more time than any caller
+                # still inside it, whose read gets ``min(budget, remaining)``,
+                # so the time a wait could take was not monotonic in the time
+                # it was given.  A caller that wants one observation whatever
+                # the time says ``wait_s=0``, which keeps that contract.
+                if remaining <= 0:
                     landed = None
                     break
-                # Preserve the first immediate observation even if scheduling
-                # consumed a very short wait before it entered this loop.
-                budget_s = (min(OUTCOME_READ_TIMEOUT_S, remaining)
-                            if remaining > 0 else OUTCOME_READ_TIMEOUT_S)
+                budget_s = min(OUTCOME_READ_TIMEOUT_S, remaining)
             previous_generation = generation
             try:
                 landed, generation = bounded_outcome_observation(
@@ -7176,8 +7183,18 @@ def await_release(q, pending_id: str, *, wait_s: float) -> int:
             key = str(published["action_key"])
             print(f"pbrun: {pending_id[:12]} was released as {key[:12]}",
                   file=sys.stderr, flush=True)
+            remaining = deadline - time.monotonic()
+            # ``await_outcome`` reads ``wait_s=0`` as "observe once", with the
+            # full read budget.  A positive wait that ran out while the
+            # release was being read is not that request: clamping it to 0
+            # handed a caller past its deadline one more full read (#938).
+            if wait_s > 0 and remaining <= 0:
+                print(f"pbrun: the wait ended before {key[:12]}'s outcome was "
+                      f"read; the action runs regardless. Run pbwait.py "
+                      f"{key[:12]} to follow it", file=sys.stderr, flush=True)
+                return GAVE_UP_EXIT
             return await_outcome(
-                q, key, wait_s=max(0.0, deadline - time.monotonic()),
+                q, key, wait_s=max(0.0, remaining),
                 generation=float(published["published_unix"]))
         remaining = deadline - time.monotonic()
         if remaining <= 0:

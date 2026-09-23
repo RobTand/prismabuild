@@ -781,9 +781,11 @@ five-second budget before any result is printed. The parent retains the
 original `--wait-s` deadline across observations and does the polling sleep,
 so a repeated preemption follows its exact generation without granting a fresh
 wait. `--wait-s 0` still makes one immediate bounded observation, and a
-timed-out read exits 74. With `--wait-s` above 0, a read that timed out and
-whose reader was killed and reaped is retried at the next poll inside the same
-deadline; a timed-out verification goes back to observation. A retry starts
+timed-out read exits 74. A positive `--wait-s` never gives a read more time
+than the wait has left, and a deadline that passed before the first read
+starts no read: `pbrun` exits 75 at once (#938). With `--wait-s` above 0, a
+read that timed out and whose reader was killed and reaped is retried at the
+next poll inside the same deadline; a timed-out verification goes back to observation. A retry starts
 only after the previous reader was reaped, so a wait has at most one reader
 alive at any moment. A failed reader, or one that cannot be reaped, exits 74 at
 once and names the retained PID/start time when available. If the deadline
@@ -3454,7 +3456,9 @@ checkout is refused, because no release could seal what it freezes. It then prep
 files it, and prints its pending id. With `--detach` the JSON line carries
 `"status": "deferred"`, the `pending_id` and the path of the release record.
 Without it, `pbrun` waits for the release and then for the consumer's
-outcome, within `--wait-s` in total, and exits 75 if the wait runs out. The
+outcome, within `--wait-s` in total, and exits 75 if the wait runs out. A
+release read after the deadline also exits 75, with the consumer's key for
+`pbwait.py`; it does not spend one more read (#938). The
 submission stays filed either way.
 
 The tier loop on dl380g10 releases a consumer once every producer has
