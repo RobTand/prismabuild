@@ -7870,6 +7870,20 @@ that reach them directly, the egress action row among them. The marker itself
 is the one unmarked, unattributed file at the stage root the reconciliation
 skips: without that line the sweep would delete the fact that lets it sweep.
 
+**A sweep that cannot read its tier ledger deletes nothing (#1007).** The
+sweep reads the tier's held keys twice: for the held-key pass, and again
+after it, so that a held mover's fragment counts as attribution for the
+reconciliation even when no live plan names that mover. Until #1007 a
+failure of the second read left the held set empty and the reconciliation
+still ran, so such a mover's staged bytes read as unowned. Now either
+failure skips what needs the read: the first skips the held-key pass and
+the reconciliation, the second skips the reconciliation. Each skip leaves a
+`stage-sweep-ledger-unreadable` record with the pass it skipped in
+`skipped`, the ledger error in `reason` and `errors`, and `complete:
+false`. The tier loop prints the record with the sweep's other events
+through `_emit`. The first skip was already fail-closed, but it left no
+record.
+
 **Tests use temporary roots, registered.** The three tests that named the real
 mountpoint now name `tmp_path`, and every fixture that drives a sweep or an
 egress registers its temporary root first, the way the loop registers the real

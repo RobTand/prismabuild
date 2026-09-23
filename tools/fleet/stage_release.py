@@ -182,6 +182,12 @@ HOLDER_UNRESOLVED_EVENT = "stage-holder-unresolved"
 #: reporting every unresolved holder once more is the right amount of noise.
 _UNRESOLVED_REPORTS: dict[tuple[str, str], dict[str, str]] = {}
 
+#: The record an orphan sweep leaves when it cannot read a tier's ledger
+#: (#1007).  Which held movers still count as attribution is unknown then,
+#: and unknown ownership never deletes: the pass that needed the read is
+#: skipped for the cycle, and this record says which pass and why.
+LEDGER_UNREADABLE_EVENT = "stage-sweep-ledger-unreadable"
+
 #: The event a bounded prune of positively stale mentions publishes (#853).
 #: Unlike a dead-owner eviction this keeps the whole old holder: no charge
 #: moves until the last fragment goes through the ordinary whole-owner egress,
@@ -322,6 +328,35 @@ def _refused_receipt(*, tier_id: str, stage_root: str | Path, refusal: str,
         # they were, and the tokens that stand for them stay held.
         "complete": False,
         "errors": [refusal],
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
+
+
+def _ledger_unreadable_receipt(*, tier_id: str, stage_root: str | Path,
+                               skipped: str, exc: BaseException,
+                               ) -> dict[str, object]:
+    """What a sweep that could not read its tier ledger skipped, and why (#1007).
+
+    Nothing is deleted and nothing is released: the bytes and the tokens stay
+    where they were until a later cycle can read the ledger.
+    """
+
+    reason = f"tier ledger unreadable: {exc}"
+    return {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1,
+        "event": LEDGER_UNREADABLE_EVENT,
+        "action_key": "",
+        "consumer_action_key": "",
+        "tier_id": tier_id,
+        "stage_root": str(stage_root),
+        "reason": reason,
+        "skipped": skipped,
+        "entries_deleted": 0,
+        "bytes_deleted": 0,
+        "tokens_released": 0,
+        "complete": False,
+        "errors": [reason],
         "host": socket.gethostname(),
         "unix": time.time(),
     }
@@ -3079,7 +3114,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             continue
         try:
             held = queue.tier_ledger(tier_id).held_keys()
-        except (OSError, pool.PoolContractError):
+        except (OSError, pool.PoolContractError) as exc:
+            # Neither pass can run without the held set, and a skip is a
+            # record, not a silence (#1007).
+            swept.append(_ledger_unreadable_receipt(
+                tier_id=tier_id, stage_root=stage_root,
+                skipped="held-key pass and reconciliation", exc=exc))
             continue
         orphans: list[tuple[float, str, str]] = []
         retained: list[dict[str, object]] = []
@@ -3181,8 +3221,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         # does name is attribution.
         try:
             still_held = set(queue.tier_ledger(tier_id).held_keys())
-        except (OSError, pool.PoolContractError):
-            still_held = set()
+        except (OSError, pool.PoolContractError) as exc:
+            # Without the held set, a held mover no live plan names is not
+            # attribution, and its bytes would read as unowned.  Unknown
+            # ownership never deletes: skip the reconciliation this cycle
+            # and say so (#1007).
+            swept.append(_ledger_unreadable_receipt(
+                tier_id=tier_id, stage_root=stage_root,
+                skipped="reconciliation", exc=exc))
+            continue
         reconciled = reconcile(
             queue, tier_id=tier_id, stage_root=stage_root,
             wanted=wanted | set(owners) | still_held,
