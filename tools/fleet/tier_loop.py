@@ -2191,10 +2191,10 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     decision.  The plan's declared read rate stands in before a report times
     a rate, and raises a slower measured one (#909).  ``None`` -- a ready
     consumer, no accepted progress, nothing measured or declared -- leaves
-    every decision what it was before the horizon existed.  The tier's announced fill supply is never a stand-in
-    for either rate: it moves as the loop probes the pool (#909), so
-    ``tier_record`` no longer prices anything here; it stays in the signature
-    the stage and ram callers share.
+    every decision what it was before the horizon existed.  The tier's
+    announced fill supply is never a stand-in for either rate: it moves as
+    the loop probes the pool (#909), so ``tier_record`` no longer prices
+    anything here; it stays in the signature the stage and ram callers share.
 
     The two legs differ only in what stands in before their first copy
     lands.  A stage leg (#903) is priced at the smallest fill its copies
