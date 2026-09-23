@@ -999,19 +999,39 @@ def transition_lock_name(action_key: str) -> str:
     return hashlib.sha256(str(action_key).encode()).hexdigest() + ".lock"
 
 
+def _live_key(name: str) -> str | None:
+    """The key a ``ready``/``claimed`` entry keeps live, or ``None``.
+
+    Any entry whose name starts with a key -- the row, its lease, a
+    tombstone or a late-finish file -- makes that key live: a transition may
+    be under way.  The survey and the re-check under the key's lock both
+    decide liveness with this one rule.
+    """
+
+    return name[:64] if _is_digest(name[:64]) else None
+
+
+def _key_live_now(queue_root: Path, key: str) -> bool:
+    """Whether ``key`` is live, re-read now by :func:`_live_key`'s rule."""
+
+    return any(_live_key(entry.name) == key
+               for state in (pool.READY, pool.CLAIMED)
+               for entry in _entries(queue_root / state))
+
+
 def queue_key_states(queue_root: Path) -> tuple[set[str], dict[str, float]]:
     """Keys with a live entry, and each terminal key's newest record mtime.
 
-    One listing per state directory.  Any ``ready`` or ``claimed`` entry
-    whose name starts with a key -- the row, its lease, a tombstone or a
-    late-finish file -- makes that key live: a transition may be under way.
+    One listing per state directory; :func:`_live_key` decides which key an
+    entry keeps live.
     """
 
     live: set[str] = set()
     for state in (pool.READY, pool.CLAIMED):
         for entry in _entries(queue_root / state):
-            if _is_digest(entry.name[:64]):
-                live.add(entry.name[:64])
+            key = _live_key(entry.name)
+            if key is not None:
+                live.add(key)
     terminal: dict[str, float] = {}
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         for entry in _entries(queue_root / state):
@@ -1208,8 +1228,9 @@ def _remove_residency_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> s
     with queue._transition_locked(key, blocking=False) as acquired:
         if not acquired:
             return "its consumer's transition lock is held"
-        if (queue.item_path(pool.READY, key).exists()
-                or queue.item_path(pool.CLAIMED, key).exists()):
+        # The survey's rule, re-read under the lock: a lease, tombstone or
+        # late-finish file keeps the key live here too, not only its row.
+        if _key_live_now(Path(queue.root), key):
             return "its consumer was queued again"
         if row["kind"] == KIND_LANDING_RECORD:
             Path(str(row["path"])).unlink(missing_ok=True)

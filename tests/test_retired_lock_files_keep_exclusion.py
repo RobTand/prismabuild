@@ -330,6 +330,27 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
     assert _lock_names(queue) == set()
 
 
+def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tmp_path):
+    """The re-check under the lock uses the survey's liveness rule, not the row alone."""
+
+    queue = _queue(tmp_path)
+    residency = queue.residency_fragment_root()
+    residency.mkdir(parents=True, exist_ok=True)
+    key = _key("mid-transition")
+    _file(queue, pool.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
+    (residency / key).mkdir()
+    (residency / f"{key}.map.json").write_text("{}")
+    plan = pb_gc.survey_queue(Path(queue.root))
+    assert len(plan["remove"]) == 1
+    # A finisher moved a claim of the key aside after the survey.
+    tombstone = queue.dir(pool.CLAIMED) / f"{key}.1.host.1.abcdef01{pool.TOMBSTONE_SUFFIX}"
+    tombstone.write_text("{}")
+    outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
+    assert outcome["removed"] == []
+    assert {why for _row, why in outcome["skipped"]} == {"its consumer was queued again"}
+    assert {entry.name for entry in os.scandir(residency)} == {key, f"{key}.map.json"}
+
+
 def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
     """The removal re-reads the consumer under its transition lock."""
 
