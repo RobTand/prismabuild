@@ -3071,6 +3071,12 @@ def main(argv: Sequence[str] | None = None) -> int:
              "cursor gaps, tier fill and occupancy, denial tops, and the "
              "not_observable gap list), and nothing else")
     parser.add_argument(
+        "--spool-retirements", action="store_true",
+        help="print one JSON blob with every host's produced-spool "
+             "retirements (the newest --recent lines) and each host's latest "
+             "retirement tick, including the namespaces it kept and why "
+             "(#1001), and nothing else")
+    parser.add_argument(
         "--deferred", action="store_true",
         help="print one JSON blob listing every consumer filed with pbrun "
              "--after and not yet released, with the runtime generation it is "
@@ -3142,6 +3148,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"({read['type']}: {read['error']})", file=sys.stderr)
         else:
             print(f"pbstatus: deferred read did not answer within "
+                  f"{args.timeout_s:g}s", file=sys.stderr)
+        return EXIT_INCOMPLETE
+
+    if args.spool_retirements:
+        # Pool-only: each host's retirement tick files its records under the
+        # queue root (#1001).
+        from prismabuild import produced_spool
+
+        read = bounded("spool-retirements",
+                       lambda: produced_spool.retirement_records(
+                           pool.PoolQueue(args.queue_root), limit=args.recent),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            print(json.dumps(read["value"], sort_keys=True, indent=1))
+            return 0
+        if read["status"] == "error":
+            print(f"pbstatus: spool-retirements read failed "
+                  f"({read['type']}: {read['error']})", file=sys.stderr)
+        else:
+            print(f"pbstatus: spool-retirements read did not answer within "
                   f"{args.timeout_s:g}s", file=sys.stderr)
         return EXIT_INCOMPLETE
 

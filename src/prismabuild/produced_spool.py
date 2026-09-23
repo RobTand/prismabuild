@@ -593,22 +593,36 @@ class ProducedSpool:
             reservation = self._reservation(group)
             if reservation.get("released"):
                 return {"ok": True, "duplicate": True}
-            record = _export_record(group, self.owner)
-            manifest = _read(group / "manifest.json", expected_sha256=record["manifest_sha256"])
-            sources = {_path(entry["source_path"], group / "payload"): entry["source_identity"]
-                       for entry in manifest["entries"]}
-            actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
-            if not actual.issubset(sources) or any(not _matches(path, sources[path]) for path in actual):
+            return _release_acknowledged(group, _export_record(group, self.owner), reservation)
+
+
+def _release_acknowledged(group, record, reservation):
+    """Unlink one acknowledged group's payloads by the identities it exported.
+
+    The caller holds the group's ``.export.lock`` and the namespace's
+    ``.reservation.lock`` and has checked the durable receipt.  Every file
+    under ``payload/`` must be a source the manifest names, with the
+    ``file_id`` the manifest recorded, or nothing is removed.  Shared by the
+    live producer's :meth:`ProducedSpool.release_group` and the retirement
+    tick (#1001), which releases a dead producer's groups by the same checks.
+    """
+
+    manifest = _read(group / "manifest.json", expected_sha256=record["manifest_sha256"])
+    sources = {_path(entry["source_path"], group / "payload"): entry["source_identity"]
+               for entry in manifest["entries"]}
+    actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
+    if not actual.issubset(sources) or any(not _matches(path, sources[path]) for path in actual):
+        return {"ok": False, "refusal": "local-spool-changed-retain"}
+    for path in actual:
+        with _parent(path) as directory:
+            if not reader_lease.file_id_matches(sources[path], _identity(path, directory=directory)):
                 return {"ok": False, "refusal": "local-spool-changed-retain"}
-            for path in actual:
-                with _parent(path) as directory:
-                    if not reader_lease.file_id_matches(sources[path], _identity(path, directory=directory)):
-                        return {"ok": False, "refusal": "local-spool-changed-retain"}
-                    os.unlink(path.name, dir_fd=directory)
-                    os.fsync(directory)
-            reservation["released"] = True
-            _write(group / "reservation.json", reservation)
-            return {"ok": True, "released_bytes": reservation["ceiling_bytes"]}
+            os.unlink(path.name, dir_fd=directory)
+            os.fsync(directory)
+    reservation["released"] = True
+    _write(group / "reservation.json", reservation)
+    return {"ok": True, "released_bytes": reservation["ceiling_bytes"],
+            "payload_bytes": sum(int(sources[path]["size"]) for path in actual)}
 
 
 def _copy_binding(entry, index, manifest_sha256):
@@ -655,7 +669,15 @@ def _check_pacing(pacing):
             raise SpoolError("export pacing counters are corrupt")
 
 
-def _check_receipt(receipt, manifest, record):
+def _check_receipt(receipt, manifest, record, *, destinations=True):
+    """Check an export receipt against its manifest and export record.
+
+    ``destinations=False`` checks the acknowledgement only: the binding and
+    every entry's completed copy proof, not whether each canonical file is
+    still the inode the export landed.  The retirement tick (#1001) asks
+    that question of a dead producer's group: whether the export finished,
+    not whether its output was since consumed or retired downstream.
+    """
     if isinstance(receipt, dict) and "pacing" in receipt:
         _check_pacing(receipt["pacing"])
         receipt = {key: value for key, value in receipt.items() if key != "pacing"}
@@ -669,7 +691,9 @@ def _check_receipt(receipt, manifest, record):
         raise SpoolError("export receipt binding is corrupt")
     for index, (entry, proof) in enumerate(zip(manifest["entries"], receipt["entries"])):
         _check_copy(proof, entry, index, record["manifest_sha256"])
-        if not proof.get("complete") or not _matches(entry["destination_path"], proof["identity"]):
+        if not proof.get("complete"):
+            raise SpoolError("export-destination-changed")
+        if destinations and not _matches(entry["destination_path"], proof["identity"]):
             raise SpoolError("export-destination-changed")
 
 
@@ -809,6 +833,403 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         _check_receipt(receipt, manifest, record)
         _write(group / "receipt.json", receipt)
         return {"ok": True, "entries": len(landed)}
+
+
+# ---------------------------------------------------------------------------
+# Retirement of an ended producer's spool (#1001)
+# ---------------------------------------------------------------------------
+
+#: One JSON line per retired namespace, per host: ``<queue>/<dir>/<host>.jsonl``.
+#: The host's tick is its only writer.  ``<host>.tick.json`` beside it is the
+#: latest tick's full summary (latest-only; the lines are the durable record).
+RETIREMENTS_SUBDIR = "produced-spool-retirements"
+RETIREMENT_SCHEMA = "prismabuild.produced_spool.retirement.v1"
+TICK_SCHEMA = "prismabuild.produced_spool.retirement_tick.v1"
+#: How often a host's tick runs.  A namespace is retired only once its owner
+#: attempt has ended, and the pool reads a silent claim as ended after
+#: ``LEASE_TIMEOUT_S``; ticking faster than the bound it waits on buys at
+#: most that much earlier reclaim.
+RETIRE_INTERVAL_S = pool.LEASE_TIMEOUT_S
+#: Everything a group directory may hold besides ``payload/``: the records
+#: ``reserve_group``, ``submit_group`` and ``export_group`` write, their
+#: ``_write`` temporaries and the export lock.
+_GROUP_FILES = frozenset({"reservation.json", "manifest.json", "export.json",
+                          "receipt.json", ".export.lock"})
+#: ``(cas_root, owner) -> spool root or None``.  A sealed request never
+#: changes, so its answer is read once per process.
+_DECLARED_ROOTS: dict[tuple[str, str], str | None] = {}
+
+
+def _group_file(name):
+    return (name in _GROUP_FILES or (name.startswith("copy-") and name.endswith(".json"))
+            or name.endswith(".tmp"))
+
+
+def declared_roots(queue, cas_root):
+    """Every spool root a producer's sealed environment names (#1001).
+
+    The producers are the owners under the produced-output scopes: a spool
+    group is reserved only against a prewrite filed there, so every owner
+    that ever wrote a spool has a scope.  Each owner's request is read once
+    per process.  Returns ``(roots, errors)``.
+    """
+
+    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    errors = []
+    try:
+        owners = po._scope_owners(scopes)
+    except FileNotFoundError:
+        owners = []
+    except OSError as exc:
+        return set(), [f"scopes unreadable: {exc}"]
+    for owner in owners:
+        cache_key = (str(cas_root), owner)
+        if cache_key in _DECLARED_ROOTS:
+            continue
+        parent = po._read_producer_request(cas_root, owner)
+        if isinstance(parent, dict):
+            errors.append(f"{owner[:12]}: {parent.get('refusal')}")
+            continue
+        root = parent[1]["environment"]["variables"].get(ROOT_ENV)
+        _DECLARED_ROOTS[cache_key] = root if isinstance(root, str) and root else None
+    roots = {Path(root) for (cas, _owner), root in _DECLARED_ROOTS.items()
+             if cas == str(cas_root) and root}
+    return roots, errors
+
+
+def _namespace_instance(queue, directory, groups):
+    """The instance whose namespace ``directory`` is, or ``None``.
+
+    Any group's manifest carries it.  A namespace whose groups never reached
+    ``submit_group`` has only reservations, which name the owner: its filed
+    instances are matched by ``instance_namespace``, the directory's name.
+    """
+
+    owner = None
+    for group in groups:
+        manifest = _read(group / "manifest.json")
+        if manifest is not None and isinstance(manifest.get("instance"), dict):
+            instance = po.validate_instance(manifest["instance"])
+            if po.instance_namespace(instance) == directory.name:
+                return instance
+        reservation = _read(group / "reservation.json")
+        if reservation is not None and owner is None:
+            owner = reservation.get("owner")
+    if not isinstance(owner, str) or len(owner) != 64:
+        return None
+    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    try:
+        paths = po._owner_instance_paths(scopes / owner)
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            instance = po.validate_instance(json.loads(path.read_text()))
+        except (OSError, ValueError, po.ProducedOutputError):
+            continue
+        if po.instance_namespace(instance) == directory.name:
+            return instance
+    return None
+
+
+def _payload_bytes(payload):
+    """Bytes of the regular files under ``payload/``, never following a link."""
+
+    total = 0
+    for parent, _directories, files in os.walk(payload, followlinks=False):
+        for name in files:
+            info = os.lstat(os.path.join(parent, name))
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+    return total
+
+
+def _remove_tree(directory):
+    """Remove a directory this tick owns, deepest first, never following links.
+
+    ``os.walk`` lists a symlink to a directory among the directories and
+    never descends into it; it is unlinked, never ``rmdir``-ed.
+    """
+
+    for parent, directories, files in os.walk(directory, topdown=False,
+                                              followlinks=False):
+        for name in files:
+            os.unlink(os.path.join(parent, name))
+        for name in directories:
+            path = os.path.join(parent, name)
+            if os.path.islink(path):
+                os.unlink(path)
+            else:
+                os.rmdir(path)
+    os.rmdir(directory)
+
+
+def _retire_group(queue, directory, group, owner):
+    """Release, discard or keep one group of an ended attempt's namespace.
+
+    Under the group's ``.export.lock`` and the namespace's
+    ``.reservation.lock``, in :meth:`ProducedSpool.release_group`'s order.
+    The export worker holds ``.export.lock`` for its whole run on this host,
+    so no export can start or be running while this decides.
+
+    ``.export.lock`` (here) and ``.reservation.lock`` (in
+    :func:`retire_namespace`) are unlinked while held, outside
+    ``posix_lock``'s tombstone protocol, and that is safe.  The owner attempt
+    has ended, so no live producer takes either lock again: a new attempt
+    writes a new namespace.  A late export worker that was waiting on the old
+    inode fails closed, because ``_lock`` asserts that the directory it
+    opened is still the lock's parent, and the group directory is gone.
+    """
+
+    name = group.name
+    with _lock(group / ".export.lock"), _lock(directory / ".reservation.lock"):
+        unknown = sorted(entry.name for entry in os.scandir(group)
+                         if entry.name != "payload" and not _group_file(entry.name))
+        if unknown or (group / "payload").is_symlink():
+            return {"batch_id": name, "kept": f"unknown entries: {unknown[:4]}"}
+        reservation = _read(group / "reservation.json")
+        record = _export_record(group, owner)
+        payload = group / "payload"
+        if reservation is not None and (reservation.get("owner") != owner
+                                        or reservation.get("batch_id") != name):
+            return {"batch_id": name, "kept": "reservation names another owner or batch"}
+        if record is None and reservation is None:
+            outcome = {"batch_id": name, "discarded": "never-reserved",
+                       "bytes": _payload_bytes(payload) if payload.is_dir() else 0}
+        elif reservation is None:
+            return {"batch_id": name, "kept": "export record without a reservation"}
+        elif reservation.get("released") is True:
+            if payload.is_dir() and any(files for _parent, _dirs, files in os.walk(payload)):
+                return {"batch_id": name,
+                        "kept": "unknown-retain: released spool still has payloads"}
+            outcome = {"batch_id": name, "released": "released-by-producer", "bytes": 0}
+        elif record is None:
+            outcome = {"batch_id": name, "discarded": "export-never-submitted",
+                       "bytes": _payload_bytes(payload)}
+        else:
+            receipt = _read(group / "receipt.json")
+            if receipt is not None:
+                manifest = _read(group / "manifest.json",
+                                 expected_sha256=record["manifest_sha256"])
+                if manifest is None:
+                    return {"batch_id": name, "kept": "receipt without its manifest"}
+                try:
+                    _check_receipt(receipt, manifest, record, destinations=False)
+                except (SpoolError, reader_lease.ReaderLeaseError) as exc:
+                    return {"batch_id": name, "kept": f"receipt does not bind: {exc}"}
+                released = _release_acknowledged(group, record, dict(reservation))
+                if not released.get("ok"):
+                    return {"batch_id": name, "kept": released.get("refusal")}
+                outcome = {"batch_id": name, "released": "export-acknowledged",
+                           "export_key": record["export_key"],
+                           "bytes": released["payload_bytes"]}
+            else:
+                state = po._mover_live_state(queue, record["export_key"])
+                if state in (pool.READY, pool.CLAIMED):
+                    return {"batch_id": name, "kept": f"export-{state}",
+                            "export_key": record["export_key"]}
+                if state not in (pool.FAILED, pool.WITHDRAWN, "absent"):
+                    return {"batch_id": name, "kept": f"export-{state}-without-ack",
+                            "export_key": record["export_key"]}
+                outcome = {"batch_id": name, "discarded": f"export-{state}",
+                           "export_key": record["export_key"],
+                           "bytes": _payload_bytes(payload)}
+        # Every payload is accounted for above; remove the group whole.  The
+        # export lock goes last, while it is still held.
+        for entry in sorted(os.scandir(group), key=lambda item: item.name == ".export.lock"):
+            path = Path(entry.path)
+            if entry.name == "payload":
+                _remove_tree(path)
+            else:
+                os.unlink(path)
+    os.rmdir(group)
+    return outcome
+
+
+def retire_namespace(queue, directory):
+    """Retire one namespace whose owner attempt ended, or say why not.
+
+    The owner attempt has ended when ``produced_output._producer_attempt_state``
+    reads ``dead`` or ``succeeded``: its latest generation is terminal, or a
+    retry under a new nonce holds the claim.  A new attempt writes a new
+    namespace (the nonce is in its name) and never reads this one, so the
+    only reader left of a group's bytes is its own export action: a group
+    whose export is ready or claimed is kept, one whose export failed or was
+    withdrawn -- or never submitted -- is discarded, and one with a durable
+    acknowledgement is released by ``release_group``'s identity checks.
+    """
+
+    started = time.monotonic()
+    result = {"namespace": directory.name}
+    try:
+        entries = list(os.scandir(directory))
+        foreign = sorted(entry.name for entry in entries
+                         if entry.name != ".reservation.lock"
+                         and not entry.is_dir(follow_symlinks=False))
+        groups = sorted(Path(entry.path) for entry in entries
+                        if entry.is_dir(follow_symlinks=False))
+        instance = _namespace_instance(queue, directory, groups)
+    except (OSError, SpoolError, po.ProducedOutputError, ValueError) as exc:
+        return {**result, "kept": f"unreadable: {exc}"}
+    if instance is None:
+        return {**result, "kept": "unattributed: no manifest or filed instance names it"}
+    owner = str(instance["owner_action_key"])
+    result.update(owner=owner, owner_attempt=dict(instance["owner_attempt"]))
+    state = po._producer_attempt_state(queue, instance)
+    result["attempt_state"] = state
+    if state not in po._ENDED_ATTEMPT_STATES:
+        return {**result, "kept": f"owner-attempt-{state}"}
+    released, discarded, kept = [], [], []
+    held = 0.0
+    for group in groups:
+        began = time.monotonic()
+        try:
+            outcome = _retire_group(queue, directory, group, owner)
+        except (OSError, SpoolError, reader_lease.ReaderLeaseError, ValueError) as exc:
+            outcome = {"batch_id": group.name, "kept": f"unknown-retain: {exc}"}
+        held += time.monotonic() - began
+        (released if "released" in outcome else
+         discarded if "discarded" in outcome else kept).append(outcome)
+    removed = False
+    if not kept and not foreign:
+        try:
+            os.unlink(directory / ".reservation.lock")
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(directory)
+            removed = True
+        except OSError as exc:
+            kept.append({"batch_id": None, "kept": f"namespace not removed: {exc}"})
+    if foreign:
+        kept.append({"batch_id": None, "kept": f"unknown entries: {foreign[:4]}"})
+    return {**result,
+            "groups_released": released, "groups_discarded": discarded,
+            "groups_kept": kept, "namespace_removed": removed,
+            "bytes": sum(int(item.get("bytes", 0)) for item in released + discarded),
+            "reason": ("owner attempt ended" if state == "dead"
+                       else "owner attempt succeeded"),
+            "held_s": round(held, 4),
+            "seconds": round(time.monotonic() - started, 4)}
+
+
+def _append_line(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def retirement_tick(queue, cas_root, *, host=None, roots=None):
+    """Retire every ended attempt's namespace under this host's spool roots.
+
+    ``roots`` defaults to :func:`declared_roots`; only roots present on this
+    host and passing the spool's own local-disk check are walked.  Every
+    namespace that released, discarded or removed anything is appended to
+    ``<queue>/produced-spool-retirements/<host>.jsonl``; the full tick,
+    including each kept namespace and its reason, replaces ``<host>.tick.json``.
+    """
+
+    started = time.monotonic()
+    host = host or socket.gethostname()
+    errors = []
+    if roots is None:
+        roots, errors = declared_roots(queue, cas_root)
+    namespaces = []
+    walked = []
+    for root in sorted({Path(root) for root in roots}):
+        try:
+            root = _path(root)
+            if not root.is_dir():
+                continue
+            _local_disk(root)
+        except (OSError, SpoolError) as exc:
+            errors.append(f"{root}: {exc}")
+            continue
+        walked.append(str(root))
+        try:
+            children = sorted(entry.path for entry in os.scandir(root)
+                              if entry.is_dir(follow_symlinks=False)
+                              and len(entry.name) == 64)
+        except OSError as exc:
+            errors.append(f"{root}: {exc}")
+            continue
+        for child in children:
+            outcome = {"root": str(root), **retire_namespace(queue, Path(child))}
+            namespaces.append(outcome)
+    records = Path(queue.root) / RETIREMENTS_SUBDIR
+    now = round(time.time(), 3)
+    for outcome in namespaces:
+        if (outcome.get("groups_released") or outcome.get("groups_discarded")
+                or outcome.get("namespace_removed")):
+            _append_line(records / f"{host}.jsonl",
+                         {"schema": RETIREMENT_SCHEMA, "host": host, "unix": now,
+                          **outcome})
+    summary = {"schema": TICK_SCHEMA, "host": host, "unix": now,
+               "roots": walked, "errors": errors,
+               "namespaces": len(namespaces),
+               "retired": sum(1 for item in namespaces if item.get("namespace_removed")),
+               "bytes": sum(int(item.get("bytes", 0)) for item in namespaces),
+               "kept": [{"namespace": item["namespace"], "root": item["root"],
+                         "reason": item.get("kept") or [group.get("kept") for group
+                                                        in item.get("groups_kept", [])]}
+                        for item in namespaces if not item.get("namespace_removed")],
+               "seconds": round(time.monotonic() - started, 4)}
+    _write_tick(records, host, summary)
+    return {**summary, "records": namespaces}
+
+
+def _write_tick(records, host, summary):
+    records.mkdir(parents=True, exist_ok=True)
+    temporary = records / f".{host}.tick.json.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps(summary, sort_keys=True) + "\n")
+    os.replace(temporary, records / f"{host}.tick.json")
+
+
+def record_failed_tick(queue, host, error):
+    """Replace ``<host>.tick.json`` with a tick that raised, so it is not stdout-only.
+
+    ``error`` is the exception the tick raised.  The record keeps the tick
+    schema, with ``failed`` naming the exception, so ``retirement_records``
+    and ``pbstatus`` show the failure where they show every other tick.
+    """
+
+    _write_tick(Path(queue.root) / RETIREMENTS_SUBDIR, host,
+                {"schema": TICK_SCHEMA, "host": host, "unix": round(time.time(), 3),
+                 "failed": f"{type(error).__name__}: {error}"})
+
+
+def retirement_records(queue, *, limit=None):
+    """Every host's retirement lines, oldest first, and each host's last tick."""
+
+    records = Path(queue.root) / RETIREMENTS_SUBDIR
+    lines, ticks = [], {}
+    try:
+        names = sorted(os.listdir(records))
+    except OSError:
+        return {"retirements": [], "ticks": {}}
+    for name in names:
+        path = records / name
+        try:
+            if name.endswith(".jsonl"):
+                for line in path.read_text().splitlines():
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(value, dict):
+                        lines.append(value)
+            elif name.endswith(".tick.json") and not name.startswith("."):
+                ticks[name[:-len(".tick.json")]] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+    lines.sort(key=lambda value: float(value.get("unix", 0.0))
+               if isinstance(value.get("unix"), (int, float)) else 0.0)
+    return {"retirements": lines if limit is None else lines[-limit:], "ticks": ticks}
 
 
 def main(argv=None):

@@ -467,10 +467,22 @@ def overlay_ram(mapping: Mapping[str, object],
 
 
 def _write_atomic(path: Path, payload: Mapping[str, object]) -> Path:
-    """Rename into place, so a reader never sees half a document."""
+    """Rename into place, so a reader never sees half a document.
+
+    ``pb_gc`` removes an empty consumer directory whose consumer is terminal
+    (#995), and its ``rmdir`` can land between this ``mkdir`` and the
+    temporary's creation.  The directory is made again rather than the write
+    failing: an empty directory holds nothing a retry could lose.
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    try:
+        handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    except FileNotFoundError:
+        # One sweep removes a directory once; a second removal would need a
+        # second sweep inside this window.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
         with os.fdopen(handle, "w") as stream:
             json.dump(payload, stream, sort_keys=True)
