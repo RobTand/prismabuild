@@ -36,10 +36,13 @@ from prismabuild import movement_actions, pool  # noqa: E402
 from prismabuild import produced_output as po  # noqa: E402
 
 HOST = "sparklina"
-CAPACITY = {"cpu": 8, "mem_gb": 16}
-CPU_TIERS = {"preferred": list(range(8)), "fallback": []}
-#: The measurement's reservation: half the CPUs, most of the memory.
-MEASUREMENT_DEMAND = {"cpu": 4, "mem_gb": 14}
+#: Sized like the live Spark: 20 CPUs and 104 GiB offered.
+CAPACITY = {"cpu": 20, "mem_gb": 104}
+CPU_TIERS = {"preferred": list(range(20)), "fallback": []}
+#: Run (a)'s reservation: half the CPUs, all but three GiB of the memory.
+MEASUREMENT_DEMAND = {"cpu": 10, "mem_gb": 101}
+#: What the running measurement burns, as its live telemetry reports it.
+MEASUREMENT_CPU_PER_S = 8.0
 #: What ``ProducedSpool.submit_group`` seals for an unpaced export.
 EXPORT_DEMAND = {"cpu": 1, "mem_gb": 1}
 
@@ -88,7 +91,7 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
 
 def _sample(monkeypatch, busy_cpus: float) -> None:
     monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-        "sampled_unix": time.time(), "cpu_count": 8, "interval_s": 1.,
+        "sampled_unix": time.time(), "cpu_count": 20, "interval_s": 1.,
         "busy_cpus": busy_cpus, "psi_some": 0.})
 
 
@@ -134,6 +137,26 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
+def _running(queue: pool.PoolQueue, key: str, monkeypatch) -> None:
+    """The measurement is running, as every live holder is.
+
+    Its CPUs are busy, and its worker's sampler reports what it burns (fresh
+    to ~2 s for every live holder on both Sparks, 2026-09-23): two readings
+    five seconds apart, the second current, both after its admission.
+    """
+
+    _sample(monkeypatch, MEASUREMENT_CPU_PER_S)
+    meta = adaptive_cpu.read_json(queue.ledger().held_dir / key / adaptive_cpu.METADATA)
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    current = {"action_key": key, "complete": True, "nonce": "live",
+               "sampled_unix": time.time(), "wall_seconds": 15.,
+               "cpu_seconds": 15. * MEASUREMENT_CPU_PER_S, "memory_peak_bytes": 0}
+    adaptive_cpu.write_json(base / "telemetry" / f"{key}.json", current)
+    adaptive_cpu.write_json(base / "jobs.json", {key: dict(
+        current, sampled_unix=meta["admitted_unix"], wall_seconds=10.,
+        cpu_seconds=10. * MEASUREMENT_CPU_PER_S)})
+
+
 def _holding_measurement(tmp_path: Path, monkeypatch):
     """A measurement claimed on an idle host, now running and holding it."""
 
@@ -152,8 +175,7 @@ def _holding_measurement(tmp_path: Path, monkeypatch):
     assert claim is not None and claim["action_key"] == key
     meta = adaptive_cpu.read_json(queue.ledger().held_dir / key / adaptive_cpu.METADATA)
     assert meta.get("measurement") is True, meta
-    # The measurement is running: its own CPUs are busy, as on the live box.
-    _sample(monkeypatch, float(MEASUREMENT_DEMAND["cpu"]))
+    _running(queue, key, monkeypatch)
     return queue, cas, measurement, key
 
 
@@ -172,6 +194,7 @@ def test_a_measurements_own_pinned_export_is_admitted_beside_it(
     assert adaptive_cpu.dependent_owner(
         {"action_key": export_key, "cas_root": str(cas.root)}) == holder
 
+    _running(queue, holder, monkeypatch)
     claim = _claim(queue)
     if claim is None:
         decision = _denial(queue, export_key)["evidence"]["decision"]
@@ -223,6 +246,7 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
 
     own_key = _publish(queue, cas, _export(queue, measurement, owner=holder, batch_id="g1"),
                        EXPORT_DEMAND)
+    _running(queue, holder, monkeypatch)
     claim = _claim(queue)
     assert claim is not None and claim["action_key"] == own_key
     for key in foreign:
