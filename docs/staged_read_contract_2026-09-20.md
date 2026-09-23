@@ -775,6 +775,8 @@ written, with in-place corrections where they are now wrong.
   `f008a76ee425`, parent `34a07e0f2ebc`). The ledger called both unmerged.
 - TIER-05's fix merged as PB#763 (`bb54907e53be`, 2026-09-20T18:46Z) and is in
   both `c2bda68758a3` and `81d95cba8d91`. The ledger called it source only.
+- PR792 (`aa03c0bde1b5`) and PR795 (`3641e29332bf`), which §11 and the PO rows
+  call not deployed or pending, are in `81d95cba8d91`.
 
 ### Keeping the ledger current
 

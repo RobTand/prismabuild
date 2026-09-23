@@ -285,12 +285,12 @@
    ],
    "acceptance_assertion": "PB720 repro record shows ack/exit/receipt distinct; application validity separately gated (partial, PB side only).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #831 and #887 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "ID-09",
    "implementation": {
-    "commit": "PB:ca0f5555",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:30Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
     "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
     "state": "partial"
    },
@@ -298,7 +298,7 @@
    "target_enforcement": "application-side validity gate on campaign outputs",
    "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
    "validation": {
-    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record",
+    "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:30Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
     "state": "partial"
    },
    "workload_proof": {
@@ -922,21 +922,21 @@
    ],
    "acceptance_assertion": "Boundary/activation bulk present in read set or unsupported-workset refused (planned ACC-06).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #932 and #934 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "TIER-03",
    "implementation": {
-    "commit": null,
+    "commit": "PB side only: 7a45a92add6e (#932) releases deferred consumers once their producers commit; 6ee921283f8c (#934) passes their manifest digest. The PQ planner obligation is not established by these.",
     "path": null,
-    "state": "no"
+    "state": "partial"
    },
    "owner": "PQ:planner",
    "target_enforcement": "plan read-set/dependency validation with unsupported-workset refusal",
    "text": "Boundary/activation bulk in read set and dependency graph or unsupported-workset; unstaged boundary reads are explicit gap; dynamic artifacts planned after durable receipt.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #932 head 36a9ad2db762 (329 files, 16 shards); #934 head 11e32f344bbe, mutant b985ab5b63c4 (2 failed).",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "unknown",
@@ -1360,12 +1360,12 @@
    ],
    "acceptance_assertion": "No live-lease eviction across prefetch/two-consumer/eviction/epoch cases (planned ACC-02/ACC-04).",
    "deployment": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "2026-09-23 update (snapshot 13:30Z): #795 and #816 are in live runtime generation 81d95cba8d91-1790160372-5d100532e024 (contract section 12 records its roll-out).",
+    "state": "partial"
    },
    "id": "SAFE-01",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:30Z): PB:3641e29332bf (#795) defers a live own claim instead of sharing itself away; b86106b05759 (#816) lets a publisher refuse a duplicate while the row is live.",
     "path": "tools/fleet/stage_release.py delete blocked by ANY current ref (pins join the ownership snapshot under one lock); tools/fleet/ram_promote.py cover proof + digest-verified copy; malformed pins/marks taint fail-closed",
     "state": "partial"
    },
@@ -1601,7 +1601,7 @@
    ],
    "acceptance_assertion": "Manual review plus later ACC-06/ACC-07: origin publication is charged once and separable from staged copies; every produced-byte bulk read opens only RAM or allowed SSD under a lease; no producer waiver or parallel cache path lands.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: aa03c0bde1b5 (PR792) and 3641e29332bf (PR795), which the text above calls undeployed or pending; 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-01",
@@ -1631,7 +1631,7 @@
    ],
    "acceptance_assertion": "Lifecycle acceptance shows a same-action self-read completing from the published batch rather than the action terminal record, and a phantom-output dependency refused.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot. Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: aa03c0bde1b5 (PR792) and 3641e29332bf (PR795), which the text above calls undeployed or pending; 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot. Correction: PQ#881 merged 2026-09-21T16:38Z (f20cccb0e953) and is in R12's PQ checkout (snapshot f008a76ee425, parent 34a07e0f2ebc).",
     "state": "partial"
    },
    "id": "PO-02",
@@ -1722,7 +1722,7 @@
    ],
    "acceptance_assertion": "Crash prefixes before and after funding resume the exact intent without duplicate quota, and a partial retirement keeps the old materialization's credits until safe reclaim.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: aa03c0bde1b5 (PR792) and 3641e29332bf (PR795), which the text above calls undeployed or pending; 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-05",
@@ -1753,7 +1753,7 @@
    ],
    "acceptance_assertion": "Cached-copy retirement leaves the origin charge intact; the origin charge clears only with proven authorized origin deletion.",
    "deployment": {
-    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "detail": "PB781 is merged and its produced-output module and pbrun --produced-output-template are present in deployed runtime generation d794839c589d-1789966072-c66c7f0568d0 (source d794839c589dee8cc9427e10127f6381800eaa05, parent dd5523dd; 737 files verified; three live nodes converged with rollout idle; baseline canary). Code presence is not behavioral deployment: no successful global produced-output lifecycle has completed (the one global attempt failed at the mover preflight; library and component cycles did run), the PQ production constructor/SDK/template/lifetime wiring is incomplete, PR792 (aa03c0bde1b52138b02be2b13083bf3e8274d9ac) is merged but not in the active runtime, and the own-copy egress repair had no accepted commit at this snapshot (PR795 merged later at 2026-09-21T06:33:58Z; its root source-merge acceptance is recorded in pb795-root-acceptance.json, deployment and global behavior proof pending). No produced-output workload proof. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: aa03c0bde1b5 (PR792) and 3641e29332bf (PR795), which the text above calls undeployed or pending; 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
     "state": "partial"
    },
    "id": "PO-06",
@@ -1793,7 +1793,7 @@
    "acceptance_assertion": "A targeted assertion shows produced retirement holds no output-prefix ownership while calling egress, plus a concurrent pin/retire/successor-retry fixture; unknown or corrupt ownership retains.",
    "deployment": {
     "state": "partial",
-    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The PR781 outer-caller ordering source is present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; no global produced-output retirement has been accepted (library and component cycles ran; a separate admitted private-queue diagnostic, action 83264d103a2a iteration 1, exposed the own-copy defect); PR795 merged 2026-09-21T06:33:58Z after the snapshot with root source-merge acceptance recorded (pb795-root-acceptance.json), deployment and global behavior proof pending, and PR792 (aa03c0bd) is merged but not deployed. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot."
+    "detail": "The PB783 lower cross-root egress edge is deployed in the activated generation 43b790cce88c-1789962578-9e60f8c7ea49 (publication verified 2026-09-21T04:07:13Z; three live nodes converged with rollout idle at 2026-09-21T04:09:13Z). The PR781 outer-caller ordering source is present in deployed runtime d794839c589d-1789966072-c66c7f0568d0; no global produced-output retirement has been accepted (library and component cycles ran; a separate admitted private-queue diagnostic, action 83264d103a2a iteration 1, exposed the own-copy defect); PR795 merged 2026-09-21T06:33:58Z after the snapshot with root source-merge acceptance recorded (pb795-root-acceptance.json), deployment and global behavior proof pending, and PR792 (aa03c0bd) is merged but not deployed. 2026-09-23 update (snapshot 13:30Z): Deployed in 81d95cba8d91-1790160372-5d100532e024: aa03c0bde1b5 (PR792) and 3641e29332bf (PR795), which the text above calls undeployed or pending; 4c3e5e099e8a (#850), 5339005d60a9 (#852), a5eb8003211b (#855), 603839dc0ee0 (#861, with #859), c4f2d02b9735 (#923), a3ef749f4ce8 (#925), 7a45a92add6e (#932), 6ee921283f8c (#934); the opt-in levers ef997618e133 (#891), c3d14052707e (#895), 4adc35d1f423 (#897), 28ba5c139fdd (#898) are deployed and off (the tier role runs without --output-windows); the spool budget from 497f5cc4e889 (#917) and 8771490e6d2f (#921) is live (sparky offers spool_gb 36, sparklina 360). 39e0177350e2 (#943) and 5d37518b0ca2 (#968) are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot."
    },
    "id": "PO-07",
    "implementation": {
@@ -1969,21 +1969,21 @@
    ],
    "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
    "deployment": {
-    "detail": "contains no proof of current deployment",
-    "state": "unknown"
+    "detail": "contains no proof of current deployment 2026-09-23 update (snapshot 13:30Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and not deployed at this snapshot.",
+    "state": "no"
    },
    "historical_context": "PB720 final shards 263957bf71ea\u2026/a62a13a366ca\u2026/0b5d2fa45ed8\u2026 done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
    "id": "VER-01",
    "implementation": {
-    "commit": null,
+    "commit": "PB:d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID; d1e217607942 (#957) records each skip's node ID and reason. These cover test receipts only.",
     "path": null,
-    "state": "no"
+    "state": "partial"
    },
    "owner": "PB:docs-process",
    "target_enforcement": "contract \u00a710 checklist step plus acceptance-record template",
    "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
    "validation": {
-    "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof PBMCP's withdrawn-row view omitted attempt history (attempts_detail=[]) for the withdrawn produced mover 6fbc96301c6c; the retained pre-withdrawal readback (produced-mover-snapshot-root-diagnosis.json; issue 790) proves one actual failed attempt, so 'never claimed' must not be concluded from current ready/withdrawn state. Counts alone are not verification, and neither is an empty view whose read scope is not stated.",
+    "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof PBMCP's withdrawn-row view omitted attempt history (attempts_detail=[]) for the withdrawn produced mover 6fbc96301c6c; the retained pre-withdrawal readback (produced-mover-snapshot-root-diagnosis.json; issue 790) proves one actual failed attempt, so 'never claimed' must not be concluded from current ready/withdrawn state. Counts alone are not verification, and neither is an empty view whose read scope is not stated. 2026-09-23 update (snapshot 13:30Z): #967 b31c34b551fd and 9 more shards (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards; #957 c749c91fcae9, cfb88c896310.",
     "state": "partial"
    },
    "workload_proof": {
