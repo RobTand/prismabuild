@@ -166,6 +166,19 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
     return min(candidates)[1]
 
 
+def _released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
+    """Whether a claim will refuse ``key`` as a released consumer (#954).
+
+    Unknown counts as released: the claim denies a row whose release it cannot
+    read, so staging it would copy bytes nothing reads.
+    """
+
+    try:
+        return produced_output.origin_consumer_release(queue, key) is not None
+    except produced_output.ProducedOutputError:
+        return True
+
+
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Every ready or claimed item that declares leads, with what it has accepted.
 
@@ -174,9 +187,17 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     and a claimed one needs the next phase staged while it reads this one.  A
     terminal consumer is deliberately absent -- its ranges are nobody's to keep
     resident, and the sweep takes them back.
+
+    So is a ready consumer whose key an operator released from an origin batch
+    (#954): the claim fails that row with ``origin-consumer-released`` and never
+    runs it, so nothing is staged for it, not even its first phase.  One whose
+    release cannot be read is absent too, because the claim will not run it
+    either until it can; the claim's denial names it.  A claimed consumer is
+    never skipped: it was claimed before any release, and it is running.
     """
 
     out: list[dict[str, object]] = []
+    released = queue.released_origin_consumer_keys()
     for state in (pool.READY, pool.CLAIMED):
         for path in pool._scan(queue.dir(state)):
             item = pool._read_json(path)
@@ -187,6 +208,9 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
                 continue
             key = item.get("action_key")
             if not isinstance(key, str):
+                continue
+            if (state == pool.READY and key in released
+                    and _released_origin_consumer(queue, key)):
                 continue
             accepted = None
             claimed_unix = None
