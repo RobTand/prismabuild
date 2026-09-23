@@ -205,7 +205,16 @@ def _unknown(_queue, _tier_id):
 @pytest.mark.parametrize("enforced", [False, True])
 def test_an_owed_window_gates_the_newcomer_that_fits_only_without_it(
         tmp_path: Path, monkeypatch, enforced: bool) -> None:
-    """Six GiB fit two 1+1 windows, but not beside a 3 GiB owed window."""
+    """Six GiB fit two 1+1 windows, but not beside a 3 GiB owed window.
+
+    Whether or not ``--output-windows`` is set, since #907: the commitment
+    charges the owed window in the same decision as the two windows' read
+    footprints (#905), 3 + 2 + 2 = 7 GiB against 6.  Unset, the joint-fit
+    gate counts it as zero and would admit the second window on 2 + 2; set,
+    it refuses on 3 + 2 + 2 as well, and the commitment names the refusal
+    because no eviction can make that room.  The opt-in now decides only
+    whether the joint-fit gate and the fence count the owed window.
+    """
 
     ctx = protection._setup_two_consumers(tmp_path, stage_gib=6)
     queue = ctx["queue"]
@@ -216,13 +225,13 @@ def test_an_owed_window_gates_the_newcomer_that_fits_only_without_it(
         monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
     events = tier_loop.residency_window(queue, tiers=protection._tiers(tmp_path))
     gated = protection._gated(events)
-    if not enforced:
-        assert gated == {}
-        assert len(protection._published(events)) == 4
-        return
     assert set(gated) == {protection.CONSUMER_B}, gated
-    assert gated[protection.CONSUMER_B]["reason"] == window_credit.REASON_STALL
-    assert gated[protection.CONSUMER_B]["output_note"] == ""
+    gate = gated[protection.CONSUMER_B]
+    assert gate["reason"] == window_credit.REASON_COMMITMENT
+    assert gate["commitment"]["unheld_output_gib"] == 3
+    assert gate["commitment"]["committed_gib"] == 3 + 2
+    assert gate["output_note"] == (
+        "" if enforced else window_credit.OUTPUT_UNENFORCED_NOTE)
     assert protection._published(events) == set(ctx["aa"]["movers"])
 
 

@@ -4947,6 +4947,197 @@ Limits:
   commitments cannot be read is skipped, as the other scope scans skip it:
   its batches stay on disk and charged.
 
+#### Deferred consumers: action edges (#913)
+
+A consumer can be submitted before its producer runs. `pbrun --after
+PRODUCER:TEMPLATE_ID` names a write-only template (#912) that the producer
+declares. PB holds the submission until the producer succeeds. It then builds
+the consumer's data manifest from the origin-only batches the producer
+committed, and seals and publishes the consumer.
+
+**Why the consumer is sealed at release, not at submission.** A key covers
+the action's data manifest, and a manifest entry names a path and a positive
+byte count (`core.validate_data_manifest`). A handoff's paths and sizes exist
+only after the producer commits. A consumer keyed at submission would have a
+key that does not cover the bytes it reads, and it could have no residency
+plan, because its mover ranges index into that manifest. `dagster.py`'s
+`CASDependency` has the same shape: an edge carries the upstream key and the
+digest it produced, so the downstream action is keyed after the upstream
+finishes. PB therefore keeps the frozen submission and seals it later,
+instead of adding a second kind of key.
+
+**Submission.** `--after PRODUCER:TEMPLATE_ID` is repeatable and needs the
+pull queue. PRODUCER is an action key, or the pending id of another deferred
+submission, which is how a chain names a consumer that is not sealed yet.
+`pbrun` refuses the edge when:
+
+- the producer is unknown: a key needs a readable row or terminal record,
+  and a pending id needs a readable deferred record;
+- the producer does not declare the template, or the template is not
+  write-only.
+
+`pbrun` then prepares the submission as it would any other: the checkout
+gates, the environment, the demand and the placement, which it announces and
+refuses as usual. It freezes the template without a data manifest, and
+refuses it when no release could seal it: the template's generation must be
+the published one or pass the retained-generation check below. A `pbrun` in a
+development checkout freezes its own wrapper, which is neither. The
+optional `--data-manifest` is the consumer's static part (for example, a
+model head); it is ingested and kept beside the template. The command may
+carry `{pb.data_manifest}` once, as a whole argument. At release it becomes
+the CAS path of the resolved manifest, as `decomposition.resolve_task_batch`
+does for a batch path.
+
+The frozen template, the static manifest, the edges and the publication
+options (priority, attempts, retry safety and the residency options) form a
+deferred record, filed immutably at `pb-queue/deferred/<pending_id>.json`.
+The pending id is the SHA-256 of the record's canonical JSON, so an identical
+submission finds its own record. `pbrun` prints the pending id. Without
+`--detach` it waits for the release and then for the consumer's terminal
+record, within `--wait-s` in total.
+
+**Release.** `tier_loop.cycle` calls `deferred_release.release_tick` once per
+cycle, directly after the origin retirement (#914). Only dl380g10 runs the
+tiers role, so one process releases. For each deferred record without a
+publication record, the tick:
+
+1. **Resumes a pinned release.** A record with a release record (step 4) is
+   finished as pinned. The tick does not resolve its producers again; it seals
+   the key the release record names, into the same generation, and refuses
+   with `release-key-mismatch` if the key comes out different.
+2. **Skips a superseded record.** A pending id with a supersession record is
+   never released; edges that name it follow its successor.
+3. **Resolves every edge.** Supersession records are followed first,
+   unconditionally. A pending producer is followed through its publication
+   record to its key; one not yet released holds the consumer quietly. Then
+   the key's latest generation decides:
+   - a `ready` or `claimed` row, or a claim being moved, holds quietly;
+   - `done` with status `executed` resolves to the nonce of that attempt;
+   - any other `done` (a `cache_hit`, or a record without an attempt nonce)
+     resolves to the one attempt of that key that committed an origin-only
+     batch under the template and not reclaimed (`committed_attempt`). A
+     cache hit ran nothing: its attempt found the receipt an earlier attempt
+     published, and that earlier attempt may have died before it could file
+     `done`. None, or more than one, holds;
+   - `failed`, `withdrawn`, absent or unreadable holds.
+
+   A hold other than a quiet one is reported once per change
+   (`deferred-held`). A failed producer therefore never releases its
+   consumer.
+4. **Pins the release.** It reads the resolved attempt's instance
+   `<producer>/<template_id>.<nonce>` and takes every origin-only batch that
+   attempt committed, in batch-id order, through `load_origin_batch`, which
+   rechecks each origin's recorded identity by `lstat`. It reads and hashes
+   no payload bytes. The consumer's manifest is the static entries with their
+   phases, then each batch as its own phase, with the batch refs under
+   `produced_output_batches`. The tick seals the consumer and files a
+   first-writer release record at `pb-queue/deferred-releases/<pending_id>.json`
+   with the producers, the refs, the manifest input, the key and the runtime
+   generation it sealed into. A crash after this point resumes from the
+   record, so a producer that later succeeds again, or fails, cannot give one
+   pending id two keys.
+5. **Publishes as `pbrun` does after it seals.** If the queue has no row or
+   record for the key yet, the tick publishes the CAS request, files the
+   origin-consumer declarations (#914) and publishes the row with the
+   submission's publication options. A submission that asked for
+   `--residency stage` has its movers sealed and its plan frozen under the
+   consumer's transition lock, as `pbrun` does. On a resume it first checks the generation again and
+   each pinned batch with `load_origin_batch`. If the key already has a row
+   or a terminal record, it was published before a crash kept step 6 from
+   running, and its generation is taken as it is.
+6. **Records the generation** at `deferred-releases/<pending_id>.published.json`.
+   That is what `pbrun` and chains wait on.
+
+`pbrun`'s notices during a release travel inside the release's log event,
+because the tier log is JSON lines.
+
+**Generation.** Two generations meet in a release, and the rule for each
+matches an ordinary submission's:
+
+- *The generation that seals.* The loop's own code seals. The tick releases
+  nothing, and reports `loop-runtime-is-not-published` once, unless the
+  loop's runtime root is the generation the `repo` link names. The loop
+  restarts on the published generation at its next cycle.
+- *The generation sealed into.* An action runs under the generation that
+  froze it, and a deferred consumer is frozen at `pbrun --after` time. Its
+  template's `PATH` starts with that generation's `tools` directory, and the
+  container owner, the stamp name and the checkout snapshot are fingerprinted
+  over it, so it cannot be re-frozen without the submitter's checkout. The
+  consumer is therefore sealed into its template's generation, as an ordinary
+  submission sealed just before a publish runs the older generation. When
+  that is not the loop's own generation, the wrapper must pass
+  `pbrun.verify_retained_wrapper`, the check `--as-sealed-by` makes: it sits
+  in the generation store, beside a receipt naming that generation, and
+  hashes to what the receipt recorded. If the generation is missing or does
+  not verify, the consumer is held and reported once as
+  `runtime-generation-unavailable`, naming the remedy: resubmit with
+  `--supersedes <pending_id>`. It is never sealed into another generation.
+
+A retained generation stays retained. Publication never deletes a generation
+(`tools/fleet/publish_runtime.py` `_activate` and `_activate_existing`); the only tree
+it removes is its own failed `.staging` directory, and `_remove_staging_tree`
+refuses anything else. `pb_gc` surveys the CAS, never the generation store.
+So nothing needs to count deferred records as references.
+`pbstatus --deferred` lists every unreleased consumer with the generation it
+is pinned to and `off_published` when that is not the published one, so an
+operator can supersede the ones a publish fixed something for.
+
+**Supersession.** Every publish moves every key, so a producer that failed
+is often resubmitted under a new key. `pbrun --supersedes OLD` files
+`pb-queue/supersessions/<OLD>.json`, first writer wins, naming the new
+submission. A key can be superseded only once its latest generation is
+`failed` or `withdrawn`; a pending id only while it has no release record. A
+link that would close a loop of supersessions refuses. Once filed, a
+supersession is followed unconditionally: if OLD later runs again and
+succeeds, edges still read the successor, so every consumer of "the
+producer" reads the same bytes, whenever it is released.
+
+**Consumed batches (#914).** A consumed batch has no declared consumer until
+its deferred consumer is released, and the retirement tick would delete it as
+an orphan once its producer attempt is dead, or once the consumers already
+declared have succeeded. `action_edges.held_producer_batches` names what must
+stay, as `(producer key, template id)`: the producers a pinned, unpublished
+release names, and the key each unreleased, unsuperseded edge resolves to,
+unless that key failed, was withdrawn or is absent. Every attempt's batches
+under that template stay, because which attempt a release reads is settled
+only when it is pinned. A record that fails validation can never be released
+and holds nothing; a record that exists and cannot be read keeps every
+consumed batch for that tick. Separately, a batch whose producer's `done` is
+a cache hit by another attempt is no longer an orphan: the cache hit ran
+nothing, and that batch may be the producer's only output.
+
+**Bounds.** The tick runs after its cycle's window publication, so a burst of
+releases cannot delay that cycle's windows. It starts no release after the
+cycle's deadline (`cycle_started + CYCLE_INTERVAL_S`, the cadence the #903
+horizon and the #907 commitment assume) or after
+`MAX_RELEASES_PER_CYCLE` (8) releases, which bounds how much new window work
+one burst hands the next cycle. The rest waits for the next cycle. While
+anything is unreleased, the tick logs one `deferred-release-tick` line per
+cycle with its counts and its wall time. A malformed or unreadable deferred
+record is reported once (`deferred-release-refused`) and kept for an
+operator; it never ends the loop. With nothing filed the tick lists one
+missing directory and prints nothing.
+
+Limits:
+
+- One placeholder. A consumer that needs values derived from the batches,
+  such as a handoff path or a digest, reads them from the manifest the
+  placeholder names; PB substitutes nothing else.
+- The once-per-change memory lives in the tier-loop process, so a standing
+  hold prints once more after a restart.
+- A record the tick cannot release stays filed until an operator supersedes
+  it; there is no withdrawal of a pending id.
+- `pbwait` takes keys. A detached deferred submission's key is in its
+  `.published.json` record once released.
+- A supersession filed while the tick pins the old pending id can race it;
+  then both the old consumer and the successor run.
+- The deadline is checked before every release, including the first. A tier
+  loop whose earlier work routinely takes the whole cycle interval releases
+  nothing; the `carried` count in `deferred-release-tick` is the only sign.
+- The origin retirement tick does not read supersessions. A released
+  consumer that fails and is resubmitted under `--supersedes` still holds its
+  batch through its first declaration (#926).
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.
@@ -5780,8 +5971,9 @@ is an admitted window's advance, which the would-publish term covers.
   waits `STAGED_RANGE_WAIT_S` (300 s) for the window to publish it again.
 * Since #906 the ram window is bounded by its own horizon as well (next
   section).
-* The horizon does not jointly admit consumers: two readers whose horizons
-  together exceed the tier still contend through the joint gate, as before.
+* Since #907 admission charges the horizons jointly: a newcomer is admitted
+  only when its read footprint fits beside every admitted window's (see
+  "Admission charges refill horizons jointly" below).
 * A consumer claimed before #903 keeps its landed ranges until another
   window needs the room. Its movers already in `ready/` past its horizon stay
   queued: withdrawing one would retire the whole plan (#708). Such a row
@@ -5860,6 +6052,204 @@ room its advance publishes into (#745). `_ram_window_state` took the same
 figure as `own_fence_gib` and did not add it. On a tmpfs with room for
 exactly the current promotion and its advance, the advance could then never
 publish. It now adds it.
+
+### Admission charges refill horizons jointly (#907)
+
+#903 bounded each window by its refill horizon, and admission did not follow.
+The joint-fit gate (`window_credit.gate_newcomer`) admits a newcomer when its
+*minimum* fits: held + queued + its current + its next. The window then grows
+into whatever room is free, up to its horizon. Nothing bounded the *sum* of
+the horizons, so two admitted windows could between them want more of the
+stage than it has. Ranges inside a horizon are never evicted, so one reader
+then waits on the other's reading: a range miss, a 300 s range wait, a stall.
+No incident has shown this yet. It is the soundness gap the #903 review named,
+and the fixtures in `tests/test_admission_charges_refill_horizons_jointly.py`
+reproduce it.
+
+**The read footprint.** `residency_plan.read_footprint` asks a window's own
+rule at every phase the consumer still has to read: the stage GiB `window`
+publishes from an empty tier with the refill horizon recomputed at that phase,
+and the largest of them. It is the most the window will ever hold at once,
+not the plan. The #633 run-ahead bound keeps it at or under the tier's
+capacity. The horizon at each phase is priced at the consumer's rates now:
+
+* Consumption: for a claimed consumer with accepted progress, the horizon's
+  own measurement (bytes through the accepted phase over the time from the
+  claim to its report), which is what bounds its window now, or the fastest
+  rate its claim has *attained*, whichever is higher. A reader that slowed
+  can speed up again, and its window grows back into the room it gave up,
+  so the footprint does not follow the rate down past what the reader has
+  shown it can do. Attained counts only the phases before the accepted one,
+  which the reader has certainly read by its report. The horizon's rate
+  counts the whole accepted phase as read, and a first report a few seconds
+  after the claim makes that a whole phase over a few seconds: kept for the
+  claim's lifetime, that peak would refuse every newcomer beside it. The
+  tier loop keeps the attained rate in memory; a restart forgets it and
+  prices each claim at its current rate. Anything else — a newcomer, a
+  ready consumer, a claim with no report — has measured nothing, and the
+  tier's announced fill supply stands in, as it does for the horizon.
+* Landing: the slowest complete copy of the plan, else the smallest fill its
+  movers were sealed with, else the fill supply, as for the horizon.
+* Read-ahead: the consumer's reservations (`mem_gb` plus its admission's GPU
+  budget), as for the horizon.
+
+With no consumption or landing rate the horizon is undefined, and the
+footprint is what the #633 bound alone lets the window publish.
+
+**The commitment.** `tier_loop._commitment_census` is, per stage tier, what
+admission has already promised:
+
+* every held token nothing can evict: held, less the tier's orphans, less each
+  window's passed legs and legs past its horizon;
+* queued new money: ready rows' tier demand no funding record covers;
+* the unheld produced-output windows (`produced_output.unheld_window_gib`);
+* each admitted window's **growth**: its read footprint less what it already
+  holds toward it (its in-horizon legs held or queued, and its fence grants).
+
+Every token is in exactly one term. A leg is passed, past the horizon or ahead
+of it; an orphan is in no live plan; a queued row is new money once, whether
+or not a window's holding names it. So an admitted window is committed at the
+larger of what it holds and its footprint, and a static holder (a receipt-less
+token, an output owner's held window) at what it holds.
+
+A live consumer the census cannot read is not free room. A plan read fails on
+a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then
+drops out of the pass, and its ranges would count as orphans and its growth
+as nothing. So a range whose receipt names a live queue item is never counted
+evictable, and a tier that an admitted window may be on uncensused (its plan
+or its mover state did not read) refuses its newcomers with
+`advance-deferred-unknown-evidence` until a pass reads it. An unreadable plan
+blinds the tier its queue item declares, or every tier if the item does not
+read either. A consumer that is certainly a newcomer (ready, none of the leads
+its item declares published) blinds nothing: it is admitted nowhere, so it
+commits nothing, and it waits for its own plan anyway.
+
+`window_credit.gate_commitment` admits a newcomer when the commitment plus its
+own growth fits the tier. Otherwise it is refused with `joint-commitment-stall`,
+a transient wait for admitted windows to finish, and the `window-gated` event
+carries every term under `commitment`. One exception: a newcomer with no other
+admitted window, owed output or queued demand on the tier is admitted under
+the joint-fit gate alone. What is committed then is holders that never grow,
+so the newcomer contends only with itself: its window runs short of its
+footprint, as every window did before #907, and a refusal would be one no later
+cycle could lift.
+
+**Where it is asked.** A newcomer's formation event is the one admission
+point, and it has three spellings:
+
+* The joint-fit gate in `_protect_tier_advances`. The commitment is asked
+  unless the joint-fit gate refused for good (`joint-fit-oversize`), and when
+  both refuse the reason is `joint-commitment-stall`, because no eviction can
+  admit what the commitment refuses. Newcomers are asked in the gate's own
+  order, and each admitted one is committed before the next. A commitment
+  wait sets the priority barrier as a joint-fit wait does.
+* Adoption. Taking a newcomer's lead over from a withdrawn donor admits it,
+  and adoption moves tokens rather than acquiring them, so no joint-fit gate
+  saw it: a successor over its predecessor's ranges (R13 over R12's) would
+  have been admitted without any gate. `adopt_resident_ranges` now asks the
+  commitment before a ready consumer's first adoption, and files
+  `adoption-deferred` when it refuses. The donor's range stays an orphan.
+* The eviction pressure. A newcomer the commitment refuses publishes nothing
+  this cycle, so `window_pressure` counts neither its lead nor its admission
+  shortfall (#632: no eviction for room nobody will use).
+
+**Owed outputs (#905).** The unheld produced-output windows are charged in the
+commitment whether or not `--output-windows` is set: the producer takes that
+room back from free, and a newcomer admitted into it would be squeezed by it.
+An output census that does not read refuses the tier's newcomers
+(`advance-deferred-unknown-evidence`, the error under `commitment`) rather than
+counting zero; admitted windows keep publishing. `--output-windows` now decides
+only whether the joint-fit gate, the fence check and the relief count the owed
+window as well.
+
+**On R12's recorded state** (`tests/fixtures/r12_stage_20260922.json`)
+against the 585 GiB stage of 2026-09-23, with the live 5 s cycle:
+
+* R12, claimed at `chain-043`, has a footprint of 242 GiB (measured
+  20.7 MB/s, 180 GiB of read-ahead, one 22 GiB refill leg) and a 48 GiB
+  output window.
+* An R12-shaped newcomer (R13) has 220 GiB before its claim: 100 GiB of
+  host read-ahead (its 80 GiB GPU budget is set at claim), with the refill
+  priced at the 413 MB/s fill supply. Beside R12 it is admitted:
+  242 + 48 + 220 + 48 = 558 GiB. Once claimed and reporting at R12's rate it
+  is R12's 242, and the two commit 580.
+* A native capture's footprint is its whole 20 GiB plan, and a Stage-B
+  quantum's (a 3 GiB head and three 22 GiB layers) its whole 69 GiB.
+* R13 alone, at R12's rate, commits 290 GiB and leaves 295: four Stage-B
+  quanta or fourteen captures beside it, where the joint-fit gate alone
+  admitted any number whose current and next fit.
+
+The last section of the test file replays the same state on the 530 GiB the
+stage had for windows on 2026-09-22 (R12's claim reservation and the
+receipt-less holder folded out), with the 60 s default cycle. R12 commits
+308 GiB: 264 inside its horizon and at its advance, and its two queued rows
+past the horizon (44). Its 264 GiB past the horizon is evictable.
+
+* The capture passes the commitment (308 + 20 = 328). The joint-fit gate
+  refuses it until the relief gives back ranges past R12's horizon, as
+  before #907, and then its lead publishes.
+* An R13 newcomer (242 GiB at this latency) is refused: 308 + 242 = 550.
+  Before #907 the relief gave back R12's farthest ranges for its lead; now
+  nothing is evicted for it.
+* After the relief took R12's ranges past its horizon, four Stage-B quanta
+  all fit the joint-fit gate (264 + 44 + 4 × 25 = 408). The commitment
+  admits three (515) and the fourth waits (584).
+
+A newcomer's footprint moves with the announced fill supply, which prices its
+consumption until it reports. At the 144 MB/s the test's own cycle probes,
+R13's footprint is 176 GiB, and 308 + 176 = 484 fits: the same R13 is admitted
+on a stage that announces a slower fill.
+
+**Assumptions and limits.**
+
+* Sound only while what it counts as evictable comes back without another
+  reader's progress: reader pins release independently of progress, egress
+  rows run, and no mover key is in two live plans.
+* A newcomer's read-ahead is its host reservation only. The GPU budget is set
+  at claim and enters its footprint from then on, so a newcomer admitted
+  beside it before then was not charged for it. R13 above is charged 220 GiB
+  at admission and needs 242 at R12's measured rate: 22 GiB admitted
+  uncharged. (Between its claim and its first report the fill supply still
+  prices its consumption and its footprint reads 308, but its window
+  publishes one step until that report, #632.)
+* The read-ahead is the reservation, not a declared prefetch depth. R12's
+  180 GiB over-states a one-phase (22 GiB) lookahead by about 150 GiB. In the
+  horizon that error only cached more; here it refuses work that would fit.
+  A newcomer's supply-priced refill is the second-order term (R13 with its
+  GPU budget: 76 GiB against 4 measured).
+* A consumer whose state does not read publishes nothing while it stays
+  unknown and is not counted.
+* A leg left past the horizon that no eviction took becomes the window's
+  advance, which is not charged until it is inside: at most one leg.
+* A window's rows queued past its horizon (R12's `chain-021` and
+  `chain-018`, published before #903) are committed as queued new money
+  until they are withdrawn or land, although once landed they are evictable.
+  This errs toward refusing.
+* Footprints are recomputed each pass. If admitted windows later want more
+  than the tier (a claim measured faster than its stand-in), they keep
+  running and contend as before; newcomers are refused until the sum fits.
+  Nothing reports the overcommit.
+* An admitted window that the joint-fit gate has physically stalled still
+  holds its footprint in the commitment. Beside a holder nothing can evict, a
+  tier can be over-committed by that window alone, and then a newcomer that
+  would fit the free room waits behind a window that cannot progress either,
+  until the holder goes. Because nothing reports the overcommit, this looks
+  like a stall to an operator: the newcomer's `window-gated` event carries
+  the terms (`committed_gib` above `capacity_gib`).
+* The horizon's own in-phase over-estimate is real window behavior: a claim
+  whose first report lands seconds after it has a window that runs to the
+  #633 bound until its next report. The footprint follows it while it lasts,
+  so newcomers wait out that interval.
+* The eviction pressure asks the commitment in the gate's priority order but
+  not behind the gate's priority barrier. With mixed priorities, a
+  lower-priority newcomer that the barrier holds back while the commitment
+  admits it can still be given relief it does not use that cycle. Uniform
+  priorities never raise the barrier.
+* The census reads the ready and claimed items, every live window's movers on
+  the tier and the output census, on each pass that asks it (at most three a
+  cycle, and only when a newcomer is present). Its cost is not measured.
+* Stage tiers only. A ram miss is a read from the stage, slower but never a
+  stall (#906), and the ram leg keeps the joint-fit gate alone.
 
 ### Adopting a resident range, and when an orphan is evicted
 
@@ -7030,7 +7420,9 @@ asks for no relief, because its publication defers.
 
 The tier loop counts the obligation only when it runs with `--output-windows`
 (or `PRISMABUILD_TIER_OUTPUT_WINDOWS=1`). Unset, every decision is the one it
-made before, with the same note. Any other value of the variable stops the
+made before, with the same note. Since #907 that is true of the joint-fit
+gate, the fence check and the relief only: the admission commitment charges
+the owed window whatever the switch says (#905). Any other value of the variable stops the
 loop at start. The supervisor restarts a role whose argv differs from its
 declaration, and a role inherits the supervisor's environment, so the switch
 is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published

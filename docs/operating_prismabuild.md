@@ -3321,6 +3321,86 @@ one, delete its files and call `produced_output.reclaim_origin`. "Consumed
 origin batches: retired after their consumers (#914)" in `docs/design.md` lists
 the rules and the limits.
 
+### Submit a consumer before its producer runs
+
+To queue a chain at once, submit each consumer with `--after
+PRODUCER:TEMPLATE_ID` (#913). PRODUCER is the producer's action key, or the
+pending id `pbrun` printed for another deferred submission. TEMPLATE_ID is a
+write-only template the producer declares. Where the consumer's command needs
+the manifest path, write `{pb.data_manifest}` as one whole argument:
+
+```
+pbrun.py --priority -10 --residency stage --detach \
+    --after <producer key>:handoff -- python consume.py {pb.data_manifest}
+```
+
+`--after` is repeatable and needs the pull queue. `--data-manifest` is
+optional; its entries are the consumer's static inputs. `pbrun` refuses an
+unknown producer, a template the producer does not declare, and a template
+that is not write-only. Submit with the published `pbrun`
+(`/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py`): one in a development
+checkout is refused, because no release could seal what it freezes. It then prepares and checks the submission as usual,
+files it, and prints its pending id. With `--detach` the JSON line carries
+`"status": "deferred"`, the `pending_id` and the path of the release record.
+Without it, `pbrun` waits for the release and then for the consumer's
+outcome, within `--wait-s` in total, and exits 75 if the wait runs out. The
+submission stays filed either way.
+
+The tier loop on dl380g10 releases a consumer once every producer has
+succeeded: it builds the manifest from the batches the producer committed,
+seals the consumer, and publishes it. The release record,
+`pb-queue/deferred-releases/<pending_id>.published.json`, names the key; pass
+that key to `pbwait`. The loop releases at most 8 consumers per cycle and
+leaves the rest for the next one.
+
+To list what is waiting:
+
+```
+pbstatus.py --deferred
+```
+
+Each consumer has a `state` (`unreleased`, `pinned` or `superseded`), its
+edges, the generation it will be sealed into, and `off_published: true` when
+that generation is no longer the published one. It exits 3 when a record
+cannot be read.
+
+The tier log reports what needs a person, once per change:
+
+```
+grep '"deferred-' <tier-loop log>
+```
+
+- `deferred-held` with reason `producer-will-not-succeed`: a producer failed,
+  was withdrawn, has no row or record, or succeeded without a batch PB can
+  attribute to one attempt (`no-committed-attempt`). The line names each edge
+  and its state.
+- `deferred-held` with reason `runtime-generation-unavailable`: the generation
+  the consumer was frozen under is missing or does not match its receipt. The
+  consumer is never sealed into another generation.
+- `deferred-release-refused`: the record is malformed, or the release failed.
+  The line names the reason and carries `pbrun`'s notices. The record stays
+  filed.
+- `deferred-released`: one line per release, with the key, the producers, the
+  batch refs and the generation.
+- `deferred-release-tick`: one line per cycle while anything is unreleased,
+  with the counts and the tick's wall time.
+
+To replace a producer or a consumer, resubmit it with `--supersedes OLD`,
+where OLD is the failed or withdrawn key, or the pending id of a consumer not
+yet released:
+
+```
+pbrun.py --priority -10 --supersedes <failed producer key> -- ...
+pbrun.py --priority -10 --supersedes <pending id> --after ... -- ...
+```
+
+Edges that name OLD then follow the new submission, even if OLD later runs
+again. A superseded pending id is never released. Resubmitting under
+`--supersedes` is also the remedy for `runtime-generation-unavailable`, and for
+a consumer you want sealed under a newer generation. There is no command that
+withdraws a pending id. "Deferred consumers: action edges (#913)" in
+`docs/design.md` lists the rules and the limits.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,

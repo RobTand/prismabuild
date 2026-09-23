@@ -166,7 +166,9 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
     assert len(gated) == 1
     (winner,) = consumers
     assert gated[0]["consumer"] != winner
-    assert gated[0]["reason"] == "joint-fit-stall"
+    # Both gates refuse the second window, and since #907 the commitment
+    # names it: no eviction admits it while the first is running.
+    assert gated[0]["reason"] == "joint-commitment-stall"
     assert gated[0]["permanent"] is False
     # The lead's publish reserves nothing, but the protected next is a real
     # reservation: the admitted window's advance holds a bound fence for its
