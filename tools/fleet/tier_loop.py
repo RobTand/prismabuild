@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import functools
 import json
 import math
 from pathlib import Path
@@ -2063,6 +2064,25 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
     return rate
 
 
+def _readahead(plan: Mapping[str, object], item: object
+               ) -> tuple[int | None, str]:
+    """The bytes a consumer holds ahead of what it reads, and the basis (#909).
+
+    What its plan declares (``reader.prefetch_depth_bytes``) when it declares
+    it: the reader's own statement of its read-ahead, which PB cannot see.
+    Otherwise the stated bound, its memory reservations
+    (:func:`_readahead_bytes`), which a reader that keeps what it prefetches
+    cannot exceed; on 2026-09-22 that bound priced R12's read-ahead at
+    180 GiB where it holds about one 22 GiB layer.
+    """
+
+    declared = residency_plan.declared_prefetch_bytes(plan)
+    if declared is not None:
+        return declared, "declared"
+    reserved = _readahead_bytes(item)
+    return reserved, ("memory-reservation" if reserved is not None else "none")
+
+
 def _readahead_bytes(item: object) -> int | None:
     """The bytes a claimed consumer can hold ahead of what it reads (#903).
 
@@ -2071,7 +2091,8 @@ def _readahead_bytes(item: object) -> int | None:
     hold more than it reserved.  The two are summed even where they share
     one physical pool (a GB10's unified memory), which over-states the
     reach, so the horizon errs long, never short.  ``None`` when the item's
-    resources do not read.
+    resources do not read.  The fallback of :func:`_readahead` for a plan
+    that declares no read-ahead (#909).
     """
 
     if not isinstance(item, Mapping):
@@ -2130,20 +2151,41 @@ def _sealed_fill_bytes_per_s(plan: Mapping[str, object],
     return min(demands) if demands else None
 
 
-def _announced_fill_supply(tier_record: Mapping[str, object] | None
-                           ) -> float | None:
-    """The fill supply a tier record announces, in MB/s, or ``None``."""
+def _plan_landing(queue: pool.PoolQueue, plan: Mapping[str, object], *,
+                  ram: bool = False) -> tuple[float | None, str]:
+    """A leg's landing rate for the refill horizon, and its basis (#903, #909).
 
-    if not isinstance(tier_record, Mapping):
-        return None
-    tokens = tier_record.get("tokens")
-    if not isinstance(tokens, Mapping):
-        return None
-    value = tokens.get(storage_tiers.FILL_KIND)
-    if (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and value > 0):
-        return float(value)
-    return None
+    The slowest complete copy of this leg of the plan (``measured``).  Before
+    one lands, a stage leg stands on the smallest fill its copies were sealed
+    with (``sealed``), a rate fixed when the plan was sealed.  A ram leg has
+    no stand-in (#906).  Never the tier's announced fill supply: it moves as
+    the loop probes the pool, and a price read off it made the same queue
+    admit a newcomer on one cycle and refuse it on the next (#909).
+    ``(None, "none")`` leaves the horizon undefined.
+    """
+
+    keys = (residency_plan.ram_mover_keys(plan) if ram
+            else residency_plan.stage_mover_keys(plan))
+    rates = [rate for rate in (_landing_rate(queue, key) for key in keys)
+             if rate is not None]
+    if rates:
+        return min(rates), "measured"
+    if not ram:
+        sealed = _sealed_fill_bytes_per_s(plan, str(plan.get("tier_id") or ""))
+        if sealed is not None:
+            return sealed, "sealed"
+    return None, "none"
+
+
+def _measurable(consumer: Mapping[str, object]) -> bool:
+    """Whether a consumer's claim and report time a rate (#903)."""
+
+    claimed = consumer.get("claimed_unix")
+    reported = consumer.get("reported_unix")
+    return (isinstance(claimed, (int, float)) and not isinstance(claimed, bool)
+            and isinstance(reported, (int, float)) and not isinstance(reported, bool)
+            and math.isfinite(float(claimed)) and math.isfinite(float(reported))
+            and float(reported) > float(claimed))
 
 
 def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
@@ -2153,16 +2195,21 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     """A claimed consumer's refill horizon on one of its tiers, or ``None``.
 
     :func:`residency_plan.refill_horizon` with this box's measurements: the
-    consumer's reservations for its read-ahead, the slowest complete copy of
-    this leg of its plan for the landing rate, the tier's announced fill
-    supply for its consumption before that is measured, and one heartbeat
-    plus one cycle for the time an accepted phase takes to reach a decision.
-    ``None`` -- a ready consumer, no accepted progress, nothing measured --
-    leaves every decision what it was before the horizon existed.
+    consumer's read-ahead (:func:`_readahead`: declared, else its memory
+    reservations), the slowest complete copy of this leg of its plan for the
+    landing rate (:func:`_plan_landing`), its measured consumption, and one
+    heartbeat plus one cycle for the time an accepted phase takes to reach a
+    decision.  Before a report times a rate, the plan's declared read rate
+    stands in (#909).  ``None`` -- a ready consumer, no accepted progress,
+    nothing measured or declared -- leaves every decision what it was before
+    the horizon existed.  The tier's announced fill supply is never a stand-in
+    for either rate: it moves as the loop probes the pool (#909), so
+    ``tier_record`` no longer prices anything here; it stays in the signature
+    the stage and ram callers share.
 
     The two legs differ only in what stands in before their first copy
     lands.  A stage leg (#903) is priced at the smallest fill its copies
-    were sealed with, then at the tier's fill supply.  A ram leg (#906) has
+    were sealed with.  A ram leg (#906) has
     no stand-in: a promotion copies the stage into the tmpfs, a path neither
     number measures, so until a promotion of this plan lands the ram horizon
     is undefined and the ram window keeps its #633 bound.  A ram horizon
@@ -2177,20 +2224,16 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     accepted = consumer.get("accepted_phase")
     if not residency_plan.accepted(plan, accepted):              # type: ignore[arg-type]
         return None
-    readahead = _readahead_bytes(consumer.get("item"))
+    readahead, _basis = _readahead(plan, consumer.get("item"))
     if readahead is None:
         return None
-    ram = mover_role == "ram_mover_row"
-    keys = (residency_plan.ram_mover_keys(plan) if ram
-            else residency_plan.stage_mover_keys(plan))
-    rates = [rate for rate in (_landing_rate(queue, key) for key in keys)
-             if rate is not None]
-    supply = _announced_fill_supply(tier_record)
-    landing: float | None = min(rates) if rates else None
-    if landing is None and not ram:
-        landing = _sealed_fill_bytes_per_s(plan, str(plan.get("tier_id") or ""))
-        if landing is None and supply is not None:
-            landing = supply * storage_tiers.MB
+    landing, _landing_basis = _plan_landing(
+        queue, plan, ram=mover_role == "ram_mover_row")
+    # Measured when the claim and its report time one; declared otherwise.
+    consumption = (None if _measurable(consumer)
+                   else residency_plan.declared_read_bytes_per_s(plan))
+    if consumption is None and not _measurable(consumer):
+        return None
     try:
         return residency_plan.refill_horizon(
             plan, accepted,                                      # type: ignore[arg-type]
@@ -2198,7 +2241,7 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
             reported_unix=consumer.get("reported_unix"),
             readahead_bytes=readahead, landing_bytes_per_s=landing,
             report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
-            fill_supply_mb_s=supply, mover_role=mover_role)
+            mover_role=mover_role, consumption_bytes_per_s=consumption)
     except (residency_plan.ResidencyPlanError, KeyError, TypeError,
             ValueError):
         return None
@@ -2571,7 +2614,6 @@ _FASTEST_CONSUMPTION: dict[tuple[str, str, float], float] = {}
 def _footprint_consumption(queue: pool.PoolQueue,
                            consumer: Mapping[str, object],
                            plan: Mapping[str, object],
-                           tier_record: Mapping[str, object] | None,
                            ) -> tuple[float | None, str]:
     """The consumption rate a read footprint is priced at, and its basis (#907).
 
@@ -2581,12 +2623,16 @@ def _footprint_consumption(queue: pool.PoolQueue,
     rate its claim has attained if that is higher.  The attained rate counts
     only the phases before the accepted one, which the reader has certainly
     read by its report, so it is a lower bound on how fast it went and never
-    the horizon's in-phase over-estimate.  Anything else --
-    a newcomer, a ready consumer, a claim that has reported nothing -- has
-    measured no rate, and the tier's announced fill supply stands in, as it
-    does in :func:`residency_plan.refill_horizon`: a consumer that reads
-    staged bytes cannot keep up a rate above what the tier refills them at.
-    ``None`` when neither exists.
+    the horizon's in-phase over-estimate.  Anything else -- a newcomer, a
+    ready consumer, a claim that has reported nothing -- has measured no
+    rate, and its plan's declared read rate stands in (#909).  ``(None,
+    "undeclared")`` when it declares none: the footprint is then the window's
+    #633 run-ahead bound, which no rate can exceed.
+
+    Never the tier's announced fill supply, which stood in before #909.  It
+    moves as the loop probes the pool, so the same newcomer was refused on
+    one cycle and admitted on the next: an R12-shaped R13 beside R12 at
+    242 GiB on 413 MB/s and 176 GiB on 144.
     """
 
     claimed = consumer.get("claimed_unix")
@@ -2610,29 +2656,50 @@ def _footprint_consumption(queue: pool.PoolQueue,
             fastest = max(attained, _FASTEST_CONSUMPTION.get(key, 0.0))
             _FASTEST_CONSUMPTION[key] = fastest
             return max(rate, fastest), "measured"
-    supply = _announced_fill_supply(tier_record)
-    if supply is not None:
-        return supply * storage_tiers.MB, "fill-supply"
-    return None, "none"
+    declared = residency_plan.declared_read_bytes_per_s(plan)
+    if declared is not None:
+        return declared, "declared"
+    return None, "undeclared"
 
 
-def _footprint_landing(queue: pool.PoolQueue, plan: Mapping[str, object],
-                       tier_record: Mapping[str, object] | None,
-                       ) -> float | None:
-    """The stage leg's landing rate, exactly as :func:`_consumer_horizon` prices it."""
-
-    rates = [rate for rate in (_landing_rate(queue, key)
-                               for key in residency_plan.stage_mover_keys(plan))
-             if rate is not None]
-    if rates:
-        return min(rates)
-    sealed = _sealed_fill_bytes_per_s(plan, str(plan.get("tier_id") or ""))
-    if sealed is not None:
-        return sealed
-    supply = _announced_fill_supply(tier_record)
-    return None if supply is None else supply * storage_tiers.MB
+#: What each ``_commitment_census`` call has cost this process since the
+#: last cycle report, in seconds (#909).  The census reads every admitted
+#: window's plan, holdings and receipts, and up to three passes of one cycle
+#: ask for it, so its cost is reported by the cycle that paid it rather than
+#: estimated.
+_CENSUS_COST: list[float] = []
 
 
+def _counted(function):
+    """Record each call's wall time in :data:`_CENSUS_COST`."""
+
+    @functools.wraps(function)
+    def counted(*args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _CENSUS_COST.append(time.perf_counter() - started)
+
+    return counted
+
+
+def census_cost_report() -> dict[str, object] | None:
+    """What the commitment census cost since the last report, or ``None`` (#909).
+
+    Drains :data:`_CENSUS_COST`.  ``None`` when no pass asked for it: a cycle
+    with no newcomer never builds one.
+    """
+
+    if not _CENSUS_COST:
+        return None
+    costs = list(_CENSUS_COST)
+    _CENSUS_COST.clear()
+    return {"calls": len(costs), "elapsed_s": round(sum(costs), 4),
+            "max_s": round(max(costs), 4)}
+
+
+@_counted
 def _commitment_census(queue: pool.PoolQueue,
                        tiers: Mapping[str, Mapping[str, object]], *,
                        consumers: list,
@@ -2814,11 +2881,17 @@ def _commitment_census(queue: pool.PoolQueue,
                 prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
                 holding += sum(gib for holder, gib in held.items()
                                if holder.startswith(prefix))
-                rate, basis = _footprint_consumption(queue, consumer, plan, record)
+                # Every term from the window's own declarations and
+                # measurements, none from the tier's announced supply, so the
+                # verdict for a fixed queue does not move as the loop probes
+                # the pool (#909).
+                rate, basis = _footprint_consumption(queue, consumer, plan)
+                readahead, readahead_basis = _readahead(plan, consumer.get("item"))
+                landing, landing_basis = _plan_landing(queue, plan)
                 footprint = residency_plan.read_footprint(
                     plan, accepted, capacity_gib=capacity_gib,   # type: ignore[arg-type]
-                    readahead_bytes=_readahead_bytes(consumer.get("item")),
-                    landing_bytes_per_s=_footprint_landing(queue, plan, record),
+                    readahead_bytes=readahead,
+                    landing_bytes_per_s=landing,
                     consumption_bytes_per_s=rate,
                     report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S)
             except (OSError, pool.PoolContractError, residency_plan.ResidencyPlanError,
@@ -2832,6 +2905,8 @@ def _commitment_census(queue: pool.PoolQueue,
                 "growth_gib": max(0, footprint - holding),
                 "own_queued_gib": queued.get(key, 0),
                 "consumption_basis": basis,
+                "readahead_basis": readahead_basis,
+                "landing_basis": landing_basis,
             }
         if error:
             out[tier_id] = {"error": error}
@@ -2944,6 +3019,8 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
         "holding_gib": mine["holding_gib"],
         "growth_gib": mine["growth_gib"],
         "consumption_basis": mine["consumption_basis"],
+        "readahead_basis": mine["readahead_basis"],
+        "landing_basis": mine["landing_basis"],
         "lone": lone,
     }
     return decision
@@ -5980,6 +6057,12 @@ def cycle(
     for event in deferred_release.release_tick(
             queue, deadline=cycle_started + CYCLE_INTERVAL_S):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
+    # What the admission commitment's census cost this cycle (#909): the one
+    # admission read whose cost grows with the number of windows.
+    census_cost = census_cost_report()
+    if census_cost is not None:
+        print(json.dumps({"unix": time.time(), "event": "commitment-census",
+                          **census_cost}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
     # its free tokens go now, its held ones as their holders finish, and its
     # record says why it is empty rather than vanishing.

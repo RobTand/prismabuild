@@ -150,7 +150,17 @@ _PLAN_KEYS = frozenset({
     "demand_source",
     # The ram tier this plan's ``ram_mover_row`` blocks name; required the
     # moment any phase carries one, and refused as a non-ram id otherwise.
-    "ram_tier_id"})
+    "ram_tier_id",
+    # Optional: what the consumer declares about its own reading (#909), so
+    # that nothing has to stand in for it before it is measured.  Absent on
+    # every plan sealed without a declaration, which is then byte-identical
+    # to one sealed before the field existed.
+    "reader"})
+#: What a reader declaration says, and nothing else (#909).  Either or both:
+#: ``prefetch_depth_bytes`` is how many bytes the consumer holds ahead of the
+#: phase it is reading, and ``read_mb_s`` is how fast it reads, in the
+#: decimal MB/s the fill ledger counts in.
+_READER_KEYS = frozenset({"prefetch_depth_bytes", "read_mb_s"})
 #: Which movement leg a window decision is about, and the egress row that
 #: frees it.  The stage window decides for ``mover_row``; the ram window
 #: decides for ``ram_mover_row`` (#640).  A role this table does not name is
@@ -184,6 +194,7 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
                phases: Sequence[Mapping[str, object]],
                demand_source: Mapping[str, object] | None = None,
                ram_tier_id: str | None = None,
+               reader: Mapping[str, object] | None = None,
                ) -> dict[str, object]:
     """Assemble one consumer's plan from ranges the submitter has already sealed.
 
@@ -196,6 +207,10 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
 
     ``ram_tier_id`` names the tier the phases' ``ram_mover_row`` entries
     promote onto, when the submitter sealed a ram leg at all.
+
+    ``reader`` is the consumer's declaration about its own reading (#909);
+    see :func:`declared_prefetch_bytes` and :func:`declared_read_bytes_per_s`.
+    An empty or absent declaration adds nothing to the plan.
     """
 
     built = []
@@ -237,6 +252,8 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
         body["ram_tier_id"] = str(ram_tier_id)
     if demand_source is not None:
         body["demand_source"] = dict(demand_source)
+    if reader:
+        body["reader"] = dict(reader)
     return validate_plan(body)
 
 
@@ -330,6 +347,51 @@ def _checked_leg_chunk(chunk: object, *, leg: str, phase_name: str,
             egress_role: dict(egress)}
 
 
+def _check_reader(reader: object) -> None:
+    """Refuse a reader declaration that is not whole, positive numbers (#909).
+
+    Whole numbers because both are quotations a gate compares with ledger
+    arithmetic in bytes and in the whole MB/s the fill ledger counts, and a
+    declaration nothing can read is refused here, where the plan is frozen,
+    rather than priced as absent later.
+    """
+
+    if not isinstance(reader, Mapping) or not reader:
+        raise ResidencyPlanError(
+            "reader must be an object declaring prefetch_depth_bytes, "
+            "read_mb_s or both")
+    stray = sorted(set(reader) - _READER_KEYS)
+    if stray:
+        raise ResidencyPlanError(f"unknown reader fields: {stray}")
+    depth = reader.get("prefetch_depth_bytes")
+    if "prefetch_depth_bytes" in reader and (
+            isinstance(depth, bool) or not isinstance(depth, int) or depth < 0):
+        raise ResidencyPlanError(
+            "reader.prefetch_depth_bytes must be a whole number of bytes, 0 or more")
+    rate = reader.get("read_mb_s")
+    if "read_mb_s" in reader and (
+            isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0):
+        raise ResidencyPlanError("reader.read_mb_s must be a positive whole MB/s")
+
+
+def declared_prefetch_bytes(plan: Mapping[str, object]) -> int | None:
+    """The bytes the consumer declares it holds ahead of its read, or ``None`` (#909)."""
+
+    reader = plan.get("reader")
+    depth = reader.get("prefetch_depth_bytes") if isinstance(reader, Mapping) else None
+    return depth if isinstance(depth, int) and not isinstance(depth, bool) else None
+
+
+def declared_read_bytes_per_s(plan: Mapping[str, object]) -> float | None:
+    """The consumer's declared read rate in bytes per second, or ``None`` (#909)."""
+
+    reader = plan.get("reader")
+    rate = reader.get("read_mb_s") if isinstance(reader, Mapping) else None
+    if isinstance(rate, int) and not isinstance(rate, bool) and rate > 0:
+        return float(rate) * storage_tiers.MB
+    return None
+
+
 def validate_plan(value: object) -> dict[str, object]:
     """Refuse a plan that is not a cover of one manifest's read order.
 
@@ -376,6 +438,8 @@ def validate_plan(value: object) -> dict[str, object]:
         raise ResidencyPlanError("stage_root must be an absolute path")
     if "demand_source" in value and not isinstance(value["demand_source"], Mapping):
         raise ResidencyPlanError("demand_source must be an object")
+    if "reader" in value:
+        _check_reader(value["reader"])
     phases = value.get("phases")
     if not isinstance(phases, list) or not phases:
         raise ResidencyPlanError("a residency plan needs at least one phase")
