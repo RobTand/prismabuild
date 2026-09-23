@@ -219,14 +219,15 @@ class _LaunchOnlySubprocess:
     The launch under test is pool.py's own ``subprocess.Popen`` call.
     Stubbing the global ``subprocess.Popen`` also captured every other
     child this process started meanwhile, and ``(argv,) = seen`` then
-    failed on two argvs (#937).  The one that did it in broad runs is the
-    finish path's GPU power reference: when the box's pqteld recorder (2
-    Hz, live on the GB10s) has a row inside the action's window,
-    ``box_window.read_window`` asks ``gpu_capacity.devices``, whose
-    ``subprocess.run`` builds a ``Popen`` for ``nvidia-smi``.  A longer
-    window under load makes that row likelier, which is why the test
-    passed in isolation.  Any other module's child, such as an adaptive
-    snapshot publisher, reached ``seen`` the same way.  Everything but
+    failed on two argvs (#937).  In this harness the adaptive snapshot
+    publisher never starts one: ``record_completion`` is stubbed out and
+    the claim has no CPU controller, so ``adaptive_snapshot.publish`` is
+    never called.  The finish path's GPU power reference does: when the
+    box's pqteld recorder (2 Hz on the GB10s) has a row inside the
+    action's window, ``box_window.read_window`` asks
+    ``gpu_capacity.devices``, whose ``subprocess.run`` builds a ``Popen``
+    for ``nvidia-smi``.  A longer window under load makes that row
+    likelier, which is why the test passed in isolation.  Everything but
     ``Popen`` resolves to the real module.
     """
 
@@ -355,8 +356,8 @@ def test_a_bystander_child_never_reaches_the_launch_capture(
     the action's window, so it asks for the GPU reference and
     ``gpu_capacity`` runs ``nvidia-smi``; ``snapshot_publisher`` is
     ``adaptive_snapshot.publish`` starting its coalesced copy child while
-    the launch is under way.  Both run for real.  RED on the global stub:
-    ``seen`` holds two argvs.
+    the launch is under way, which the issue named.  Both run for real.
+    RED on the global stub: ``seen`` holds more than one argv.
     """
 
     gen_a = _published_generation(fleet_store, "gen-a-0004")
