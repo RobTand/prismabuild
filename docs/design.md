@@ -195,7 +195,9 @@ the key's transition lock, which already serializes that key's writers across
 the fleet. `transition_busy`, recorded because another loop holds that lock,
 stays out of the ring: it is a sibling loop evaluating the item this instant,
 not a verdict about the item, and several loops per box would otherwise fill
-the ring with it. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
+the ring with it. One writer is outside the claim scan and its lock: the tier
+loop's `residency_plan_unreadable`, whose entry is best-effort against a claim
+loop writing the same key at that instant. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
 lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
 lookup for an unchanged reason: an in-process memo holds the reason each
 process last saw on file for its host, pruned to the ready queue every pass.

@@ -5573,9 +5573,9 @@ class PoolQueue:
         * **Reason transitions, kept (#991).**  :meth:`_record_denial_transition`
           appends ``{unix, host, reason, decision_reason}`` to the key's ring
           in ``denial-transitions/`` when this host's reason changes.  It takes
-          no lock of its own: every caller that reaches it holds the key's
-          transition lock, which serializes writers of that key across the
-          fleet.  ``transition_busy`` -- recorded *because* another loop holds
+          no lock of its own: every pool caller holds the key's transition
+          lock (see :meth:`_record_denial_transition`), which serializes the
+          fleet's writers.  ``transition_busy`` -- recorded *because* a loop holds
           that lock -- is not an admission verdict about the item, only a
           sibling loop evaluating it this instant, and stays out of the ring
           (as #998 kept ``deferred_behind_withholding`` out of ``passes``).
@@ -5670,10 +5670,10 @@ class PoolQueue:
         was said last.
 
         Survives contention by construction.  It shares no lock with the
-        latest-only file (whose ``flock`` drops observations by design), and
-        its writers are serialized by the key's transition lock, which every
-        caller holds.  A write that fails leaves the memo as it was, so the
-        next pass retries the same transition.
+        latest-only file's ``flock``; pool callers hold the key's transition lock.
+        Best-effort for the tier loop's ``residency_plan_unreadable``, which does
+        not: a claim loop writing that key at that instant can drop one entry
+        (atomic rename, never a torn file).  A failed write leaves the memo.
         """
 
         try:
