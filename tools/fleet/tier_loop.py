@@ -48,6 +48,8 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import core as pb  # noqa: E402
+from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
@@ -5316,6 +5318,43 @@ def _queued_mover(queue: pool.PoolQueue, mover: str
     return None
 
 
+def _mover_report(queue: pool.PoolQueue, mover: str
+                  ) -> dict[str, object] | None:
+    """A claimed stage mover's last landed-bytes report, or ``None`` (#1010).
+
+    The progress record the mover writes for the worker's stall check
+    (``stage_move._ProgressReporter``), read once, bounded and without
+    following links, the way the worker reads it.  Its token is not checked:
+    this prices an expectation and gates nothing, and the worker unlinks the
+    file at every ending, so a report here is the running attempt's.
+    ``None`` for no report, one that does not read, or one that is not a
+    mover's (another schema or phase, a count that is not whole bytes).
+    """
+
+    try:
+        raw = pb._read_regular_file_nofollow(
+            queue.action_progress_path(mover), where="mover progress report",
+            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+        record = json.loads(raw)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError,
+            pb.ActionContractError, pb.CASTamperError,
+            pb.CASUnavailableError):
+        return None
+    if not isinstance(record, Mapping):
+        return None
+    units, at = record.get("units_completed"), record.get("reported_unix")
+    if (record.get("schema") != pb.PROGRESS_RECORD_SCHEMA_V1
+            or record.get("phase") not in movement_actions.MOVER_PROGRESS_PHASES
+            or isinstance(units, bool) or not isinstance(units, int) or units < 0
+            or isinstance(at, bool) or not isinstance(at, (int, float))
+            or not math.isfinite(float(at))):
+        return None
+    return {"landed_bytes": units, "reported_unix": float(at),
+            "landed_phase": str(record["phase"])}
+
+
 def publish_landing_expectations(
         queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
         consumers: Sequence[Mapping[str, object]],
@@ -5327,7 +5366,10 @@ def publish_landing_expectations(
     its read-order bytes and its state.  A queued range (``ready`` or
     ``claimed``) carries :func:`residency_plan.expected_landings`' answer:
     its place in the tier's queue, the bytes ahead of it and when it is
-    expected to land.  The rate is the slowest complete copy among the
+    expected to land.  A claimed copy that reports its landed bytes
+    (:func:`_mover_report`, #1010) is priced from them and their rate, and
+    its ``basis`` says so (``reported``); one without a report is priced
+    from its claim time (``claim``).  The rate is the slowest complete copy among the
     tier's live plans (:func:`_plan_landing`, the refill horizon's own
     landing rate), and the record carries every measured rate beside it.
 
@@ -5390,6 +5432,10 @@ def publish_landing_expectations(
                          "range_bytes": int(leg["end_bytes"]) - int(leg["start_bytes"]),
                          "claimed_unix": record.get("claimed_unix")}
                 if state == pool.CLAIMED:
+                    # One bounded read per claimed mover per pass (#1010).
+                    report = _mover_report(queue, mover)
+                    if report is not None:
+                        entry.update(report)
                     stamp = record.get("claimed_unix")
                     claimed.append((float(stamp) if isinstance(stamp, (int, float))
                                     and not isinstance(stamp, bool) else moment, entry))
@@ -5403,7 +5449,8 @@ def publish_landing_expectations(
         expected = ({} if landing is None else residency_plan.expected_landings(
             order, now=moment, landing_bytes_per_s=landing))
         queue_print = tuple((entry["mover_action_key"], entry["state"],
-                             entry["claimed_unix"], entry["range_bytes"])
+                             entry["claimed_unix"], entry["range_bytes"],
+                             entry.get("landed_bytes"), entry.get("landed_phase"))
                             for entry in order)
         for key, consumer, plan in members:
             try:

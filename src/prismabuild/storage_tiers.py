@@ -58,7 +58,7 @@ exact read set, so the bytes a range needs resident are arithmetic over it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 import json
 import math
 import os
@@ -297,6 +297,106 @@ def _run(argv: list[str]) -> str:
 
 
 Runner = Callable[[list[str]], str]
+
+
+#: ``/sys/block/<dev>/stat`` field offsets, from
+#: ``Documentation/block/stat.rst``.  Named because the file is a bare row of
+#: integers and an off-by-one here reads writes as reads.  The storage role's
+#: disk pacer (``prewarm_loop.DiskPacer``) and the worker's pool-contention
+#: check (``pool.PoolContentionProbe``, #1010) read the same fields through
+#: :func:`worst_member_interval`, so a hold and a credit are one judgment.
+STAT_READS_COMPLETED = 0
+#: Sectors read, always 512 bytes each whatever the device's logical block
+#: size (``stat.rst``).
+STAT_READ_SECTORS = 2
+STAT_READ_MS = 3
+STAT_IN_FLIGHT = 8
+STAT_IO_TICKS = 9
+STAT_WEIGHTED_IO_MS = 10
+
+
+#: A hold ends at half the number that started it.  A disk sitting exactly on
+#: a cap otherwise flaps the reader once per sample, and those bursts are what
+#: the pacer exists to smooth.  This is a property of the control loop rather
+#: than of any pool, which is why it is a constant and not an argument.  One
+#: definition for the pacer (``prewarm_loop.DiskPacer``) and the worker's
+#: pool-contention check (``pool.PoolContentionProbe``, #1010), so a copy the
+#: pacer still holds is never one the worker charges.
+HOLD_RELEASE_FRACTION = 0.5
+
+
+def pool_is_hurting(measured: Mapping[str, float], *, max_read_await_ms: float,
+                    max_backlog_ms: float, over: bool) -> bool:
+    """Service time or backlog over its cap, with hysteresis on the way out.
+
+    ``over`` is the verdict of the previous interval: once over, the pool
+    stays over until both numbers fall to :data:`HOLD_RELEASE_FRACTION` of
+    their caps or below.  A cap of 0 or less is off.  Utilization is
+    deliberately absent: it is recorded, and it never holds.
+    """
+
+    scale = HOLD_RELEASE_FRACTION if over else 1.0
+    return bool(
+        (max_read_await_ms > 0
+         and measured["read_await_ms"] > max_read_await_ms * scale)
+        or (max_backlog_ms > 0
+            and measured["backlog_ms"] > max_backlog_ms * scale))
+
+
+def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None:
+    """One block device's ``stat`` row as integers, or ``None`` if unreadable."""
+
+    try:
+        with open(f"{root}/{device}/stat") as handle:
+            return [int(field) for field in handle.read().split()]
+    except (OSError, ValueError):
+        return None
+
+
+def worst_member_interval(
+    previous: Mapping[str, Sequence[int]], current: Mapping[str, Sequence[int]],
+    elapsed_s: float,
+) -> tuple[dict[str, float], int] | None:
+    """The worst member's numbers over one interval, and the sectors read.
+
+    The quantities Netdata charts, computed the same way:
+
+    * ``util_pct``      = d(io_ticks) / d(wall_ms) * 100
+    * ``read_await_ms`` = d(read_ms) / d(reads_completed), and 0 when no read
+      completed: an interval with no completions has no average to report.
+    * ``backlog_ms``    = d(weighted_io_ms) / d(wall_s)
+    * ``in_flight``     = the requests in flight at the end of the interval.
+
+    Each is the maximum over the members both rows have.  Returns ``None``
+    when no member is in both rows or the interval is not positive.
+    """
+
+    if elapsed_s <= 0:
+        return None
+    worst = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0,
+             "in_flight": 0.0}
+    seen = False
+    sectors = 0
+    for device, row in current.items():
+        before = previous.get(device)
+        if before is None or len(row) <= STAT_WEIGHTED_IO_MS \
+                or len(before) <= STAT_WEIGHTED_IO_MS:
+            continue
+        seen = True
+        sectors += max(0, row[STAT_READ_SECTORS] - before[STAT_READ_SECTORS])
+        reads = row[STAT_READS_COMPLETED] - before[STAT_READS_COMPLETED]
+        read_ms = row[STAT_READ_MS] - before[STAT_READ_MS]
+        ticks = row[STAT_IO_TICKS] - before[STAT_IO_TICKS]
+        weighted = row[STAT_WEIGHTED_IO_MS] - before[STAT_WEIGHTED_IO_MS]
+        worst["util_pct"] = max(
+            worst["util_pct"], min(100.0, 100.0 * ticks / (elapsed_s * 1000.0)))
+        worst["read_await_ms"] = max(
+            worst["read_await_ms"], (read_ms / reads) if reads > 0 else 0.0)
+        worst["backlog_ms"] = max(worst["backlog_ms"], weighted / elapsed_s)
+        worst["in_flight"] = max(worst["in_flight"], float(row[STAT_IN_FLIGHT]))
+    if not seen:
+        return None
+    return worst, sectors
 
 
 def whole_disk_of(path: str, *, sysfs: str = SYSFS_BLOCK) -> str | None:

@@ -2486,7 +2486,11 @@ declare a policy require both tags. Previously sealed `progress-v1` actions
 remain eligible on either generation; their requests are unchanged.
 
 Cyclic policies additionally require `progress-cycle-v1`
-(`core.PROGRESS_CYCLE_TAG`). Updated worker loops offer all three tags.
+(`core.PROGRESS_CYCLE_TAG`). A stage mover that seals a pool contention
+spec beside its policy (`params.progress_pool_contention`, #1010) requires
+`progress-pool-contention-v1` (`core.POOL_CONTENTION_TAG`): an older worker
+would ignore the spec and charge a paced copy to its grace. Updated worker
+loops offer all four tags.
 Submission refuses cyclic mode if no eligible offer proves that capability,
 including an empty offer census. In a mixed fleet only cyclic-capable hosts
 contribute phase ceilings or receive the action. Existing linear requests keep
@@ -7361,13 +7365,17 @@ bytes and one state:
 
 | State | Meaning | `expected_landing_unix` |
 |---|---|---|
-| `claimed` | the mover is copying | claim time + own bytes / rate |
+| `claimed` | the mover is copying | its last progress report + remaining bytes / its live rate (`basis: reported`, #1010); with no report, claim time + own bytes / rate (`basis: claim`) |
 | `ready` | the mover is queued | now + (bytes ahead + own bytes) / rate |
 | `unpublished` | the window has not published it, or will recopy a failed copy (#627) | null, with `waiting_for` |
 | `evicted` | in `done/` with no tokens on the tier ledger: evicted, and published again when the range is back inside the horizon (`evict_beyond_horizon`) | null, with `waiting_for` |
 | `done-not-resident` | in `done/` and holding its tokens, but not resident yet: waiting for adoption, briefly under adoption lag | null, with `waiting_for` |
 | `terminal-no-receipt` | the plan is superseded, so nothing will publish it | null |
 
+Every range with an expectation carries `basis`: `reported`, `claim` or
+`queue` (a queued range). A `reported` range also carries `landed_bytes`,
+`reported_unix` and `live_bytes_per_s`, the bytes landed since its claim over
+the time they took (see "A mover reports what it has landed" below).
 A queued range also carries its `queue_position` and `bytes_ahead`: every
 claimed mover's remaining bytes on the tier, then every earlier ready
 mover's, in the queue's own order (`_queue_order_of`).
@@ -7456,15 +7464,225 @@ not cover their unpublished waits while the tier is over-committed.
 
 **Limits.**
 
-* A claimed mover's landed bytes are not observable without walking the
-  stage, so its expectation is its claim time plus its own bytes at the
-  tier's rate, not its live rate.
+* A claimed mover sealed before #1010, or one with no measured landing
+  rate, reports nothing, so its expectation is its claim time plus its own
+  bytes at the tier's rate, not its live rate.
 * The replay is serial. Movers that copy in parallel land sooner than the
   expectation says, and a withheld or isolation-refused mover later.
-* A mover carries no execution bound and reports no progress, so a claimed
-  mover whose copy stops holds its claim until the box's announced ceiling,
-  and the reader waits that long. The fix belongs to the mover (report
-  landed bytes as progress), not to a reader clock.
+* A mover with no measured landing rate carries no stall grace (`basis:
+  unmeasured`), so if its copy stops it holds its claim until the box's
+  announced ceiling, and the reader waits that long. Every mover of a plan
+  whose manifest has landed once on the tier is bounded (next section).
+
+### A mover reports what it has landed, and a stalled copy ends (#1010)
+
+Since #1009, a consumer blocked on its own staged range is exempt from its
+`no_progress` rung while that range's mover is `claimed`. A mover sealed no
+progress phases and no execution bound, so a copy that stopped (a hung pool
+read, a stuck mount) held its claim, and the consumer's GPU, until the
+worker's announced ceiling: 86400 s on both Sparks.
+
+**What the mover reports.** `stage_move.py` runs a reporter thread
+(`_ProgressReporter`) beside the copy when the worker gives it a progress
+channel. Every `--progress-interval-s` (default `pool.HEARTBEAT_S`, 30 s)
+it reads the copier's landed byte count under the copier's lock and commits
+it through `progress.commit` in phase `copy`, with the unit `bytes landed of
+read-order range [start, end)`. An entry counts once it is copied, verified
+and renamed into place, which is the durable unit the progress contract asks
+for. The read-back that warms the file server's cache reports in phase
+`warm`. The copy loop itself never touches the channel: it pays one lock
+acquisition per interval, not per entry. The reporter commits only when the
+count grows or the phase advances, and a refused commit is recorded in the
+receipt's `progress_report`, never raised into the copy.
+
+**What the mover is sealed with.** `pbrun.residency_stage_rows` seals each
+stage chunk with a `params.progress` policy of three phases, `start`, `copy`
+and `warm` (`movement_actions.MOVER_PROGRESS_PHASES`), all with the same
+grace:
+
+```text
+unit    = sum of the copy_depth largest entries in the chunk
+grace_s = ceil(unit / landing_bytes_per_s + 2 * pool.HEARTBEAT_S)
+```
+
+* `landing_bytes_per_s` is the plan's measured landing rate on the tier:
+  `storage_tiers.mover_fill_price` with basis `landing`, capped by the
+  tier's sealed fill, the same term that prices the mover's seal. It is the
+  slowest complete copy of the manifest that the tier has receipted.
+* `copy_depth` is `MOVER_MAX_READERS` (16), the mover's `--max-readers`.
+  Each copy worker holds one entry in flight and they share the rate, so a
+  healthy copy may land none of the 16 until it has read all of them. The
+  unit is the most bytes that can be in flight before the next entry lands.
+* The report latency is two heartbeats (`movement_actions.
+  mover_report_latency_s`): the reporter commits at most one interval after
+  an entry lands, and the worker's progress poll (`PoolQueue.execute`)
+  samples the file at most one heartbeat after that. The tier loop's cycle
+  is not on this path: the worker judges the mover's progress file directly.
+  The brief for #1010 named `HEARTBEAT_S + CYCLE_INTERVAL_S`; the cycle
+  bounds how late the landing record sees a report, not how late the rung
+  does.
+* `start` runs from launch to the copy's first read: the manifest, the
+  resume census and the start gate. The reporter commits phase `copy` when
+  the copy starts, so the copy's grace is measured from its first read.
+* A plan whose manifest has no landing receipt on the tier (basis
+  `single-reader-share` or `none`), or whose tier record names no source
+  pool members (`source_members`), is sealed with no policy, which is what
+  every mover had before. The plan's `demand_source.mover_progress` records
+  each chunk's derivation (`basis`, `landing_bytes_per_s`, `copy_depth`,
+  `unit_bytes`, `report_latency_s`, `grace_s`, `landing_window_movers`,
+  `pool_contention`), with `basis: unmeasured`, the missing term under
+  `unmeasured`, and `grace_s: null` for these.
+
+Beside the policy, pbrun seals `params.progress_pool_contention`
+(`core.POOL_CONTENTION_PARAM`, schema `prismabuild.progress_pool_contention.v1`,
+built by `movement_actions.pool_contention_spec`): the source pool's member
+devices as the storage role announced them, the disk pacer's caps
+(`--max-read-await-ms` 10, `--max-backlog-ms` 2000, the shared
+`movement_actions.MOVER_*` constants that `stage_move.py` also takes its
+defaults from), the stage root, and the rate the grace was priced at.
+`landing_window_movers` is the most movers that were copying on the tier
+while the pricing window landed (`movers_claimed_on_tier` on its receipts),
+so a reviewer can put the load the rate was measured under beside the load
+now.
+
+The policy and the spec are part of the action key, so a measured mover's
+key changes with #1010. Its placement needs `progress-v1`,
+`progress-helper-v1` and `progress-pool-contention-v1`: a worker without
+the last would ignore the spec and charge a paced copy to its grace.
+
+**The grace prices the copy, not the pool.** The allowance says how long a
+copy running at its measured rate takes to land its next entry. It does not
+say how long the pool may be slower than that because something else is
+using it. Three things make the pool the bottleneck without the mover being
+stuck, and the worker does not charge any of them to the allowance:
+
+* **A pacer hold.** `stage_move`'s disk pacer holds pool reads while a
+  client reads the pool and a member's read await or backlog is over its
+  cap, or while its telemetry is blind.
+* **A slow copy under unadmitted load.** A reader that holds no fill token
+  (a scrub, an NFS client, a process outside PrismaBuild) slows the copy
+  without any hold.
+* **A live egress at the start gate.** The mover's resume census and
+  `ownership_start_gate` take the stage's ownership lock, which an egress
+  holds from its snapshot to its release.
+
+The credit is granted on evidence the worker confirms itself, never on the
+mover's word. `pool.PoolContentionProbe` reads the `stat` row of each sealed
+member (`pool.POOL_MEMBER_STAT`, `storage_tiers.read_disk_stat`) on every
+progress poll, once a heartbeat, and judges the interval since its last
+read with the pacer's own arithmetic (`storage_tiers.worst_member_interval`,
+which `prewarm_loop.DiskPacer._measure` now calls too). The stall rung takes
+no look of its own: the counters are milliseconds, and a second look in the
+same checkpoint would judge an interval shorter than their resolution.
+Because a mover's grace is more than two heartbeats, a poll always falls
+between the last credit and the rung.
+
+| Verdict | When | Credited |
+|---|---|---|
+| `over` | the worst member's read await or backlog is over its sealed cap; or, after an `over` or `blind` interval, still over `HOLD_RELEASE_FRACTION` (0.5) of it (`release_band`) | yes, and the start of each stretch is filed as a `mover-pool-over` event |
+| `blind` | a member's row is missing or unreadable, at either end of the interval | yes, and the start of each blind stretch is filed as a `mover-pool-blind` event |
+| `under` | every member is under both caps, or under half of both once over | no |
+
+The release band is the pacer's own hysteresis and state
+(`storage_tiers.pool_is_hurting`, with `HOLD_RELEASE_FRACTION` defined once
+in `storage_tiers` for both): the pacer keeps holding until both numbers
+fall to half their caps, and a blind interval leaves it holding. Without the
+same rule, a copy the pacer still held at 0.5 to 1.0 of a cap would be
+charged and killed at one grace, and the retry's pacer would start again
+from not holding.
+
+While the action has not reported past its first phase, the worker also
+tries the stage's ownership lock without blocking
+(`PoolQueue.stage_ownership_lock(stage_root, blocking=False)`). An interval
+at both ends of which the lock was held by someone else is credited as a
+start-gate wait. That two-sample rule leaves up to one heartbeat uncredited
+at each edge of a held stretch: before the first look that saw it held, and
+after the last. The watch grants one `pool.HEARTBEAT_S` at each edge it
+sees (`ProgressWatch.grant_start_gate_edge`, counted as `start_gate_edges`).
+An exit edge is seen only if a look finds the lock free before the mover
+reports; otherwise the mover's report restarts its clock and there is
+nothing to grant. The try takes the lock for as long as one `lockf` call when
+it is free, and the worker holds no other stage lock while it runs.
+
+Every credit uses `ProgressWatch.exempt_staged_wait`'s rule
+(`ProgressWatch._credit`): the stall deadline moves by the uncredited quiet
+since the later of the interval's start, the last real advance and the last
+exemption of any kind, so an interval two exemptions both cover is credited
+once. No phase has a grace of its own for contention, and nothing invents a
+throughput threshold: a pool that delivers less than the priced rate while
+both caps hold is not credited. The probe records what the pool delivered
+to all readers over each interval (`pool_bytes_per_s`) and the most it
+delivered (`peak_pool_bytes_per_s`), so a pool saturated in throughput under
+both caps shows its measured ceiling on the record.
+
+The members are local block devices: a stage mover is placed on the box
+that owns the stage, which is the box whose pool it reads. A device name
+that changed between the seal and the run (a reboot that renamed `sdb`)
+reads as `blind`, which is credited and announced.
+
+**What the record says.** The mover's `progress_observation` carries
+`pool_contention_exempt_s`, `start_gate_exempt_s`,
+`delivered_units_per_s` and `pool_contention`: the members, the caps, the
+count and seconds of each verdict, the last verdict with the worst member's
+`read_await_ms`, `backlog_ms`, `util_pct` and `in_flight`, the blind starts,
+the priced rate, and `start_gate_held_s`, the seconds the worker saw the
+lock held at both ends of an interval, and `start_gate_edges`. The start
+of each blind stretch and of each credited over stretch is appended to
+`residency-events/<mover>/<host>-stall-watch.jsonl` (events
+`mover-pool-blind` and `mover-pool-over`, at most `pool.MAX_BLIND_EVENTS`
+of each per launch) and printed on the worker's stderr. `consumer_events` reads that file with the tier
+loop's, so a kill's ending record carries it, and `sweep_consumer_events`
+retires it with them.
+
+**What a stall does.** A copy that lands nothing for a grace of uncredited
+quiet ends at the mover's own `no_progress` rung. The ending record's
+`stall`, filed beside `PoolQueue.ending_diagnosis`'s fields and outside its
+read so a failed read cannot lose it, names the allowance
+(`allowance_s`), the last landing (`last_landing`: `units_completed`, the
+phase and the unit, which names the range), the quiet, every credit
+(`credited_s`), the delivered rate beside the priced rate
+(`delivered_bytes_per_s`, `priced_bytes_per_s`) and the last pool verdict.
+The ending follows the worker's existing path: while attempts remain the
+mover returns to `ready` and is retried (it is `retry_safe`); at its attempt
+limit it goes to `failed`, and the window recopies it (#627). The consumer's
+staged-wait verdict then reads a `failed` mover, which is exempt only while
+the tier loop is alive and the tier is within its commitment, and never on
+the claim alone.
+
+**The exposure this leaves.** A mover has `--residency-mover-max-attempts`
+attempts (3 by default), so a copy that stalls on every attempt keeps its
+consumer's staged wait exempt for up to 3 × (grace + requeue wait) of
+uncredited quiet before it reaches `failed`: the grace per attempt, and the
+time each retry waits in `ready` to be claimed again. Credited intervals add
+to that without bound while the pool stays over its caps or blind, or an
+egress keeps the lock; that is the point of the credit, and the record and
+the blind and over events are what make it visible. `progress_no_progress_bound_s`
+bounds only the charged quiet for such an action.
+
+**What the landing record does with it.** `publish_landing_expectations`
+reads each claimed mover's progress file (`claimed/<key>.progress`, bounded,
+without following links) and passes its `units_completed`, `reported_unix`
+and phase to `residency_plan.expected_landings`. The live rate is the bytes
+landed over the time from the claim to the report, and the expectation is
+the report time plus the remaining bytes at that rate. A report in `warm`,
+or one that covers the range, prices the copy as landed at the report. The
+report is part of the record's fingerprint, so a new report rewrites the
+record. A claimed mover with no usable report keeps the claim-time price.
+
+**What is not covered, and why.**
+
+* **Egress** (`stage_release.py`) is not sealed with progress. A consumer's
+  staged wait never names an egress, so a stalled egress never exempts a
+  consumer's rung, which is the failure #1010 fixes. A mover waiting on a
+  live egress at its start gate is credited (above); an egress's own
+  progress contract is PB #1021.
+* **The ram leg** and **produced-output movers** are not named in staged
+  waits either, and seal as before.
+* **Per-mover fairness.** The probe judges the pool, not this mover's share
+  of it: a mover starved by admitted peers while every member is under its
+  caps is charged, and ends at its allowance.
+* **Unadmitted writes.** The caps are read caps. Writes that slow the pool
+  without raising read await or backlog over a cap are not credited.
 
 ### Adopting a resident range, and when an orphan is evicted
 

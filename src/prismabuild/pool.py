@@ -918,6 +918,10 @@ class ProgressPolicy(NamedTuple):
     phases: tuple[ProgressPhase, ...]
     ceiling_s: float | None
     cycle: bool = False
+    #: The sealed ``core.POOL_CONTENTION_PARAM``, when the action declared
+    #: one (#1010): the evidence the worker samples before it charges quiet
+    #: to the action (:class:`PoolContentionProbe`).
+    pool_contention: Mapping[str, object] | None = None
 
     @property
     def no_progress_bound_s(self) -> float:
@@ -941,6 +945,10 @@ class ProgressPolicy(NamedTuple):
             "progress_stall_clamped": self.clamped,
             "progress_no_progress_bound_s": self.no_progress_bound_s,
             "progress_cycle": self.cycle,
+            # Only when declared, so every other action's record keeps its
+            # bytes.
+            **({"progress_pool_contention": dict(self.pool_contention)}
+               if self.pool_contention is not None else {}),
         }
 
 
@@ -966,6 +974,7 @@ def progress_policy(
         ),
         ceiling,
         cycle=bool(declared.get("cycle")),
+        pool_contention=_sealed_progress_policy(item, read=pb.action_pool_contention),
     )
 
 
@@ -1013,9 +1022,15 @@ def _sealed_produced_output_batch(
 
 
 def _sealed_progress_policy(
-    item: Mapping[str, object],
+    item: Mapping[str, object], *,
+    read: Callable[[Mapping[str, object]], Mapping[str, object] | None]
+    = pb.action_progress_policy,
 ) -> Mapping[str, object] | None:
-    """Read the declared policy from the sealed request, or None."""
+    """Read the declared policy from the sealed request, or None.
+
+    ``read`` picks which sealed param: the policy itself, or the pool
+    contention spec a stage mover declares beside it (#1010).
+    """
 
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
@@ -1029,7 +1044,7 @@ def _sealed_progress_policy(
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     try:
-        return pb.action_progress_policy(action)
+        return read(action)
     except pb.ActionContractError as exc:
         raise PoolContractError(str(exc)) from exc
 
@@ -1056,6 +1071,11 @@ class ProgressWatch:
     reporter was actually doing.  Launcher liveness and pipe bytes are not
     considered here at all: :func:`_observe_execution` samples those, on
     purpose, as a different source that proves a different thing.
+
+    Quiet the worker proves was not the action's is credited rather than
+    charged, each interval once (:meth:`_credit`): a verified staged-range
+    wait (#989), and for a stage mover the pool over its caps or unreadable
+    and a start-gate wait on a live egress (#1010, :class:`PoolContentionProbe`).
     """
 
     def __init__(
@@ -1088,6 +1108,12 @@ class ProgressWatch:
         self.staged_wait_exempt_through = started
         self.staged_wait_exempt_s = 0.0
         self.staged_wait: dict[str, object] | None = None
+        # Pool contention and the start gate (#1010).  Credited like a
+        # staged wait and through the same mark, so an interval that is
+        # both is credited once.
+        self.pool_contention_exempt_s = 0.0
+        self.start_gate_exempt_s = 0.0
+        self.first_advance_monotonic: float | None = None
 
     @property
     def grace_s(self) -> float:
@@ -1181,6 +1207,8 @@ class ProgressWatch:
         self.accepted += 1
         self.last_advance_monotonic = now
         self.last_real_advance_monotonic = now
+        if self.first_advance_monotonic is None:
+            self.first_advance_monotonic = now
         reported = record.get("reported_unix")
         try:
             reported = (float(reported) if type(reported) in (int, float)
@@ -1221,14 +1249,75 @@ class ProgressWatch:
         self.staged_wait = dict(verdict)
         if not verdict.get("exempt"):
             return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.staged_wait_exempt_s += credit
+        return credit
+
+    def _credit(self, *, now: float, since_monotonic: float) -> float:
+        """Move the stall deadline by the uncredited quiet in [since, now].
+
+        The one rule every exemption uses: from the later of ``since``, the
+        last real advance and the last exemption of any kind, so an interval
+        two exemptions both cover is credited once.
+        """
+
         start = max(float(since_monotonic), self.staged_wait_exempt_through,
                     self.last_real_advance_monotonic)
         credit = max(0.0, float(now) - start)
         self.last_advance_monotonic += credit
-        self.staged_wait_exempt_s += credit
         self.staged_wait_exempt_through = max(self.staged_wait_exempt_through,
                                               float(now))
         return credit
+
+    def exempt_pool_contention(self, verdict: Mapping[str, object], *,
+                               now: float, since_monotonic: float) -> float:
+        """Leave an interval the pool was the bottleneck out of the quiet (#1010).
+
+        ``verdict`` is one :meth:`PoolContentionProbe.judge` answer about
+        ``[since_monotonic, now]``.  ``over`` (a member over the sealed
+        caps) and ``blind`` (a member unreadable) are credited; ``under``
+        is not.  Same arithmetic as :meth:`exempt_staged_wait`.
+        """
+
+        if verdict.get("verdict") not in ("over", "blind"):
+            return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.pool_contention_exempt_s += credit
+        return credit
+
+    def exempt_start_gate(self, *, now: float, since_monotonic: float) -> float:
+        """Leave a start-gate wait on a live egress out of the quiet (#1010).
+
+        Called only while the action has not advanced past its first phase
+        and the stage's ownership lock is held by someone else.
+        """
+
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.start_gate_exempt_s += credit
+        return credit
+
+    def grant_start_gate_edge(self, seconds: float) -> None:
+        """Extend the allowance by one start-gate edge (#1010).
+
+        A held stretch is credited only between two looks that both saw the
+        lock held, so up to one heartbeat before its first look and after
+        its last is left uncredited.  The watch grants that heartbeat at
+        each edge instead: derived from the look's own cadence, recorded
+        with the gate's credit.
+        """
+
+        self.last_advance_monotonic += float(seconds)
+        self.start_gate_exempt_s += float(seconds)
+
+    def delivered_units_per_s(self, *, now: float) -> float | None:
+        """Units committed per second since the first accepted report."""
+
+        if self.first_advance_monotonic is None:
+            return None
+        elapsed = float(now) - self.first_advance_monotonic
+        if elapsed <= 0:
+            return None
+        return float(self.units_high_water) / elapsed
 
     def as_record(self, *, now: float) -> dict[str, object]:
         """What a receipt carries so a reader can see what the action reported."""
@@ -1249,7 +1338,182 @@ class ProgressWatch:
             # staged range while that range's mover was alive.
             "staged_wait_exempt_s": self.staged_wait_exempt_s,
             "staged_wait": self.staged_wait,
+            # Quiet the pool or a live egress caused, credited on evidence
+            # the worker sampled itself (#1010).  Zero for any action that
+            # declared no pool contention spec.
+            "pool_contention_exempt_s": self.pool_contention_exempt_s,
+            "start_gate_exempt_s": self.start_gate_exempt_s,
+            "delivered_units_per_s": self.delivered_units_per_s(now=now),
         }
+
+
+#: How the worker reads one pool member's ``/sys/block/<dev>/stat`` row
+#: (#1010).  A module attribute so a test can supply the disks; production
+#: reads the kernel's.
+POOL_MEMBER_STAT: Callable[[str], "list[int] | None"] = storage_tiers.read_disk_stat
+#: The most blind-start events, and the most over-start events, one launch
+#: files (#1010).  A member that flaps every heartbeat is still counted on
+#: the record past this.
+MAX_BLIND_EVENTS = 64
+
+
+class PoolContentionProbe:
+    """Whether a stage mover's pool was the bottleneck, as the worker sees it.
+
+    A mover's stall grace prices its copy at a measured landing rate
+    (``movement_actions.mover_progress_policy``); it does not price the pool
+    being slower than that because somebody else is reading it.  The disk
+    pacer holds the copy while that is so, and an unadmitted reader slows it
+    without any hold.  Neither is the mover's stall, so the worker does not
+    charge them to its allowance -- but it credits the time on evidence it
+    reads itself, never on the mover's word: every heartbeat it reads the
+    ``stat`` row of each member the storage role announced for the pool
+    (sealed as ``members``) and judges the interval since the last read
+    against the pacer's own caps, with the pacer's own arithmetic
+    (``storage_tiers.worst_member_interval``):
+
+    * ``over``: the worst member's read await or backlog is over its cap,
+      or, after an ``over`` or ``blind`` interval, still over
+      ``storage_tiers.HOLD_RELEASE_FRACTION`` of it: the pacer's own
+      hysteresis and state (``storage_tiers.pool_is_hurting``), so a copy
+      the pacer still holds is never charged (``release_band`` marks such an
+      interval).  Credited, and the start of each stretch is filed as a
+      ``mover-pool-over`` event.
+    * ``blind``: a member's row is missing or unreadable, now or at the
+      start of the interval.  Credited, as the pacer holds on it, and the
+      start of each blind stretch is filed as a ``mover-pool-blind`` event.
+      Both go to ``residency-events/<mover>/<host>-stall-watch.jsonl``,
+      because a mover that is never killed while its pool is busy or cannot
+      be read is exactly what nobody would otherwise notice.
+    * ``under``: every member under both caps, or under the release
+      fraction of both once over.  Not credited.
+
+    It judges no throughput threshold.  What the pool delivered over the
+    interval (sectors read, all readers) and the worst member's utilization
+    are recorded beside the verdict, so a pool saturated in throughput while
+    under both caps shows its measured ceiling on the record instead of a
+    number invented to call it contended.
+
+    The members are local block devices: a stage mover is placed on the box
+    that owns the stage, which is the box that owns the pool.
+    """
+
+    def __init__(self, spec: Mapping[str, object], *, now: float) -> None:
+        members = spec["members"]
+        assert isinstance(members, Sequence)
+        self.members = [str(member) for member in members]
+        self.max_read_await_ms = float(spec["max_read_await_ms"])  # type: ignore[arg-type]
+        self.max_backlog_ms = float(spec["max_backlog_ms"])        # type: ignore[arg-type]
+        self.priced_bytes_per_s = float(spec["priced_bytes_per_s"])  # type: ignore[arg-type]
+        self.stage_root = str(spec["stage_root"])
+        self.counts = {"over": 0, "under": 0, "blind": 0}
+        self.seconds = {"over": 0.0, "under": 0.0, "blind": 0.0}
+        self.blind_starts = 0
+        self.blind = False
+        #: Whether the last interval was over (or blind): the pacer's
+        #: ``_over``, which sets where the next interval releases.
+        self.over = False
+        self.over_starts = 0
+        self.missing: list[str] = []
+        self.last: dict[str, object] | None = None
+        self.peak_pool_bytes_per_s: float | None = None
+        self.gate_held_s = 0.0
+        self.gate_probes = 0
+        self.gate_edges = 0
+        self._previous: dict[str, list[int]] | None = None
+        self._previous_at = float(now)
+        self._read(now)
+
+    def _read(self, now: float) -> dict[str, list[int]] | None:
+        rows: dict[str, list[int]] = {}
+        missing: list[str] = []
+        for device in self.members:
+            try:
+                row = POOL_MEMBER_STAT(device)
+            except Exception:                          # noqa: BLE001
+                row = None
+            if row is None or len(row) <= storage_tiers.STAT_WEIGHTED_IO_MS:
+                missing.append(device)
+            else:
+                rows[device] = row
+        self.missing = missing
+        previous = self._previous
+        self._previous = None if missing else rows
+        self._previous_at = float(now)
+        return previous
+
+    def judge(self, *, now: float) -> dict[str, object]:
+        """The verdict on the interval since the last read, and the numbers."""
+
+        since = self._previous_at
+        previous = self._read(now)
+        elapsed = max(0.0, float(now) - since)
+        verdict: dict[str, object] = {
+            "verdict": "blind", "since_monotonic": since, "interval_s": elapsed,
+            "missing": list(self.missing)}
+        interval = None
+        blind = previous is None or self._previous is None
+        if not blind:
+            interval = storage_tiers.worst_member_interval(
+                previous, self._previous, elapsed)            # type: ignore[arg-type]
+        if interval is not None:
+            worst, sectors = interval
+            pool_rate = sectors * 512 / elapsed
+            # The pacer's own rule and state: once over (or blind), the pool
+            # stays over until both numbers fall to the release fraction of
+            # their caps, so a copy the pacer still holds is never charged.
+            released = not self.over
+            over = storage_tiers.pool_is_hurting(
+                worst, max_read_await_ms=self.max_read_await_ms,
+                max_backlog_ms=self.max_backlog_ms, over=self.over)
+            verdict.update({"verdict": "over" if over else "under",
+                            "release_band": bool(over and not released and not (
+                                worst["read_await_ms"] > self.max_read_await_ms
+                                or worst["backlog_ms"] > self.max_backlog_ms)),
+                            **{key: round(value, 3) for key, value in worst.items()},
+                            "pool_bytes_per_s": round(pool_rate, 1)})
+            self.peak_pool_bytes_per_s = max(self.peak_pool_bytes_per_s or 0.0,
+                                             pool_rate)
+        elif not blind:
+            # Both rows complete over no time: nothing to judge, nothing to
+            # credit.
+            verdict["verdict"] = "under"
+        state = str(verdict["verdict"])
+        self.counts[state] += 1
+        self.seconds[state] += elapsed
+        verdict["blind_start"] = state == "blind" and not self.blind
+        if verdict["blind_start"]:
+            self.blind_starts += 1
+        verdict["over_start"] = state == "over" and not self.over
+        if verdict["over_start"]:
+            self.over_starts += 1
+        self.blind = state == "blind"
+        # A blind interval holds the pacer too (``DiskPacer._refresh_locked``
+        # sets ``_over``), so the next readable interval releases from it.
+        self.over = state in ("over", "blind")
+        self.last = {key: value for key, value in verdict.items()
+                     if key != "since_monotonic"}
+        return verdict
+
+    def as_record(self) -> dict[str, object]:
+        return {"members": list(self.members),
+                "max_read_await_ms": self.max_read_await_ms,
+                "max_backlog_ms": self.max_backlog_ms,
+                "intervals": dict(self.counts),
+                "seconds": {key: round(value, 3)
+                            for key, value in self.seconds.items()},
+                "blind_starts": self.blind_starts,
+                "over_starts": self.over_starts,
+                "hold_release_fraction": storage_tiers.HOLD_RELEASE_FRACTION,
+                "last": self.last,
+                # The most the pool delivered to all readers over one
+                # interval: the measured ceiling, when nothing was over a cap.
+                "peak_pool_bytes_per_s": self.peak_pool_bytes_per_s,
+                "priced_bytes_per_s": self.priced_bytes_per_s,
+                "stage_root": self.stage_root,
+                "start_gate_held_s": round(self.gate_held_s, 3),
+                "start_gate_probes": self.gate_probes,
+                "start_gate_edges": self.gate_edges}
 
 
 def read_staged_wait(path: Path, *, token: str
@@ -6095,6 +6359,29 @@ class PoolQueue:
                 "dependents_truncated": len(rows) > len(shown),
                 "dependents_errors": errors}
 
+    def _file_stall_watch_event(self, action_key: str,
+                                record: Mapping[str, object]) -> None:
+        """Append one stall-watch event to the action's event directory (#1010).
+
+        ``residency-events/<key>/<host>-stall-watch.jsonl``: beside the tier
+        loop's verdicts, so :meth:`consumer_events` and a kill's
+        :meth:`ending_diagnosis` read it with them, and swept with them.
+        This launch is the file's only writer; ``MAX_BLIND_EVENTS`` bounds
+        it.  Best-effort: a write that fails is said on stderr.
+        """
+
+        line = json.dumps(dict(record), default=str)
+        print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
+        try:
+            directory = self.consumer_events_dir(action_key)
+            directory.mkdir(parents=True, exist_ok=True)
+            with open(directory / f"{socket.gethostname()}-stall-watch.jsonl",
+                      "a") as stream:
+                stream.write(line + "\n")
+        except (OSError, PoolContractError) as exc:
+            print(f"PrismaBuild: stall-watch event unwritten: {exc!r}",
+                  file=sys.stderr, flush=True)
+
     def consumer_events_dir(self, action_key: str) -> Path:
         """``residency-events/<consumer>/``: one ``<host>.jsonl`` per tier loop."""
 
@@ -6140,7 +6427,9 @@ class PoolQueue:
         The rows it depended on (:meth:`dependent_rows`), the newest tier-loop
         verdicts about it (:meth:`consumer_events`), and its own reason ring
         from before it was claimed.  Read once, at the ``no_progress``,
-        ``execution_deadline`` and ``withdrawn`` rungs.
+        ``execution_deadline`` and ``withdrawn`` rungs.  At the
+        ``no_progress`` rung the record also carries ``stall``: what the
+        watch measured the action against (#1010).
         """
 
         started = time.monotonic()
@@ -18269,6 +18558,84 @@ class PoolQueue:
             watch = (None if progress is None else ProgressWatch(
                 progress_path, progress_token, progress,
                 started=checkpoint_started))
+            # A stage mover's pool, judged by this worker (#1010).
+            contention = (
+                None if watch is None or progress is None
+                or progress.pool_contention is None
+                else PoolContentionProbe(progress.pool_contention,
+                                         now=checkpoint_started))
+            gate_held_since: list[float | None] = [None]
+
+            def credit_contention(now: float) -> None:
+                """Credit what the pool and the start gate cost since the last look.
+
+                One ``stat`` read per sealed member, and while the action is
+                still in its first phase one non-blocking try of the stage's
+                ownership lock.  Nothing at all for an action that declared
+                no pool contention spec.
+                """
+
+                if contention is None or watch is None:
+                    return
+                verdict = contention.judge(now=now)
+                watch.exempt_pool_contention(
+                    verdict, now=now,
+                    since_monotonic=float(verdict["since_monotonic"]))  # type: ignore[arg-type]
+                if (verdict.get("blind_start")
+                        and contention.blind_starts <= MAX_BLIND_EVENTS):
+                    self._file_stall_watch_event(key, {
+                        "unix": _now(), "event": "mover-pool-blind",
+                        "action_key": key, "missing": verdict.get("missing"),
+                        "members": list(contention.members),
+                        "blind_starts": contention.blind_starts})
+                if (verdict.get("over_start")
+                        and contention.over_starts <= MAX_BLIND_EVENTS):
+                    # A credited stretch nobody would otherwise hear about:
+                    # a dead copy on a busy pool is never killed while it
+                    # lasts, so its start is on the record like a blind one.
+                    self._file_stall_watch_event(key, {
+                        "unix": _now(), "event": "mover-pool-over",
+                        "action_key": key,
+                        **{field: verdict.get(field) for field in (
+                            "read_await_ms", "backlog_ms", "util_pct",
+                            "pool_bytes_per_s")},
+                        "max_read_await_ms": contention.max_read_await_ms,
+                        "max_backlog_ms": contention.max_backlog_ms,
+                        "over_starts": contention.over_starts})
+                if watch.accepted or watch.phase_index != 0:
+                    # Past the start gate: the mover has reported, and that
+                    # advance restarts its clock.
+                    gate_held_since[0] = None
+                    return
+                contention.gate_probes += 1
+                try:
+                    with self.stage_ownership_lock(contention.stage_root,
+                                                   blocking=False) as got:
+                        held = not got
+                except OSError:
+                    held = False
+                if not held:
+                    if gate_held_since[0] is not None:
+                        # The exit edge: the lock was released somewhere in
+                        # the heartbeat since it was last seen held, and the
+                        # two-sample rule credited none of it.  One heartbeat
+                        # is the most that interval can be.
+                        watch.grant_start_gate_edge(heartbeat_s)
+                        contention.gate_edges += 1
+                    gate_held_since[0] = None
+                    return
+                if gate_held_since[0] is not None:
+                    # Held at both ends of the interval: a live egress owns
+                    # the stage, and the mover's gate waits on it.
+                    contention.gate_held_s += max(0.0, now - gate_held_since[0])
+                    watch.exempt_start_gate(now=now,
+                                            since_monotonic=gate_held_since[0])
+                else:
+                    # The entry edge: taken somewhere in the heartbeat since
+                    # the last look, which the two-sample rule cannot credit.
+                    watch.grant_start_gate_edge(heartbeat_s)
+                    contention.gate_edges += 1
+                gate_held_since[0] = now
 
             def ending(outcome: dict[str, object]) -> dict[str, object]:
                 """Every way out files the same evidence and clears the same files.
@@ -18279,9 +18646,39 @@ class PoolQueue:
                 them agreeing about what a record carries and one not.
                 """
 
+                stall: dict[str, object] | None = None
                 if watch is not None:
-                    outcome["progress_observation"] = watch.as_record(
-                        now=time.monotonic())
+                    ended = time.monotonic()
+                    outcome["progress_observation"] = watch.as_record(now=ended)
+                    if contention is not None:
+                        outcome["progress_observation"]["pool_contention"] = (
+                            contention.as_record())
+                    if outcome.get("termination_reason") == "no_progress":
+                        # What the kill measured the action against (#1010):
+                        # its allowance, its last landing, every credit, and
+                        # the rate it delivered beside the rate it was priced.
+                        delivered = watch.delivered_units_per_s(now=ended)
+                        stall = {
+                            "allowance_s": watch.grace_s,
+                            "phase": watch.policy.phases[watch.phase_index].name,
+                            "last_landing": watch.last_accepted,
+                            "quiet_s": max(0.0, ended - watch.last_advance_monotonic),
+                            "credited_s": {
+                                "staged_wait": watch.staged_wait_exempt_s,
+                                "pool_contention": watch.pool_contention_exempt_s,
+                                "start_gate": watch.start_gate_exempt_s},
+                            "delivered_units_per_s": delivered,
+                            "delivered_bytes_per_s": (
+                                delivered if contention is not None else None),
+                            "priced_bytes_per_s": (
+                                contention.priced_bytes_per_s
+                                if contention is not None else None),
+                            "pool": (contention.last if contention is not None
+                                     else None)}
+                if stall is not None:
+                    # Outside the diagnosis read below, so a failure there
+                    # never loses what the kill was measured against.
+                    outcome["stall"] = stall
                 if (outcome.get("status") == "withdrawn"
                         or outcome.get("termination_reason") in (
                             "no_progress", "execution_deadline")):
@@ -18393,6 +18790,14 @@ class PoolQueue:
                         # an accepted sample after earlier checkpoint I/O and
                         # then refunding it again would grant extra quiet.
                         watch.sample(now=checkpoint_started)
+                        # The pool and the start gate (#1010), judged on this
+                        # cadence only: the counters are milliseconds, so an
+                        # interval must not shrink to the gap between two
+                        # checks in one checkpoint.  The rung needs no look of
+                        # its own: a mover's grace is at least two heartbeats
+                        # (``movement_actions.mover_report_latency_s``), so a
+                        # poll always falls between the last credit and it.
+                        credit_contention(checkpoint_started)
                         next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(

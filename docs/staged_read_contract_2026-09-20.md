@@ -562,6 +562,21 @@ Budget and durability requirements for produced workloads:
   named mover against the consumer's own plan, recording
   `staged_wait_exempt_s` and the movers' states. Without a landing record
   the reader's bounded wait applies and its refusal says so.
+  The exempting mover is itself bounded (PB#1010): a stage mover whose
+  plan has a measured landing rate on its tier is sealed with progress
+  phases `start`, `copy` and `warm`, reports its landed bytes on the
+  heartbeat, and ends `no_progress` when a copy lands nothing for
+  `ceil(unit / rate + 2 * HEARTBEAT_S)` of charged quiet, where the unit is
+  the chunk's 16 largest entries. The worker does not charge intervals in
+  which its own sample of the sealed pool members reads a member over the
+  disk pacer's caps or unreadable, nor a start-gate wait on a live egress;
+  it records the credited seconds. Its ending names the allowance, the
+  bytes landed, the range and the delivered and priced rates, and it
+  follows the retry and `failed` path, so a consumer's exemption does not
+  outlive a stalled copy by more than 3 × (grace + requeue wait) of
+  charged quiet. The landing record prices a claimed copy from its last
+  report (`basis: reported`). A mover with no measured rate, or on a tier
+  that names no pool members, is sealed as before (`basis: unmeasured`).
 - PRG-04 no circular hold-and-wait by assertion: PRG-03's "holds current
   window" alone proves nothing with multiple consumers. The contract
   requires the formal inequality over all competing consumers —
@@ -807,6 +822,7 @@ launch attempts and the defects below ran on:
 | PB#965 | Chunk mover `8faf2233c63a` (consumer `a7d31a4da9c1`) cut a manifest entry and refused `residency_overran_reservation` on every attempt | SM-02, PRG-02, PRG-03, LIVE-01 | Fixed by #970 (`0411c83330da`); deployed in `a0fdcd2f7482`; not yet exercised; consumers sealed on an older generation need a resubmit |
 | PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Fix in review on branch `fix/966-mover-dead-owner` (Fixes #966): a divergent name is settled by its owners' states; not merged, not deployed |
 | PB#989, PQ#1107 | A stage-fed reader refused a declared range at a fixed 300 s whatever its mover was doing; the live (b) and R13 seals raised the wait to 840 s, just under the 900 s phase grace. A third R12-shaped consumer's next range lands behind the other two consumers' queued ranges, after either constant | PRG-03, LIVE-01 | Fix in review on branches `fix/989-expected-landing` (PB, Fixes #989) and `fix/1107-wait-on-expected-landing` (PQ, Closes #1107): landing record, reader rule and staged-wait exemption; not merged, not deployed |
+| PB#1010 | Since PB#989, a consumer is exempt from its `no_progress` rung while its range's mover is `claimed`; a mover sealed no progress and no bound, so a stalled copy held its claim and the consumer's GPU until the worker's 86400 s ceiling | PRG-03, LIVE-01 | Fix in review on branch `ws-mp/mover-progress-1010` (Fixes #1010): movers report landed bytes and end `no_progress` after a grace derived from the measured landing rate; quiet the worker measures as pool contention (its own sample of the sealed members against the pacer's caps, or blind telemetry) or as a start-gate wait on a live egress is credited, not charged; the landing record carries the live rate; not merged, not deployed |
 | PQ#1080 | Stage A seed `2c164969c33c` did not prefetch its first layer and refused a cold source read, rc 1 after 282 s | PRG-02 (INV-06 held: the reader refused and did not fall back) | Fixed by PQ#1079 (`f12313f9903d`); use in a campaign unknown |
 
 ### Corrections to earlier status

@@ -69,7 +69,9 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
@@ -2728,9 +2730,151 @@ class _Copier:
         admission.close()
 
 
+class _ProgressReporter:
+    """Report this mover's landed bytes to the worker's stall check (#1010).
+
+    A mover sealed with a progress policy (``movement_actions.
+    mover_progress_policy``) is ended by the worker's ``no_progress`` rung
+    when it commits nothing for its grace.  This is the other half: every
+    ``interval_s`` a thread of its own reads the copier's landed bytes and
+    commits them through :mod:`prismabuild.progress` when they grew.  An
+    entry counts once it is copied, verified and renamed into place, which
+    is the durable unit the contract asks for, and the copy loop does no
+    extra work for it: the count is the one the copier already keeps under
+    its lock per landed entry.
+
+    In the ``warm`` phase the count goes on growing by the bytes read back,
+    so the read-back of a large range is not quiet either.  The ``unit``
+    names the range, so the ending record of a stalled copy names the bytes
+    landed and the range they belong to.
+
+    Without a progress channel -- a mover sealed with no policy, or a direct
+    run -- nothing starts and nothing is written.  A report that fails is
+    counted and never fails the copy: the worker then reads the mover as
+    quiet, which is the honest verdict.
+    """
+
+    def __init__(self, copier: "_Copier", *, interval_s: float,
+                 range_start_bytes: int, range_end_bytes: int) -> None:
+        self.copier = copier
+        self.interval_s = max(0.001, float(interval_s))
+        self.unit = (f"bytes landed of read-order range "
+                     f"[{int(range_start_bytes)}, {int(range_end_bytes)})")
+        self.channel = pb_progress.channel() is not None
+        declared = pb_progress.declared_phases() or ()
+        #: Whether the launch was granted a ``start`` phase: the copy phase
+        #: is then entered by a report when the copy starts, so its grace
+        #: counts from the first read, not from the interpreter's launch,
+        #: and the worker knows the start gate is behind it.
+        self.start_declared = movement_actions.MOVER_START_PHASE in declared
+        #: ``copy``, then ``warm``.
+        self.phase = movement_actions.MOVER_COPY_PHASE
+        self.warm_state: dict[str, int] | None = None
+        self.reported_units = 0
+        self.reported_phase: str | None = None
+        self.reports = 0
+        self.unwritten = 0
+        self.last_reported_unix: float | None = None
+        self.refusal: str | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def units(self) -> int:
+        with self.copier.lock:
+            landed = int(self.copier.bytes_staged)
+        warm = self.warm_state
+        return landed + (int(warm.get("bytes", 0)) if warm is not None else 0)
+
+    def report(self) -> None:
+        """Commit the count now if it grew or the phase moved on."""
+
+        if not self.channel or self.refusal is not None:
+            return
+        with self._lock:
+            units = self.units()
+            if units <= self.reported_units and self.phase == self.reported_phase:
+                return
+            if (units == 0 and self.reported_phase is None
+                    and self.phase == movement_actions.MOVER_COPY_PHASE):
+                # The first phase is granted at launch; a zero count earns
+                # nothing and would only be rejected as a replay.
+                return
+            try:
+                written = pb_progress.commit(units, self.phase, unit=self.unit)
+            except ValueError as exc:
+                # A phase this launch did not declare: the policy and this
+                # tool disagree, and every later report would be refused too.
+                self.refusal = str(exc)
+                return
+            if not written:
+                self.unwritten += 1
+                return
+            self.reports += 1
+            self.reported_units = max(self.reported_units, units)
+            self.reported_phase = self.phase
+            self.last_reported_unix = time.time()
+
+    def start(self) -> None:
+        if not self.channel or self._thread is not None:
+            return
+        if self.start_declared and self.refusal is None:
+            # Enter ``copy`` now, with whatever is already landed (nothing,
+            # on a first attempt).  A new phase is advancement, so the copy
+            # grace runs from here.
+            with self._lock:
+                units = self.units()
+                try:
+                    written = pb_progress.commit(units, self.phase, unit=self.unit)
+                except ValueError as exc:
+                    self.refusal = str(exc)
+                    written = False
+                if written:
+                    self.reports += 1
+                    self.reported_units = max(self.reported_units, units)
+                    self.reported_phase = self.phase
+                    self.last_reported_unix = time.time()
+                elif self.refusal is None:
+                    self.unwritten += 1
+
+        def loop() -> None:
+            while not self._stop.wait(self.interval_s):
+                self.report()
+
+        self._thread = threading.Thread(target=loop, daemon=True,
+                                        name="stage-move-progress")
+        self._thread.start()
+
+    def enter_warm(self, state: dict[str, int]) -> None:
+        """The copy is done; count the read-back from here on."""
+
+        self.report()
+        with self._lock:
+            self.warm_state = state
+            self.phase = movement_actions.MOVER_WARM_PHASE
+        self.report()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self.report()
+
+    def record(self) -> dict[str, object]:
+        """What the receipt says about the reports this copy made."""
+
+        return {"channel": self.channel, "interval_s": self.interval_s,
+                "reports": self.reports, "units_reported": self.reported_units,
+                "start_declared": self.start_declared,
+                "phase": self.reported_phase, "unit": self.unit,
+                "last_reported_unix": self.last_reported_unix,
+                "unwritten": self.unwritten, "refusal": self.refusal}
+
+
 def warm_staged(paths: "list[str]", *, workers: int = 4,
                 block: int = prewarm_loop.BLOCK,
-                stop: "threading.Event | None" = None) -> dict[str, object]:
+                stop: "threading.Event | None" = None,
+                state: "dict[str, int] | None" = None) -> dict[str, object]:
     """Read staged files back, on the box that owns the stage.
 
     This is the whole of cache layer 2, and it is one sentence long because
@@ -2748,6 +2892,10 @@ def warm_staged(paths: "list[str]", *, workers: int = 4,
     that cannot be read is an error on the receipt and never a raise: the copy
     is published and its map is written before this runs, so a failed warm
     costs speed and nothing else.
+
+    ``state``, when given, is the dict the running totals are kept in, so a
+    reader outside the warm (the mover's progress reporter, #1010) sees them
+    grow; it is updated once per file, never per block.
     """
 
     stop = stop or threading.Event()
@@ -2758,7 +2906,9 @@ def warm_staged(paths: "list[str]", *, workers: int = 4,
     for _ in range(workers):
         work.put(None)
     lock = threading.Lock()
-    state = {"bytes": 0, "entries": 0}
+    if state is None:
+        state = {}
+    state.update({"bytes": 0, "entries": 0})
     errors: list[str] = []
 
     def worker() -> None:
@@ -3373,6 +3523,15 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     gate_started = time.perf_counter()
     pool.PoolQueue(Path(args.pool_root)).ownership_start_gate(args.stage_root)
     start_gate_wait_s = time.perf_counter() - gate_started
+    # Reports landed bytes while the copy and the read-back run (#1010).  A
+    # thread of its own, started only when this launch has a progress
+    # channel; it is a daemon, so a copy that raises ends it with the process.
+    reporter = _ProgressReporter(
+        copier, interval_s=float(getattr(args, "progress_interval_s", None)
+                                 or pool.HEARTBEAT_S),
+        range_start_bytes=int(args.range_start_bytes),
+        range_end_bytes=int(args.range_end_bytes))
+    reporter.start()
     copier.run(window, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish,
                named_once=named_once)
@@ -3507,9 +3666,12 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         warm = {**warm, "warm": False, "state": "skipped",
                 "reason": "nothing was published to warm"}
     elif warm["warm"]:
+        warm_state: dict[str, int] = {}
+        reporter.enter_warm(warm_state)
         outcome = warm_staged(
             [str(record["stage_path"]) for record in copier.staged.values()],
-            workers=args.max_readers, block=args.block, stop=stop)
+            workers=args.max_readers, block=args.block, stop=stop,
+            state=warm_state)
     receipt["arc_warm"] = {
         "state": str(warm["state"]),
         "reason": str(warm["reason"]),
@@ -3532,6 +3694,10 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                  if diagnosis["state"] == "unreachable"
                  else "residency_moved_nothing")
         receipt["refusal"] = receipt.get("refusal") or empty
+    reporter.stop()
+    # What this copy told the worker's stall check (#1010), so a receipt
+    # says whether the copy was bounded by its progress or by nothing.
+    receipt["progress_report"] = reporter.record()
     return receipt
 
 
@@ -3656,7 +3822,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "promised.  0 means the claim reserved none")
     parser.add_argument("--readers", type=int, default=4,
                         help="copy depth while another client is reading the pool")
-    parser.add_argument("--max-readers", type=int, default=16,
+    parser.add_argument("--max-readers", type=int,
+                        default=movement_actions.MOVER_MAX_READERS,
                         help="copy depth while the pool serves nobody but this move")
     parser.add_argument("--warm-after-copy", choices=("auto", "always", "never"),
                         default="auto",
@@ -3665,6 +3832,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "it for the consumer (#638).  'auto' asks the tier's "
                              "own record whether its dataset may cache file data "
                              "at all; 'never' spends no reads on it")
+    parser.add_argument("--progress-interval-s", type=float,
+                        default=pool.HEARTBEAT_S,
+                        help="seconds between reports of landed bytes to the "
+                             "worker's stall check, when this mover was sealed "
+                             "with a progress policy (#1010).  The worker "
+                             "samples on its heartbeat, so a shorter interval "
+                             "buys nothing there")
     parser.add_argument("--no-incremental-fragment", action="store_true",
                         help="write the fragment once at the end rather than as "
                              "entries land; the end state is the same")
@@ -3676,7 +3850,7 @@ def build_parser() -> argparse.ArgumentParser:
     # pool and a mover that paced differently would not be measuring the same
     # thing.  ``prewarm_loop.py`` is owned by #589 and is not edited to share
     # them; when that lands, one definition replaces these.
-    parser.add_argument("--pace-pool", default="storage_pool",
+    parser.add_argument("--pace-pool", default=movement_actions.MOVER_PACE_POOL,
                         help="the ZFS pool whose members the pacer watches")
     parser.add_argument("--disks", default="",
                         help="name the pacer's members directly when zpool "
@@ -3692,9 +3866,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="server-side NFS byte counters the pacer samples")
     parser.add_argument("--max-util-pct", type=float, default=25.0,
                         help="hold the copy above this member utilization")
-    parser.add_argument("--max-read-await-ms", type=float, default=10.0,
+    parser.add_argument("--max-read-await-ms", type=float,
+                        default=movement_actions.MOVER_MAX_READ_AWAIT_MS,
                         help="hold the copy above this member read latency")
-    parser.add_argument("--max-backlog-ms", type=float, default=2000.0,
+    parser.add_argument("--max-backlog-ms", type=float,
+                        default=movement_actions.MOVER_MAX_BACKLOG_MS,
                         help="hold the copy above this member queue backlog")
     parser.add_argument("--pace-sample-s", type=float, default=0.25,
                         help="seconds between the pacer's device samples")
