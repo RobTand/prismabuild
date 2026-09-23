@@ -7,6 +7,17 @@ staging contract for produced outputs; it does not copy bytes itself
 (existing movers do), creates no parallel cache/ledger/dispatcher, and never
 rewrites a sealed input manifest or action key.
 
+WRITE-ONLY (#912): a template marked ``write_only`` declares outputs its own
+action never reads again. It reserves no stage window (every tier's minimum
+and window are zero, so `owner_demand_terms` is empty and admission charges
+no stage token), and its batches commit at their origin through
+`commit_origin_batch`: no mover, no stage copy, no funding. A later action
+declares such a batch in its data manifest (`origin_batch_manifest`) and
+stages it through the ordinary input path. The durable charge and the path
+ownership of an origin-only batch last until `reclaim_origin` proves its
+origin gone, as for a staged batch. A template without ``write_only`` hashes
+exactly as before.
+
 R2 split (root review, defects 1-7):
 
   * TEMPLATE (sealed pre-submit): authorized prefix/slots/classes, durable
@@ -58,8 +69,9 @@ fleet takes back at retirement. `ensure_batch_materialized` is the ONE
 transition this adds -- make an already committed batch resident again over
 the SAME origin files, under the same owner action and attempt, the same
 logical batch, manifest, descriptors, namespace and output prefix, and the
-same durable charge. It adds no origin-only commit, no v2 record, no parallel
-cache and no second dispatcher: it reuses the published first-publisher
+same durable charge. It adds no v2 record, no parallel
+cache and no second dispatcher (an origin-only batch has nothing to
+re-materialize, and refuses): it reuses the published first-publisher
 sealing (`_seal_output_mover`), `movement_actions`, exact prepaid funding, the
 strict SDK, the existing egress and the existing recovery. The caller chooses
 neither origins (they come from the immutable record), nor tokens (ordinary
@@ -104,6 +116,11 @@ PRODUCED_OUTPUT_REF_SCHEMA_V1 = "prismabuild.produced_output_ref.v1"
 #: from the spent one. Never a caller nonce; see `ensure_batch_materialized`.
 MATERIALIZATION_SCHEMA_V1 = (
     "prismaquant.prismabuild.produced_output_materialization.v1")
+#: What a consumer declares to read one origin-only batch (#912): the batch's
+#: filing coordinates plus its manifest digest. See `origin_batch_ref`.
+ORIGIN_BATCH_REF_SCHEMA_V1 = "prismabuild.produced_output_origin_batch_ref.v1"
+#: The data-manifest annotation that carries a consumer's declared batches.
+ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
 #: The mover's typed refusal when a declared window's origin directories are
 #: not on the tier host (`stage_move.origin_reachability_diagnosis`). Spelled
 #: as data: this package imports no fleet tool.
@@ -219,11 +236,19 @@ def validate_template(value: object) -> dict[str, object]:
         raise ProducedOutputError("a produced-output template must be an object")
     allowed = frozenset({
         "schema", "version", "template_id", "output_prefix", "slots",
-        "durable_maxima", "working_demands", "permitted_tiers",
+        "durable_maxima", "working_demands", "permitted_tiers", "write_only",
     })
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ProducedOutputError(f"unknown template fields: {unknown}")
+    # A write-only template (#912) declares outputs its own action never
+    # reads again: its batches commit at origin (`commit_origin_batch`) and a
+    # later action stages them as declared input.  It reserves no stage
+    # window, so every tier it names carries a zero window; the tier stays
+    # named because the spool export is paced on that tier's pool-side fill.
+    write_only = value.get("write_only", False)
+    if type(write_only) is not bool:
+        raise ProducedOutputError("template write_only must be true or false")
     if value.get("schema") != TEMPLATE_SCHEMA_V1:
         raise ProducedOutputError(f"template schema must be {TEMPLATE_SCHEMA_V1!r}")
     if type(value.get("version")) is not int or value.get("version") != 1:
@@ -287,8 +312,18 @@ def validate_template(value: object) -> dict[str, object]:
                 f"template working_demands[{tier!r}] must carry minimum/window GiB")
         minimum = _nonneg_int(spec.get("minimum_gib"),
                               where=f"template working_demands[{tier}].minimum_gib")
-        window = _positive_int(spec.get("window_gib"),
-                               where=f"template working_demands[{tier}].window_gib")
+        if write_only:
+            window = _nonneg_int(
+                spec.get("window_gib"),
+                where=f"template working_demands[{tier}].window_gib")
+            if minimum or window:
+                raise ProducedOutputError(
+                    f"template working_demands[{tier}] must be zero: a "
+                    "write-only template reserves no stage window")
+        else:
+            window = _positive_int(
+                spec.get("window_gib"),
+                where=f"template working_demands[{tier}].window_gib")
         if minimum > window:
             raise ProducedOutputError(
                 f"template working_demands[{tier}] minimum exceeds window")
@@ -302,7 +337,7 @@ def validate_template(value: object) -> dict[str, object]:
     if set(checked_tiers) != set(checked_demands):
         raise ProducedOutputError(
             "template permitted_tiers must equal the working_demands tiers")
-    return {
+    checked: dict[str, object] = {
         "schema": TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": template_id,
@@ -316,6 +351,17 @@ def validate_template(value: object) -> dict[str, object]:
         "working_demands": checked_demands,
         "permitted_tiers": sorted(checked_tiers),
     }
+    # Present only when true, so every read-back template -- all of them
+    # before #912 -- keeps its canonical bytes and its `template_sha256`.
+    if write_only:
+        checked["write_only"] = True
+    return checked
+
+
+def is_write_only(template: Mapping[str, object]) -> bool:
+    """Whether a template's batches commit at origin, never through a stage."""
+
+    return bool(validate_template(template).get("write_only"))
 
 
 def template_sha256(template: Mapping[str, object]) -> str:
@@ -1106,7 +1152,15 @@ def _live_path_owner(queue_root: str | Path,
         # mover reading these very origin files, so authorizing a second
         # writer over them here would corrupt a copy in flight. Ownership
         # follows the active materialization.
-        if _batch_stage_retired(entry):
+        #
+        # An origin-only batch (#912) has no copy, and its origin files are
+        # what a consumer declared and will stage.  It owns its paths until
+        # `reclaim_origin` proves them gone; regenerating them earlier would
+        # change bytes under a declared read.
+        if entry.get("origin_only") is True:
+            if entry.get("origin_reclaimed"):
+                continue
+        elif _batch_stage_retired(entry):
             continue
         indexed = entry.get("paths")
         if isinstance(indexed, list):
@@ -1279,6 +1333,9 @@ def refill_window(queue, instance: Mapping[str, object],
             template, instance)
     except ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
+    if checked_template.get("write_only"):
+        # A write-only template holds no window to refill (#912).
+        return {"ok": False, "refusal": "template-is-write-only"}
     if tier not in checked_template["permitted_tiers"]:
         return {"ok": False, "refusal": "tier-not-permitted"}
     window = int(checked_template["working_demands"][tier]["window_gib"])
@@ -1679,9 +1736,11 @@ def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
 # namespace and its durable charge never move; only the materialization does.
 #
 # Everything below is that one transition. There is no second cache, no second
-# dispatcher, no origin-only commit and no v2 record: a materialization reuses
-# the published first-publisher helpers, the pool's prepaid funding, the
-# existing strict SDK, the existing egress and the existing recovery.
+# dispatcher and no v2 record: a materialization reuses the published
+# first-publisher helpers, the pool's prepaid funding, the existing strict SDK,
+# the existing egress and the existing recovery. A write-only template's
+# origin-only batch (`commit_origin_batch`, #912) is not re-materialized here;
+# a consumer stages it as an input instead.
 
 
 def _portable_identity_of(info) -> dict[str, int]:
@@ -1866,6 +1925,14 @@ def _active_materialization(entry: Mapping[str, object]) -> dict[str, object]:
     a malformed list (unknown retains).
     """
 
+    if entry.get("origin_only") is True:
+        # An origin-only batch (#912) never had a stage copy, so every reader
+        # that asks "is a copy live?" hears no.  Path ownership is the one
+        # question that must not follow this answer; `_live_path_owner` asks
+        # it of the origin instead.
+        return {"mover_key": "", "tier": str(entry.get("tier") or ""),
+                "generation": 0, "retired": True, "state": "origin-only",
+                "staged_paths": [], "source": "origin"}
     mats = _materializations(entry)
     if mats:
         latest = dict(mats[-1])
@@ -2212,6 +2279,9 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": f"bad-instance: {exc}"}
     if checked_instance["template_sha256"] != template_sha256(checked_template):
         return {"ok": False, "refusal": "template-mismatch"}
+    if checked_template.get("write_only"):
+        # A write-only template has no window to fund (#912).
+        return {"ok": False, "refusal": "template-is-write-only"}
     if not isinstance(need_gib_per_tier, Mapping) or not need_gib_per_tier:
         return {"ok": False, "refusal": "bad-window-need"}
     for tier, need in need_gib_per_tier.items():
@@ -2493,6 +2563,10 @@ def commit_batch(queue, instance: Mapping[str, object],
     except ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
+    if checked_template.get("write_only"):
+        # A write-only template's batches commit at origin and are never
+        # staged by their owner (#912); this staged path is not theirs.
+        return {"ok": False, "refusal": "template-is-write-only"}
     mover = _hex64(mover_key, where="batch mover_key")
     if tier not in checked_template["permitted_tiers"]:
         return {"ok": False, "refusal": "tier-not-permitted"}
@@ -2746,6 +2820,247 @@ def commit_batch(queue, instance: Mapping[str, object],
             "manifest_digest": manifest_digest, "class_bytes": class_bytes,
             "mover_key": mover, "tier": tier, "entries": sealed,
             "funding": "prepaid" if prepaid is not None else "legacy"}
+
+
+def origin_batch_ref(instance: Mapping[str, object], *, batch_id: str,
+                     manifest_digest: str) -> dict[str, object]:
+    """The reference a consumer declares for one origin-only batch (#912).
+
+    It names the batch by where PB filed it -- owner action, attempt nonce,
+    template, batch id -- and pins its content by the manifest digest, so a
+    reference can never come to mean other bytes.
+    """
+
+    checked = validate_instance(instance)
+    attempt = checked["owner_attempt"]
+    assert isinstance(attempt, dict)
+    return {"schema": ORIGIN_BATCH_REF_SCHEMA_V1,
+            "owner_action_key": str(checked["owner_action_key"]),
+            "owner_nonce": str(attempt["nonce"]),
+            "template_id": str(checked["template_id"]),
+            "batch_id": _name(batch_id, where="batch_id"),
+            "manifest_digest": _hex64(manifest_digest,
+                                      where="batch manifest_digest")}
+
+
+def _origin_record(checked_template: Mapping[str, object],
+                   checked_instance: Mapping[str, object], *, batch_id: str,
+                   batch_ns: str, manifest_digest: str, tier: str,
+                   class_bytes: Mapping[str, int],
+                   sealed: list[dict[str, object]],
+                   origin_identity: Mapping[str, object]) -> dict[str, object]:
+    """The immutable record of one origin-only batch, minus its commit time."""
+
+    return {
+        "schema": BATCH_SCHEMA_V1,
+        "batch_id": batch_id,
+        "batch_namespace": batch_ns,
+        "manifest_schema": BATCH_MANIFEST_SCHEMA_V1,
+        "manifest_digest": manifest_digest,
+        # The tier whose pool-side fill paced the export; nothing is staged.
+        "tier": tier,
+        "mover_key": None,
+        "origin_only": True,
+        "class_bytes": dict(class_bytes),
+        "total_bytes": sum(int(v) for v in class_bytes.values()),
+        "entry_count": len(sealed),
+        "entries": sealed,
+        "template_id": str(checked_template["template_id"]),
+        "template_sha256": template_sha256(checked_template),
+        "owner_action_key": str(checked_instance["owner_action_key"]),
+        "owner_attempt": dict(checked_instance["owner_attempt"]),
+        "origin_identity": dict(origin_identity),
+        "object_set_id": manifest_object_set_id({
+            f"{d['bytes']}:{d['path']}": {"bytes": int(d["bytes"]),
+                                         "sha256": d["sha256"]}
+            for d in sealed}),
+    }
+
+
+def commit_origin_batch(queue, instance: Mapping[str, object],
+                        template: Mapping[str, object],
+                        descriptors: list[Mapping[str, object]], *,
+                        batch_id: str,
+                        landed: Mapping[str, Mapping[str, object]] | None = None
+                        ) -> dict[str, object]:
+    """Commit one write-only batch at its origin, with no stage copy (#912).
+
+    The write-only sibling of `commit_batch`. A write-only template's batches
+    are never read again by the action that wrote them, so nothing is staged,
+    no mover is sealed and no tier token moves: the batch is its origin files,
+    which the producer wrote -- through the paced spool export or directly --
+    under a prewrite this commit consumes. A later action declares the batch
+    in its data manifest (`origin_batch_manifest`) and stages it like any
+    other input.
+
+    Checks are `commit_batch`'s, minus the window and the funding: the live
+    owner under the output-prefix lock, the prewrite present and matched (its
+    tier, owner and attempt, the paths a subset of the planned ones, each
+    class within its ceiling), every planned path the batch omits absent, the
+    durable maxima, and one lstat per origin for size and identity. The
+    identity is recorded in the batch, and `origin_batch_manifest` rechecks it
+    before any consumer is told the bytes are there.
+
+    Two checks are this commit's own:
+
+    - Every descriptor carries its sha256. No mover copies an origin-only
+      batch at commit, so the digest is the only thing that binds the bytes a
+      consumer's mover later copies to the bytes committed here; that mover
+      verifies it on copy.
+    - ``landed`` maps each origin path to the identity its writer recorded
+      when the file landed; the spool passes its export receipt's
+      (`ProducedSpool.commit_origin_group`). Each origin must still be that
+      file. An export retried before its receipt can replace a landed copy,
+      so an identity taken from before the receipt is not the committed one.
+
+    The commitments entry carries ``origin_only: true`` and no mover. Its
+    paths stay owned until `reclaim_origin` proves them absent, because a
+    consumer may have declared them; its durable class bytes stay charged
+    until then too, exactly as for a staged batch.
+
+    Idempotent: a replay with the same manifest answers the duplicate, and a
+    crash between filing the record and filing the entry resumes from the
+    filed record rather than refusing it. Returns ``{"ok": True, ..., "ref"}``
+    or a typed refusal.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError:
+        return {"ok": False, "refusal": "template-mismatch"}
+    _name(batch_id, where="batch_id")
+    if not checked_template.get("write_only"):
+        # A read-back template's batches are staged for their owner to read
+        # again: `commit_batch`, through a mover and a funded window.
+        return {"ok": False, "refusal": "template-reads-back"}
+    if not isinstance(descriptors, list) or not descriptors:
+        return {"ok": False, "refusal": "batch-has-no-entries"}
+    sealed = [validate_descriptor(d, checked_template, checked_instance)
+              for d in descriptors]
+    if any(desc["sha256"] is None for desc in sealed):
+        return {"ok": False, "refusal": "origin-batch-needs-sha256"}
+    origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
+    if identity_refusal is not None:
+        return identity_refusal
+    assert origin_identity is not None
+    if landed is not None:
+        from prismabuild import reader_lease as lease_mod
+
+        if (not isinstance(landed, Mapping)
+                or set(landed) != set(origin_identity)
+                or not all(lease_mod.file_id_matches(landed[path], live)
+                           for path, live in origin_identity.items())):
+            return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
+    class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
+    for desc in sealed:
+        class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
+    manifest_digest = output_manifest_sha256(sealed)
+    batch_ns = batch_namespace(checked_instance, batch_id, manifest_digest)
+    prewrite_path = (_prewrites_dir(queue.root, checked_instance)
+                     / f"{batch_id}.prewrite.json")
+    ref = origin_batch_ref(checked_instance, batch_id=batch_id,
+                           manifest_digest=manifest_digest)
+    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        commitments_path = _commitments_path(queue.root, checked_instance)
+        try:
+            commitments = _read_commitments(commitments_path)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        if batch_id in batches:
+            existing = batches[batch_id]
+            if (isinstance(existing, Mapping)
+                    and existing.get("origin_only") is True
+                    and existing.get("manifest_digest") == manifest_digest):
+                # The commit consumed the prewrite; a crash after the entry
+                # and before the unlink leaves it, and the replay finishes it.
+                prewrite_path.unlink(missing_ok=True)
+                return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                        "batch_namespace": batch_ns,
+                        "manifest_digest": manifest_digest,
+                        "origin_only": True, "ref": ref}
+            return {"ok": False, "refusal": "batch-id-in-use"}
+        gated = _require_live_owner(queue, checked_instance)
+        if gated is not None:
+            return gated
+        try:
+            prewrite = _read_prewrite(prewrite_path)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
+        if prewrite is None:
+            return {"ok": False, "refusal": "prewrite-reservation-missing"}
+        tier = str(prewrite.get("tier") or "")
+        if (tier not in checked_template["permitted_tiers"]
+                or not _actual_within_ceiling(prewrite, sealed)
+                or not set(str(d["path"]) for d in sealed)
+                <= set(prewrite.get("paths", []))
+                or prewrite.get("owner_action_key")
+                != checked_instance["owner_action_key"]
+                or dict(prewrite.get("owner_attempt", {})) != dict(
+                    checked_instance["owner_attempt"])):
+            return {"ok": False, "refusal": "prewrite-mismatch"}
+        if not _planned_omitted_absent(prewrite, sealed):
+            return {"ok": False, "refusal": "planned-path-present-retain"}
+        try:
+            sums = _class_sums(batches)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        maxima = checked_instance_maxima(checked_template)
+        for cls in sums:
+            if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
+                return {"ok": False, "refusal": f"commit-exceeds-{cls}-maxima"}
+        body = _origin_record(
+            checked_template, checked_instance, batch_id=batch_id,
+            batch_ns=batch_ns, manifest_digest=manifest_digest, tier=tier,
+            class_bytes=class_bytes, sealed=sealed,
+            origin_identity=origin_identity)
+        batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                     / instance_namespace(checked_instance))
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        batch_path = batch_dir / f"{batch_id}.json"
+        record = dict(body, unix=time.time())
+        try:
+            pool_mod._publish_immutable(
+                batch_path,
+                json.dumps(record, sort_keys=True,
+                           separators=(",", ":")).encode() + b"\n",
+                where="produced-output batch")
+        except pool_mod.PoolContractError as exc:
+            # A crash after this record and before the entry below: the same
+            # batch, over the same identities, resumes from what is filed.
+            # Anything else is a different batch under this id.
+            try:
+                filed = json.loads(batch_path.read_text())
+            except (OSError, ValueError):
+                filed = None
+            if (not isinstance(filed, Mapping)
+                    or {k: v for k, v in filed.items() if k != "unix"}
+                    != json.loads(json.dumps(body))):
+                return {"ok": False, "refusal": f"batch-conflict: {exc}"}
+        # `retired` stays false for the life of the entry: nothing was staged
+        # to retire, `_active_materialization` answers "no copy" from
+        # `origin_only`, and `_committed_restage_authority` reads this flag,
+        # so false is also what keeps the batch unfundable as a restage.
+        batches[batch_id] = {
+            "manifest_digest": manifest_digest,
+            "batch_namespace": batch_ns,
+            "tier": tier,
+            "mover_key": None,
+            "origin_only": True,
+            "class_bytes": class_bytes,
+            "paths": sorted(str(d["path"]) for d in sealed),
+            "retired": False,
+            "origin_reclaimed": False,
+        }
+        _write_commitments(commitments_path, {"batches": batches})
+        prewrite_path.unlink(missing_ok=True)
+    return {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
+            "manifest_digest": manifest_digest, "class_bytes": class_bytes,
+            "tier": tier, "entries": sealed, "origin_only": True, "ref": ref}
 
 
 def _producer_launch_context(queue, producer: str) -> dict[str, object]:
@@ -3198,6 +3513,11 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     except ProducedOutputError as exc:
         return {"ok": False, "step": "validate", "refusal": str(exc)}
     _name(batch_id, where="batch_id")
+    if checked_template.get("write_only"):
+        # A write-only template's batches commit at origin and are never
+        # staged by their owner (#912); this staged path is not theirs.
+        return {"ok": False, "step": "validate",
+                "refusal": "template-is-write-only"}
     if tier not in checked_template["permitted_tiers"]:
         return {"ok": False, "step": "validate", "refusal": "tier-not-permitted"}
     try:
@@ -3487,9 +3807,11 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
     mover over the sealed origin files and funding it by exact transfer from
     the producer's existing window, exactly as the first publication did.
 
-    There is no origin-only commit, no second schema, no parallel cache and no
-    second dispatcher: the caller supplies neither origins, nor tokens, nor a
-    successor id. The descriptors come from the immutable batch record, the
+    There is no second schema, no parallel cache and no second dispatcher: the
+    caller supplies neither origins, nor tokens, nor a successor id. A
+    write-only template refuses `template-is-write-only`: its origin-only
+    batches (#912) have no window to fund and are staged by the consumer that
+    declares them. The descriptors come from the immutable batch record, the
     successor's mover/funding key is the content-addressed key of a request PB
     seals over the filed materialization generation, and the credit is the
     ordinary prepaid transfer.
@@ -3534,6 +3856,11 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
     except ProducedOutputError:
         return {"ok": False, "step": "validate", "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
+    if checked_template.get("write_only"):
+        # A write-only template's batches commit at origin and are never
+        # staged by their owner (#912); this staged path is not theirs.
+        return {"ok": False, "step": "validate",
+                "refusal": "template-is-write-only"}
     owner = str(checked_instance["owner_action_key"])
     prefix = str(checked_instance["output_prefix"])
 
@@ -3762,6 +4089,166 @@ def build_stage_manifest(batch: Mapping[str, object],
             "coordinate_space": "output-manifest-batch",
             "batch_id": str(batch.get("batch_id")),
             "manifest_digest": str(batch.get("manifest_digest")),
+        },
+    }
+
+
+def _checked_origin_ref(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != {
+            "schema", "owner_action_key", "owner_nonce", "template_id",
+            "batch_id", "manifest_digest"}:
+        raise ProducedOutputError(
+            "origin batch ref must carry exactly schema, owner_action_key, "
+            "owner_nonce, template_id, batch_id and manifest_digest")
+    if value.get("schema") != ORIGIN_BATCH_REF_SCHEMA_V1:
+        raise ProducedOutputError(
+            f"origin batch ref schema must be {ORIGIN_BATCH_REF_SCHEMA_V1!r}")
+    return {"schema": ORIGIN_BATCH_REF_SCHEMA_V1,
+            "owner_action_key": _hex64(value.get("owner_action_key"),
+                                       where="origin batch ref owner_action_key"),
+            "owner_nonce": _hex32(value.get("owner_nonce"),
+                                  where="origin batch ref owner_nonce"),
+            "template_id": _name(value.get("template_id"),
+                                 where="origin batch ref template_id"),
+            "batch_id": _name(value.get("batch_id"),
+                              where="origin batch ref batch_id"),
+            "manifest_digest": _hex64(value.get("manifest_digest"),
+                                      where="origin batch ref manifest_digest")}
+
+
+def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
+                      ) -> dict[str, object]:
+    """Resolve one declared origin-only batch to its committed files (#912).
+
+    Everything comes from what PB filed, never from the reference beyond its
+    coordinates: the instance at ``<owner>/<template>.<nonce>``, the template
+    it is bound to, the commitments entry, and the immutable batch record
+    through the one batch loader. The batch must be origin-only, committed
+    over the digest the reference names, and not reclaimed, and every origin
+    must still carry the identity its commit recorded. That recheck is taken
+    here, at submission; the consumer's mover later verifies each entry's
+    sha256 as it copies, which is what binds the staged bytes to the
+    committed ones. Raises `ProducedOutputError` naming what failed.
+
+    Returns ``{"ref", "instance", "template", "record", "entries"}`` with the
+    sealed descriptors in the batch's own order.
+    """
+
+    checked_ref = _checked_origin_ref(ref)
+    scope_dir = (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+                 / checked_ref["owner_action_key"]
+                 / f"{checked_ref['template_id']}.{checked_ref['owner_nonce']}")
+    try:
+        instance = validate_instance(json.loads(
+            (scope_dir / "instance.json").read_text()))
+        template = validate_template(json.loads(
+            (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+             / f"{checked_ref['template_id']}.json").read_text()))
+    except FileNotFoundError:
+        raise ProducedOutputError(
+            "origin-batch-unknown: no instance or template is filed for "
+            f"{checked_ref['owner_action_key'][:12]}/"
+            f"{checked_ref['template_id']}") from None
+    except (OSError, ValueError) as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: origin batch scope unreadable: {exc}") from None
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    if (instance["owner_action_key"] != checked_ref["owner_action_key"]
+            or attempt["nonce"] != checked_ref["owner_nonce"]
+            or instance["template_id"] != checked_ref["template_id"]
+            or instance["template_sha256"] != template_sha256(template)):
+        raise ProducedOutputError(
+            "unknown-retain: origin batch scope is bound to another template "
+            "or attempt")
+    if not template.get("write_only"):
+        raise ProducedOutputError(
+            "origin-batch-not-write-only: its template stages its batches")
+    commitments = _read_commitments(_commitments_path(queue_root, instance))
+    entry = commitments["batches"].get(checked_ref["batch_id"])
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError(
+            f"origin-batch-uncommitted: {checked_ref['batch_id']}")
+    if (entry.get("origin_only") is not True
+            or entry.get("manifest_digest") != checked_ref["manifest_digest"]):
+        raise ProducedOutputError(
+            "origin-batch-mismatch: the committed batch is not origin-only "
+            "over this manifest digest")
+    if entry.get("origin_reclaimed"):
+        raise ProducedOutputError(
+            f"origin-batch-reclaimed: {checked_ref['batch_id']}")
+    filed, sealed = _load_batch_record(
+        queue_root, instance, template, entry, checked_ref["batch_id"])
+    if filed.get("origin_only") is not True:
+        raise ProducedOutputError(
+            "unknown-retain: origin batch record is not origin-only")
+    ok, refusal = _recheck_origin_identity(filed, sealed)
+    if not ok:
+        raise ProducedOutputError(
+            f"origin-batch-changed: {refusal} ({checked_ref['batch_id']})")
+    return {"ref": checked_ref, "instance": instance, "template": template,
+            "record": filed, "entries": sealed}
+
+
+def origin_batch_manifest(queue_root: str | Path,
+                          refs: Sequence[Mapping[str, object]]
+                          ) -> dict[str, object]:
+    """The data manifest a consumer declares to read origin-only batches (#912).
+
+    One v1 manifest over every declared batch, in the order given: each
+    batch's entries in its own order, one read phase per batch, and the
+    references themselves under the ``produced_output_batches`` annotation.
+    The consumer submits it with ``pbrun --data-manifest`` and stages it with
+    ``--residency stage`` like any other input; ``pbrun`` derives it again
+    from the queue at submission and refuses a manifest that says anything
+    else. The mount prefix is the common directory of the batches' output
+    prefixes. Every batch is resolved through `load_origin_batch`, so an
+    uncommitted, reclaimed or changed batch refuses here.
+    """
+
+    if (not isinstance(refs, Sequence) or isinstance(refs, (str, bytes))
+            or not refs):
+        raise ProducedOutputError("origin batch manifest needs at least one ref")
+    loaded = [load_origin_batch(queue_root, ref) for ref in refs]
+    keys = [tuple(item["ref"].values()) for item in loaded]
+    if len(set(keys)) != len(keys):
+        raise ProducedOutputError("origin batch manifest names a batch twice")
+    prefixes = [str(item["instance"]["output_prefix"]) for item in loaded]
+    mount_prefix = os.path.commonpath(prefixes)
+    if mount_prefix == "/":
+        raise ProducedOutputError(
+            "origin batches share no directory below / to mount")
+    entries: list[dict[str, object]] = []
+    phases: list[dict[str, object]] = []
+    running = 0
+    seen: set[str] = set()
+    for index, item in enumerate(loaded):
+        size = 0
+        for desc in item["entries"]:
+            if str(desc["path"]) in seen:
+                # Two committed batches over one origin path: a retried owner
+                # attempt can file one (ownership is per attempt), and at most
+                # one of them still names the file that is there.
+                raise ProducedOutputError(
+                    f"origin batch manifest names {desc['path']} twice")
+            seen.add(str(desc["path"]))
+            entries.append({"path": str(desc["path"]), "offset": 0,
+                            "bytes": int(desc["bytes"]),
+                            "sha256": desc["sha256"]})
+            size += int(desc["bytes"])
+        running += size
+        phases.append({"name": f"{index:04d}-{item['ref']['batch_id']}",
+                       "bytes": size, "cumulative_bytes": running})
+    return {
+        "schema": "prismaquant.prismabuild.data_manifest.v1",
+        "produced_by": {"tool": "prismabuild.produced_output.origin_batch_manifest"},
+        "mount_prefix": mount_prefix,
+        "entries": entries,
+        "entry_count": len(entries),
+        "total_bytes": running,
+        "annotations": {
+            "phases": phases,
+            ORIGIN_BATCHES_ANNOTATION: [dict(item["ref"]) for item in loaded],
         },
     }
 
@@ -4305,6 +4792,11 @@ def retire_batch(queue, instance: Mapping[str, object],
                 entry, batch_id)
         except ProducedOutputError as exc:
             return {"ok": False, "refusal": str(exc)}
+        if entry.get("origin_only") is True and filed.get("origin_only") is True:
+            # Nothing was staged, so there is no copy to evict and no window
+            # to return (#912). The origin is `reclaim_origin`'s.
+            return {"ok": True, "batch_id": batch_id, "origin_only": True,
+                    "staged": False}
         mover = str(filed.get("mover_key") or "")
         tier = str(filed.get("tier") or "")
         try:
@@ -5426,6 +5918,11 @@ def recover_batches(queue, instance: Mapping[str, object],
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "error": repr(exc)})
             continue
+        if str(active.get("source")) == "origin":
+            # Committed at origin, never staged (#912): nothing to recover.
+            events.append({"event": "output-batch-origin-only",
+                           "batch_id": batch_id})
+            continue
         if active.get("retired"):
             events.append({"event": "output-batch-retired",
                            "batch_id": batch_id,
@@ -5534,6 +6031,10 @@ def owner_demand_terms(template: Mapping[str, object]) -> dict[str, int]:
     for tier in checked["permitted_tiers"]:
         kind = tiers_mod.capacity_kind_of(tier)
         window = int(demands[tier]["window_gib"])
+        if window == 0:
+            # Only a write-only template has a zero window (#912): it holds
+            # no stage capacity, so its owner claims none.
+            continue
         terms[f"{kind}{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}"] = window
     return terms
 
@@ -5545,6 +6046,8 @@ __all__ = [
     "BATCH_SCHEMA_V1",
     "BATCH_MANIFEST_SCHEMA_V1",
     "PRODUCED_OUTPUT_REF_SCHEMA_V1",
+    "ORIGIN_BATCH_REF_SCHEMA_V1",
+    "ORIGIN_BATCHES_ANNOTATION",
     "OUTPUT_TEMPLATES_SUBDIR",
     "OUTPUT_SCOPES_SUBDIR",
     "OUTPUT_BATCHES_SUBDIR",
@@ -5580,6 +6083,11 @@ __all__ = [
     "reserve_working_minimum",
     "require_prewrite",
     "commit_batch",
+    "commit_origin_batch",
+    "origin_batch_ref",
+    "load_origin_batch",
+    "origin_batch_manifest",
+    "is_write_only",
     "publish_prepaid_batch",
     "refill_window",
     "unheld_window_gib",

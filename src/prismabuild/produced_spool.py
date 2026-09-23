@@ -3,6 +3,9 @@
 No staged-read authority lives here. A verified durable export acknowledgement
 permits the caller to use its existing canonical produced-output descriptors.
 Pending local bytes are never committed units or canonical origin identities.
+A write-only template's producer (#912) commits an acknowledged group at its
+origin through `ProducedSpool.commit_origin_group`, against the identities the
+acknowledgement recorded.
 """
 from __future__ import annotations
 
@@ -474,7 +477,9 @@ class ProducedSpool:
                        "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
             demand = {"cpu": 1, "mem_gb": 1}
             # Opted in, the pool write enters under a reservation on the tier
-            # its batch stages through, and is paced to it (#747).  The rate
+            # its prewrite names -- the tier its batch stages through, or for
+            # a write-only template (#912) the tier a later consumer stages
+            # it through -- and is paced to it (#747).  The rate
             # is sealed in the command, so it is part of the export's
             # identity.  Not opted in, the export is sealed as before.
             tier_id = str(prewrite.get("tier") or "")
@@ -536,6 +541,41 @@ class ProducedSpool:
             return {"ok": False, "complete": False, "export_key": key,
                     "refusal": f"export-{state}-without-ack"}
         return {"ok": True, "complete": False, "export_key": key}
+
+    def commit_origin_group(self, batch_id, descriptors):
+        """Commit one exported group as a write-only batch at its origin (#912).
+
+        Only after the group's export receipt is durable: before it, a
+        retried export can still replace a landed copy, so an identity taken
+        then may not be the one that lasts.  The descriptors must name
+        exactly the files the export landed, with their sizes and digests,
+        and `produced_output.commit_origin_batch` commits them against the
+        identities the receipt recorded.  Returns that commit's answer, or
+        the export's refusal.  Independent of `release_group`: either may
+        come first.
+        """
+        group = self._group(batch_id)
+        with _lock(group / ".export.lock"):
+            result = self.poll_group(batch_id)
+            if not result.get("ok") or not result.get("complete"):
+                return {**result, "ok": False,
+                        "refusal": result.get("refusal", "export-incomplete-retain")}
+            record = _export_record(group, self.owner)
+            manifest = _read(group / "manifest.json",
+                             expected_sha256=record["manifest_sha256"])
+            receipt = _read(group / "receipt.json")
+            sealed = [po.validate_descriptor(desc, self.template, self.instance)
+                      for desc in descriptors]
+            exported = sorted((str(entry["destination_path"]), int(entry["bytes"]),
+                               str(entry["sha256"])) for entry in manifest["entries"])
+            declared = sorted((str(desc["path"]), int(desc["bytes"]), str(desc["sha256"]))
+                              for desc in sealed)
+            if exported != declared:
+                return {"ok": False, "refusal": "descriptors-are-not-the-export"}
+            landed = {str(proof["destination_path"]): proof["identity"]
+                      for proof in receipt["entries"]}
+        return po.commit_origin_batch(self.queue, self.instance, self.template,
+                                      sealed, batch_id=batch_id, landed=landed)
 
     def release_group(self, batch_id):
         group = self._group(batch_id)

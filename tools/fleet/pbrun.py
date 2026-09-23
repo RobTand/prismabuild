@@ -1958,6 +1958,56 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
     return line + "."
 
 
+#: The data-manifest annotation naming the origin-only batches a consumer
+#: declares (#912); ``produced_output.ORIGIN_BATCHES_ANNOTATION`` is the same
+#: name.  A manifest without it is never checked against the queue.
+_ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
+
+
+def require_declared_origin_batches(
+    manifest: Mapping[str, object], *, transport: str, queue_root: Path,
+) -> None:
+    """Refuse a manifest whose declared batches are not what it lists (#912).
+
+    A consumer declares committed origin-only batches by carrying their
+    references under ``annotations.produced_output_batches``.  The references
+    are what PB will later account the read against, so they must describe
+    the manifest exactly: the manifest is derived again from the queue's own
+    records (``produced_output.origin_batch_manifest``, which also refuses an
+    uncommitted, reclaimed or changed batch) and its mount prefix, entries and
+    references must be the declared ones.  A manifest without the annotation
+    is not read here at all.
+    """
+
+    annotations = manifest.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return
+    declared = annotations.get(_ORIGIN_BATCHES_ANNOTATION)
+    if declared is None:
+        return
+    if transport != "pool":
+        raise SystemExit(
+            f"pbrun: a data manifest that declares {_ORIGIN_BATCHES_ANNOTATION} "
+            f"needs the pull queue, where those batches are filed; --transport "
+            f"{transport} has none")
+    from prismabuild import produced_output as produced_mod
+
+    try:
+        derived = produced_mod.origin_batch_manifest(queue_root, declared)
+    except produced_mod.ProducedOutputError as exc:
+        raise SystemExit(f"pbrun: declared produced-output batch: {exc}") from None
+    for field in ("mount_prefix", "entries"):
+        if manifest.get(field) != derived[field]:
+            raise SystemExit(
+                f"pbrun: the data manifest's {field} is not what its declared "
+                f"{_ORIGIN_BATCHES_ANNOTATION} commit; build it with "
+                "produced_output.origin_batch_manifest")
+    if list(declared) != derived["annotations"][_ORIGIN_BATCHES_ANNOTATION]:
+        raise SystemExit(
+            f"pbrun: the data manifest's {_ORIGIN_BATCHES_ANNOTATION} are not "
+            "in canonical form")
+
+
 def require_deployed_read_plan_storage(*, source_root: Path | None = None,
                                        published_root: Path | None = None) -> None:
     """Refuse a v2 row until the published storage reader has the same bytes.
@@ -4770,6 +4820,8 @@ def freeze_action_template(
             input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
         )
         manifest, manifest_encoding = pb.read_data_manifest(cas.input_path(manifest_input))
+        require_declared_origin_batches(
+            manifest, transport=transport, queue_root=SH / "pb-queue")
         inputs.append(manifest_input)
         data_manifest_summary = {
             "input": manifest_input,
