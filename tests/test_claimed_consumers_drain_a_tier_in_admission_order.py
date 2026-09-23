@@ -44,6 +44,14 @@ published within that many seconds of cycles: ``ceil(259.6 / 60)`` and
 of ``cycle()``: nothing publishes, nothing is evicted, and no term depends
 on the time.  So the bound is a ceiling, not a race.
 
+After the fix the tier ranks its claimed consumers (``window_credit.
+claim_order``): blocked on the range it is reading first, then by the
+recorded claim time.  The oldest blocked consumer is the head; the tier
+evicts what is ranked after it, farthest first, to make its room, and every
+consumer behind it is held back with a record naming the consumer ahead of
+it, the GiB it waits for and the priced landing.  One head is served a
+cycle.
+
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
 from __future__ import annotations
@@ -59,7 +67,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import pool, storage_tiers  # noqa: E402
+from prismabuild import (  # noqa: E402
+    pool, residency_map, residency_plan, storage_tiers, window_credit)
 import tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _cycle, _fixture_queue, _land)
@@ -221,6 +230,190 @@ def test_the_oldest_claimed_consumers_range_publishes_within_the_landing_bound(
     events = _events(capsys)
 
     assert published_at is not None, _diagnosis(queue, events, count)
+    # The first cycle serves the oldest consumer: one head a cycle.
+    assert published_at == 1, _diagnosis(queue, events, count)
+    _assert_held_back_records(queue, count, head=0, served=())
+
+
+def _landing(queue: pool.PoolQueue, key: str) -> dict[str, object]:
+    return residency_map.read_landing(residency_map.landing_path(
+        queue.residency_fragment_root(), key))
+
+
+def _assert_held_back_records(queue: pool.PoolQueue, count: int, *, head: int,
+                              served: tuple[int, ...]) -> None:
+    """Every consumer the order holds back says what holds it, three ways.
+
+    The tier's commitment record carries the rank; each held-back consumer's
+    event file carries this cycle's ``window-gated`` verdict naming the one
+    ahead and the head; its landing record lists its ``chain-043`` as
+    ``held-by-claim-order`` with the GiB and a priced landing.
+    """
+
+    record = queue.tier_commitment(TIER)
+    assert record is not None
+    order = record["claim_order"]
+    assert isinstance(order, dict), record
+    entries = {entry["consumer"]: entry for entry in order["entries"]}
+    assert order["head"] == _key(head), order
+    for n in range(count):
+        if n == head or n in served:
+            continue
+        key = _key(n)
+        entry = entries[key]
+        assert entry["standing"] == window_credit.CLAIM_HELD_BACK, entry
+        # Blocked consumers rank by claim time, so the one ahead of a
+        # held-back consumer is the next older blocked one.
+        older = [m for m in range(n) if m not in served]
+        assert entry["ahead"] == _key(older[-1]), entry
+        assert entry["waiting_on"] == _key(head), entry
+        assert entry["need_gib"] == int(PHASES[READING]["stage_gib"])
+        assert isinstance(entry["expected_landing_unix"], float), entry
+        gated = [event for event in queue.consumer_events(key)
+                 if event.get("event") == "window-gated"]
+        assert gated, key
+        last = gated[-1]
+        assert last["reason"] == window_credit.REASON_CLAIM_ORDER, last
+        assert last["ahead"] == _key(older[-1]), last
+        assert last["waiting_on"]["consumer"] == _key(head), last
+        assert last["expected_landing_unix"] == entry["expected_landing_unix"]
+        rows = {row["phase"]: row for row in _landing(queue, key)["ranges"]}
+        row = rows[READING]
+        assert row["state"] == residency_map.LANDING_HELD_BY_CLAIM_ORDER, row
+        assert row["held_back_by"] == _key(older[-1]), row
+        assert row["waiting_on"] == _key(head), row
+        assert row["waiting_gib"] == int(PHASES[READING]["stage_gib"]), row
+        assert row["expected_landing_unix"] == entry["expected_landing_unix"]
+        assert "claim order" in str(row["waiting_for"]), row
+
+
+# ------------------------------------------------ the drain, and its cost
+
+
+def _run_movers(queue: pool.PoolQueue, stage: Path, count: int) -> list[str]:
+    """Every queued copy of the fixture's consumers lands: one cycle's copies.
+
+    The mover's row leaves ``ready/`` for ``done/`` and its range is filed as
+    ``stage_move`` files one (``_land``), at the slowest fixture rate for a
+    range with no receipt of its own.
+    """
+
+    landed: list[str] = []
+    slowest = min(RATES.values())
+    for n in range(count):
+        key, manifest = _key(n), _manifest(n)
+        plan = residency_plan.read(queue, key)
+        for phase in plan["phases"]:                        # type: ignore[union-attr]
+            row = phase.get("mover_row")
+            if not isinstance(row, dict):
+                continue
+            mover = str(row["action_key"])
+            ready = queue.item_path(pool.READY, mover)
+            if not ready.exists():
+                continue
+            item = json.loads(ready.read_text())
+            ready.unlink()
+            done = queue.item_path(pool.DONE, mover)
+            done.parent.mkdir(parents=True, exist_ok=True)
+            done.write_text(json.dumps({**item, "status": "done"}))
+            start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+            _land(queue, stage, consumer=key, manifest=manifest, mover=mover,
+                  name=str(phase["name"]), start=start, end=end,
+                  seconds=(end - start) / RATES.get(str(phase["name"]), slowest))
+            landed.append(f"{n}:{phase['name']}")
+    return landed
+
+
+class _Timer:
+    """Wall seconds and calls per wrapped tier-loop step, per cycle."""
+
+    STEPS = ("window_pressure", "evict_beyond_horizon", "residency_window",
+             "publish_landing_expectations", "_commitment_census",
+             "_rank_claims", "_claim_order_candidates", "_report_commitments")
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.cycle: dict[str, list[float]] = {}
+        for name in self.STEPS:
+            original = getattr(tier_loop, name)
+            monkeypatch.setattr(tier_loop, name, self._wrap(name, original))
+
+    def _wrap(self, name, original):
+        def timed(*args, **kwargs):
+            began = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                self.cycle.setdefault(name, []).append(time.perf_counter() - began)
+        return timed
+
+    def take(self) -> dict[str, dict[str, float]]:
+        out = {name: {"calls": len(spent), "s": round(sum(spent), 4)}
+               for name, spent in sorted(self.cycle.items())}
+        self.cycle = {}
+        return out
+
+
+def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eight blocked R12s on the shrunk tier are served one a cycle, oldest first.
+
+    Each cycle's copies land before the next (``_run_movers``).  Consumer
+    ``n``'s ``chain-043`` is published on cycle ``n + 1``: every older
+    consumer is served first, and each served consumer's read-ahead is what
+    the next blocked one's room comes from.  Every consumer still waiting
+    carries its held-back record, every cycle.  Once no consumer is blocked,
+    the tier stops evicting: a leg another reader needs no later than the
+    head's own is not given back for it, so no read-ahead is traded.
+
+    The scale half: per-cycle wall seconds and calls of every step the
+    order adds, printed, with the calls bounded -- one rank and at most one
+    candidate walk per cycle, and at most the two commitment censuses the
+    cycle took before (#1011 adds one; the report reuses it).
+    """
+
+    count = 8
+    queue, stage, _plans, shrunk = _fixture(tmp_path, count, EIGHT_HOLD)
+    timer = _Timer(monkeypatch)
+    served_at: dict[int, int] = {}
+    per_cycle: list[dict[str, object]] = []
+    began = time.perf_counter()
+    for cycle in range(1, count + 3):
+        # The rank this cycle takes: consumers served on earlier cycles have
+        # their range and are no longer blocked.
+        served = tuple(sorted(served_at))
+        head = min((n for n in range(count) if n not in served), default=None)
+        start = time.perf_counter()
+        _cycle(queue, stage, gib=shrunk)
+        wall = time.perf_counter() - start
+        steps = timer.take()
+        events = _events(capsys)
+        now_served = [n for n in range(count) if n not in served_at
+                      and _published(queue, _mover(n, READING))]
+        for n in now_served:
+            served_at[n] = cycle
+        if head is not None:
+            _assert_held_back_records(queue, count, head=head, served=served)
+        evicted = [event for event in events
+                   if event.get("event") == "claim-order-evicted"]
+        per_cycle.append({"cycle": cycle, "wall_s": round(wall, 4),
+                          "served": now_served, "evicted": len(evicted),
+                          "landed": _run_movers(queue, stage, count),
+                          "steps": steps})
+        calls = {name: steps.get(name, {"calls": 0})["calls"]
+                 for name in _Timer.STEPS}
+        assert calls["_rank_claims"] <= 1, steps
+        assert calls["_claim_order_candidates"] <= 1, steps
+        assert calls["_commitment_census"] <= 2, steps
+    total = time.perf_counter() - began
+    with capsys.disabled():
+        print(json.dumps({"test": "eight-consumer drain", "wall_s": round(total, 3),
+                          "cycles": per_cycle}, default=str))
+
+    assert served_at == {n: n + 1 for n in range(count)}, per_cycle
+    # Served: nobody is blocked, and no read-ahead is traded for read-ahead.
+    for entry in per_cycle[count:]:
+        assert entry["evicted"] == 0, per_cycle
 
 
 # ------------------------------------------------ N consumers of one range
@@ -293,3 +486,191 @@ def test_a_range_two_claimed_consumers_read_is_charged_to_each_of_them(
     charged = {entry["consumer"]: entry["gib"] for entry in census["holders"]
                if entry["key"] in (first_mover, second_mover)}
     assert charged == {first: PHASE_GIB, second: PHASE_GIB}, census["holders"]
+
+
+# ------------------------------------------------ the no_progress verdict
+
+
+from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
+    TOKEN, _finish, _verdict, _verdict_fixture)
+from test_a_resident_range_is_adopted_rather_than_recopied import STAGE_KIND  # noqa: E402
+
+AHEAD = _hexkey("verdictahead")
+GRACE_S = 600.0
+
+
+def _file_order(queue: pool.PoolQueue, key: str, *, standing: str,
+                ahead: str | None = AHEAD, relief: str | None = None) -> None:
+    """The tier's commitment record, 161 GiB over, ranking ``key``."""
+
+    entries = [{"consumer": AHEAD, "rank": 0, "standing": window_credit.CLAIM_HEAD,
+                "ahead": None, "need_gib": 22, "blocked": True}]
+    if key != AHEAD:
+        entries.append({"consumer": key, "rank": 1, "standing": standing,
+                        "ahead": ahead, "need_gib": 22, "blocked": True,
+                        "expected_landing_unix": time.time() + 400.0,
+                        **({"waiting_on": AHEAD}
+                           if standing == window_credit.CLAIM_HELD_BACK else {})})
+    queue.file_tier_commitment({
+        "tier_id": TIER, "capacity_gib": 565, "committed_gib": 726,
+        "over_committed_gib": 161,
+        "claim_order": {"head": AHEAD, "entries": entries,
+                        **({"relief": relief} if relief else {})}})
+
+
+def _ahead_running(queue: pool.PoolQueue, *, quiet_s: float | None,
+                   heartbeat_age_s: float = 0.0) -> None:
+    """The consumer ranked ahead: claimed, with the lease its worker writes.
+
+    ``quiet_s`` is what its progress watch last reported (``None``: the
+    lease carries no progress observation).  Written directly: ``write_lease``
+    is the claiming worker's, and checks it is that worker.
+    """
+
+    claimed = time.time() - 3600.0
+    item = {"action_key": AHEAD, "claimed_unix": claimed,
+            "claimed_by": "verdict-fixture", "published_unix": claimed - 10.0}
+    path = queue.item_path(pool.CLAIMED, AHEAD)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(item))
+    lease: dict[str, object] = {
+        "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": AHEAD,
+        "owner": "verdict-fixture", "heartbeat_unix": time.time() - heartbeat_age_s,
+        "claimed_unix": claimed, "published_unix": claimed - 10.0}
+    if quiet_s is not None:
+        lease["progress_observation"] = {"source": "action-progress",
+                                         "quiet_s": quiet_s, "grace_s": GRACE_S}
+    queue.lease_path(AHEAD).parent.mkdir(parents=True, exist_ok=True)
+    queue.lease_path(AHEAD).write_text(json.dumps(lease))
+
+
+def test_a_held_back_consumer_is_exempt_while_the_one_ahead_advances(
+        tmp_path: Path) -> None:
+    """Over-committed, unpublished, held back behind a consumer that reported
+    progress a minute ago: the wait is the order's, and it is exempt.  The
+    verdict names what holds it back and what that consumer last said."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    key = str(item["action_key"])
+    _file_order(queue, key, standing=window_credit.CLAIM_HELD_BACK)
+    _ahead_running(queue, quiet_s=60.0)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["movers"][0]["state"] == "unpublished"
+    assert verdict["exempt"] is True, verdict
+    assert verdict["held_back_by"] == AHEAD
+    assert verdict["ahead_grace_s"] == GRACE_S
+    assert 60.0 <= float(verdict["ahead_quiet_s"]) < 70.0   # type: ignore[arg-type]
+    assert verdict["claim_order"]["standing"] == window_credit.CLAIM_HELD_BACK
+
+
+def test_a_held_back_consumer_stays_exempt_once_the_one_ahead_has_ended(
+        tmp_path: Path) -> None:
+    """The consumer ahead finished (or was ended): it holds nothing the order
+    waits on, so the one behind it is not blamed for its absence."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is True, verdict
+    assert verdict["held_back_by"] == AHEAD
+
+
+@pytest.mark.parametrize("quiet_s,heartbeat_age_s", [
+    (GRACE_S + pool.CLAIM_ORDER_AHEAD_SLACK_S + 1.0, 0.0),
+    # Quiet within its grace at its last heartbeat, but that heartbeat is old.
+    (GRACE_S, pool.CLAIM_ORDER_AHEAD_SLACK_S + 1.0),
+    (None, 0.0),
+], ids=["stalled", "stale-lease", "no-observation"])
+def test_a_held_back_consumer_is_not_exempt_behind_a_stalled_one(
+        tmp_path: Path, quiet_s: float | None, heartbeat_age_s: float) -> None:
+    """Past its grace plus the slack its own rung needs to end it, the one
+    ahead has stalled, and the wait behind it is no longer the order's: the
+    ``no_progress`` rung may end it, as before #1011.  A lease with no
+    progress observation proves nothing and is read the same way."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+    _ahead_running(queue, quiet_s=quiet_s, heartbeat_age_s=heartbeat_age_s)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False, verdict
+    assert verdict["held_back_by"] == AHEAD
+
+
+def test_the_stall_slack_is_derived_from_the_kill_path() -> None:
+    """One lease refresh plus the three kill budgets a stall ending spends."""
+
+    assert pool.CLAIM_ORDER_AHEAD_SLACK_S == pool.HEARTBEAT_S + 3 * pool.TIMEOUT_GRACE_S
+
+
+@pytest.mark.parametrize("standing", [window_credit.CLAIM_HEAD,
+                                      window_credit.CLAIM_GRANTED])
+def test_the_head_and_a_granted_consumer_are_exempt_on_an_over_committed_tier(
+        tmp_path: Path, standing: str) -> None:
+    """The order is serving them: the head's room is being made, a granted
+    consumer's is already counted.  Exempt while the tier loop is alive."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=standing, ahead=AHEAD)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is True, verdict
+    assert verdict["claim_order"]["standing"] == standing
+    assert "held_back_by" not in verdict
+
+
+def test_a_consumer_the_order_does_not_rank_keeps_the_old_rule(
+        tmp_path: Path) -> None:
+    """Over-committed and absent from the rank (a claim time that did not
+    read, or a loop from before #1011): not exempt."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, AHEAD, standing=window_credit.CLAIM_HEAD)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False, verdict
+    assert "claim_order" not in verdict
+
+
+def test_a_stalled_consumer_ahead_whose_range_landed_is_still_killed(
+        tmp_path: Path) -> None:
+    """The consumer ahead is the one stalled: its range is resident (its mover
+    is in ``done/`` and holds its tokens), so its own verdict is not exempt
+    whatever its rank says, and its ``no_progress`` rung ends it.  The order
+    shelters a consumer waiting for room, never one that has its bytes."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    key = _finish(queue, row, pool.DONE)
+    queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
+    assert queue.tier_ledger(TIER).acquire(key, {STAGE_KIND: 21})
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HEAD)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["movers"] == [{"key": key, "state": "done"}]
+    assert verdict["exempt"] is False, verdict
+
+
+@pytest.mark.parametrize("standing", [window_credit.CLAIM_HEAD,
+                                      window_credit.CLAIM_HELD_BACK])
+def test_a_stuck_order_ends_the_wait_as_before(tmp_path: Path, standing: str) -> None:
+    """Relief was futile and every ranked consumer is blocked: nobody reads,
+    so no egress will make the head's room either.  The order cannot leave
+    that state, so it exempts nobody, and ``no_progress`` ends the wait as it
+    did before #1011 -- never a wait without end."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=standing, relief="futile")
+    _ahead_running(queue, quiet_s=60.0)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False, verdict
+    assert verdict["claim_order"]["relief"] == "futile"

@@ -89,9 +89,16 @@ RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
 #: mover's queue state.  ``unpublished`` is an in-horizon leg the window has
 #: not published (a stall, or a failed copy awaiting its recopy).
 #: ``terminal-no-receipt`` is a leg nothing will publish again: its mover
-#: failed and the plan is superseded.
+#: failed and the plan is superseded.  ``held-by-claim-order`` is the range a
+#: claimed consumer waits for while the claim order serves the consumers
+#: ranked ahead of it on an over-committed stage tier (#1011); it names the
+#: one ahead (``held_back_by``), the head (``waiting_on``) and the GiB, and
+#: its ``expected_landing_unix`` is the order's priced lower bound, or null
+#: when no landing rate is known.
+LANDING_HELD_BY_CLAIM_ORDER = "held-by-claim-order"
 LANDING_STATES = ("ready", "claimed", "unpublished", "evicted",
-                  "done-not-resident", "terminal-no-receipt")
+                  "done-not-resident", "terminal-no-receipt",
+                  LANDING_HELD_BY_CLAIM_ORDER)
 _LANDING_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "manifest_sha256",
     "written_unix", "landing_bytes_per_s", "landing_basis",
@@ -106,7 +113,10 @@ _LANDING_RANGE_KEYS = frozenset({
     # claimed mover's own landed-bytes report, ``claim`` from its claim
     # time, ``queue`` for a ready range.  A ``reported`` range also carries
     # the report's bytes, time and the rate they landed at.
-    "basis", "landed_bytes", "reported_unix", "live_bytes_per_s"})
+    "basis", "landed_bytes", "reported_unix", "live_bytes_per_s",
+    # A range the claim order holds back (#1011).
+    "held_back_by", "waiting_on", "waiting_gib", "claim_rank",
+    "expected_landing_basis"})
 #: The values ``basis`` may take (#1010).
 LANDING_BASES = ("reported", "claim", "queue")
 
@@ -673,6 +683,24 @@ def validate_landing(value: object) -> dict[str, object]:
                 raise ResidencyMapError("a queued range carries its expected landing")
             _nonnegative(row["queue_position"], where="queue_position")
             _nonnegative(row["bytes_ahead"], where="bytes_ahead")
+        elif state == LANDING_HELD_BY_CLAIM_ORDER:
+            # Priced, not queued: the landing is the order's lower bound.
+            held_back_by = entry.get("held_back_by")
+            waiting_on = entry.get("waiting_on")
+            if not (isinstance(held_back_by, str) and held_back_by
+                    and isinstance(waiting_on, str) and waiting_on
+                    and row["waiting_for"]):
+                raise ResidencyMapError(
+                    "a range the claim order holds back names the consumer "
+                    "ahead of it, the head and what it waits for")
+            row.update({
+                "held_back_by": held_back_by, "waiting_on": waiting_on,
+                "waiting_gib": _nonnegative(entry.get("waiting_gib"),
+                                            where="waiting_gib"),
+                "claim_rank": _nonnegative(entry.get("claim_rank"),
+                                           where="claim_rank"),
+                "expected_landing_basis": str(
+                    entry.get("expected_landing_basis") or "")})
         elif expected is not None or not row["waiting_for"]:
             raise ResidencyMapError(
                 "a range that is not queued carries no expected landing and "
@@ -715,6 +743,7 @@ def lookup(mapping: Mapping[str, object], path: str, offset: int = 0) -> dict[st
 
 
 __all__ = [
+    "LANDING_HELD_BY_CLAIM_ORDER",
     "LANDING_STATES",
     "RESIDENCY_LANDING_SCHEMA_V1",
     "RESIDENCY_MAP_ENV",

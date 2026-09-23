@@ -302,6 +302,14 @@ LEASE_TIMEOUT_S = 300.0
 # margin for the launcher's own exit once the relay has returned.
 TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
 
+# How much longer than its own grace a consumer ranked ahead in a stage
+# tier's claim order may read quiet before the consumers held back behind it
+# lose their staged-wait exemption (#1011): one lease refresh, since the quiet
+# is read off the lease, plus the three kill budgets (TERM wait, KILL wait,
+# drain) a ``no_progress`` ending spends while it still holds its claim.
+# Within it, a stalled consumer ahead is ended by its own rung first.
+CLAIM_ORDER_AHEAD_SLACK_S = HEARTBEAT_S + 3.0 * TIMEOUT_GRACE_S
+
 # The pool is also a lower-level transport for specialized producers whose
 # existing contract explicitly chooses its bound.  ``fleet/pbrun`` supplies a
 # separate safe default of one for arbitrary commands; changing this legacy
@@ -6602,14 +6610,34 @@ class PoolQueue:
           mover included).  Not exempt, and ``detail`` says why.
         * ``not-a-dependent``: the consumer's plan does not name it.
 
-        ``unpublished``, ``evicted`` and ``failed`` are exempt only while the tier is
-        within its commitment as well: the tier loop's filed commitment
-        record (``tier-commitments/<tier>.json``, #930) shows
-        ``over_committed_gib <= 0``.  On an over-committed tier the claimed
-        consumers wait on each other's room (#1011), and ``no_progress`` is
-        what breaks that.  A missing or unreadable record is not exempt.
-        ``ready`` and ``claimed`` stay exempt there: a published mover
-        already holds its room.
+        ``unpublished``, ``evicted`` and ``failed`` are exempt only while the
+        tier loop that publishes them is alive, and then by the tier loop's
+        filed commitment record (``tier-commitments/<tier>.json``, #930):
+
+        * ``over_committed_gib <= 0``: exempt.  The tier has room for every
+          admitted window, so the range is coming.
+        * over-committed, and the record's claim order (#1011) ranks this
+          consumer ``granted``, ``head`` or ``satisfied``: exempt.  The tier
+          loop serves the claimed consumers one at a time in that rank and
+          evicts ranges ranked after the head to make the head's room, so an
+          over-committed tier is no longer a deadlock by itself.
+        * over-committed, and the order holds this consumer back: exempt
+          while the consumer ranked just ahead of it advances
+          (:meth:`_claim_order_ahead_live`), and not exempt once it has
+          stalled.  A stalled consumer ahead of it is killed by its own
+          ``no_progress`` rung, which this slack leaves room for, so the
+          kill falls on the stalled consumer and not on the ones waiting
+          behind it.
+        * over-committed, with no claim order that ranks this consumer, or
+          a missing or unreadable record: not exempt, as before #1011.
+        * over-committed, and the order is stuck: its last relief pass was
+          ``futile`` (no candidate could make the head's room) and every
+          ranked consumer is blocked, so nobody is reading and no egress
+          will make room either.  Not exempt, as before #1011: that wait
+          ends the way it did before the order existed.
+
+        ``ready`` and ``claimed`` stay exempt on any tier: a published mover
+        takes its room when it claims.
 
         The wait is exempt when any named mover is still coming.  The read
         is the plan the consumer froze and one existence check per state per
@@ -6637,6 +6665,7 @@ class PoolQueue:
         tier_alive: bool | None = None
         tier_age: float | None = None
         over_committed: int | None = None
+        claim: dict[str, object] | None = None
         if plan is not None:
             try:
                 superseded = plan_mod.superseded(self, plan) is not None
@@ -6686,9 +6715,11 @@ class PoolQueue:
                 if tier_alive is None:
                     tier_id = str(plan["tier_id"])          # type: ignore[index]
                     tier_alive, tier_age = self._tier_loop_alive(tier_id, now=moment)
-                    over_committed = self._tier_over_committed_gib(tier_id)
-                exempt = exempt or (tier_alive and over_committed is not None
-                                    and over_committed <= 0)
+                    over_committed, claim = self._tier_commitment_standing(
+                        tier_id, key, now=moment)
+                exempt = exempt or bool(tier_alive and over_committed is not None and (
+                    over_committed <= 0
+                    or (claim is not None and bool(claim.get("exempt")))))
         verdict: dict[str, object] = {
             "exempt": exempt, "movers": movers,
             "since_unix": record["since_unix"], "checked_unix": moment,
@@ -6698,9 +6729,119 @@ class PoolQueue:
             verdict["tier_record_age_s"] = tier_age
             # None: no commitment record filed, or one that does not read.
             verdict["tier_over_committed_gib"] = over_committed
+            if claim is not None:
+                # What the claim order said about this consumer (#1011).
+                verdict["claim_order"] = claim
+                if claim.get("held_back_by") is not None:
+                    verdict["held_back_by"] = claim["held_back_by"]
+                    verdict["ahead_quiet_s"] = claim.get("ahead_quiet_s")
+                    verdict["ahead_grace_s"] = claim.get("ahead_grace_s")
         if not exempt:
             verdict["reason"] = "no named mover is still coming"
         return verdict
+
+    def _tier_commitment_standing(self, tier_id: str, key: str, *, now: float
+                                  ) -> tuple[int | None, dict[str, object] | None]:
+        """``(over_committed_gib, claim)`` from the tier's commitment record.
+
+        One read of the record (#930).  ``claim`` is ``None`` unless the tier
+        is over-committed and the record's claim order ranks ``key`` (#1011);
+        otherwise it names the consumer's ``standing`` and ``rank``, whether
+        that standing exempts its wait, and for a held-back consumer the one
+        ahead of it (``held_back_by``) with its observed quiet and grace.
+        """
+
+        try:
+            record = self.tier_commitment(tier_id)
+        except (OSError, ValueError, PoolContractError):
+            return None, None
+        value = None if record is None else record.get("over_committed_gib")
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None, None
+        if value <= 0:
+            return value, None
+        order = record.get("claim_order")                   # type: ignore[union-attr]
+        entries = order.get("entries") if isinstance(order, Mapping) else None
+        entry = next((item for item in entries or ()
+                      if isinstance(item, Mapping) and item.get("consumer") == key),
+                     None)
+        if entry is None:
+            return value, None
+        standing = str(entry.get("standing"))
+        claim: dict[str, object] = {"standing": standing, "rank": entry.get("rank")}
+        if order.get("relief") == "futile" and all(  # type: ignore[union-attr]
+                isinstance(item, Mapping) and item.get("blocked")
+                for item in entries or ()):
+            # The one state the order cannot leave: no candidate can make
+            # the head's room and no ranked consumer is reading, so no
+            # egress will either.  The rule before #1011 applies, and the
+            # ``no_progress`` rung breaks the wait.
+            claim.update({"exempt": False, "relief": "futile",
+                          "reason": "claim order stuck: relief futile and "
+                                    "every ranked consumer blocked"})
+            return value, claim
+        if standing != "held-back":
+            claim["exempt"] = standing in ("granted", "head", "satisfied")
+            return value, claim
+        ahead = entry.get("ahead")
+        claim["held_back_by"] = ahead
+        claim["waiting_on"] = entry.get("waiting_on")
+        claim["expected_landing_unix"] = entry.get("expected_landing_unix")
+        live, quiet, grace = self._claim_order_ahead_live(
+            str(ahead) if isinstance(ahead, str) else None, now=now)
+        claim.update({"exempt": live, "ahead_quiet_s": quiet,
+                      "ahead_grace_s": grace})
+        return value, claim
+
+    def _claim_order_ahead_live(self, ahead: str | None, *, now: float
+                                ) -> tuple[bool, float | None, float | None]:
+        """Whether the consumer ranked ahead of a held-back one advances (#1011).
+
+        ``(live, quiet_s, grace_s)``.  Live when it is no longer claimed --
+        it ended, so it holds nothing the order waits on -- or when its
+        lease says it is within its own ``no_progress`` allowance: the quiet
+        it last reported, aged by the heartbeat's staleness, is at most its
+        grace plus the slack that lets its own rung end it first.  The slack
+        is one lease refresh (``HEARTBEAT_S``) plus the three kill budgets a
+        stall ending spends while it still holds its claim (TERM wait, KILL
+        wait and drain, ``TIMEOUT_GRACE_S`` each), so a stalled consumer
+        ahead is killed by
+        its own rung before the one behind it loses its exemption.  An
+        exempt dependency wait is credited back into its quiet, so a
+        consumer ahead that is itself waiting in the order reads live.  A
+        lease without a progress observation, or one that does not read or
+        belongs to another claim, is not live.
+        """
+
+        if not isinstance(ahead, str) or len(ahead) != 64:
+            return False, None, None
+        try:
+            claim = _read_json(self.item_path(CLAIMED, ahead))
+        except (OSError, ValueError, PoolContractError):
+            return False, None, None
+        if claim is None:
+            return True, None, None
+        try:
+            lease = _read_json(self.lease_path(ahead))
+        except (OSError, ValueError, PoolContractError):
+            return False, None, None
+        if not isinstance(lease, Mapping):
+            return False, None, None
+        if lease.get("claimed_unix") != claim.get("claimed_unix"):
+            return False, None, None
+        observation = lease.get("progress_observation")
+        heartbeat = lease.get("heartbeat_unix")
+        if not isinstance(observation, Mapping) or isinstance(heartbeat, bool) \
+                or not isinstance(heartbeat, (int, float)):
+            return False, None, None
+        quiet = observation.get("quiet_s")
+        grace = observation.get("grace_s")
+        if (isinstance(quiet, bool) or not isinstance(quiet, (int, float))
+                or isinstance(grace, bool) or not isinstance(grace, (int, float))):
+            return False, None, None
+        aged = float(quiet) + max(0.0, float(now) - float(heartbeat))
+        return (aged <= float(grace) + CLAIM_ORDER_AHEAD_SLACK_S,
+                round(aged, 3), float(grace))
 
     def _tier_over_committed_gib(self, tier_id: str) -> int | None:
         """The tier's filed ``over_committed_gib``, or ``None`` when unknown.

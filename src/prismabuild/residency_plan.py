@@ -1951,6 +1951,9 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
         "readahead_bytes": int(readahead_bytes),
         "reach_end_bytes": reach_end,
         "landing_s": landing_s,
+        # The rate ``landing_s`` was priced at, so a caller pricing another
+        # range on this tier uses the same number (#1011).
+        "landing_bytes_per_s": float(landing_bytes_per_s),
         "latency_s": latency,
         "refill_bytes": refill_bytes,
         "horizon_end_bytes": horizon_end,

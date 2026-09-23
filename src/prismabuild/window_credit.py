@@ -186,6 +186,85 @@ def gate_commitment(*, committed_gib: int, growth_gib: int,
             "lone": False}
 
 
+#: A claimed consumer whose next range waits behind an older claim on a tier
+#: whose joint commitment is past its capacity (#1011).  Transient: the
+#: consumers ranked ahead of it are served first, one head a cycle.
+REASON_CLAIM_ORDER = "held-by-claim-order"
+
+#: The standings :func:`claim_order` gives a claimed consumer.
+CLAIM_SATISFIED = "satisfied"
+CLAIM_GRANTED = "granted"
+CLAIM_HEAD = "head"
+CLAIM_HELD_BACK = "held-back"
+
+
+def claim_order(claims, *, free_gib: int) -> dict[str, object]:
+    """Rank a tier's claimed consumers for its room (#1011).
+
+    Used only on a stage tier whose joint commitment (#907) is past its
+    capacity, where the claimed consumers cannot all have their horizons and
+    each waits on the others' reading.  ``claims`` holds one mapping per
+    claimed consumer: ``consumer`` (its key), ``claimed_unix`` (when its
+    claim was recorded), ``need_gib`` (the GiB its window takes from free
+    next, 0 when it needs nothing) and ``blocked`` (whether that range is
+    the one it is reading, so it cannot progress without it).
+
+    The rank is blocked first, then admission order: the recorded claim
+    time, with the key as a tiebreak for determinism only.  A consumer
+    blocked on its own reading range comes before any consumer's read-ahead,
+    because a read-ahead range buys latency while a blocked range is the
+    only thing between a GPU and its next unit of work.  Among blocked
+    consumers, and among the rest, the older claim is served first.
+
+    The walk spends ``free_gib`` in rank order.  A consumer whose need fits
+    what is left is ``granted``; the first whose need does not fit is the
+    ``head``, and every consumer ranked after it with a need is
+    ``held-back``: it publishes nothing until the head is served, and its
+    record names the consumer ranked just ahead of it (``ahead``) and the
+    head (``waiting_on``).  A consumer with no need is ``satisfied``.
+
+    Returns ``{"entries": [...], "head": key or None, "target_free_gib":
+    int}``.  ``target_free_gib`` is the free the tier must reach for every
+    granted consumer and the head to take their needs at once; with no head
+    it is what the granted consumers take.  The caller makes that room from
+    ranges ranked after the head, never from a range a consumer is reading.
+    """
+
+    ranked = sorted(claims, key=lambda claim: (
+        not bool(claim.get("blocked")), float(claim["claimed_unix"]),
+        str(claim["consumer"])))
+    left = int(free_gib)
+    target = 0
+    head: str | None = None
+    entries: list[dict[str, object]] = []
+    ahead: str | None = None
+    for rank, claim in enumerate(ranked):
+        key = str(claim["consumer"])
+        need = max(0, int(claim.get("need_gib") or 0))
+        entry: dict[str, object] = {
+            "consumer": key, "rank": rank,
+            "claimed_unix": float(claim["claimed_unix"]),
+            "blocked": bool(claim.get("blocked")), "need_gib": need,
+            "ahead": ahead}
+        if need <= 0:
+            entry["standing"] = CLAIM_SATISFIED
+        elif head is not None:
+            entry["standing"] = CLAIM_HELD_BACK
+            entry["waiting_on"] = head
+        elif need <= left:
+            entry["standing"] = CLAIM_GRANTED
+            left -= need
+            target += need
+        else:
+            entry["standing"] = CLAIM_HEAD
+            entry["shortfall_gib"] = need - left
+            head = key
+            target += need
+        entries.append(entry)
+        ahead = key
+    return {"entries": entries, "head": head, "target_free_gib": target}
+
+
 def fence_fits(*, held_gib: int, ready_gib: int, output_gib: int,
                capacity_gib: int | None) -> bool:
     """Whether one more fence keeps every future take fundable.
