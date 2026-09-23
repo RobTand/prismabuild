@@ -2978,7 +2978,11 @@ class ResourceLedger:
             f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
             f".{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
         )
-        if not wanted:
+        # A dependent running wholly on its producer's allowance takes no
+        # token, but its holder still has to exist: its metadata is the slot
+        # it occupies and the CPUs it is pinned to (#985).
+        funded = adaptive.get("funded") if adaptive is not None else None
+        if not wanted and not funded:
             return handle
         destination = self.held_dir / handle
         destination.mkdir(parents=True, exist_ok=True)
@@ -3013,10 +3017,17 @@ class ResourceLedger:
             if adaptive is not None and cpu_tiers is not None:
                 allocation = self.cpu_allocation(handle, cpu_tiers)
                 assigned = set(allocation["preferred"] + allocation["fallback"])
+                if funded:
+                    # The producer's allowance CPUs are this dependent's; it
+                    # borrows nothing else (#985).
+                    assigned |= {int(cpu) for cpu in funded.get("cpus", [])}
+                    wanted_cpu = wanted.get("cpu", 0) + len(funded.get("cpus", []))
+                    if len(assigned) != wanted_cpu:
+                        raise _Insufficient("cpu")
                 # Proven idle preferred reservations may be shared before
                 # consuming free SMT/efficiency tokens. Unknown donors retain
                 # ordinary disjoint physical-token admission.
-                for tier in ("preferred", "fallback"):
+                for tier in (() if funded else ("preferred", "fallback")):
                     for cpu in adaptive.get("borrowable_cpus", []):
                         if cpu not in cpu_tiers[tier]:
                             continue
@@ -3025,12 +3036,36 @@ class ResourceLedger:
                         if cpu not in assigned:
                             allocation[tier].append(cpu)
                             assigned.add(cpu)
-                if len(assigned) != wanted.get("cpu", 0):
+                if not funded and len(assigned) != wanted.get("cpu", 0):
                     raise _Insufficient("cpu")
                 for tier in allocation:
                     allocation[tier] = [c for c in cpu_tiers[tier] if c in assigned]
                 metadata = dict(adaptive, allocation=allocation,
-                                borrowed_cpu=max(0, len(assigned) - len(_glob(destination, "cpu-*"))))
+                                borrowed_cpu=0 if funded else max(
+                                    0, len(assigned) - len(_glob(destination, "cpu-*"))))
+                allowance = adaptive.get("dependent_allowance")
+                if allowance:
+                    # A producer's export allowance (#985): the last CPUs it
+                    # took, fallback first, are kept out of its own affinity
+                    # and named for its dependents; its memory stays a count.
+                    # The tokens stay under this holder -- the producer pays
+                    # for the room while it is idle -- so nothing else is
+                    # admitted onto them.
+                    # Only CPUs this claim holds tokens for: a CPU borrowed
+                    # from another holder's idle reservation is that holder's.
+                    count = int(allowance.get("cpu", 0))
+                    own = set(self.cpu_ids(_glob(destination, "cpu-*"), cpu_tiers))
+                    ordered = [cpu for cpu in allocation["preferred"] + allocation["fallback"]
+                               if cpu in own]
+                    if count <= 0 or count >= len(ordered):
+                        raise _Insufficient("cpu")
+                    kept = set(ordered[-count:])
+                    for tier in allocation:
+                        allocation[tier] = [c for c in allocation[tier] if c not in kept]
+                    metadata["allocation"] = allocation
+                    metadata["dependent_allowance"] = {
+                        "slots": int(allowance.get("slots", 1)), "cpus": sorted(kept),
+                        "mem_gb": int(allowance.get("mem_gb", 0))}
                 _write_json_atomic(destination / cpu_admission.METADATA, metadata)
         except _Insufficient:
             self._empty_into_free(destination)
@@ -4315,6 +4350,7 @@ class PoolQueue:
         residency: Mapping[str, object] | None = None,
         produced_output_template: Mapping[str, object] | None = None,
         produced_output_batch: Mapping[str, object] | None = None,
+        dependent_of: str | None = None,
         recompute: bool = False,
         refuse_withdrawn: bool = False,
         refuse_if_live: bool = False,
@@ -4735,6 +4771,15 @@ class PoolQueue:
             item["produced_output"] = produced_ref
         if produced_batch_ref is not None:
             item["produced_output_batch"] = produced_batch_ref
+        if dependent_of is not None:
+            # The producer this action serves, copied from its sealed request
+            # so the claim path can find the producer's export allowance
+            # without a CAS read per candidate (#985).  A hint, checked against
+            # the sealed request at claim; absent, the item is byte-identical to
+            # what it was before the field existed.
+            if not cpu_admission._is_key(dependent_of):
+                raise PoolContractError("dependent_of must be a 64-hex action key")
+            item["dependent_of"] = dependent_of
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -4832,6 +4877,24 @@ class PoolQueue:
         return self.item_path(READY, action_key)
 
     # -- consumer -------------------------------------------------------
+
+    def _may_serve_a_producer(self, item: Mapping[str, object]) -> bool:
+        """Whether this row may be a producer's spool export (#985).
+
+        A cheap row-only filter for which rows are worth reading the sealed
+        owner for.  True for a row carrying ``dependent_of`` and for one whose
+        host demand is exactly :data:`cpu_admission.EXPORT_DEMAND` -- what an
+        export published by an older generation, before the hint existed,
+        looks like.  The sealed request decides; this only narrows the reads.
+        """
+
+        if item.get("dependent_of") is not None:
+            return True
+        try:
+            host, _tiers = storage_tiers.split_demand(self.demand_of(item))
+        except (TypeError, ValueError):
+            return False
+        return host == cpu_admission.EXPORT_DEMAND
 
     def _placement_matches(
         self, item: Mapping[str, object], *, tags: frozenset[str], has_gpu: bool
@@ -5495,9 +5558,14 @@ class PoolQueue:
             identity = f"{key}:{generation}"
             now = _now()
             records = dict(records)
+            evidence = dict(evidence or {})
+            if item.get("dependent_of") is not None:
+                # Every refusal of a producer's export names the producer, so a
+                # starved producer's evidence reads in one place (#985).
+                evidence.setdefault("dependent_of", item.get("dependent_of"))
             records[identity] = {
                 "action_key": key, "published_unix": float(item["published_unix"]),
-                "host": host, "reason": reason, "evidence": self._bounded_denial_value(evidence or {}),
+                "host": host, "reason": reason, "evidence": self._bounded_denial_value(evidence),
                 "denied_unix": now,
             }
             newest = sorted(records.items(), key=lambda entry: (
@@ -12444,8 +12512,15 @@ class PoolQueue:
                 if generation not in live_generations:
                     deferrals.pop(generation, None)
         preempted = False
+        #: The item withholding this box, once one does (#924).  The scan used
+        #: to end there; it now goes on for the rows that can run without
+        #: taking anything that item waits for -- a dependent on its
+        #: producer's allowance -- and for nothing else (#985).
+        withheld_for: str | None = None
         for item in ready:
             key = str(item.get("action_key", ""))
+            if withheld_for is not None and not self._may_serve_a_producer(item):
+                continue
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     if key:
@@ -12637,6 +12712,11 @@ class PoolQueue:
                     # Preserve the sealed demand but reserve this worker's single
                     # physical GPU; the controller keeps multi-slot work exclusive.
                     reservation_demand["gpu"] = 1
+                # The sealed host demand, before #985 adds a producer's export
+                # allowance to what this claim reserves (below).
+                sealed_host_demand = dict(demand)
+                allowance = None
+                dependent_owner: object = cpu_admission._UNREAD
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
@@ -12688,7 +12768,39 @@ class PoolQueue:
                         # pass even unknown facts explicitly: no locked reread.
                         identity = (cpu_admission.action_identity(item)
                                     if controller is not None else None)
-                        contract = (gpu_admission.action_contract(item, demand)
+                        # #985, outside the admission lock and after the
+                        # identity read, whose bytes these reuse
+                        # (``adaptive_cpu._LAST_REQUEST``): a producer's export
+                        # allowance, and the producer a dependent serves.  Only
+                        # rows that carry the lane's marker -- a producer's
+                        # ``produced_output`` reference, an export-shaped row --
+                        # ask, so no ordinary candidate pays for them.
+                        if controller is not None:
+                            if item.get("produced_output") is not None:
+                                allowance = cpu_admission.producer_allowance(item)
+                                if allowance and not int(sealed_host_demand.get("cpu", 0)):
+                                    # An unbounded-CPU producer inherits the worker's
+                                    # whole affinity: there is no CPU set to carve an
+                                    # allowance out of, and adding one would turn its
+                                    # historical unbounded demand into a bounded one.
+                                    allowance = None
+                                if allowance and any(
+                                        total.get(kind, 0)
+                                        < reservation_demand.get(kind, 0) + int(allowance[kind])
+                                        for kind in cpu_admission.EXPORT_DEMAND):
+                                    # A producer that fits this box only without the
+                                    # allowance runs as it did before it existed.
+                                    allowance = None
+                                if allowance:
+                                    for kind in cpu_admission.EXPORT_DEMAND:
+                                        demand[kind] = int(demand.get(kind, 0)) + int(allowance[kind])
+                                        reservation_demand[kind] = (
+                                            int(reservation_demand.get(kind, 0)) + int(allowance[kind]))
+                            if self._may_serve_a_producer(item):
+                                # The sealed request names the owner; the row's hint
+                                # only says which rows are worth the read.
+                                dependent_owner = cpu_admission.dependent_owner(item)
+                        contract = (gpu_admission.action_contract(item, sealed_host_demand)
                                     if gpu_controller is not None and demand.get("gpu")
                                     else None)
                         # Host admission's exclusive half, and only that half: read
@@ -12707,13 +12819,37 @@ class PoolQueue:
                         cpu_decision = gpu_decision = token_shortage = None
                         with self._admission_lock(controller):
                             if controller is not None:
-                                adaptive = controller.decision(item, demand, identity=identity)
+                                adaptive = controller.decision(
+                                    item, demand, identity=identity, owner=dependent_owner,
+                                    allowance=allowance)
                                 cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
                                     refusal_source = "adaptive_cpu_refused"
+                            funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
+                            if funded_claim:
+                                # The funded kinds come from the producer's
+                                # allowance, not ``free/`` (#985): only the
+                                # remainder, if any, is taken, and only it is
+                                # what the commit must file.
+                                funded = adaptive["funded"]
+                                covered = {"cpu": len(funded["cpus"]),
+                                           "mem_gb": int(funded["mem_gb"])}
+                                demand = {kind: int(need) - covered.get(kind, 0)
+                                          for kind, need in demand.items()
+                                          if int(need) - covered.get(kind, 0) > 0}
+                                reservation_demand = dict(demand)
+                            elif withheld_for is not None:
+                                # An earlier item is withholding this box.  Only
+                                # a dependent on its producer's allowance takes
+                                # nothing that item waits for (#985); any other
+                                # row is left as the withhold always left it,
+                                # unevaluated: no pass, no withhold of its own.
+                                refused = True
+                                refusal_source = "deferred_behind_withholding"
+                                adaptive = None
                             if not refused and gpu_controller is not None and demand.get("gpu"):
-                                adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
+                                adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
                                 gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:
@@ -12769,9 +12905,18 @@ class PoolQueue:
                                 # passes and its place, and is denied starved.
                                 verdict = dict(verdict, withhold=False,
                                                why="measurement_admits_only_its_dependents")
-                            self.record_pass(key)
                             reason = refusal_source or "adaptive_refused"
                             evidence: dict[str, object] = {"decision": decision or {}}
+                            if refusal_source == "deferred_behind_withholding":
+                                # Not a refusal of this item's own: no pass.
+                                # Recorded for a producer's export, whose
+                                # producer is waiting on it; any other row the
+                                # scan looked at stays as silent as before.
+                                if isinstance(dependent_owner, str):
+                                    evidence["withheld_for"] = withheld_for
+                                    self.record_denial(item, reason, evidence)
+                                continue
+                            self.record_pass(key)
                             if verdict is not None and verdict["eligible"]:
                                 # #924: an occupied-box refusal holds the box
                                 # shut while its holders drain soon, exactly as
@@ -12780,7 +12925,8 @@ class PoolQueue:
                                 evidence["withhold"] = verdict
                                 if verdict["withhold"]:
                                     self.record_denial(item, f"{reason}_withholding", evidence)
-                                    return None
+                                    withheld_for = key
+                                    continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
                                                        "holders": verdict.get("holders")}
@@ -12813,7 +12959,8 @@ class PoolQueue:
                             if withholding and verdict["withhold"]:
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
-                                return None
+                                withheld_for = key
+                                continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
                                 # box run what fits while the holders in its way
@@ -12828,7 +12975,8 @@ class PoolQueue:
                     allocation = (ledger.cpu_allocation(handle, cpu_tiers)
                                   if ledger is not None and handle is not None and cpu_tiers is not None else None)
                     fallback_deferral = (self._defer_fallback(item, demand)
-                                          if allocation is not None and allocation["fallback"] else None)
+                                          if allocation is not None and allocation["fallback"]
+                                          and not (adaptive or {}).get("funded_by") else None)
                     if fallback_deferral is not None:
                         ledger.abandon_acquire(handle)
                         self._return_borrow(controller, borrow)

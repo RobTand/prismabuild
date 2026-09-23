@@ -21,7 +21,7 @@ import stat
 import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
-from . import storage_tiers
+from . import adaptive_cpu, storage_tiers
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -475,7 +475,7 @@ class ProducedSpool:
             tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
             command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
                        "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
-            demand = {"cpu": 1, "mem_gb": 1}
+            demand = dict(adaptive_cpu.EXPORT_DEMAND)
             # Opted in, the pool write enters under a reservation on the tier
             # its prewrite names -- the tier its batch stages through, or for
             # a write-only template (#912) the tier a later consumer stages
@@ -514,7 +514,7 @@ class ProducedSpool:
                 worker_script=launch["worker_script"], **launch["addressing"],
                 resources=dict(record["action"]["params"]["demand"]), tags=[self.host],
                 max_attempts=3, retry_safe=True, priority=launch["priority"],
-                refuse_withdrawn=True)
+                dependent_of=self.owner, refuse_withdrawn=True)
         elif state in {"failed", "withdrawn"}:
             return {"ok": False, "complete": False, "export_key": key,
                     "refusal": f"export-{state}"}
