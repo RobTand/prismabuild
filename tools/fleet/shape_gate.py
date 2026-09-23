@@ -122,9 +122,10 @@ REFERENCE_TABLES: dict[str, dict[str, object]] = {
         "chunk_edge_inside_entry": True,
     },
     # GLM layer-44 Stage B executable readset: 10,344 entries in 22 phases,
-    # 138.08 GiB.  Its largest phase is 32.01 GiB, under a 40 GiB chunk, and
-    # its total fits the 160 GiB RAM window: it tests entry count and phase
-    # count through both tiers, not chunking and not the RAM slide.
+    # 138.08 GiB unique.  Four phases read one 8 GiB spill plane, so the plan
+    # reads 162.08 GiB, past the 160 GiB RAM window.  Its largest phase is
+    # 32.01 GiB, under a 40 GiB chunk: it tests revisits, entry count, phase
+    # count and the RAM slide through both tiers, not the in-entry chunk edge.
     "bc2a3bc8ad11": {
         "sha256": "0483746a8752ea710caca0ee539eed2bbc6be34917dcc93b5d9851781b304538",
         "chunk_edge_inside_entry": False,
@@ -1022,10 +1023,16 @@ class ShapeGate:
             "ram_window_units": self.window_gib,
             "chunks": chunks,
             "manifest_bytes": total,
+            # A v2 read plan may read an entry again in a later phase, and the
+            # tiers' window and frontier are linear in these bytes, revisits
+            # included (docs/design.md, "Opt-in data-manifest v2").
+            "read_bytes": int(coverage["read_bytes"]),
+            "entry_reads": sum(len(phase["entry_indices"]) for phase in self.phases),
             "stage_bytes_moved": moved("stage_move.py"),
             "ram_bytes_moved": moved("ram_promote.py"),
             "bytes_read_strictly": sum(int(item["bytes"]) for item in self.read),
             "entries_read_strictly": len(self.read),
+            "unique_entries_read": len({int(item["entry"]) for item in self.read}),
             "stage_movers": len(self.ran["stage_move.py"]),
             "ram_promotions": len(self.ran["ram_promote.py"]),
             "stage_egresses": sum(1 for record in self.ran["stage_release.py"]
@@ -1034,7 +1041,7 @@ class ShapeGate:
                                 if record["tier"] == "ram"),
             "ram_peak_bytes": self.ram_peak_bytes,
             "ram_window_bytes": self.window_gib * storage_tiers.GIB,
-            "ram_slide": total > self.window_gib * storage_tiers.GIB,
+            "ram_slide": int(coverage["read_bytes"]) > self.window_gib * storage_tiers.GIB,
             "pool_opens": opens,
             "cycles": self.cycles,
             "adaptations": [
@@ -1054,9 +1061,9 @@ def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
 
     Returns the result on a pass.  Raises :class:`ShapeGateFailure` otherwise:
     a refused mover, a stalled window, a read the RAM tier could not serve,
-    bytes that differ, a pool open during a promotion or a read, bytes moved
-    twice, or -- with ``require_chunk_edge`` -- a shape that cannot put a
-    chunk edge inside an entry.
+    bytes that differ, a pool open during a promotion or a read, a byte moved
+    more often than the plan reads it, or -- with ``require_chunk_edge`` -- a
+    shape that cannot put a chunk edge inside an entry.
     """
 
     shape = scaled_shape(table, scale=scale)
@@ -1065,18 +1072,26 @@ def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
                      require_chunk_edge=require_chunk_edge)
     result = gate.run()
     total = int(result["manifest_bytes"])
+    reads = int(result["read_bytes"])
     problems = []
-    for field in ("stage_bytes_moved", "ram_bytes_moved", "bytes_read_strictly"):
-        if int(result[field]) != total:
-            problems.append(f"{field} is {result[field]}, not the manifest's {total}")
-    if int(result["entries_read_strictly"]) != int(result["entries"]):
-        problems.append("not every entry was read back")
+    # Each tier moves every unique byte at least once and no byte more often
+    # than the plan reads it.  Without revisits the two bounds are one number.
+    for field in ("stage_bytes_moved", "ram_bytes_moved"):
+        if not total <= int(result[field]) <= reads:
+            problems.append(f"{field} is {result[field]}, outside the manifest's "
+                            f"{total} unique bytes and {reads} read bytes")
+    if int(result["bytes_read_strictly"]) != reads:
+        problems.append(f"bytes_read_strictly is {result['bytes_read_strictly']}, "
+                        f"not the plan's {reads}")
+    if (int(result["entries_read_strictly"]) != int(result["entry_reads"])
+            or int(result["unique_entries_read"]) != int(result["entries"])):
+        problems.append("not every entry the plan reads was read back")
     if any(result["pool_opens"].values()):                   # type: ignore[union-attr]
         problems.append(f"the pool was opened outside a stage mover: {result['pool_opens']}")
     if int(result["ram_peak_bytes"]) > int(result["ram_window_bytes"]):
         problems.append("the RAM tier held more than its window")
-    if total > int(result["ram_window_bytes"]) and not int(result["ram_egresses"]):
-        problems.append("the shape is larger than the RAM window and nothing "
+    if reads > int(result["ram_window_bytes"]) and not int(result["ram_egresses"]):
+        problems.append("the plan reads more than the RAM window and nothing "
                         "egressed from RAM")
     if problems:
         raise ShapeGateFailure("result_refused", "; ".join(problems), result)

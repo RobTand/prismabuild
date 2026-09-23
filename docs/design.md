@@ -2908,10 +2908,12 @@ past the data: the real `tier_loop.cycle` mints the tiers and admits the
 movers, the real `stage_move`, `ram_promote` and `stage_release` nodes run
 in-process under a claimed action key, and the reader uses the published
 residency map.  An audit hook counts every open of the source pool outside
-a stage mover.  The run passes only when each tier moved exactly the
-manifest's bytes, every entry read back bit-exactly from RAM, the pool was
-never opened during a promotion or a read, the RAM tier never held more than
-its window, and a shape larger than the window egressed from RAM.  Every
+a stage mover.  The run passes only when each tier moved every unique
+byte of the manifest at least once and no byte more often than the read
+plan reads it, every entry the plan reads read back bit-exactly from RAM, the
+pool was never opened during a promotion or a read, the RAM tier never held
+more than its window, and a plan that reads more than the window egressed
+from RAM.  Every
 root is under the test's `tmp_path`; the gate refuses a shared root other
 than the one the test fixture installs, and never touches `/stage/*`,
 `/ram/*` or the live queue.
@@ -2919,17 +2921,21 @@ than the one the test fixture installs, and never touches `/stage/*`,
 **The reference tables** live in `tools/fleet/shape_gate_tables/` and are
 registered, with their sha256, in `shape_gate.REFERENCE_TABLES`:
 
-| Table | Source | Entries | Phases | Bytes | Chunk edge in an entry | RAM slide |
-| --- | --- | --- | --- | --- | --- | --- |
-| `682e7b0a859f` | PQ consumer `a7d31a4da9c1`, the #965 read plan | 9,255 | 6 | 175.71 GiB | yes (two phases over a chunk) | yes |
-| `bc2a3bc8ad11` | GLM layer-44 Stage B executable readset | 10,344 | 22 | 138.08 GiB | no | no |
+| Table | Source | Entries | Phases | Unique bytes | Read bytes | Chunk edge in an entry | RAM slide |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `682e7b0a859f` | PQ consumer `a7d31a4da9c1`, the #965 read plan | 9,255 | 6 | 175.71 GiB | 175.71 GiB | yes (two phases over a chunk) | yes |
+| `bc2a3bc8ad11` | GLM layer-44 Stage B executable readset | 10,344 | 22 | 138.08 GiB | 162.08 GiB | no | yes |
 
 Each table carries a `chunk_edge_inside_entry` flag, checked against the
 table's own coverage under the checkout's RAM policy, and the registry must
 hold at least one table where it is true: a gate that cannot put a chunk
 edge inside an entry did not test the defect it exists for.  The layer-44
-table is the breadth table; it fits the RAM window and no phase exceeds a
-chunk.  Add a table with `shape_gate.py extract <manifest>` and register it.
+table is the breadth and revisit table: four of its phases read one 8 GiB
+spill plane, and no phase exceeds a chunk.  A revisit is staged and read
+again, because each tier's window and frontier are linear in the plan's read
+bytes, so the gate requires each tier to move between the manifest's unique
+bytes and its read bytes, and the reader to read every phase's entries.  Add
+a table with `shape_gate.py extract <manifest>` and register it.
 
 **How a publish consumes it.**  The gate is one pbtest shard of
 `tests/gate_campaign_shape.py`, a file the ordinary suite does not collect,

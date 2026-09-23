@@ -121,14 +121,42 @@ def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
     assert result["chunks"]["ram"] > result["phases"]
     assert result["overlapping_files"] == 1
     assert result["digest_less_entries"] == 7
+    assert result["read_bytes"] == total
     assert (result["stage_bytes_moved"], result["ram_bytes_moved"],
             result["bytes_read_strictly"]) == (total, total, total)
     assert result["entries_read_strictly"] == result["entries"]
+    assert result["unique_entries_read"] == result["entries"]
     assert result["pool_opens"] == {"promote": 0, "read": 0, "egress": 0}
     assert total > result["ram_window_bytes"] and result["ram_egresses"] >= 1
     assert result["ram_slide"] is True
     assert result["ram_peak_bytes"] <= result["ram_window_bytes"]
     assert result["coverage"]["chunk_edge_inside_entry"] is True
+
+
+def test_a_plan_that_reads_an_entry_again_moves_and_reads_it_again(
+        tmp_path: Path, small_units) -> None:
+    """A v2 revisit is staged again: each tier's frontier is linear in read bytes.
+
+    The GLM layer-44 readset reads one 8 GiB spill plane in four phases.  A
+    revisit is moved and read again, so the bytes each tier moves are the
+    plan's read bytes, not the manifest's unique bytes, and still no more.
+    """
+
+    table = _campaign_like()
+    head = table["phases"][0]["entry_indices"]
+    table["phases"].append({"name": "revisit-head", "entry_indices": list(head)})
+    table["source"]["phase_count"] += 1
+
+    result = _run(tmp_path, table)
+
+    total, reads = result["manifest_bytes"], result["read_bytes"]
+    assert reads == total + sum(max(1, table["entries"][index][2] // SMALL_SCALE)
+                                for index in head)
+    assert (result["stage_bytes_moved"], result["ram_bytes_moved"],
+            result["bytes_read_strictly"]) == (reads, reads, reads)
+    assert result["entry_reads"] == result["entries"] + len(head)
+    assert result["entries_read_strictly"] == result["entry_reads"]
+    assert result["unique_entries_read"] == result["entries"]
 
 
 def test_a_byte_cut_splitter_is_refused_by_name(

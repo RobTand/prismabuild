@@ -875,7 +875,11 @@ fi
 say ""
 say "# step 5: publish a runtime generation whose default transport is slurm"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$PUBLISH --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")${SHAPE_GATE[@]+ $(printf '%q ' "${SHAPE_GATE[@]}")}"
+    gate_words=""
+    if [ "${#SHAPE_GATE[@]}" -gt 0 ]; then
+        gate_words="$(printf ' %q' "${SHAPE_GATE[@]}")"
+    fi
+    say "$PUBLISH --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")$gate_words"
 else
     $PUBLISH --default-transport slurm --rollout rolling --rollout-reason "$ROLLOUT_REASON" \
         ${SHAPE_GATE[@]+"${SHAPE_GATE[@]}"} \

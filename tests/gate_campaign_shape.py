@@ -17,9 +17,10 @@ scale, against a hermetic queue, stage and RAM root under ``tmp_path``:
   (#965).  9,255 entries in six phases; two phases are larger than a chunk,
   two chunk edges fall inside entries, and the total exceeds the RAM window.
 * ``bc2a3bc8ad11``: the GLM layer-44 Stage B executable readset.  10,344
-  entries in 22 phases, 138.08 GiB.  No phase exceeds a chunk and the total
-  fits the RAM window, so it exercises neither the in-entry chunk edge nor
-  the RAM slide; it is the breadth table.
+  entries in 22 phases, 138.08 GiB unique.  Four phases read one 8 GiB
+  spill plane, so the plan reads 162.08 GiB, past the RAM window.  No phase
+  exceeds a chunk, so it does not exercise the in-entry chunk edge; it is
+  the breadth and revisit table.
 
 The harness is ``tools/fleet/shape_gate.py``; its own tests are
 ``tests/test_the_campaign_shape_harness.py``.  On a pass each result is
