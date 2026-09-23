@@ -27,14 +27,16 @@ published, claimed and finished through the real ``PoolQueue``; submissions,
 deferred releases and operator releases go through the real ``pbrun.main``
 and ``deferred_release.release_tick``. A submitter's death between its
 declaration and its row is a ``publish_consumer_row`` that raises, and a
-publish is the fleet's ``repo`` link moving to another generation.
+publish is the fleet's ``repo`` link moving to another generation. The
+operator who races a submitter is a separate Python process, so the lock it
+meets is the submitter's ``fcntl`` lock, not this process's thread mutex.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
-import threading
 
 import pytest
 
@@ -96,6 +98,35 @@ def _dies_after_declaring(tmp_path: Path, queue, monkeypatch, *argv: str) -> str
     [key] = seen
     assert po._key_generation(queue, key)[0] == "absent"
     return key
+
+
+#: An operator's release in its own process: prints the answer or the refusal.
+_OPERATOR = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from prismabuild import pool, produced_output as po
+root, ref, key, live, cas = sys.argv[2:7]
+try:
+    answer = po.release_origin_consumer(
+        pool.PoolQueue(root), json.loads(ref), consumer_action_key=key,
+        by="op", live_runtime=live, cas_root=cas)
+except po.ProducedOutputError as exc:
+    answer = {"refusal": str(exc)}
+print(json.dumps(answer))
+"""
+
+
+def _release_elsewhere(queue, committed: dict, key: str, *, live: Path,
+                       cas: Path) -> dict:
+    """Release from another process, as an operator's ``pbrun`` would."""
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    done = subprocess.run(
+        [sys.executable, "-c", _OPERATOR, str(src), str(queue.root),
+         json.dumps(committed["ref"]), key, str(live), str(cas)],
+        capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
 
 
 def _release(monkeypatch, capsys, committed: dict, key: str) -> dict:
@@ -217,32 +248,25 @@ def test_a_submitter_between_its_declaration_and_its_row_holds_off_the_release(
     seen: dict[str, object] = {}
 
     def racing(q, action, template, *, key, **kwargs):
-        # Declared, row not yet published: an operator releases from
-        # another thread, as another process would.
+        # Declared, row not yet published: an operator releases it now.
         assert po._consumer_state(queue, key) == "unpublished"
-
-        def operator() -> None:
-            try:
-                seen["answer"] = po.release_origin_consumer(
-                    queue, committed["ref"], consumer_action_key=key, by="op",
-                    live_runtime=live, cas_root=tmp_path / "cas")
-            except po.ProducedOutputError as exc:
-                seen["refusal"] = str(exc)
-
-        thread = threading.Thread(target=operator)
-        thread.start()
-        thread.join()
         seen["key"] = key
+        seen["operator"] = _release_elsewhere(
+            queue, committed, key, live=live, cas=tmp_path / "cas")
         return real(q, action, template, key=key, **kwargs)
 
     monkeypatch.setattr(pbrun, "publish_consumer_row", racing)
     _pbrun(monkeypatch, capsys, *_consumer_argv(work, manifest, "true"))
     key = str(seen["key"])
-    assert "answer" not in seen, (
-        f"the release landed while the row was still to come: {seen.get('answer')}")
-    assert "origin-consumer-submitting" in str(seen["refusal"])
+    operator = seen["operator"]
+    assert "refusal" in operator, (
+        f"the release landed while the row was still to come: {operator}")
+    assert "origin-consumer-submitting" in str(operator["refusal"])
     assert po._consumer_state(queue, key) == "live"
     assert not po._released_consumers_dir(queue.root, instance, "b1").exists()
+    after = _release_elsewhere(queue, committed, key, live=live,
+                               cas=tmp_path / "cas")
+    assert "origin-consumer-live" in str(after.get("refusal")), after
     _run_consumer(queue, key, "executed", tags=("sparky", "gb10"))
     assert [event["event"] for event in po.origin_retirement_tick(queue)] == [RETIRED]
 
