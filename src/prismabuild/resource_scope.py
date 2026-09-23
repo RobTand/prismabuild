@@ -103,9 +103,11 @@ def cgroup_membership(path: Path) -> str:
 def procs_in_cgroup(membership: str, *, errors: list[str] | None = None) -> list[int]:
     """Every process whose own ``/proc`` entry names this scope or a leaf of it.
 
-    The broker keeps the payload leaf ``drwx------ root root``, so the leaf the
-    action actually runs in cannot be listed, entered or read by the worker
-    that launched it -- and that leaf is where every one of its processes is.
+    A broker installed before #916 keeps the payload leaf ``drwx------ root
+    root``, so the leaf the action actually runs in cannot be listed, entered
+    or read by the worker that launched it -- and that leaf is where every one
+    of its processes is.  A current broker makes it ``drwxr-xr-x``, but a host
+    is not upgraded until its client upgrader rotates the broker.
     ``/proc/<pid>/cgroup`` is world-readable and says the same thing from the
     other side, so membership is read from the processes rather than from a
     directory this uid may not open.

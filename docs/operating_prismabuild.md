@@ -2161,9 +2161,10 @@ with no minimum timeout grant, and does not start at or after expiry. If a later
 pressure read is skipped, the CPU readings already collected remain available
 with a deadline diagnostic. Earlier measurements on sparky took
 0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
-two seconds, and on a contained attempt each tick scans `/proc` for the scope's
-members, because the broker's payload leaf is `drwx------` and its
-`cgroup.procs` cannot be read directly.
+two seconds. On a contained attempt, each tick reads the scope's members from
+its `cgroup.procs` files. When a broker installed before #916 has left the
+payload leaf `drwx------`, the tick cannot read the leaf and scans `/proc` for
+the scope's members instead.
 
 CSV collection visits files in reverse discovery order and reads rows backwards
 from each captured EOF in 64 KiB blocks. Recent appended samples therefore get
