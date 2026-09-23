@@ -268,15 +268,30 @@ class _World:
         return rc, receipt
 
 
+#: Where the copy meets the divergence.  ``adopt``: the adoption proof before
+#: any copy, the ordinary case.  ``publish``: the name diverged only after
+#: that proof, so the copy meets it at its own publication; ``try_adopt`` is
+#: skipped to put the mover there.
+STEPS = ["adopt", "publish"]
+
+
+def _meet_at(monkeypatch, step: str) -> None:
+    if step == "publish":
+        monkeypatch.setattr(stage_move._StagedPublisher, "try_adopt",
+                            lambda self, *args, **kwargs: None)
+
+
+@pytest.mark.parametrize("step", STEPS)
 @pytest.mark.parametrize("order", sorted(ORDERS))
 @pytest.mark.parametrize("consumer_state", ["failed", "withdrawn", "executed"])
 def test_an_ended_owner_is_invalidated_and_the_mover_is_not_republished(
-        fleet, tmp_path, monkeypatch, consumer_state, order) -> None:
+        fleet, tmp_path, monkeypatch, consumer_state, order, step) -> None:
     """RED on the base source: the window republishes the mover every cycle."""
 
     queue, stage, _ = fleet
     consumer, mover = _old_owner(fleet, consumer_state)
     world = _World(fleet, tmp_path, monkeypatch, order)
+    _meet_at(monkeypatch, step)
     name = _divergent(order)
     before = os.stat(_staged(stage, name))
 
@@ -301,20 +316,28 @@ def test_an_ended_owner_is_invalidated_and_the_mover_is_not_republished(
     assert row["stage_path"] == str(_staged(stage, name))
     assert row["owners"] == [{"consumer_action_key": consumer,
                               "mover_action_key": mover, "state": "ended"}]
-    # The untouched name was adopted, never rewritten.
+    # The untouched name kept its bytes: adopted, or republished identically.
     other = NAMES[0] if name == NAMES[1] else NAMES[1]
     assert _staged(stage, other).read_bytes() == OLD
     assert residency_plan.superseded(queue, world.plan) is None
+    # One judgment per owner, wherever the copy met it, and one act: the
+    # copy's own rename over the old file, never an unlink before the copy.
+    timings = receipt["phase_timings"]
+    assert timings["thread_seconds"]["owner_judgement"]["calls"] == 1
+    assert timings["outcomes"].get("replaced_ended_owner") == 1, (
+        timings["outcomes"])
 
 
+@pytest.mark.parametrize("step", STEPS)
 @pytest.mark.parametrize("order", sorted(ORDERS))
 def test_a_live_owner_is_a_terminal_conflict_naming_both_owners(
-        fleet, tmp_path, monkeypatch, order) -> None:
+        fleet, tmp_path, monkeypatch, order, step) -> None:
     """RED on the base source: rc 0, no refusal, and the loop continues."""
 
     queue, stage, _ = fleet
     consumer, mover = _old_owner(fleet, "claimed")
     world = _World(fleet, tmp_path, monkeypatch, order)
+    _meet_at(monkeypatch, step)
     name = _divergent(order)
     path = _staged(stage, name)
     before = os.stat(path)
@@ -415,3 +438,57 @@ def test_an_owner_whose_ending_is_unproven_is_never_replaced(
     assert residency_plan.superseded(queue, world.plan) is None
     assert any(name in error for error in receipt["errors"]), (
         json.dumps(receipt["errors"]))
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
+        fleet, tmp_path, monkeypatch, step) -> None:
+    """A live owner that names the path between the judgment and the act.
+
+    The ended owner is judged; then, before the stage lock is taken, a live
+    consumer's mover files a fragment dating the same inode.  The decision
+    under the stage lock sees an owner nobody judged, so it acts on nothing,
+    and the publication judges the newcomer and finds it live.  The live
+    copy is never destroyed on the strength of a judgment that did not
+    include its owner.  ``publish`` is the case where the next act would be
+    the replacement itself.
+    """
+
+    queue, stage, _ = fleet
+    consumer, mover = _old_owner(fleet, "failed")
+    world = _World(fleet, tmp_path, monkeypatch, "last")
+    _meet_at(monkeypatch, step)
+    world.claim()
+    path = _staged(stage, NAMES[1])
+    before = os.stat(path)
+    late_consumer, late_mover = base._key(), base._key()
+    real = stage_move._StagedPublisher._judge_owners
+    arrived: list[bool] = []
+
+    def judge_then_arrive(self, pairs):
+        rows = real(self, pairs)
+        if not arrived:
+            arrived.append(True)
+            base._publish(queue, late_consumer, max_attempts=1)
+            stale._write_sidecar(queue, stage, late_consumer, late_mover,
+                                 stale._entries(stage))
+            stale._fragment(queue, stage, late_consumer, late_mover)
+        return rows
+
+    monkeypatch.setattr(stage_move._StagedPublisher, "_judge_owners",
+                        judge_then_arrive)
+
+    rc, receipt = world.run(claimed=True)
+
+    assert arrived
+    after = os.stat(path)
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
+                                                 before.st_mtime_ns)
+    assert path.read_bytes() == OLD
+    assert rc == 1 and receipt["refusal"] == "staged_destination_conflict", (
+        receipt.get("refusal"), receipt.get("errors"))
+    owners = {(row["consumer_action_key"], row["mover_action_key"]):
+              row["state"] for row in receipt["conflict"]["owners"]}
+    assert owners == {(consumer, mover): "ended",
+                      (late_consumer, late_mover): "live"}
+    assert not receipt.get("invalidated")

@@ -779,9 +779,9 @@ class _PhaseClock:
     ``publish_decide``, ``ownership_lock_wait``, ``ownership_lock_held``,
     ``publish_poll_sleep``, and ``owner_judgement`` for a divergent name's
     owners, #966) once per call.  ``outcomes`` counts how each entry ended:
-    adopted before any copy, published by its own rename, or adopted at
-    publication after copying; and, for a name every owner of which had
-    ended, invalidated before the copy or replaced at publication.
+    adopted before any copy, published by its own rename, adopted at
+    publication after copying, or -- a name every owner of which had ended
+    -- replaced at publication.
     """
 
     def __init__(self) -> None:
@@ -975,7 +975,10 @@ class _StagedPublisher:
         #: thread holding them must read as a wait, not as another process's
         #: contention.
         self._arbitration_lock = threading.Lock()
-        #: The names this run invalidated because every owner had ended, each
+        #: Owners this run proved ended, by ``(consumer, mover)``, each with
+        #: its judged row.  Read and written under ``_arbitration_lock``.
+        self._ended_owners: dict[tuple[str, str], dict[str, object]] = {}
+        #: The names this run replaced because every owner had ended, each
         #: with the owners it proved, for the receipt.  Appended under
         #: ``_arbitration_lock``.
         self.invalidated: list[dict[str, object]] = []
@@ -1056,10 +1059,14 @@ class _StagedPublisher:
 
         A divergence on a stage mover is arbitrated by its owners' states
         (#966, :meth:`_arbitration`) before anything is copied: a live owner
-        raises the terminal conflict, an unproven ending raises the
-        retryable refusal as before, and when every owner has ended the name
-        is invalidated -- unlinked under the locks -- so the copy publishes
-        it as a first publication, with no second judgment.
+        raises the terminal conflict and an unproven ending the retryable
+        refusal, as before, so neither costs a copy.  When every owner has
+        ended the copy proceeds, and its publication replaces the name by
+        rename; the owners' endings are remembered for the run, so the
+        publication does not judge them again.  Nothing is unlinked here: a
+        rename over the old file keeps its inode allocated until the new one
+        takes the name, so the new bytes can never reuse the inode number the
+        old owner's material dates, which would read as an in-place write.
         """
 
         want = int(entry["bytes"])
@@ -1106,7 +1113,12 @@ class _StagedPublisher:
                          declared: object, source_id: str | None,
                          owners: _Owners, detail: str | None,
                          ) -> tuple[int, str, dict[str, int]] | None:
-        """:meth:`try_adopt`'s answer for a name its search found divergent."""
+        """:meth:`try_adopt`'s answer for a name its search found divergent.
+
+        Acts on nothing: a live owner or an unproven ending refuses before
+        any copy, and otherwise the copy proceeds to a publication that
+        decides the name under the stage lock.
+        """
 
         def redo(fresh: _Owners) -> tuple:
             return self._decide(destination, want, declared, None, source_id,
@@ -1117,24 +1129,12 @@ class _StagedPublisher:
                 if verdict[0] == "adopt":
                     return want, verdict[1], verdict[2]
                 return None
-            if state in ("busy", "moved"):
-                # Nothing judged, or a new owner appeared: copy, and let the
-                # publication arbitrate under the locks again.
-                return None
             if state == "live":
                 raise self._conflict(norm, declared, detail, rows)
             if state == "uncertain":
                 raise _PublicationRefused(f"{detail}; {why}")
-            blocked = self._invalidation_blocked(norm, destination)
-            if blocked:
-                raise _PublicationRefused(
-                    f"{detail}; every owner has ended, but {blocked}")
-            try:
-                os.unlink(destination)
-            except FileNotFoundError:
-                pass
-            self._invalidated(norm, rows)
-            self.clock.outcome("invalidated_ended_owner")
+            # ``ended``: the publication replaces it.  ``busy`` or ``moved``:
+            # nothing was decided, and the publication arbitrates again.
             return None
 
     def publish(self, entry: dict[str, object], destination: Path,
@@ -1267,13 +1267,21 @@ class _StagedPublisher:
         Before this, a name whose recorded owner held different bytes was
         refused forever: the refusal was retryable, the retry met the same
         owner, and a mover whose owner had long ended reran without end
-        while holding fill.  The owners' states now decide it.  Every owner
-        the search collected is judged under its own transition locks --
-        consumers, then movers, each set sorted, taken without blocking so a
-        long egress or claim never stalls a copy; contention is ``busy`` --
-        and then, under the stage ownership lock, the name is decided again
-        by ``redo`` with a fresh collector.  The lock order is the one every
-        holder keeps: transition before ownership.
+        while holding fill.  The owners' states now decide it.
+
+        Each owner not already proven ended in this run is judged under its
+        own transition locks -- consumers, then movers, each set sorted,
+        taken without blocking so a long egress or claim never stalls a
+        copy; contention is ``busy`` -- and then, under the stage ownership
+        lock, the name is decided again by ``redo`` with a fresh collector.
+        The lock order is the one every holder keeps: transition before
+        ownership.  An owner proven ended is remembered for the rest of the
+        run, so a range whose names one dead owner holds is judged once, not
+        once per name: an ending is terminal for the queue unless the same
+        key is deliberately resubmitted, and a consumer resubmitted after
+        this judgment meets this copy's bytes under the name and is refused
+        by name, since its own arbitration finds this consumer live.  What a
+        judgment reads is listed in :meth:`_owner_state`.
 
         Yields ``(state, rows, verdict, why)``:
 
@@ -1282,27 +1290,25 @@ class _StagedPublisher:
         * ``changed``: under the stage lock the name no longer diverges, and
           ``verdict`` is the fresh decision, for the caller to act on while
           the lock is held;
-        * ``moved``: it still diverges, but an owner nobody judged names it
-          now;
+        * ``moved``: it still diverges, but an owner that was never judged
+          names it now;
         * ``live``: an owner's consumer is still queued or claimed -- a real
           conflict, refused terminally and never destroyed;
         * ``uncertain``: an ending could not be proven, or a fragment could
           not be read; the refusal stays retryable, as it always was;
-        * ``ended``: every owner that names the name now has provably
-          ended.
+        * ``ended``: every owner that names it now has provably ended.
 
-        ``rows`` are the judged owners that name it now, each with its
-        state.  What the judgment reads is listed in :meth:`_owner_state`;
-        it is only the owners' own queue records, under their own locks, and
-        it runs only on a divergence.
+        ``rows`` are the owners that name it now, each with its state.
         """
 
         with self._arbitration_lock:
+            pending = sorted(pair for pair in owners.pairs
+                             if pair not in self._ended_owners)
+            judged: dict[tuple[str, str], dict[str, object]] = {}
             with ExitStack() as held:
-                consumers = sorted({c for c, _ in owners.pairs
+                consumers = sorted({c for c, _ in pending
                                     if _is_action_key(c)})
-                movers = sorted({m for _, m in owners.pairs
-                                 if _is_action_key(m)})
+                movers = sorted({m for _, m in pending if _is_action_key(m)})
                 for key in consumers:
                     if not held.enter_context(self.queue._transition_locked(
                             key, blocking=False)):
@@ -1317,8 +1323,15 @@ class _StagedPublisher:
                                f"owner mover {key[:12]}'s transition lock "
                                f"is held")
                         return
-                with self.clock.timing("owner_judgement"):
-                    judged = self._judge_owners(owners.pairs)
+                if pending:
+                    with self.clock.timing("owner_judgement"):
+                        rows = self._judge_owners(set(pending))
+                    for row in rows:
+                        pair = (str(row["consumer_action_key"]),
+                                str(row["mover_action_key"]))
+                        judged[pair] = row
+                        if row["state"] == "ended":
+                            self._ended_owners[pair] = row
                 with self._ownership():
                     fresh = _Owners()
                     with self.clock.timing("publish_decide"):
@@ -1326,13 +1339,12 @@ class _StagedPublisher:
                     if verdict[0] != "divergent":
                         yield "changed", [], verdict, ""
                         return
-                    if not fresh.pairs <= owners.pairs:
+                    known = {**self._ended_owners, **judged}
+                    if any(pair not in known for pair in fresh.pairs):
                         yield ("moved", [], verdict,
                                "an owner that was not judged names it now")
                         return
-                    rows = [row for row in judged
-                            if (row["consumer_action_key"],
-                                row["mover_action_key"]) in fresh.pairs]
+                    rows = [known[pair] for pair in sorted(fresh.pairs)]
                     state, why = _combined_owner_state(rows, fresh.complete)
                     yield state, rows, verdict, why
 
