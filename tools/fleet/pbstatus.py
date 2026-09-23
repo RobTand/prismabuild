@@ -1687,6 +1687,61 @@ def _starvation_gaps() -> list[dict]:
     ]
 
 
+def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
+                                  unreadable: list[str]) -> list[dict]:
+    """Every ledger whose last retire could not read a holder (#936).
+
+    A holder that stays unreadable refuses every mint on its ledger and
+    bounds every shrink by the mint markers instead of the truth, and a
+    claim the lower-bound total cannot seat is refused as
+    ``tier_census_unreadable``.  The ledger's own report names the holder,
+    its errno, the kinds asked and retired and how many consecutive
+    censuses it has lasted, so the refusal is attributed here rather than
+    read as an empty ledger.  Host ledgers and tier ledgers both file one;
+    an exact census removes it.
+    """
+
+    ledgers: list[tuple[str, str, pool.ResourceLedger]] = []
+    try:
+        with os.scandir(queue.root / pool.RESERVATIONS) as entries:
+            hosts = sorted(entry.name for entry in entries if entry.is_dir())
+    except FileNotFoundError:
+        hosts = []
+    except OSError as exc:
+        notes.append(f"starvation host ledgers: {exc}")
+        unreadable.append(f"starvation host ledgers: {exc}")
+        hosts = []
+    ledgers.extend(("host", host, queue.ledger(host)) for host in hosts)
+    try:
+        ledgers.extend(("tier", tier_id, queue.tier_ledger(tier_id))
+                       for tier_id in queue.tier_ids())
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        notes.append(f"starvation tier census reports: {exc}")
+        unreadable.append(f"starvation tier census reports: {exc}")
+    reports: list[dict] = []
+    for kind, name, ledger in ledgers:
+        try:
+            report = pool._read_json(ledger.census_report_path)
+        except (OSError, pool.PoolContractError) as exc:
+            notes.append(f"starvation {kind} ledger {name} census report: {exc}")
+            unreadable.append(f"starvation {kind} ledger {name} census report: {exc}")
+            continue
+        if report is None:
+            continue
+        holders = report.get("unreadable")
+        holders = [dict(entry) for entry in holders
+                   if isinstance(entry, Mapping)] if isinstance(holders, list) else []
+        reports.append({"ledger_kind": kind, "ledger_id": name, **report,
+                        "unreadable": holders})
+        named = ", ".join(f"{entry.get('holder')} errno {entry.get('errno')}"
+                          for entry in holders)
+        notes.append(
+            f"{kind} ledger {name}: {len(holders)} unreadable holder(s) for "
+            f"{report.get('cycles')} census cycle(s); mints refused, last "
+            f"retire {report.get('retired')} ({named})")
+    return reports
+
+
 #: Schema of the --blocked-origins JSON blob (#926).
 BLOCKED_ORIGINS_SCHEMA_V1 = "prismabuild.pbstatus.blocked_origins.v1"
 
@@ -1833,6 +1888,8 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
     tiers = _starvation_tiers(queue, now=moment, notes=notes, unreadable=unreadable)
     denial_top = _starvation_denials(queue, notes=notes)
     starved = _starvation_starved(jobs)
+    census_unreadable = _starvation_census_unreadable(
+        queue, notes=notes, unreadable=unreadable)
     return {"schema": STARVATION_SCHEMA_V1,
             "queue_root": str(queue.root),
             "sampled_unix": moment,
@@ -1844,6 +1901,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             "tiers": tiers,
             "denial_top": denial_top,
             "starved": starved,
+            "census_unreadable": census_unreadable,
             "not_observable": _starvation_gaps()}
 
 

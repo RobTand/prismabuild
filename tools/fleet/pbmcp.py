@@ -1774,6 +1774,7 @@ class Session:
             "tiers": blob.get("tiers"),
             "denial_top": blob.get("denial_top"),
             "starved": blob.get("starved"),
+            "census_unreadable": blob.get("census_unreadable"),
             "not_observable": blob.get("not_observable"),
             "notes": blob.get("notes"),
         }
