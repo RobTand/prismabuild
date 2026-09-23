@@ -119,59 +119,81 @@ def _key_of(item):
 # -- the issue fixture -------------------------------------------------------
 
 
+def _twenty_cpu_gpu_box(queue, clock, monkeypatch, *, adaptive):
+    capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
+    tiers = {"preferred": list(range(20)), "fallback": []}
+    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
+        "psi_some": 0., "busy_cpus": 0.})
+
+    def claim():
+        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers))
+
+    # A multi-hour GPU holder, and a GPU action that has waited behind it
+    # long enough that its own first-denial clock is past the ceiling.
+    clock[0] = T0 - 3000
+    holder = _publish(queue, clock, _key("gpu-holder"), {"cpu": 2, "gpu": 1, "mem_gb": 48})
+    assert claim() == holder
+    clock[0] = T0 - 1500
+    waiting = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1, "mem_gb": 48})
+    return claim, holder, waiting
+
+
+@pytest.mark.parametrize("adaptive", [False, True], ids=["ledger", "adaptive_cpu"])
+def test_a_multi_hour_gpu_holder_does_not_hold_the_box_shut_for_cpu_work(
+    queue: pool.PoolQueue, clock, monkeypatch, adaptive: bool,
+) -> None:
+    """The 2026-09-04 half: the GPU holder is hours old and does not drain soon.
+
+    The GPU action is past the floor and inside its own ceiling, which before
+    #924 withheld the box for fifteen minutes behind a holder that would not
+    leave in them.  It now keeps its place and the box runs the shards.
+    """
+
+    claim, holder, waiting = _twenty_cpu_gpu_box(queue, clock, monkeypatch,
+                                                 adaptive=adaptive)
+    for _ in range(pool.STARVATION_FLOOR - 1):
+        assert claim() is None
+    shard = _publish(queue, clock, _key("shard"), {"cpu": 2, "mem_gb": 4})
+    assert claim() == shard
+    denial = _denial(queue, waiting)
+    assert denial["reason"] == "reservation_unavailable_starved"
+    assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
+    [named] = denial["evidence"]["starved"]["holders"]
+    assert named["action_key"] == holder[:12] and named["bound"] == "long"
+    assert queue.passes(waiting) == pool.STARVATION_FLOOR
+
+
 @pytest.mark.parametrize("adaptive", [False, True], ids=["ledger", "adaptive_cpu"])
 def test_a_gpu_action_behind_2cpu_shards_is_admitted_within_one_shard_lifetime(
     queue: pool.PoolQueue, clock, monkeypatch, adaptive: bool,
 ) -> None:
     """#924's acceptance fixture, on a 20-CPU GPU box.
 
-    A GPU action waits behind a multi-hour GPU holder, long enough that its own
-    first-denial clock is past ``WITHHOLD_CEILING_S``.  While the GPU is held
-    the box keeps running shards -- the holder does not drain soon, so the
-    item does not hold the box shut (2026-09-04).  Once the GPU frees, the
-    shards in the item's way are transient, so the item withholds the box and
-    is admitted when the first of them finishes.  Before #924 the item was
-    past its ceiling and never withheld again, and under adaptive admission it
-    was refused by the controller, which never withheld at all: either way the
-    next shard in the stream took the freed CPUs.
+    While the GPU is held the box runs 2-CPU shards on the other eighteen
+    CPUs.  When the GPU frees, two CPUs come back with it and the action needs
+    four.  The shards in its way are transient, so it withholds the box and is
+    admitted when the first of them finishes.  Before #924 it was past its own
+    ceiling and never withheld again -- and under adaptive admission the
+    controller refused the shortage, and a refusal never withheld at all --
+    so each freed pair of CPUs went to the next shard in the stream.
     """
 
-    capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
-    tiers = {"preferred": list(range(20)), "fallback": []}
-    state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-        "psi_some": 0., **state})
-
-    def claim():
-        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers))
-
-    clock[0] = T0 - 3000
-    holder = _publish(queue, clock, _key("gpu-holder"), {"cpu": 2, "gpu": 1, "mem_gb": 48})
-    assert claim() == holder
-
-    clock[0] = T0 - 1500
-    waiting = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1, "mem_gb": 48})
+    claim, holder, waiting = _twenty_cpu_gpu_box(queue, clock, monkeypatch,
+                                                 adaptive=adaptive)
     for _ in range(pool.STARVATION_FLOOR):
-        assert claim() is None
-    denial = _denial(queue, waiting)
-    assert denial["reason"] == "reservation_unavailable_starved"
-    assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
-    assert [h["bound"] for h in denial["evidence"]["starved"]["holders"]] == ["long"]
+        queue.record_pass(waiting)
 
-    # The GPU holder is hours old and does not drain soon, so the box runs the
-    # shards: nine of them fill the other eighteen CPUs.
     clock[0] = T0 - 100
     shards = [_publish(queue, clock, _key(f"shard-{n}"), {"cpu": 2, "mem_gb": 4})
               for n in range(9)]
     for shard in shards:
         assert claim() == shard
-    assert queue.passes(waiting) >= pool.STARVATION_FLOOR
     stream = [_publish(queue, clock, _key(f"stream-{n}"), {"cpu": 2, "mem_gb": 4})
               for n in range(3)]
     assert queue.withhold_age(waiting) > pool.WITHHOLD_CEILING_S
 
-    # The GPU frees.  Two CPUs come back with it; the action needs four.
+    # The GPU frees.
     clock[0] = T0
     queue.finish(holder, status="executed")
     assert claim() is None, (
