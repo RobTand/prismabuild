@@ -3096,7 +3096,10 @@ class ResourceLedger:
                     metadata["allocation"] = allocation
                     metadata["dependent_allowance"] = {
                         "slots": int(allowance.get("slots", 1)), "cpus": sorted(kept),
-                        "mem_gb": int(allowance.get("mem_gb", 0))}
+                        "mem_gb": int(allowance.get("mem_gb", 0)),
+                        # How the slot count was reached (#999): declared,
+                        # measured, or unmeasured with the default.
+                        "basis": allowance.get("basis")}
                 _write_json_atomic(destination / cpu_admission.METADATA, metadata)
         except _Insufficient:
             self._empty_into_free(destination)
@@ -10471,6 +10474,151 @@ class PoolQueue:
             handles[tier_id] = handle
         return None
 
+    def _learn_export(self, record: Mapping[str, object],
+                      telemetry: Mapping[str, object]) -> bool:
+        """Feed ``adaptive_cpu.learn_export`` from one finished export (#999)."""
+
+        owner = record.get("dependent_of")
+        if (not cpu_admission._is_key(owner) or telemetry.get("complete") is not True
+                or record.get("action_key") != telemetry.get("action_key")):
+            return False
+        producer = _read_json(self.item_path(CLAIMED, str(owner)))
+        ref = producer.get("produced_output") if isinstance(producer, Mapping) else None
+        template = ref.get("template_sha256") if isinstance(ref, Mapping) else None
+        return cpu_admission.learn_export(
+            self.ledger(), template, owner, record.get("published_unix"),
+            telemetry.get("wall_seconds"))
+
+    def _producer_family(self, owner: str) -> tuple[set[str], int]:
+        """``owner`` and the movement its frozen plan publishes (#999).
+
+        The keys whose tier holdings are the producer's own work: the
+        producer's claim, and every mover and egress its residency plan will
+        ever publish (``residency_plan.child_keys``).  A sibling export is
+        recognised by its claim row instead (:meth:`_borrow_family_fill`).
+        Returns the set and how many plan children it names.  An unreadable
+        plan names none: a mover the pool cannot attribute is foreign.
+        """
+
+        from . import residency_plan as _residency_plan
+        family = {owner}
+        try:
+            plan = _residency_plan.read(self, owner)
+            children = _residency_plan.child_keys(plan) if plan is not None else []
+        except Exception:                                    # noqa: BLE001
+            children = []
+        family.update(str(key) for key in children)
+        return family, len(children)
+
+    def _borrow_family_fill(
+        self, action_key: str, owner: str,
+        tier_demand: Mapping[str, Mapping[str, int]],
+        handles: dict[str, str],
+    ) -> dict[str, object] | None:
+        """Fund a producer's paced export from fill its own family holds (#999).
+
+        A paced export demands pool fill on the tier its batch stages through,
+        and the producer's own movers hold that tier's fill tokens while they
+        refill its window.  Its progress is counted when the export lands
+        (#982), so the producer's own movement could hold its own progress
+        out.  Here the export's fill beyond what is free is borrowed from
+        tokens its family holds: the producer's claim, the movers and egresses
+        its plan publishes, and its other exports.  Nothing is reserved for
+        the producer's lifetime, and a foreign holder's tokens are never
+        counted, so a foreign paced write at the ceiling is still refused.
+
+        Only the fill kind is borrowed; any other tier kind the free pool
+        cannot cover refuses as before.  The free part is taken into
+        ``handles`` like any claim; the borrowed part takes no token, so
+        while the export runs the tier's pool traffic can exceed its offer by
+        at most what the family lent -- the family's own work, never a
+        stranger's.  Returns the borrow record the claim files
+        (``tier_fill_borrowed``), or ``None`` with ``handles`` left empty.
+        """
+
+        family, children = self._producer_family(owner)
+        record: dict[str, object] = {}
+        for tier_id, needs in sorted(tier_demand.items()):
+            if set(needs) != {storage_tiers.FILL_KIND}:
+                return None
+            need = int(needs[storage_tiers.FILL_KIND])
+            try:
+                ledger = self.tier_ledger(tier_id)
+                free = int(ledger.available().get(storage_tiers.FILL_KIND, 0))
+                lenders: dict[str, int] = {}
+                for holder in ledger.held_keys():
+                    if holder == action_key:
+                        continue
+                    count = ledger.holder_tokens(holder).get(storage_tiers.FILL_KIND, 0)
+                    if not count:
+                        continue
+                    if holder not in family:
+                        row = _read_json(self.item_path(CLAIMED, holder))
+                        if not (isinstance(row, Mapping) and row.get("dependent_of") == owner):
+                            continue
+                    lenders[holder] = int(count)
+            except (OSError, PoolContractError, ValueError):
+                return None
+            taken = min(free, need)
+            borrowed = need - taken
+            if borrowed > sum(lenders.values()):
+                return None
+            record[tier_id] = {
+                "kind": storage_tiers.FILL_KIND, "demand": need, "taken_free": taken,
+                "borrowed": borrowed, "funded_by": sorted(lenders), "lent": lenders,
+                "owner": owner, "plan_children": children, "borrowed_unix": _now()}
+        for tier_id, entry in sorted(record.items()):
+            taken = int(entry["taken_free"])  # type: ignore[call-overload]
+            if not taken:
+                continue
+            handle = self.tier_ledger(tier_id).begin_acquire(
+                action_key, {storage_tiers.FILL_KIND: taken})
+            if handle is None:
+                self._abandon_tier_acquire(handles)
+                handles.clear()
+                return None
+            handles[tier_id] = handle
+        return record
+
+    def note_fill_borrow_end(self, record: dict[str, object]) -> None:
+        """Say which lenders released before a borrowing export ended (#999).
+
+        Called by ``finish`` on the record it files, before the export's own
+        tokens go back.  A lender that no longer holds the fill it lent has
+        returned it to the free pool while the export still wrote on it, so
+        for that interval the tier carried the borrowed rate on top of its
+        offer.  The record names each such lender and the overcommit it left.
+        Best effort: a lender this cannot read is named as unread, and the
+        reapers' conclusions do not annotate.
+        """
+
+        borrowed = record.get("tier_fill_borrowed")
+        if not isinstance(borrowed, dict):
+            return
+        for tier_id, entry in borrowed.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("lent"), dict):
+                continue
+            released, unread, overcommit = [], [], 0
+            try:
+                ledger = self.tier_ledger(str(tier_id))
+            except (OSError, PoolContractError, ValueError):
+                entry["lenders_unread"] = sorted(entry["lent"])
+                continue
+            for lender, count in sorted(entry["lent"].items()):
+                try:
+                    held = ledger.holder_tokens(str(lender)).get(storage_tiers.FILL_KIND, 0)
+                except OSError:
+                    unread.append(lender)
+                    continue
+                if held < int(count):
+                    released.append(lender)
+                    overcommit += int(count) - held
+            entry["lenders_released_before_end"] = released
+            entry["overcommit_mb_s"] = min(overcommit, int(entry.get("borrowed", 0)))
+            if unread:
+                entry["lenders_unread"] = unread
+            entry["checked_unix"] = _now()
+
     def _abandon_tier_acquire(self, handles: Mapping[str, str]) -> int:
         """Return every claimant-private tier handle; a committed one owns nothing and is a no-op."""
 
@@ -11870,6 +12018,10 @@ class PoolQueue:
                 # A delayed cleanup is not a fresh runtime measurement and
                 # must not train the live admission model for this action.
                 return {**containers, "resource_scope": cleanup}
+            with suppress(Exception):
+                # A producer's export teaches this host its template's landing
+                # time and group spacing (#999); never worth losing an action.
+                self._learn_export(record, telemetry)
             try:
                 cpu_admission.record_completion(self.ledger(), record, telemetry)
             except Exception as exc:                                 # noqa: BLE001
@@ -13217,6 +13369,7 @@ class PoolQueue:
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
+                tier_borrowed: dict[str, object] | None = None
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
@@ -13274,7 +13427,9 @@ class PoolQueue:
                         # ask, so no ordinary candidate pays for them.
                         if controller is not None:
                             if item.get("produced_output") is not None:
-                                allowance = cpu_admission.producer_allowance(item)
+                                allowance = cpu_admission.producer_allowance(
+                                    item, cpu_admission.read_json(
+                                        controller.base / cpu_admission.EXPORT_RATES))
                                 if allowance and not int(sealed_host_demand.get("cpu", 0)):
                                     # An unbounded-CPU producer inherits the worker's
                                     # whole affinity: there is no CPU set to carve an
@@ -13498,6 +13653,21 @@ class PoolQueue:
                         if shortage is not None:
                             self._abandon_tier_acquire(tier_handles)
                             tier_handles.clear()
+                            fill_owner = (dependent_owner if isinstance(dependent_owner, str)
+                                          else cpu_admission.dependent_owner(item)
+                                          if item.get("dependent_of") is not None else None)
+                            if (shortage.get("reason") == "tier_reservation_unavailable"
+                                    and isinstance(fill_owner, str) and not tier_funded):
+                                # A producer's paced export at the fill ceiling
+                                # its own family holds (#999).
+                                tier_borrowed = self._borrow_family_fill(
+                                    key, fill_owner, tier_demand, tier_handles)
+                                if tier_borrowed is not None:
+                                    shortage = None
+                                else:
+                                    shortage = dict(shortage, dependent_of=fill_owner,
+                                                    family_fill="not_enough_family_fill")
+                        if shortage is not None:
                             if ledger is not None and handle is not None:
                                 ledger.abandon_acquire(handle)
                                 self._return_borrow(controller, borrow)
@@ -13604,7 +13774,14 @@ class PoolQueue:
                     # Funded credit counts exactly once: the fence the
                     # coordinator transferred under this key now belongs to
                     # this claim, and only the remainder came from free.
-                    incomplete = tier_filed + tier_funded_total < tier_wanted
+                    # Fill borrowed from the producer's family (#999) takes
+                    # no token of its own.
+                    tier_borrowed_total = sum(
+                        int(entry.get("borrowed", 0))
+                        for entry in (tier_borrowed or {}).values()
+                        if isinstance(entry, dict))
+                    incomplete = (tier_filed + tier_funded_total + tier_borrowed_total
+                                  < tier_wanted)
                     filed = 0
                     if ledger is not None and handle is not None:
                         # Won the rename, so the reservation stops belonging to this
@@ -13806,6 +13983,8 @@ class PoolQueue:
                 claimed.pop("passes", None)
                 claimed.pop("cpu_allocation", None)
                 claimed.pop("gpu_admission", None)
+                claimed.pop("idle_baseline", None)
+                claimed.pop("tier_fill_borrowed", None)
                 generation = (key, repr(moved.get("published_unix")))
                 self._cpu_deferrals.pop(generation, None)
                 self._cross_resource_deferrals.pop(generation, None)
@@ -13816,6 +13995,10 @@ class PoolQueue:
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
                     claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
+                if adaptive is not None and adaptive.get("idle_baseline"):
+                    # The host baseline an exclusive claim was judged idle
+                    # against (#997): measurements compare on it afterwards.
+                    claimed["idle_baseline"] = adaptive["idle_baseline"]
                 claimed["reserved_on"] = socket.gethostname() if demand else None
                 if tier_demand:
                     claimed["tier_reservations"] = {
@@ -13824,6 +14007,8 @@ class PoolQueue:
                     }
                 if residency["state"] != "not_requested":
                     claimed["residency_verdict"] = residency
+                if tier_borrowed:
+                    claimed["tier_fill_borrowed"] = tier_borrowed
                 if tier_funded:
                     # Re-verify each funding against the renamed record before
                     # persisting: the claim holds this key's transition lock,
@@ -16301,6 +16486,11 @@ class PoolQueue:
             detail = {**dict(detail or {}), "status": "failed", "returncode": 137,
                       "termination_reason": resource_failure, "resource_telemetry": telemetry,
                       "termination_evidence": telemetry.get("termination_evidence")}
+        if effective_record.get("tier_fill_borrowed"):
+            # Before the export's own tokens go back (#999): which lenders
+            # left while it still wrote on what they lent.
+            with suppress(Exception):
+                self.note_fill_borrow_end(effective_record)
         if self.withdrawal_covers(record, action_key=action_key) is not None:
             # An operator cancelled this while it was running.  Filing it under
             # ``done`` or ``failed`` would put the pool's opinion of the work on
