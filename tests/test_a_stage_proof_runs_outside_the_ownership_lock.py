@@ -27,6 +27,9 @@ incarnation the proof dated.
   racing one destination leave exactly one owner, a racer with other bytes is
   refused rather than adopted, and an incarnation that moves between the proof
   and the commit is never adopted.
+* the census cases hold the shared forest census to the freshness each search
+  had when it listed the forest itself: a search never decides on a census
+  that began before it, and searches that wait together share one census.
 
 Every case synchronizes on events and barriers with timeouts that only bound
 a failure; none asserts a wall-clock duration.
@@ -38,6 +41,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 
 import pytest
 
@@ -434,3 +438,120 @@ def test_an_incarnation_that_moves_after_the_proof_is_not_adopted(
     assert moved[0], "the proof never ran"
     assert adopted is None, (
         f"adopted an incarnation that moved after its proof: {adopted}")
+
+
+# ---------------------------------------------------------------------------
+# The shared forest census
+# ---------------------------------------------------------------------------
+
+def _hold_first_census(publisher, monkeypatch):
+    """Hold the publisher's first census open once it has listed the forest.
+
+    Returns ``(listed, release, calls)``: ``listed`` is set when the first
+    census has its answer, which it returns only after ``release``; ``calls``
+    counts every census the publisher runs.
+    """
+
+    listed = threading.Event()
+    release = threading.Event()
+    calls = [0]
+    real = publisher._forest_census
+
+    def held():
+        census = real()
+        calls[0] += 1
+        if calls[0] == 1:
+            listed.set()
+            assert release.wait(BOUND_S), "the held census was never released"
+        return census
+
+    monkeypatch.setattr(publisher, "_forest_census", held)
+    return listed, release, calls
+
+
+def _await_waiters(publisher, count: int) -> None:
+    """Until ``count`` searches wait on the census condition, within the bound."""
+
+    deadline = time.monotonic() + BOUND_S
+    while len(publisher._census_cond._waiters) < count:
+        assert time.monotonic() < deadline, (
+            f"{len(publisher._census_cond._waiters)} of {count} searches "
+            f"reached the census")
+        time.sleep(0.01)
+
+
+def _search(publisher, entry, destination, answers, label) -> None:
+    norm = os.path.normpath(str(destination))
+    _proof, standing, _detail = publisher._proof_search(
+        norm, int(entry["bytes"]), entry["sha256"])
+    answers[label] = standing
+
+
+def test_a_search_never_decides_on_a_census_that_began_before_it(
+        world, monkeypatch) -> None:
+    """A search waits for a census that begins after it, never an older one.
+
+    The first search's census lists the forest while the predecessor's
+    fragment still vouches for the entry, and is then held open.  The
+    fragment is removed and a second search arrives.  The held census began
+    before the second search, so it must not answer it: the second search
+    waits for it, runs its own, sees the removal and answers ``clean``, while
+    the first answers ``proof`` from what it listed.
+    """
+
+    [entry] = world.published(["one.bin"])
+    destination = world.destination(entry)
+    publisher = world.publisher(_key("successor-mover"),
+                                _key("successor-consumer"))
+    listed, release, calls = _hold_first_census(publisher, monkeypatch)
+    answers: dict[str, str] = {}
+    first = threading.Thread(
+        target=_search, args=(publisher, entry, destination, answers, "first"))
+    first.start()
+    assert listed.wait(BOUND_S), "the first census never listed the forest"
+    residency_map.fragment_path(
+        world.root, _key("predecessor-consumer"),
+        _key("predecessor-mover")).unlink()
+    second = threading.Thread(
+        target=_search, args=(publisher, entry, destination, answers, "second"))
+    second.start()
+    _await_waiters(publisher, 1)
+    release.set()
+    first.join(BOUND_S)
+    second.join(BOUND_S)
+
+    assert answers == {"first": "proof", "second": "clean"}, answers
+    assert calls[0] == 2, f"{calls[0]} censuses for two searches"
+
+
+def test_searches_that_wait_together_share_one_census(
+        world, monkeypatch) -> None:
+    """Four searches that arrive while a census runs share the next one.
+
+    This is the work the census saves: sixteen copy workers adopting at once
+    list the forest once per round rather than once per entry.  Every search
+    still decides its own entry, and every entry is proven.
+    """
+
+    entries = world.published([f"entry-{n}.bin" for n in range(5)])
+    publisher = world.publisher(_key("successor-mover"),
+                                _key("successor-consumer"))
+    listed, release, calls = _hold_first_census(publisher, monkeypatch)
+    answers: dict[str, str] = {}
+    threads = [threading.Thread(
+        target=_search,
+        args=(publisher, entry, world.destination(entry), answers, str(n)))
+        for n, entry in enumerate(entries)]
+    threads[0].start()
+    assert listed.wait(BOUND_S), "the first census never listed the forest"
+    for thread in threads[1:]:
+        thread.start()
+    _await_waiters(publisher, len(threads) - 1)
+    release.set()
+    for thread in threads:
+        thread.join(BOUND_S)
+
+    assert answers == {str(n): "proof" for n in range(len(entries))}, answers
+    assert calls[0] == 2, (
+        f"{calls[0]} censuses for {len(entries)} searches: the four that "
+        f"waited together must share one")

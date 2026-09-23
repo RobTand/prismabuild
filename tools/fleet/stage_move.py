@@ -568,6 +568,12 @@ class _PackedPaths:
 #: row, and the one object is process-wide).
 _EMPTY_PATHS = _PackedPaths([])
 
+#: A census slot whose fragment record the reuse index would not keep (#981):
+#: its packed table is too big for the budget, so the census holds no copy of
+#: it, and each decision that reaches the slot looks the file up again, as
+#: every decision did before the census was shared.
+_LOOK_AGAIN = object()
+
 
 def _pack_mention(mention: tuple) -> bytes:
     """One validated mention as its fixed binary record.
@@ -878,6 +884,15 @@ class _StagedPublisher:
         self._material_cost = 0
         #: Where this publisher's time goes, for the mover's receipt.
         self.clock = _PhaseClock()
+        # The single-flight forest census (#981), see :meth:`_shared_census`.
+        # ``_census`` is the latest finished census and ``_census_done`` its
+        # number; ``_census_started`` counts censuses begun.  Only one runs
+        # at a time, so the numbers finish in order.
+        self._census_cond = threading.Condition(threading.Lock())
+        self._census_started = 0
+        self._census_done = 0
+        self._census_running = False
+        self._census: tuple | None = None
 
     @contextmanager
     def _ownership(self):
@@ -1563,6 +1578,115 @@ class _StagedPublisher:
 
         No payload is hashed here: the sidecar digest is the copy-time
         content proof, and stat stability is the change detection.
+
+        The forest is read through :meth:`_shared_census`: one directory
+        census, begun after this call began, serves every search waiting on
+        it (#981).  Each search then decides its own path from that census
+        in the same order, with the same verdicts, and takes the sidecar and
+        the live destination stat itself, fresh.
+        """
+
+        census = self._shared_census()
+        if census[0] == "absent":
+            return None, "clean", None
+        if census[0] == "unreadable":
+            return None, "unknown", census[1]
+        standing = "clean"
+        unknown: str | None = None
+        found: tuple[str, dict[str, int]] | None = None
+        for child, name, path, fragment in census[1]:
+            if name is None:
+                # The child directory itself could not be listed.
+                unknown = path
+                continue
+            if fragment is _LOOK_AGAIN:
+                observed = _observe(path)
+                with self._lookup_lock:
+                    fragment = self._fragment_record(path, observed)
+            candidate = self._candidate_from_record(
+                fragment, child, norm, want, declared,
+                computed=computed, source_id=source_id)
+            if candidate == "tainted":
+                unknown = f"{child}/{name}: unreadable"
+            elif candidate == "divergent":
+                return None, "divergent", (
+                    f"staged destination holds different bytes than "
+                    f"manifest digest for {norm}; refusing to "
+                    f"invalidate its owner")
+            elif candidate in ("owned", "stale"):
+                # ``owned``: a vouch without a usable date.  ``stale``:
+                # a date for an incarnation this name no longer carries
+                # -- not evidence that the current bytes differ, so a
+                # later record may still prove them.  Neither adopts
+                # and neither permits replacement.
+                standing = "owned"
+            elif candidate is not None and found is None:
+                found = candidate
+        if unknown is not None:
+            return None, "unknown", unknown
+        if found is not None:
+            return found, "proof", None
+        return None, standing, None
+
+    def _shared_census(self) -> tuple:
+        """A census of the residency forest that began after this call did.
+
+        Single flight (#981).  If no census is running, this caller runs
+        one.  If one is running, it began before this call, so it is not
+        fresh enough: the caller waits for it to finish and for the next
+        one, which the first waiter to find no census running starts.  Every
+        caller that arrived while a census ran shares that next census.  A
+        search therefore sees every fragment added, changed or removed
+        before it began, as each search did when it listed the forest
+        itself; what goes away is the same listing repeated once per entry.
+
+        Measured on the synthetic forest (434 directories, 145 fragments):
+        one census costs about 5 ms of one core.  Sixteen copy workers each
+        listing it for themselves spent 45 ms of CPU per entry, because
+        ``os.scandir`` gives up the GIL around every ``readdir`` and sixteen
+        threads contending for it turn each handoff into a futex round
+        trip.  Before #981 the stage ownership lock serialized those
+        listings, one entry at a time for the whole host.
+        """
+
+        with self._census_cond:
+            wanted = self._census_started + 1
+            while self._census_done < wanted:
+                if not self._census_running:
+                    self._census_running = True
+                    self._census_started += 1
+                    number = self._census_started
+                    break
+                self._census_cond.wait()
+            else:
+                return self._census  # type: ignore[return-value]
+        try:
+            census = self._forest_census()
+        except BaseException:
+            with self._census_cond:
+                self._census_running = False
+                self._census_cond.notify_all()
+            raise
+        with self._census_cond:
+            self._census = census
+            self._census_done = number
+            self._census_running = False
+            self._census_cond.notify_all()
+        return census
+
+    def _forest_census(self) -> tuple:
+        """List the residency forest once, with each fragment's record.
+
+        ``("absent",)`` when the residency root does not exist,
+        ``("unreadable", detail)`` when it cannot be listed, otherwise
+        ``("listed", slots)``: one ``(child, name, path, record)`` slot per
+        fragment file, in the order the search visits them, and a
+        ``(child, None, detail, None)`` slot for a child directory that
+        could not be listed.  Each record comes from the reuse index (#761),
+        stat first, so an unchanged file is not parsed again.  A record the
+        index would not keep is held here as :data:`_LOOK_AGAIN`, never as
+        a copy: an oversized table stays out of memory between decisions,
+        as it did before.
         """
 
         try:
@@ -1571,12 +1695,10 @@ class _StagedPublisher:
                 if e.is_dir() and not e.name.startswith(".")
                 and e.name not in _NON_FRAGMENT_DIRS)
         except FileNotFoundError:
-            return None, "clean", None
+            return ("absent",)
         except OSError as exc:
-            return None, "unknown", f"{self.residency_root}: {exc}"
-        standing = "clean"
-        unknown: str | None = None
-        found: tuple[str, dict[str, int]] | None = None
+            return ("unreadable", f"{self.residency_root}: {exc}")
+        slots: list[tuple] = []
         for child in children:
             cdir = self.residency_root / child
             try:
@@ -1588,33 +1710,19 @@ class _StagedPublisher:
             except FileNotFoundError:
                 continue
             except OSError as exc:
-                unknown = f"{child}: {exc}"
+                slots.append((child, None, f"{child}: {exc}", None))
                 continue
             for name in names:
-                candidate = self._proof_candidate(
-                    cdir / name, child, norm, want, declared,
-                    computed=computed, source_id=source_id)
-                if candidate == "tainted":
-                    unknown = f"{child}/{name}: unreadable"
-                elif candidate == "divergent":
-                    return None, "divergent", (
-                        f"staged destination holds different bytes than "
-                        f"manifest digest for {norm}; refusing to "
-                        f"invalidate its owner")
-                elif candidate in ("owned", "stale"):
-                    # ``owned``: a vouch without a usable date.  ``stale``:
-                    # a date for an incarnation this name no longer carries
-                    # -- not evidence that the current bytes differ, so a
-                    # later record may still prove them.  Neither adopts
-                    # and neither permits replacement.
-                    standing = "owned"
-                elif candidate is not None and found is None:
-                    found = candidate
-        if unknown is not None:
-            return None, "unknown", unknown
-        if found is not None:
-            return found, "proof", None
-        return None, standing, None
+                path = cdir / name
+                observed = _observe(path)
+                with self._lookup_lock:
+                    record = self._fragment_record(path, observed)
+                    if isinstance(record, tuple) and record[1].keys:
+                        kept = self._fragments.get(str(path))
+                        if kept is None or kept[1] is not record:
+                            record = _LOOK_AGAIN
+                slots.append((child, name, path, record))
+        return ("listed", tuple(slots))
 
     def _proof_candidate(self, fragment_path: Path, consumer: str,
                          norm: str, want: int, declared: object,
@@ -1646,6 +1754,21 @@ class _StagedPublisher:
         observed = _observe(fragment_path)
         with self._lookup_lock:
             fragment = self._fragment_record(fragment_path, observed)
+        return self._candidate_from_record(
+            fragment, consumer, norm, want, declared,
+            computed=computed, source_id=source_id)
+
+    def _candidate_from_record(self, fragment: object, consumer: str,
+                               norm: str, want: int, declared: object,
+                               computed: str | None = None,
+                               source_id: str | None = None,
+                               ) -> tuple[str, dict[str, int]] | str | None:
+        """:meth:`_proof_candidate`'s verdict for an already looked-up record.
+
+        ``fragment`` is what :meth:`_fragment_record` returned for the file;
+        the sidecar and the live destination stat are taken here, fresh.
+        """
+
         if fragment is None:
             return None
         if fragment == "tainted":
