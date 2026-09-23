@@ -221,8 +221,10 @@ def test_a_deferred_resubmission_takes_over_once_it_is_released(
                           command=("/bin/cat", edges.PLACEHOLDER, "retry"))
     assert ae.read_supersession(queue.root, first["action_key"])["new"] == \
         retry["pending_id"]
-    # Unreleased: #913 holds the producer's batches quietly.
+    # Unreleased: #913 holds the producer's batches quietly, and the batch
+    # is waiting, not blocked.
     assert po.origin_retirement_tick(queue) == []
+    assert pbstatus.read_blocked_origins(queue.root)["blocked"] == []
 
     [second] = edges._released(dr.release_tick(queue))
     assert second["pending_id"] == retry["pending_id"]

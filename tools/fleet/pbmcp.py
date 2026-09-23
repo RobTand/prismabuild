@@ -2433,7 +2433,7 @@ TOOLS: tuple[dict, ...] = (
                        "listed with its state, any supersession that did not "
                        "apply, and the two remedies: the exact pbrun "
                        "--release-origin-consumer command, and the "
-                       "resubmit-with---supersedes form. Read-only and "
+                       "resubmission with --supersedes. Read-only and "
                        "deadline-bounded; check `census_complete`.",
         "inputSchema": {"type": "object", "properties": {},
                         "additionalProperties": False},

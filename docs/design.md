@@ -4958,14 +4958,15 @@ consumer that is not `succeeded`, `superseded` or `released`) is `failed` or
 `withdrawn`: nothing queued or running will free it. The stall line fires
 earlier, as soon as any holding consumer has failed, so it also covers a
 batch that a live consumer still holds; that batch is waiting, not blocked.
-The stall line names each consumer's terminal state, and `superseded_by`
-where a supersession did not apply, once per change, and its bytes stay
-identical to #914's.
+The stall line names each consumer's terminal state once per change. It is
+byte-identical to #914's unless a supersession exists that did not apply;
+then that consumer also carries `superseded_by`.
 
 `pbstatus --blocked-origins` lists the blocked batches at any time, so the
 leak does not scroll away with the log. It reads the same records the tick
-does through `produced_output.blocked_origin_batches`, takes no lock and
-writes nothing. It skips a batch that is retiring, reclaimed or without a
+does through `produced_output.blocked_origin_batches`, skips the scopes the
+tick skips, takes no lock and writes nothing. It skips a batch that is
+retiring, reclaimed or without a
 declared consumer, and one held for an unreleased deferred consumer (#913),
 which is waiting. Each entry carries the batch's `ref` and `bytes`, every
 declared consumer's resolved state, the holding keys, `reported` (whether

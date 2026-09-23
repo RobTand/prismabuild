@@ -5846,9 +5846,10 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     scroll away.
 
     It scans the produced-output scopes as `origin_retirement_tick` does,
-    takes no lock and writes nothing. A batch that is retiring, reclaimed,
-    or has no declared consumer is not listed; neither is one held for a
-    deferred consumer's release (#913), which is waiting, not blocked.
+    skipping the scopes it skips, takes no lock and writes nothing. A batch
+    that is retiring, reclaimed, or has no declared consumer is not listed;
+    neither is one held for a deferred consumer's release (#913), which is
+    waiting, not blocked. If those holds cannot be read, nothing is listed.
     Returns ``{"blocked": [...], "unreadable": [...]}``. Each blocked entry
     carries the batch's ``ref`` and ``bytes``, every declared consumer's
     state as the tick resolves it (`_resolved_consumers`), the ``holding``
@@ -5861,6 +5862,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     blocked: list[dict[str, object]] = []
     unreadable: list[str] = []
     scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except FileNotFoundError:
@@ -5895,8 +5897,16 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             try:
                 instance = validate_instance(json.loads(
                     (scope / "instance.json").read_text()))
+                template = validate_template(json.loads(
+                    (templates_root / f"{instance['template_id']}.json"
+                     ).read_text()))
             except (OSError, ValueError) as exc:
                 unreadable.append(f"{where}: {exc}")
+                continue
+            # The tick skips a scope filed elsewhere or bound to another
+            # template; so does the listing.
+            if (instance_dir(queue.root, instance) != scope
+                    or template_sha256(template) != instance["template_sha256"]):
                 continue
             if holds is None:
                 try:
