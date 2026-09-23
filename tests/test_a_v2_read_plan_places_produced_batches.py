@@ -315,11 +315,11 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
 
     mixed = _rephased(placed, (("head", [0, 1]), ("handoff", [0, 2]),
                                ("replay-0", [0]), ("replay-1", [1])))
-    assert "reads its declared batches" in refused(mixed)
+    assert "read its declared batches where its slots say" in refused(mixed)
 
     changed = json.loads(json.dumps(placed))
     changed["entries"][2]["sha256"] = "0" * 64
-    assert "reads its declared batches" in refused(changed)
+    assert "read its declared batches where its slots say" in refused(changed)
 
     unplaced = {**placed, "annotations": {
         key: value for key, value in notes.items()
