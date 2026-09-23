@@ -406,18 +406,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="where receipts, profiles and the summary go")
     parser.add_argument("--entries", type=int, default=1500,
                         help="entries per mover window")
-    parser.add_argument("--ranges-per-file", type=int, default=10)
+    parser.add_argument("--ranges-per-file", type=int, default=10,
+                        help="4 KiB ranges cut from each synthetic source file")
     parser.add_argument("--workers", type=int, default=16,
                         help="copy workers per mover (the tool's --max-readers)")
     parser.add_argument("--py-spy", default="",
                         help="py-spy executable; empty runs unprofiled")
-    parser.add_argument("--rate", type=int, default=100)
-    parser.add_argument("--scenarios", default="copy1,adopt1,copy3,adopt3,mixed")
-    parser.add_argument("--empty-dirs", type=int, default=404)
-    parser.add_argument("--small-dirs", type=int, default=30)
+    parser.add_argument("--rate", type=int, default=100,
+                        help="py-spy samples per second")
+    parser.add_argument("--scenarios", default="copy1,adopt1,copy3,adopt3,mixed",
+                        help="comma-separated scenarios to run, in order")
+    parser.add_argument("--empty-dirs", type=int, default=404,
+                        help="empty consumer directories in the residency "
+                             "forest")
+    parser.add_argument("--small-dirs", type=int, default=30,
+                        help="consumer directories holding one to nine "
+                             "small noise fragments each")
     parser.add_argument("--big-fragments", default="90000,60000,50000,40000",
                         help="entries in each large noise fragment")
-    parser.add_argument("--produced-fragment-dirs", type=int, default=1957)
+    parser.add_argument("--produced-fragment-dirs", type=int, default=1957,
+                        help="subdirectories of the produced-output fragment "
+                             "directory")
     args = parser.parse_args(argv)
 
     work = Path(args.work).resolve()
