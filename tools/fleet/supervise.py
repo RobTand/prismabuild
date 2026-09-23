@@ -500,25 +500,35 @@ def declared_shape(host: str, override_loops: int,
     return (override_loops or int(config.get("loops", 1)), args)
 
 
-#: The worker loop flag that declares this box's local spool budget, in GiB
-#: (#747), and the roster fields it is checked against (#910).
+#: The worker loop flag that declares this box's local disk budget, in GiB
+#: (#747), and the roster fields it is derived from (#910, #911).  In the
+#: roster its value is ``auto`` -- the whole measured room -- or a whole
+#: number of GiB that caps the measured room.  The supervisor always passes
+#: the worker an integer: the roster is its input, not a command line.
 SPOOL_FLAG = "--spool-gb"
-#: Per box: the directory whose filesystem the declared ``--spool-gb`` is
-#: carved from.  The spool root itself is the producer's sealed
-#: ``PRISMABUILD_PRODUCED_SPOOL_ROOT``, not something a box knows, so the
-#: roster names the disk rather than the supervisor guessing it.
+SPOOL_AUTO = "auto"
+#: The host-ledger kind the flag declares.  The produced-spool window and
+#: declared bounded local scratch both reserve it.
+SPOOL_KIND = "spool_gb"
+#: Per box: the directory whose filesystem the budget is carved from.  The
+#: roots themselves are the actions' sealed variables, not something a box
+#: knows, so the roster names the disk rather than the supervisor guessing it.
 LOCAL_DISK_FIELD = "local_disk"
 #: Fleet-wide, beside ``boxes``: the share of a local filesystem, in whole
 #: percent of its size, that the fleet keeps free.  It is Rob's disk-headroom
 #: rule, stated in the file rather than assumed by the code.
 LOCAL_DISK_FLOOR_FIELD = "local_disk_free_floor_percent"
 GIB = 1 << 30
-#: One verdict per distinct declaration for the life of this process, so the
-#: check runs at supervisor start -- and again after a publish, which re-execs
-#: -- rather than every tick.  A spool that is filling lowers free space, and a
-#: per-tick check would retract the box's offer because its own producer was
-#: using it, then restore it when the producer drained.
+#: One settled verdict per distinct declaration for the life of this
+#: process, so the disk is measured at supervisor start -- and again after a
+#: publish, which re-execs -- rather than every tick.  Other writers move free
+#: space continuously, and a per-tick measurement would change the loops'
+#: arguments, and so cycle every idle loop, with every GiB they wrote.  A
+#: measurement a running holder blocks is not settled; see ``_spool_budget``.
 _SPOOL_VERDICTS: dict[tuple, list[str]] = {}
+#: The last line printed for a declaration whose measurement is waiting on a
+#: holder, so a wait that repeats every tick is logged once.
+_SPOOL_WAITING: dict[tuple, str] = {}
 
 
 def local_disk_room(path: str, floor_percent: int, *,
@@ -541,8 +551,11 @@ def local_disk_room(path: str, floor_percent: int, *,
             "room_bytes": free - floor}
 
 
-def _spool_gb_of(args: list[str]) -> int:
-    """The one ``--spool-gb`` value ``args`` declares, or ``ValueError``."""
+def _spool_gb_of(args: list[str]) -> int | None:
+    """The one ``--spool-gb`` value ``args`` declares, or ``ValueError``.
+
+    ``None`` is ``auto``: no ceiling on the measured room.
+    """
 
     if any(a.startswith(SPOOL_FLAG + "=") for a in args):
         raise ValueError(f"spell {SPOOL_FLAG} as two arguments, flag and value")
@@ -553,8 +566,11 @@ def _spool_gb_of(args: list[str]) -> int:
         value = args[positions[0] + 1]
     except IndexError:
         raise ValueError(f"{SPOOL_FLAG} has no value") from None
+    if value == SPOOL_AUTO:
+        return None
     if not value.isascii() or not value.isdigit():
-        raise ValueError(f"{SPOOL_FLAG} {value!r} is not a whole number of GiB")
+        raise ValueError(f"{SPOOL_FLAG} {value!r} is neither {SPOOL_AUTO!r} "
+                         "nor a whole number of GiB")
     return int(value)
 
 
@@ -576,75 +592,165 @@ def _without_spool(args: list[str]) -> list[str]:
     return out
 
 
-def _check_spool_declaration(host: str, entry: dict, document: dict,
-                             args: list[str], *, statvfs=None) -> str | None:
-    """Why this box's ``--spool-gb`` cannot stand, or ``None`` if it can.
+def _with_spool(args: list[str], gib: int) -> list[str]:
+    """``args`` with the one ``--spool-gb`` value replaced by ``gib``."""
 
-    The declaration stands only when the roster names the local filesystem
-    it is carved from, the fleet states its free floor, the path is a local
-    disk, and the filesystem's free space minus that floor covers it.  A
-    zero declaration declares nothing and needs no disk.
+    out = list(args)
+    out[out.index(SPOOL_FLAG) + 1] = str(gib)
+    return out
+
+
+def _held_spool(ledger) -> int:
+    """``spool_gb`` tokens running actions hold in ``ledger``, error-visibly.
+
+    A ledger nobody has created holds nothing.  Any other listing failure
+    raises: "cannot see a holder" must not read as "no holder", because the
+    caller would then measure a disk whose written bytes it cannot account
+    for.
     """
 
     try:
-        declared = _spool_gb_of(args)
+        holders = pool._scan_visible(ledger.held_dir)
+    except FileNotFoundError:
+        return 0
+    return sum(1 for holder in holders
+               for name in pool.held_names_visible(ledger, holder.name)
+               if name.rsplit("-", 1)[0] == SPOOL_KIND)
+
+
+def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
+                  statvfs=None) -> tuple:
+    """Measure this box's ``--spool-gb`` from its disk: a verdict and a value.
+
+    ``("offer", gib, detail)`` and ``("refuse", reason)`` are settled; either
+    is kept for the life of the process.  ``("wait", reason)`` is not: a
+    running action holds ``spool_gb`` here, and the measurement cannot be
+    taken until none does.
+
+    The measured budget is ``f_bavail`` on ``local_disk`` minus the fleet
+    floor, in whole GiB, capped at a numeric declaration.  It is taken only
+    while the host ledger shows no ``spool_gb`` held, read before and after
+    ``statvfs``.  With nothing held, every byte on the disk is either
+    unreserved or belongs to no reservation, so the room is exactly what the
+    ledger may promise.  With a holder, the room is short by what the holder
+    has already written and cannot be told from anything else on the disk:
+    counting it as used charges the holder twice, and adding the holder's
+    whole reservation back, as the ``mem_gb`` offer does, credits the part it
+    has not yet written, which the next holder could then reserve too.
+    """
+
+    try:
+        ceiling = _spool_gb_of(args)
     except ValueError as exc:
-        return str(exc)
-    if declared == 0:
-        return None
+        return ("refuse", str(exc))
+    if ceiling == 0:
+        return ("offer", 0, "")
+    declared = SPOOL_AUTO if ceiling is None else str(ceiling)
     path = entry.get(LOCAL_DISK_FIELD)
     if not isinstance(path, str) or not path.startswith("/"):
-        return (f"{host} declares {SPOOL_FLAG} {declared} but no absolute "
-                f"{LOCAL_DISK_FIELD!r} path naming the filesystem it is on")
+        return ("refuse", f"{host} declares {SPOOL_FLAG} {declared} but no "
+                f"absolute {LOCAL_DISK_FIELD!r} path naming the filesystem it "
+                "is on")
     floor = document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None
     if type(floor) is not int or not 0 <= floor < 100:
-        return (f"the roster states no {LOCAL_DISK_FLOOR_FIELD!r} as a whole "
-                f"percent from 0 to 99 (found {floor!r}), so there is no floor "
-                f"to check {SPOOL_FLAG} {declared} against")
+        return ("refuse", f"the roster states no {LOCAL_DISK_FLOOR_FIELD!r} as a "
+                f"whole percent from 0 to 99 (found {floor!r}), so there is no "
+                f"floor to measure {SPOOL_FLAG} {declared} against")
     try:
         from prismabuild import produced_spool
 
         produced_spool._local_disk(Path(path))
     except Exception as exc:  # noqa: BLE001 - any failure refuses the declaration
-        return f"{LOCAL_DISK_FIELD} {path} is not a usable local disk: {exc}"
+        return ("refuse", f"{LOCAL_DISK_FIELD} {path} is not a usable local "
+                f"disk: {exc}")
+    ledger = pool.PoolQueue(_queue_root()).ledger(host)
+
+    def holders_wait() -> tuple[str, str] | None:
+        try:
+            held = _held_spool(ledger)
+        except (OSError, pool.PoolContractError) as exc:
+            return ("wait", f"cannot read the host ledger at {ledger.base}: {exc}")
+        if held:
+            return ("wait", f"running actions hold {held} GiB of {SPOOL_KIND} "
+                    "here, and the bytes they have written cannot be told "
+                    "from other use of the disk")
+        return None
+
+    # Held is read on both sides of ``statvfs``: a holder that claimed and
+    # wrote in between would otherwise be measured as if it were not there.
+    waiting = holders_wait()
+    if waiting is not None:
+        return waiting
     try:
         room = local_disk_room(path, floor, statvfs=statvfs)
     except OSError as exc:
-        return f"cannot read free space on {LOCAL_DISK_FIELD} {path}: {exc}"
-    if declared * GIB > room["room_bytes"]:
-        return (f"{SPOOL_FLAG} {declared} ({declared * GIB} B) exceeds "
-                f"{path}'s free space minus the {floor}% floor: "
-                f"{room['free_bytes']} B free - {room['floor_bytes']} B floor "
-                f"= {room['room_bytes']} B")
-    return None
+        return ("refuse", f"cannot read free space on {LOCAL_DISK_FIELD} "
+                f"{path}: {exc}")
+    waiting = holders_wait()
+    if waiting is not None:
+        return waiting
+    gib = max(0, room["room_bytes"]) // GIB
+    if ceiling is not None:
+        gib = min(ceiling, gib)
+    detail = (f"{room['free_bytes']} B free - {room['floor_bytes']} B "
+              f"({floor}%) floor = {room['room_bytes']} B on {path}")
+    if gib == 0:
+        return ("refuse", f"{SPOOL_FLAG} {declared} measures 0 GiB: {detail}")
+    return ("offer", gib, detail)
 
 
 def spool_declaration(host: str, entry: dict, document: dict,
                       args: list[str], *, statvfs=None) -> list[str]:
-    """The loop arguments with ``--spool-gb`` kept, or dropped with a reason.
+    """The loop arguments with ``--spool-gb`` measured, or dropped with a reason.
 
-    Checked once per distinct declaration in this process (see
-    ``_SPOOL_VERDICTS``).  A refusal drops the flag rather than exiting: this
-    supervisor runs under ``Restart=always``, so an exit would take every
-    loop on the box with it, where a refused spool budget should cost the box
-    only the spool kind.  Producers that need it then record
+    A settled measurement is kept once per distinct declaration in this
+    process (see ``_SPOOL_VERDICTS``).  A refusal drops the flag rather than
+    exiting: this supervisor runs under ``Restart=always``, so an exit would
+    take every loop on the box with it, where a refused budget should cost the
+    box only its disk kind.  Actions that need it then record
     ``never_fits_capacity`` on this box and are claimed where it fits.
+
+    While a running action holds ``spool_gb`` here, nothing is settled and the
+    loops offer the ledger's current total, capped at a numeric declaration:
+    the last measured value, which neither grows nor shrinks the ledger.  The
+    measurement is retried every tick until the box holds none.
     """
 
     key = (host, tuple(args), entry.get(LOCAL_DISK_FIELD),
            document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None)
-    if key not in _SPOOL_VERDICTS:
-        reason = _check_spool_declaration(host, entry, document, args,
-                                          statvfs=statvfs)
-        if reason is None:
-            _SPOOL_VERDICTS[key] = list(args)
-            print(f"[{host}] {SPOOL_FLAG} declaration accepted: "
-                  f"{' '.join(args)}", flush=True)
-        else:
-            _SPOOL_VERDICTS[key] = _without_spool(args)
-            print(f"[{host}] {SPOOL_FLAG} declaration refused, so this box "
-                  f"offers no spool_gb: {reason}", flush=True)
-    return list(_SPOOL_VERDICTS[key])
+    if key in _SPOOL_VERDICTS:
+        return list(_SPOOL_VERDICTS[key])
+    verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+    if verdict[0] == "offer":
+        gib = int(verdict[1])
+        _SPOOL_VERDICTS[key] = _with_spool(args, gib)
+        _SPOOL_WAITING.pop(key, None)
+        if gib:
+            declared = args[args.index(SPOOL_FLAG) + 1]
+            print(f"[{host}] {SPOOL_FLAG} {declared} measured {gib} GiB: "
+                  f"{verdict[2]}", flush=True)
+        return list(_SPOOL_VERDICTS[key])
+    if verdict[0] == "refuse":
+        _SPOOL_VERDICTS[key] = _without_spool(args)
+        _SPOOL_WAITING.pop(key, None)
+        print(f"[{host}] {SPOOL_FLAG} declaration refused, so this box offers "
+              f"no {SPOOL_KIND}: {verdict[1]}", flush=True)
+        return list(_SPOOL_VERDICTS[key])
+    try:
+        total = pool.PoolQueue(_queue_root()).ledger(host).capacity().get(SPOOL_KIND, 0)
+    except (OSError, pool.PoolContractError):
+        total = 0
+    ceiling = _spool_gb_of(args)
+    if ceiling is not None:
+        total = min(ceiling, total)
+    waiting = _with_spool(args, total) if total else _without_spool(args)
+    offering = f"the ledger's current {total} GiB" if total else "none"
+    line = (f"[{host}] {SPOOL_FLAG} measurement waits: {verdict[1]}; offering "
+            f"{offering} until it can be taken")
+    if _SPOOL_WAITING.get(key) != line:
+        _SPOOL_WAITING[key] = line
+        print(line, flush=True)
+    return waiting
 
 
 def declared_roles(host: str) -> list[tuple[str, list[str]]]:
