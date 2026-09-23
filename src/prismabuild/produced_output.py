@@ -18,6 +18,16 @@ ownership of an origin-only batch last until `reclaim_origin` proves its
 origin gone, as for a staged batch. A template without ``write_only`` hashes
 exactly as before.
 
+ORIGIN LIFETIME (#914): an origin-only batch is committed with a lifetime.
+``retain``, the default, is #912's batch unchanged: PB never deletes it. A
+``consumed`` batch is a handoff. Each consumer that declares it files a
+consumer declaration at submission (`declare_origin_consumer`), and
+`origin_retirement_tick`, run once per tier-loop cycle, deletes its origin
+files and frees its durable charge once every declared consumer has
+succeeded. It also sweeps a consumed batch that no consumer declared and
+whose producer attempt is dead. Every retirement checks each file against
+the identity its commit recorded, and every unknown keeps the batch.
+
 R2 split (root review, defects 1-7):
 
   * TEMPLATE (sealed pre-submit): authorized prefix/slots/classes, durable
@@ -95,6 +105,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import time
@@ -121,6 +132,15 @@ MATERIALIZATION_SCHEMA_V1 = (
 ORIGIN_BATCH_REF_SCHEMA_V1 = "prismabuild.produced_output_origin_batch_ref.v1"
 #: The data-manifest annotation that carries a consumer's declared batches.
 ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
+#: An origin-only batch's lifetime (#914). ``retain`` is the default and is
+#: never written into a record, so a retained batch is filed byte for byte as
+#: #912 filed it; ``consumed`` is retired once its declared consumers succeed.
+ORIGIN_LIFETIME_RETAIN = "retain"
+ORIGIN_LIFETIME_CONSUMED = "consumed"
+ORIGIN_LIFETIMES = frozenset({ORIGIN_LIFETIME_RETAIN, ORIGIN_LIFETIME_CONSUMED})
+#: One consumer's declaration that it reads one consumed batch (#914), filed
+#: under the batch's instance at ``consumers/<batch_id>/<consumer_key>.json``.
+ORIGIN_CONSUMER_SCHEMA_V1 = "prismabuild.produced_output_origin_consumer.v1"
 #: The mover's typed refusal when a declared window's origin directories are
 #: not on the tier host (`stage_move.origin_reachability_diagnosis`). Spelled
 #: as data: this package imports no fleet tool.
@@ -2848,10 +2868,15 @@ def _origin_record(checked_template: Mapping[str, object],
                    batch_ns: str, manifest_digest: str, tier: str,
                    class_bytes: Mapping[str, int],
                    sealed: list[dict[str, object]],
-                   origin_identity: Mapping[str, object]) -> dict[str, object]:
-    """The immutable record of one origin-only batch, minus its commit time."""
+                   origin_identity: Mapping[str, object],
+                   lifetime: str = ORIGIN_LIFETIME_RETAIN) -> dict[str, object]:
+    """The immutable record of one origin-only batch, minus its commit time.
 
-    return {
+    A ``consumed`` lifetime is written into the record; ``retain`` is not, so
+    a retained batch's record is the one #912 filed.
+    """
+
+    record = {
         "schema": BATCH_SCHEMA_V1,
         "batch_id": batch_id,
         "batch_namespace": batch_ns,
@@ -2875,13 +2900,23 @@ def _origin_record(checked_template: Mapping[str, object],
                                          "sha256": d["sha256"]}
             for d in sealed}),
     }
+    if lifetime != ORIGIN_LIFETIME_RETAIN:
+        record["lifetime"] = lifetime
+    return record
+
+
+def _entry_lifetime(entry: Mapping[str, object]) -> str:
+    """A commitments entry's origin lifetime; an entry without one retains."""
+
+    return str(entry.get("lifetime") or ORIGIN_LIFETIME_RETAIN)
 
 
 def commit_origin_batch(queue, instance: Mapping[str, object],
                         template: Mapping[str, object],
                         descriptors: list[Mapping[str, object]], *,
                         batch_id: str,
-                        landed: Mapping[str, Mapping[str, object]] | None = None
+                        landed: Mapping[str, Mapping[str, object]] | None = None,
+                        lifetime: str = ORIGIN_LIFETIME_RETAIN
                         ) -> dict[str, object]:
     """Commit one write-only batch at its origin, with no stage copy (#912).
 
@@ -2918,6 +2953,14 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
     consumer may have declared them; its durable class bytes stay charged
     until then too, exactly as for a staged batch.
 
+    ``lifetime`` (#914) says who ends the batch. ``retain``, the default,
+    leaves that to the producer and the operator: PB never deletes it, and
+    nothing about it differs from #912. ``consumed`` hands it to
+    `origin_retirement_tick`, which deletes the origin once every consumer
+    that declared the batch has succeeded, or once its producer attempt is
+    dead if no consumer declared it. The lifetime is part of the record and
+    the entry, so a replay that names another lifetime refuses.
+
     Idempotent: a replay with the same manifest answers the duplicate, and a
     crash between filing the record and filing the entry resumes from the
     filed record rather than refusing it. Returns ``{"ok": True, ..., "ref"}``
@@ -2932,6 +2975,10 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
     except ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
     _name(batch_id, where="batch_id")
+    if lifetime not in ORIGIN_LIFETIMES:
+        raise ProducedOutputError(
+            f"origin batch lifetime must be one of {sorted(ORIGIN_LIFETIMES)}, "
+            f"not {lifetime!r}")
     if not checked_template.get("write_only"):
         # A read-back template's batches are staged for their owner to read
         # again: `commit_batch`, through a mover and a funded window.
@@ -2976,6 +3023,8 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
             if (isinstance(existing, Mapping)
                     and existing.get("origin_only") is True
                     and existing.get("manifest_digest") == manifest_digest):
+                if _entry_lifetime(existing) != lifetime:
+                    return {"ok": False, "refusal": "batch-lifetime-mismatch"}
                 # The commit consumed the prewrite; a crash after the entry
                 # and before the unlink leaves it, and the replay finishes it.
                 prewrite_path.unlink(missing_ok=True)
@@ -3017,7 +3066,7 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
             checked_template, checked_instance, batch_id=batch_id,
             batch_ns=batch_ns, manifest_digest=manifest_digest, tier=tier,
             class_bytes=class_bytes, sealed=sealed,
-            origin_identity=origin_identity)
+            origin_identity=origin_identity, lifetime=lifetime)
         batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
                      / instance_namespace(checked_instance))
         batch_dir.mkdir(parents=True, exist_ok=True)
@@ -3045,7 +3094,7 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
         # to retire, `_active_materialization` answers "no copy" from
         # `origin_only`, and `_committed_restage_authority` reads this flag,
         # so false is also what keeps the batch unfundable as a restage.
-        batches[batch_id] = {
+        entry = {
             "manifest_digest": manifest_digest,
             "batch_namespace": batch_ns,
             "tier": tier,
@@ -3056,11 +3105,17 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
             "retired": False,
             "origin_reclaimed": False,
         }
+        if lifetime != ORIGIN_LIFETIME_RETAIN:
+            entry["lifetime"] = lifetime
+        batches[batch_id] = entry
         _write_commitments(commitments_path, {"batches": batches})
         prewrite_path.unlink(missing_ok=True)
-    return {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
-            "manifest_digest": manifest_digest, "class_bytes": class_bytes,
-            "tier": tier, "entries": sealed, "origin_only": True, "ref": ref}
+    result = {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
+              "manifest_digest": manifest_digest, "class_bytes": class_bytes,
+              "tier": tier, "entries": sealed, "origin_only": True, "ref": ref}
+    if lifetime != ORIGIN_LIFETIME_RETAIN:
+        result["lifetime"] = lifetime
+    return result
 
 
 def _producer_launch_context(queue, producer: str) -> dict[str, object]:
@@ -4116,25 +4171,15 @@ def _checked_origin_ref(value: object) -> dict[str, str]:
                                       where="origin batch ref manifest_digest")}
 
 
-def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
-                      ) -> dict[str, object]:
-    """Resolve one declared origin-only batch to its committed files (#912).
+def _origin_ref_scope(queue_root: str | Path, checked_ref: Mapping[str, str]
+                      ) -> tuple[dict[str, object], dict[str, object]]:
+    """The filed instance and template a checked ref names, bound together.
 
-    Everything comes from what PB filed, never from the reference beyond its
-    coordinates: the instance at ``<owner>/<template>.<nonce>``, the template
-    it is bound to, the commitments entry, and the immutable batch record
-    through the one batch loader. The batch must be origin-only, committed
-    over the digest the reference names, and not reclaimed, and every origin
-    must still carry the identity its commit recorded. That recheck is taken
-    here, at submission; the consumer's mover later verifies each entry's
-    sha256 as it copies, which is what binds the staged bytes to the
-    committed ones. Raises `ProducedOutputError` naming what failed.
-
-    Returns ``{"ref", "instance", "template", "record", "entries"}`` with the
-    sealed descriptors in the batch's own order.
+    Read from PB's own records only: the instance at
+    ``<owner>/<template>.<nonce>`` and the template it is bound to. Raises
+    `ProducedOutputError` naming what is missing or does not match.
     """
 
-    checked_ref = _checked_origin_ref(ref)
     scope_dir = (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
                  / checked_ref["owner_action_key"]
                  / f"{checked_ref['template_id']}.{checked_ref['owner_nonce']}")
@@ -4161,6 +4206,30 @@ def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
         raise ProducedOutputError(
             "unknown-retain: origin batch scope is bound to another template "
             "or attempt")
+    return instance, template
+
+
+def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
+                      ) -> dict[str, object]:
+    """Resolve one declared origin-only batch to its committed files (#912).
+
+    Everything comes from what PB filed, never from the reference beyond its
+    coordinates: the instance at ``<owner>/<template>.<nonce>``, the template
+    it is bound to, the commitments entry, and the immutable batch record
+    through the one batch loader. The batch must be origin-only, committed
+    over the digest the reference names, and not reclaimed, and every origin
+    must still carry the identity its commit recorded, and a consumed batch
+    that `origin_retirement_tick` has started to retire refuses. That recheck
+    is taken here, at submission; the consumer's mover later verifies each entry's
+    sha256 as it copies, which is what binds the staged bytes to the
+    committed ones. Raises `ProducedOutputError` naming what failed.
+
+    Returns ``{"ref", "instance", "template", "record", "entries"}`` with the
+    sealed descriptors in the batch's own order.
+    """
+
+    checked_ref = _checked_origin_ref(ref)
+    instance, template = _origin_ref_scope(queue_root, checked_ref)
     if not template.get("write_only"):
         raise ProducedOutputError(
             "origin-batch-not-write-only: its template stages its batches")
@@ -4177,6 +4246,11 @@ def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
     if entry.get("origin_reclaimed"):
         raise ProducedOutputError(
             f"origin-batch-reclaimed: {checked_ref['batch_id']}")
+    if entry.get("retiring"):
+        # `origin_retirement_tick` decided to delete it (#914); its files may
+        # already be going, and no new consumer may count on them.
+        raise ProducedOutputError(
+            f"origin-batch-retiring: {checked_ref['batch_id']}")
     filed, sealed = _load_batch_record(
         queue_root, instance, template, entry, checked_ref["batch_id"])
     if filed.get("origin_only") is not True:
@@ -4992,10 +5066,14 @@ def reclaim_origin(queue, instance: Mapping[str, object],
     Stage retirement frees the tier window only. Each committed batch keeps
     charging its payload/checkpoint/temp classes until this call stats
     every sealed entry path and finds all of them absent (producer-side
-    disposal; this lane never unlinks origin files). A present file
+    disposal: this call never unlinks an origin file). A present file
     refuses `origin-present-retain` keeping the charge; an unstatable
     path retains unknown. Exactly-once: already-reclaimed returns
     `{"ok": True, "reclaimed": False}`.
+
+    The one place PB itself deletes origin files is the retirement of a
+    ``consumed`` origin-only batch (`origin_retirement_tick`, #914), which
+    sets the same ``origin_reclaimed`` flag when it is done.
     """
 
     try:
@@ -5047,6 +5125,597 @@ def reclaim_origin(queue, instance: Mapping[str, object],
         except ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     return {"ok": True, "batch_id": batch_id, "reclaimed": True}
+
+
+# --------------------------------------------------------------------------
+# Consumed origin batches: consumer declarations and retirement (#914)
+# --------------------------------------------------------------------------
+#
+# A ``consumed`` origin-only batch is a handoff: PB deletes its origin files
+# and frees its durable charge once the actions that read it have succeeded.
+# Nothing here copies, stages or moves a token. It reads the queue's own
+# records to learn how each action ended, and it deletes only files whose
+# identity is the one the batch's commit recorded.
+
+#: The events `origin_retirement_tick` returns, one per batch.
+ORIGIN_RETIRED_EVENT = "output-origin-retired"
+ORIGIN_RETIREMENT_STALLED_EVENT = "output-origin-retirement-stalled"
+ORIGIN_RETIREMENT_REFUSED_EVENT = "output-origin-retirement-refused"
+
+#: Consumer states that hold a consumed batch and are reported as a stall:
+#: the consumer ended without succeeding, or was declared and never
+#: published, or its records could not be read.
+_STALLED_CONSUMER_STATES = frozenset(
+    {"failed", "withdrawn", "unpublished", "unknown"})
+
+#: Reports the tick could not file on the batch itself (its records were
+#: unreadable, or the step raised), keyed by batch coordinates. They are
+#: logged once per change for the life of the process instead of on every
+#: cycle; a restarted tier loop logs each one again once.
+_UNFILED_REPORTS: dict[str, str] = {}
+
+
+def _consumers_dir(queue_root: str | Path, instance: Mapping[str, object],
+                   batch_id: str) -> Path:
+    return instance_dir(queue_root, instance) / "consumers" / batch_id
+
+
+def declare_origin_consumer(queue, ref: Mapping[str, object], *,
+                            consumer_action_key: str) -> dict[str, object]:
+    """File one consumer's declaration that it reads one origin batch (#914).
+
+    ``pbrun`` calls this for each batch a consumer's data manifest declares,
+    after the consumer's action key is sealed and before its row is
+    published, so that no consumer can be queued that the retirement tick
+    does not know about. Under the batch's output-prefix lock -- the lock
+    retirement takes -- the batch must be committed over the ref's digest and
+    neither retiring nor reclaimed. A ``consumed`` batch gets the file
+    ``consumers/<batch_id>/<consumer_action_key>.json`` under its instance;
+    the same consumer declaring again finds its own file and succeeds. A
+    ``retain`` batch is never retired, so nothing is filed for it.
+
+    Returns ``{"ok": True, "declared": bool}``; raises `ProducedOutputError`
+    naming the refusal.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    checked_ref = _checked_origin_ref(ref)
+    consumer = _hex64(consumer_action_key, where="consumer_action_key")
+    instance, _template = _origin_ref_scope(queue.root, checked_ref)
+    batch_id = checked_ref["batch_id"]
+    with queue.stage_ownership_lock(str(instance["output_prefix"])):
+        commitments = _read_commitments(_commitments_path(queue.root, instance))
+        entry = commitments["batches"].get(batch_id)
+        if not isinstance(entry, Mapping):
+            raise ProducedOutputError(f"origin-batch-uncommitted: {batch_id}")
+        if (entry.get("origin_only") is not True
+                or entry.get("manifest_digest") != checked_ref["manifest_digest"]):
+            raise ProducedOutputError(
+                "origin-batch-mismatch: the committed batch is not origin-only "
+                "over this manifest digest")
+        if entry.get("origin_reclaimed"):
+            raise ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
+        if entry.get("retiring"):
+            raise ProducedOutputError(f"origin-batch-retiring: {batch_id}")
+        if _entry_lifetime(entry) != ORIGIN_LIFETIME_CONSUMED:
+            return {"ok": True, "declared": False}
+        directory = _consumers_dir(queue.root, instance, batch_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        body = {"schema": ORIGIN_CONSUMER_SCHEMA_V1,
+                "consumer_action_key": consumer, "ref": dict(checked_ref)}
+        try:
+            pool_mod._publish_immutable(
+                directory / f"{consumer}.json",
+                json.dumps(body, sort_keys=True,
+                           separators=(",", ":")).encode() + b"\n",
+                where="produced-output origin consumer")
+        except pool_mod.PoolContractError as exc:
+            raise ProducedOutputError(f"origin-consumer-conflict: {exc}") from None
+    return {"ok": True, "declared": True}
+
+
+def _declared_consumers(queue_root: str | Path, instance: Mapping[str, object],
+                        batch_id: str,
+                        checked_ref: Mapping[str, str]) -> list[str]:
+    """The consumer action keys filed for one batch, sorted.
+
+    A missing directory is no declaration. An unreadable directory or
+    declaration, or one that names another batch or another key than its
+    file name, raises: an unknown declaration may be the one live reader.
+    """
+
+    directory = _consumers_dir(queue_root, instance, batch_id)
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: consumer declarations unreadable: {exc}") from None
+    keys: list[str] = []
+    for name in names:
+        if name.startswith("."):
+            # A publication's temporary file; the declaration it becomes is
+            # read on the next cycle.
+            continue
+        if not name.endswith(".json"):
+            raise ProducedOutputError(
+                f"unknown-retain: unexpected consumer declaration {name!r}")
+        try:
+            body = json.loads((directory / name).read_text())
+        except (OSError, ValueError) as exc:
+            raise ProducedOutputError(
+                f"unknown-retain: consumer declaration {name} unreadable: "
+                f"{exc}") from None
+        if (not isinstance(body, Mapping)
+                or body.get("schema") != ORIGIN_CONSUMER_SCHEMA_V1
+                or body.get("consumer_action_key") != name[:-len(".json")]
+                or body.get("ref") != dict(checked_ref)):
+            raise ProducedOutputError(
+                f"unknown-retain: consumer declaration {name} does not name "
+                "this batch")
+        keys.append(_hex64(body["consumer_action_key"],
+                           where="consumer declaration key"))
+    return keys
+
+
+def _key_generation_once(queue, key: str) -> tuple[str, dict[str, object] | None]:
+    """One read of where an action key stands: ``(state, record)``.
+
+    A live row wins: ``claimed`` or ``ready``. (A claim's ``intent`` marker is
+    not one: it names who claimed the key and outlives the claim.) A claim
+    a finisher or a reaper has moved aside -- a tombstone or late-finish file
+    beside the row -- is a transition in flight and reads ``moving``. A lease
+    with no claim is a widowed lease, not a transition, and is not read.
+    Otherwise the terminal record
+    with the latest ``published_unix`` among ``done``, ``failed`` and
+    ``withdrawn`` is the key's latest generation: a resubmission publishes a
+    new generation and leaves the earlier terminal where it was, so the
+    newest one is the one that answers for the key. No record at all reads
+    ``absent``; an unreadable record, a terminal without a generation stamp,
+    or two terminals of one generation read ``unknown``.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        for state in (pool_mod.CLAIMED, pool_mod.READY):
+            record = pool_mod._read_json(queue.item_path(state, key))
+            if record is not None:
+                return (state, record)
+        try:
+            beside = [path.name for path in pool_mod._glob_visible(
+                queue.dir(pool_mod.CLAIMED), f"{key}.*")]
+        except FileNotFoundError:
+            beside = []
+        if any(name.endswith((pool_mod.TOMBSTONE_SUFFIX,
+                              pool_mod.LATE_FINISH_SUFFIX))
+               for name in beside):
+            return ("moving", None)
+        terminals: list[tuple[float, str, dict[str, object]]] = []
+        for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+            record = pool_mod._read_json(queue.item_path(state, key))
+            if record is None:
+                continue
+            stamp = record.get("published_unix")
+            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+                return ("unknown", None)
+            terminals.append((float(stamp), state, record))
+    except (OSError, pool_mod.PoolContractError):
+        return ("unknown", None)
+    if not terminals:
+        return ("absent", None)
+    terminals.sort(key=lambda item: item[0])
+    if len(terminals) > 1 and terminals[-1][0] == terminals[-2][0]:
+        return ("unknown", None)
+    return (terminals[-1][1], terminals[-1][2])
+
+
+def _key_generation(queue, key: str) -> tuple[str, dict[str, object] | None]:
+    """`_key_generation_once`, taken twice; a disagreement reads ``unknown``.
+
+    The single read visits several directories one after another, and a row
+    moving between two of them (a requeue lands in ``ready`` after that
+    directory was read) can make one read describe a state the key was never
+    in. Two reads that agree have not been split by a move.
+    """
+
+    first = _key_generation_once(queue, key)
+    second = _key_generation_once(queue, key)
+    if first != second:
+        return ("unknown", None)
+    return first
+
+
+def _record_nonce(record: Mapping[str, object] | None) -> str:
+    control = (record or {}).get("resource_scope")
+    if isinstance(control, Mapping):
+        nonce = control.get("nonce")
+        if isinstance(nonce, str) and nonce:
+            return nonce
+    return ""
+
+
+def _consumer_state(queue, key: str) -> str:
+    """How a declared consumer stands, for retirement.
+
+    ``succeeded`` (its latest generation is ``done`` as executed or a cache
+    hit), ``live`` (queued, claimed or moving), ``failed``, ``withdrawn``,
+    ``unpublished`` (declared but no row filed) or ``unknown``.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    state, record = _key_generation(queue, key)
+    if state in (pool_mod.CLAIMED, pool_mod.READY, "moving"):
+        return "live"
+    if state == pool_mod.DONE:
+        assert record is not None
+        if record.get("status") in ("executed", "cache_hit"):
+            return "succeeded"
+        return "unknown"
+    if state == pool_mod.FAILED:
+        return "failed"
+    if state == pool_mod.WITHDRAWN:
+        return "withdrawn"
+    if state == "absent":
+        return "unpublished"
+    return "unknown"
+
+
+def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
+    """Whether the attempt that filed this instance is dead, for the sweep.
+
+    ``dead`` when nothing of the owner's is running and its latest
+    generation ended without this attempt succeeding: the owner's claim names
+    another attempt (a retry superseded this one), or its latest terminal is
+    ``failed`` or ``withdrawn``, or it is ``done`` by another attempt.
+    ``succeeded`` when it is ``done`` by this attempt; ``live`` while this
+    attempt holds the claim. Everything else -- queued, moving, absent, a
+    record without the attempt's nonce, anything unreadable -- is
+    ``unknown``, and the sweep keeps the batch.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    owner = str(instance["owner_action_key"])
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    nonce = str(attempt["nonce"])
+    state, record = _key_generation(queue, owner)
+    if state == pool_mod.CLAIMED:
+        live = _record_nonce(record)
+        if not live:
+            return "unknown"
+        return "live" if live == nonce else "dead"
+    if state in (pool_mod.FAILED, pool_mod.WITHDRAWN):
+        return "dead"
+    if state == pool_mod.DONE:
+        assert record is not None
+        finished = _record_nonce(record)
+        if record.get("status") not in ("executed", "cache_hit") or not finished:
+            return "unknown"
+        return "succeeded" if finished == nonce else "dead"
+    return "unknown"
+
+
+def _fsync_directories(paths: Sequence[str]) -> None:
+    """Make the unlinks of these paths durable before the charge is freed."""
+
+    for directory in sorted({os.path.dirname(path) for path in paths}):
+        try:
+            handle = os.open(directory, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.fsync(handle)
+        except OSError:
+            pass
+        finally:
+            os.close(handle)
+
+
+def _retire_consumed_batch(queue, instance: Mapping[str, object],
+                           template: Mapping[str, object],
+                           batch_id: str) -> dict[str, object] | None:
+    """One retirement step for one consumed batch; the event to log, or None.
+
+    Everything happens under the batch's output-prefix lock, the lock
+    `declare_origin_consumer` takes, so no consumer can be declared between
+    the decision and the delete.
+
+    The decision, unless the batch is already ``retiring``:
+
+    * With declared consumers: every one must have ``succeeded``. A live one
+      holds the batch quietly. A failed, withdrawn, unpublished or unknown
+      one holds it and is reported as a stall, once per change of the
+      consumers' states, because a retry of that consumer needs the batch.
+    * With none: the batch is an orphan once its producer attempt is dead
+      (`_producer_attempt_state`). Otherwise it waits, quietly, for a
+      consumer.
+
+    The delete checks the output prefix first: a prefix that is not a
+    directory here means the file system is not mounted on this host, and
+    an absent file would prove nothing. Each origin is then compared with
+    the identity its commit recorded:
+
+    * the same file is deleted;
+    * an absent file is already gone;
+    * a file with another inode is not this batch's any more (a retried
+      producer attempt wrote the path again, #912's per-attempt ownership),
+      so it is left alone and the batch stops charging for it;
+    * the same inode changed in place, or any unreadable stat, refuses and
+      keeps the batch.
+
+    Before the first unlink the entry is marked ``retiring``: consumers can
+    no longer declare it, and a crash resumes the delete rather than
+    deciding again. Afterwards ``origin_reclaimed`` frees its durable class
+    bytes and its paths, as `reclaim_origin` does.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    commitments_path = _commitments_path(queue.root, instance)
+    with queue.stage_ownership_lock(str(instance["output_prefix"])):
+        try:
+            commitments = _read_commitments(commitments_path)
+        except ProducedOutputError as exc:
+            return _unfiled_report(instance, batch_id, {
+                "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                "reason": str(exc)})
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        entry = batches.get(batch_id)
+        if (not isinstance(entry, Mapping)
+                or entry.get("origin_only") is not True
+                or _entry_lifetime(entry) != ORIGIN_LIFETIME_CONSUMED
+                or entry.get("origin_reclaimed")):
+            return None
+        entry = dict(entry)
+        ref = origin_batch_ref(instance, batch_id=batch_id,
+                               manifest_digest=str(entry["manifest_digest"]))
+        try:
+            total = sum(_check_class_bytes(
+                entry.get("class_bytes"),
+                where=f"committed batch {batch_id!r}").values())
+        except ProducedOutputError as exc:
+            return _unfiled_report(instance, batch_id, {
+                "event": ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": ref,
+                "reason": str(exc)})
+        base = {"ref": ref, "bytes": total}
+
+        def report(event: dict[str, object]) -> dict[str, object] | None:
+            # Once per change: the entry remembers the last report it made.
+            signature = hashlib.sha256(json.dumps(
+                event, sort_keys=True).encode()).hexdigest()
+            if entry.get("retirement_report") == signature:
+                return None
+            entry["retirement_report"] = signature
+            batches[batch_id] = entry
+            _write_commitments(commitments_path, {"batches": batches})
+            return event
+
+        def quiet() -> None:
+            # Nothing to report now; a later stall reports again.
+            if "retirement_report" in entry:
+                entry.pop("retirement_report")
+                batches[batch_id] = entry
+                _write_commitments(commitments_path, {"batches": batches})
+
+        retiring = entry.get("retiring")
+        if isinstance(retiring, Mapping):
+            reason = str(retiring.get("reason") or "")
+            consumers = list(retiring.get("consumers") or [])
+        elif retiring:
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": "unknown-retain: retiring record is corrupt"})
+        else:
+            checked_ref = _checked_origin_ref(ref)
+            try:
+                declared = _declared_consumers(
+                    queue.root, instance, batch_id, checked_ref)
+            except ProducedOutputError as exc:
+                return report({"event": ORIGIN_RETIREMENT_STALLED_EVENT, **base,
+                               "consumers": [], "reason": str(exc)})
+            if declared:
+                consumers = [{"action_key": key,
+                              "state": _consumer_state(queue, key)}
+                             for key in declared]
+                if not all(item["state"] == "succeeded" for item in consumers):
+                    if any(item["state"] in _STALLED_CONSUMER_STATES
+                           for item in consumers):
+                        return report({"event": ORIGIN_RETIREMENT_STALLED_EVENT,
+                                       **base, "consumers": consumers})
+                    quiet()
+                    return None
+                reason = "consumed"
+            else:
+                if _producer_attempt_state(queue, instance) != "dead":
+                    quiet()
+                    return None
+                reason, consumers = "orphan", []
+
+        # The delete.  First prove this host sees the output prefix.
+        try:
+            prefix_mode = os.stat(str(instance["output_prefix"])).st_mode
+        except OSError as exc:
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": "output-prefix-unreachable",
+                           "detail": str(exc)})
+        if not stat.S_ISDIR(prefix_mode):
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": "output-prefix-unreachable",
+                           "detail": "not a directory on this host"})
+        try:
+            filed, sealed = _load_batch_record(
+                queue.root, instance, template, entry, batch_id)
+        except ProducedOutputError as exc:
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": str(exc)})
+        recorded = filed.get("origin_identity")
+        if (not isinstance(recorded, Mapping)
+                or set(recorded) != {str(desc["path"]) for desc in sealed}):
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": "origin-proof-missing"})
+
+        def classify(path: str) -> tuple[str, str]:
+            try:
+                live = _portable_identity_of(os.lstat(path))
+            except FileNotFoundError:
+                return ("absent", "")
+            except OSError as exc:
+                return ("refuse", f"origin-unstatable: {exc}")
+            if lease_mod.file_id_matches(recorded[path], live):
+                return ("unlink", "")
+            if live.get("ino") != recorded[path].get("ino"):
+                return ("superseded", "")
+            return ("refuse", "origin-changed")
+
+        paths = sorted(str(desc["path"]) for desc in sealed)
+        for path in paths:
+            verdict, why = classify(path)
+            if verdict == "refuse":
+                return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                               "reason": why, "path": path})
+        if not retiring:
+            entry["retiring"] = {"reason": reason, "consumers": consumers}
+            entry.pop("retirement_report", None)
+            batches[batch_id] = entry
+            _write_commitments(commitments_path, {"batches": batches})
+        unlinked: list[str] = []
+        superseded: list[str] = []
+        absent: list[str] = []
+        for path in paths:
+            # Checked again at the unlink, not only above: the name is
+            # removed only while it is still the committed file.
+            verdict, why = classify(path)
+            if verdict == "refuse":
+                return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                               "reason": why, "path": path})
+            if verdict == "unlink":
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    absent.append(path)
+                    continue
+                except OSError as exc:
+                    return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                                   **base, "reason": f"origin-unlink: {exc}",
+                                   "path": path})
+                unlinked.append(path)
+            elif verdict == "superseded":
+                superseded.append(path)
+            else:
+                absent.append(path)
+        _fsync_directories(unlinked)
+        entry["origin_reclaimed"] = True
+        entry.pop("retirement_report", None)
+        batches[batch_id] = entry
+        _write_commitments(commitments_path, {"batches": batches})
+    _UNFILED_REPORTS.pop(_batch_report_key(instance, batch_id), None)
+    return {"event": ORIGIN_RETIRED_EVENT, **base, "reason": reason,
+            "consumers": consumers, "origin_identity": dict(recorded),
+            "unlinked": unlinked, "superseded": superseded, "absent": absent}
+
+
+def _batch_report_key(instance: Mapping[str, object], batch_id: str) -> str:
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    return (f"{instance['owner_action_key']}/{instance['template_id']}."
+            f"{attempt['nonce']}/{batch_id}")
+
+
+def _unfiled_report(instance: Mapping[str, object], batch_id: str,
+                    event: dict[str, object]) -> dict[str, object] | None:
+    """Report once per change what cannot be remembered on the batch itself."""
+
+    event = {**event, "batch": _batch_report_key(instance, batch_id)}
+    signature = hashlib.sha256(json.dumps(
+        event, sort_keys=True).encode()).hexdigest()
+    key = _batch_report_key(instance, batch_id)
+    if _UNFILED_REPORTS.get(key) == signature:
+        return None
+    _UNFILED_REPORTS[key] = signature
+    return event
+
+
+def origin_retirement_tick(queue) -> list[dict[str, object]]:
+    """Retire the consumed origin batches whose time has come (#914).
+
+    Called once per `tier_loop.cycle` on the tier host. It scans the same
+    produced-output scopes `unheld_window_gib` and `output_scope_tick` scan,
+    reads each instance's commitments, and runs `_retire_consumed_batch` for
+    every origin-only batch committed with the ``consumed`` lifetime and not
+    yet reclaimed. A ``retain`` batch is never touched, whatever became of
+    its producer.
+
+    Returns the events to log: one ``output-origin-retired`` per retired
+    batch (its ref, bytes, consumers and the origin identity each deleted
+    file was checked against), and ``output-origin-retirement-stalled`` or
+    ``-refused`` once per change of what holds a batch. A tick with nothing
+    to retire and nothing new to report returns ``[]``. An instance whose
+    commitments cannot be read is skipped, as the other scans skip it: its
+    batches stay charged and on disk.
+    """
+
+    events: list[dict[str, object]] = []
+    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    try:
+        owners = _scope_owners(scopes_root)
+    except OSError:
+        return events
+    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    for owner in owners:
+        try:
+            scopes = sorted(child for child in (scopes_root / owner).iterdir()
+                            if child.is_dir())
+        except OSError:
+            continue
+        for scope in scopes:
+            try:
+                commitments = _read_commitments(scope / "commitments.json")
+            except ProducedOutputError:
+                continue
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            due = [batch_id for batch_id, entry in sorted(batches.items())
+                   if isinstance(entry, Mapping)
+                   and entry.get("origin_only") is True
+                   and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
+                   and not entry.get("origin_reclaimed")]
+            if not due:
+                continue
+            try:
+                instance = validate_instance(json.loads(
+                    (scope / "instance.json").read_text()))
+                template = validate_template(json.loads(
+                    (templates_root / f"{instance['template_id']}.json"
+                     ).read_text()))
+            except (OSError, ValueError) as exc:
+                event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                         "batch": f"{owner}/{scope.name}",
+                         "reason": f"unknown-retain: scope unreadable: {exc}"}
+                signature = hashlib.sha256(json.dumps(
+                    event, sort_keys=True).encode()).hexdigest()
+                if _UNFILED_REPORTS.get(event["batch"]) != signature:
+                    _UNFILED_REPORTS[event["batch"]] = signature
+                    events.append(event)
+                continue
+            if (instance_dir(queue.root, instance) != scope
+                    or template_sha256(template) != instance["template_sha256"]):
+                continue
+            for batch_id in due:
+                try:
+                    event = _retire_consumed_batch(
+                        queue, instance, template, batch_id)
+                except (ProducedOutputError, OSError, ValueError) as exc:
+                    event = _unfiled_report(instance, batch_id, {
+                        "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                        "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+                if event is not None:
+                    events.append(event)
+    return events
 
 
 def _require_coherent_lease_sdk(lease_sdk: object):
@@ -6094,6 +6763,14 @@ __all__ = [
     "build_stage_manifest",
     "retire_batch",
     "reclaim_origin",
+    "declare_origin_consumer",
+    "origin_retirement_tick",
+    "ORIGIN_LIFETIME_RETAIN",
+    "ORIGIN_LIFETIME_CONSUMED",
+    "ORIGIN_CONSUMER_SCHEMA_V1",
+    "ORIGIN_RETIRED_EVENT",
+    "ORIGIN_RETIREMENT_STALLED_EVENT",
+    "ORIGIN_RETIREMENT_REFUSED_EVENT",
     "safe_release_instance",
     "output_scope_tick",
     "due_mover_rows",

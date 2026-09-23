@@ -5410,6 +5410,12 @@ def cycle(
     if retired_funding.get("retired") or retired_funding.get("unreadable"):
         print(json.dumps({"unix": time.time(), "event": "output-funding-retired",
                           **retired_funding}), flush=True)
+    # Consumed produced-output origins whose declared consumers have all
+    # succeeded, and consumed ones a dead producer attempt left undeclared
+    # (#914).  Silent when it retires nothing; a stalled or refused
+    # retirement is reported once per change.
+    for event in produced_output.origin_retirement_tick(queue):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
     # its free tokens go now, its held ones as their holders finish, and its
     # record says why it is empty rather than vanishing.

@@ -542,7 +542,8 @@ class ProducedSpool:
                     "refusal": f"export-{state}-without-ack"}
         return {"ok": True, "complete": False, "export_key": key}
 
-    def commit_origin_group(self, batch_id, descriptors):
+    def commit_origin_group(self, batch_id, descriptors, *,
+                            lifetime=po.ORIGIN_LIFETIME_RETAIN):
         """Commit one exported group as a write-only batch at its origin (#912).
 
         Only after the group's export receipt is durable: before it, a
@@ -550,9 +551,11 @@ class ProducedSpool:
         then may not be the one that lasts.  The descriptors must name
         exactly the files the export landed, with their sizes and digests,
         and `produced_output.commit_origin_batch` commits them against the
-        identities the receipt recorded.  Returns that commit's answer, or
-        the export's refusal.  Independent of `release_group`: either may
-        come first.
+        identities the receipt recorded.  ``lifetime`` is that commit's
+        (#914): ``retain`` by default, or ``consumed`` for a handoff that PB
+        retires once its declared consumers succeed.  Returns that commit's
+        answer, or the export's refusal.  Independent of `release_group`:
+        either may come first.
         """
         group = self._group(batch_id)
         with _lock(group / ".export.lock"):
@@ -575,7 +578,8 @@ class ProducedSpool:
             landed = {str(proof["destination_path"]): proof["identity"]
                       for proof in receipt["entries"]}
         return po.commit_origin_batch(self.queue, self.instance, self.template,
-                                      sealed, batch_id=batch_id, landed=landed)
+                                      sealed, batch_id=batch_id, landed=landed,
+                                      lifetime=lifetime)
 
     def release_group(self, batch_id):
         group = self._group(batch_id)
