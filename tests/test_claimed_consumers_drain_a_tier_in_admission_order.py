@@ -68,7 +68,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import (  # noqa: E402
-    pool, residency_map, residency_plan, storage_tiers, window_credit)
+    pool, progress as pb_progress, residency_map, residency_plan,
+    storage_tiers, window_credit)
+import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _cycle, _fixture_queue, _land)
@@ -77,7 +79,8 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     PHASE_GIB, TIER, _hexkey, _tier_record)
 from test_r12_and_the_capture_replay_under_the_refill_horizon import (  # noqa: E402
-    DATA, SAMPLE_UNIX, _claim, _consumer, _plan)
+    DATA, FILL, SAMPLE_UNIX, _claim, _consumer, _plan)
+from test_a_resident_range_is_adopted_rather_than_recopied import _row  # noqa: E402
 
 CLAIM_GAP_S = 5.0
 READING = "chain-043"
@@ -290,16 +293,24 @@ def _assert_held_back_records(queue: pool.PoolQueue, count: int, *, head: int,
 # ------------------------------------------------ the drain, and its cost
 
 
-def _run_movers(queue: pool.PoolQueue, stage: Path, count: int) -> list[str]:
-    """Every queued copy of the fixture's consumers lands: one cycle's copies.
+def _run_movers(queue: pool.PoolQueue, stage: Path, count: int, *,
+                unfit: list[str] | None = None) -> list[str]:
+    """Every queued copy of the fixture's consumers that can claim lands.
 
-    The mover's row leaves ``ready/`` for ``done/`` and its range is filed as
-    ``stage_move`` files one (``_land``), at the slowest fixture rate for a
-    range with no receipt of its own.
+    One cycle's copies.  The mover's row leaves ``ready/`` for ``done/`` and
+    its range is filed as ``stage_move`` files one (``_land``), at the
+    slowest fixture rate for a range with no receipt of its own.  A claim
+    takes its tokens from free, counting a fence the window put on this very
+    leg (#907: held under the consumer's grant for the leg, or already moved
+    onto the mover by ``_settle_protected``); that fence is handed back and
+    ``_land`` takes the same tokens again.  A mover whose tokens are not
+    there stays in ``ready/``, as the claim pass leaves it
+    (``tier_reservation_unavailable``), and is named in ``unfit``.
     """
 
     landed: list[str] = []
     slowest = min(RATES.values())
+    ledger = queue.tier_ledger(TIER)
     for n in range(count):
         key, manifest = _key(n), _manifest(n)
         plan = residency_plan.read(queue, key)
@@ -311,12 +322,24 @@ def _run_movers(queue: pool.PoolQueue, stage: Path, count: int) -> list[str]:
             ready = queue.item_path(pool.READY, mover)
             if not ready.exists():
                 continue
+            start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+            need = storage_tiers.stage_tokens_for_bytes(end - start)
+            own = (mover, window_credit.grant_key(
+                key, TIER, "mover_row", str(phase["name"])))
+            funded = sum(int(ledger.holder_tokens(holder).get("stage_gib", 0))
+                         for holder in own)
+            if int(ledger.available().get("stage_gib", 0)) + funded < need:
+                if unfit is not None:
+                    unfit.append(f"{n}:{phase['name']}")
+                continue
             item = json.loads(ready.read_text())
             ready.unlink()
+            for holder in own:
+                if ledger.holder_tokens(holder):
+                    ledger.release(holder)
             done = queue.item_path(pool.DONE, mover)
             done.parent.mkdir(parents=True, exist_ok=True)
             done.write_text(json.dumps({**item, "status": "done"}))
-            start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
             _land(queue, stage, consumer=key, manifest=manifest, mover=mover,
                   name=str(phase["name"]), start=start, end=end,
                   seconds=(end - start) / RATES.get(str(phase["name"]), slowest))
@@ -377,6 +400,7 @@ def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
     timer = _Timer(monkeypatch)
     served_at: dict[int, int] = {}
     per_cycle: list[dict[str, object]] = []
+    unfit: list[str] = []
     began = time.perf_counter()
     for cycle in range(1, count + 3):
         # The rank this cycle takes: consumers served on earlier cycles have
@@ -402,7 +426,7 @@ def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
                           "relief": (order.get("relief")
                                      if isinstance(order, dict) else None),
                           "served": now_served, "evicted": len(evicted),
-                          "landed": _run_movers(queue, stage, count),
+                          "landed": _run_movers(queue, stage, count, unfit=unfit),
                           "steps": steps})
         calls = {name: steps.get(name, {"calls": 0})["calls"]
                  for name in _Timer.STEPS}
@@ -415,6 +439,8 @@ def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
                           "cycles": per_cycle}, default=str))
 
     assert served_at == {n: n + 1 for n in range(count)}, per_cycle
+    # Every published range could claim: the order grants what fits.
+    assert unfit == [], (unfit, per_cycle)
     # Served: nobody is blocked, and no read-ahead is traded for read-ahead.
     for entry in per_cycle[count:]:
         assert entry["evicted"] == 0, per_cycle
@@ -527,7 +553,7 @@ def test_a_range_two_claimed_consumers_read_is_charged_to_each_of_them(
 
 
 from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
-    TOKEN, _finish, _verdict, _verdict_fixture)
+    TOKEN, _finish, _judge, _verdict, _verdict_fixture)
 from test_a_resident_range_is_adopted_rather_than_recopied import STAGE_KIND  # noqa: E402
 
 AHEAD = _hexkey("verdictahead")
@@ -554,12 +580,16 @@ def _file_order(queue: pool.PoolQueue, key: str, *, standing: str,
 
 
 def _ahead_running(queue: pool.PoolQueue, *, quiet_s: float | None,
-                   heartbeat_age_s: float = 0.0) -> None:
+                   heartbeat_age_s: float = 0.0,
+                   accepted_count: int | None = None,
+                   waiting_exempt: bool | None = None) -> None:
     """The consumer ranked ahead: claimed, with the lease its worker writes.
 
     ``quiet_s`` is what its progress watch last reported (``None``: the
-    lease carries no progress observation).  Written directly: ``write_lease``
-    is the claiming worker's, and checks it is that worker.
+    lease carries no progress observation).  ``accepted_count`` and
+    ``waiting_exempt`` are the watch's accepted reports and its latest
+    staged-wait verdict (``ProgressWatch.as_record``).  Written directly:
+    ``write_lease`` is the claiming worker's, and checks it is that worker.
     """
 
     claimed = time.time() - 3600.0
@@ -573,8 +603,14 @@ def _ahead_running(queue: pool.PoolQueue, *, quiet_s: float | None,
         "owner": "verdict-fixture", "heartbeat_unix": time.time() - heartbeat_age_s,
         "claimed_unix": claimed, "published_unix": claimed - 10.0}
     if quiet_s is not None:
-        lease["progress_observation"] = {"source": "action-progress",
-                                         "quiet_s": quiet_s, "grace_s": GRACE_S}
+        observation: dict[str, object] = {
+            "source": "action-progress", "quiet_s": quiet_s, "grace_s": GRACE_S}
+        if accepted_count is not None:
+            observation.update({"accepted_count": accepted_count,
+                                "staged_wait_exempt_s": 0.0})
+        if waiting_exempt is not None:
+            observation["staged_wait"] = {"exempt": waiting_exempt}
+        lease["progress_observation"] = observation
     queue.lease_path(AHEAD).parent.mkdir(parents=True, exist_ok=True)
     queue.lease_path(AHEAD).write_text(json.dumps(lease))
 
@@ -709,3 +745,432 @@ def test_a_stuck_order_ends_the_wait_as_before(tmp_path: Path, standing: str) ->
 
     assert verdict["exempt"] is False, verdict
     assert verdict["claim_order"]["relief"] == "futile"
+
+
+# ================================================ the #1022 review (items 2-6)
+#
+# Each test below names the review item it pins.  Every one fails on the
+# first head of #1022 (14d6c96d3aab) on a behavioural assertion.
+
+
+# ------------------------------------------------ item 2: no starvation
+
+
+def _lease_reported(queue: pool.PoolQueue, n: int) -> float:
+    lease = json.loads(queue.lease_path(_key(n)).read_text())
+    return float(lease["progress_observation"]["last_accepted"]["reported_unix"])
+
+
+def _waiting(queue: pool.PoolQueue, n: int, *, phase: str, since: float) -> None:
+    """Consumer ``n``'s reader declares its staged wait on ``phase``'s range,
+    the record ``progress.declare_staged_wait`` writes beside its report."""
+
+    path = Path(pb_progress.staged_wait_path(str(queue.action_progress_path(_key(n)))))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": pb_progress.STAGED_WAIT_SCHEMA_V1, "token": "w" * 32,
+        "since_unix": float(since), "movers": [_mover(n, phase)]}))
+
+
+def _read_and_pass(queue: pool.PoolQueue, stage: Path, n: int, *, phase: str,
+                   following: str, now: float) -> None:
+    """Consumer ``n`` read ``phase``: it reports ``following``, gives
+    ``phase`` back (its egress ran) and blocks on ``following``."""
+
+    key = _key(n)
+    item = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    queue.write_lease(key, owner="replay-fixture", claim_snapshot=item,
+                      progress_observation={
+                          "source": "action-progress",
+                          "last_accepted": {"phase": following,
+                                            "units_completed": 1,
+                                            "reported_unix": now}})
+    receipt = stage_release.evict(queue, _mover(n, phase), consumer_action_key=key,
+                                  stage_root=str(stage), reason="egress")
+    assert receipt.get("tokens_released") or receipt.get("complete"), receipt
+    plan = residency_plan.read(queue, key)
+    egress = next(dict(entry["egress_row"]) for entry in plan["phases"]  # type: ignore[union-attr]
+                  if entry["name"] == phase)
+    path = queue.item_path(pool.DONE, str(egress["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**egress, "status": "done"}))
+    _waiting(queue, n, phase=following, since=now)
+
+
+def test_among_blocked_consumers_the_one_blocked_longest_ranks_first() -> None:
+    """Item 2's rank: blocked first, then by when each became blocked.
+
+    The older claim blocked later, so it waits behind the younger claim
+    that has been blocked longer.  Claim time only breaks a tie."""
+
+    order = window_credit.claim_order([
+        {"consumer": "older-claim", "claimed_unix": 100.0,
+         "blocked_since_unix": 900.0, "need_gib": 22, "blocked": True},
+        {"consumer": "younger-claim", "claimed_unix": 200.0,
+         "blocked_since_unix": 300.0, "need_gib": 22, "blocked": True}],
+        free_gib=30)
+
+    assert [(entry["consumer"], entry["standing"]) for entry in order["entries"]] == [
+        ("younger-claim", window_credit.CLAIM_GRANTED),
+        ("older-claim", window_credit.CLAIM_HEAD)]
+
+
+def test_the_second_consumer_is_served_before_the_first_blocks_again(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Item 2's starvation fixture: two R12s, one 22 GiB range each, 30 GiB.
+
+    Unchunked, R = 22 GiB, C_eff = 30 GiB (``_fixture(count=2,
+    holding=())``, ``_cycle(gib=30)``).  One consumer's range fits at a
+    time.  A, the older claim, is granted on cycle 1.  Between cycles its
+    copy lands and it reads the range, gives it back and blocks on the next
+    one (``_read_and_pass``): one T_land + T_phase per cycle here.  On the
+    first head A is the older claim again every cycle and is granted again:
+    B's GPU idles and B is never killed.  The bound: with k = 2 consumers, B
+    is served within (k - 1) x (T_phase + T_land), so on cycle 2.
+    """
+
+    count, room = 2, 30
+    queue, stage, _plans, _shrunk = _fixture(tmp_path, count, ())
+    for n in range(count):
+        _waiting(queue, n, phase=READING, since=_lease_reported(queue, n))
+    names = [str(phase["name"]) for phase in DATA["r12"]["phases"]]
+    reading = {n: READING for n in range(count)}
+    served: list[tuple[int, int, str]] = []
+    stuck: list[str] = []
+    for cycle in range(1, 5):
+        _cycle(queue, stage, gib=room)
+        now_served = [n for n in range(count)
+                      if _published(queue, _mover(n, reading[n]))]
+        served.extend((cycle, n, reading[n]) for n in now_served)
+        unfit: list[str] = []
+        landed = _run_movers(queue, stage, count, unfit=unfit)
+        stuck.extend(f"cycle {cycle} {name}" for name in unfit)
+        for n in [n for n in now_served if f"{n}:{reading[n]}" in landed]:
+            following = names[names.index(reading[n]) + 1]
+            _read_and_pass(queue, stage, n, phase=reading[n],
+                           following=following, now=time.time())
+            reading[n] = following
+    events = _events(capsys)
+
+    b_served = [cycle for cycle, n, _phase in served if n == 1]
+    assert b_served and b_served[0] <= 2, (served, stuck,
+                                           _diagnosis(queue, events, count))
+    # A granted range can claim: the order's grant is room, not a promise
+    # an advance fence has already spent.
+    assert stuck == [], stuck
+
+
+# ------------------------------------------------ item 3: Belady for a blocked head
+
+
+def test_a_granted_readers_next_range_is_kept_for_a_head_that_lands_later(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Item 3: A is granted and holds ``chain-042``, the range it reads the
+    moment its ``chain-043`` is read (``seconds_until_needed`` 0).  B, the
+    blocked head, cannot have its range for ``need_bytes / rate`` seconds.
+    Evicting A's next range for B trades a range needed now for one that
+    lands later, and A's reader already saw it hit.  It stays."""
+
+    shift = time.time() - SAMPLE_UNIX
+    queue, stage = _fixture_queue(tmp_path, DATA["tier"]["capacity_gib"])
+    _blocked(queue, stage, 0, shift=shift, holding=("chain-042",))
+    _blocked(queue, stage, 1, shift=shift, holding=())
+    kept = _mover(0, "chain-042")
+    room = int(PHASES["chain-042"]["stage_gib"]) + 30
+
+    _cycle(queue, stage, gib=room)
+    events = _events(capsys)
+
+    record = queue.tier_commitment(TIER) or {}
+    order = record.get("claim_order") or {}
+    standing = {entry["consumer"]: entry["standing"]
+                for entry in order.get("entries") or ()}
+    assert standing == {_key(0): window_credit.CLAIM_GRANTED,
+                        _key(1): window_credit.CLAIM_HEAD}, order
+    assert queue.tier_ledger(TIER).holder_tokens(kept), _diagnosis(queue, events, 2)
+    assert not [event for event in events
+                if event.get("event") == "claim-order-evicted"
+                and event.get("mover") == kept], events
+
+
+# ------------------------------------------------ item 6: futile, on transition
+
+
+def test_a_futile_relief_is_told_once_while_it_stays_futile(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Item 6: three cycles in one futile state file one event, not three.
+    Each is a line in every consumer's 256-line event file."""
+
+    queue, stage, _plans, _shrunk = _fixture(tmp_path, 2, ())
+    for _cycle_number in range(3):
+        _cycle(queue, stage, gib=30)
+    events = _events(capsys)
+
+    told = [event for event in events
+            if event.get("event") == "claim-order-eviction-futile"]
+    filed = [event for event in queue.consumer_events(_key(1))
+             if event.get("event") == "claim-order-eviction-futile"]
+    assert len(told) == 1, told
+    assert len(filed) == 1, filed
+
+
+# ------------------------------------------------ item 4: chunked plans
+
+CHUNKS = 2
+
+
+def _chunked_plan(queue: pool.PoolQueue, key: str, *, label: str,
+                  manifest: str, stage_root: str) -> dict[str, object]:
+    """R12's plan with every phase sealed as ``CHUNKS`` stage chunks (#675)."""
+
+    r12 = DATA["r12"]
+    total = int(r12["phases"][-1]["end_bytes"])
+    built = []
+    for phase in r12["phases"]:
+        name = str(phase["name"])
+        start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+        cuts = [start + (end - start) * index // CHUNKS
+                for index in range(CHUNKS)] + [end]
+        chunks = []
+        for index in range(CHUNKS):
+            low, high = cuts[index], cuts[index + 1]
+            gib = storage_tiers.stage_tokens_for_bytes(high - low)
+            chunks.append({
+                "chunk_index": index, "start_bytes": low, "end_bytes": high,
+                "stage_gib": gib,
+                "mover_row": {
+                    **_row(queue, _hexkey(f"{label}mover{name}c{index}"),
+                           {STAGE_KIND: gib, FILL: r12["sealed_fill_mb_s"],
+                            "cpu": 2, "mem_gb": 1}),
+                    "residency": {
+                        "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                        "manifest_sha256": manifest, "manifest_bytes": total,
+                        "range_start_bytes": low, "range_end_bytes": high}},
+                "egress_row": _row(queue, _hexkey(f"{label}egress{name}c{index}"),
+                                   {"mem_gb": 1})})
+        built.append({"name": name, "start_bytes": start, "end_bytes": end,
+                      "stage_gib": sum(int(chunk["stage_gib"]) for chunk in chunks),
+                      "stage_chunks": chunks})
+    return residency_plan.build_plan(
+        consumer_action_key=key, tier_id=TIER, stage_root=stage_root,
+        manifest_sha256=manifest, manifest_bytes=total, phases=built)
+
+
+def _chunk_of(plan, name: str, index: int) -> dict[str, object]:
+    phase = next(entry for entry in plan["phases"] if entry["name"] == name)
+    return phase["stage_chunks"][index]
+
+
+def _chunked_blocked(queue: pool.PoolQueue, stage: Path, n: int, *, shift: float,
+                     holding: tuple[tuple[str, int], ...]) -> dict[str, object]:
+    """``_blocked`` on the chunked plan: ``holding`` names landed chunks."""
+
+    r12 = DATA["r12"]
+    key, manifest = _key(n), _manifest(n)
+    plan = _chunked_plan(queue, key, label=f"order{n}", manifest=manifest,
+                         stage_root=str(stage))
+    _consumer(queue, key, plan, manifest=manifest,
+              mem_gb=r12["resources"]["mem_gb"])
+    for name, index in holding:
+        chunk = _chunk_of(plan, name, index)
+        start, end = int(chunk["start_bytes"]), int(chunk["end_bytes"])
+        _land(queue, stage, consumer=key, manifest=manifest,
+              mover=str(chunk["mover_row"]["action_key"]),  # type: ignore[index]
+              name=f"{name}c{index}", start=start, end=end,
+              seconds=(end - start) / RATES[name])
+    for name in PASSED:
+        for index in range(CHUNKS):
+            egress = dict(_chunk_of(plan, name, index)["egress_row"])  # type: ignore[arg-type]
+            path = queue.item_path(pool.DONE, str(egress["action_key"]))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({**egress, "status": "done"}))
+    offset = n * CLAIM_GAP_S
+    _claim(queue, key, phase=READING,
+           claimed_unix=r12["claimed_unix"] + shift + offset,
+           reported_unix=r12["accepted"]["reported_unix"] + shift + offset,
+           gpu_budget=r12["gpu_memory_budget_bytes"])
+    return plan
+
+
+def _chunked_cycle(queue: pool.PoolQueue, stage: Path, *, gib: int,
+                   chunk_gib: int) -> None:
+    """One cycle on a stage tier that announces its chunking."""
+
+    record = {**_tier_record(stage, gib=gib), "promotion_chunk_gib": chunk_gib,
+              "window_gib": CHUNKS * chunk_gib}
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kwargs: {TIER: record})
+
+
+def test_chunked_consumers_holding_part_of_their_reading_phase_do_not_deadlock(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Item 4's hold-and-wait: C_eff < sum(held chunks) + chunk_head.
+
+    Two chunked R12s each hold chunk 0 of ``chain-043``, the phase they are
+    reading, and each is blocked on its chunk 1.  The tier has room for
+    neither chunk 1 and nothing is ranked past a horizon, so relief finds no
+    read-ahead to evict.  On the first head relief is futile, nothing is
+    published and the stuck rule ends both.  Now the lowest-ranked blocked
+    consumer's reading-phase chunk is preempted -- evicted whole, copied
+    again when its turn comes -- and the head's chunk is published on the
+    first cycle, with no kill."""
+
+    shift = time.time() - SAMPLE_UNIX
+    queue, stage = _fixture_queue(tmp_path, DATA["tier"]["capacity_gib"])
+    plans = [_chunked_blocked(queue, stage, n, shift=shift, holding=((READING, 0),))
+             for n in range(2)]
+    chunk_gib = int(_chunk_of(plans[0], READING, 1)["stage_gib"])  # type: ignore[arg-type]
+    held = sum(int(_chunk_of(plan, READING, 0)["stage_gib"])  # type: ignore[arg-type]
+               for plan in plans)
+    room = held + chunk_gib - 1
+    head_chunk = str(_chunk_of(plans[0], READING, 1)["mover_row"]["action_key"])  # type: ignore[index]
+    preempted = str(_chunk_of(plans[1], READING, 0)["mover_row"]["action_key"])  # type: ignore[index]
+
+    _chunked_cycle(queue, stage, gib=room, chunk_gib=chunk_gib)
+    events = _events(capsys)
+
+    assert _published(queue, head_chunk), _diagnosis(queue, events, 2)
+    assert not queue.tier_ledger(TIER).holder_tokens(preempted), events
+    evicted = [event for event in events
+               if event.get("event") == "claim-order-evicted"]
+    assert [(event["mover"], event.get("basis")) for event in evicted] == [
+        (preempted, "preempt-reading-phase")], evicted
+    order = (queue.tier_commitment(TIER) or {}).get("claim_order") or {}
+    assert order.get("relief") != "futile", order
+    assert order.get("stuck_victim") is None, order
+
+
+LAST = _hexkey("verdictlast")
+
+
+def _file_stuck_order(queue: pool.PoolQueue, key: str, *, rank: int) -> None:
+    """Three blocked consumers, none granted, relief futile: the order is
+    stuck.  ``key`` is filed at ``rank``; the others are ``AHEAD`` and ``LAST``."""
+
+    names = [AHEAD, LAST]
+    names.insert(rank, key)
+    entries = []
+    for position, name in enumerate(names):
+        entry = {"consumer": name, "rank": position, "need_gib": 22,
+                 "blocked": True,
+                 "standing": (window_credit.CLAIM_HEAD if position == 0
+                              else window_credit.CLAIM_HELD_BACK),
+                 "ahead": names[position - 1] if position else None}
+        if position:
+            entry.update({"waiting_on": names[0],
+                          "expected_landing_unix": time.time() + 400.0})
+        entries.append(entry)
+    queue.file_tier_commitment({
+        "tier_id": TIER, "capacity_gib": 565, "committed_gib": 726,
+        "over_committed_gib": 161,
+        "claim_order": {"head": names[0], "entries": entries, "relief": "futile"}})
+
+
+@pytest.mark.parametrize("rank", [0, 1], ids=["head", "middle"])
+def test_a_stuck_order_ends_only_its_lowest_ranked_consumer(
+        tmp_path: Path, rank: int) -> None:
+    """Item 4: every rung reads the same record, so a stuck rule every
+    consumer applies to itself ends all of them in one cycle.  It names one
+    consumer, the lowest ranked; the rest stay exempt."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_stuck_order(queue, str(item["action_key"]), rank=rank)
+    _ahead_running(queue, quiet_s=60.0, accepted_count=3)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is True, verdict
+    assert verdict["claim_order"].get("stuck_victim") == LAST, verdict
+
+
+def test_an_order_with_a_granted_consumer_is_not_stuck(tmp_path: Path) -> None:
+    """Item 4: relief is futile and both are blocked, but the older one is
+    granted: its range lands, it reads it, and its egress returns the room.
+    That order is moving, so its head is exempt."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    key = str(item["action_key"])
+    queue.file_tier_commitment({
+        "tier_id": TIER, "capacity_gib": 30, "committed_gib": 44,
+        "over_committed_gib": 14,
+        "claim_order": {"head": key, "relief": "futile", "entries": [
+            {"consumer": AHEAD, "rank": 0, "standing": window_credit.CLAIM_GRANTED,
+             "ahead": None, "need_gib": 22, "blocked": True},
+            {"consumer": key, "rank": 1, "standing": window_credit.CLAIM_HEAD,
+             "ahead": AHEAD, "need_gib": 22, "blocked": True}]}})
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is True, verdict
+
+
+# ------------------------------------------------ item 5: evidence, not a clock
+
+
+def test_a_late_lease_on_the_ahead_box_does_not_strip_the_exemption(
+        tmp_path: Path) -> None:
+    """Item 5: the consumer ahead advanced within this consumer's evidence
+    window, and its box's loop is 90 s late with the lease.  A late loop on
+    another box is not a stall; the exemption holds."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+    now = time.time()
+    _ahead_running(queue, quiet_s=GRACE_S - 10.0, heartbeat_age_s=90.0,
+                   accepted_count=5)
+
+    first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                   now=now - 100.0)
+    late = _judge(queue, item, progress_path, prior=first, window_s=GRACE_S,
+                  now=now)
+
+    assert late["exempt"] is True, late
+    assert late.get("ahead_evidence", {}).get("evidence") == "carried", late
+
+
+def test_a_held_back_consumer_is_not_exempt_once_the_one_ahead_shows_nothing(
+        tmp_path: Path) -> None:
+    """Item 5: a whole evidence window with no accepted report, no credited
+    wait and no exempt verdict from the consumer ahead: it is not advancing,
+    whatever its last quiet said, and the wait behind it is not the order's."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+    now = time.time()
+    _ahead_running(queue, quiet_s=60.0, accepted_count=5)
+
+    first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                   now=now - GRACE_S - 1.0)
+    idle = _judge(queue, item, progress_path, prior=first, window_s=GRACE_S,
+                  now=now)
+
+    assert idle["exempt"] is False, idle
+    assert idle.get("ahead_evidence", {}).get("evidence") == "none", idle
+
+
+@pytest.mark.parametrize("change,evidence", [
+    ({"quiet_s": 5.0, "accepted_count": 6}, "ahead-advanced"),
+    # Waiting itself, on a verdict its own worker judged exempt, from a box
+    # whose loop is late with the lease.
+    ({"quiet_s": GRACE_S - 5.0, "heartbeat_age_s": 90.0, "accepted_count": 5,
+      "waiting_exempt": True}, "ahead-waiting"),
+], ids=["advanced", "waiting"])
+def test_a_held_back_consumer_is_exempt_on_the_ahead_ones_evidence(
+        tmp_path: Path, change: dict[str, object], evidence: str) -> None:
+    """Item 5: growth of the ahead consumer's ``accepted_count``, or its own
+    exempt staged wait, renews the exemption past a whole window."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+    now = time.time()
+    _ahead_running(queue, quiet_s=60.0, accepted_count=5)
+    first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                   now=now - GRACE_S - 1.0)
+    _ahead_running(queue, **change)  # type: ignore[arg-type]
+
+    renewed = _judge(queue, item, progress_path, prior=first, window_s=GRACE_S,
+                     now=now)
+
+    assert renewed["exempt"] is True, renewed
+    assert renewed.get("ahead_evidence", {}).get("evidence") == evidence, renewed

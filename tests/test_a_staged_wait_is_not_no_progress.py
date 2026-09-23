@@ -16,15 +16,18 @@ token.  Those are the same ``no_progress`` ending as before.
 """
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import core as pb, pool, progress, residency_plan  # noqa: E402
+from prismabuild import (  # noqa: E402
+    core as pb, movement_actions, pool, progress, residency_map, residency_plan)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
@@ -308,3 +311,137 @@ def test_a_queued_mover_stays_exempt_on_an_over_committed_tier(
 
     assert verdict["exempt"] is True
     assert verdict["movers"][0]["state"] == "ready"
+
+
+# -- a queued mover is waited on only on evidence (#1011 review, item 1) -----
+#
+# A ``ready`` or ``claimed`` mover used to exempt its consumer with no clock:
+# a row the claim pass can never place, or one it withholds, held a GPU
+# consumer for as long as the row sat there.  The exemption now holds only
+# while the mover shows progress: the bytes queued ahead of it in the
+# consumer's landing record fell (``bytes_ahead``), or its own progress
+# report grew within two heartbeats.  A refused or withheld row is not
+# exempt at all.  The verdict records the evidence it went on.
+
+
+def _judge(queue, item, progress_path, **evidence):
+    """``_verdict`` plus the evidence arguments the review added, passed only
+    where the method takes them, so a head without them fails on the
+    assertion and not on the call."""
+
+    accepted = inspect.signature(queue.staged_wait_verdict).parameters
+    return queue.staged_wait_verdict(
+        str(item["action_key"]), progress_path, token=TOKEN,
+        **{name: value for name, value in evidence.items() if name in accepted})
+
+
+def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int) -> None:
+    """The consumer's landing record, the tier loop's way: its one queued
+    range ``bytes_ahead`` behind the copies ahead of it."""
+
+    residency = row["residency"]
+    residency_map.write_landing(residency_map.landing_path(
+        queue.residency_fragment_root(), str(item["action_key"])), {
+        "schema": residency_map.RESIDENCY_LANDING_SCHEMA_V1,
+        "consumer_action_key": str(item["action_key"]), "tier_id": TIER,
+        "manifest_sha256": MANIFEST, "written_unix": time.time(),
+        "rates_measured_bytes_per_s": [],
+        "ranges": [{"mover_action_key": str(row["action_key"]),
+                    "phase": "chain-043",
+                    "range_start_bytes": int(residency["range_start_bytes"]),
+                    "range_end_bytes": int(residency["range_end_bytes"]),
+                    "state": "ready", "queue_position": 1,
+                    "bytes_ahead": int(bytes_ahead),
+                    "expected_landing_unix": time.time() + 600.0,
+                    "basis": "queue"}]})
+
+
+def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
+                   reported_unix: float) -> None:
+    """The claimed mover's own landed-bytes report (#1010), as
+    ``stage_move._ProgressReporter`` commits it: only when it grew."""
+
+    path = queue.action_progress_path(str(row["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "m" * 32,
+        "phase": movement_actions.MOVER_COPY_PHASE, "units_completed": units,
+        "reported_unix": reported_unix}))
+
+
+@pytest.mark.parametrize("reason,kind", [
+    ("never_fits_tier_capacity", "refusal"),
+    ("tier_unknown", "refusal"),
+    # The #538 shape: a ``cpus=`` demand no box's census can place.
+    ("never_fits_capacity", "refusal"),
+    ("reservation_unavailable_withholding", "withhold"),
+    ("deferred_behind_withholding", "withhold"),
+])
+def test_a_ready_mover_the_claim_pass_refuses_or_withholds_is_not_waited_on(
+        tmp_path: Path, reason: str, kind: str) -> None:
+    """Queued, and the claim pass's latest word on it is a refusal or a
+    withhold: nothing will copy it while that stands, so the consumer's wait
+    on it is not a dependency wait.  Tier within commitment, loop alive."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    queue._record_denial_transition(ready, host="dl380g10", reason=reason,
+                                    decision_reason=None)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False, verdict
+    mover = verdict["movers"][0]
+    assert mover["state"] == "ready"
+    assert mover.get(kind) == reason, mover
+
+
+def test_a_ready_mover_is_waited_on_while_the_bytes_ahead_of_it_fall(
+        tmp_path: Path) -> None:
+    """The first look is the baseline; a fall in ``bytes_ahead`` renews it;
+    a whole evidence window without one ends the exemption."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    window = 600.0
+    gib = 1 << 30
+    _landing_ahead(queue, item, row, bytes_ahead=100 * gib)
+    first = _judge(queue, item, progress_path, prior=None, window_s=window)
+
+    _landing_ahead(queue, item, row, bytes_ahead=40 * gib)
+    fell = _judge(queue, item, progress_path, prior=first, window_s=window,
+                  now=time.time() + 30.0)
+
+    stale = _judge(queue, item, progress_path, prior=fell, window_s=window,
+                   now=time.time() + 30.0 + window + 1.0)
+
+    assert first["exempt"] is True, first
+    assert first["movers"][0].get("evidence") == "baseline", first
+    assert fell["exempt"] is True, fell
+    assert fell["movers"][0].get("evidence") == "bytes-ahead-fell", fell
+    assert fell["movers"][0].get("bytes_ahead") == 40 * gib, fell
+    assert stale["exempt"] is False, stale
+    assert stale["movers"][0].get("evidence") == "none", stale
+
+
+def test_a_claimed_mover_is_waited_on_while_its_report_grows(
+        tmp_path: Path) -> None:
+    """Claimed, copying: exempt while its landed-bytes report is at most two
+    heartbeats old, and not after."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    now = time.time()
+    _mover_reports(queue, row, units=5 << 30, reported_unix=now - 10.0)
+    fresh = _judge(queue, item, progress_path, now=now)
+
+    _mover_reports(queue, row, units=5 << 30,
+                   reported_unix=now - 2 * pool.HEARTBEAT_S - 1.0)
+    old = _judge(queue, item, progress_path, now=now)
+
+    assert fresh["exempt"] is True, fresh
+    assert fresh["movers"][0].get("evidence") == "progress", fresh
+    assert fresh["movers"][0].get("progress_units") == 5 << 30, fresh
+    assert old["exempt"] is False, old
+    assert old["movers"][0].get("evidence") == "none", old
