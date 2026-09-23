@@ -25,7 +25,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ONE_PASS  # noqa: E402
+from pbtest_shard_output import shard_output_for  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
@@ -44,8 +44,11 @@ from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 class _FinishedProcess:
     returncode = 0
 
+    def __init__(self, command):
+        self.output = shard_output_for(command)
+
     def communicate(self):
-        return ONE_PASS, None
+        return self.output, None
 
 
 def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
@@ -61,7 +64,7 @@ def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
 
     def _popen(command, **_kwargs):
         calls.append(list(command))
-        return _FinishedProcess()
+        return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
     monkeypatch.setattr(
