@@ -4076,6 +4076,24 @@ copy-time digest; the existing staged file is never rehashed for adoption.
 The same rule applies to retries by the original consumer. A changed origin
 cannot silently reuse its earlier bytes, and existing readers keep their file.
 
+The lock guards the act, not the proof (#981). The proof search and the pin,
+live-claim and partial-copy censuses only read, so they run first, without
+the lock. An adoption then commits under the lock only while the destination
+still carries every field of the file identity its proof dated. A
+replacement, a refusal, or an adoption whose incarnation moved is decided
+again, in full, under the lock. A publication that must wait never takes the
+lock. Proof searches read the residency forest through a single-flight
+census: one listing, begun after every waiting search began, serves all of
+them, so each search still sees every fragment added, changed or removed
+before it started. Before this change one lock per stage root serialized
+every mover's proofs on the host. On a synthetic 434-directory forest on
+sparky, one mover's adoption rose from 172 to 711 entries/s, three movers
+from 168 to 1,939 entries/s combined, and a copy mover running beside two
+adopters from 85 to 3,571 entries/s. Each mover receipt carries
+`phase_timings`: thread-seconds, calls and the longest call per phase (copy
+read and write, hash, fsync, pacing, proof, lock wait and hold, publication),
+plus how each entry ended.
+
 Range adoption also checks the donor's dated material against the current file
 identity under the ownership lock before publishing a successor or transferring
 credit (#755/#756). A superseded donor is skipped in favor of another current
