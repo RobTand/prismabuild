@@ -707,9 +707,20 @@ class Controller:
             borrowing = False
         if borrowing:
             last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
-            if (not fresh or not shape or measurement or not lendable
-                    or len(borrowable) < declared - available
-                    or sample['sampled_unix'] <= last):
+            authorized = (fresh and shape and not measurement and lendable
+                          and len(borrowable) >= declared - available
+                          and sample['sampled_unix'] > last)
+            if not authorized and available >= declared:
+                # A preferred borrow is a placement preference, not a need:
+                # free tokens already cover the demand.  When the borrow cannot
+                # be authorized -- most often because this sample's one borrow
+                # was already spent -- the claim takes its free tokens instead
+                # of being refused.  Where those land on fallback CPUs, the
+                # claim path's bounded ``deferred_for_preferred_cpu`` decides
+                # whether to wait for a preferred one; a refusal here cost one
+                # sample interval per item for nothing (#924).
+                preferred_borrow, borrowing = 0, False
+            elif not authorized:
                 return refuse("borrow_evidence_unavailable", fresh=fresh, shape=shape,
                               lendable=lendable, available_cpu=available,
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
