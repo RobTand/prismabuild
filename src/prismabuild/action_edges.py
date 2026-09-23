@@ -949,6 +949,101 @@ def merged_manifest(static: Mapping[str, object] | None,
     })
 
 
+def after_slots(static: Mapping[str, object],
+                edges: Sequence[Mapping[str, object]]) -> list[dict[str, str]]:
+    """Which read phase each ``--after`` edge fills in a deferred v2 plan (#946).
+
+    A deferred consumer's static v2 manifest names, under
+    ``annotations.produced_output_slots``, one ``{"phase", "after"}`` per
+    edge: the phase that reads that producer's committed batches, and the
+    edge as ``--after`` spells it (``PRODUCER:TEMPLATE_ID``). Each such phase
+    reads nothing yet; the release fills it. Every edge is named by exactly
+    one slot, so no batch has nowhere to go. The static manifest declares no
+    batches of its own (``produced_output_batches``): in v2 every batch is
+    placed by a slot. Returns ``[{"phase", "producer", "template_id"}]`` in
+    plan order; raises `ActionEdgeError` naming what does not fit.
+    """
+
+    checked = pb.validate_data_manifest(static)
+    if checked["schema"] != pb.DATA_MANIFEST_SCHEMA_V2:
+        raise ActionEdgeError("--after slots need a data_manifest.v2")
+    notes = checked["annotations"]
+    if po.ORIGIN_BATCHES_ANNOTATION in notes:
+        raise ActionEdgeError(
+            f"a deferred v2 plan places its batches through "
+            f"{po.ORIGIN_SLOTS_ANNOTATION}, not {po.ORIGIN_BATCHES_ANNOTATION}")
+    try:
+        wanted = po._slot_phases(checked, notes.get(po.ORIGIN_SLOTS_ANNOTATION),
+                                 where=po.ORIGIN_SLOTS_ANNOTATION)
+    except po.ProducedOutputError as exc:
+        raise ActionEdgeError(
+            f"a deferred v2 plan must name the phase each --after edge fills: "
+            f"{exc}") from None
+    declared = {(str(edge["producer"]), str(edge["template_id"]))
+                for edge in edges}
+    out: list[dict[str, str]] = []
+    named: set[tuple[str, str]] = set()
+    for phase in checked["read_plan"]["phases"]:
+        slot = wanted.get(str(phase["name"]))
+        if slot is None:
+            continue
+        if set(slot) != {"phase", "after"}:
+            raise ActionEdgeError(
+                f"slot {phase['name']!r} of a deferred plan must carry exactly "
+                "phase and after")
+        if phase["entry_indices"]:
+            raise ActionEdgeError(
+                f"slot phase {phase['name']!r} already reads static entries")
+        edge = parse_edge(str(slot["after"]))
+        pair = (edge["producer"], edge["template_id"])
+        if pair not in declared:
+            raise ActionEdgeError(
+                f"slot {phase['name']!r} names {slot['after']}, which is not "
+                "an --after edge of this submission")
+        if pair in named:
+            raise ActionEdgeError(f"two slots name {slot['after']}")
+        named.add(pair)
+        out.append({"phase": str(phase["name"]), **edge})
+    missing = sorted(f"{producer}:{template}"
+                     for producer, template in declared - named)
+    if missing:
+        raise ActionEdgeError(
+            f"no slot reads --after {', '.join(missing)}: a v2 plan says where "
+            "it reads each producer's batches")
+    return out
+
+
+def place_after_slots(queue_root: str | Path, static: Mapping[str, object],
+                      producers: Sequence[Mapping[str, object]]
+                      ) -> dict[str, object]:
+    """A deferred v2 consumer's manifest, its slots filled by its producers (#946).
+
+    ``producers`` is the release decision's resolution of every edge
+    (``{producer, key, nonce, template_id}``). Each slot's edge becomes the
+    batches that producer's successful attempt committed
+    (`committed_batch_refs`), and `produced_output.place_origin_batches`
+    places them at the slot, as it does for an ordinary submission, so the
+    released manifest is the one ``pbrun`` would accept from a submitter.
+    """
+
+    slots = after_slots(static, producers)
+    by_edge = {
+        (str(item["producer"]), str(item["template_id"])): committed_batch_refs(
+            queue_root, producer_key=str(item["key"]), nonce=str(item["nonce"]),
+            template_id=str(item["template_id"]))
+        for item in producers}
+    notes = {key: value for key, value in dict(static["annotations"]).items()
+             if key != po.ORIGIN_SLOTS_ANNOTATION}
+    try:
+        return po.place_origin_batches(
+            queue_root, {**static, "annotations": notes},
+            [{"phase": slot["phase"],
+              "refs": by_edge[(slot["producer"], slot["template_id"])]}
+             for slot in slots])
+    except po.ProducedOutputError as exc:
+        raise ActionEdgeError(str(exc)) from None
+
+
 def resolve_command(command: Sequence[str], manifest_path: str | Path,
                     manifest_sha256: str) -> list[str]:
     """Put the resolved manifest's path and digest where the command asks.
@@ -977,6 +1072,7 @@ __all__ = [
     "DEFERRED_SUBDIR", "MAX_LINKS", "PRODUCER_KEY", "PRODUCER_PENDING",
     "PUBLISHED_SCHEMA_V1", "RELEASES_SUBDIR", "RELEASE_SCHEMA_V1",
     "SUPERSESSIONS_SUBDIR", "SUPERSESSION_SCHEMA_V1", "committed_batch_refs",
+    "after_slots", "place_after_slots",
     "ActionEdgeUnreadable", "DEFERRED_LISTING_SCHEMA_V1", "RELEASED_EVENT",
     "RuntimeGenerationUnavailable", "committed_attempt",
     "declared_template_id", "deferred_body", "deferred_ids",

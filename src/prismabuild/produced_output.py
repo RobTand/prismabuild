@@ -132,6 +132,12 @@ MATERIALIZATION_SCHEMA_V1 = (
 ORIGIN_BATCH_REF_SCHEMA_V1 = "prismabuild.produced_output_origin_batch_ref.v1"
 #: The data-manifest annotation that carries a consumer's declared batches.
 ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
+#: Where a data_manifest.v2 read plan reads its declared batches (#946): one
+#: ``{"phase", "refs"}`` per read phase that reads committed batches, in plan
+#: order. A deferred consumer's static plan names the ``--after`` edge that
+#: fills each slot instead (``{"phase", "after"}``). See
+#: `place_origin_batches`.
+ORIGIN_SLOTS_ANNOTATION = "produced_output_slots"
 #: An origin-only batch's lifetime (#914). ``retain`` is the default and is
 #: never written into a record, so a retained batch is filed byte for byte as
 #: #912 filed it; ``consumed`` is retired once its declared consumers succeed.
@@ -4342,6 +4348,205 @@ def origin_batch_manifest(queue_root: str | Path,
     }
 
 
+def _slot_phases(checked: Mapping[str, object], slots: object, *,
+                 where: str) -> dict[str, dict[str, object]]:
+    """``slots`` by phase name, checked against a validated v2 manifest."""
+
+    if (not isinstance(slots, Sequence) or isinstance(slots, (str, bytes))
+            or not slots):
+        raise ProducedOutputError(f"{where} must be a non-empty array")
+    plan = checked["read_plan"]
+    assert isinstance(plan, Mapping)
+    names = {str(phase["name"]) for phase in plan["phases"]}
+    out: dict[str, dict[str, object]] = {}
+    for slot in slots:
+        if not isinstance(slot, Mapping) or "phase" not in slot:
+            raise ProducedOutputError(f"{where} entries must name a phase")
+        name = slot["phase"]
+        if not isinstance(name, str) or name not in names:
+            raise ProducedOutputError(
+                f"{where} names {name!r}, which is not a read phase")
+        if name in out:
+            raise ProducedOutputError(f"{where} names phase {name!r} twice")
+        out[name] = dict(slot)
+    return out
+
+
+def place_origin_batches(queue_root: str | Path, static: Mapping[str, object],
+                         slots: Sequence[Mapping[str, object]]
+                         ) -> dict[str, object]:
+    """A data_manifest.v2 that reads committed batches where its plan says (#946).
+
+    ``static`` is the consumer's own v2 manifest: its entries, and a read
+    plan in which each phase that will read batches reads nothing yet
+    (``entry_indices: []``). ``slots`` is ``[{"phase", "refs"}]``: which
+    committed origin-only batches each such phase reads. Every slot's batches
+    are resolved through `origin_batch_manifest`, so an uncommitted,
+    reclaimed, retiring or changed batch refuses here.
+
+    The result is canonical, so ``pbrun`` can derive it again and compare:
+    the static entries keep their indices, each slot's batch entries follow
+    them in plan order, and each slot phase reads exactly its batch's entries
+    in the batch's own order. Every other phase is unchanged, so its
+    ``entry_indices`` keep their v2 meaning, re-reads included. Phase sizes,
+    running sums, ``read_bytes`` and the totals are recomputed; the mount
+    prefix is the common directory of the static prefix and the batches'.
+    ``annotations.produced_output_batches`` lists every ref in plan order and
+    ``annotations.produced_output_slots`` the ``{"phase", "refs"}`` placed.
+    A batch is read in its slot phase only.
+    """
+
+    from prismabuild import core as core_mod
+
+    checked = core_mod.validate_data_manifest(static)
+    if checked["schema"] != core_mod.DATA_MANIFEST_SCHEMA_V2:
+        raise ProducedOutputError(
+            "placing batches in a read plan needs a data_manifest.v2")
+    notes = dict(checked["annotations"])
+    if ORIGIN_BATCHES_ANNOTATION in notes:
+        raise ProducedOutputError(
+            f"a v2 read plan declares its batches through "
+            f"{ORIGIN_SLOTS_ANNOTATION}, not {ORIGIN_BATCHES_ANNOTATION}")
+    wanted = _slot_phases(checked, slots, where="slots")
+    plan = checked["read_plan"]
+    assert isinstance(plan, Mapping)
+    entries = [dict(entry) for entry in checked["entries"]]
+    prefixes = [str(checked["mount_prefix"])]
+    placed_slots: list[dict[str, object]] = []
+    all_refs: list[dict[str, object]] = []
+    orders: list[tuple[str, list[int]]] = []
+    for phase in plan["phases"]:
+        name = str(phase["name"])
+        slot = wanted.get(name)
+        if slot is None:
+            orders.append((name, list(phase["entry_indices"])))
+            continue
+        if set(slot) != {"phase", "refs"}:
+            raise ProducedOutputError(
+                f"slot {name!r} must carry exactly phase and refs")
+        if phase["entry_indices"]:
+            raise ProducedOutputError(
+                f"slot phase {name!r} already reads static entries")
+        batch = origin_batch_manifest(queue_root, slot["refs"])
+        start = len(entries)
+        entries.extend(dict(entry) for entry in batch["entries"])
+        orders.append((name, list(range(start, len(entries)))))
+        refs = list(batch["annotations"][ORIGIN_BATCHES_ANNOTATION])
+        placed_slots.append({"phase": name, "refs": refs})
+        all_refs.extend(refs)
+        prefixes.append(str(batch["mount_prefix"]))
+    keys = [tuple(sorted(ref.items())) for ref in all_refs]
+    if len(set(keys)) != len(keys):
+        raise ProducedOutputError("slots name one batch twice")
+    phases: list[dict[str, object]] = []
+    running = 0
+    for name, indices in orders:
+        size = sum(int(entries[index]["bytes"]) for index in indices)
+        running += size
+        phases.append({"name": name, "entry_indices": indices,
+                       "bytes": size, "cumulative_bytes": running})
+    mount_prefix = os.path.commonpath(prefixes)
+    if mount_prefix == "/":
+        raise ProducedOutputError(
+            "the static entries and the batches share no directory below / "
+            "to mount")
+    notes.pop(ORIGIN_SLOTS_ANNOTATION, None)
+    notes[ORIGIN_BATCHES_ANNOTATION] = all_refs
+    notes[ORIGIN_SLOTS_ANNOTATION] = placed_slots
+    try:
+        return core_mod.validate_data_manifest({
+            "schema": core_mod.DATA_MANIFEST_SCHEMA_V2,
+            "produced_by": dict(checked["produced_by"]),
+            "mount_prefix": mount_prefix,
+            "entries": entries,
+            "entry_count": len(entries),
+            "total_bytes": sum(int(entry["bytes"]) for entry in entries),
+            "annotations": notes,
+            "read_plan": {"phases": phases, "read_bytes": running},
+        })
+    except core_mod.PrismaBuildError as exc:
+        raise ProducedOutputError(f"placed manifest refused: {exc}") from None
+
+
+def verify_placed_origin_batches(queue_root: str | Path,
+                                 manifest: Mapping[str, object]) -> None:
+    """Refuse a v2 manifest whose batches are not placed as its slots say (#946).
+
+    The v2 counterpart of deriving `origin_batch_manifest` again: the
+    manifest's static part is recovered by taking off the trailing batch
+    entries and emptying the slot phases, `place_origin_batches` places the
+    declared slots into it again from the queue's own records, and the
+    result must be the manifest, byte for byte in its normalized form. So a
+    submitted plan can read static entries in any order and re-read them, but
+    each batch it declares is exactly the committed one, read once, at its
+    slot. Raises `ProducedOutputError` naming what does not match.
+    """
+
+    from prismabuild import core as core_mod
+
+    checked = core_mod.validate_data_manifest(manifest)
+    notes = dict(checked["annotations"])
+    slots = notes.get(ORIGIN_SLOTS_ANNOTATION)
+    wanted = _slot_phases(checked, slots, where=ORIGIN_SLOTS_ANNOTATION)
+    for name, slot in wanted.items():
+        if set(slot) != {"phase", "refs"}:
+            raise ProducedOutputError(
+                f"slot {name!r} must carry exactly phase and refs; an "
+                "--after slot is placed by the release, not submitted")
+    counts = {}
+    for name, slot in wanted.items():
+        counts[name] = int(origin_batch_manifest(
+            queue_root, slot["refs"])["entry_count"])
+    batch_entries = sum(counts.values())
+    entries = list(checked["entries"])
+    if batch_entries >= len(entries):
+        raise ProducedOutputError(
+            "a v2 read plan with slots needs static entries of its own")
+    static_count = len(entries) - batch_entries
+    plan = checked["read_plan"]
+    assert isinstance(plan, Mapping)
+    phases: list[dict[str, object]] = []
+    running = 0
+    for phase in plan["phases"]:
+        indices = list(phase["entry_indices"])
+        if str(phase["name"]) in wanted:
+            indices = []
+        elif any(index >= static_count for index in indices):
+            raise ProducedOutputError(
+                f"phase {phase['name']!r} reads a batch entry outside its slot")
+        size = sum(int(entries[index]["bytes"]) for index in indices)
+        running += size
+        phases.append({"name": phase["name"], "entry_indices": indices,
+                       "bytes": size, "cumulative_bytes": running})
+    static_entries = entries[:static_count]
+    skeleton_notes = {key: value for key, value in notes.items()
+                      if key not in (ORIGIN_BATCHES_ANNOTATION,
+                                     ORIGIN_SLOTS_ANNOTATION)}
+    try:
+        skeleton = core_mod.validate_data_manifest({
+            "schema": core_mod.DATA_MANIFEST_SCHEMA_V2,
+            "produced_by": dict(checked["produced_by"]),
+            "mount_prefix": checked["mount_prefix"],
+            "entries": static_entries,
+            "entry_count": static_count,
+            "total_bytes": sum(int(entry["bytes"]) for entry in static_entries),
+            "annotations": skeleton_notes,
+            "read_plan": {"phases": phases, "read_bytes": running},
+        })
+    except core_mod.PrismaBuildError as exc:
+        raise ProducedOutputError(
+            f"the manifest's static part is not a read plan: {exc}") from None
+    placed = place_origin_batches(
+        queue_root, skeleton,
+        [{"phase": name, "refs": wanted[name]["refs"]}
+         for name in [str(phase["name"]) for phase in plan["phases"]]
+         if name in wanted])
+    if placed != checked:
+        raise ProducedOutputError(
+            "the manifest does not read its declared batches where its slots "
+            "say; build it with produced_output.place_origin_batches")
+
+
 def _strict_int(value: object, *, where: str) -> int:
     # Exact JSON integers only: bools, strings, floats, and objects are
     # corrupt counts, never zero. `int()` would coerce them all.
@@ -7256,6 +7461,7 @@ __all__ = [
     "PRODUCED_OUTPUT_REF_SCHEMA_V1",
     "ORIGIN_BATCH_REF_SCHEMA_V1",
     "ORIGIN_BATCHES_ANNOTATION",
+    "ORIGIN_SLOTS_ANNOTATION",
     "OUTPUT_TEMPLATES_SUBDIR",
     "OUTPUT_SCOPES_SUBDIR",
     "OUTPUT_BATCHES_SUBDIR",
@@ -7295,6 +7501,8 @@ __all__ = [
     "origin_batch_ref",
     "load_origin_batch",
     "origin_batch_manifest",
+    "place_origin_batches",
+    "verify_placed_origin_batches",
     "is_write_only",
     "publish_prepaid_batch",
     "refill_window",

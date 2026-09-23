@@ -918,6 +918,20 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+`pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
+carries `reconciliation`: its collected tests matched against the outcomes its
+recorder saw, and its record's counts matched against its summary line. A
+shard is not green, whatever its exit code, when a collected test has no
+outcome, an outcome belongs to no collected test, a node ID is collected twice,
+another shard also collected one of its node IDs, its counts disagree with its
+summary, or it reported a summary and printed no record. A `--collect-only`
+shard is matched on its collected count instead. Two differences are not
+failures, and the report names each: an outcome at collection (a module that
+skipped or failed at import, which the summary counts and a `--collect-only`
+pass does not) and a test the summary counts in more than one phase (a pass
+whose teardown errors or skips). The report's totals line states the sum:
+outcomes equal tests, plus outcomes at collection, plus extra phases.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
@@ -4837,7 +4851,9 @@ refuses. The consumer submits the manifest with
 manifest again from the queue (`require_declared_origin_batches`) and refuses
 one whose `mount_prefix`, entries or references differ, and any transport
 other than the pull queue. A manifest without the annotation is not checked.
-From there the batch is an ordinary input: the tier loop publishes the
+A data_manifest.v2 instead declares its batches where its read plan reads
+them, and is checked by placing them again ("Produced batches in a v2 read
+plan (#946)"). From there the batch is an ordinary input: the tier loop publishes the
 consumer's lead mover, and the mover verifies each entry's sha256 as it
 copies.
 
@@ -5190,7 +5206,9 @@ refuses it when no release could seal it: the template's generation must be
 the published one or pass the retained-generation check below. A `pbrun` in a
 development checkout freezes its own wrapper, which is neither. The
 optional `--data-manifest` is the consumer's static part (for example, a
-model head); it is ingested and kept beside the template. The command may
+model head); it is ingested and kept beside the template. It is plain JSON:
+a data_manifest.v1, or a data_manifest.v2 whose read plan names the phase
+each edge fills (#946). The command may
 carry `{pb.data_manifest}` and `{pb.data_manifest_sha256}`, each at most once
 and as a whole argument. At release the first becomes the CAS path of the
 resolved manifest, as `decomposition.resolve_task_batch` does for a batch
@@ -5239,9 +5257,11 @@ publication record, the tick:
    `<producer>/<template_id>.<nonce>` and takes every origin-only batch that
    attempt committed, in batch-id order, through `load_origin_batch`, which
    rechecks each origin's recorded identity by `lstat`. It reads and hashes
-   no payload bytes. The consumer's manifest is the static entries with their
-   phases, then each batch as its own phase, with the batch refs under
-   `produced_output_batches`. The tick seals the consumer and files a
+   no payload bytes. With a v1 static manifest, or none, the consumer's
+   manifest is the static entries with their phases, then each batch as its
+   own phase, with the batch refs under `produced_output_batches`. A v2
+   static manifest has each edge's batches placed at the phase it names
+   (#946). The tick seals the consumer and files a
    first-writer release record at `pb-queue/deferred-releases/<pending_id>.json`
    with the producers, the refs, the manifest input, the key and the runtime
    generation it sealed into. A crash after this point resumes from the
@@ -5348,6 +5368,77 @@ Limits:
 - A released consumer that fails and is resubmitted with `--supersedes`
   gives up its declaration once the successor is released and declared
   against the same batch (#926, "Replacing a failed consumer").
+
+#### Produced batches in a v2 read plan (#946)
+
+A consumer that reads a producer's handoff in the middle of its readset, and
+reads its own entries again after it, fits neither v1 shape. #912's manifest
+holds only batches, #913's release appends each batch after every static
+phase, and a v1 manifest cannot read an entry twice. PQ's Stage B band-serial
+consumer reads its head, then the handoff, then replay windows over the
+head's entries.
+
+A data_manifest.v2 therefore names where it reads its batches. Its static
+part is the consumer's own entries and read plan. Each phase that reads
+batches reads nothing yet (`entry_indices: []`) and is named under
+`annotations.produced_output_slots`, one slot per phase:
+
+- **Ordinary submission:** `{"phase", "refs"}`, the committed batches'
+  references. The submitter builds the manifest with
+  `produced_output.place_origin_batches(queue_root, static, slots)`.
+- **Deferred submission (`--after`):** `{"phase", "after":
+  "PRODUCER:TEMPLATE_ID"}`, spelled as the `--after` edge is. The release
+  builds the manifest with `action_edges.place_after_slots`, which resolves
+  each edge to the batches its producer's attempt committed
+  (`committed_batch_refs`) and calls the same function.
+
+`place_origin_batches` resolves each slot through `origin_batch_manifest`,
+so it refuses what #912 refuses. It appends each slot's batch entries after
+the static entries, in plan order, and points the slot phase at exactly those
+entries, in the batch's own order. Every other phase keeps its
+`entry_indices`, re-reads included. Phase sizes, running sums, `read_bytes`
+and the totals are recomputed, and `mount_prefix` is the common directory of
+the static prefix and the batches'. The result lists every ref under
+`produced_output_batches` and the placed `{"phase", "refs"}` slots under
+`produced_output_slots`. Two slots cannot name one batch. For one static
+plan and one set of refs, the two paths yield the same manifest.
+
+**Checks at submission.** For a v2 manifest that declares batches,
+`require_declared_origin_batches` calls
+`produced_output.verify_placed_origin_batches`. It takes the trailing batch
+entries off, empties the slot phases, places the declared slots into that
+static part again from the queue's records, and refuses unless the result is
+the manifest. So a non-slot phase that reads a batch entry refuses, and so do
+a slot phase that also reads a static entry, a batch placed at another phase,
+and a changed entry. A v2 manifest with `produced_output_batches` and no
+slots, or with an `after` slot, refuses too. A v1 manifest may not carry
+slots, and is otherwise checked as #912 checks it.
+
+`pbrun.require_deferred_read_plan` checks a deferred v2 submission.
+`action_edges.after_slots` requires exactly one slot per `--after` edge, each
+on an empty phase, and no `produced_output_batches` in the static part. The
+v2 gates of an ordinary submission also apply: the published storage
+generation must read v2 (`require_deployed_read_plan_storage`), and every
+read phase must be a linear progress phase, in order. With `--residency
+stage`, the plan's first phase must read something or be a slot. Otherwise
+the placed plan's first boundary is at byte 0, which ends no read, and the
+plan has no range to stage. The release seals `schema` and `read_bytes` into
+the manifest summary, as a v2 submission does.
+
+**Residency.** The placed manifest is an ordinary v2 plan, so the window
+stages its phases in plan order: the head, then the batch, then each replay
+window, whose own mover stages the head's entries again
+(`prewarm_loop.manifest_read_entries`, `entries_between`).
+
+Limits:
+
+- A deferred v2 plan places every batch through an `after` slot. It cannot
+  also read batches committed before it was submitted (`refs` slots), which
+  a v1 static manifest can declare.
+- A v2 manifest needs static entries of its own. A consumer that reads only
+  batches uses the v1 manifest `origin_batch_manifest` builds.
+- A slot is filled by one edge. When the producer's attempt commits several
+  batches, they are all read at that slot, in batch-id order.
 
 #### Repeat materialization: one batch, one charge, many windows
 

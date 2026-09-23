@@ -6,7 +6,8 @@ record, and pytest's ``-rs`` folds skips by location and drops their node IDs
 (#942).  So the shard runs pytest through this module, which records each
 report pytest's own terminal counts, and prints the record as one line,
 ``pbtest-outcomes: {json}``, where the pool stores the shard's stdout.
-``pbtest.py`` reads it back into the receipt.
+``pbtest.py`` reads it back into the receipt, and reconciles each shard's
+outcomes with its collection by node ID (:func:`reconcile`, #941).
 
 What is recorded is what the summary line counts, and it is classified the
 way the terminal classifies it: a test report takes the category
@@ -100,6 +101,83 @@ def parse(output: str) -> dict | None:
     return None
 
 
+def reconcile(record: dict, counts: dict[str, int] | None,
+              collected_count: int | None = None) -> dict:
+    """Match one shard's outcomes against its own collection, by node ID (#941).
+
+    ``counts`` is the shard's summary line by category (``error`` singular,
+    warnings and deselections left out), and ``collected_count`` is the
+    count a ``--collect-only`` summary states instead.  The answer names:
+
+    * ``never_ran``: collected, and no outcome.  A missing test.
+    * ``not_collected``: an outcome for a node the collection did not hold.
+    * ``collected_twice``: one node ID collected twice in this session.
+    * ``at_collection``: outcomes of collectors, not tests -- a module that
+      skipped at import or failed to import.  The summary counts each; a
+      ``--collect-only`` pass counts none, which is how the two differ
+      without any test running twice.
+    * ``extra_phases``: tests the summary counts more than once, such as a
+      pass whose teardown then errors or skips.
+
+    ``problems`` holds every finding that makes the shard unreconciled; the
+    last two lists are how a summary exceeds the tests, and are not problems.
+    """
+
+    rows = [dict(zip(REPORT_FIELDS, row)) for row in record.get("reports") or ()]
+    collect_only = bool(record.get("collect_only"))
+    collected = list(record.get("collected") or ())
+    at_collection = [{"nodeid": row["nodeid"], "category": row["category"],
+                      "reason": row["reason"]}
+                     for row in rows if row["when"] == "collect"]
+    phases: dict[str, list[str]] = {}
+    for row in rows:
+        if row["when"] != "collect":
+            phases.setdefault(row["nodeid"], []).append(
+                f"{row['when']}:{row['category']}")
+    ran = set(phases) | {row[0] for row in record.get("uncounted") or ()}
+    seen: dict[str, int] = {}
+    for nodeid in collected:
+        seen[nodeid] = seen.get(nodeid, 0) + 1
+    never_ran = [] if collect_only else [
+        nodeid for nodeid in seen if nodeid not in ran]
+    not_collected = sorted(ran - set(seen))
+    collected_twice = sorted(nodeid for nodeid, count in seen.items() if count > 1)
+    record_counts: dict[str, int] = {}
+    for row in rows:
+        record_counts[row["category"]] = record_counts.get(row["category"], 0) + 1
+
+    problems = []
+    if never_ran:
+        problems.append(f"{len(never_ran)} collected test(s) never ran")
+    if not_collected:
+        problems.append(f"{len(not_collected)} outcome(s) for tests the "
+                        "collection did not hold")
+    if collected_twice:
+        problems.append(f"{len(collected_twice)} node ID(s) collected twice")
+    if collect_only:
+        if collected_count is not None and collected_count != len(collected):
+            problems.append(f"the summary states {collected_count} collected "
+                            f"and the record holds {len(collected)}")
+    elif counts is not None and counts != record_counts:
+        problems.append(f"the summary counts {counts} and the record "
+                        f"holds {record_counts}")
+    return {
+        "collect_only": collect_only,
+        "collected": len(collected),
+        "ran": len(set(seen) & ran),
+        "outcomes": len(rows),
+        "at_collection": at_collection,
+        "extra_phases": {nodeid: kinds for nodeid, kinds in phases.items()
+                         if len(kinds) > 1},
+        "never_ran": never_ran,
+        "not_collected": not_collected,
+        "collected_twice": collected_twice,
+        "summary_counts": counts,
+        "record_counts": record_counts,
+        "problems": problems,
+    }
+
+
 def main(argv: list[str] | None = None, *, preflight=None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
@@ -125,6 +203,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             self.config = None
             self.collected: list[str] | None = None
             self.reports: list[list] = []
+            self.uncounted: list[list] = []
             self.written = False
 
         def pytest_configure(self, config) -> None:
@@ -156,6 +235,11 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             category = status[0] if status else ""
             if not category:
                 return  # a passing setup or teardown: the summary counts nothing
+            if not getattr(report, "count_towards_summary", True):
+                # The terminal leaves it out of the summary line, so the
+                # record's counts do too; it still shows the test ran.
+                self.uncounted.append([report.nodeid, report.when, category])
+                return
             reason = location = None
             if category == "skipped":
                 reason, location = skip_reason(report), self.location(report)
@@ -172,6 +256,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                                      and config.getoption("collectonly", False)),
                 "collected": self.collected,
                 "reports": self.reports,
+                "uncounted": self.uncounted,
             }, separators=(",", ":"))
 
         def pytest_terminal_summary(self, terminalreporter) -> None:

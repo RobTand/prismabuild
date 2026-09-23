@@ -156,6 +156,11 @@ the unique entry registry as the read schedule. Publish the compatible storage
 generation and verify its running role before submitting v2 campaign rows;
 source changes or a producer capable of sealing v2 are not deployment proof.
 
+A v2 plan can also read committed produced-output batches at a named phase,
+declared under `annotations.produced_output_slots` and built with
+`produced_output.place_origin_batches`. "Produced batches in a v2 read plan
+(#946)" in `docs/design.md` has the contract.
+
 `sha256` may be null on every entry, and is for the GLM census.  Hashing a
 terabyte of calibration captures costs far more than the residency it buys,
 and integrity is not what this contract carries.  What binds the byte list to

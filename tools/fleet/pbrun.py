@@ -1966,6 +1966,9 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
 _ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
 #: The frozen template's copy of those refs, for `declare_origin_consumers`.
 _ORIGIN_BATCHES_TEMPLATE_KEY = "produced_output_batches"
+#: Where a data_manifest.v2 read plan reads its declared batches (#946);
+#: ``produced_output.ORIGIN_SLOTS_ANNOTATION`` is the same name.
+_ORIGIN_SLOTS_ANNOTATION = "produced_output_slots"
 
 
 def require_declared_origin_batches(
@@ -1981,13 +1984,20 @@ def require_declared_origin_batches(
     uncommitted, reclaimed or changed batch) and its mount prefix, entries and
     references must be the declared ones.  A manifest without the annotation
     is not read here at all.
+
+    A data_manifest.v2 declares them with its own entries, at the read
+    phases ``annotations.produced_output_slots`` names (#946), and is checked
+    by placing those slots again into its static part
+    (``produced_output.verify_placed_origin_batches``). A v1 manifest has no
+    read plan to place them in, so it may not carry slots.
     """
 
     annotations = manifest.get("annotations")
     if not isinstance(annotations, Mapping):
         return
     declared = annotations.get(_ORIGIN_BATCHES_ANNOTATION)
-    if declared is None:
+    slots = annotations.get(_ORIGIN_SLOTS_ANNOTATION)
+    if declared is None and slots is None:
         return
     if transport != "pool":
         raise SystemExit(
@@ -1996,6 +2006,22 @@ def require_declared_origin_batches(
             f"{transport} has none")
     from prismabuild import produced_output as produced_mod
 
+    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
+        if slots is None:
+            raise SystemExit(
+                f"pbrun: a data_manifest.v2 declares its batches where it reads "
+                f"them, under {_ORIGIN_SLOTS_ANNOTATION}; build it with "
+                "produced_output.place_origin_batches")
+        try:
+            produced_mod.verify_placed_origin_batches(queue_root, manifest)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: declared produced-output batch: {exc}") from None
+        return
+    if slots is not None:
+        raise SystemExit(
+            f"pbrun: {_ORIGIN_SLOTS_ANNOTATION} places batches in a read plan, "
+            "which only a data_manifest.v2 has")
     try:
         derived = produced_mod.origin_batch_manifest(queue_root, declared)
     except produced_mod.ProducedOutputError as exc:
@@ -3263,7 +3289,9 @@ def await_outcome(
     (75). ``wait_s=0`` retains its useful historical meaning: one immediate
     observation with a finite read budget, and 74 if that read is unavailable.
     A preemption handoff after that probe cannot start another observation
-    once caller patience is exhausted.
+    once caller patience is exhausted.  With ``wait_s > 0``, no read ever gets
+    more than the time left, and a deadline that passed before the first read
+    starts no read at all: the wait exits 75 at once (#938).
 
     With ``wait_s > 0``, a read that timed out and whose reader was reaped
     (``OutcomeObservationTimedOut``) is repeated at the next poll, inside the
@@ -3304,13 +3332,18 @@ def await_outcome(
                 budget_s = OUTCOME_READ_TIMEOUT_S
             else:
                 remaining = deadline - time.monotonic()
-                if not first_observation and remaining <= 0:
+                # An expired deadline is expired on the first read too (#938).
+                # This used to preserve one observation with the full read
+                # budget when the deadline passed before the loop began.  That
+                # gave a caller past its deadline more time than any caller
+                # still inside it, whose read gets ``min(budget, remaining)``,
+                # so the time a wait could take was not monotonic in the time
+                # it was given.  A caller that wants one observation whatever
+                # the time says ``wait_s=0``, which keeps that contract.
+                if remaining <= 0:
                     landed = None
                     break
-                # Preserve the first immediate observation even if scheduling
-                # consumed a very short wait before it entered this loop.
-                budget_s = (min(OUTCOME_READ_TIMEOUT_S, remaining)
-                            if remaining > 0 else OUTCOME_READ_TIMEOUT_S)
+                budget_s = min(OUTCOME_READ_TIMEOUT_S, remaining)
             previous_generation = generation
             try:
                 landed, generation = bounded_outcome_observation(
@@ -7057,19 +7090,21 @@ def submit_deferred(prepared: Mapping[str, object],
         static_input, _ = cas.ingest_input(
             args.data_manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
         static, encoding = pb.read_data_manifest(cas.input_path(static_input))
-        if static["schema"] != pb.DATA_MANIFEST_SCHEMA_V1 or encoding != "identity":
+        if encoding != "identity":
             raise SystemExit(
-                "pbrun: a deferred submission's --data-manifest must be a plain "
-                "data_manifest.v1: the release appends the committed batches to "
-                "its entries and its phases")
-        require_declared_origin_batches(
-            static, transport=args.transport, queue_root=q.root)
-        if (args.residency == "stage"
-                and not storage_tiers.manifest_phase_ranges(static)):
-            raise SystemExit(
-                "pbrun: --residency stage needs the static --data-manifest to "
-                "declare its read order in phases; the release adds one phase "
-                "per committed batch after them")
+                "pbrun: a deferred submission's --data-manifest must be plain "
+                "JSON: the release rewrites it with the committed batches")
+        if static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            require_deferred_read_plan(static, edges, args=args)
+        else:
+            require_declared_origin_batches(
+                static, transport=args.transport, queue_root=q.root)
+            if (args.residency == "stage"
+                    and not storage_tiers.manifest_phase_ranges(static)):
+                raise SystemExit(
+                    "pbrun: --residency stage needs the static --data-manifest "
+                    "to declare its read order in phases; the release adds one "
+                    "phase per committed batch after them")
     announce_placement(
         prepared["offer_queue"](), {"params": template["params"]}, args=args,
         cwd=prepared["cwd"], portable_checkout=prepared["portable_checkout"])
@@ -7103,6 +7138,40 @@ def submit_deferred(prepared: Mapping[str, object],
         }, sort_keys=True), flush=True)
         return 0
     return await_release(q, pending_id, wait_s=args.wait_s)
+
+
+def require_deferred_read_plan(static: Mapping[str, object],
+                               edges: Sequence[Mapping[str, object]], *,
+                               args: argparse.Namespace) -> None:
+    """Refuse a deferred v2 read plan the release could not place (#946).
+
+    The static plan names, under ``annotations.produced_output_slots``, the
+    read phase each ``--after`` edge fills (`action_edges.after_slots`). The
+    release puts the committed batches there, so what is checked here is
+    everything a submission of the placed plan would be checked for that
+    does not depend on those bytes: the published storage generation reads
+    v2, every read phase is a progress phase in order, and with
+    ``--residency stage`` the placed plan has a phase boundary to stage up
+    to. That last holds unless the plan's first phase reads nothing and fills
+    no slot, because a boundary at byte 0 ends no read.
+    """
+
+    if args.transport != "pool":
+        raise SystemExit(
+            f"pbrun: --after needs the pull queue; --transport {args.transport} "
+            "has none")
+    try:
+        slots = action_edges.after_slots(static, edges)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: --after: {exc}") from None
+    require_deployed_read_plan_storage()
+    require_linear_read_plan_progress(static, args.progress_policy)
+    first = static["read_plan"]["phases"][0]
+    if (args.residency == "stage" and not first["entry_indices"]
+            and first["name"] not in {slot["phase"] for slot in slots}):
+        raise SystemExit(
+            f"pbrun: --residency stage: read phase {first['name']!r} opens the "
+            "plan and reads nothing, so it ends no read to stage up to")
 
 
 def require_releasable_template(template: Mapping[str, object]) -> None:
@@ -7153,8 +7222,18 @@ def await_release(q, pending_id: str, *, wait_s: float) -> int:
             key = str(published["action_key"])
             print(f"pbrun: {pending_id[:12]} was released as {key[:12]}",
                   file=sys.stderr, flush=True)
+            remaining = deadline - time.monotonic()
+            # ``await_outcome`` reads ``wait_s=0`` as "observe once", with the
+            # full read budget.  A positive wait that ran out while the
+            # release was being read is not that request: clamping it to 0
+            # handed a caller past its deadline one more full read (#938).
+            if wait_s > 0 and remaining <= 0:
+                print(f"pbrun: the wait ended before {key[:12]}'s outcome was "
+                      f"read; the action runs regardless. Run pbwait.py "
+                      f"{key[:12]} to follow it", file=sys.stderr, flush=True)
+                return GAVE_UP_EXIT
             return await_outcome(
-                q, key, wait_s=max(0.0, deadline - time.monotonic()),
+                q, key, wait_s=max(0.0, remaining),
                 generation=float(published["published_unix"]))
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -7218,21 +7297,25 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
     cas = template["cas"]
     pinned = action_edges.read_release(q.root, pending_id)
     if pinned is None:
-        refs: list[dict[str, object]] = []
-        for producer in producers:
-            refs.extend(action_edges.committed_batch_refs(
-                q.root, producer_key=str(producer["key"]),
-                nonce=str(producer["nonce"]),
-                template_id=str(producer["template_id"])))
         static = None
         if record["static_manifest"] is not None:
             static, _ = pb.read_data_manifest(
                 cas.input_path(record["static_manifest"]))
-        try:
-            batches = produced_mod.origin_batch_manifest(q.root, refs)
-        except produced_mod.ProducedOutputError as exc:
-            raise action_edges.ActionEdgeError(str(exc)) from None
-        manifest = action_edges.merged_manifest(static, batches)
+        if static is not None and static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            # Each edge's batches go where the plan reads them (#946).
+            manifest = action_edges.place_after_slots(q.root, static, producers)
+        else:
+            refs: list[dict[str, object]] = []
+            for producer in producers:
+                refs.extend(action_edges.committed_batch_refs(
+                    q.root, producer_key=str(producer["key"]),
+                    nonce=str(producer["nonce"]),
+                    template_id=str(producer["template_id"])))
+            try:
+                batches = produced_mod.origin_batch_manifest(q.root, refs)
+            except produced_mod.ProducedOutputError as exc:
+                raise action_edges.ActionEdgeError(str(exc)) from None
+            manifest = action_edges.merged_manifest(static, batches)
         runtime = sealing_runtime(template)
         manifest_input, _ = cas.ingest_bytes(
             pb._canonical_file_bytes(manifest),
@@ -7243,6 +7326,10 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
     summary = {"input": manifest_input, "mount_prefix": manifest["mount_prefix"],
                "entry_count": manifest["entry_count"],
                "total_bytes": manifest["total_bytes"]}
+    if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+        # As ``freeze_action_template`` seals a submitted v2 plan.
+        summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+        summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
     command = action_edges.resolve_command(
         template["params"]["command"], cas.input_path(manifest_input),
         str(manifest_input["sha256"]))
