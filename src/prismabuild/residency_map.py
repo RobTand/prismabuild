@@ -80,6 +80,29 @@ class ResidencyMapError(ValueError):
     """A map, a fragment or an entry that does not say what it must."""
 
 
+#: When the tier loop expects each of a consumer's pending ranges to land
+#: (#989).  A document of its own beside the map, never a field in the map's
+#: header: every map reader refuses unknown header fields, so a header field
+#: would stop every reader that predates it.
+RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
+#: The states a pending range can be in.  ``ready`` and ``claimed`` name the
+#: mover's queue state.  ``unpublished`` is an in-horizon leg the window has
+#: not published (a stall, or a failed copy awaiting its recopy).
+#: ``terminal-no-receipt`` is a leg nothing will publish again: its mover
+#: failed and the plan is superseded.
+LANDING_STATES = ("ready", "claimed", "unpublished", "terminal-no-receipt")
+_LANDING_KEYS = frozenset({
+    "schema", "consumer_action_key", "tier_id", "manifest_sha256",
+    "written_unix", "landing_bytes_per_s", "landing_basis",
+    "rates_measured_bytes_per_s", "rate_min_bytes_per_s",
+    "rate_max_bytes_per_s", "report_latency_s", "tier_loop_liveness_s",
+    "ranges"})
+_LANDING_RANGE_KEYS = frozenset({
+    "mover_action_key", "phase", "chunk_index", "range_start_bytes",
+    "range_end_bytes", "state", "queue_position", "bytes_ahead",
+    "expected_landing_unix", "claimed_unix", "waiting_for"})
+
+
 def residency_map_key(path: str, offset: int = 0) -> str:
     """The identity of one manifest entry, as the map spells it.
 
@@ -512,6 +535,130 @@ def read_fragments(root: str | Path, consumer_action_key: str) -> list[dict[str,
     return out
 
 
+def landing_path(root: str | Path, consumer_action_key: str) -> Path:
+    """``<root>/<consumer>.landing.json`` -- beside the map, one writer.
+
+    Outside the fragment directory for the map's reason: ``read_fragments``
+    would read it back as a fragment and refuse it on every scan.
+    """
+
+    return (Path(root) / f"{_action_key(consumer_action_key, where='consumer_action_key')}"
+            ".landing.json")
+
+
+def _finite_or_none(value: object, *, where: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ResidencyMapError(f"{where} must be a number or null")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ResidencyMapError(f"{where} must be finite")
+    return number
+
+
+def validate_landing(value: object) -> dict[str, object]:
+    """A landing record, checked field by field (#989).
+
+    Every pending range names its mover, its read-order byte range and its
+    state.  A queued range (``ready``/``claimed``) carries a number for
+    ``expected_landing_unix`` with its queue position and the bytes ahead of
+    it; any other state carries ``null`` there and says in ``waiting_for``
+    what it waits on.
+    """
+
+    if not isinstance(value, Mapping):
+        raise ResidencyMapError("a landing record must be an object")
+    unknown = sorted(set(value) - _LANDING_KEYS)
+    if unknown:
+        raise ResidencyMapError(f"unknown landing record fields: {unknown}")
+    if value.get("schema") != RESIDENCY_LANDING_SCHEMA_V1:
+        raise ResidencyMapError(
+            f"landing record schema must be {RESIDENCY_LANDING_SCHEMA_V1!r}")
+    rates = value.get("rates_measured_bytes_per_s")
+    if not isinstance(rates, list):
+        raise ResidencyMapError("rates_measured_bytes_per_s must be an array")
+    out: dict[str, object] = {
+        "schema": RESIDENCY_LANDING_SCHEMA_V1,
+        "consumer_action_key": _action_key(
+            value.get("consumer_action_key"), where="landing consumer_action_key"),
+        "tier_id": str(value.get("tier_id") or ""),
+        "manifest_sha256": _digest(value.get("manifest_sha256"),
+                                   where="landing manifest_sha256"),
+        "written_unix": _finite_or_none(value.get("written_unix"),
+                                        where="landing written_unix"),
+        "landing_bytes_per_s": _finite_or_none(
+            value.get("landing_bytes_per_s"), where="landing_bytes_per_s"),
+        "landing_basis": str(value.get("landing_basis") or ""),
+        "rates_measured_bytes_per_s": [
+            _finite_or_none(rate, where="rates_measured_bytes_per_s")
+            for rate in rates],
+        "rate_min_bytes_per_s": _finite_or_none(
+            value.get("rate_min_bytes_per_s"), where="rate_min_bytes_per_s"),
+        "rate_max_bytes_per_s": _finite_or_none(
+            value.get("rate_max_bytes_per_s"), where="rate_max_bytes_per_s"),
+        "report_latency_s": _finite_or_none(
+            value.get("report_latency_s"), where="report_latency_s"),
+        "tier_loop_liveness_s": _finite_or_none(
+            value.get("tier_loop_liveness_s"), where="tier_loop_liveness_s"),
+    }
+    if out["written_unix"] is None:
+        raise ResidencyMapError("landing written_unix is required")
+    ranges = value.get("ranges")
+    if not isinstance(ranges, list):
+        raise ResidencyMapError("landing ranges must be an array")
+    checked: list[dict[str, object]] = []
+    for entry in ranges:
+        if not isinstance(entry, Mapping):
+            raise ResidencyMapError("a landing range must be an object")
+        extra = sorted(set(entry) - _LANDING_RANGE_KEYS)
+        if extra:
+            raise ResidencyMapError(f"unknown landing range fields: {extra}")
+        state = entry.get("state")
+        if state not in LANDING_STATES:
+            raise ResidencyMapError(f"landing range state must be one of {LANDING_STATES}")
+        start = _nonnegative(entry.get("range_start_bytes"), where="range_start_bytes")
+        end = _positive(entry.get("range_end_bytes"), where="range_end_bytes")
+        if end <= start:
+            raise ResidencyMapError("a landing range must be non-empty")
+        expected = _finite_or_none(entry.get("expected_landing_unix"),
+                                   where="expected_landing_unix")
+        row: dict[str, object] = {
+            "mover_action_key": _action_key(entry.get("mover_action_key"),
+                                            where="landing mover_action_key"),
+            "phase": str(entry.get("phase") or ""),
+            "chunk_index": entry.get("chunk_index"),
+            "range_start_bytes": start, "range_end_bytes": end,
+            "state": state, "expected_landing_unix": expected,
+            "queue_position": entry.get("queue_position"),
+            "bytes_ahead": entry.get("bytes_ahead"),
+            "claimed_unix": _finite_or_none(entry.get("claimed_unix"),
+                                            where="claimed_unix"),
+            "waiting_for": str(entry.get("waiting_for") or ""),
+        }
+        if state in ("ready", "claimed"):
+            if expected is None:
+                raise ResidencyMapError("a queued range carries its expected landing")
+            _nonnegative(row["queue_position"], where="queue_position")
+            _nonnegative(row["bytes_ahead"], where="bytes_ahead")
+        elif expected is not None or not row["waiting_for"]:
+            raise ResidencyMapError(
+                "a range that is not queued carries no expected landing and "
+                "says what it waits for")
+        checked.append(row)
+    out["ranges"] = checked
+    return out
+
+
+def write_landing(path: str | Path, record: Mapping[str, object]) -> Path:
+    return _write_atomic(Path(path), validate_landing(record))
+
+
+def read_landing(path: str | Path) -> dict[str, object]:
+    with open(path) as stream:
+        return validate_landing(json.load(stream))
+
+
 def write_map(path: str | Path, mapping: Mapping[str, object]) -> Path:
     return _write_atomic(Path(path), validate_map(mapping))
 
@@ -536,23 +683,29 @@ def lookup(mapping: Mapping[str, object], path: str, offset: int = 0) -> dict[st
 
 
 __all__ = [
+    "LANDING_STATES",
+    "RESIDENCY_LANDING_SCHEMA_V1",
     "RESIDENCY_MAP_ENV",
     "RESIDENCY_MAP_FRAGMENT_SCHEMA_V1",
     "RESIDENCY_MAP_SCHEMA_V1",
     "ResidencyMapError",
     "compose",
     "fragment_path",
+    "landing_path",
     "lookup",
     "map_path",
     "overlay_ram",
     "parse_residency_map_key",
     "read_fragments",
+    "read_landing",
     "read_map",
     "reissue",
     "residency_map_key",
     "validate_entry",
     "validate_fragment",
+    "validate_landing",
     "validate_map",
     "write_fragment",
+    "write_landing",
     "write_map",
 ]

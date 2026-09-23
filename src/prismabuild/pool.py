@@ -1080,6 +1080,14 @@ class ProgressWatch:
         self.rejected = 0
         self.last_rejection: str | None = None
         self.sampled_unix: float | None = None
+        # Staged-range waits the worker left out of the quiet (#989).  The
+        # last real advance is kept apart from ``last_advance_monotonic``,
+        # which refunds and exemptions move, so one blocked interval is
+        # never credited twice.
+        self.last_real_advance_monotonic = started
+        self.staged_wait_exempt_through = started
+        self.staged_wait_exempt_s = 0.0
+        self.staged_wait: dict[str, object] | None = None
 
     @property
     def grace_s(self) -> float:
@@ -1172,6 +1180,7 @@ class ProgressWatch:
             self.phase_index = index
         self.accepted += 1
         self.last_advance_monotonic = now
+        self.last_real_advance_monotonic = now
         reported = record.get("reported_unix")
         try:
             reported = (float(reported) if type(reported) in (int, float)
@@ -1196,6 +1205,31 @@ class ProgressWatch:
 
         self.last_advance_monotonic += seconds
 
+    def exempt_staged_wait(self, verdict: Mapping[str, object], *,
+                           now: float, since_monotonic: float) -> float:
+        """Leave a verified staged-range wait out of the quiet (#989).
+
+        ``verdict`` is :meth:`PoolQueue.staged_wait_verdict`'s answer, kept
+        for the record whatever it says.  When it is exempt, the seconds
+        from the later of the wait's start, the last real advance and the
+        last exemption up to ``now`` are credited once: the stall deadline
+        moves by exactly that much, and ``staged_wait_exempt_s`` says so.
+        A dependency wait is not advancement, so ``last_accepted`` and the
+        counters are untouched.  Returns the seconds credited.
+        """
+
+        self.staged_wait = dict(verdict)
+        if not verdict.get("exempt"):
+            return 0.0
+        start = max(float(since_monotonic), self.staged_wait_exempt_through,
+                    self.last_real_advance_monotonic)
+        credit = max(0.0, float(now) - start)
+        self.last_advance_monotonic += credit
+        self.staged_wait_exempt_s += credit
+        self.staged_wait_exempt_through = max(self.staged_wait_exempt_through,
+                                              float(now))
+        return credit
+
     def as_record(self, *, now: float) -> dict[str, object]:
         """What a receipt carries so a reader can see what the action reported."""
 
@@ -1210,7 +1244,51 @@ class ProgressWatch:
             "grace_s": self.grace_s,
             "phase": self.policy.phases[self.phase_index].name,
             "phases_entered": self.phases_entered,
+            # Dependency waits, labelled as such (#989): quiet the worker
+            # did not count because the action was blocked on its own
+            # staged range while that range's mover was alive.
+            "staged_wait_exempt_s": self.staged_wait_exempt_s,
+            "staged_wait": self.staged_wait,
         }
+
+
+def read_staged_wait(path: Path, *, token: str
+                     ) -> tuple[dict[str, object] | None, str]:
+    """A launch's staged-wait record, or ``None`` and why not (#989).
+
+    The same rules the progress report is read under: the stable
+    regular-file reader, the same byte bound, the exact schema and this
+    launch's token.  A missing file is the ordinary case and reads as
+    ``(None, "")``; anything else that does not read names its reason.
+    """
+
+    try:
+        raw = pb._read_regular_file_nofollow(
+            path, where="staged wait record",
+            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+    except FileNotFoundError:
+        return None, ""
+    except (OSError, pb.ActionContractError, pb.CASTamperError,
+            pb.CASUnavailableError) as exc:
+        return None, f"unreadable: {type(exc).__name__}"
+    try:
+        record = pb._decode_strict_json(raw, where="staged wait record")
+    except (pb.ActionContractError, RecursionError):
+        return None, "unparsable"
+    if not isinstance(record, dict):
+        return None, "not an object"
+    if record.get("schema") != pb_progress.STAGED_WAIT_SCHEMA_V1:
+        return None, "wrong schema"
+    if record.get("token") != token:
+        return None, "foreign token"
+    movers = record.get("movers")
+    since = record.get("since_unix")
+    if (not isinstance(movers, list) or not movers
+            or not all(isinstance(mover, str) and mover for mover in movers)):
+        return None, "movers is not a list of action keys"
+    if type(since) not in (int, float) or not math.isfinite(float(since)):
+        return None, "since_unix is not a time"
+    return {"movers": list(movers), "since_unix": float(since)}, ""
 
 
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
@@ -6072,6 +6150,112 @@ class PoolQueue:
                     action_key, published_unix=published_unix),
                 # What the read cost the kill, on the record it delayed.
                 "dependents_read_s": round(time.monotonic() - started, 4)}
+
+    def staged_wait_verdict(self, action_key: str, progress_path: Path, *,
+                            token: str, now: float | None = None
+                            ) -> dict[str, object] | None:
+        """Whether a quiet consumer is blocked on its own staged range (#989).
+
+        ``None`` when the launch filed no staged-wait record.  Otherwise the
+        verdict the ``no_progress`` rung acts on, with every named mover and
+        the state this read found it in:
+
+        * ``ready`` or ``claimed``: the mover is queued or copying.  Its
+          liveness is the queue's own: a claimed mover whose worker died is
+          reaped by its lease, and the next read sees it ready or failed.
+        * ``unpublished`` or ``failed``: the window has not published it,
+          or will publish a recopy (#627).  Exempt only while the tier loop
+          that publishes it is alive, which is the offer freshness bound the
+          fleet already applies to every announcement (``OFFER_TIMEOUT_S``).
+        * ``superseded``: the plan is withdrawn, so nothing will publish it.
+        * ``not-a-dependent``: the consumer's plan does not name it.
+
+        The wait is exempt when any named mover is still coming.  The read
+        is the plan the consumer froze and one existence check per state per
+        named mover, the same children :meth:`dependent_rows` reads.
+        """
+
+        from . import residency_plan as plan_mod
+
+        record, reason = read_staged_wait(
+            Path(pb_progress.staged_wait_path(str(progress_path))), token=token)
+        if record is None and not reason:
+            return None
+        moment = _now() if now is None else float(now)
+        if record is None:
+            return {"exempt": False, "reason": reason, "movers": [],
+                    "checked_unix": moment}
+        key = _residency_action_key(action_key)
+        try:
+            plan = plan_mod.read(self, key)
+        except (OSError, ValueError, PoolContractError):
+            plan = None
+        stage_movers = (set() if plan is None
+                        else {str(mover) for mover in plan_mod.stage_mover_keys(plan)})
+        superseded = False
+        tier_alive: bool | None = None
+        tier_age: float | None = None
+        if plan is not None:
+            try:
+                superseded = plan_mod.superseded(self, plan) is not None
+            except (OSError, ValueError, PoolContractError):
+                superseded = False
+        movers: list[dict[str, object]] = []
+        exempt = False
+        for mover in record["movers"]:
+            mover = str(mover)
+            if mover not in stage_movers:
+                movers.append({"key": mover, "state": "not-a-dependent"})
+                continue
+            try:
+                if self.item_path(READY, mover).exists():
+                    state = READY
+                elif self.item_path(CLAIMED, mover).exists():
+                    state = CLAIMED
+                elif superseded:
+                    state = "superseded" if not self.item_path(
+                        FAILED, mover).exists() else FAILED
+                else:
+                    state = (FAILED if self.item_path(FAILED, mover).exists()
+                             else "unpublished")
+            except (OSError, ValueError):
+                state = "unknown"
+            movers.append({"key": mover, "state": state})
+            if state in (READY, CLAIMED):
+                exempt = True
+            elif state in (FAILED, "unpublished") and not superseded:
+                if tier_alive is None:
+                    tier_alive, tier_age = self._tier_loop_alive(
+                        str(plan["tier_id"]), now=moment)   # type: ignore[index]
+                exempt = exempt or tier_alive
+        verdict: dict[str, object] = {
+            "exempt": exempt, "movers": movers,
+            "since_unix": record["since_unix"], "checked_unix": moment,
+            "plan_superseded": superseded}
+        if tier_alive is not None:
+            verdict["tier_loop_alive"] = tier_alive
+            verdict["tier_record_age_s"] = tier_age
+        if not exempt:
+            verdict["reason"] = "no named mover is still coming"
+        return verdict
+
+    def _tier_loop_alive(self, tier_id: str, *, now: float
+                         ) -> tuple[bool, float | None]:
+        """Whether the loop that announces ``tier_id`` announced it lately.
+
+        The tier loop re-announces every tier it owns each cycle, so the
+        record's age against ``OFFER_TIMEOUT_S`` is the same judgment the
+        fleet makes of every worker offer.  An unreadable record is dead.
+        """
+
+        try:
+            record = _read_json(self.tier_record_path(tier_id))
+        except (OSError, PoolContractError, ValueError):
+            return False, None
+        if not isinstance(record, Mapping):
+            return False, None
+        age = offer_timing(record.get("announced_unix"), now=now).age_s
+        return (age is not None and age <= OFFER_TIMEOUT_S), age
 
     def withhold_age(self, action_key: str) -> float:
         """Seconds since this item was first denied admission; 0.0 if never."""
@@ -17783,6 +17967,8 @@ class PoolQueue:
         progress_token = uuid.uuid4().hex
         with suppress(OSError):
             progress_path.unlink()
+        with suppress(OSError):
+            Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
         progress_environment = (
             {} if progress is None else {
                 pb.ACTION_PROGRESS_PATH_ENV: str(progress_path),
@@ -17867,6 +18053,8 @@ class PoolQueue:
                         outcome["gpu_framebuffer_window"] = group
                 with suppress(OSError):
                     progress_path.unlink()
+                with suppress(OSError):
+                    Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
                 return self._merge_action_status(outcome, status_path)
             self.write_lease(
                 key,
@@ -18027,6 +18215,29 @@ class PoolQueue:
                         next_progress_poll = time.monotonic() + heartbeat_s
                         if deadline is not None:
                             deadline += spent
+                        if not advanced:
+                            # A consumer blocked on its own staged range, whose
+                            # mover is still coming, is waiting on a dependency
+                            # rather than stuck (#989).  Checked here, at the
+                            # rung only, so a working action pays nothing.
+                            exempt_checkpoint = time.monotonic()
+                            try:
+                                verdict = self.staged_wait_verdict(
+                                    key, progress_path, token=progress_token)
+                            except (OSError, ValueError, PoolContractError) as exc:
+                                verdict = {"exempt": False, "movers": [],
+                                           "reason": f"unreadable: {exc!r}"}
+                            if verdict is not None:
+                                now_unix = _now()
+                                since = float(verdict.get("since_unix") or now_unix)
+                                watch.exempt_staged_wait(
+                                    verdict, now=exempt_checkpoint,
+                                    since_monotonic=exempt_checkpoint
+                                    - max(0.0, now_unix - since))
+                            spent = time.monotonic() - exempt_checkpoint
+                            watch.shift(spent)
+                            if deadline is not None:
+                                deadline += spent
                         if (not advanced
                                 and time.monotonic() >= watch.stall_deadline()):
                             # Same three grace budgets, same precedence: this
@@ -18074,6 +18285,8 @@ class PoolQueue:
                 status_path.unlink()
             with suppress(OSError):
                 progress_path.unlink()
+            with suppress(OSError):
+                Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
         if watch is not None:

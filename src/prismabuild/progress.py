@@ -190,6 +190,63 @@ def report_action_progress(
     return commit(units_completed, phase, unit=unit)
 
 
+#: What a consumer writes while it is blocked on its own staged range (#989).
+#: Not advancement: the worker's ``no_progress`` rung reads it, checks every
+#: named mover against the consumer's own dependents, and leaves the time
+#: out of the quiet only while one of them is still coming.
+STAGED_WAIT_SCHEMA_V1 = "prismabuild.staged_wait.v1"
+#: Beside the progress report, under the same launch token.
+STAGED_WAIT_SUFFIX = ".staged-wait"
+
+
+def staged_wait_path(progress_path: str) -> str:
+    """Where a launch's staged-wait record lives, beside its progress report."""
+
+    return str(progress_path) + STAGED_WAIT_SUFFIX
+
+
+def declare_staged_wait(movers: list[str], *, since_unix: float | None = None
+                        ) -> bool:
+    """Say that this action is blocked until one of ``movers`` lands its range.
+
+    ``movers`` are the action keys of the stage movers whose ranges the read
+    needs, as the tier loop's landing record names them.  ``since_unix`` is
+    when the wait began; the worker counts blocked time from it.  Replaces
+    any earlier record, so a reader with several waits writes their union.
+    Returns ``False`` when this action has no progress channel or the record
+    could not be written.  The worker then counts the wait as quiet, which is
+    today's behaviour.
+    """
+
+    open_channel = channel()
+    if open_channel is None:
+        return False
+    destination, token = open_channel
+    names = [str(mover) for mover in movers]
+    if not names:
+        raise ValueError("a staged wait names at least one mover")
+    record = {"schema": STAGED_WAIT_SCHEMA_V1, "token": token,
+              "since_unix": float(time.time() if since_unix is None
+                                  else since_unix),
+              "movers": names}
+    return _write(Path(staged_wait_path(destination)), record)
+
+
+def clear_staged_wait() -> bool:
+    """End the wait: the range landed, or the reader stopped waiting."""
+
+    open_channel = channel()
+    if open_channel is None:
+        return False
+    try:
+        os.unlink(staged_wait_path(open_channel[0]))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _resolve_phase(phase: str | None) -> str:
     declared = declared_phases()
     if phase is None:
