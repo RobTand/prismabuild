@@ -293,3 +293,162 @@ def test_the_captures_layer_3_publishes_after_its_lead_is_given_back(
     assert sum(held.values()) == 506
     assert _claim_shortage(queue, layer_3, 14) is None
     assert_ledger_matches_the_stage(queue)
+
+
+# ------------------------------------------- three R12s on one stage (#989)
+#
+# (a), (b) and R13 are three Stage A consumers of R12's shape.  Each asks
+# for R12's horizon, 242 GiB of the 565 GiB stage, so together they ask
+# for about 726 GiB.  The fixture's live copy rates and R12's own claim
+# and report times price every horizon the same way.
+THREE = {name: _hexkey(f"three{name}") for name in ("a", "b", "c")}
+THREE_MANIFESTS = {name: _hexkey(f"manifest{name}") for name in ("a", "b", "c")}
+
+
+def _r12_shaped(queue: pool.PoolQueue, stage: Path, shift: float, name: str, *,
+                landed: list[str], ready: list[str]) -> dict[str, object]:
+    """One consumer of R12's shape, claimed and reading ``chain-043``.
+
+    ``landed`` ranges are staged with the fixture's receipts, and ``ready``
+    ranges are published into ``ready/`` in that order.
+    """
+
+    r12 = DATA["r12"]
+    key, manifest = THREE[name], THREE_MANIFESTS[name]
+    label = f"three{name}"
+    plan = _plan(queue, key, label=label, manifest=manifest,
+                 phases=r12["phases"], fill=r12["sealed_fill_mb_s"])
+    _consumer(queue, key, plan, manifest=manifest,
+              mem_gb=r12["resources"]["mem_gb"])
+    by_name = {str(phase["name"]): phase for phase in r12["phases"]}
+    rates = {entry["phase"]: entry["bytes_staged"] / entry["seconds"]
+             for entry in r12["landed"]}
+    for phase_name in landed:
+        phase = by_name[phase_name]
+        start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+        _land(queue, stage, consumer=key, manifest=manifest,
+              mover=_mover(label, phase_name), name=phase_name,
+              start=start, end=end, seconds=(end - start) / rates[phase_name])
+    for phase_name in ready:
+        queue.publish(**dict(next(
+            phase["mover_row"] for phase in plan["phases"]  # type: ignore[union-attr]
+            if phase["name"] == phase_name)))
+    _claim(queue, key, phase=r12["accepted"]["phase"],
+           claimed_unix=r12["claimed_unix"] + shift,
+           reported_unix=r12["accepted"]["reported_unix"] + shift,
+           gpu_budget=r12["gpu_memory_budget_bytes"])
+    return plan
+
+
+def _landing(queue: pool.PoolQueue, key: str) -> dict[str, object]:
+    from prismabuild import residency_map
+    return residency_map.read_landing(residency_map.landing_path(
+        queue.residency_fragment_root(), key))
+
+
+def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
+        tmp_path: Path) -> None:
+    """#989: the third consumer's next range lands after the reader's 300 s.
+
+    (a) and (b) hold ``chain-043`` to ``chain-034`` (220 GiB each), and each
+    has ``chain-033`` queued in ``ready/``.  R13 (``c``) holds only
+    ``chain-043``, the range it is reading.  One cycle publishes what room
+    allows of R13's horizon.  Its first queued range copies behind (a)'s and
+    (b)'s queued ranges at the tier's slowest measured rate.
+
+    On main nothing says when that range will land: the reader waits a
+    constant and refuses while the mover is still queued.  After the fix,
+    every pending range of every consumer is listed beside its map, and
+    every queued one carries an expected landing no earlier than a serial
+    replay of the tier's queue at the published rate.  For R13 the
+    expectation is more than 300 s out.
+    """
+
+    shift = time.time() - SAMPLE_UNIX
+    capacity = DATA["tier"]["capacity_gib"]
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    holding = [f"chain-{n:03d}" for n in range(43, 33, -1)]
+    _r12_shaped(queue, stage, shift, "a", landed=holding, ready=["chain-033"])
+    _r12_shaped(queue, stage, shift, "b", landed=holding, ready=["chain-033"])
+    _r12_shaped(queue, stage, shift, "c", landed=["chain-043"], ready=[])
+
+    _cycle(queue, stage, gib=capacity)
+
+    docs = {name: _landing(queue, key) for name, key in THREE.items()}
+    for name, doc in docs.items():
+        assert doc["consumer_action_key"] == THREE[name]
+        assert doc["ranges"], name
+        for entry in doc["ranges"]:
+            # Present on every pending range: a number while the mover is
+            # queued, and an explicit null with the reason otherwise.
+            assert "expected_landing_unix" in entry
+            if entry["state"] in ("ready", "claimed"):
+                assert isinstance(entry["expected_landing_unix"], float)
+                assert isinstance(entry["queue_position"], int)
+                assert isinstance(entry["bytes_ahead"], int)
+            else:
+                assert entry["expected_landing_unix"] is None
+                assert entry["waiting_for"]
+    # Every queued stage mover on the tier, in the order the tier serves it.
+    queued = sorted((entry for doc in docs.values() for entry in doc["ranges"]
+                     if entry["state"] == "ready"),
+                    key=lambda entry: entry["queue_position"])
+    assert [entry["queue_position"] for entry in queued] == list(range(len(queued)))
+    rates = {doc["landing_bytes_per_s"] for doc in docs.values()}
+    assert len(rates) == 1              # one tier, one rate
+    rate = rates.pop()
+    written = min(float(doc["written_unix"]) for doc in docs.values())
+    served = 0
+    for entry in queued:
+        served += int(entry["range_end_bytes"]) - int(entry["range_start_bytes"])
+        # No range stays unlanded past its expectation while it is queued.
+        assert written + served / rate <= entry["expected_landing_unix"] + 1e-6
+    first_c = min((entry for entry in docs["c"]["ranges"]
+                   if entry["state"] == "ready"),
+                  key=lambda entry: entry["queue_position"])
+    ahead_of_c = [entry for entry in queued
+                  if entry["queue_position"] < first_c["queue_position"]]
+    assert {entry["mover_action_key"] for entry in ahead_of_c} >= {
+        _mover("threea", "chain-033"), _mover("threeb", "chain-033")}
+    assert first_c["bytes_ahead"] >= 2 * 22 * 10 ** 9
+    # The incident: a 300 s reader wait refuses before this range can land.
+    assert first_c["expected_landing_unix"] - written > 300
+
+
+def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(
+        tmp_path: Path) -> None:
+    """#989 point 2 is #907/#930's commitment gate, already on main.
+
+    (a) and (b) are admitted and hold their horizons.  R13 arrives as a
+    newcomer whose read footprint cannot fit beside what the tier has
+    already promised them.  The commitment refuses its first step with
+    ``joint-commitment-stall``, and the tier's commitment record names the
+    two consumers it waits on and their GiB.
+    """
+
+    shift = time.time() - SAMPLE_UNIX
+    capacity = DATA["tier"]["capacity_gib"]
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    holding = [f"chain-{n:03d}" for n in range(43, 33, -1)]
+    _r12_shaped(queue, stage, shift, "a", landed=holding, ready=["chain-033"])
+    _r12_shaped(queue, stage, shift, "b", landed=holding, ready=["chain-033"])
+    r12 = DATA["r12"]
+    plan = _plan(queue, THREE["c"], label="threec", manifest=THREE_MANIFESTS["c"],
+                 phases=r12["phases"], fill=r12["sealed_fill_mb_s"])
+    _consumer(queue, THREE["c"], plan, manifest=THREE_MANIFESTS["c"],
+              mem_gb=r12["resources"]["mem_gb"])
+
+    _cycle(queue, stage, gib=capacity)
+
+    record = json.loads(queue.tier_commitment_path(TIER).read_text())
+    waiting = {entry["consumer"]: entry for entry in record["waiting"]}
+    assert waiting[THREE["c"]]["reason"] == "joint-commitment-stall"
+    terms = waiting[THREE["c"]]["terms"]
+    named = {term.get("consumer"): 0 for term in terms if not term["evictable"]}
+    for term in terms:
+        if not term["evictable"] and term.get("consumer") in named:
+            named[term["consumer"]] += int(term["gib"])
+    assert named.get(THREE["a"], 0) >= 220 and named.get(THREE["b"], 0) >= 220
+    assert waiting[THREE["c"]]["shortfall_gib"] > 0
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])     # type: ignore[index]
+    assert not queue.item_path(pool.READY, lead).exists()
