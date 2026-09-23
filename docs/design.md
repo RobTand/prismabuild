@@ -3205,7 +3205,12 @@ direct descendants and Docker containers created through a daemon. The resource
 scope architecture assigns each attempt one broker-owned cgroup, launches the
 payload inside it, attaches owned containers, enforces the declared memory limit
 over the aggregate, records CPU time and memory peak, and proves the scope empty
-before releasing its reservation. Parent-local `memory.events.local` `oom`
+before releasing its reservation. The payload runs in the scope's `payload`
+leaf, which the broker sets to `drwxr-xr-x root` and verifies before any
+process enters (#916). A bare-host payload can therefore read its own limits,
+such as `memory.max`, as a container reads its docker scope's; it cannot write
+them, create cgroups or move processes. The broker's `UMask=0077` alone would
+leave the leaf `drwx------`. Parent-local `memory.events.local` `oom`
 identifies exhaustion of this aggregate limit and authorizes exact-attempt
 termination even before a victim is counted. Hierarchical OOM victim counters
 remain diagnostic: an independently capped descendant can OOM without exhausting

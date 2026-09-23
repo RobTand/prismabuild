@@ -256,6 +256,15 @@ class SystemdBackend:
         if not {'cpu','memory'}<=available:raise ValueError('CPU/memory controllers unavailable')
         (group/'cgroup.subtree_control').write_text('+cpu +memory')
         leaf=group/'payload';leaf.mkdir(exist_ok=True)
+        # The payload reads its own limits through this directory, as a
+        # container reads its docker scope's: CaptureMemoryGuard walks its
+        # cgroup reading memory.max. UMask=0077 would leave it drwx------
+        # root, so set the mode rather than inherit it. Traversable and
+        # listable, never writable: control files keep the kernel's modes,
+        # and only root may create or remove cgroups here (#916).
+        os.chmod(leaf,0o755)
+        if stat.S_IMODE(leaf.stat().st_mode)!=0o755:
+            raise ValueError('payload cgroup is not readable by its payload')
         info=group.stat()
         events=dict(line.split() for line in (group/'memory.events').read_text().splitlines())
         local_events=dict(line.split() for line in (group/'memory.events.local').read_text().splitlines())
