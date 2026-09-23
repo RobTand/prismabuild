@@ -5236,7 +5236,9 @@ Limits:
 - The same mount assumption as the retirement tick applies. A prefix that
   is itself the mount point of an unmounted file system is still an empty
   directory, so its files read as absent: the record is removed, and the
-  files on that file system are never reported.
+  files on that file system are never reported. A prefix directory that was
+  never created reads as unreachable, and the prewrite is reported as
+  refused until it exists.
 
 #### Deferred consumers: action edges (#913)
 
