@@ -352,16 +352,17 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
 
     (a) and (b) hold ``chain-043`` to ``chain-034`` (220 GiB each), and each
     has ``chain-033`` queued in ``ready/``.  R13 (``c``) holds only
-    ``chain-043``, the range it is reading.  One cycle publishes what room
-    allows of R13's horizon.  Its first queued range copies behind (a)'s and
-    (b)'s queued ranges at the tier's slowest measured rate.
+    ``chain-043``, the range it is reading.  One cycle runs.  The tier's room
+    is promised to (a) and (b), so the window stalls R13's next range, and
+    once published it would copy behind (a)'s and (b)'s queued ranges at the
+    tier's slowest measured rate: more than 300 s out.
 
-    On main nothing says when that range will land: the reader waits a
-    constant and refuses while the mover is still queued.  After the fix,
-    every pending range of every consumer is listed beside its map, and
-    every queued one carries an expected landing no earlier than a serial
-    replay of the tier's queue at the published rate.  For R13 the
-    expectation is more than 300 s out.
+    On main nothing says what that range is waiting for: the reader waits a
+    constant and refuses while the range is still coming.  After the fix,
+    every pending range of every consumer is listed beside its map, every
+    queued one carries an expected landing no earlier than a serial replay
+    of the tier's queue at the published rate, and R13's stalled range says
+    it waits on the window.
     """
 
     shift = time.time() - SAMPLE_UNIX
@@ -394,6 +395,9 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
                      if entry["state"] == "ready"),
                     key=lambda entry: entry["queue_position"])
     assert [entry["queue_position"] for entry in queued] == list(range(len(queued)))
+    # The pass records what it cost; three R12 plans on NFS-free tmp_path
+    # must not approach a cycle (60 s) -- or even one second.
+    assert all(0 <= doc["publish_s"] < 1.0 for doc in docs.values())
     rates = {doc["landing_bytes_per_s"] for doc in docs.values()}
     assert len(rates) == 1              # one tier, one rate
     rate = rates.pop()
@@ -403,16 +407,20 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
         served += int(entry["range_end_bytes"]) - int(entry["range_start_bytes"])
         # No range stays unlanded past its expectation while it is queued.
         assert written + served / rate <= entry["expected_landing_unix"] + 1e-6
-    first_c = min((entry for entry in docs["c"]["ranges"]
-                   if entry["state"] == "ready"),
-                  key=lambda entry: entry["queue_position"])
-    ahead_of_c = [entry for entry in queued
-                  if entry["queue_position"] < first_c["queue_position"]]
-    assert {entry["mover_action_key"] for entry in ahead_of_c} >= {
+    # R13's next range: the window stalls it (the tier's room is promised to
+    # (a) and (b)), so it is listed unpublished, waiting on the window, with
+    # no expectation -- a wait, not a refusal, while the tier loop is alive.
+    next_c = min(docs["c"]["ranges"], key=lambda entry: entry["range_start_bytes"])
+    assert next_c["phase"] == "chain-042"
+    assert next_c["state"] == "unpublished"
+    assert next_c["expected_landing_unix"] is None
+    assert "window" in next_c["waiting_for"]
+    assert {entry["mover_action_key"] for entry in queued} >= {
         _mover("threea", "chain-033"), _mover("threeb", "chain-033")}
-    assert first_c["bytes_ahead"] >= 2 * 22 * 10 ** 9
-    # The incident: a 300 s reader wait refuses before this range can land.
-    assert first_c["expected_landing_unix"] - written > 300
+    # The incident: published now, it would copy behind (a)'s and (b)'s
+    # queued ranges, so the earliest it can land is past a 300 s reader wait.
+    own = int(next_c["range_end_bytes"]) - int(next_c["range_start_bytes"])
+    assert (served + own) / rate > 300
 
 
 def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(

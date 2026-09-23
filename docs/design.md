@@ -6765,7 +6765,10 @@ is an admitted window's advance, which the would-publish term covers.
 * The horizon trusts the consumer to read in plan order and to hold no more
   than its reservations ahead. A consumer that prefetches past its
   reservations can find a range evicted; the PrismaQuant layer reader then
-  waits `STAGED_RANGE_WAIT_S` (300 s) for the window to publish it again.
+  waits for the window to publish it again. Since #989 that wait follows the
+  consumer's landing record while the tier loop is alive, and
+  `STAGED_RANGE_WAIT_S` (300 s) bounds it only where no landing record
+  covers the range (see "A reader waits on its range's landing" below).
 * Since #906 the ram window is bounded by its own horizon as well (next
   section).
 * Since #907 admission charges the horizons jointly: a newcomer is admitted
@@ -7226,6 +7229,111 @@ loaded. The profile of an R12-alone call puts the added time in
 `_report_commitments`: the census's ledger token-directory scans
 (`holder_tokens`, `_mover_state`), as in #909, and one atomic write. At the
 loop's 60 s cadence the worst case is 16 ms a cycle.
+
+### A reader waits on its range's landing, not a constant (#989)
+
+A stage-fed PrismaQuant reader refused a declared range 300 s after it began
+waiting (`STAGED_RANGE_WAIT_S`), whatever the range's mover was doing, and
+the live seals raised it to 840 s to stay under the 900 s phase grace. With
+three R12-shaped consumers on a 565 GiB tier, the third consumer's next
+range copies behind the other two consumers' queued ranges, and it lands
+long after either constant: 46 GB ahead at the tier's slowest measured copy
+is several minutes before its own bytes start. The reader could not tell a
+range that is coming from one that never will, because nothing told it.
+
+**The landing record.** Each cycle, `residency_window` calls
+`publish_landing_expectations`, which writes `<consumer>.landing.json`
+(`prismaquant.prismabuild.residency_landing.v1`, `residency_map.write_landing`)
+beside each running consumer's map. For every range the consumer still has
+to read that is not resident, it names the mover, the range's read-order
+bytes and one state:
+
+| State | Meaning | `expected_landing_unix` |
+|---|---|---|
+| `claimed` | the mover is copying | claim time + own bytes / rate |
+| `ready` | the mover is queued | now + (bytes ahead + own bytes) / rate |
+| `unpublished` | the window has not published it, or will recopy a failed copy (#627) | null, with `waiting_for` |
+| `terminal-no-receipt` | the plan is superseded, so nothing will publish it | null |
+
+A queued range also carries its `queue_position` and `bytes_ahead`: every
+claimed mover's remaining bytes on the tier, then every earlier ready
+mover's, in the queue's own order (`_queue_order_of`).
+`residency_plan.expected_landings` replays that queue serially at one rate.
+The rate is the refill horizon's landing term, not a second model: the
+slowest complete copy among the tier's live plans (`_plan_landing`), else
+the smallest sealed fill. The record carries every measured rate beside it
+(`rates_measured_bytes_per_s`, `rate_min_bytes_per_s`,
+`rate_max_bytes_per_s`) and `report_latency_s` (heartbeat plus cycle). The
+tier loop rewrites the record only when the queue, the ranges' states or the
+rates change, so `written_unix` dates the last change, not the last cycle.
+An `unpublished` range is listed only inside the consumer's refill horizon;
+a queued range is listed wherever it is.
+
+The expectation is information for the reader's log, `pbstatus` and
+pricing. It is never a deadline. A copy that runs slower than every earlier
+receipt is still a copy, and it lands.
+
+**Why a sidecar.** Both map validators (PB's `validate_map` and PrismaQuant's
+reader) refuse unknown header fields. A new map header field would make a
+running reader built on an older PrismaQuant refuse its map at the next
+publish. A reader that does not know the sidecar never opens it.
+
+**The liveness judgment.** The record also carries `tier_loop_liveness_s`,
+the offer freshness bound the fleet already applies to every announcement
+(`pool.OFFER_TIMEOUT_S`, 120 s). The tier loop re-announces its tiers every
+cycle, so a tier record older than that bound means the loop that publishes
+and composes has stopped. That is the same judgment
+`PoolQueue._tier_loop_alive` makes. No new constant is involved.
+
+**What the reader does** (PrismaQuant `residency_shard_reader.landing_verdict`):
+
+* It waits while every pending span is covered by a `ready` or `claimed`
+  range, or by an `unpublished` range, and the tier loop is alive. Each
+  state change logs the state and the expectation.
+* It refuses at once when every range covering a span is
+  `terminal-no-receipt`, or when the tier loop is silent. The refusal names
+  the mover, its state and the expectation.
+* Where no landing record covers the span (an older generation, a
+  produced-output map), it keeps the bounded wait, and the refusal says that
+  no landing record covered it.
+
+**A staged wait is not quiet.** A reader that waits on the record writes
+`<progress path>.staged-wait` (`prismabuild.staged_wait.v1`,
+`progress.declare_staged_wait`): its progress token, when the wait began and
+the movers it waits on. When the `no_progress` rung finds the action quiet,
+it asks `PoolQueue.staged_wait_verdict`. The verdict reads the consumer's
+frozen plan and checks each named mover against it and the queue. The wait
+is exempt while a named mover of that plan is `ready` or `claimed`, or while
+one is failed or unpublished under a live plan and the tier loop is alive.
+A mover the plan does not name, a record with another token, or a plan
+superseded by a withdrawal earns nothing. The rung credits only the time
+since the later of the wait's start and the last real advance, and it
+refunds the time the check itself took. The progress observation records
+`staged_wait_exempt_s` and `staged_wait` (the movers and the states the
+last check found), labeled as a dependency wait. The record is removed with
+the progress file.
+
+**What #928 already covers.** Three R12-shaped consumers on a 565 GiB tier:
+(a) and (b) each hold 220 GiB and are claimed; a third, ready newcomer is
+refused by the #907 commitment with `joint-commitment-stall`, and the tier's
+commitment record names (a) and (b) and their GiB among its terms
+(`tests/test_r12_and_the_capture_replay_under_the_refill_horizon.py`, which
+passes on `72c276d7d9d1` without this change). The commitment does not
+re-gate consumers that are already claimed: if three are claimed together,
+only `tier-over-committed` reports it. Their waits are what the landing
+record and the staged-wait exemption now bound.
+
+**Limits.**
+
+* A claimed mover's landed bytes are not observable without walking the
+  stage, so its expectation is its claim time plus its own bytes at the
+  tier's rate, not its live rate.
+* The replay is serial. Movers that copy in parallel land sooner than the
+  expectation says, and a withheld or isolation-refused mover later.
+* A mover carries no execution bound and reports no progress, so a claimed
+  mover whose copy stops holds its claim until the box's announced ceiling,
+  and the reader waits that long. The fix belongs to the mover (report
+  landed bytes as progress), not to a reader clock.
 
 ### Adopting a resident range, and when an orphan is evicted
 

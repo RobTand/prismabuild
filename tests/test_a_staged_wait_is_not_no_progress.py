@@ -189,6 +189,6 @@ def test_the_helper_writes_the_record_the_worker_reads(tmp_path: Path,
     assert record == {"schema": progress.STAGED_WAIT_SCHEMA_V1,
                       "token": "t" * 32, "since_unix": 5.0, "movers": ["a" * 64]}
     assert pool.read_staged_wait(Path(progress.staged_wait_path(str(path))),
-                                 token="t" * 32)["movers"] == ["a" * 64]
+                                 token="t" * 32)[0]["movers"] == ["a" * 64]
     assert progress.clear_staged_wait() is True
     assert not Path(progress.staged_wait_path(str(path))).exists()

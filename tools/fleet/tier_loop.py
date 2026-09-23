@@ -5339,6 +5339,7 @@ def publish_landing_expectations(
     """
 
     moment = time.time() if now is None else float(now)
+    began = time.monotonic()
     events: list[dict[str, object]] = []
     root = queue.residency_fragment_root()
     per_tier: dict[str, list[tuple[str, Mapping[str, object],
@@ -5475,6 +5476,9 @@ def publish_landing_expectations(
                 "rate_max_bytes_per_s": max(rates) if rates else None,
                 "report_latency_s": pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
                 "tier_loop_liveness_s": pool.OFFER_TIMEOUT_S,
+                # What this pass had spent when it composed the record: the
+                # queue and plan reads for every consumer before this one.
+                "publish_s": round(time.monotonic() - began, 4),
                 "ranges": ranges}
             try:
                 residency_map.write_landing(path, record)

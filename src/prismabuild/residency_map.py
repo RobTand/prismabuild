@@ -96,7 +96,7 @@ _LANDING_KEYS = frozenset({
     "written_unix", "landing_bytes_per_s", "landing_basis",
     "rates_measured_bytes_per_s", "rate_min_bytes_per_s",
     "rate_max_bytes_per_s", "report_latency_s", "tier_loop_liveness_s",
-    "ranges"})
+    "publish_s", "ranges"})
 _LANDING_RANGE_KEYS = frozenset({
     "mover_action_key", "phase", "chunk_index", "range_start_bytes",
     "range_end_bytes", "state", "queue_position", "bytes_ahead",
@@ -601,6 +601,7 @@ def validate_landing(value: object) -> dict[str, object]:
             value.get("report_latency_s"), where="report_latency_s"),
         "tier_loop_liveness_s": _finite_or_none(
             value.get("tier_loop_liveness_s"), where="tier_loop_liveness_s"),
+        "publish_s": _finite_or_none(value.get("publish_s"), where="publish_s"),
     }
     if out["written_unix"] is None:
         raise ResidencyMapError("landing written_unix is required")
