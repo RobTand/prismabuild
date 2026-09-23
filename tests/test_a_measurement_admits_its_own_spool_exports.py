@@ -191,8 +191,6 @@ def test_a_measurements_own_pinned_export_is_admitted_beside_it(
     queue, cas, measurement, holder = _holding_measurement(tmp_path, monkeypatch)
     export = _export(queue, measurement, owner=holder, batch_id="g0")
     export_key = _publish(queue, cas, export, EXPORT_DEMAND)
-    assert adaptive_cpu.dependent_owner(
-        {"action_key": export_key, "cas_root": str(cas.root)}) == holder
 
     _running(queue, holder, monkeypatch)
     claim = _claim(queue)
@@ -202,6 +200,8 @@ def test_a_measurements_own_pinned_export_is_admitted_beside_it(
             "a measurement's own spool export must run under its isolation; "
             f"it was refused {decision.get('reason')} by {decision.get('holder')}")
     assert claim["action_key"] == export_key
+    assert adaptive_cpu.dependent_owner(
+        {"action_key": export_key, "cas_root": str(cas.root)}) == holder
 
     held = queue.ledger().held_dir
     measurement_cpus = set(queue.ledger().cpu_allocation(holder, CPU_TIERS)["preferred"])
@@ -220,9 +220,12 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
     """Isolation holds for everything else, and every refusal is recorded.
 
     Two foreign actions: an ordinary ``pbrun`` action, and an export whose
-    owner is some other producer.  Each is refused ``measurement_holder`` with a denial
-    record naming the holder's key; the holder's own export is still admitted
-    past them.
+    owner is some other producer.  Each is refused ``measurement_holder``
+    with a denial record naming the holder's key.  They are ahead of the
+    holder's own export in the ready order, and this measurement declares no
+    run bound, so it reads as a transient holder: under #924 alone each
+    refusal would withhold the box and end the scan before the export.  The
+    export is admitted past them, and they keep their passes, denied starved.
     """
 
     import pbrun
@@ -241,8 +244,6 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
         assert decision["reason"] == "measurement_holder", decision
         assert decision["holder"] == holder, decision
         assert queue.item_path(pool.READY, key).exists()
-    assert _denial(queue, foreign[1])["evidence"]["decision"]["dependent_of"] == "c" * 64
-    assert _denial(queue, foreign[0])["evidence"]["decision"]["dependent_of"] is None
 
     own_key = _publish(queue, cas, _export(queue, measurement, owner=holder, batch_id="g1"),
                        EXPORT_DEMAND)
@@ -251,7 +252,14 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
     assert claim is not None and claim["action_key"] == own_key
     for key in foreign:
         assert queue.item_path(pool.READY, key).exists()
-        assert _denial(queue, key)["evidence"]["decision"]["holder"] == holder
+        assert queue.passes(key) >= 2
+        denial = _denial(queue, key)
+        assert denial["reason"] == "adaptive_cpu_refused_starved", denial
+        assert denial["evidence"]["withhold"]["why"] == "measurement_admits_only_its_dependents"
+        decision = denial["evidence"]["decision"]
+        assert decision["holder"] == holder and decision["isolated_by"] == holder
+    assert _denial(queue, foreign[1])["evidence"]["decision"]["dependent_of"] == "c" * 64
+    assert _denial(queue, foreign[0])["evidence"]["decision"]["dependent_of"] is None
 
 
 def test_a_waiting_measurement_is_never_a_dependent(tmp_path, monkeypatch) -> None:
@@ -272,3 +280,25 @@ def test_a_waiting_measurement_is_never_a_dependent(tmp_path, monkeypatch) -> No
     assert _claim(queue) is None
     decision = _denial(queue, key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_holder" and decision["holder"] == holder
+    assert decision["isolated_by"] == holder
+
+
+def test_a_measurement_waiting_behind_ordinary_work_is_not_isolated(tmp_path) -> None:
+    """``isolated_by`` is set only by a measurement holder, so a measurement
+    waiting behind ordinary work keeps the #924 exclusive withhold."""
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    ledger = queue.ledger()
+    ledger.ensure_capacity({"cpu": 2})
+    assert ledger.acquire("0" * 64, {"cpu": 1})
+    controller = adaptive_cpu.Controller(ledger, {"preferred": [0, 1], "fallback": []})
+    controller._host_sample = {"sampled_unix": time.time(), "cpu_count": 2,
+                               "interval_s": 1., "busy_cpus": 0., "psi_some": 0.}
+    assert controller.decision({"action_key": "a" * 64}, {"cpu": 1},
+                               identity=("shape", True)) is None
+    decision = controller.last_decision
+    assert decision["reason"] == "measurement_holder" and decision["holder"] == "0" * 64
+    assert decision["isolated_by"] is None
+    assert pool._adaptive_refusal_drains(
+        "adaptive_cpu_refused", decision, demand={"cpu": 1}, measurement=True,
+        cpu_count=2) == ("exclusive", False)

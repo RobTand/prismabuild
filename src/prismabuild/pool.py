@@ -12755,6 +12755,20 @@ class PoolQueue:
                                 mode=mode or "exclusive", adaptive=True, foreign=foreign,
                                 gpu_sample=_gpu_sample_for(gpu_controller, demand))
                                 if mode is not None or foreign else None)
+                            if (verdict is not None and verdict["withhold"]
+                                    and isinstance(decision, Mapping)
+                                    and decision.get("reason") == "measurement_holder"
+                                    and decision.get("isolated_by")):
+                                # While a measurement holds this box, the only
+                                # work it admits is its own dependents (#982),
+                                # so a veto here protects against no
+                                # overtaking.  It would block just the work the
+                                # holder's progress waits on, and the holder
+                                # would then never drain: the deadlock #924
+                                # was written to prevent.  The item keeps its
+                                # passes and its place, and is denied starved.
+                                verdict = dict(verdict, withhold=False,
+                                               why="measurement_admits_only_its_dependents")
                             self.record_pass(key)
                             reason = refusal_source or "adaptive_refused"
                             evidence: dict[str, object] = {"decision": decision or {}}

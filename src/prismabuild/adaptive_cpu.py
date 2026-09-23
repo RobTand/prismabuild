@@ -645,7 +645,14 @@ class Controller:
                     return refuse("holder_reservation_unknown", holder=holder.name)
                 continue
             if measurement:
-                return refuse("measurement_holder", holder=holder.name)
+                # ``isolated_by`` names a measurement already holding the host,
+                # if any: the claim path must not withhold the box against
+                # that measurement's own dependents (#982).
+                isolated = holder.name if meta.get('measurement') else next(
+                    (other.name for other in holders
+                     if read_json(other / METADATA).get('measurement')), None)
+                return refuse("measurement_holder", holder=holder.name,
+                              isolated_by=isolated)
             if meta.get('measurement'):
                 # A measurement's own spool exports run under its isolation;
                 # everything else waits (#982).  Read only here, where a
@@ -656,7 +663,7 @@ class Controller:
                     owner = dependent_owner(item)
                 if owner != holder.name:
                     return refuse("measurement_holder", holder=holder.name,
-                                  dependent_of=owner)
+                                  isolated_by=holder.name, dependent_of=owner)
                 serves = holder.name
             # ``self.base`` rather than ``local_telemetry_path``: that helper
             # resolves the ledger path, which is three stats on the mount per
