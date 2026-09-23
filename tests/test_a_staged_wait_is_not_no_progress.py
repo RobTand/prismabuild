@@ -229,20 +229,57 @@ def _verdict(queue, item, progress_path):
                                      token=TOKEN)
 
 
-@pytest.mark.parametrize("finished", ["done", "withdrawn"])
-def test_a_finished_mover_is_not_waited_on(tmp_path: Path, finished: str) -> None:
-    """Its copy ended, the plan is live and the tier loop is alive."""
+def _finish(queue: pool.PoolQueue, row, state: str) -> str:
+    key = str(row["action_key"])
+    queue.item_path(state, key).parent.mkdir(parents=True, exist_ok=True)
+    queue.item_path(state, key).write_text(json.dumps({**dict(row), "status": state}))
+    return key
+
+
+def test_a_landed_mover_is_not_waited_on(tmp_path: Path) -> None:
+    """In ``done/`` and still holding its tokens: the range is resident (or
+    being adopted), so a consumer still quiet is not waiting on it -- a
+    reader that hung with a stale record, say.  Plan live, loop alive, tier
+    within commitment."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
-    key = str(row["action_key"])
-    state = pool.DONE if finished == "done" else pool.WITHDRAWN
-    queue.item_path(state, key).parent.mkdir(parents=True, exist_ok=True)
-    queue.item_path(state, key).write_text(json.dumps({**dict(row), "status": finished}))
+    key = _finish(queue, row, pool.DONE)
+    queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
+    assert queue.tier_ledger(TIER).acquire(key, {STAGE_KIND: 21})
 
     verdict = _verdict(queue, item, progress_path)
 
     assert verdict["exempt"] is False
-    assert verdict["movers"] == [{"key": key, "state": finished}]
+    assert verdict["movers"] == [{"key": key, "state": "done"}]
+
+
+@pytest.mark.parametrize("over,exempt", [(0, True), (161, False)])
+def test_an_evicted_range_is_waited_on_like_an_unpublished_one(
+        tmp_path: Path, over: int, exempt: bool) -> None:
+    """In ``done/`` with no tokens: evicted, and the window publishes it
+    again (``tier_loop.evict_beyond_horizon``) -- while the tier fits it."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=over)
+    key = _finish(queue, row, pool.DONE)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["movers"] == [{"key": key, "state": "evicted"}]
+    assert verdict["exempt"] is exempt
+    assert verdict["tier_over_committed_gib"] == over
+
+
+def test_a_withdrawn_mover_is_not_waited_on(tmp_path: Path) -> None:
+    """The window never republishes a withdrawn mover: its publish passes
+    ``refuse_withdrawn`` and the refusal supersedes the plan (#708)."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    key = _finish(queue, row, pool.WITHDRAWN)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False
+    assert verdict["movers"] == [{"key": key, "state": "withdrawn"}]
 
 
 @pytest.mark.parametrize("over,exempt", [(0, True), (161, False), (None, False)])

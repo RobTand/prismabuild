@@ -428,10 +428,16 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
     assert (served + own) / rate > 300
 
 
+@pytest.mark.parametrize("holds,label,waits_on", [
+    (True, "done-not-resident", "adoption"), (False, "evicted", "window")])
 def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
-        tmp_path: Path) -> None:
-    """PR #1009 review: a mover in ``done/`` whose range is not resident is
-    not waiting on the window.  It waits on adoption, and says so."""
+        tmp_path: Path, holds: bool, label: str, waits_on: str) -> None:
+    """PR #1009 review: a mover in ``done/`` whose range is not resident.
+
+    Still holding its tokens, it landed and waits on adoption.  Holding
+    none, it was evicted, and the window publishes it again when the range
+    is back inside the horizon.
+    """
 
     shift = time.time() - SAMPLE_UNIX
     capacity = DATA["tier"]["capacity_gib"]
@@ -446,14 +452,16 @@ def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
     queue.item_path(pool.DONE, finished).parent.mkdir(parents=True, exist_ok=True)
     queue.item_path(pool.DONE, finished).write_text(json.dumps(
         {**dict(row), "status": "done"}))
+    if holds:
+        assert queue.tier_ledger(TIER).acquire(finished, {"stage_gib": 22})
 
     _cycle(queue, stage, gib=capacity)
 
     entry = next(entry for entry in _landing(queue, THREE["c"])["ranges"]
                  if entry["mover_action_key"] == finished)
-    assert entry["state"] == "done-not-resident"
+    assert entry["state"] == label
     assert entry["expected_landing_unix"] is None
-    assert "adoption" in entry["waiting_for"]
+    assert waits_on in entry["waiting_for"]
 
 
 def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(
