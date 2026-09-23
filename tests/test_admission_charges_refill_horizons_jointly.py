@@ -30,8 +30,9 @@ The numbers every case here uses, so each assertion can be checked by hand:
   215 s, 305 s with the latency, in which it reads 3.0 GB -- two legs.  Its
   footprint is 2 + 8 + 4 = **14 GiB**.
 
-``tests/fixtures`` holds no live numbers for this: the 2026-09-23 survey is in
-the PR, and each case below is the smallest state that shows one term.
+Each case up to the last section is the smallest state that shows one term.
+The last section replays ``tests/fixtures/r12_stage_20260922.json`` -- R12,
+the native capture and Stage-B-shaped quanta on the live stage's numbers.
 
 Everything runs on a ``tmp_path`` queue and stage root; nothing touches a live
 queue or a real stage mountpoint (#628).
@@ -55,6 +56,7 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
     GIB, STAGE_KIND, TIER, _hexkey, _row, assert_ledger_matches_the_stage)
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _cycle, _fixture_queue, _land)
+import test_r12_and_the_capture_replay_under_the_refill_horizon as replay  # noqa: E402
 
 PHASE_GIB = 2
 MEM_GB = 8
@@ -363,10 +365,11 @@ def test_an_admitted_window_that_has_not_grown_is_charged_its_growth(
         tmp_path: Path) -> None:
     """A ready consumer whose lead has landed will claim and grow to 14 GiB.
 
-    It holds 2 GiB now.  Before the fix the gate charged it one protected
-    next (2 GiB) and admitted a newcomer on 2 + 2 + 2 + 2 = 8 of 24; after
-    it, the admitted window's 12 GiB of growth is committed: 2 + 12 + 14 =
-    28 > 24.
+    It holds its 2 GiB lead, and the pass fences 2 GiB more for its advance
+    before any newcomer is asked.  Before the fix the gate charged it that
+    protected next and admitted a newcomer on 2 + 2 + 2 + 2 = 8 of 24; after
+    it, the admitted window is committed at its whole footprint -- the 4 GiB
+    it holds and 10 of growth -- and 14 + 14 = 28 > 24.
     """
 
     queue, stage = _fixture_queue(tmp_path, 24)
@@ -378,7 +381,9 @@ def test_an_admitted_window_that_has_not_grown_is_charged_its_growth(
 
     assert not newcomer.lead_published()
     terms = _refused(events, newcomer.key)
-    assert terms["admitted_growth_gib"] == NEWCOMER_FOOTPRINT - PHASE_GIB
+    # What the admitted window holds (its lead and the fence) plus what it
+    # has still to grow is its footprint, however the pass split the two.
+    assert terms["held_gib"] + terms["admitted_growth_gib"] == NEWCOMER_FOOTPRINT
     assert terms["committed_gib"] == NEWCOMER_FOOTPRINT
 
 
@@ -479,6 +484,9 @@ def _report(queue: pool.PoolQueue, key: str, *, phase: str,
     """File a later accepted phase under the same claim."""
 
     item = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    # The fixture's claim names another host than the one writing the lease,
+    # which a lease refresh refuses; the first lease is simply replaced.
+    queue.lease_path(key).unlink()
     queue.write_lease(
         key, owner="horizon-fixture", claim_snapshot=item,
         progress_observation={
@@ -519,3 +527,168 @@ def test_a_newcomer_the_commitment_refuses_evicts_nothing(
     terms = _refused(events, newcomer.key)
     assert terms["evictable_gib"] == 3 * PHASE_GIB
     assert terms["footprint_gib"] == 10 * PHASE_GIB
+
+
+# ---------------------------------------------------------- the live numbers
+#
+# R12 at 22:30:26Z, as ``test_r12_and_the_capture_replay_under_the_refill_
+# horizon`` builds it, on the 530 GiB the stage had for windows.  What R12
+# commits, by ``_commitment_census``: the 264 GiB it holds inside its horizon
+# and its advance (``chain-043`` to ``chain-032``), and its two queued rows past
+# the horizon (``chain-021``, ``chain-018``, 44 GiB) -- 308 GiB.  The twelve
+# landed ranges past the horizon (264 GiB) are evictable.  Its footprint at
+# its measured 20.7 MB/s is the eleven ranges inside the horizon, 242 GiB, and
+# it holds more than that already, so it has no growth.  A newcomer is priced
+# at the stage's announced 413 MB/s fill supply, with a 90 s report latency
+# (30 s heartbeat and the 60 s default cycle).
+
+#: What R12 commits at 22:30Z, by the arithmetic above.
+R12_COMMITTED = 264 + 44
+#: An R13 shaped like R12, not yet claimed: 100 GiB of host read-ahead (its
+#: GPU budget is unknown before a claim), landing at R12's sealed 144 MB/s.
+R13_FOOTPRINT = 242
+CAPTURE_FOOTPRINT = 20
+#: A Stage-B quantum: a 3 GiB head and three 22 GiB layer ranges, 28 GiB of
+#: host read-ahead.  Its whole plan fits inside its horizon.
+QUANTUM_FOOTPRINT = 3 + 3 * 22
+
+
+def _live_tiers(stage: Path) -> dict[str, dict[str, object]]:
+    """The stage as announced on 2026-09-22, with its 413 MB/s fill supply."""
+
+    return {TIER: {**replay._tier_record(stage, gib=replay.CAPACITY),
+                   "tokens": {storage_tiers.FILL_KIND:
+                              replay.DATA["tier"]["fill_supply_mb_s"]}}}
+
+
+def _live_cycle(queue: pool.PoolQueue, stage: Path) -> None:
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kwargs: _live_tiers(stage))
+
+
+def _live_r12(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
+    queue, stage = _fixture_queue(tmp_path, replay.CAPACITY)
+    replay._r12(queue, stage, time.time() - replay.SAMPLE_UNIX)
+    return queue, stage
+
+
+def _lead_published(queue: pool.PoolQueue, label: str, lead: str) -> bool:
+    mover = replay._mover(label, lead)
+    return (queue.item_path(pool.READY, mover).exists()
+            or bool(queue.tier_ledger(TIER).holder_tokens(mover)))
+
+
+def test_the_capture_beside_r12_passes_the_commitment(tmp_path: Path) -> None:
+    """22:30Z, the capture not yet admitted: #907 does not stand in its way.
+
+    The capture's whole plan is 20 GiB and fits its horizon, so that is its
+    footprint: 308 + 20 = 328 of 530.  The joint-fit gate still refuses it
+    for now -- 528 held and 44 queued leave 2 GiB beside its 3 + 1 GiB
+    minimum -- and the commitment says eviction can admit it, so the relief
+    is asked as it was before the fix.  The ranges it gives back are past
+    R12's horizon; nothing inside it moves, and the capture's lead publishes.
+    """
+
+    queue, stage = _live_r12(tmp_path)
+    replay._capture(queue)
+
+    events = tier_loop.residency_window(queue, tiers=_live_tiers(stage))
+
+    gate = _gate(events, replay.CAPTURE)
+    assert gate is not None and gate["reason"] == window_credit.REASON_STALL, gate
+    terms = gate["commitment"]
+    assert terms["committed_gib"] == R12_COMMITTED
+    assert terms["footprint_gib"] == CAPTURE_FOOTPRINT
+    assert terms["consumption_basis"] == "fill-supply"
+    assert (tier_loop.window_pressure(queue, tiers=_live_tiers(stage))
+            .get(TIER) or 0) > 0
+
+    _live_cycle(queue, stage)
+    _live_cycle(queue, stage)
+
+    assert _lead_published(queue, "capture", "head")
+    held = replay._r12_held(queue)
+    assert all(held[name] for name in replay.INSIDE + [replay.ADVANCE]), held
+    assert sum(held.values()) < 528
+    assert_ledger_matches_the_stage(queue)
+
+
+def test_an_r13_shaped_newcomer_waits_for_r12s_footprint(
+        tmp_path: Path) -> None:
+    """22:30Z with R13 queued: refused on the commitment, and nothing evicted.
+
+    308 + 242 = 550 > 530.  Before the fix the joint-fit gate's shortfall
+    (528 + 44 + 22 + 22 - 530 = 86) gave back R12's farthest ranges for
+    R13's lead, and the two windows then wanted 550 GiB of 530 between them:
+    with every range past R12's horizon gone, each range inside one horizon
+    waits on the other consumer's reading.  After it, R13 waits for room
+    that stays free, and R12 keeps every range it holds.
+    """
+
+    queue, stage = _live_r12(tmp_path)
+    r13, manifest = _hexkey("r13consumer"), _hexkey("r13manifest")
+    r12 = replay.DATA["r12"]
+    plan = replay._plan(queue, r13, label="r13", manifest=manifest,
+                        phases=r12["phases"], fill=r12["sealed_fill_mb_s"])
+    replay._consumer(queue, r13, plan, manifest=manifest,
+                     mem_gb=r12["resources"]["mem_gb"])
+
+    events = tier_loop.residency_window(queue, tiers=_live_tiers(stage))
+
+    terms = _refused(events, r13)
+    assert terms["capacity_gib"] == replay.CAPACITY
+    assert terms["committed_gib"] == R12_COMMITTED
+    assert terms["footprint_gib"] == R13_FOOTPRINT
+    assert terms["evictable_gib"] == 264
+    assert tier_loop.window_pressure(queue, tiers=_live_tiers(stage)).get(TIER) is None
+
+    _live_cycle(queue, stage)
+
+    assert not _lead_published(queue, "r13", str(plan["phases"][0]["name"]))  # type: ignore[index]
+    assert sum(replay._r12_held(queue).values()) == 528
+    assert_ledger_matches_the_stage(queue)
+
+
+def test_three_stage_b_quanta_fit_beside_r12_and_a_fourth_waits(
+        tmp_path: Path, monkeypatch) -> None:
+    """R12 after the relief gave back its twelve ranges past the horizon.
+
+    It holds 264 GiB, has 44 queued, and commits 308.  Four Stage-B quanta
+    arrive, each with a 69 GiB footprint.  The joint-fit gate admits all
+    four on their minimums (264 + 44 + 4 x (3 + 22) = 408 of 530), and
+    before the fix all four leads published: 308 + 4 x 69 = 584 GiB of
+    promises on 530.  After it, three are admitted (308 + 3 x 69 = 515) and
+    the fourth waits for one of them.
+    """
+
+    monkeypatch.setitem(replay.DATA["r12"], "landed", [
+        entry for entry in replay.DATA["r12"]["landed"]
+        if entry["phase"] not in replay.PAST])
+    queue, stage = _live_r12(tmp_path)
+    assert sum(queue.tier_ledger(TIER).holder_tokens(key).get("stage_gib", 0)
+               for key in queue.tier_ledger(TIER).held_keys()) == 264
+    quanta = []
+    for n in range(4):
+        label = f"quantum{n}"
+        key, manifest = _hexkey(f"{label}consumer"), _hexkey(f"{label}manifest")
+        phases = [{"name": "head", "start_bytes": 0, "end_bytes": 3 * GIB,
+                   "stage_gib": 3}] + [
+            {"name": f"layer-{i}", "start_bytes": (3 + 22 * i) * GIB,
+             "end_bytes": (3 + 22 * (i + 1)) * GIB, "stage_gib": 22}
+            for i in range(3)]
+        plan = replay._plan(queue, key, label=label, manifest=manifest,
+                            phases=phases, fill=144)
+        replay._consumer(queue, key, plan, manifest=manifest, mem_gb=28)
+        quanta.append((label, key))
+
+    events = tier_loop.residency_window(queue, tiers=_live_tiers(stage))
+
+    published = [key for label, key in quanta if _lead_published(queue, label, "head")]
+    assert len(published) == 3, events
+    (waiting,) = [key for _label, key in quanta if key not in published]
+    terms = _refused(events, waiting)
+    assert terms["footprint_gib"] == QUANTUM_FOOTPRINT
+    assert terms["committed_gib"] == R12_COMMITTED + 3 * QUANTUM_FOOTPRINT
+    assert terms["committed_gib"] + terms["growth_gib"] > replay.CAPACITY
+

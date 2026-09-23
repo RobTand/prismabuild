@@ -558,10 +558,15 @@ def test_an_unfittable_newcomer_adds_no_admission_pressure(
 
     A live reader's protected bytes sit beside the orphan, so even taking
     every orphan back leaves the joint gate refusing (2 live + 4 window
-    against 5).  The admission probe must contribute NOTHING beyond the
-    ordinary next-phase term -- evicting for it would empty room nobody
-    can use -- and the live reader's bytes and tokens survive the cycle
-    regardless.
+    against 5).  The admission probe must contribute nothing -- evicting
+    for it would empty room nobody can use -- and the live reader's bytes
+    and tokens survive the cycle regardless.
+
+    Since #907 the newcomer's lead asks for nothing either.  The commitment
+    refuses it (the reader's 2 GiB beside its 4 GiB footprint, against 5),
+    so its window will not publish the lead this cycle, and the 2 GiB the
+    ordinary next-phase term used to ask for evicted the orphan for a lead
+    that stayed unpublished.  The orphan stays resident.
     """
 
     live_files = _stage_range(queue, mover=_hexkey("firstmover0"),
@@ -577,11 +582,11 @@ def test_an_unfittable_newcomer_adds_no_admission_pressure(
     _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
     assert queue.tier_ledger(TIER).available()["stage_gib"] == 1
 
-    # The probe itself, on the actual function: only the ordinary
-    # next-phase term (one phase's GiB), never free+shortfall (1+3=4).
+    # The probe itself, on the actual function: never free+shortfall
+    # (1+3=4), and since #907 not the lead's own GiB either.
     pressure = tier_loop.window_pressure(
         queue, tiers={TIER: _tier_record(stage)})
-    assert pressure.get(TIER) == PHASE_GIB, pressure
+    assert pressure.get(TIER) is None, pressure
 
     _cycle(queue, stage)
 
