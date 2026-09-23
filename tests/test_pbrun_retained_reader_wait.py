@@ -147,6 +147,35 @@ def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
         readers.cleanup()
 
 
+def test_a_long_wait_on_a_retained_reader_is_not_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """While the reader stays in the kernel, the wait says so at its interval."""
+
+    queue = Queue(tmp_path / "queue")
+    record = queue.item_path("done", KEY)
+    os.mkfifo(record)
+
+    def land():
+        record.unlink()
+        record.write_text(json.dumps(_ending()), encoding="utf-8")
+
+    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.3)
+    readers = Readers(monkeypatch)
+    _kernel_holds_the_reader_until(
+        monkeypatch, release_at=time.monotonic() + 1.5, on_release=land)
+    try:
+        assert pbrun.await_outcome(queue, KEY, wait_s=60) == 0
+        err = capsys.readouterr().err
+        assert "its reader is still retained after" in err
+        assert f'"pid": {readers.forked[0]}' in err
+        assert readers.peak == 1
+    finally:
+        readers.cleanup()
+
+
 def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

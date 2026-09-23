@@ -2883,7 +2883,8 @@ def _bounded_pool_read(section: str, read, *, budget_s: float,
     raise OutcomeReadUnavailable(f"{section} failed: {kind}: {message}")
 
 
-def _await_retained_readers(retained: list[dict], deadline: float) -> list[dict]:
+def _await_retained_readers(retained: list[dict], deadline: float, *,
+                            on_wait=None) -> list[dict]:
     """Reap retained readers as they exit, until the deadline. Return the rest.
 
     Each one is this process's own child (``pbstatus`` forked it), so
@@ -2892,16 +2893,25 @@ def _await_retained_readers(retained: list[dict], deadline: float) -> list[dict]
     what keeps a wait to one reader at a time (#1033). The cadence starts at
     the reap grace ``pbstatus`` already gave the reader and doubles up to the
     wait's own poll interval; the only bound is the caller's deadline.
+
+    A hung mount can hold a reader for as long as the deadline allows, so the
+    wait is not silent: ``on_wait(alive, waited_s)`` runs once every
+    ``UNAVAILABLE_NOTICE_INTERVAL_S`` while a reader is still retained.
     """
 
     alive = [dict(child) for child in retained]
     delay = pbstatus.KILL_GRACE_S
+    started = last_notice = time.monotonic()
     while True:
         alive = [child for child in alive
                  if not pbstatus._reap_within(int(child["pid"]), 0)]
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        remaining = deadline - now
         if not alive or remaining <= 0:
             return alive
+        if on_wait is not None and now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
+            last_notice = now
+            on_wait(alive, now - started)
         time.sleep(min(delay, remaining))
         delay = min(delay * 2, POLL_S)
 
@@ -3431,7 +3441,16 @@ def await_outcome(
                 if wait_s <= 0:
                     raise
                 unavailable, unavailable_count = exc, unavailable_count + 1
-                still = _await_retained_readers(exc.retained, deadline)
+
+                def waiting(alive, waited_s):
+                    print(f"pbrun: pool outcome for {key[:12]} not observed yet: "
+                          f"its reader is still retained after {waited_s:.0f}s "
+                          f"(retained reader={json.dumps(alive, sort_keys=True)}); "
+                          "waiting for it to exit before reading again, inside "
+                          "--wait-s", file=sys.stderr, flush=True)
+
+                still = _await_retained_readers(exc.retained, deadline,
+                                                on_wait=waiting)
                 if still:
                     # The deadline came before the reader left the kernel.
                     print(f"pbrun: unavailable pool outcome for {key[:12]} on "
