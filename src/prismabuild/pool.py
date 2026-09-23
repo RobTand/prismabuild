@@ -333,7 +333,127 @@ STARVATION_FLOOR = 3
 #: it in its band.  It loses the veto, not its place.  Fifteen minutes is longer than
 #: any transient this pool produces (the lease timeout is five) and far shorter
 #: than the multi-hour actions that turn the guard pathological.
+#:
+#: Since #924 the line is drawn per *holder*, not per waiting item: a holder
+#: that is younger than this, or whose requested timeout ends inside it, is a
+#: transient hold worth withholding for, and one older than this with no
+#: declared end inside it is the multi-hour hold that must not keep the box
+#: shut.  The item's own first-denial clock still governs holders the pool
+#: cannot read a claim for (see :meth:`PoolQueue.holder_bound`).
 WITHHOLD_CEILING_S = 900.0
+
+#: Adaptive refusals that draining this box's own holders resolves (#924),
+#: by what the item needs from the drain.
+#:
+#: *Exclusive*: the item needs the box empty of other holders.  A measurement
+#: needs a quiet host and an idle device, so it is refused while anything else
+#: runs, and a stream of small admissions behind it keeps the box occupied for
+#: as long as the stream lasts.  The GPU refusals count only for a
+#: measurement: for any other item they name GPU holders alone, which leave
+#: whether or not CPU-only work is withheld, so withholding would idle the
+#: CPUs for nothing.  What such an item then needs from CPU-only work is its
+#: CPU and memory, and that is the GPU-first token verdict's to keep.
+DRAIN_EXCLUSIVE_CPU = frozenset({
+    "measurement_host_not_idle", "measurement_holder", "unbounded_cpu_not_exclusive",
+})
+DRAIN_EXCLUSIVE_GPU = frozenset({
+    "exclusive_holder", "measurement_device_not_idle", "host_or_device_congested",
+    "sharing_probe_not_authorized", "gpu_memory_budget",
+})
+#: *Tokens*: under adaptive admission a CPU token shortage never reaches the
+#: ledger -- ``available < declared`` routes it through borrowing, so it is
+#: refused as one of these before ``begin_acquire`` runs.  They are a token
+#: shortage in the controller's words only when the box's free CPU tokens do
+#: not cover the demand; a refusal about *usage* with tokens free is not
+#: something draining is known to repair.
+DRAIN_TOKENS_CPU = frozenset({
+    "borrow_evidence_unavailable", "pressure_override_no_borrow", "projected_cpu_cost",
+})
+
+#: Passes-sidecar fields the withhold verdict keeps (#924): the last time the
+#: item was refused with one of the box's own holders in its way; the last
+#: time the box was busy with none of them there, or with processes the pool
+#: does not own; and the current withholding episode's start and, once it
+#: expired, its end (see :meth:`PoolQueue._withhold_verdict`).
+DRAIN_NOTE_FIELDS = ("blocked_unix", "foreign_unix", "epoch_unix", "expired_unix")
+
+
+def _adaptive_refusal_drains(
+    source: str | None, decision: Mapping[str, object] | None, *,
+    demand: Mapping[str, int], measurement: bool, cpu_count: int | None,
+) -> tuple[str | None, bool]:
+    """Classify one adaptive refusal for the withhold verdict (#924).
+
+    Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"`` or
+    ``None`` (draining does not resolve it, and the item is overtaken exactly
+    as before), and ``foreign`` is true when the refusal's own evidence names
+    processes the pool does not own -- draining the pool's holders cannot
+    idle a device a vLLM serve is using.
+    """
+
+    reason = decision.get("reason") if isinstance(decision, Mapping) else None
+    if source == "adaptive_gpu_refused":
+        foreign = decision.get("foreign_processes") if isinstance(decision, Mapping) else None
+        if foreign:
+            return None, True
+        if reason == "host_or_device_congested" and decision.get("limited") is True:
+            # Thermal, power-brake and slowdown limiters are the device's own
+            # state; no holder leaving turns them off.
+            return None, False
+        return ("exclusive" if measurement and reason in DRAIN_EXCLUSIVE_GPU
+                else None), False
+    if source != "adaptive_cpu_refused":
+        return None, False
+    if reason in DRAIN_EXCLUSIVE_CPU:
+        return "exclusive", False
+    declared = int(demand.get("cpu", 0) or 0)
+    if reason == "host_pressure" and (measurement or not declared
+                                      or (cpu_count is not None and declared == cpu_count)):
+        # The branch that is closed to the per-CPU override
+        # (``adaptive_cpu.decision``): this item needs the host quiet, which
+        # is an exclusive need, not a CPU count.
+        return "exclusive", False
+    if reason in DRAIN_TOKENS_CPU:
+        return "tokens", False
+    return None, False
+
+
+def _starved_suffix(verdict: Mapping[str, object]) -> str:
+    """The denial suffix of an eligible item that is not withholding (#924).
+
+    ``_past_ceiling`` keeps its pre-#924 meaning -- the item's own clock ran
+    out -- and now also covers a veto that expired while work ahead of it kept
+    refilling the box.  ``_starved`` is every holder or load that draining
+    will not clear soon.  ``pbstatus --starvation`` lists both.
+    """
+
+    return ("_past_ceiling" if verdict.get("why") in ("unknown_past_ceiling",
+                                                     "refilled_past_ceiling")
+            else "_starved")
+
+
+def _gpu_sample_for(
+    gpu_controller: "gpu_admission.Controller | None", demand: Mapping[str, int],
+) -> Mapping[str, object] | None:
+    """The GPU broker sample a verdict reads, or ``None`` where none applies.
+
+    Only on a box that samples its GPU and only for an item that needs one.
+    The controller's cached sample is the one this pass decided on; when the
+    CPU refused first it has none, and the controller's ``sample`` reads the
+    broker's read-only snapshot -- never ``decision``, which writes probe
+    state.
+    """
+
+    if gpu_controller is None or not demand.get("gpu"):
+        return None
+    sample = getattr(gpu_controller, "_sample", None)
+    if sample is None:
+        try:
+            sample = gpu_controller.sample()
+        except (OSError, ValueError):
+            sample = None
+    return sample if isinstance(sample, Mapping) else {}
+
 
 #: How much of an unparseable record is kept inline with the evidence.  Enough
 #: to recognise a writer's handwriting, little enough that a runaway producer
@@ -1078,6 +1198,40 @@ def _requested_execution_timeout(item: Mapping[str, object]) -> float | None:
     """
 
     return _execution_timeout(item, None)
+
+
+def _declared_run_bound(item: Mapping[str, object]) -> tuple[str, float | None]:
+    """What a claimed action declared about how long it may run.
+
+    Returns ``(governed_by, requested_timeout_s)``, read once from the same
+    sealed request ``_execution_timeout`` and ``_sealed_progress_policy``
+    read.  ``governed_by`` is ``"progress"`` when the request seals a progress
+    policy and ``"deadline"`` otherwise -- including a legacy item with no
+    request, which the worker runs under its own ceiling.  A progress-governed
+    action with no requested timeout has no total bound at all: the worker
+    re-aims its ceiling at each phase's quiet instead (#480).  Anything the
+    request refuses raises ``PoolContractError`` exactly as it does there.
+    """
+
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        return "deadline", None
+    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    try:
+        policy = pb.action_progress_policy(action)
+    except pb.ActionContractError as exc:
+        raise PoolContractError(str(exc)) from exc
+    requested = action["params"].get("execution_timeout_s")
+    if requested is not None and (type(requested) not in (int, float)
+                                  or not math.isfinite(requested) or requested <= 0):
+        raise PoolContractError("execution_timeout_s must be a positive finite number")
+    return ("progress" if policy is not None else "deadline",
+            None if requested is None else float(requested))
 
 
 @contextmanager
@@ -3157,6 +3311,9 @@ class PoolQueue:
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
         self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
+        # Drain observations waiting for the next ``record_pass`` of their key
+        # (#924); never read as admission authority on their own.
+        self._drain_notes: dict[str, dict[str, float | None]] = {}
         self._admission_busy_logged_at: float | None = None
         # Queue directories are created once per process (see
         # ``ensure_layout``): nothing in the pool ever removes them.
@@ -5036,11 +5193,19 @@ class PoolQueue:
         if not isinstance(first, (int, float)):
             first = now
         count = self.passes(action_key) + 1
-        _write_json_atomic(
-            self.passes_path(action_key),
-            {"action_key": action_key, "passes": count,
-             "first_unix": float(first), "updated_unix": now},
-        )
+        record: dict[str, object] = {"action_key": action_key, "passes": count,
+                                     "first_unix": float(first), "updated_unix": now}
+        # The drain observations the withhold verdict keeps (#924) ride
+        # this same write rather than a second one: ``_drain_notes`` is set by
+        # the claim pass just before it counts the denial, and a note that is
+        # not refreshed is carried forward as it was.
+        notes = getattr(self, "_drain_notes", {}).pop(action_key, {})
+        for field in DRAIN_NOTE_FIELDS:
+            # A note of ``None`` clears the field; no note carries it forward.
+            value = notes[field] if field in notes else prior.get(field)
+            if type(value) in (int, float) and math.isfinite(value):
+                record[field] = float(value)
+        _write_json_atomic(self.passes_path(action_key), record)
         return count
 
     @staticmethod
@@ -5127,6 +5292,242 @@ class PoolQueue:
         if not isinstance(first, (int, float)):
             return 0.0
         return max(0.0, _now() - float(first))
+
+    def holder_bound(self, action_key: str, *, now: float | None = None) -> dict[str, object]:
+        """Whether draining this box would release ``action_key`` soon.
+
+        The answer is read from what the holder declared, never guessed:
+
+        * ``unbounded`` -- its sealed request is progress-governed and asks for
+          no total timeout, so nothing bounds its run (the GLM campaign
+          holders).  Withholding a box for it is waiting on a day.
+        * ``transient`` -- it runs under a deadline and either is still inside
+          ``WITHHOLD_CEILING_S`` of its claim, or its requested timeout ends
+          inside that ceiling from now.  ``WITHHOLD_CEILING_S`` is the pool's
+          own line between a transient hold and a multi-hour one.
+        * ``long`` -- bounded, but already older than that line with no
+          declared end inside it: the 2026-09-04 multi-hour holder.
+        * ``unknown`` -- no readable claim names it (a raw ledger holder, or a
+          record this read could not use).  The caller falls back to the
+          item's own withhold clock for these, which is the behavior every
+          holder had before #924.
+
+        Age only grows, so a ``transient`` holder becomes ``long`` by itself
+        and a veto that rests on it expires with no clock of the item's own.
+        The one way back is real: a holder whose requested timeout now ends
+        inside the ceiling is going to release soon, whatever its age.
+        """
+
+        moment = _now() if now is None else float(now)
+        answer: dict[str, object] = {"action_key": action_key, "bound": "unknown"}
+        try:
+            claim = _read_json(self.item_path(CLAIMED, action_key))
+        except (OSError, pb.PrismaBuildError, ValueError):
+            return answer
+        claimed_unix = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
+        if (not isinstance(claim, Mapping) or claim.get("action_key") != action_key
+                or type(claimed_unix) not in (int, float) or not math.isfinite(claimed_unix)):
+            return answer
+        try:
+            governed_by, requested = _declared_run_bound(claim)
+        except (OSError, pb.PrismaBuildError, ValueError, TypeError, KeyError):
+            # ``PrismaBuildError`` covers the CAS read's own refusals -- an
+            # unavailable or tampered request -- as well as the contract's.
+            return answer
+        age = max(0.0, moment - float(claimed_unix))
+        answer.update(age_s=age, claimed_unix=float(claimed_unix), governed_by=governed_by,
+                      requested_timeout_s=requested)
+        if governed_by == "progress" and requested is None:
+            answer["bound"] = "unbounded"
+            return answer
+        ends_soon = (requested is not None
+                     and float(claimed_unix) + requested - moment <= WITHHOLD_CEILING_S)
+        answer["bound"] = ("transient" if age <= WITHHOLD_CEILING_S or ends_soon
+                           else "long")
+        return answer
+
+    def _withhold_verdict(
+        self, key: str, *, ledger: "ResourceLedger", need: Mapping[str, int],
+        mode: str, adaptive: bool = False, foreign: bool = False,
+        gpu_sample: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """May this refused item hold its box shut while the box drains (#924)?
+
+        Called after host admission is released and before the denial is
+        counted.  ``mode`` says what the item needs from a drain: ``"tokens"``
+        (the reservation ``need``, per kind) or ``"exclusive"`` (no other
+        holder at all).  The verdict never takes or returns tokens; it is
+        fairness, not capacity authority, and a read it cannot make leaves the
+        item to be overtaken, as every adaptive refusal was before #924.
+
+        **Eligible** is the old floor -- ``STARVATION_FLOOR`` denials -- or, for
+        an item that needs a GPU on a box whose GPU is free, the first denial:
+        an idle GPU behind CPU-only work is the costliest waste the pool has,
+        and every admission behind the item takes CPU or memory it needs.
+        "Free" is the token *and*, where the box samples its GPU
+        (``gpu_sample``), a valid sample naming no foreign process: a vLLM
+        serve outside the pool holds no token and still owns the device.
+
+        An eligible item **withholds** only while the holders in its way drain
+        soon (:meth:`holder_bound`): transient holders cover every short kind,
+        or, for an exclusive need, no holder in the way is anything but
+        transient.  Holders with no readable claim count as draining only while
+        the item's own first-denial clock is inside ``WITHHOLD_CEILING_S``,
+        which keeps every pre-#924 behavior for them.  Otherwise the item
+        keeps its passes and its place and is reported ``..._starved``.
+
+        Three things bound a veto that rests on transient holders:
+
+        * **Age.**  Holders only age, so a veto on a fixed set of holders ends
+          within ``WITHHOLD_CEILING_S`` of the youngest one's claim.
+        * **Refill.**  While the item withholds, only work ahead of it in the
+          ready order is admitted.  A holder claimed during the veto is such
+          work refilling the box, and a veto that is being refilled cannot
+          drain: past ``WITHHOLD_CEILING_S`` of the episode (``epoch_unix``)
+          the item stops withholding (``expired_unix``) until the holders
+          claimed during that veto have gone.
+        * **Foreign load.**  An exclusive need with no holder in the way is
+          the box's own load: the tail of a holder that just left, which the
+          next CPU sample no longer holds, or work the pool does not own.  It
+          withholds only inside one sample window (``adaptive_cpu``'s
+          ``MAX_INTERVAL_S`` plus ``MAX_SAMPLE_AGE_S``) of the last refusal
+          that had a holder in the way; past that, and whenever a refusal
+          names foreign processes, the item stops withholding for
+          ``WITHHOLD_CEILING_S``.  Draining for load the pool does not own
+          would only cut the box to one admission per drain.
+        """
+
+        now = _now()
+        prior = _read_json(self.passes_path(key)) or {}
+        passes = prior.get("passes", 0)
+        passes = int(passes) if type(passes) in (int, float) else 0
+        first = prior.get("first_unix")
+        age = max(0.0, now - float(first)) if type(first) in (int, float) else 0.0
+
+        def stamp(field: str) -> float | None:
+            value = prior.get(field)
+            return float(value) if type(value) in (int, float) and math.isfinite(value) else None
+
+        # ``None`` in ``notes`` clears the field; an absent field is carried.
+        notes: dict[str, float | None] = {}
+        verdict: dict[str, object] = {"eligible": False, "withhold": False, "why": None,
+                                      "mode": mode, "withhold_age_s": age}
+        try:
+            available = ledger.available()
+            gpu_need = int(need.get("gpu", 0) or 0)
+            gpu_clear = None
+            if gpu_need and gpu_sample is not None:
+                processes = gpu_sample.get("foreign_processes")
+                sampled = gpu_sample.get("sampled_unix")
+                gpu_clear = (isinstance(processes, list) and not processes
+                             and type(sampled) in (int, float)
+                             and 0 <= now - sampled <= gpu_admission.MAX_SAMPLE_AGE_S)
+                if isinstance(processes, list) and processes:
+                    foreign = True
+            gpu_first = (bool(gpu_need) and available.get("gpu", 0) >= gpu_need
+                         and gpu_clear is not False)
+            short: dict[str, int] = {}
+            if mode == "tokens":
+                short = {kind: int(amount) - available.get(kind, 0)
+                         for kind, amount in need.items()
+                         if int(amount) > available.get(kind, 0)}
+                verdict["short"] = dict(short)
+                if adaptive and not short:
+                    # A usage refusal with the tokens free: the controller's
+                    # own evidence, not an occupancy draining is known to fix.
+                    verdict["why"] = "not_a_token_shortage"
+                    return verdict
+            eligible = passes + 1 >= STARVATION_FLOOR or gpu_first
+            verdict.update(eligible=eligible, gpu_first=gpu_first)
+            if foreign:
+                notes["foreign_unix"] = now
+            if not eligible:
+                return verdict
+            foreign_unix = now if foreign else stamp("foreign_unix")
+            if foreign_unix is not None and now - foreign_unix <= WITHHOLD_CEILING_S:
+                notes.update(epoch_unix=None, expired_unix=None)
+                verdict.update(why="foreign_load", foreign_age_s=now - foreign_unix)
+                return verdict
+            unknown_drains = age <= WITHHOLD_CEILING_S
+
+            def drains(bound: Mapping[str, object]) -> bool:
+                return (bound["bound"] == "transient"
+                        or (bound["bound"] == "unknown" and unknown_drains))
+
+            in_way: list[dict[str, object]] = []
+            draining: list[Mapping[str, object]] = []
+            covered = {kind: 0 for kind in short}
+            for holder in ledger.held_keys():
+                counts: dict[str, int] = {}
+                if mode == "tokens":
+                    tokens = ledger.holder_tokens(holder)
+                    counts = {kind: tokens.get(kind, 0) for kind in short if tokens.get(kind, 0)}
+                    if not counts:
+                        continue
+                bound = self.holder_bound(holder, now=now)
+                if drains(bound):
+                    draining.append(bound)
+                    for kind, count in counts.items():
+                        covered[kind] += count
+                else:
+                    in_way.append({"action_key": holder[:12], **{
+                        field: bound.get(field) for field in (
+                            "bound", "age_s", "governed_by", "requested_timeout_s")}})
+            verdict["holders"] = in_way
+            if draining or in_way:
+                notes["blocked_unix"] = now
+            if not draining and not in_way:
+                if mode == "exclusive":
+                    blocked = stamp("blocked_unix")
+                    window = cpu_admission.MAX_INTERVAL_S + cpu_admission.MAX_SAMPLE_AGE_S
+                    if blocked is not None and now - blocked <= window:
+                        verdict.update(withhold=True, why="holder_tail")
+                        return verdict
+                    notes.update(foreign_unix=now, epoch_unix=None, expired_unix=None)
+                    verdict["why"] = "foreign_load"
+                    return verdict
+                # Short, yet no action holds the short kind: the tokens are
+                # between an acquisition and its rename.  That resolves inside
+                # a pass, so the item's own clock bounds it.
+                verdict.update(withhold=unknown_drains,
+                               why="in_flight" if unknown_drains else "unknown_past_ceiling")
+                return verdict
+            fits = (not in_way if mode == "exclusive" else
+                    all(covered[kind] >= amount for kind, amount in short.items()))
+            if not fits:
+                notes.update(epoch_unix=None, expired_unix=None)
+                verdict["why"] = (
+                    "holders_cannot_cover" if not in_way else
+                    "unknown_past_ceiling"
+                    if all(entry["bound"] == "unknown" for entry in in_way)
+                    else "holder_does_not_drain_soon")
+                return verdict
+            epoch, expired = stamp("epoch_unix"), stamp("expired_unix")
+            if epoch is None:
+                epoch = now
+            refills = [bound for bound in draining
+                       if type(bound.get("claimed_unix")) in (int, float)
+                       and epoch < float(bound["claimed_unix"])
+                       and (expired is None or float(bound["claimed_unix"]) < expired)]
+            if expired is not None and not refills:
+                # The work that refilled the last veto has gone: a new episode.
+                epoch, expired = now, None
+            elif expired is None and refills and now - epoch > WITHHOLD_CEILING_S:
+                expired = now
+            notes.update(epoch_unix=epoch, expired_unix=expired)
+            verdict.update(episode_age_s=now - epoch,
+                           refills=[str(bound["action_key"])[:12] for bound in refills])
+            if expired is not None:
+                verdict["why"] = "refilled_past_ceiling"
+                return verdict
+            verdict.update(withhold=True, why="drains_soon")
+            return verdict
+        except (OSError, pb.PrismaBuildError, ValueError, TypeError) as exc:
+            verdict.update(withhold=False, why="verdict_unreadable", error=str(exc))
+            return verdict
+        finally:
+            if notes:
+                self.__dict__.setdefault("_drain_notes", {})[key] = notes
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -12023,14 +12424,39 @@ class PoolQueue:
                             # Aging is shared diagnostic/fairness bookkeeping, not
                             # capacity authority. Keep its I/O outside host admission.
                             # The per-key transition lock still protects this item.
-                            self.record_pass(key)
                             decision = (gpu_decision
                                         if refusal_source == "adaptive_gpu_refused"
                                         else cpu_decision)
-                            self.record_denial(item, refusal_source or "adaptive_refused",
-                                               {"decision": decision or {}})
+                            mode, foreign = _adaptive_refusal_drains(
+                                refusal_source, decision, demand=demand,
+                                measurement=bool(identity and identity[1]),
+                                cpu_count=len(controller.cpus) if controller is not None else None)
+                            verdict = (self._withhold_verdict(
+                                key, ledger=ledger, need=reservation_demand,
+                                mode=mode or "exclusive", adaptive=True, foreign=foreign,
+                                gpu_sample=_gpu_sample_for(gpu_controller, demand))
+                                if mode is not None or foreign else None)
+                            self.record_pass(key)
+                            reason = refusal_source or "adaptive_refused"
+                            evidence: dict[str, object] = {"decision": decision or {}}
+                            if verdict is not None and verdict["eligible"]:
+                                # #924: an occupied-box refusal holds the box
+                                # shut while its holders drain soon, exactly as
+                                # a token shortage does, and says so when they
+                                # will not.
+                                evidence["withhold"] = verdict
+                                if verdict["withhold"]:
+                                    self.record_denial(item, f"{reason}_withholding", evidence)
+                                    return None
+                                reason = f"{reason}{_starved_suffix(verdict)}"
+                                evidence["starved"] = {"why": verdict["why"],
+                                                       "holders": verdict.get("holders")}
+                            self.record_denial(item, reason, evidence)
                             continue
                         if handle is None:
+                            verdict = self._withhold_verdict(
+                                key, ledger=ledger, need=asked, mode="tokens",
+                                gpu_sample=_gpu_sample_for(gpu_controller, demand))
                             denials = self.record_pass(key)
                             if not preempted:
                                 # Selection reacquires admission, while the separate
@@ -12040,23 +12466,31 @@ class PoolQueue:
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
                                     controller=controller) is not None
-                            withholding = denials >= STARVATION_FLOOR
+                            withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
-                            self.record_denial(item,
-                                               "reservation_unavailable_withholding" if withholding
-                                               and age <= WITHHOLD_CEILING_S else
-                                               "reservation_unavailable_past_ceiling" if withholding else
-                                               "reservation_unavailable", {
+                            evidence = {
                                 "demand": demand, "reservation_demand": reservation_demand,
                                 "token_shortage": token_shortage,
                                 "capacity_total": total, "denials": denials,
                                 "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
                                 "cpu_decision": cpu_decision,
                                 "gpu_decision": gpu_decision,
-                            })
-                            if withholding and age <= WITHHOLD_CEILING_S:
+                                "withhold": verdict,
+                            }
+                            if withholding and verdict["withhold"]:
+                                self.record_denial(
+                                    item, "reservation_unavailable_withholding", evidence)
                                 return None
-                            # Past the ceiling, retain aging but let smaller work run.
+                            if withholding:
+                                # Keep its passes, and so its place, but let the
+                                # box run what fits while the holders in its way
+                                # do not drain soon (#924, 2026-09-04).
+                                evidence["starved"] = {"why": verdict["why"],
+                                                       "holders": verdict.get("holders")}
+                            self.record_denial(
+                                item, "reservation_unavailable" + (
+                                    _starved_suffix(verdict) if withholding else ""),
+                                evidence)
                             continue
                     allocation = (ledger.cpu_allocation(handle, cpu_tiers)
                                   if ledger is not None and handle is not None and cpu_tiers is not None else None)

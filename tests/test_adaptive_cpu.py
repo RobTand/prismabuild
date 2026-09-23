@@ -361,6 +361,101 @@ def test_proven_idle_preferred_is_borrowed_before_free_fallback(tmp_path, monkey
     assert queue.ledger().available()['cpu'] == 1  # SMT remains unused
 
 
+def test_a_spent_sample_admits_on_free_tokens_instead_of_refusing(tmp_path, monkeypatch):
+    """A preferred borrow is a preference; free tokens that cover the demand win.
+
+    Sparky, 2026-09-23 (#924): CPU-only actions were refused
+    ``borrow_evidence_unavailable`` for about 30 minutes with fresh evidence and
+    ten free CPU tokens against a demand of one or two.  The only failing
+    condition was that the sample's single borrow had already been spent, so
+    each item waited one sample interval before it ran on tokens it could have
+    taken at once.  The freshness rule forbids a second *borrow* against one
+    sample; taking free tokens is not a borrow.
+    """
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    clock = [100.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': .1, 'psi_some': 0.})
+    tiers = {'preferred': [0], 'fallback': [1]}
+    def claim():
+        return queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
+                           adaptive_cpu=True)
+    key = 'a' * 64
+    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    assert claim()['cpu_allocation'] == {'preferred': [0], 'fallback': []}
+    queue.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    controller = adaptive_cpu.Controller(queue.ledger(), tiers)
+    for elapsed in (1, 2):
+        clock[0] = 100 + elapsed
+        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
+            'action_key': key, 'complete': True, 'sampled_unix': clock[0],
+            'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
+        with controller.locked():
+            decision = controller.decision(
+                {'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')}, {'cpu': 1})
+            controller._host_sample = None
+    # The holder lends its preferred CPU, so this sample would authorize a
+    # borrow ...
+    assert decision['borrowing'] and decision['preferred_borrow'] == 1
+    # ... had another claim not already spent it.
+    controller.write_state('last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
+    with controller.locked():
+        spent = controller.decision(
+            {'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')}, {'cpu': 1})
+    assert spent is not None, controller.last_decision
+    assert spent['borrowing'] is False and spent['preferred_borrow'] == 0
+
+    second = claim()
+    assert second is not None and second['action_key'] == 'b' * 64
+    assert second['cpu_allocation'] == {'preferred': [], 'fallback': [1]}
+    # The peer's borrow record is untouched: nothing was borrowed here.
+    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
+        'sampled_unix': clock[0], 'borrow_id': 'peer'}
+
+
+def test_a_spent_sample_still_refuses_a_borrow_the_demand_needs(tmp_path, monkeypatch):
+    """The relaxation above is bounded by free tokens, never by the borrow."""
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    clock = [100.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': .1, 'psi_some': 0.})
+    tiers = {'preferred': [0], 'fallback': [1]}
+    key = 'a' * 64
+    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 2, 'mem_gb': 1})
+    assert queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is not None
+    controller = adaptive_cpu.Controller(queue.ledger(), tiers)
+    for elapsed in (1, 2):
+        clock[0] = 100 + elapsed
+        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
+            'action_key': key, 'complete': True, 'sampled_unix': clock[0],
+            'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
+        with controller.locked():
+            controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')},
+                                {'cpu': 1})
+            controller._host_sample = None
+    controller.write_state('last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
+    with controller.locked():
+        assert controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')},
+                                   {'cpu': 1}) is None
+    assert controller.last_decision['reason'] == 'borrow_evidence_unavailable'
+    assert controller.last_decision['available_cpu'] == 0
+
+
 @pytest.mark.parametrize('measurement', [False, True])
 def test_legacy_gpu_only_holder_cannot_overlap_cpu_work_or_measurement(tmp_path, monkeypatch, measurement):
     from prismabuild import adaptive_cpu

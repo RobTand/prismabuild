@@ -1773,6 +1773,7 @@ class Session:
             "residency_plans": blob.get("residency_plans"),
             "tiers": blob.get("tiers"),
             "denial_top": blob.get("denial_top"),
+            "starved": blob.get("starved"),
             "not_observable": blob.get("not_observable"),
             "notes": blob.get("notes"),
         }
