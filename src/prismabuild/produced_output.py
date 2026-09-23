@@ -100,7 +100,7 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 import hashlib
 import json
 import os
@@ -5370,11 +5370,11 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
     ``dead`` when nothing of the owner's is running and its latest
     generation ended without this attempt succeeding: the owner's claim names
     another attempt (a retry superseded this one), or its latest terminal is
-    ``failed`` or ``withdrawn``, or it is ``done`` by another attempt.
+    ``failed`` or ``withdrawn``, or another attempt executed it.
     ``succeeded`` when it is ``done`` by this attempt; ``live`` while this
     attempt holds the claim. Everything else -- queued, moving, absent, a
-    record without the attempt's nonce, anything unreadable -- is
-    ``unknown``, and the sweep keeps the batch.
+    cache hit by another attempt, a record without the attempt's nonce,
+    anything unreadable -- is ``unknown``, and the sweep keeps the batch.
     """
 
     from prismabuild import pool as pool_mod
@@ -5396,7 +5396,12 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
         finished = _record_nonce(record)
         if record.get("status") not in ("executed", "cache_hit") or not finished:
             return "unknown"
-        return "succeeded" if finished == nonce else "dead"
+        if finished == nonce:
+            return "succeeded"
+        # A cache hit by another attempt ran nothing: it found the receipt
+        # this attempt may have published before it died, and then these
+        # batches are the producer's only output (#913).
+        return "dead" if record.get("status") == "executed" else "unknown"
     return "unknown"
 
 
@@ -5418,7 +5423,9 @@ def _fsync_directories(paths: Sequence[str]) -> None:
 
 def _retire_consumed_batch(queue, instance: Mapping[str, object],
                            template: Mapping[str, object],
-                           batch_id: str) -> dict[str, object] | None:
+                           batch_id: str, *,
+                           deferred_holds: Collection[tuple[str, str]] = ()
+                           ) -> dict[str, object] | None:
     """One retirement step for one consumed batch; the event to log, or None.
 
     Everything happens under the batch's output-prefix lock, the lock
@@ -5434,6 +5441,10 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     * With none: the batch is an orphan once its producer attempt is dead
       (`_producer_attempt_state`). Otherwise it waits, quietly, for a
       consumer.
+    * Either way, a consumer filed with ``pbrun --after`` and not yet
+      released (#913) holds it, quietly: ``deferred_holds`` is
+      `action_edges.held_producer_batches`, and a batch it names waits for
+      that consumer to be released and declared.
 
     The delete checks the output prefix first: a prefix that is not a
     directory here means the file system is not mounted on this host, and
@@ -5510,6 +5521,9 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
         elif retiring:
             return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": "unknown-retain: retiring record is corrupt"})
+        elif _held_for_deferred(instance, deferred_holds):
+            quiet()
+            return None
         else:
             checked_ref = _checked_origin_ref(ref)
             try:
@@ -5619,6 +5633,14 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
             "unlinked": unlinked, "superseded": superseded, "absent": absent}
 
 
+def _held_for_deferred(instance: Mapping[str, object],
+                       holds: Collection[tuple[str, str]]) -> bool:
+    """Whether an unreleased deferred consumer may read this batch (#913)."""
+
+    return (str(instance["owner_action_key"]),
+            str(instance["template_id"])) in holds
+
+
 def _batch_report_key(instance: Mapping[str, object], batch_id: str) -> str:
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
@@ -5666,6 +5688,10 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
     except OSError:
         return events
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    # What unreleased deferred consumers will read (#913), read once and only
+    # when some batch is due.  A queue that cannot say keeps every batch for
+    # this tick.
+    holds: set[tuple[str, str]] | None = None
     for owner in owners:
         try:
             scopes = sorted(child for child in (scopes_root / owner).iterdir()
@@ -5705,10 +5731,18 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
             if (instance_dir(queue.root, instance) != scope
                     or template_sha256(template) != instance["template_sha256"]):
                 continue
+            if holds is None:
+                from . import action_edges
+
+                try:
+                    holds = action_edges.held_producer_batches(queue)
+                except (OSError, ProducedOutputError, ValueError):
+                    return events
             for batch_id in due:
                 try:
                     event = _retire_consumed_batch(
-                        queue, instance, template, batch_id)
+                        queue, instance, template, batch_id,
+                        deferred_holds=holds)
                 except (ProducedOutputError, OSError, ValueError) as exc:
                     event = _unfiled_report(instance, batch_id, {
                         "event": ORIGIN_RETIREMENT_REFUSED_EVENT,

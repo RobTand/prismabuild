@@ -4916,6 +4916,197 @@ Limits:
   commitments cannot be read is skipped, as the other scope scans skip it:
   its batches stay on disk and charged.
 
+#### Deferred consumers: action edges (#913)
+
+A consumer can be submitted before its producer runs. `pbrun --after
+PRODUCER:TEMPLATE_ID` names a write-only template (#912) that the producer
+declares. PB holds the submission until the producer succeeds. It then builds
+the consumer's data manifest from the origin-only batches the producer
+committed, and seals and publishes the consumer.
+
+**Why the consumer is sealed at release, not at submission.** A key covers
+the action's data manifest, and a manifest entry names a path and a positive
+byte count (`core.validate_data_manifest`). A handoff's paths and sizes exist
+only after the producer commits. A consumer keyed at submission would have a
+key that does not cover the bytes it reads, and it could have no residency
+plan, because its mover ranges index into that manifest. `dagster.py`'s
+`CASDependency` has the same shape: an edge carries the upstream key and the
+digest it produced, so the downstream action is keyed after the upstream
+finishes. PB therefore keeps the frozen submission and seals it later,
+instead of adding a second kind of key.
+
+**Submission.** `--after PRODUCER:TEMPLATE_ID` is repeatable and needs the
+pull queue. PRODUCER is an action key, or the pending id of another deferred
+submission, which is how a chain names a consumer that is not sealed yet.
+`pbrun` refuses the edge when:
+
+- the producer is unknown: a key needs a readable row or terminal record,
+  and a pending id needs a readable deferred record;
+- the producer does not declare the template, or the template is not
+  write-only.
+
+`pbrun` then prepares the submission as it would any other: the checkout
+gates, the environment, the demand and the placement, which it announces and
+refuses as usual. It freezes the template without a data manifest, and
+refuses it when no release could seal it: the template's generation must be
+the published one or pass the retained-generation check below. A `pbrun` in a
+development checkout freezes its own wrapper, which is neither. The
+optional `--data-manifest` is the consumer's static part (for example, a
+model head); it is ingested and kept beside the template. The command may
+carry `{pb.data_manifest}` once, as a whole argument. At release it becomes
+the CAS path of the resolved manifest, as `decomposition.resolve_task_batch`
+does for a batch path.
+
+The frozen template, the static manifest, the edges and the publication
+options (priority, attempts, retry safety and the residency options) form a
+deferred record, filed immutably at `pb-queue/deferred/<pending_id>.json`.
+The pending id is the SHA-256 of the record's canonical JSON, so an identical
+submission finds its own record. `pbrun` prints the pending id. Without
+`--detach` it waits for the release and then for the consumer's terminal
+record, within `--wait-s` in total.
+
+**Release.** `tier_loop.cycle` calls `deferred_release.release_tick` once per
+cycle, directly after the origin retirement (#914). Only dl380g10 runs the
+tiers role, so one process releases. For each deferred record without a
+publication record, the tick:
+
+1. **Resumes a pinned release.** A record with a release record (step 4) is
+   finished as pinned. The tick does not resolve its producers again; it seals
+   the key the release record names, into the same generation, and refuses
+   with `release-key-mismatch` if the key comes out different.
+2. **Skips a superseded record.** A pending id with a supersession record is
+   never released; edges that name it follow its successor.
+3. **Resolves every edge.** Supersession records are followed first,
+   unconditionally. A pending producer is followed through its publication
+   record to its key; one not yet released holds the consumer quietly. Then
+   the key's latest generation decides:
+   - a `ready` or `claimed` row, or a claim being moved, holds quietly;
+   - `done` with status `executed` resolves to the nonce of that attempt;
+   - any other `done` (a `cache_hit`, or a record without an attempt nonce)
+     resolves to the one attempt of that key that committed an origin-only
+     batch under the template and not reclaimed (`committed_attempt`). A
+     cache hit ran nothing: its attempt found the receipt an earlier attempt
+     published, and that earlier attempt may have died before it could file
+     `done`. None, or more than one, holds;
+   - `failed`, `withdrawn`, absent or unreadable holds.
+
+   A hold other than a quiet one is reported once per change
+   (`deferred-held`). A failed producer therefore never releases its
+   consumer.
+4. **Pins the release.** It reads the resolved attempt's instance
+   `<producer>/<template_id>.<nonce>` and takes every origin-only batch that
+   attempt committed, in batch-id order, through `load_origin_batch`, which
+   rechecks each origin's recorded identity by `lstat`. It reads and hashes
+   no payload bytes. The consumer's manifest is the static entries with their
+   phases, then each batch as its own phase, with the batch refs under
+   `produced_output_batches`. The tick seals the consumer and files a
+   first-writer release record at `pb-queue/deferred-releases/<pending_id>.json`
+   with the producers, the refs, the manifest input, the key and the runtime
+   generation it sealed into. A crash after this point resumes from the
+   record, so a producer that later succeeds again, or fails, cannot give one
+   pending id two keys.
+5. **Publishes as `pbrun` does after it seals.** If the queue has no row or
+   record for the key yet, the tick publishes the CAS request, files the
+   origin-consumer declarations (#914) and publishes the row with the
+   submission's publication options. A submission that asked for
+   `--residency stage` has its movers sealed and its plan frozen under the
+   consumer's transition lock, as `pbrun` does. On a resume it first checks the generation again and
+   each pinned batch with `load_origin_batch`. If the key already has a row
+   or a terminal record, it was published before a crash kept step 6 from
+   running, and its generation is taken as it is.
+6. **Records the generation** at `deferred-releases/<pending_id>.published.json`.
+   That is what `pbrun` and chains wait on.
+
+`pbrun`'s notices during a release travel inside the release's log event,
+because the tier log is JSON lines.
+
+**Generation.** Two generations meet in a release, and the rule for each
+matches an ordinary submission's:
+
+- *The generation that seals.* The loop's own code seals. The tick releases
+  nothing, and reports `loop-runtime-is-not-published` once, unless the
+  loop's runtime root is the generation the `repo` link names. The loop
+  restarts on the published generation at its next cycle.
+- *The generation sealed into.* An action runs under the generation that
+  froze it, and a deferred consumer is frozen at `pbrun --after` time. Its
+  template's `PATH` starts with that generation's `tools` directory, and the
+  container owner, the stamp name and the checkout snapshot are fingerprinted
+  over it, so it cannot be re-frozen without the submitter's checkout. The
+  consumer is therefore sealed into its template's generation, as an ordinary
+  submission sealed just before a publish runs the older generation. When
+  that is not the loop's own generation, the wrapper must pass
+  `pbrun.verify_retained_wrapper`, the check `--as-sealed-by` makes: it sits
+  in the generation store, beside a receipt naming that generation, and
+  hashes to what the receipt recorded. If the generation is missing or does
+  not verify, the consumer is held and reported once as
+  `runtime-generation-unavailable`, naming the remedy: resubmit with
+  `--supersedes <pending_id>`. It is never sealed into another generation.
+
+A retained generation stays retained. Publication never deletes a generation
+(`tools/fleet/publish_runtime.py` `_activate` and `_activate_existing`); the only tree
+it removes is its own failed `.staging` directory, and `_remove_staging_tree`
+refuses anything else. `pb_gc` surveys the CAS, never the generation store.
+So nothing needs to count deferred records as references.
+`pbstatus --deferred` lists every unreleased consumer with the generation it
+is pinned to and `off_published` when that is not the published one, so an
+operator can supersede the ones a publish fixed something for.
+
+**Supersession.** Every publish moves every key, so a producer that failed
+is often resubmitted under a new key. `pbrun --supersedes OLD` files
+`pb-queue/supersessions/<OLD>.json`, first writer wins, naming the new
+submission. A key can be superseded only once its latest generation is
+`failed` or `withdrawn`; a pending id only while it has no release record. A
+link that would close a loop of supersessions refuses. Once filed, a
+supersession is followed unconditionally: if OLD later runs again and
+succeeds, edges still read the successor, so every consumer of "the
+producer" reads the same bytes, whenever it is released.
+
+**Consumed batches (#914).** A consumed batch has no declared consumer until
+its deferred consumer is released, and the retirement tick would delete it as
+an orphan once its producer attempt is dead, or once the consumers already
+declared have succeeded. `action_edges.held_producer_batches` names what must
+stay, as `(producer key, template id)`: the producers a pinned, unpublished
+release names, and the key each unreleased, unsuperseded edge resolves to,
+unless that key failed, was withdrawn or is absent. Every attempt's batches
+under that template stay, because which attempt a release reads is settled
+only when it is pinned. A record that fails validation can never be released
+and holds nothing; a record that exists and cannot be read keeps every
+consumed batch for that tick. Separately, a batch whose producer's `done` is
+a cache hit by another attempt is no longer an orphan: the cache hit ran
+nothing, and that batch may be the producer's only output.
+
+**Bounds.** The tick runs after its cycle's window publication, so a burst of
+releases cannot delay that cycle's windows. It starts no release after the
+cycle's deadline (`cycle_started + CYCLE_INTERVAL_S`, the cadence the #903
+horizon and the #907 commitment assume) or after
+`MAX_RELEASES_PER_CYCLE` (8) releases, which bounds how much new window work
+one burst hands the next cycle. The rest waits for the next cycle. While
+anything is unreleased, the tick logs one `deferred-release-tick` line per
+cycle with its counts and its wall time. A malformed or unreadable deferred
+record is reported once (`deferred-release-refused`) and kept for an
+operator; it never ends the loop. With nothing filed the tick lists one
+missing directory and prints nothing.
+
+Limits:
+
+- One placeholder. A consumer that needs values derived from the batches,
+  such as a handoff path or a digest, reads them from the manifest the
+  placeholder names; PB substitutes nothing else.
+- The once-per-change memory lives in the tier-loop process, so a standing
+  hold prints once more after a restart.
+- A record the tick cannot release stays filed until an operator supersedes
+  it; there is no withdrawal of a pending id.
+- `pbwait` takes keys. A detached deferred submission's key is in its
+  `.published.json` record once released.
+- A supersession filed while the tick pins the old pending id can race it;
+  then both the old consumer and the successor run.
+- The deadline is checked before every release, including the first. A tier
+  loop whose earlier work routinely takes the whole cycle interval releases
+  nothing; the `carried` count in `deferred-release-tick` is the only sign.
+- The origin retirement tick does not read supersessions. A released
+  consumer that fails and is resubmitted under `--supersedes` still holds its
+  batch through its first declaration (#926).
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.

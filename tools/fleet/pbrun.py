@@ -82,8 +82,9 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    adaptive_gpu, container_images, core as pb, decomposition as dc,
-    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
+    action_edges, adaptive_gpu, container_images, core as pb,
+    decomposition as dc, movement_actions, pool, residency_plan, slurm_lane,
+    storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -4677,6 +4678,19 @@ def reseal_wrapper(key: str) -> Path:
     if action["task"]["definition_id"] != "fleet/pbrun":
         raise ValueError(f"{where}: request is not a pbrun action")
     prefix = action["environment"]["variables"].get("PATH", "").split(":", 1)[0]
+    return verify_retained_wrapper(prefix, where=where)
+
+
+def verify_retained_wrapper(prefix: str, *, where: str) -> Path:
+    """The Docker wrapper at ``prefix``, proved to be a retained generation's.
+
+    The wrapper must sit in a published generation under the store, beside a
+    receipt naming that generation, and hash to what the receipt recorded.
+    ``--as-sealed-by`` reads an old action's wrapper back this way, and a
+    deferred release (#913) seals into its template's generation only after
+    this check.  Raises ``ValueError`` (or ``OSError``) naming what failed.
+    """
+
     wrapper = Path(prefix)
     generation = wrapper.parent
     if (str(wrapper) != prefix or wrapper.name != "tools"
@@ -5973,6 +5987,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "one, and from the same command with a different manifest",
     )
     ap.add_argument(
+        "--after", action="append", default=[], metavar="PRODUCER:TEMPLATE_ID",
+        help="defer this submission until PRODUCER succeeds (#913).  PRODUCER "
+             "is an action key, or the pending id another --after submission "
+             "printed; TEMPLATE_ID is the write-only produced-output template "
+             "it declares.  PB then builds this action's data manifest from "
+             "--data-manifest (the static part, optional) followed by every "
+             "origin-only batch the producer's successful attempt committed "
+             "under the template, seals the action and publishes it.  The "
+             f"command may carry {action_edges.DATA_MANIFEST_PLACEHOLDER} once, "
+             "as a whole argument; it becomes that manifest's path.  "
+             "Repeatable; pool transport only",
+    )
+    ap.add_argument(
+        "--supersedes", default=None, metavar="KEY_OR_PENDING_ID",
+        help="state that this submission replaces a failed or withdrawn key, "
+             "or an unreleased deferred submission, so that --after edges "
+             "naming the old one follow this one (#913).  Every publish moves "
+             "every key; this is how a resubmission keeps its dependents",
+    )
+    ap.add_argument(
         "--produced-output-template", default=None, metavar="PATH",
         help="path to a tiny validated produced-output template JSON "
              "(at most 64 KiB) declaring the bounded working window this "
@@ -6157,6 +6191,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = ap.parse_args(argv)
     if args.as_sealed_by is not None and args.withdraw:
         ap.error("--as-sealed-by cannot be combined with --withdraw")
+    if args.after or args.supersedes is not None:
+        # A deferred submission is sealed at release, by the tiers loop,
+        # against the pull queue's own records (#913).
+        if args.withdraw:
+            ap.error("--after and --supersedes cannot be combined with --withdraw")
+        if args.transport != "pool":
+            ap.error("--after and --supersedes need the pull queue, where "
+                     "producers, releases and supersessions are filed")
+    if args.after and args.as_sealed_by is not None:
+        ap.error("--after cannot be combined with --as-sealed-by: a deferred "
+                 "action has no key until it is released")
     if args.timeout_s is not None and (
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
@@ -6520,7 +6565,10 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         measurement=args.measurement,
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
-        data_manifest_path=args.data_manifest,
+        # A deferred submission's manifest is built at release (#913); its
+        # static part is ingested beside the template, never sealed into it.
+        data_manifest_path=(None if getattr(args, "after", None)
+                            else args.data_manifest),
         produced_output_template_path=produced_template_opt,
         checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
         snapshot_refs=args.snapshot_ref,
@@ -6767,6 +6815,467 @@ def publication_row(
     return row
 
 
+#: The submitter's own handles a deferred submission freezes (#913): what
+#: ``publication_row`` and ``residency_stage_rows`` read off ``args`` when the
+#: release publishes the consumer.  Everything else about the action is in
+#: its frozen template.
+_DEFERRED_PUBLICATION_ARGS = (
+    "priority", "max_attempts", "retry_safe", "residency", "residency_tier",
+    "residency_ram", "residency_mover_mem_gb", "residency_mover_readers",
+    "residency_mover_max_attempts",
+)
+
+
+def file_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
+    """File that ``new`` replaces ``old``, or refuse the submission (#913)."""
+
+    try:
+        action_edges.file_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: --supersedes: {exc}") from None
+    print(f"pbrun: {new[:12]} supersedes {old[:12]}; edges that name it "
+          f"follow this submission", file=sys.stderr, flush=True)
+
+
+def template_record(template: Mapping[str, object]) -> dict[str, object]:
+    """A frozen template as JSON: everything but the CAS handle (#913).
+
+    The CAS is the one live object a template carries; the release rebuilds
+    it from the recorded root.  The marker root is a path, recorded as text.
+    """
+
+    record = {name: value for name, value in template.items() if name != "cas"}
+    record["marker_root"] = str(template["marker_root"])
+    try:
+        return json.loads(json.dumps(record))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"pbrun: this submission cannot be deferred: its frozen template "
+            f"is not plain data ({exc})") from None
+
+
+def template_from_record(record: Mapping[str, object], *,
+                         cas_root: str | Path) -> dict[str, object]:
+    """The frozen template a deferred record carries, ready to seal."""
+
+    template = dict(record)
+    template["cas"] = pb.PrismaBuildCAS(Path(cas_root))
+    template["marker_root"] = Path(str(record["marker_root"]))
+    return template
+
+
+def resolve_after_edges(q, cas_root: Path,
+                        texts: Sequence[str]) -> list[dict[str, str]]:
+    """Every ``--after`` edge, checked against what the queue has filed.
+
+    An unknown producer refuses: a key needs a readable row or terminal
+    record, a pending id a deferred record.  So does a producer that does
+    not declare the template, or a template that is not write-only.
+    """
+
+    edges: list[dict[str, str]] = []
+    for text in texts:
+        try:
+            edge = action_edges.parse_edge(text)
+            kind = action_edges.producer_kind(q, edge["producer"])
+            if kind == action_edges.PRODUCER_KEY:
+                declared = action_edges.declared_template_id(
+                    cas_root, edge["producer"])
+                if declared != edge["template_id"]:
+                    raise action_edges.ActionEdgeError(
+                        f"the producer declares template {declared!r}, not "
+                        f"{edge['template_id']!r}")
+                action_edges.require_write_only_template(
+                    q.root, edge["template_id"])
+            else:
+                deferred = action_edges.read_deferred(q.root, edge["producer"])
+                assert deferred is not None
+                produced = deferred["template"].get("produced_output_template")
+                if (not isinstance(produced, Mapping)
+                        or produced.get("template_id") != edge["template_id"]):
+                    raise action_edges.ActionEdgeError(
+                        "the deferred producer does not declare template "
+                        f"{edge['template_id']!r}")
+                if not produced.get("write_only"):
+                    raise action_edges.ActionEdgeError(
+                        f"template {edge['template_id']!r} is not write-only")
+        except action_edges.ActionEdgeError as exc:
+            raise SystemExit(f"pbrun: --after {text}: {exc}") from None
+        edges.append({**edge, "kind": kind})
+    return edges
+
+
+def submit_deferred(prepared: Mapping[str, object],
+                    args: argparse.Namespace) -> int:
+    """File this submission for release once its producers succeed (#913).
+
+    Everything ``prepare_submission`` checks has been checked: the checkout,
+    the environment, the demand and the placement, which is announced and
+    refused here exactly as for an ordinary submission.  What is left is
+    what depends on the producer's bytes -- the data manifest, the key, the
+    residency plan -- and the tiers loop's release does that.
+    """
+
+    template = prepared["template"]
+    cas = template["cas"]
+    q = pool.PoolQueue(SH / "pb-queue")
+    edges = resolve_after_edges(q, Path(cas.root), args.after)
+    try:
+        action_edges.resolve_command(template["params"]["command"], "")
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+    require_releasable_template(template)
+    static_input = None
+    if args.data_manifest is not None:
+        pb.load_data_manifest(args.data_manifest)
+        static_input, _ = cas.ingest_input(
+            args.data_manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        static, encoding = pb.read_data_manifest(cas.input_path(static_input))
+        if static["schema"] != pb.DATA_MANIFEST_SCHEMA_V1 or encoding != "identity":
+            raise SystemExit(
+                "pbrun: a deferred submission's --data-manifest must be a plain "
+                "data_manifest.v1: the release appends the committed batches to "
+                "its entries and its phases")
+        require_declared_origin_batches(
+            static, transport=args.transport, queue_root=q.root)
+        if (args.residency == "stage"
+                and not storage_tiers.manifest_phase_ranges(static)):
+            raise SystemExit(
+                "pbrun: --residency stage needs the static --data-manifest to "
+                "declare its read order in phases; the release adds one phase "
+                "per committed batch after them")
+    announce_placement(
+        prepared["offer_queue"](), {"params": template["params"]}, args=args,
+        cwd=prepared["cwd"], portable_checkout=prepared["portable_checkout"])
+    body = action_edges.deferred_body(
+        edges=edges, template=template_record(template), cas_root=cas.root,
+        static_manifest=static_input,
+        publication={name: getattr(args, name)
+                     for name in _DEFERRED_PUBLICATION_ARGS})
+    try:
+        pending_id, path = action_edges.file_deferred(q.root, body)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: cannot file the deferred submission: {exc}") from None
+    if args.supersedes is not None:
+        file_supersession_or_exit(q, args.supersedes, new=pending_id,
+                                  new_kind=action_edges.PRODUCER_PENDING)
+    producers = ", ".join(f"{edge['producer'][:12]}:{edge['template_id']}"
+                          for edge in edges)
+    print(f"pbrun: deferred {pending_id[:12]} until {producers} succeeds; the "
+          f"tiers loop seals and publishes it then", file=sys.stderr, flush=True)
+    if args.detach:
+        print(json.dumps({
+            "schema": DETACH_SCHEMA_V1,
+            "action_key": None,
+            "pending_id": pending_id,
+            "transport": "pool",
+            "status": "deferred",
+            "published_unix": None,
+            "job_id": None,
+            "submission": str(path),
+            "release": str(action_edges.published_path(q.root, pending_id)),
+        }, sort_keys=True), flush=True)
+        return 0
+    return await_release(q, pending_id, wait_s=args.wait_s)
+
+
+def require_releasable_template(template: Mapping[str, object]) -> None:
+    """Refuse a deferred submission that no release could seal (#913).
+
+    The tiers loop runs the published generation, and seals a deferred
+    consumer into the generation its template was frozen under: that one,
+    or a retained generation whose wrapper matches its receipt
+    (``sealing_runtime``).  A template frozen by a ``pbrun`` outside the
+    generation store, such as a development checkout's, is neither, and
+    would be held until superseded.  Refuse it at submission instead.
+    """
+
+    prefix = action_edges.template_wrapper(template)
+    try:
+        published = (SH / "repo").resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(
+            f"pbrun: --after: cannot read the published runtime: {exc}") from None
+    if prefix == str(published / "tools"):
+        return
+    try:
+        verify_retained_wrapper(prefix, where="--after")
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        raise SystemExit(
+            f"pbrun: --after: no release could seal this submission ({exc}); "
+            f"submit it with the published {SH / 'repo' / 'tools' / 'pbrun.py'}"
+        ) from None
+
+
+def await_release(q, pending_id: str, *, wait_s: float) -> int:
+    """Wait for a deferred submission's release, then for its action.
+
+    The release record names the key and the generation the tiers loop
+    published, which is what the ordinary wait is pinned to.  Waiting longer
+    than ``wait_s`` in total exits ``GAVE_UP_EXIT``; the submission stays
+    filed and is released whenever its producers succeed.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(wait_s))
+    while True:
+        try:
+            published = action_edges.read_published(q.root, pending_id)
+        except action_edges.ActionEdgeError as exc:
+            print(f"pbrun: {exc}", file=sys.stderr, flush=True)
+            return RECORD_WRITE_FAILED_EXIT
+        if published is not None:
+            key = str(published["action_key"])
+            print(f"pbrun: {pending_id[:12]} was released as {key[:12]}",
+                  file=sys.stderr, flush=True)
+            return await_outcome(
+                q, key, wait_s=max(0.0, deadline - time.monotonic()),
+                generation=float(published["published_unix"]))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(f"pbrun: {pending_id[:12]} is still deferred; it stays filed "
+                  f"and is released when its producers succeed",
+                  file=sys.stderr, flush=True)
+            return GAVE_UP_EXIT
+        time.sleep(min(POLL_S, remaining))
+
+
+def sealing_runtime(template: Mapping[str, object]) -> dict[str, str]:
+    """The generation a deferred template is sealed into, proved present (#913).
+
+    It is the template's own: a consumer frozen by ``pbrun --after`` runs
+    under the generation that froze it, as an ordinary submission sealed
+    just before a publish does.  When that is this process's own generation,
+    the caller has already checked it is the published one.  Otherwise it
+    must be a retained generation whose wrapper matches its receipt, the
+    check ``--as-sealed-by`` makes.  Raises
+    ``action_edges.RuntimeGenerationUnavailable`` when it is not, so that
+    nothing is ever sealed into a different generation instead.
+    """
+
+    prefix = action_edges.template_wrapper(template)
+    if prefix == str(CONTAINER_WRAPPER_DIR):
+        root = RUNTIME_ROOT
+    else:
+        try:
+            root = verify_retained_wrapper(
+                prefix, where="deferred release").parent
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            raise action_edges.RuntimeGenerationUnavailable(
+                f"runtime-generation-unavailable: {exc}") from None
+    return {"root": str(root), "generation": action_edges.generation_name(root)}
+
+
+def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
+                     producers: Sequence[Mapping[str, object]] = ()
+                     ) -> dict[str, object]:
+    """Seal and publish one deferred consumer whose producers succeeded (#913).
+
+    ``producers`` holds each edge's resolved ``{key, nonce, template_id}``.
+    The first release pins the batch refs, the manifest and the key in a
+    first-writer record before anything is published.  A release that finds
+    that record resumes from it: it never resolves the producers again, and
+    ``producers`` is not read.  After that it is ``main``'s own path: the CAS
+    request, the origin-consumer declarations (#914), the window and the
+    row.  A key the queue already carries -- published before a crash kept
+    the last step from being recorded -- is not published again; its
+    generation is recorded instead.  Last, the release records that
+    generation, which is what waiters and chains read.
+
+    Returns the event to log.  Raises ``ActionEdgeError`` (or ``SystemExit``
+    from pbrun's own refusals) when the consumer cannot be released yet.
+    """
+
+    from prismabuild import produced_output as produced_mod
+
+    cas_root = Path(str(record["cas_root"]))
+    template = template_from_record(record["template"], cas_root=cas_root)
+    cas = template["cas"]
+    pinned = action_edges.read_release(q.root, pending_id)
+    if pinned is None:
+        refs: list[dict[str, object]] = []
+        for producer in producers:
+            refs.extend(action_edges.committed_batch_refs(
+                q.root, producer_key=str(producer["key"]),
+                nonce=str(producer["nonce"]),
+                template_id=str(producer["template_id"])))
+        static = None
+        if record["static_manifest"] is not None:
+            static, _ = pb.read_data_manifest(
+                cas.input_path(record["static_manifest"]))
+        try:
+            batches = produced_mod.origin_batch_manifest(q.root, refs)
+        except produced_mod.ProducedOutputError as exc:
+            raise action_edges.ActionEdgeError(str(exc)) from None
+        manifest = action_edges.merged_manifest(static, batches)
+        runtime = sealing_runtime(template)
+        manifest_input, _ = cas.ingest_bytes(
+            pb._canonical_file_bytes(manifest),
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    else:
+        manifest_input = dict(pinned["manifest_input"])
+        manifest, _ = pb.read_data_manifest(cas.input_path(manifest_input))
+    summary = {"input": manifest_input, "mount_prefix": manifest["mount_prefix"],
+               "entry_count": manifest["entry_count"],
+               "total_bytes": manifest["total_bytes"]}
+    command = action_edges.resolve_command(
+        template["params"]["command"], cas.input_path(manifest_input))
+    action = seal_action_from_template(
+        template, command=command, extra_inputs=[manifest_input],
+        extra_params={"data_manifest": summary})
+    key = str(action["action_key"])
+    all_refs = list((manifest["annotations"] or {}).get(
+        _ORIGIN_BATCHES_ANNOTATION) or [])
+    if pinned is None:
+        pinned = action_edges.file_release(
+            q.root, pending_id, action_key=key,
+            producers=[dict(item) for item in producers], refs=all_refs,
+            manifest_input=manifest_input, runtime=runtime)
+        resumed = False
+    else:
+        resumed = True
+    if str(pinned["action_key"]) != key:
+        raise action_edges.ActionEdgeError(
+            f"release-key-mismatch: the pinned release names "
+            f"{str(pinned['action_key'])[:12]}, and this runtime seals "
+            f"{key[:12]}")
+    state, existing = produced_mod._key_generation(q, key)
+    if state == "absent":
+        if resumed:
+            # About to publish: the generation must still be there, and the
+            # pinned batches must still be the ones the release pinned.
+            # ``lstat`` only, as at submission.
+            sealing_runtime(template)
+            for ref in all_refs:
+                try:
+                    produced_mod.load_origin_batch(q.root, ref)
+                except produced_mod.ProducedOutputError as exc:
+                    raise action_edges.ActionEdgeError(str(exc)) from None
+        cas.publish_action_request(action)
+        declare_origin_consumers(q, all_refs, consumer_action_key=key)
+        options = argparse.Namespace(**dict(record["publication"]))
+        sealed = {**template,
+                  "params": {**template["params"], "data_manifest": summary},
+                  "inputs": [*template["inputs"], manifest_input]}
+        _queued, generation = publish_consumer_row(
+            q, action, sealed, key=key, args=options, cas=cas, attach=True)
+    elif state == "unknown" or existing is None or isinstance(
+            existing.get("published_unix"), bool) or not isinstance(
+            existing.get("published_unix"), (int, float)):
+        raise action_edges.ActionEdgeError(
+            f"release-row-unreadable: {key[:12]} reads {state}")
+    else:
+        # Published before a crash kept this from being recorded: that row
+        # is the release's generation, whatever became of it since.
+        generation = float(existing["published_unix"])
+    if generation is None:
+        raise action_edges.ActionEdgeError(
+            f"release-generation-unknown: {key[:12]} was published with no "
+            "generation stamp")
+    action_edges.file_published(q.root, pending_id, action_key=key,
+                                published_unix=float(generation))
+    return {"event": action_edges.RELEASED_EVENT, "pending_id": pending_id,
+            "action_key": key, "published_unix": float(generation),
+            "resumed": resumed, "runtime": dict(pinned["runtime"]),
+            "producers": [dict(item) for item in pinned["producers"]],
+            "refs": all_refs, "manifest_sha256": str(manifest_input["sha256"])}
+
+
+def publish_consumer_row(q, action: Mapping[str, object],
+                         template: Mapping[str, object], *, key: str,
+                         args: argparse.Namespace, cas,
+                         attach: bool = False) -> tuple[object, float | None]:
+    """Publish one sealed action's row, with its window when it stages.
+
+    Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
+    the queue was already carrying the key and this call attached to it.
+    ``main`` and the deferred release (#913) are its two callers, so a
+    released consumer is published exactly as a submitted one is.
+    ``attach`` is the release's: a staged row it finds already live is the
+    one it published before a crash, and it waits on that row instead of
+    refusing.
+
+    Everything the window will ever publish is sealed and written down before
+    the consumer's own row goes in, so a crash between the two leaves a
+    frozen plan and no queue rows rather than a half-published window.
+    """
+
+    staged = None
+    if args.residency == "stage":
+        # One ownership transaction, under the consumer's existing transition
+        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
+        # withdrawn terminal every cycle, and between ``freeze`` and the
+        # consumer's own row it would see a filed plan nobody owns and reap
+        # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
+        # all take this same lock and nest inside it (#708 review).
+        with q._transition_locked(key):
+            staged = residency_stage_rows(
+                template, consumer_action_key=key,
+                tier=resolve_stage_tier(q, args.residency_tier),
+                args=args, queue=q, cas=cas)
+            if not staged.get("reused_frozen_plan"):
+                # A fresh seal is a new generation of this consumer's window.
+                # The predecessor's *visible* child cancellations -- an
+                # operator's withdrawal, or the dead-consumer pass that
+                # stopped its movers -- do not cover it, but the window reads
+                # them as live and would supersede it before its second phase
+                # ever published.  A deliberate seal retires them as evidence,
+                # under this consumer's lock and then each child's, before the
+                # fresh plan is filed.  A cancellation filed after that is the
+                # new plan's own decision and still supersedes it; automatic
+                # publication never retires one (#708 review).
+                try:
+                    renewal = residency_plan.retire_predecessor_cancellations(
+                        q, key, staged["plan"])
+                except residency_plan.ResidencyPlanError as exc:
+                    raise SystemExit(f"pbrun: {exc}") from None
+                if renewal["retired"]:
+                    print(
+                        f"pbrun: renewing {key[:12]}: retired "
+                        f"{len(renewal['retired'])} predecessor cancellation "
+                        f"marker(s); their decisions stay under "
+                        f"{q.superseded_dir()}", file=sys.stderr, flush=True)
+            residency_plan.freeze(q, staged["plan"])
+            publication = publication_row(action, args=args, queue=q)
+            publication["residency"] = staged["residency"]
+            if template.get("produced_output_template") is not None:
+                publication["produced_output_template"] = template[
+                    "produced_output_template"]
+            if attach:
+                # A release resuming after a crash (#913) finds its own row:
+                # the plan above was first-writer and reused, and the row is
+                # the one generation to wait on, not a second copy.
+                queued_path, generation = publish_or_attach(
+                    q, publication, key=key)
+            else:
+                # Not ``publish_or_attach``: a staged submission has already
+                # frozen its window plan, which is first-writer and has its
+                # own answer for a second seal of the same body, and the
+                # duplicate #812 describes is a plain shard submission.
+                queued_path = publish_or_refuse(q, publication)
+                generation = published_generation(q, key, queued_path)
+            # The consumer's row and nothing else.  Every phase of the
+            # frozen plan is the tiers loop's to publish, the first included:
+            # the loop adopts before it publishes, and its adoption pass skips
+            # any leg whose row already exists, so a lead published here could
+            # never be taken over from a range already on the tier.  One
+            # publisher also means no interleaving to arbitrate.  A cold lead
+            # therefore waits for the next cycle, which staged submissions
+            # already depend on for phases 1..n.
+            lead = staged["plan"]["phases"][0]
+            print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
+                  f"{staged['plan']['tier_id']}; phase {lead['name']!r} "
+                  f"({lead['stage_gib']} GiB) next, for the tiers loop to "
+                  f"adopt or publish",
+                  file=sys.stderr, flush=True)
+    else:
+        publication = publication_row(action, args=args, queue=q)
+        if template.get("produced_output_template") is not None:
+            publication["produced_output_template"] = template[
+                "produced_output_template"]
+        queued_path, generation = publish_or_attach(q, publication, key=key)
+    return queued_path, generation
+
+
 def main() -> int:
     args = parse_args()
     if args.withdraw:
@@ -6784,6 +7293,8 @@ def main() -> int:
             by=f"{who}@{socket.gethostname()}",
         )
     prepared = prepare_submission(args)
+    if args.after:
+        return submit_deferred(prepared, args)
     template = prepared["template"]
     cwd = prepared["cwd"]
     portable_checkout = prepared["portable_checkout"]
@@ -6916,77 +7427,14 @@ def main() -> int:
     if template.get(_ORIGIN_BATCHES_TEMPLATE_KEY):
         declare_origin_consumers(
             q, template[_ORIGIN_BATCHES_TEMPLATE_KEY], consumer_action_key=key)
+    # Filed before the row, so an edge that names the replaced key follows
+    # this one from the moment it can run (#913).
+    if args.supersedes is not None:
+        file_supersession_or_exit(q, args.supersedes, new=key,
+                                  new_kind=action_edges.PRODUCER_KEY)
 
-    # Everything the window will ever publish is sealed and written down
-    # before the consumer's own row goes in, so a crash between the two leaves
-    # a frozen plan and no queue rows rather than a half-published window.
-    staged = None
-    if args.residency == "stage":
-        # One ownership transaction, under the consumer's existing transition
-        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
-        # withdrawn terminal every cycle, and between ``freeze`` and the
-        # consumer's own row it would see a filed plan nobody owns and reap
-        # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
-        # all take this same lock and nest inside it (#708 review).
-        with q._transition_locked(key):
-            staged = residency_stage_rows(
-                template, consumer_action_key=key,
-                tier=resolve_stage_tier(q, args.residency_tier),
-                args=args, queue=q, cas=cas)
-            if not staged.get("reused_frozen_plan"):
-                # A fresh seal is a new generation of this consumer's window.
-                # The predecessor's *visible* child cancellations -- an
-                # operator's withdrawal, or the dead-consumer pass that
-                # stopped its movers -- do not cover it, but the window reads
-                # them as live and would supersede it before its second phase
-                # ever published.  A deliberate seal retires them as evidence,
-                # under this consumer's lock and then each child's, before the
-                # fresh plan is filed.  A cancellation filed after that is the
-                # new plan's own decision and still supersedes it; automatic
-                # publication never retires one (#708 review).
-                try:
-                    renewal = residency_plan.retire_predecessor_cancellations(
-                        q, key, staged["plan"])
-                except residency_plan.ResidencyPlanError as exc:
-                    raise SystemExit(f"pbrun: {exc}") from None
-                if renewal["retired"]:
-                    print(
-                        f"pbrun: renewing {key[:12]}: retired "
-                        f"{len(renewal['retired'])} predecessor cancellation "
-                        f"marker(s); their decisions stay under "
-                        f"{q.superseded_dir()}", file=sys.stderr, flush=True)
-            residency_plan.freeze(q, staged["plan"])
-            publication = publication_row(action, args=args, queue=q)
-            publication["residency"] = staged["residency"]
-            if template.get("produced_output_template") is not None:
-                publication["produced_output_template"] = template[
-                    "produced_output_template"]
-            # Not ``publish_or_attach``: a staged submission has already
-            # frozen its window plan, which is first-writer and has its own
-            # answer for a second seal of the same body, and the duplicate
-            # #812 describes is a plain shard submission.
-            queued_path = publish_or_refuse(q, publication)
-            generation = published_generation(q, key, queued_path)
-            # The consumer's row and nothing else.  Every phase of the
-            # frozen plan is the tiers loop's to publish, the first included:
-            # the loop adopts before it publishes, and its adoption pass skips
-            # any leg whose row already exists, so a lead published here could
-            # never be taken over from a range already on the tier.  One
-            # publisher also means no interleaving to arbitrate.  A cold lead
-            # therefore waits for the next cycle, which staged submissions
-            # already depend on for phases 1..n.
-            lead = staged["plan"]["phases"][0]
-            print(f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
-                  f"{staged['plan']['tier_id']}; phase {lead['name']!r} "
-                  f"({lead['stage_gib']} GiB) next, for the tiers loop to "
-                  f"adopt or publish",
-                  file=sys.stderr, flush=True)
-    else:
-        publication = publication_row(action, args=args, queue=q)
-        if template.get("produced_output_template") is not None:
-            publication["produced_output_template"] = template[
-                "produced_output_template"]
-        queued_path, generation = publish_or_attach(q, publication, key=key)
+    queued_path, generation = publish_consumer_row(
+        q, action, template, key=key, args=args, cas=cas)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
