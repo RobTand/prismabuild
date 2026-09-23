@@ -3316,12 +3316,18 @@ To queue a chain at once, submit each consumer with `--after
 PRODUCER:TEMPLATE_ID` (#913). PRODUCER is the producer's action key, or the
 pending id `pbrun` printed for another deferred submission. TEMPLATE_ID is a
 write-only template the producer declares. Where the consumer's command needs
-the manifest path, write `{pb.data_manifest}` as one whole argument:
+the manifest path, write `{pb.data_manifest}` as one whole argument, and
+`{pb.data_manifest_sha256}` where it needs the manifest's SHA-256, the digest
+its sealed request binds. Each may appear once:
 
 ```
 pbrun.py --priority -10 --residency stage --detach \
-    --after <producer key>:handoff -- python consume.py {pb.data_manifest}
+    --after <producer key>:handoff \
+    -- python consume.py {pb.data_manifest} {pb.data_manifest_sha256}
 ```
+
+The consumer should hash the file at the path and refuse when the digest
+differs: that is how it knows it reads the manifest it was released with.
 
 `--after` is repeatable and needs the pull queue. `--data-manifest` is
 optional; its entries are the consumer's static inputs. `pbrun` refuses an
