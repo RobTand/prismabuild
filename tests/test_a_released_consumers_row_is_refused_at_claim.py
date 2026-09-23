@@ -219,6 +219,8 @@ def test_the_tier_loop_stages_nothing_for_a_released_consumer(
     _tier_cycle(queue, stage)
     assert _movers_published(queue, plan) == []
     assert not any(stage.rglob(path.name))
+    assert residency_plan.read(queue, key) is None, (
+        "the dead-consumer sweep archives the plan")
     assert not path.exists(), "the tier cycle's tick retired the batch"
 
 
