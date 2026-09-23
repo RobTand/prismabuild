@@ -6496,6 +6496,23 @@ the commitment: refused by it, refused because its census did not read, or
 waiting behind one of those. Each entry has the newcomer's footprint, the
 committed total, the capacity, the shortfall and the terms.
 
+**Cost.** A cycle with a newcomer reuses the admission census, so the report
+adds the record write and the terms. A cycle without one adds a census. Median
+and p90 of 25 steady-state `residency_window` calls per tree, measured on
+2026-09-23 as PB actions on sparky over NFS, on the #907 replay:
+
+| Queue | Before (`ee2420db`) | After | PB keys (before / after) |
+|---|---|---|---|
+| R12 alone, no newcomer | 21.5 / 21.8 ms | 37.5 / 37.7 ms | `4c27c6b2ac88` / `663142e0138f` |
+| R12, R13, the capture, three quanta | 75.4 / 75.7 ms | 80.1 / 81.1 ms | `e856991f8e48` / `15ae898822f4` |
+
+The census itself is unchanged: 11.9 ms beside R12 alone and 18.4 ms against
+18.6 ms loaded. The record is 5.9 KB for R12 alone (24 holders) and 9.9 KB
+loaded. The profile of an R12-alone call puts the added time in
+`_report_commitments`: the census's ledger token-directory scans
+(`holder_tokens`, `_mover_state`), as in #909, and one atomic write. At the
+loop's 60 s cadence the worst case is 16 ms a cycle.
+
 ### Adopting a resident range, and when an orphan is evicted
 
 The campaign is one probe and many artifacts of one model, so every artifact
