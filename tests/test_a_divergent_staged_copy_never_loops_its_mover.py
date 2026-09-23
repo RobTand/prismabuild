@@ -34,6 +34,7 @@ Every fixture is a temp stage root registered to a temp queue (never a real
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -561,3 +562,32 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
         assert residency_plan.superseded(queue, world.plan) is None
         assert any(NAMES[1] in error for error in receipt["errors"]), (
             json.dumps(receipt["errors"]))
+
+
+def test_a_movers_own_record_is_not_an_owner_it_judges(fleet) -> None:
+    """The divergence census never names the mover that is judging it.
+
+    A same-key retry whose origin changed under a digest-less manifest meets
+    its own earlier record dating other bytes.  Judged as an owner, its own
+    consumer -- queued while its movers run -- would read as live, and the
+    retry would refuse its own copy as a terminal conflict.  Any other mover
+    meeting the same record collects it.
+    """
+
+    queue, stage, _ = fleet
+    consumer, mover = _old_owner(fleet, "failed")
+    path = os.path.normpath(str(_staged(stage, NAMES[0])))
+    declared = hashlib.sha256(NEW).hexdigest()
+
+    own = base._publisher(fleet, mover, consumer)
+    collected = stage_move._Owners()
+    _, standing, _ = own._proof_search(path, SIZE, declared, owners=collected)
+    assert standing == "divergent"
+    assert collected.pairs == set() and collected.complete
+
+    other = base._publisher(fleet, base._key(), base._key())
+    collected = stage_move._Owners()
+    _, standing, _ = other._proof_search(path, SIZE, declared,
+                                         owners=collected)
+    assert standing == "divergent"
+    assert collected.pairs == {(consumer, mover)} and collected.complete
