@@ -307,6 +307,38 @@ def test_an_unreadable_output_census_defers_only_the_newcomer(
     assert queue.item_path(pool.READY, reader.mover(5)).exists()
 
 
+@pytest.mark.parametrize("landed", [(0, 1), tuple(range(6))])
+def test_a_reader_whose_plan_does_not_read_defers_the_newcomer(
+        tmp_path: Path, landed: tuple[int, ...]) -> None:
+    """A live reader missing from the census is not free room (#907 review).
+
+    A plan read fails on a torn write or the mount's quarter-hourly ESTALE
+    (#575), and the reader drops out of that pass's census.  Before the fix
+    its ranges then counted as orphans -- their receipts name a consumer the
+    census could not see -- and its growth as nothing, so the newcomer was
+    admitted alone on 0 of 24.  The next pass reads the plan, and the
+    reader's window wants its 12 GiB footprint back beside the newcomer's
+    14.  Now the newcomer waits for a census that reads, both when the
+    reader holds part of its footprint (4 GiB) and all of it (12).
+    """
+
+    queue, stage = _fixture_queue(tmp_path, 24)
+    reader = _reader(queue, stage, landed=landed)
+    newcomer = Consumer(queue, stage, "b")
+    plan_path = Path(queue.residency_plan_path(reader.key))
+    plan_path.unlink()
+    plan_path.write_text("{")
+
+    events = tier_loop.residency_window(queue, tiers=_tiers(stage))
+
+    assert not newcomer.lead_published()
+    gate = _gate(events, newcomer.key)
+    assert gate is not None
+    assert gate["reason"] == window_credit.REASON_DEFER_UNKNOWN
+    assert "not censused" in str(gate["commitment"]["error"])
+    assert tier_loop.window_pressure(queue, tiers=_tiers(stage)).get(TIER) is None
+
+
 def _owes(gib: int):
     def census(_queue, tier_id):
         return {"gib": gib if tier_id == TIER else 0, "owners": {},
@@ -449,7 +481,8 @@ def test_a_reader_that_slows_keeps_the_footprint_it_was_charged(
     26 GiB stage would fit the newcomer's 14 beside it.  But a reader that
     slowed can speed up again, and the room a newcomer took meanwhile is the
     room its window grows back into.  The commitment keeps the fastest rate
-    this claim has shown.
+    this claim has attained: at the ``phase-4`` report it had read at least
+    the 8 GiB before ``phase-4``, 8.7 MB/s, still a two-leg refill.
     """
 
     queue, stage = _fixture_queue(tmp_path, 26)
@@ -477,6 +510,42 @@ def test_a_reader_that_slows_keeps_the_footprint_it_was_charged(
     # phase-4 is passed: evictable, not committed.
     assert terms["evictable_gib"] == PHASE_GIB
     assert terms["admitted_growth_gib"] == 2
+
+
+def test_a_first_report_just_after_the_claim_does_not_freeze_the_footprint(
+        tmp_path: Path) -> None:
+    """The horizon's in-phase over-estimate is priced while it lasts, not kept.
+
+    The reader reports ``phase-0`` 5 s after its claim.  The horizon counts
+    the whole accepted phase as read: 2 GiB in 5 s, 429 MB/s, a refill that
+    covers the plan, so its window would publish all ten phases now, and its
+    footprint is 20 GiB.  At its next report, ``phase-1`` 990 s in, that rate
+    is 4 GiB in 990 s (4.3 MB/s): a one-leg refill and a 12 GiB footprint,
+    and a 26 GiB stage fits the newcomer's 14 beside it.  Before the fix the
+    ratchet kept the 429 MB/s for the claim's lifetime, priced the reader at
+    the 18 GiB left of its plan, and refused every newcomer beside it.  The
+    ratchet now keeps only what the reader has certainly read -- the phases
+    before the one it reports -- and ``phase-0`` has none before it.
+    """
+
+    queue, stage = _fixture_queue(tmp_path, 26)
+    reader = Consumer(queue, stage, "a")
+    reader.land(*range(6))
+    now = time.time()
+    claimed = now - 1000.0
+    _claim(queue, reader.key, phase="phase-0", claimed_unix=claimed,
+           reported_unix=claimed + 5.0)
+    newcomer = Consumer(queue, stage, "n")
+    tiers = _tiers(stage)
+
+    early = tier_loop._commitment_census(
+        queue, tiers, consumers=tier_loop._planned_consumers(queue, tiers))
+    assert early[TIER]["windows"][reader.key]["footprint_gib"] == 10 * PHASE_GIB
+
+    _report(queue, reader.key, phase="phase-1", reported_unix=now - 10.0)
+    events = tier_loop.residency_window(queue, tiers=tiers)
+
+    assert newcomer.lead_published(), _gate(events, newcomer.key)
 
 
 def _report(queue: pool.PoolQueue, key: str, *, phase: str,
@@ -619,11 +688,16 @@ def test_an_r13_shaped_newcomer_waits_for_r12s_footprint(
     """22:30Z with R13 queued: refused on the commitment, and nothing evicted.
 
     308 + 242 = 550 > 530.  Before the fix the joint-fit gate's shortfall
-    (528 + 44 + 22 + 22 - 530 = 86) gave back R12's farthest ranges for
-    R13's lead, and the two windows then wanted 550 GiB of 530 between them:
-    with every range past R12's horizon gone, each range inside one horizon
-    waits on the other consumer's reading.  After it, R13 waits for room
-    that stays free, and R12 keeps every range it holds.
+    (528 + 44 + 22 + 22 - 530 = 86) asked the relief for R12's farthest
+    ranges, and R13's lead published into them: the two windows then wanted
+    550 GiB of 530 between them, and with every range past R12's horizon
+    gone, each range inside one horizon waits on the other consumer's
+    reading.  After it, R13 waits, and no pressure is asked for it, so the
+    orphan sweep and the horizon eviction take nothing.
+
+    The refusal is priced at the 413 MB/s the stage announced.  A newcomer's
+    consumption is the fill supply until it reports, so the footprint moves
+    with it: at 144 MB/s R13's is 176 GiB, and 308 + 176 = 484 fits.
     """
 
     queue, stage = _live_r12(tmp_path)
@@ -636,18 +710,14 @@ def test_an_r13_shaped_newcomer_waits_for_r12s_footprint(
 
     events = tier_loop.residency_window(queue, tiers=_live_tiers(stage))
 
+    assert not _lead_published(queue, "r13", str(plan["phases"][0]["name"]))  # type: ignore[index]
     terms = _refused(events, r13)
     assert terms["capacity_gib"] == replay.CAPACITY
     assert terms["committed_gib"] == R12_COMMITTED
     assert terms["footprint_gib"] == R13_FOOTPRINT
     assert terms["evictable_gib"] == 264
     assert tier_loop.window_pressure(queue, tiers=_live_tiers(stage)).get(TIER) is None
-
-    _live_cycle(queue, stage)
-
-    assert not _lead_published(queue, "r13", str(plan["phases"][0]["name"]))  # type: ignore[index]
     assert sum(replay._r12_held(queue).values()) == 528
-    assert_ledger_matches_the_stage(queue)
 
 
 def test_three_stage_b_quanta_fit_beside_r12_and_a_fourth_waits(

@@ -36,7 +36,7 @@ from contextlib import ExitStack
 import json
 import math
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import os
 import socket
 import sys
@@ -1335,21 +1335,28 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
 
 
 def _planned_consumers(
-    queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
+    queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]], *,
+    unknown: list[dict[str, object]] | None = None,
 ) -> list[tuple[str, dict[str, object], dict[str, object], str]]:
     """Live consumers whose frozen plan stages onto a tier this box announced.
 
     Quietly: a plan this reader refuses is reported once, by
     :func:`residency_window`, which is the step that has a denial to file.  A
     second report from each of the steps below would say the same thing three
-    times per cycle.
+    times per cycle.  ``unknown`` collects those consumers all the same, for
+    the admission commitment (#907), which must not count a live consumer's
+    room as free because its plan did not read.
     """
 
     out: list[tuple[str, dict[str, object], dict[str, object], str]] = []
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
-        plan = residency_plan.read(queue, key)
+        refusals: list[Exception] = []
+        plan = residency_plan.read(queue, key, on_unreadable=refusals.append)
         if plan is None:
+            if refusals and unknown is not None:
+                unknown.append({"consumer": key, "tier_id": "",
+                                "error": f"plan unreadable: {refusals[0]!r}"})
             continue
         tier_id = str(plan["tier_id"])
         if tier_id not in tiers:
@@ -1828,6 +1835,7 @@ def adopt_resident_ranges(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
     withdrawn: frozenset[str] | None = None,
+    unknown: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Take over the resident prefix before a live window's first gap (#864).
 
@@ -1868,7 +1876,8 @@ def adopt_resident_ranges(
     root = queue.residency_fragment_root()
     index_by_tier: dict[str, dict[tuple, list[str]]] = {}
     if consumers is None:
-        consumers = _planned_consumers(queue, tiers)
+        unknown = []
+        consumers = _planned_consumers(queue, tiers, unknown=unknown)
     # Asked once, and only when a ready consumer is about to take a range
     # over: most cycles adopt nothing.
     admissions: dict[tuple[str, str], dict[str, object]] | None = None
@@ -1952,7 +1961,8 @@ def adopt_resident_ranges(
                     admission_asked = True
                     if admissions is None:
                         admissions = _commitment_admissions(_commitment_census(
-                            queue, tiers, consumers=consumers))
+                            queue, tiers, consumers=consumers,
+                            unknown=unknown or ()))
                     refusal = _commitment_refusal(admissions, consumer_key,
                                                   str(tier_id))
                     if refusal is not None:
@@ -2540,15 +2550,20 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
     return None
 
 
-#: The fastest consumption each claim has shown, in bytes per second, by
-#: queue, consumer and claim time (#907).  A reader that slowed can speed up
-#: again, and its window grows back into the room it gave up; a newcomer
-#: admitted into that room in between would be squeezed by it.  So the read
-#: footprint of an admitted window is priced at the fastest rate its claim
-#: has measured, never at a slower one.  Held by this process: a restart
-#: forgets it, and the first cycle after one prices each claim at its
-#: current rate, which is what every window was priced at before #907.
-#: Entries of consumers that are no longer live are dropped each census.
+#: The fastest consumption each claim has provably attained, in bytes per
+#: second, by queue, consumer and claim time (#907).  A reader that slowed
+#: can speed up again, and its window grows back into the room it gave up; a
+#: newcomer admitted into that room in between would be squeezed by it.  So
+#: the read footprint of an admitted window is priced at no less than the
+#: fastest rate its claim has attained.  Attained, not measured: the
+#: horizon's rate counts the whole accepted phase as read, which over-states
+#: the rate while the reader is inside it -- by a whole phase over a few
+#: seconds when the first report lands just after the claim -- and a peak of
+#: that estimate kept for the claim's lifetime would refuse every newcomer
+#: beside it.  Held by this process: a restart forgets it, and the first
+#: cycle after one prices each claim at its current rate, which is what every
+#: window was priced at before #907.  Entries of consumers that are no longer
+#: live are dropped each census.
 _FASTEST_CONSUMPTION: dict[tuple[str, str, float], float] = {}
 
 
@@ -2559,9 +2574,13 @@ def _footprint_consumption(queue: pool.PoolQueue,
                            ) -> tuple[float | None, str]:
     """The consumption rate a read footprint is priced at, and its basis (#907).
 
-    A claimed consumer with accepted progress: the fastest rate its claim
-    has measured, the horizon's own measurement (bytes through the accepted
-    phase over the time from the claim to its report).  Anything else --
+    A claimed consumer with accepted progress: the horizon's own measurement
+    (bytes through the accepted phase over the time from the claim to its
+    report), which is the rate its window is bounded by now, or the fastest
+    rate its claim has attained if that is higher.  The attained rate counts
+    only the phases before the accepted one, which the reader has certainly
+    read by its report, so it is a lower bound on how fast it went and never
+    the horizon's in-phase over-estimate.  Anything else --
     a newcomer, a ready consumer, a claim that has reported nothing -- has
     measured no rate, and the tier's announced fill supply stands in, as it
     does in :func:`residency_plan.refill_horizon`: a consumer that reads
@@ -2580,14 +2599,16 @@ def _footprint_consumption(queue: pool.PoolQueue,
             and float(reported) > float(claimed)):
         phases = list(plan["phases"])                         # type: ignore[arg-type]
         names = [str(phase["name"]) for phase in phases]
-        through = int(phases[names.index(str(accepted))]["end_bytes"])
+        entered = phases[names.index(str(accepted))]
         first = int(phases[0]["start_bytes"])
-        rate = (through - first) / (float(reported) - float(claimed))
+        elapsed = float(reported) - float(claimed)
+        rate = (int(entered["end_bytes"]) - first) / elapsed
+        attained = (int(entered["start_bytes"]) - first) / elapsed
         if rate > 0:
             key = (str(queue.root), str(consumer.get("action_key")), float(claimed))
-            rate = max(rate, _FASTEST_CONSUMPTION.get(key, 0.0))
-            _FASTEST_CONSUMPTION[key] = rate
-            return rate, "measured"
+            fastest = max(attained, _FASTEST_CONSUMPTION.get(key, 0.0))
+            _FASTEST_CONSUMPTION[key] = fastest
+            return max(rate, fastest), "measured"
     supply = _announced_fill_supply(tier_record)
     if supply is not None:
         return supply * storage_tiers.MB, "fill-supply"
@@ -2614,6 +2635,7 @@ def _footprint_landing(queue: pool.PoolQueue, plan: Mapping[str, object],
 def _commitment_census(queue: pool.PoolQueue,
                        tiers: Mapping[str, Mapping[str, object]], *,
                        consumers: list,
+                       unknown: Iterable[Mapping[str, object]] = (),
                        ) -> dict[str, dict[str, object]]:
     """Per stage tier, what admission has promised and to which window (#907).
 
@@ -2639,8 +2661,15 @@ def _commitment_census(queue: pool.PoolQueue,
     tiers only: a ram miss is a read from the stage, slower but never a
     stall (#906).
 
+    ``unknown`` is every live consumer the caller could not census -- an
+    unreadable plan (``tier_id`` empty: any tier) or unreadable state on a
+    named tier.  Its ranges are still counted, as a live item's, but its
+    growth is not known, and the next pass that reads its plan may find it
+    wants its footprint back.  So its tier is not censused either.
+
     Returns ``{tier_id: {...}}``; a tier whose ledger, queue or output
-    census does not read carries ``error`` instead, and its newcomers wait.
+    census does not read, or that a live consumer may be on uncensused,
+    carries ``error`` instead, and its newcomers wait.
     """
 
     out: dict[str, dict[str, object]] = {}
@@ -2660,8 +2689,19 @@ def _commitment_census(queue: pool.PoolQueue,
     for stale in [entry for entry in _FASTEST_CONSUMPTION
                   if entry[0] == root and entry[1] not in live]:
         _FASTEST_CONSUMPTION.pop(stale, None)
+    uncensused: dict[str, str] = {}
+    for entry in unknown:
+        consumer_key = str(entry.get("consumer") or "")
+        entry_tier = str(entry.get("tier_id") or "") or _declared_tier(
+            queue, consumer_key)
+        uncensused.setdefault(entry_tier, (
+            f"{consumer_key[:12] or '(census)'}: {entry.get('error', '')}"))
     for tier_id in tier_ids:
         record = tiers.get(tier_id)
+        blind = uncensused.get(tier_id) or uncensused.get("")
+        if blind is not None:
+            out[tier_id] = {"error": f"live consumer not censused: {blind}"}
+            continue
         try:
             ledger = queue.tier_ledger(tier_id)
             held = {str(holder): int(ledger.holder_tokens(holder).get(kind, 0))
@@ -2710,7 +2750,11 @@ def _commitment_census(queue: pool.PoolQueue,
                 if not gib or holder in wanted or holder in owners:
                     continue
                 receipt = queue.move_record(holder)
-                if isinstance(receipt, Mapping) and receipt.get("consumer_action_key"):
+                named = (receipt.get("consumer_action_key")
+                         if isinstance(receipt, Mapping) else None)
+                # A range a live item's receipt names is that item's, not an
+                # orphan, even when its plan did not read this pass.
+                if named and str(named) not in owners:
                     evictable += gib
         except (OSError, pool.PoolContractError, ValueError) as exc:
             out[tier_id] = {"error": f"orphan census unreadable: {exc}"}
@@ -2775,6 +2819,29 @@ def _commitment_census(queue: pool.PoolQueue,
             "unheld_output_gib": int(owed["gib"]), "windows": windows,
         }
     return out
+
+
+def _declared_tier(queue: pool.PoolQueue, key: str) -> str:
+    """The stage tier a live item's residency declares, or ``""`` when unknown.
+
+    What the commitment census reads for a consumer whose plan did not: the
+    queue item names its tier as well, so an unreadable plan blinds only the
+    tier it is on.  ``""`` -- no key, no item, no tier -- blinds every tier.
+    """
+
+    if not key:
+        return ""
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            item = json.loads(queue.item_path(state, key).read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, pool.PoolContractError):
+            return ""
+        residency = item.get("residency") if isinstance(item, dict) else None
+        tier_id = residency.get("tier_id") if isinstance(residency, dict) else None
+        return tier_id if isinstance(tier_id, str) else ""
+    return ""
 
 
 def _priority(consumer: Mapping[str, object]) -> int:
@@ -2887,6 +2954,7 @@ def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
     withdrawn: frozenset[str] | None = None,
+    unknown: list[dict[str, object]] | None = None,
 ) -> dict[str, int]:
     """Per tier, the GiB a live window needs and the tier does not have free.
 
@@ -2942,7 +3010,8 @@ def window_pressure(
 
     need: dict[str, int] = {}
     if consumers is None:
-        consumers = _planned_consumers(queue, tiers)
+        unknown = []
+        consumers = _planned_consumers(queue, tiers, unknown=unknown)
     cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
     # Newcomer admission probes (#orphan-pressure): collected during the
@@ -3028,7 +3097,7 @@ def window_pressure(
         if stage_newcomer:
             if admissions is None:
                 admissions = _commitment_admissions(_commitment_census(
-                    queue, tiers, consumers=consumers))
+                    queue, tiers, consumers=consumers, unknown=unknown or ()))
             if _commitment_refusal(admissions, _key, str(tier_id)) is not None:
                 # The commitment refuses it (#907), and no eviction can
                 # change that: its window publishes nothing this cycle, so
@@ -3580,9 +3649,9 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     # newcomer gate below admits only a window whose read footprint fits
     # beside them.  Taken on the first newcomer, since most passes gate
     # none.  The stage leg's pass only -- a ram miss reads the stage, it
-    # never stalls (#906) -- and over the consumers this census could read:
-    # one whose state did not read publishes nothing while it stays unknown,
-    # so it grows nothing either.
+    # never stalls (#906).  A consumer this census could not read makes its
+    # tier's newcomers wait: its growth is unknown, and the next pass that
+    # reads it may find it wants its footprint back.
     census: dict[str, dict[str, object]] | None = (
         None if mover_role == "mover_row" else {})
     for tier_id, tier_wants in sorted(by_tier.items()):
@@ -3787,7 +3856,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     if census is None:
                         census = _commitment_census(queue, tiers, consumers=[
                             (other["key"], other["consumer"], other["plan"],
-                             other["tier_id"]) for other in wants])
+                             other["tier_id"]) for other in wants],
+                            unknown=census_unknown)
                     verdict = _commitment_decision(
                         census.get(tier_id), key, admitted=admitted_newcomers)
                     if verdict is not None:
@@ -3880,6 +3950,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                    or "funding record unreadable"})
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 if (fence_status == "record"
                         and fence_record.get("state") in (
@@ -3895,6 +3966,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "error": f"ready census unreadable: {exc!r}"})
                 if added_extra:
                     running_extra -= added_extra
+                    admitted_newcomers.discard(key)
                 continue
             if held_grant > 0:
                 record_status, record, record_reason = (
@@ -3913,6 +3985,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                    or "funding record unreadable"})
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 if record_status == "absent":
                     if (not mover_rowed and not mover_holds
@@ -3954,6 +4027,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         }
                         if added_extra:
                             running_extra -= added_extra
+                            admitted_newcomers.discard(key)
                         continue
                     _reread_status, record, _reread_reason = (
                         queue.read_funding_evidence(mover, tier_id))
@@ -3970,6 +4044,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         }
                         if added_extra:
                             running_extra -= added_extra
+                            admitted_newcomers.discard(key)
                         continue
                 # Coordinator-side binding check: the fence belongs to this
                 # live plan and consumer.  A replaced plan (same mover keys
@@ -4012,6 +4087,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     }
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 superseded = residency_plan.superseded(queue, want["plan"])
                 due = window_credit.cancel_due(
@@ -4059,6 +4135,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         }
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 if added_extra:
                     # Already-held advance was planned: it sits in
@@ -4101,6 +4178,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "error": f"prior census unreadable: {prior_unknown!r}"})
                 if added_extra:
                     running_extra -= added_extra
+                    admitted_newcomers.discard(key)
                 continue
             if not window_credit.replenish_ok(
                     grant_outstanding=False, need_gib=demand,
@@ -4113,6 +4191,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 }
                 if added_extra:
                     running_extra -= added_extra
+                    admitted_newcomers.discard(key)
                 continue
             if mover_holds:
                 # Already holding under its own key: either the live fence
@@ -4159,6 +4238,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                    "error": f"grant census unreadable: {exc!r}"})
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 if int(demand) - grant_have <= 0:
                     # Grant already sufficient (held_total counts it):
@@ -4183,6 +4263,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     }
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 deficit = int(demand) - grant_have
                 try:
@@ -4199,6 +4280,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     }
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
                 # Planned next becomes held: exact, once.
                 if added_extra:
@@ -4225,6 +4307,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "error": f"grant census unreadable: {exc!r}"})
                 if added_extra:
                     running_extra -= added_extra
+                    admitted_newcomers.discard(key)
                 continue
             if int(demand) - grant_have > 0:
                 # Fresh take: the peak must fit before committing new money.
@@ -4240,6 +4323,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     }
                     if added_extra:
                         running_extra -= added_extra
+                        admitted_newcomers.discard(key)
                     continue
             try:
                 kept = queue.read_funding(mover, tier_id)
@@ -4260,6 +4344,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 }
                 if added_extra:
                     running_extra -= added_extra
+                    admitted_newcomers.discard(key)
                 continue
             # Exact move: planned next becomes held.
             if added_extra:
@@ -5785,7 +5870,8 @@ def cycle(
     # frozen and an accepted phase moves in minutes, so the second reader of
     # this list is not reading anything stale; what changes between them is the
     # ledger, and both re-read that.
-    planned = _planned_consumers(queue, announced_tiers)
+    planned_unknown: list[dict[str, object]] = []
+    planned = _planned_consumers(queue, announced_tiers, unknown=planned_unknown)
     # One snapshot of the live withdrawal markers for every step below, so a
     # cancellation filed mid-cycle cannot have the adoption, the pressure
     # probe and the two windows disagree about it (#708).
@@ -5797,10 +5883,11 @@ def cycle(
     for event in withdraw_dead_consumer_movers(queue):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
-                                       consumers=planned, withdrawn=withdrawn):
+                                       consumers=planned, withdrawn=withdrawn,
+                                       unknown=planned_unknown):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
-                               withdrawn=withdrawn)
+                               withdrawn=withdrawn, unknown=planned_unknown)
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
