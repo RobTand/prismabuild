@@ -255,9 +255,40 @@ counts it. The filed record names the offending field and the value it stated,
 and the original bytes stay beside it in `superseded/`. Values `int`/`float`
 accept keep the place they have always had: the guard turns a raise into an
 answer and changes no reading the sort already made. A denied item past `STARVATION_FLOOR` may withhold its
-host until `WITHHOLD_CEILING_S`, but higher-priority items have already been
-considered before that veto is reached. The existing withholding rule still
-protects large items within each band. Priority defaults to 0 and is queue
+host, but higher-priority items have already been considered before that veto
+is reached. The withholding rule protects large items within each band, and
+since #924 it withholds only while the box will drain soon. That is judged per
+holder from what the holder declared (`PoolQueue.holder_bound`), not from a new
+constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
+`execution_timeout_s` ends inside it, is transient; a bounded holder past that
+line is long; a progress-governed holder with no total timeout is unbounded;
+a raw ledger holder with no readable claim is judged by the waiting item's own
+first-denial clock, as every holder was before #924. The age half of
+"transient" is a presumption, not a declaration: a young deadline-governed
+holder with no requested timeout may yet run for hours, and it becomes long by
+itself once it passes the line, so a veto resting on it ends on its own. A
+token shortage withholds when transient holders cover every short kind. An
+adaptive refusal that draining resolves withholds too: an exclusive need (a
+measurement's `measurement_host_not_idle`/`measurement_holder`, unbounded or
+full-width CPU demand on a pressured host, and the GPU refusals for a
+measurement) when every holder is transient, and the adaptive CPU refusals
+that stand for a CPU token shortage (`borrow_evidence_unavailable`,
+`pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
+by the token rule. Every other adaptive refusal is overtaken as before. An item
+whose holders do not drain soon keeps its passes and its place, is denied
+`..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
+veto expired under refills), and is listed under `starved` by
+`pbstatus --starvation` and `pb_starvation`. Three bounds keep a veto finite:
+holders age; a veto refilled by work ahead of it in the ready order expires
+`WITHHOLD_CEILING_S` into the episode until those refills have gone; and an
+exclusive need with no holder in the way withholds only for one CPU sample
+window (`adaptive_cpu.MAX_INTERVAL_S + MAX_SAMPLE_AGE_S`) of the last holder's
+tail, after which the load is treated as foreign and the item does not withhold
+for `WITHHOLD_CEILING_S`, as it does not whenever a GPU refusal names processes
+the pool does not own. An item that needs a GPU on a box whose GPU is free is
+eligible on its first denial rather than at the floor, because every admission
+behind it takes CPU or memory it needs; "free" is the token and, where the box
+samples its GPU, a fresh sample naming no foreign process. Priority defaults to 0 and is queue
 metadata outside action identity; `pbtest --priority` forwards it to every
 shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
 first. A denied foreground item may also preempt one admitted background holder

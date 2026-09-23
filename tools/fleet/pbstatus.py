@@ -1604,6 +1604,44 @@ def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict
     return top
 
 
+def _starvation_starved(jobs: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Ready items a box refused and will not withhold for (#924).
+
+    A starved item withholds its box only while the holders in its way will
+    drain soon.  When one of them will not -- a progress-governed campaign
+    holder with no total bound, a bounded one already past the pool's
+    transient line, load the pool does not own, or a veto that work ahead of
+    it kept refilling -- the item stops holding the box shut, and this is
+    where it says so instead of going quiet.  Each row is the host's latest
+    verdict for this exact submission, with the reason and the holders it
+    named.
+    """
+
+    starved: list[dict] = []
+    for job in jobs:
+        if job.get("state") != "READY":
+            continue
+        for denial in job.get("admission_denials") or ():
+            reason = str(denial.get("reason", ""))
+            if not reason.endswith(("_starved", "_past_ceiling")):
+                continue
+            evidence = denial.get("evidence")
+            detail = evidence.get("starved") if isinstance(evidence, Mapping) else None
+            starved.append({
+                "action_key_prefix": job.get("action_key_prefix"),
+                "host": denial.get("host"),
+                "reason": reason,
+                "why": detail.get("why") if isinstance(detail, Mapping) else None,
+                "decision_reason": denial.get("decision_reason"),
+                "admission_passes": job.get("admission_passes"),
+                "admission_wait_s": job.get("admission_wait_s"),
+                "denial_age_s": denial.get("age_s"),
+                "holders": (detail.get("holders")
+                            if isinstance(detail, Mapping) else None),
+            })
+    return starved
+
+
 def _starvation_gaps() -> list[dict]:
     """What this blob cannot derive, and what would have to be recorded.
 
@@ -1737,6 +1775,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             notes=notes, unreadable=unreadable, now=moment))
     tiers = _starvation_tiers(queue, now=moment, notes=notes, unreadable=unreadable)
     denial_top = _starvation_denials(queue, notes=notes)
+    starved = _starvation_starved(jobs)
     return {"schema": STARVATION_SCHEMA_V1,
             "queue_root": str(queue.root),
             "sampled_unix": moment,
@@ -1747,6 +1786,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             "residency_plans": plans,
             "tiers": tiers,
             "denial_top": denial_top,
+            "starved": starved,
             "not_observable": _starvation_gaps()}
 
 
