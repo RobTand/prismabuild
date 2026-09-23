@@ -5444,7 +5444,36 @@ def publish_landing_expectations(
                     continue
                 inside = (leg["phase"] == reading if horizon is None
                           else end is None or start < end)
+                # A finished copy whose range is not resident: landed and
+                # holding its tokens (adoption has not caught up), or evicted
+                # and holding none, which the window publishes again once the
+                # range is back inside the horizon (``evict_beyond_horizon``).
+                # Error-visible: a holder this cannot list falls through to
+                # the plain unpublished label rather than a guess.
+                finished: str | None = None
+                if state is None and not superseded and queue.item_path(
+                        pool.DONE, mover).exists():
+                    try:
+                        finished = ("done-not-resident" if pool.held_names_visible(
+                            queue.tier_ledger(tier_id), mover) else "evicted")
+                    except (OSError, ValueError, pool.PoolContractError):
+                        finished = None
+                if finished == "done-not-resident":
+                    row.update({"state": finished, "expected_landing_unix": None,
+                                "waiting_for": "adoption: the copy finished and "
+                                               "holds its tokens, and the range "
+                                               "is not resident yet"})
+                    ranges.append(row)
+                    continue
                 if not inside and state is None:
+                    continue
+                if finished == "evicted":
+                    row.update({"state": finished, "expected_landing_unix": None,
+                                "waiting_for": "the window: the range was "
+                                               "evicted, and is published again "
+                                               "when it is back inside the "
+                                               "horizon and the tier's room allows"})
+                    ranges.append(row)
                     continue
                 failed = queue.item_path(pool.FAILED, mover).exists()
                 if superseded:

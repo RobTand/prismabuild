@@ -6168,7 +6168,29 @@ class PoolQueue:
           that publishes it is alive, which is the offer freshness bound the
           fleet already applies to every announcement (``OFFER_TIMEOUT_S``).
         * ``superseded``: the plan is withdrawn, so nothing will publish it.
+        * ``done``: the copy finished and still holds its tokens on the tier
+          ledger, so its range is resident or being adopted.  Waiting after
+          it is not a dependency wait (a reader that hung with a stale
+          record, say).  Not exempt.
+        * ``evicted``: in ``done/`` with no tokens on the tier ledger.  The
+          window evicted the range and publishes it again when it is back
+          inside the horizon (``tier_loop.evict_beyond_horizon``), so it is
+          treated as ``unpublished``.
+        * ``withdrawn``: a cancellation.  The window never republishes it:
+          its publish passes ``refuse_withdrawn`` and a refusal supersedes
+          the plan (``tier_loop.residency_window``, #708).  Not exempt.
+        * ``unknown``: the evidence did not read (the tier ledger for a done
+          mover included).  Not exempt, and ``detail`` says why.
         * ``not-a-dependent``: the consumer's plan does not name it.
+
+        ``unpublished``, ``evicted`` and ``failed`` are exempt only while the tier is
+        within its commitment as well: the tier loop's filed commitment
+        record (``tier-commitments/<tier>.json``, #930) shows
+        ``over_committed_gib <= 0``.  On an over-committed tier the claimed
+        consumers wait on each other's room (#1011), and ``no_progress`` is
+        what breaks that.  A missing or unreadable record is not exempt.
+        ``ready`` and ``claimed`` stay exempt there: a published mover
+        already holds its room.
 
         The wait is exempt when any named mover is still coming.  The read
         is the plan the consumer froze and one existence check per state per
@@ -6195,6 +6217,7 @@ class PoolQueue:
         superseded = False
         tier_alive: bool | None = None
         tier_age: float | None = None
+        over_committed: int | None = None
         if plan is not None:
             try:
                 superseded = plan_mod.superseded(self, plan) is not None
@@ -6207,27 +6230,46 @@ class PoolQueue:
             if mover not in stage_movers:
                 movers.append({"key": mover, "state": "not-a-dependent"})
                 continue
+            detail: str | None = None
             try:
-                if self.item_path(READY, mover).exists():
+                if self.item_path(WITHDRAWN, mover).exists():
+                    state = WITHDRAWN
+                elif self.item_path(READY, mover).exists():
                     state = READY
                 elif self.item_path(CLAIMED, mover).exists():
                     state = CLAIMED
+                elif self.item_path(DONE, mover).exists():
+                    # Landed (tokens held) or evicted (released, and the
+                    # window publishes it again): the ledger tells them apart.
+                    # Error-visible, so a holder this cannot list is unknown,
+                    # never "holds nothing".
+                    try:
+                        held = held_names_visible(self.tier_ledger(
+                            str(plan["tier_id"])), mover)  # type: ignore[index]
+                    except (OSError, ValueError, PoolContractError) as exc:
+                        state, detail = "unknown", f"done; tier ledger unreadable: {exc!r}"
+                    else:
+                        state = DONE if held else "evicted"
                 elif superseded:
                     state = "superseded" if not self.item_path(
                         FAILED, mover).exists() else FAILED
                 else:
                     state = (FAILED if self.item_path(FAILED, mover).exists()
                              else "unpublished")
-            except (OSError, ValueError):
-                state = "unknown"
-            movers.append({"key": mover, "state": state})
+            except (OSError, ValueError) as exc:
+                state, detail = "unknown", repr(exc)
+            movers.append({"key": mover, "state": state}
+                          if detail is None else
+                          {"key": mover, "state": state, "detail": detail})
             if state in (READY, CLAIMED):
                 exempt = True
-            elif state in (FAILED, "unpublished") and not superseded:
+            elif state in (FAILED, "unpublished", "evicted") and not superseded:
                 if tier_alive is None:
-                    tier_alive, tier_age = self._tier_loop_alive(
-                        str(plan["tier_id"]), now=moment)   # type: ignore[index]
-                exempt = exempt or tier_alive
+                    tier_id = str(plan["tier_id"])          # type: ignore[index]
+                    tier_alive, tier_age = self._tier_loop_alive(tier_id, now=moment)
+                    over_committed = self._tier_over_committed_gib(tier_id)
+                exempt = exempt or (tier_alive and over_committed is not None
+                                    and over_committed <= 0)
         verdict: dict[str, object] = {
             "exempt": exempt, "movers": movers,
             "since_unix": record["since_unix"], "checked_unix": moment,
@@ -6235,9 +6277,28 @@ class PoolQueue:
         if tier_alive is not None:
             verdict["tier_loop_alive"] = tier_alive
             verdict["tier_record_age_s"] = tier_age
+            # None: no commitment record filed, or one that does not read.
+            verdict["tier_over_committed_gib"] = over_committed
         if not exempt:
             verdict["reason"] = "no named mover is still coming"
         return verdict
+
+    def _tier_over_committed_gib(self, tier_id: str) -> int | None:
+        """The tier's filed ``over_committed_gib``, or ``None`` when unknown.
+
+        Read once per verdict from the tier loop's own commitment record
+        (:meth:`tier_commitment`, #930).  ``None`` for no record, a record
+        that does not read, or a field that is not a whole number.
+        """
+
+        try:
+            record = self.tier_commitment(tier_id)
+        except (OSError, ValueError, PoolContractError):
+            return None
+        value = None if record is None else record.get("over_committed_gib")
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
 
     def _tier_loop_alive(self, tier_id: str, *, now: float
                          ) -> tuple[bool, float | None]:

@@ -90,7 +90,8 @@ RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
 #: not published (a stall, or a failed copy awaiting its recopy).
 #: ``terminal-no-receipt`` is a leg nothing will publish again: its mover
 #: failed and the plan is superseded.
-LANDING_STATES = ("ready", "claimed", "unpublished", "terminal-no-receipt")
+LANDING_STATES = ("ready", "claimed", "unpublished", "evicted",
+                  "done-not-resident", "terminal-no-receipt")
 _LANDING_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "manifest_sha256",
     "written_unix", "landing_bytes_per_s", "landing_basis",

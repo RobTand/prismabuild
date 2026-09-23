@@ -7253,6 +7253,8 @@ bytes and one state:
 | `claimed` | the mover is copying | claim time + own bytes / rate |
 | `ready` | the mover is queued | now + (bytes ahead + own bytes) / rate |
 | `unpublished` | the window has not published it, or will recopy a failed copy (#627) | null, with `waiting_for` |
+| `evicted` | in `done/` with no tokens on the tier ledger: evicted, and published again when the range is back inside the horizon (`evict_beyond_horizon`) | null, with `waiting_for` |
+| `done-not-resident` | in `done/` and holding its tokens, but not resident yet: waiting for adoption, briefly under adoption lag | null, with `waiting_for` |
 | `terminal-no-receipt` | the plan is superseded, so nothing will publish it | null |
 
 A queued range also carries its `queue_position` and `bytes_ahead`: every
@@ -7266,8 +7268,9 @@ the smallest sealed fill. The record carries every measured rate beside it
 `rate_max_bytes_per_s`) and `report_latency_s` (heartbeat plus cycle). The
 tier loop rewrites the record only when the queue, the ranges' states or the
 rates change, so `written_unix` dates the last change, not the last cycle.
-An `unpublished` range is listed only inside the consumer's refill horizon;
-a queued range is listed wherever it is. A consumer that is no longer running
+An `unpublished` or `evicted` range is listed only inside the consumer's
+refill horizon; a queued or `done-not-resident` range is listed wherever it
+is. A consumer that is no longer running
 loses its record, and the dead-consumer pass removes it with the plan it
 reaps. Each record carries `publish_s`, what the pass had spent when it
 composed it.
@@ -7290,8 +7293,10 @@ and composes has stopped. That is the same judgment
 
 **What the reader does** (PrismaQuant `residency_shard_reader.landing_verdict`):
 
-* It waits while every pending span is covered by a `ready` or `claimed`
-  range, or by an `unpublished` range, and the tier loop is alive. Each
+* It waits while every pending span is covered by a range in any state
+  but `terminal-no-receipt`, and the tier loop is alive. A
+  `done-not-resident` range is transient under adoption lag, so it is never
+  a refusal; PrismaBuild's rung bounds a wait on it instead (not exempt). Each
   state change logs the state and the expectation.
 * It refuses at once when every range covering a span is
   `terminal-no-receipt`, or when the tier loop is silent. The refusal names
@@ -7305,11 +7310,23 @@ and composes has stopped. That is the same judgment
 `progress.declare_staged_wait`): its progress token, when the wait began and
 the movers it waits on. When the `no_progress` rung finds the action quiet,
 it asks `PoolQueue.staged_wait_verdict`. The verdict reads the consumer's
-frozen plan and checks each named mover against it and the queue. The wait
-is exempt while a named mover of that plan is `ready` or `claimed`, or while
-one is failed or unpublished under a live plan and the tier loop is alive.
-A mover the plan does not name, a record with another token, or a plan
-superseded by a withdrawal earns nothing. The rung credits only the time
+frozen plan and checks each named mover against it and the queue:
+
+| Mover state | Exempt |
+|---|---|
+| `ready`, `claimed` | yes: a published mover already holds its room |
+| `unpublished`, `evicted` (in `done/`, no tokens), `failed` under a live plan | only while the tier loop is alive **and** the tier's filed commitment record (`tier-commitments/<tier>.json`, #930) shows `over_committed_gib <= 0` |
+| `done` (in `done/`, holding tokens: landed or being adopted) | no: the copy finished, so a consumer still quiet is not waiting on it |
+| `withdrawn` | no: the window never republishes it (its publish passes `refuse_withdrawn`, and the refusal supersedes the plan, #708) |
+| `superseded`, `not-a-dependent`, `unknown` | no |
+
+The commitment condition is #1011: on an over-committed tier the claimed
+consumers wait on each other's room, and the `no_progress` kill is what
+breaks that, so their unpublished waits are not exempt there. A missing or
+unreadable commitment record, or a tier ledger the verdict cannot list for
+a `done` mover (`held_names_visible`), is not exempt either, and the verdict
+records why (`tier_over_committed_gib`, a mover's `detail`). A record with
+another token earns nothing. The rung credits only the time
 since the later of the wait's start and the last real advance, and it
 refunds the time the check itself took. The progress observation records
 `staged_wait_exempt_s` and `staged_wait` (the movers and the states the
@@ -7323,8 +7340,8 @@ commitment record names (a) and (b) and their GiB among its terms
 (`tests/test_r12_and_the_capture_replay_under_the_refill_horizon.py`, which
 passes on `72c276d7d9d1` without this change). The commitment does not
 re-gate consumers that are already claimed: if three are claimed together,
-only `tier-over-committed` reports it. Their waits are what the landing
-record and the staged-wait exemption now bound.
+only `tier-over-committed` reports it (#1011). The staged-wait exemption does
+not cover their unpublished waits while the tier is over-committed.
 
 **Limits.**
 
