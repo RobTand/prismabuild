@@ -3357,9 +3357,18 @@ To let the batch go, use one of these (#926):
       --reason "band L-1 abandoned"
   ```
 
-  `pbrun` refuses while that consumer is queued, claimed or being moved, and
-  refuses a key that did not declare the batch. The batch is then deleted as
-  soon as every other declared consumer has succeeded.
+  `pbrun` refuses while that consumer is queued, claimed, being moved or
+  being submitted, and refuses a key that did not declare the batch. The
+  batch is then deleted as soon as every other declared consumer has
+  succeeded. A released key cannot declare the batch again: submitting it
+  again is refused with `origin-consumer-released`.
+
+  A consumer the stall line names `unpublished` was declared and never
+  queued, usually because its submitter died. Release it the same way (#945).
+  `pbrun` refuses when the live generation sealed it
+  (`origin-consumer-unpublished-live`; submit the same key again instead,
+  which clears the hold) and when a deferred release has pinned it and will
+  still publish it (`origin-consumer-release-pending`).
 
 A batch is *blocked* when every consumer still holding it is `failed` or
 `withdrawn`: nothing queued or running will free it, and it is held until one

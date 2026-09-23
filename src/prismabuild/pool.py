@@ -559,6 +559,10 @@ _RESIDENCY_KEYS = frozenset({
 PASSES = "passes"
 CLAIM_DENIALS = "claim-denials.json"
 CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
+#: Per-ledger report of holders a census could not read (#936): written by
+#: every inexact retire, removed by the next exact one.
+CENSUS_UNREADABLE = "census-unreadable.json"
+CENSUS_UNREADABLE_SCHEMA_V1 = "prismabuild.ledger_census_unreadable.v1"
 MAX_CLAIM_DENIALS = 256
 MAX_DENIAL_VALUE_DEPTH = 6
 MAX_DENIAL_VALUE_ITEMS = 32
@@ -1482,11 +1486,66 @@ def _scan_visible(directory: Path):
     grow, dead-name reclaim): a holder this listing cannot read makes
     the census unknown, and the caller must refuse the decision --
     retain rather than mint -- instead of narrowing the view.  Reads
-    (``capacity``, ``available``) and shrink-only scans keep the
-    tolerant :func:`_scan`, whose errors understate toward refusal.
+    (``capacity``, ``available``) keep the tolerant :func:`_scan`, and a
+    holder they cannot read is counted as HELD, never as free (#936):
+    ``capacity`` becomes a lower bound, and the shrink
+    (``retire_free_capacity``) counts the holder as holding every minted
+    name that is neither free nor dead, because an under-counted held
+    total would retire too few.  Neither reads an unreadable holder's
+    tokens as free.
     """
 
     return sorted(directory.iterdir())
+
+
+def _holder_is_dir(path: Path) -> bool:
+    """Whether a listed ``held/`` entry is a holder directory, error-visible.
+
+    ``Path.is_dir`` gives different answers on the two interpreters the
+    fleet runs (#936).  Python 3.12 re-raises any errno other than ENOENT,
+    ENOTDIR, EBADF and ELOOP.  Python 3.14 is ``os.path.isdir``, which
+    returns False on every ``OSError``, so an EIO reads as "not a holder"
+    and that holder's tokens drop out of the census: on the strict census
+    this reissued dead names with no backing.  This check gives one answer
+    everywhere.  An entry that vanished (ENOENT, ENOTDIR) is not a holder,
+    exactly as :func:`_scan` treats a vanished directory.  Any other error
+    propagates, and each caller decides what an unreadable holder means.
+    """
+
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _unreadable_holder(holder: Path, exc: OSError) -> dict[str, object]:
+    """What a census report says about one holder it could not read."""
+
+    return {"holder": str(holder), "errno": exc.errno,
+            "error": exc.strerror or str(exc)}
+
+
+def _holder_token_paths(
+    holder: Path, pattern: str = "*-*",
+) -> tuple[list[Path], OSError | None]:
+    """One listed holder's token paths for a tolerant read, and its error.
+
+    The error is set when the holder cannot be read (its type or its
+    listing fails with anything but vanishing), so the read can count it
+    as held and report it instead of treating it as empty.  A holder that
+    vanished mid-scan was released and holds nothing, so it reads as an
+    empty list with no error.  Tokens are matched exactly as
+    :func:`_glob_visible` matches them.
+    """
+
+    try:
+        if not _holder_is_dir(holder):
+            return [], None
+        return _glob_visible(holder, pattern), None
+    except (FileNotFoundError, NotADirectoryError):
+        return [], None
+    except OSError as exc:
+        return [], exc
 
 
 def _glob_visible(directory: Path, pattern: str):
@@ -2169,6 +2228,9 @@ class ResourceLedger:
         self.root = Path(root)
         self.host = host or socket.gethostname()
         self.last_token_shortage: dict[str, object] | None = None
+        # The last retire's unreadable-holder report, or None when its
+        # census was exact (#936; see report_census).
+        self.last_census_report: dict[str, object] | None = None
         # Optional ``(*, blocking: bool) -> context manager`` yielding the
         # acquisition status.  Set only by PoolQueue.tier_ledger (the
         # tier's mint lock); host ledgers keep None and no new behavior.
@@ -2412,12 +2474,16 @@ class ResourceLedger:
                 try:
                     held = self._token_is_held(name)
                 except OSError:
+                    # Unknown whether a holder has this name: the marker
+                    # just created would strand the index (a marker with no
+                    # token is skipped forever; see retire_free_capacity).
+                    # Remove it and mint nothing this cycle; the next cycle
+                    # retries.  A host ledger still propagates the error,
+                    # but only after the removal (#936): before, a host
+                    # raise left the marker and lost the index for good.
+                    (self.minted_dir / name).unlink(missing_ok=True)
                     if not self._strict_census():
                         raise
-                    # Unknown whether a holder has this name: the marker
-                    # just created would strand the index.  Remove it and
-                    # mint nothing this cycle; the next cycle retries.
-                    (self.minted_dir / name).unlink(missing_ok=True)
                     return
                 if held:
                     # Adoption did not see it, but a holder has it: the marker
@@ -2439,20 +2505,33 @@ class ResourceLedger:
         """Whether any holder here currently contains a token called ``name``.
 
         Error-visible on a tier ledger (an unreadable holder aborts the
-        grow census); tolerant on a host ledger, as before.
+        grow census); tolerant on a host ledger, as before, where a holder
+        or token that vanished mid-scan reads as not holding the name.
+
+        An unreadable holder is UNKNOWN on both, never an answer (#936).
+        ``True`` would leave the marker ``ensure_capacity`` just created
+        with no token, which it then skips forever; ``False`` would mint a
+        free duplicate of a name the holder may hold, reading the holder as
+        free.  So the error propagates, and ``ensure_capacity`` removes the
+        marker and mints nothing.  ``Path.is_dir`` and ``Path.exists`` are
+        not used: on Python 3.14 both return False on every ``OSError``.
         """
 
         if self._strict_census():
             return any(
                 name in {path.name for path in _scan_visible(holder)}
                 for holder in _scan_visible(self.held_dir)
-                if holder.is_dir()
+                if _holder_is_dir(holder)
             )
-        return any(
-            (holder / name).exists()
-            for holder in _scan(self.held_dir)
-            if holder.is_dir()
-        )
+        for holder in _scan(self.held_dir):
+            if not _holder_is_dir(holder):
+                continue
+            try:
+                os.stat(holder / name)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return True
+        return False
 
     def _adopt_present_tokens(self, minted: Container[str]) -> set[str]:
         """Record the mint right for every token this ledger already has.
@@ -2474,7 +2553,7 @@ class ResourceLedger:
         adopted: set[str] = set()
         present = {path.name for path in self._census_glob(self.free_dir, "*-*")}
         for holder in self._census_scan(self.held_dir):
-            if holder.is_dir():
+            if _holder_is_dir(holder):
                 present.update(
                     path.name for path in self._census_glob(holder, "*-*"))
         for name in sorted(present):
@@ -2510,21 +2589,54 @@ class ResourceLedger:
         Only free tokens are retired, so a running action never loses the
         reservation it is executing under; the total falls as holders finish
         and their tokens are not re-created.  Returns what was retired.
+
+        An unreadable holder counts as HELD, never as free (#936).  The
+        arithmetic is why it cannot be skipped: ``excess = free + held -
+        target``, so a held count that is too low retires too few.  With
+        free 5, held 3 and target 4, skipping the holder retires 1 instead
+        of 4 and the true total stays at 7, over-admitting against the
+        shrink.  So the held count becomes the most the ledger's own mint
+        authority allows it to be: every minted name that is neither free
+        nor dead (``minted/`` less ``free/`` less ``minted/dead/``), plus any
+        held name a readable holder shows.  That retires at least what the
+        truth requires, and in a steady state it retires nothing valid: the
+        R6 case (3 markers, 1 dead, 1 free, 1 held, target 2) keeps its
+        free token.  If the markers cannot be listed either, there is no
+        bound, and every free token of each kind asked about is retired.
+        The one miss is a transient duplicate (a host-ledger artifact,
+        see ``ensure_capacity``) held inside the unreadable holder.
         """
 
         retired: dict[str, int] = {}
+        held_paths, unreadable = self._held_census()
+        minted: tuple[set[str], set[str]] | None = None
+        if unreadable:
+            try:
+                minted = self._minted_and_dead_names()
+            except OSError:
+                minted = None
         for kind, count in sorted(capacity.items()):
             target = int(count)
             if target < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
             free = _glob(self.free_dir, f"{kind}-*")
-            held = sum(
-                1 for holder in _scan(self.held_dir)
-                if holder.is_dir()
-                for _ in _glob(holder, f"{kind}-*")
-            )
-            # Never retire below what is already held: those tokens exist.
-            excess = max(0, len(free) + held - target)
+            pattern = f"{kind}-*"
+            if not unreadable:
+                held = sum(1 for path in held_paths
+                           if fnmatch.fnmatchcase(path.name, pattern))
+                # Never retire below what is already held: those tokens exist.
+                excess = max(0, len(free) + held - target)
+            elif minted is None:
+                # No mint authority to bound the holder by: under-count free.
+                excess = len(free)
+            else:
+                markers, dead = minted
+                free_names = {path.name for path in free}
+                held_names = {name for name in markers
+                              if fnmatch.fnmatchcase(name, pattern)} - free_names - dead
+                held_names |= {path.name for path in held_paths
+                               if fnmatch.fnmatchcase(path.name, pattern)}
+                excess = max(0, len(free) + len(held_names) - target)
             # Retire the HIGHEST-indexed free tokens, not the lowest.
             #
             # ``ensure_capacity`` runs on every claim attempt and fills the
@@ -2556,6 +2668,8 @@ class ResourceLedger:
                 except OSError:
                     continue
                 retired[kind] = retired.get(kind, 0) + 1
+        self.last_census_report = self.report_census(
+            unreadable, asked=capacity.keys(), retired=retired)
         return retired
 
     @_guarded_mutation(blocking=True)
@@ -2687,19 +2801,121 @@ class ResourceLedger:
         self._drop_empty_holder(holder)
         return released
 
-    def capacity(self) -> dict[str, int]:
-        """Total tokens of each kind, free or held."""
+    def _held_census(self) -> tuple[list[Path], list[dict[str, object]]]:
+        """Every held token path, and every holder that could not be read.
+
+        A tolerant read: a holder that vanished mid-scan holds nothing, and
+        one that cannot be read is left out of the paths and listed with its
+        errno, so the caller can count it as held and report it (#936).
+        """
+
+        paths: list[Path] = []
+        unreadable: list[dict[str, object]] = []
+        for holder in _scan(self.held_dir):
+            tokens, error = _holder_token_paths(holder)
+            if error is not None:
+                unreadable.append(_unreadable_holder(holder, error))
+                continue
+            paths.extend(tokens)
+        return paths, unreadable
+
+    def capacity_census(self) -> tuple[dict[str, int], list[dict[str, object]]]:
+        """Total tokens of each kind, and the holders that total could not read.
+
+        The total is exact when the list is empty.  Otherwise the unreadable
+        holders' tokens are uncounted, so the total is a lower bound.  They
+        are never counted as free (:meth:`available` reads ``free/`` only).
+        A caller that decides a shrink from the total must not trust a lower
+        bound to say the ledger is already small enough (see
+        ``_apply_tier_capacity``).
+        """
 
         counts: dict[str, int] = {}
         for path in _glob(self.free_dir, "*-*"):
             counts[path.name.rsplit("-", 1)[0]] = counts.get(path.name.rsplit("-", 1)[0], 0) + 1
-        for holder in _scan(self.held_dir):
-            if not holder.is_dir():
-                continue
-            for path in _glob(holder, "*-*"):
-                kind = path.name.rsplit("-", 1)[0]
-                counts[kind] = counts.get(kind, 0) + 1
-        return counts
+        held, unreadable = self._held_census()
+        for path in held:
+            kind = path.name.rsplit("-", 1)[0]
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts, unreadable
+
+    def _minted_and_dead_names(self) -> tuple[set[str], set[str]]:
+        """The mint markers and the destroyed names, error-visible.
+
+        The bound :meth:`retire_free_capacity` counts an unreadable holder
+        by: every token has a marker, and ``retire_held`` files a destroyed
+        one under ``minted/dead/`` without touching its marker.  A ledger
+        with no dead namespace (every host ledger) has no dead names; any
+        other listing error propagates, and the retire then has no bound.
+        """
+
+        markers = {path.name for path in _scan_visible(self.minted_dir)
+                   if path.name != "dead"}
+        try:
+            dead = {path.name for path in _scan_visible(self.minted_dir / "dead")}
+        except FileNotFoundError:
+            dead = set()
+        return markers, dead
+
+    @property
+    def census_report_path(self) -> Path:
+        """This ledger's unreadable-holder report (#936)."""
+
+        return self.base / CENSUS_UNREADABLE
+
+    def report_census(
+        self, unreadable: Sequence[Mapping[str, object]], *,
+        asked: Iterable[str], retired: Mapping[str, int],
+    ) -> dict[str, object] | None:
+        """Record, or clear, why this ledger's census was not exact.
+
+        A holder that stays unreadable blocks every mint on this ledger
+        (the strict census refuses) and makes every shrink retire against
+        a bound instead of the truth (see :meth:`retire_free_capacity`),
+        so it must be loud: the report names the ledger, each unreadable
+        holder with its errno, the kinds the retire was asked about and
+        what it retired, and counts consecutive inexact censuses.
+        ``pbstatus --starvation`` reads it.  An exact census removes the
+        report.  Returns the report, or ``None`` when exact.
+        """
+
+        path = self.census_report_path
+        if not unreadable:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None
+        try:
+            previous = _read_json(path) or {}
+        except (OSError, PoolContractError):
+            previous = {}
+        now = _now()
+        prior_cycles = previous.get("cycles")
+        report: dict[str, object] = {
+            "schema": CENSUS_UNREADABLE_SCHEMA_V1,
+            "ledger": str(self.base),
+            "unreadable": [dict(entry) for entry in unreadable],
+            "kinds_asked": sorted(str(kind) for kind in asked),
+            "retired": {str(kind): int(count) for kind, count in retired.items()},
+            "cycles": (int(prior_cycles) + 1
+                       if isinstance(prior_cycles, int) and prior_cycles > 0 else 1),
+            "first_unix": (previous.get("first_unix")
+                           if isinstance(previous.get("first_unix"), (int, float))
+                           else now),
+            "last_unix": now,
+        }
+        with suppress(OSError):
+            _write_json_atomic(path, report)
+        return report
+
+    def capacity(self) -> dict[str, int]:
+        """Total tokens of each kind, free or held.
+
+        A lower bound while a holder cannot be read; it never raises for
+        one (#936).  Admission reading it refuses (``never_fits``) rather
+        than seating work on tokens nobody can count.
+        """
+
+        return self.capacity_census()[0]
 
     def available(self) -> dict[str, int]:
         """Tokens of each kind not currently held."""
@@ -9183,11 +9399,28 @@ class PoolQueue:
 
         reclaimed = self._reclaim_dead_markers(ledger, wanted)
         ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
-        total = ledger.capacity()
-        lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
-        retired = ledger.retire_free_capacity(lower) if lower else {}
+        total, unreadable = ledger.capacity_census()
+        if not unreadable:
+            lower = {kind: wanted.get(kind, 0) for kind in total
+                     if total[kind] > wanted.get(kind, 0)}
+        else:
+            # A holder could not be read, so the total is a lower bound and
+            # cannot say the tier is already at or below wanted: a hidden
+            # holder under a falling wanted would skip the retire and keep
+            # unbacked free tokens.  The retire decides every kind, counting
+            # the unreadable holder as held (#936).
+            lower = {kind: wanted.get(kind, 0) for kind in set(total) | set(wanted)}
+        if lower:
+            retired = ledger.retire_free_capacity(lower)
+            census = ledger.last_census_report
+        else:
+            # No retire ran, so nothing wrote this cycle's report: an exact
+            # census removes any earlier one (#936).
+            retired = {}
+            census = ledger.report_census(unreadable, asked=(), retired={})
         return {"tier_id": tier_id, "capacity": ledger.capacity(),
-                "retired": retired, "reclaimed": reclaimed}
+                "retired": retired, "reclaimed": reclaimed,
+                "census_unreadable": census}
 
     def _reclaim_dead_markers(
         self, ledger: ResourceLedger, wanted: Mapping[str, int],
@@ -9248,7 +9481,7 @@ class PoolQueue:
             for path in ledger._census_glob(ledger.free_dir, "*-*"):
                 live.add(path.name)
             for holder in ledger._census_scan(ledger.held_dir):
-                if holder.is_dir():
+                if _holder_is_dir(holder):
                     live.update(
                         path.name
                         for path in ledger._census_glob(holder, "*-*"))
@@ -9493,8 +9726,15 @@ class PoolQueue:
             ledger = self.tier_ledger(tier_id)
             if not ledger.base.is_dir():
                 return {"tier_id": tier_id, "reason": "tier_unknown", "demand": dict(needs)}
-            total = ledger.capacity()
+            # A holder this census cannot read is counted as held and named
+            # (#936): the total is a lower bound, and a refusal it causes is
+            # attributed to the unreadable holder, never called never-fits.
+            total, unreadable = ledger.capacity_census()
             if any(total.get(kind, 0) < need for kind, need in needs.items()):
+                if unreadable:
+                    return {"tier_id": tier_id, "reason": "tier_census_unreadable",
+                            "capacity_total": total, "census_unreadable": unreadable,
+                            "demand": dict(needs)}
                 return {"tier_id": tier_id, "reason": "never_fits_tier_capacity",
                         "capacity_total": total, "demand": dict(needs)}
             covered: dict[str, int] = {}
@@ -9637,10 +9877,16 @@ class PoolQueue:
                             "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
-                return {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
-                        "token_shortage": ledger.last_token_shortage,
-                        "capacity_total": total, "available": ledger.available(),
-                        "demand": dict(needs)}
+                shortage = {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
+                            "token_shortage": ledger.last_token_shortage,
+                            "capacity_total": total, "available": ledger.available(),
+                            "demand": dict(needs)}
+                if unreadable:
+                    # While a holder is unreadable every shrink retires this
+                    # tier's free tokens, so the shortage is the holder's.
+                    shortage["reason"] = "tier_census_unreadable"
+                    shortage["census_unreadable"] = unreadable
+                return shortage
             handles[tier_id] = handle
         return None
 

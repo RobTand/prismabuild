@@ -52,7 +52,9 @@ Runs under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -61,7 +63,9 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import adaptive_cpu, pool  # noqa: E402
+import pbstatus  # noqa: E402
 
 TIER = "prismabuild-stage:r6excl"
 KIND = "stage_gib"
@@ -96,13 +100,14 @@ def _shaped_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
     return queue, dead[0]
 
 
-def _publish_claimant(queue: pool.PoolQueue) -> None:
+def _publish_claimant(queue: pool.PoolQueue, *, key: str = CLAIM_KEY,
+                      tokens: int = 3) -> None:
     """A real READY mover demanding more than the two backed credits."""
     queue.publish(
-        action_key=CLAIM_KEY, cas_root=str(queue.root / "cas"),
+        action_key=key, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
         worker_script=str(queue.root / "worker.py"),
-        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 3},
+        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": tokens},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": "f" * 64, "manifest_bytes": MIB,
                    "range_start_bytes": 0, "range_end_bytes": MIB},
@@ -212,24 +217,271 @@ def _brief(observed: dict) -> tuple:
             if isinstance(result, dict) else None)
 
 
-def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch):
-    """An unreadable holder type is unknown, not proof it holds no tokens."""
+# --- An unreadable holder (#936) ------------------------------------------
+#
+# The fleet runs two interpreters whose ``Path.is_dir`` disagree: Python
+# 3.12 (the Sparks) re-raises an EIO from ``stat``, and Python 3.14
+# (dl380g10, where the tier loop runs) is ``os.path.isdir``, which returns
+# False on every ``OSError``.  So the fault is injected at ``os.stat``,
+# which both ``Path.stat`` and ``os.path.isdir`` call, and every test runs
+# twice: on this interpreter's own ``Path.is_dir``, and on dl380g10's,
+# emulated verbatim (its source, read off the box, is below).  The
+# emulation is what shows the live tier-loop host's failure on any
+# interpreter: before #936 the strict census there read an unreadable
+# holder as absent and reissued a dead name with no backing.
+
+EIO_TEXT = "injected holder metadata I/O error"
+
+
+def _python314_is_dir(self, *, follow_symlinks=True):
+    """``pathlib.Path.is_dir`` exactly as Python 3.14.4 on dl380g10 has it."""
+    if follow_symlinks:
+        return os.path.isdir(self)
+    try:
+        return stat.S_ISDIR(self.stat(follow_symlinks=follow_symlinks).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
+def _python314_exists(self, *, follow_symlinks=True):
+    """``pathlib.Path.exists`` exactly as Python 3.14.4 has it."""
+    if follow_symlinks:
+        return os.path.exists(self)
+    return os.path.lexists(self)
+
+
+PATH_IMPLS = ("interpreter", "python314")
+
+
+def _unreadable(guarded, paths, path_impl: str) -> None:
+    """Make ``stat`` of each path fail with EIO, on the chosen ``Path``."""
+    targets = {os.fspath(path) for path in paths}
+    original = os.stat
+
+    def failing(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) in targets:
+            raise OSError(errno.EIO, EIO_TEXT, os.fspath(path))
+        return original(path, *args, **kwargs)
+
+    guarded.setattr(os, "stat", failing)
+    if path_impl == "python314":
+        guarded.setattr(Path, "is_dir", _python314_is_dir)
+        guarded.setattr(Path, "exists", _python314_exists)
+
+
+def _eio(holder: Path) -> dict:
+    return {"holder": str(holder), "errno": errno.EIO, "error": EIO_TEXT}
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
+                                                       path_impl):
+    """An unreadable holder type is unknown, not proof it holds no tokens.
+
+    RED on pre-#936 main: on 3.12 the mint raises the EIO out of
+    ``capacity()`` (the tier loop loses the whole cycle); on the 3.14
+    emulation the strict reclaim reads H as absent and reissues the dead
+    name with no backing (``reclaimed == {stage_gib: 1}``).
+    """
     queue, dead_name = _shaped_queue(tmp_path)
     ledger = queue.tier_ledger(TIER)
     holder = ledger.held_dir / HOLDER_H
-    original_stat = Path.stat
-
-    def failing_stat(path, *args, **kwargs):
-        if path == holder:
-            raise OSError(5, "injected holder metadata I/O error")
-        return original_stat(path, *args, **kwargs)
-
     with monkeypatch.context() as guarded:
-        guarded.setattr(Path, "stat", failing_stat)
+        _unreadable(guarded, [holder], path_impl)
         result = queue.mint_tier_capacity(TIER, dict(WANTED))
+        free_during = ledger.available().get(KIND, 0)
+    # The unknown census reissued nothing: the dead name stays dead.
     assert result["reclaimed"] == {}
     assert (ledger.minted_dir / "dead" / dead_name).exists()
+    # H counted as HELD by the mint markers (3 minted - 1 dead - 1 free =
+    # 1 held): at wanted 2 nothing is unbacked, so the valid free token is
+    # kept, and the report names H with its errno.
+    assert result["retired"] == {}
+    assert free_during == 1
+    assert result["census_unreadable"]["unreadable"] == [_eio(holder)]
+    assert result["census_unreadable"]["retired"] == {}
     assert ledger.capacity().get(KIND) == 2
+    # Readable again: the books are exact and the report is removed.
+    result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    assert result["reclaimed"] == {}
+    assert ledger.capacity().get(KIND) == 2
+    assert ledger.available().get(KIND) == 1
+    assert result["census_unreadable"] is None
+    assert not ledger.census_report_path.exists()
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_unreadable_holder_still_retires_under_a_falling_wanted(
+        tmp_path, monkeypatch, path_impl):
+    """A lower-bound total must not skip the shrink.
+
+    wanted falls 2 -> 1 while H (1 live token) is unreadable.  The truth
+    is held 1, free 1, wanted 1: the free token is unbacked and must go.
+    RED on pre-#936 main: 3.12 raises out of ``capacity()``; on the 3.14
+    emulation the total reads 1 (H hidden), ``1 > 1`` is false, the
+    retire never runs and the unbacked free token stays admissible.
+    """
+    queue, _dead = _shaped_queue(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    holder = ledger.held_dir / HOLDER_H
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [holder], path_impl)
+        result = queue.mint_tier_capacity(TIER, {KIND: 1})
+    assert result["retired"] == {KIND: 1}
+    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.capacity().get(KIND) == 1
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
+        tmp_path, monkeypatch, path_impl):
+    """Loud, not silent -- and a steady state that does not stall.
+
+    Every mint cycle reports the ledger, the holder, its errno, the kinds
+    asked and what was retired, with a consecutive-cycle count.  At a
+    steady wanted nothing valid is retired, so a mover that fits the one
+    backed free token is still admitted while H stays unreadable; the
+    mover that cannot fit is denied as ``tier_census_unreadable`` naming
+    the holder (the lower-bound total cannot call it never-fits); and
+    ``pbstatus --starvation`` attributes the refusal to the holder.
+    """
+    queue, _dead = _shaped_queue(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    holder = ledger.held_dir / HOLDER_H
+    small = "s" * 64
+    _publish_claimant(queue)
+    _publish_claimant(queue, key=small, tokens=1)
+    reports = []
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [holder], path_impl)
+        for _cycle in range(3):
+            reports.append(queue.mint_tier_capacity(TIER, dict(WANTED))["census_unreadable"])
+        row = queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
+                          tags=["dl380g10"])
+        starvation = pbstatus.read_starvation(queue.root)
+    assert [report["cycles"] for report in reports] == [1, 2, 3]
+    for report in reports:
+        assert report["ledger"] == str(ledger.base)
+        assert report["unreadable"] == [_eio(holder)]
+        assert report["kinds_asked"] == [KIND]
+    # Nothing is unbacked at wanted 2, so no cycle retires a valid token.
+    assert [report["retired"] for report in reports] == [{}, {}, {}]
+    # No stall: the mover that fits takes the backed free token.
+    assert row is not None and row["action_key"] == small
+    assert ledger.holder_tokens(small) == {KIND: 1}
+    # The one that cannot fit is refused, and the refusal names the holder.
+    denials = adaptive_cpu.read_json(
+        adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
+    (denial,) = [value for value in denials.get("records", {}).values()
+                 if value["action_key"] == CLAIM_KEY]
+    assert denial["reason"] == "tier_census_unreadable"
+    shortage = denial["evidence"]["tier_shortage"]
+    assert shortage["tier_id"] == TIER
+    assert shortage["census_unreadable"] == [_eio(holder)]
+    # The starvation census attributes the stall to the holder.
+    (entry,) = [entry for entry in starvation["census_unreadable"]
+                if entry["ledger_id"] == TIER]
+    assert entry["ledger_kind"] == "tier"
+    assert entry["cycles"] == 3
+    assert entry["unreadable"] == [_eio(holder)]
+    assert any(str(holder) in note for note in starvation["notes"])
+
+
+def _free5_held3(root: Path, host: str, key: str) -> pool.ResourceLedger:
+    ledger = pool.ResourceLedger(root, host)
+    ledger.ensure_capacity({"cpu": 8, "mem_gb": 4})
+    assert ledger.acquire(key, {"cpu": 3}) is True
+    return ledger
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
+        tmp_path, monkeypatch, path_impl):
+    """Arithmetic and blast radius of the shrink.
+
+    Two host ledgers in the same state -- free cpu 5, held cpu 3 -- asked
+    the same shrink to cpu 4.  ``excess = 5 + 3 - 4 = 4`` for both: the
+    unreadable holder is counted as held by the mint markers, not skipped
+    (skipping retires 1 and leaves the true total at 7).  The kind the
+    retire was not asked about (mem_gb) is untouched, the report lands on
+    the sick ledger only, and a second tier ledger is untouched by the
+    first tier's fault.  RED on pre-#936 main: 3.12 raises the EIO; the
+    3.14 emulation skips the holder and retires 1.
+    """
+    root = tmp_path / "reservations"
+    key = "k" * 64
+    sick, well = _free5_held3(root, "boxa", key), _free5_held3(root, "boxb", key)
+    queue, _dead = _shaped_queue(tmp_path)
+    other_tier = "prismabuild-stage:r6other"
+    queue.mint_tier_capacity(other_tier, {KIND: 2})
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [sick.held_dir / key,
+                              queue.tier_ledger(TIER).held_dir / HOLDER_H], path_impl)
+        assert sick.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
+        assert well.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
+        queue.mint_tier_capacity(TIER, {KIND: 1})
+    assert sick.available() == {"cpu": 1, "mem_gb": 4}
+    assert well.available() == {"cpu": 1, "mem_gb": 4}
+    report = pool._read_json(sick.census_report_path)
+    assert report["kinds_asked"] == ["cpu"]
+    assert report["retired"] == {"cpu": 4}
+    assert report["unreadable"] == [_eio(sick.held_dir / key)]
+    assert not well.census_report_path.exists()
+    other = queue.tier_ledger(other_tier)
+    assert other.available() == {KIND: 2}
+    assert not other.census_report_path.exists()
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_retire_without_a_marker_census_retires_every_free_token(
+        tmp_path, monkeypatch, path_impl):
+    """No mint authority to bound the unreadable holder by: refuse fully.
+
+    With the markers unlistable too, the held count has no upper bound,
+    so every free token of the kind asked about goes (under-count free),
+    and the kind not asked about stays.
+    """
+    key = "k" * 64
+    ledger = _free5_held3(tmp_path / "reservations", "boxa", key)
+
+    def no_markers(self):
+        raise OSError(errno.EIO, "injected marker listing I/O error")
+
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [ledger.held_dir / key], path_impl)
+        guarded.setattr(pool.ResourceLedger, "_minted_and_dead_names",
+                        no_markers, raising=False)
+        assert ledger.retire_free_capacity({"cpu": 4}) == {"cpu": 5}
+    assert ledger.available() == {"mem_gb": 4}
+
+
+@pytest.mark.parametrize("path_impl", PATH_IMPLS)
+def test_an_unreadable_token_check_never_strands_a_mint_marker(
+        tmp_path, monkeypatch, path_impl):
+    """Host ledger grow: an unknown held check removes its marker.
+
+    ``ensure_capacity`` creates the index marker before asking whether a
+    holder has the name.  Answering "held" would leave a marker with no
+    token, which is skipped forever; answering "not held" would mint a
+    free duplicate of a name the holder may hold.  RED on pre-#936 main:
+    3.12 raised with the marker left behind (the index lost for good), and
+    3.14 answered "not held" and minted without knowing.
+    """
+    ledger = pool.ResourceLedger(tmp_path / "reservations", "boxa")
+    key = "k" * 64
+    ledger.ensure_capacity({"cpu": 1})
+    assert ledger.acquire(key, {"cpu": 1}) is True
+    with monkeypatch.context() as guarded:
+        _unreadable(guarded, [ledger.held_dir / key / "cpu-0001"], path_impl)
+        with pytest.raises(OSError) as raised:
+            ledger.ensure_capacity({"cpu": 2})
+    assert raised.value.errno == errno.EIO
+    assert not (ledger.minted_dir / "cpu-0001").exists()
+    assert ledger.available() == {}
+    # Readable again: the index is minted, not lost.
+    ledger.ensure_capacity({"cpu": 2})
+    assert ledger.capacity() == {"cpu": 2}
+    assert ledger.available() == {"cpu": 1}
 
 
 def test_r6_reclaim_headroom_atomic_with_exclusion(tmp_path: Path,
