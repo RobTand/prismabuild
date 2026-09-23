@@ -522,7 +522,7 @@ _SPOOL_VERDICTS: dict[tuple, list[str]] = {}
 
 
 def local_disk_room(path: str, floor_percent: int, *,
-                    statvfs=os.statvfs) -> dict[str, int]:
+                    statvfs=None) -> dict[str, int]:
     """What the filesystem under ``path`` can still give, above the floor.
 
     ``free_bytes`` is what an unprivileged writer can allocate (``f_bavail``,
@@ -531,7 +531,9 @@ def local_disk_room(path: str, floor_percent: int, *,
     is the first minus the second and may be negative.
     """
 
-    stat_result = statvfs(path)
+    # Bound at call time, not definition time, so a repointed ``os.statvfs``
+    # is the one read.
+    stat_result = (os.statvfs if statvfs is None else statvfs)(path)
     size = int(stat_result.f_blocks) * int(stat_result.f_frsize)
     free = int(stat_result.f_bavail) * int(stat_result.f_frsize)
     floor = -(-size * floor_percent // 100)
@@ -575,7 +577,7 @@ def _without_spool(args: list[str]) -> list[str]:
 
 
 def _check_spool_declaration(host: str, entry: dict, document: dict,
-                             args: list[str], *, statvfs=os.statvfs) -> str | None:
+                             args: list[str], *, statvfs=None) -> str | None:
     """Why this box's ``--spool-gb`` cannot stand, or ``None`` if it can.
 
     The declaration stands only when the roster names the local filesystem
@@ -618,7 +620,7 @@ def _check_spool_declaration(host: str, entry: dict, document: dict,
 
 
 def spool_declaration(host: str, entry: dict, document: dict,
-                      args: list[str], *, statvfs=os.statvfs) -> list[str]:
+                      args: list[str], *, statvfs=None) -> list[str]:
     """The loop arguments with ``--spool-gb`` kept, or dropped with a reason.
 
     Checked once per distinct declaration in this process (see
