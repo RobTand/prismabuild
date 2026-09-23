@@ -3244,6 +3244,38 @@ not name the kind, `pbrun` queues it, and every claim records
 `never_fits_capacity`. The refusals are listed in `docs/design.md` under
 "Bounded local scratch draws from the same budget".
 
+### Write outputs that a later action reads
+
+A producer whose outputs only a later action reads declares a write-only
+produced-output template (#912): `"write_only": true`, with `minimum_gib` 0 and
+`window_gib` 0 for every tier it names. Submit it with
+`--produced-output-template` as usual. Its claim holds no stage window.
+
+The producer writes each batch under `require_prewrite` and commits it at its
+origin. Through the produced spool, call
+`ProducedSpool.commit_origin_group(batch_id, descriptors)` after the group's
+export completes; it refuses with `export-incomplete-retain` until then. A
+producer that writes its origin files directly calls
+`produced_output.commit_origin_batch`. Either way every descriptor needs its
+sha256, and the commit returns `ref`, the batch's reference.
+
+A later action reads the batches through an ordinary staged data manifest:
+
+```
+manifest = produced_output.origin_batch_manifest(queue_root, [ref, ...])
+# write it to a file, then:
+pbrun.py --priority -10 --data-manifest manifest.json --residency stage -- ...
+```
+
+`pbrun` derives the manifest again from the queue and refuses one that differs,
+names a batch that is not committed, is reclaimed, or has changed on disk, or
+uses a transport other than the pull queue. Build the manifest with
+`origin_batch_manifest` rather than by hand. An origin-only batch keeps its
+paths and its durable charge until `reclaim_origin` finds its files gone; until
+then the same attempt cannot prewrite those paths again. A retried attempt can,
+and the earlier batch then refuses as changed. "Write-only templates:
+origin-only batches (#912)" in `docs/design.md` lists the checks and the limits.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,

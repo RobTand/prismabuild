@@ -4238,7 +4238,9 @@ nothing the worker reads. The qualified tier demand is derived from the
 bounded working window (`produced_output.owner_demand_terms`: window GiB,
 never the durable corpus maxima or host decode memory) and added to the
 explicit user CPU/memory/GPU reservation, which is otherwise untouched. Pool
-transport only.
+transport only. A write-only template declares no window, so its producer
+carries no tier demand at all; see "Write-only templates: origin-only
+batches (#912)".
 
 `PoolQueue.publish(..., produced_output_template=...)` validates the template
 (closed fields, stage/ram kinds, minimum-within-window), requires the
@@ -4719,6 +4721,84 @@ their original path layout; nothing migrates or overwrites existing material.
 A source merge does not change sealed deployed runtimes or revive a mover whose
 funding was already consumed (#848).
 
+#### Write-only templates: origin-only batches (#912)
+
+A producer whose outputs only a later action reads declares
+`"write_only": true` in its template. Every tier in its `working_demands`
+must then carry `minimum_gib` 0 and `window_gib` 0: the tiers stay named,
+because the prewrite names the tier and the spool paces its export to that
+tier's pool-side fill, but the template reserves no window.
+`owner_demand_terms` skips a zero window, so the producer's sealed demand
+carries no tier term and its claim takes no stage token. A template without
+the field, or with `false`, is canonicalized without it and keeps its
+`template_sha256`.
+
+Such a producer writes under `require_prewrite` as before, and commits each
+batch with `produced_output.commit_origin_batch`, the write-only sibling of
+`commit_batch`. It makes the same checks under the output-prefix lock (live
+owner, matching prewrite, omitted planned paths absent, durable maxima, one
+lstat per origin), with two of its own: every descriptor carries its sha256
+(`origin-batch-needs-sha256`), and when the caller passes the identities its
+writer recorded as each file landed (`landed`), each origin must still be
+that file (`origin-is-not-the-landed-copy`). The spool's
+`ProducedSpool.commit_origin_group` passes them from the export receipt and
+refuses before the receipt is durable: a retried export can replace a copy
+that landed earlier. The commit files an immutable batch record with
+`origin_only: true` and `mover_key: null`, files the commitments entry, and
+consumes the prewrite. It seals no mover, moves no token and writes no stage
+copy. A replay over the same manifest answers `duplicate`; a crash between
+the record and the entry resumes from the filed record. `commit_batch`,
+`publish_prepaid_batch`, `refill_window`, `admit_funded_window` and
+`ensure_batch_materialized` refuse a write-only template
+(`template-is-write-only`), and `commit_origin_batch` refuses a read-back one
+(`template-reads-back`).
+
+Every reader that asks whether a stage copy is live hears no:
+`_active_materialization` answers `origin-only`, retired, with no mover, so
+`retire_batch` returns `staged: false`, `safe_release_instance` finds no
+batch or mover to hold it, and `recover_batches` emits
+`output-batch-origin-only`. The commitments entry keeps `retired: false`,
+because `_committed_restage_authority` reads that flag and it is what keeps
+the batch from being funded as a restage. Path ownership does not follow the
+"no copy" answer: the batch owns its origin paths, and keeps its durable
+class bytes charged, until `reclaim_origin` proves every origin absent.
+
+A consumer declares batches by reference. `origin_batch_ref` names a batch
+by where PB filed it (owner action key, attempt nonce, template id, batch
+id) and pins it by manifest digest. `origin_batch_manifest(queue_root, refs)`
+builds the v1 data manifest the consumer submits: each batch's entries in
+its own order, one read phase per batch, the common directory of the output
+prefixes as `mount_prefix`, and the references under
+`annotations.produced_output_batches`. Each batch resolves through
+`load_origin_batch`, which reads the filed instance, template, commitments
+entry and immutable record, and refuses a batch that is not write-only,
+uncommitted, committed over another digest, reclaimed, or whose origin no
+longer has the identity its commit recorded. A path named by two batches
+refuses. The consumer submits the manifest with
+`pbrun --data-manifest --residency stage`. At freeze, `pbrun` derives the
+manifest again from the queue (`require_declared_origin_batches`) and refuses
+one whose `mount_prefix`, entries or references differ, and any transport
+other than the pull queue. A manifest without the annotation is not checked.
+From there the batch is an ordinary input: the tier loop publishes the
+consumer's lead mover, and the mover verifies each entry's sha256 as it
+copies.
+
+Limits:
+
+- Path ownership is per owner attempt, as it is for staged batches: a
+  retried attempt can commit a second origin-only batch over a path an
+  earlier attempt's unreclaimed batch still names, and both stay charged.
+  A consumer cannot stage the wrong bytes: the earlier batch refuses its
+  identity recheck at submission, the manifest refuses a path named twice,
+  and the mover verifies digests. Retiring the earlier attempt's batch is
+  #914's orphan sweep.
+- Nothing records which consumers declared a batch, so a producer that
+  deletes its origins and reclaims can strand a consumer frozen before the
+  deletion: its mover finds the origin gone. Holding the origin until its
+  declared consumers commit is #914.
+- `pbrun` rechecks origin identities from the submitting host, and the tier
+  host must mount the output prefix for its mover to copy it.
+
 #### Repeat materialization: one batch, one charge, many windows
 
 A committed batch is an immutable logical unit with ONE durable origin charge.
@@ -4728,8 +4808,8 @@ the SAME batch again when a later read needs those bytes.
 `produced_output.ensure_batch_materialized` is that one transition, and the
 only one this adds. `require_prewrite` already admits every initial write
 without a physical token, so first PUBLICATION is what the bounded window
-delays until an actual read -- there is no origin-only commit API and no v2
-record.
+delays until an actual read -- a read-back batch is never committed at its
+origin (only a write-only template's is, above), and there is no v2 record.
 
 The governing rows of the staged-read contract
 (`docs/staged_read_requirements_2026-09-20.json`, 69 requirements as of
