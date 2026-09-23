@@ -396,7 +396,11 @@ def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
             _assert_held_back_records(queue, count, head=head, served=served)
         evicted = [event for event in events
                    if event.get("event") == "claim-order-evicted"]
+        record = queue.tier_commitment(TIER) or {}
+        order = record.get("claim_order")
         per_cycle.append({"cycle": cycle, "wall_s": round(wall, 4),
+                          "relief": (order.get("relief")
+                                     if isinstance(order, dict) else None),
                           "served": now_served, "evicted": len(evicted),
                           "landed": _run_movers(queue, stage, count),
                           "steps": steps})
@@ -414,6 +418,37 @@ def test_eight_claimed_consumers_drain_the_tier_in_claim_order(
     # Served: nobody is blocked, and no read-ahead is traded for read-ahead.
     for entry in per_cycle[count:]:
         assert entry["evicted"] == 0, per_cycle
+
+
+def test_a_younger_blocked_consumer_ranks_before_an_older_read_ahead() -> None:
+    """Blocked first, then admission order: where the rank leaves claim time.
+
+    An older consumer that asks for read-ahead waits behind a younger one
+    blocked on the range it is reading.  Among the blocked consumers, and
+    among the rest, the older claim still ranks first.  Every acceptance
+    case above has only blocked consumers, so this is the one test where
+    strict claim order and this rank disagree.
+    """
+    order = window_credit.claim_order([
+        {"consumer": "older-read-ahead", "claimed_unix": 100.0,
+         "need_gib": 30, "blocked": False},
+        {"consumer": "younger-blocked", "claimed_unix": 200.0,
+         "need_gib": 30, "blocked": True},
+        {"consumer": "youngest-blocked", "claimed_unix": 300.0,
+         "need_gib": 30, "blocked": True},
+        {"consumer": "oldest-read-ahead", "claimed_unix": 50.0,
+         "need_gib": 30, "blocked": False}], free_gib=40)
+    assert [(entry["consumer"], entry["standing"], entry["ahead"])
+            for entry in order["entries"]] == [
+        ("younger-blocked", window_credit.CLAIM_GRANTED, None),
+        ("youngest-blocked", window_credit.CLAIM_HEAD, "younger-blocked"),
+        ("oldest-read-ahead", window_credit.CLAIM_HELD_BACK,
+         "youngest-blocked"),
+        ("older-read-ahead", window_credit.CLAIM_HELD_BACK,
+         "oldest-read-ahead")]
+    assert order["head"] == "youngest-blocked"
+    # The granted need plus the head's: the room relief must make.
+    assert order["target_free_gib"] == 60
 
 
 # ------------------------------------------------ N consumers of one range
