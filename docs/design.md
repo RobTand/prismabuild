@@ -6257,7 +6257,8 @@ priced its consumption until it reported: R13 was 242 GiB and refused at
   priorities never raise the barrier.
 * The census reads the ready and claimed items, every live window's movers on
   the tier and the output census, on each pass that asks it (at most three a
-  cycle, and only when a newcomer is present). Its cost is not measured.
+  cycle, and only when a newcomer is present). Its cost is measured since #909
+  (see below): about 20 ms a call from sparky over NFS.
 * Stage tiers only. A ram miss is a read from the stage, slower but never a
   stall (#906), and the ram leg keeps the joint-fit gate alone.
 
@@ -6333,7 +6334,18 @@ mints no more than the ceiling plus one reader's worth.
 
 **Cost.** Each cycle that builds the commitment census reports what it cost:
 `{"event": "commitment-census", "calls", "elapsed_s", "max_s"}` on the tier
-loop's output.
+loop's output. Measured on 2026-09-23 from sparky over NFS (the loop itself
+reads the queue locally on dl380g10), 25 warm calls per tree, as PB actions:
+
+| Queue | Before (`81d95cba`) median / p90 | After median / p90 |
+|---|---|---|
+| Live, no live window | 23.1 / 28.9 ms | 23.5 / 26.8 ms |
+| #907 replay: R12, R13, the capture, three quanta | 20.2 / 20.4 ms | 18.3 / 18.6 ms |
+
+The profile splits a loaded call about evenly between `read_footprint` (six
+calls) and the ledger's token-directory scans (`holder_tokens`,
+`_mover_state`). An undeclared newcomer's footprint is the run-ahead bound,
+which recomputes no horizon, so the after-tree is slightly cheaper.
 
 ### Adopting a resident range, and when an orphan is evicted
 
