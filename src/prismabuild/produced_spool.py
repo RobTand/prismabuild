@@ -971,6 +971,14 @@ def _retire_group(queue, directory, group, owner):
     ``.reservation.lock``, in :meth:`ProducedSpool.release_group`'s order.
     The export worker holds ``.export.lock`` for its whole run on this host,
     so no export can start or be running while this decides.
+
+    ``.export.lock`` (here) and ``.reservation.lock`` (in
+    :func:`retire_namespace`) are unlinked while held, outside
+    ``posix_lock``'s tombstone protocol, and that is safe.  The owner attempt
+    has ended, so no live producer takes either lock again: a new attempt
+    writes a new namespace.  A late export worker that was waiting on the old
+    inode fails closed, because ``_lock`` asserts that the directory it
+    opened is still the lock's parent, and the group directory is gone.
     """
 
     name = group.name
