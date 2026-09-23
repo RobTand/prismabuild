@@ -233,11 +233,45 @@ def per_test_bound(*, timeout_s: float | None, override_s: float | None,
 
     if override_s is not None:
         return max(0.0, float(override_s))
-    announced = [value for value in (ceilings or {}).values() if value is not None]
-    ceiling = min(announced) if announced else DEFAULT_EXECUTION_CEILING_S
-    if timeout_s is not None:
-        ceiling = min(ceiling, float(timeout_s))
+    announced = {host: value for host, value in (ceilings or {}).items()
+                 if value is not None}
+    # With nothing announced the published default stands in for the box's
+    # ceiling here, and only here: a bound too generous to fire is never
+    # worse than today, whereas a sealed guess would be (``shard_ceiling``).
+    ceiling = shard_ceiling(
+        timeout_s=timeout_s,
+        ceilings=announced or {"published default": DEFAULT_EXECUTION_CEILING_S})
     return max(0.0, ceiling - pool.HEARTBEAT_S)
+
+
+def shard_ceiling(*, timeout_s: float | None,
+                  ceilings: dict[str, float | None] | None = None) -> float | None:
+    """The deadline every shard seals as ``execution_timeout_s``; ``None`` seals none.
+
+    The smaller of what the submitter asked for and the smallest ceiling a box
+    that could claim the shard announces -- the ``min``
+    ``pool._execution_timeout`` applies at claim.  So the sealed number is the
+    deadline the shard runs under wherever it lands, and admission, which
+    reads a holder's sealed request to judge whether it drains soon
+    (``PoolQueue.holder_bound``), reads when the shard will actually end
+    (#939).  Before #939 a shard sealed only an explicit ``--timeout-s``, and
+    admission could read an unsealed shard by its age alone.
+
+    It is the ceiling itself, not the per-test bound one heartbeat inside it.
+    Sealing the bound would move the lease's deadline onto the instant the
+    per-test alarm fires, and the node id the alarm writes would no longer
+    reach the record while the action is alive.
+
+    With no announcement and no ``--timeout-s`` it is ``None``, and the shard
+    seals nothing, as before.  The published loop default is a guess about
+    boxes that said nothing, and a sealed guess is a declared end nobody
+    declared.
+    """
+
+    bounds = [value for value in (ceilings or {}).values() if value is not None]
+    if timeout_s is not None:
+        bounds.append(float(timeout_s))
+    return min(bounds) if bounds else None
 
 
 def discover(checkout: Path, paths: list[str]) -> list[str]:
@@ -547,7 +581,11 @@ def main() -> int:
                          "overrides are refused. --surface-json paths get a shard suffix "
                          "or expand {shard}. Replaces pytest addopts when supplied")
     ap.add_argument("--timeout-s", type=float, default=None,
-                    help="an explicit deadline for each shard; unset means none")
+                    help="each shard's deadline. Every shard seals the smaller "
+                         "of this and the smallest ceiling a box able to claim "
+                         "it announces, which admission reads as its declared "
+                         "end (#939); unset seals that ceiling, and nothing "
+                         "if no box announces one")
     ap.add_argument("--test-timeout-s", type=float, default=None,
                     help="per-test bound for every shard, in seconds; the "
                          "default is derived from the shard's own execution "
@@ -695,9 +733,27 @@ def main() -> int:
     pytest_workers = (["-n", str(args.workers_per_shard)]
                       if args.workers_per_shard > 1 else [])
 
+    # One read of the announcements serves both numbers below, so the shard's
+    # sealed deadline and the per-test bound inside it cannot disagree.
+    ceilings = announced_ceilings(tags)
+    sealed_s = shard_ceiling(timeout_s=args.timeout_s, ceilings=ceilings)
+    announced = ", ".join(f"{host} {value:g}s" for host, value in sorted(ceilings.items())
+                          if value is not None) or "none"
+    if sealed_s is None:
+        print("pbtest: no --timeout-s and no claimant announced a ceiling; the "
+              "shards seal no deadline and run under their box's own", flush=True)
+    else:
+        print(f"pbtest: each shard seals execution_timeout_s={sealed_s:g} "
+              f"(--timeout-s {'unset' if args.timeout_s is None else f'{args.timeout_s:g}'}; "
+              f"ceilings announced: {announced}); admission reads it as the "
+              "shard's declared end (#939)", flush=True)
+        if args.timeout_s is not None and sealed_s < args.timeout_s:
+            print(f"pbtest: --timeout-s {args.timeout_s:g} exceeds the ceiling a "
+                  f"claimant announces, which would cut the shard at {sealed_s:g}s "
+                  "anyway; that is the deadline sealed", flush=True)
     test_bound_s = per_test_bound(
         timeout_s=args.timeout_s, override_s=args.test_timeout_s,
-        ceilings=announced_ceilings(tags))
+        ceilings=ceilings)
     test_bound = ([f"{pytest_test_bound.TIMEOUT_ENV}={test_bound_s:g}"]
                   if test_bound_s > 0 else [])
     if test_bound:
@@ -737,8 +793,11 @@ def main() -> int:
             flags += ["--gpu"]
         if args.gpu_memory_gb is not None:
             flags += ["--gpu-memory-gb", str(args.gpu_memory_gb)]
-        if args.timeout_s is not None:
-            flags += ["--timeout-s", str(args.timeout_s)]
+        if sealed_s is not None:
+            # ``str`` of the float, the spelling an explicit ``--timeout-s``
+            # was always forwarded in, so a request inside every announced
+            # ceiling reaches ``pbrun`` byte for byte as before (#939).
+            flags += ["--timeout-s", str(sealed_s)]
         flags += ["--wait-s", str(args.wait_s)]
         if args.priority != 0:
             # Zero is pbrun's own default; forwarding only a non-zero hint
