@@ -161,20 +161,28 @@ under each ready item's transition lock, so a pass over 40 ready items was 40
 listings of one directory on the NFS export, on every loop of every box, and
 discovery read the aging sidecar of every ready record, though a record the
 box cannot place is skipped whatever its aging count. Now the pass takes one
-listing after its first lock acquisition and uses it for every item. The one
-decision a stale listing could get wrong, a rename onto a claim record filed
-after the listing, is checked again for that key alone, just before the
-rename, and refused as `already_claimed`, as the fresh listing refused it.
+listing after its first lock acquisition and uses it, as a hint that only
+denies, for every item. A claim is decided on a fresh listing: under the
+key's transition lock, just before the rename, `claimed/` is listed again
+and the key refused as `already_claimed` on a claim record or on either
+finish mark (a tombstone or a late-finish record) filed since the pass
+listing, which is the check the per-candidate listing made. A mark's name
+carries a time, host, pid and uuid, or an identity digest, so no lookup by
+name can find it; the cost is one listing per claim rather than one per
+candidate, and almost every candidate is denied before that point.
 `pool.ready_placement(tags, has_gpu)` scopes discovery to this loop's
 placement (a context variable, so `ready_items` keeps its signature), and
-the claim pass scopes its own read the same way. The order among the records
-the box can place is unchanged. Measured with `tools/fleet/bench_claim_pass.py`
+the claim pass scopes its own read the same way. A snapshot handed to a
+claim whose placement differs from the one it was listed under loses no
+aging: the claim reads the count of every record it can place that arrived
+without one, and restores the order. The order among the records the box
+can place is unchanged. Measured with `tools/fleet/bench_claim_pass.py`
 over the live shape (40 foreign ready records, 28 claimed, 1,324 aging
 sidecars) and counted with `strace` on sparky, a steady poll's directory
 listings fell from 43 to 4 (`claimed/` from 40 to 1, `getdents64` calls
 from 86 to 8) and its per-key path lookups from 120 to 80: the 40 `passes/`
 reads are gone, and the 40 `ready/` record reads and 40 transition-lock
-opens remain (actions d7efe085bd3c and 7576d4b3a638). On the NFS export a
+opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 

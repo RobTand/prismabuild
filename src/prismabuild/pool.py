@@ -3954,6 +3954,21 @@ _READY_PLACEMENT: contextvars.ContextVar[
         "pool_ready_placement", default=None)
 
 
+def _claimed_blocks(names: Iterable[str], key: str) -> bool:
+    """Whether a listing of ``claimed/`` refuses a claim of ``key``.
+
+    Its claim record, or a finish mark for it: a tombstone or a late-finish
+    record, whose names start ``<key>.`` and end in their suffix.
+    """
+
+    record = f"{key}.json"
+    prefix = f"{key}."
+    return any(name == record
+               or (name.startswith(prefix)
+                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX)))
+               for name in names)
+
+
 @contextmanager
 def ready_placement(tags: Iterable[str], has_gpu: bool) -> Iterator[None]:
     """List ``ready/`` for the claimant ``(tags, has_gpu)`` inside the block."""
@@ -5300,37 +5315,65 @@ class PoolQueue:
             return False
         return host == cpu_admission.EXPORT_DEMAND
 
-    def _claim_record_present(self, key: str) -> tuple[bool, str | None]:
-        """Whether ``claimed/<key>.json`` exists, asked fresh (#993).
+    def _claim_blocked_fresh(self, key: str) -> tuple[bool, str | None]:
+        """Whether ``claimed/`` refuses a claim of ``key``, listed fresh (#993).
 
-        The claim pass lists ``claimed/`` once and consults that listing for
-        every candidate, so a claim record filed for a later candidate after
-        the listing is not in it.  ``os.rename`` replaces its destination, so
-        the claim asks again for exactly the name it is about to rename onto,
-        under that key's transition lock: the parent is opened first, which
-        is the close-to-open revalidation a cached negative lookup needs
-        (:func:`_read_json_fresh`, #808), and then the one name is looked up
-        -- two round trips, not a listing of every claim.
+        The claim pass lists ``claimed/`` once and consults that listing, as
+        a hint, for every candidate.  A claim is decided on a fresh listing,
+        taken under the key's transition lock just before the rename, with
+        the check the per-candidate listing made: the key is refused on its
+        claim record, ``<key>.json``, or on either finish mark,
+        ``<key>.*.tombstone`` or ``<key>.*.late-finish`` (:func:`_claimed_blocks`).
+        ``os.rename`` replaces its destination, so a claim record filed since
+        the pass listing would be lost; and ``sweep_finish_tombstones``
+        completes a predecessor's cleanup only while no successor is
+        claimed, so a claim beside a mark filed since would skip it.  A
+        mark's name carries a time, host, pid and uuid, or an identity
+        digest, so no lookup by name can find it: this is one listing per
+        claim, not one per candidate.  The listing is itself the revalidation
+        a cached negative lookup needs on the export (#808).
 
-        Returns ``(present, why)``.  A lookup that fails for any reason but
-        absence answers present, with the error: an unknown claim record is
-        never renamed over.
+        Returns ``(blocked, why)``.  A listing that fails answers blocked,
+        with the error: an unknown ``claimed/`` is never claimed into.
         """
 
         try:
-            descriptor = os.open(self.dir(CLAIMED),
-                                 os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            names = os.listdir(self.dir(CLAIMED))
         except OSError as exc:
-            return True, f"claimed/ could not be opened: {exc}"
-        try:
-            os.stat(f"{key}.json", dir_fd=descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            return False, None
-        except OSError as exc:
-            return True, f"claimed/{key}.json could not be looked up: {exc}"
-        finally:
-            os.close(descriptor)
-        return True, None
+            return True, f"claimed/ could not be listed: {exc}"
+        return _claimed_blocks(names, key), None
+
+    def _aged_for(self, ready: list[dict[str, object]], *,
+                  tags: frozenset[str], has_gpu: bool,
+                  ) -> list[dict[str, object]]:
+        """``ready`` with every aging count this claimant's order needs (#993).
+
+        A snapshot listed inside :func:`ready_placement` carries no
+        ``passes`` for a record that placement could not place.  Handed to a
+        claim whose own placement differs, a record this claim *can* place
+        would arrive without its count and lose its place to an older record.
+        Each such count is read here and the snapshot put back in the order
+        ``ready_items`` sorts by.  When the two placements agree, as the
+        worker loop's do, every record this claim can place already carries
+        its count, and nothing is read or re-sorted.
+        """
+
+        filled = False
+        for item in ready:
+            if "passes" in item:
+                continue
+            try:
+                placeable = self._placement_matches(item, tags=tags,
+                                                    has_gpu=has_gpu)
+            except PoolContractError:
+                placeable = True
+            if placeable:
+                item["passes"] = self.passes(str(item.get("action_key", "")))
+                filled = True
+        if not filled:
+            return ready
+        return sorted(ready, key=lambda item: (
+            self._queue_order_of(item) or (math.inf, 0, 0.0)))
 
     def _placement_matches(
         self, item: Mapping[str, object], *, tags: frozenset[str], has_gpu: bool
@@ -13773,6 +13816,8 @@ class PoolQueue:
         if ready is None:
             with ready_placement(tagset, has_gpu):
                 ready = self.ready_items()
+        else:
+            ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
         for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals):
@@ -13794,11 +13839,11 @@ class PoolQueue:
         #: ``READDIR`` is itself the revalidation a cached negative lookup
         #: needs (#808), so the listing post-dates every transition that
         #: finished before the pass reached its first candidate.  It is a
-        #: hint for the rest of the pass: the one decision it could get wrong
-        #: -- renaming over a claim record filed after it -- is checked again
-        #: for its own key, fresh, just before the rename
-        #: (:meth:`_claim_record_present`).  Listed again only after a rename
-        #: of this pass's own changed the directory.
+        #: hint for the rest of the pass, and it only ever denies: anything
+        #: filed since -- a claim record, a tombstone, a late-finish mark --
+        #: is found by the fresh listing each claim takes under its own lock
+        #: just before its rename (:meth:`_claim_blocked_fresh`).  Listed
+        #: again only after a rename of this pass's own changed the directory.
         claimed_listed: set[str] | None = None
         claimed_marks: list[str] = []
         for item in ready:
@@ -13819,8 +13864,7 @@ class PoolQueue:
                         name for name in names
                         if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
                 if (f"{key}.json" in claimed_listed
-                        or any(name.startswith(f"{key}.")
-                               for name in claimed_marks)):
+                        or _claimed_blocks(claimed_marks, key)):
                     self.record_denial(item, "already_claimed")
                     continue
                 if key in released and self._refuse_released_origin_consumer(
@@ -14339,11 +14383,11 @@ class PoolQueue:
                             "action_key": key,
                         })
                         continue
-                    # The pass listing is a hint (#993): a claim record filed
-                    # for this key since would be replaced by the rename below,
-                    # so it is asked for again, fresh, under this key's lock.
-                    # The unwind is the resign fence's, above.
-                    present, why = self._claim_record_present(key)
+                    # The pass listing is a hint (#993): a claim record or a
+                    # finish mark filed for this key since it was taken is
+                    # found by a fresh listing, under this key's lock, before
+                    # the rename.  The unwind is the resign fence's, above.
+                    present, why = self._claim_blocked_fresh(key)
                     if present:
                         self._abandon_tier_acquire(tier_handles)
                         tier_handles.clear()
