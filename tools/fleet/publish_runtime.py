@@ -190,6 +190,11 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "residency forest and a scratch queue root; it is a record of one "
      "measurement rather than an operator command, and it must never be "
      "pointed at the live stage or the live queue"),
+    ("bench_claim_pass.py",
+     "a standalone count of the listings and per-key lookups of one worker "
+     "poll (#993), run from a checkout through pbrun under strace over a "
+     "synthetic queue root; it is a record of one measurement rather than "
+     "an operator command, and it must never be pointed at the live queue"),
     ("bench_tier_cycle.py",
      "a standalone profile of one tier-loop cycle on a campaign-sized "
      "queue (#992), run from a checkout through pbrun over a synthetic "
