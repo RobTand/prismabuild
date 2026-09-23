@@ -3309,6 +3309,21 @@ then the same attempt cannot prewrite those paths again. A retried attempt can,
 and the earlier batch then refuses as changed. "Write-only templates:
 origin-only batches (#912)" in `docs/design.md` lists the checks and the limits.
 
+When the consumer reads a batch between its own inputs, or reads its inputs
+again, declare a v2 read plan instead (#946). Leave the phase that reads the
+batch empty (`"entry_indices": []`) and place the batch there:
+
+```
+manifest = produced_output.place_origin_batches(
+    queue_root, static_v2_manifest, [{"phase": "handoff", "refs": [ref, ...]}])
+# write it to a file, then submit it as above, with one --progress-phase
+# NAME=SECONDS per read phase, in order.
+```
+
+`pbrun` places the batches again from the queue and refuses a manifest that
+differs. "Produced batches in a v2 read plan (#946)" in `docs/design.md` has
+the checks.
+
 By default PB never deletes an origin-only batch. For a handoff that only its
 consumers need, commit it with `lifetime="consumed"` (#914):
 
@@ -3424,7 +3439,10 @@ The consumer should hash the file at the path and refuse when the digest
 differs: that is how it knows it reads the manifest it was released with.
 
 `--after` is repeatable and needs the pull queue. `--data-manifest` is
-optional; its entries are the consumer's static inputs. `pbrun` refuses an
+optional; its entries are the consumer's static inputs. A v2 manifest names
+the phase each edge fills, with that phase's `entry_indices` empty:
+`"annotations": {"produced_output_slots": [{"phase": "handoff", "after":
+"<producer key>:handoff"}]}`. The release places the committed batches there. `pbrun` refuses an
 unknown producer, a template the producer does not declare, and a template
 that is not write-only. Submit with the published `pbrun`
 (`/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py`): one in a development
