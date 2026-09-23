@@ -91,6 +91,10 @@ FLEET_SCRIPTS = (
     # orphan sweep, so a generation without it leaves a withdrawn consumer's
     # movers holding the stage with nothing able to take it back.
     "stage_release.py",
+    # ...and deferred_release.py, which the tier loop imports to release
+    # consumers filed with ``pbrun --after`` once their producers commit
+    # (#913).  A generation without it is a tier loop that cannot start.
+    "deferred_release.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing

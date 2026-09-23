@@ -62,6 +62,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     core as pb, pool, slurm_lane as sl,
 )
+from prismabuild import action_edges  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
@@ -2790,6 +2791,12 @@ def main(argv: Sequence[str] | None = None) -> int:
              "cursor gaps, tier fill and occupancy, denial tops, and the "
              "not_observable gap list), and nothing else")
     parser.add_argument(
+        "--deferred", action="store_true",
+        help="print one JSON blob listing every consumer filed with pbrun "
+             "--after and not yet released, with the runtime generation it is "
+             "pinned to and whether that is the published one "
+             "(off_published), and nothing else")
+    parser.add_argument(
         "--recent", type=int, default=DEFAULT_RECENT,
         help=f"how many endings to read (default {DEFAULT_RECENT})")
     parser.add_argument(
@@ -2833,6 +2840,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     # have in common is only that neither read the fleet.
     unavailable: list[dict] = []
     pool_partial = False
+
+    if args.deferred:
+        # Pool-only, like --starvation: deferred submissions are pull-queue
+        # records (#913).  The published generation is the repo link's.
+        def read_deferred_listing() -> dict:
+            try:
+                published = Path(args.repo_link).resolve(strict=True)
+            except OSError:
+                published = None
+            return action_edges.deferred_listing(
+                args.queue_root, published_root=published)
+
+        read = bounded("deferred", read_deferred_listing, deadline=deadline,
+                       abandoned=abandoned)
+        if read["status"] == "ok":
+            print(json.dumps(read["value"], sort_keys=True, indent=1))
+            return 0 if read["value"]["complete"] else EXIT_INCOMPLETE
+        if read["status"] == "error":
+            print(f"pbstatus: deferred read failed "
+                  f"({read['type']}: {read['error']})", file=sys.stderr)
+        else:
+            print(f"pbstatus: deferred read did not answer within "
+                  f"{args.timeout_s:g}s", file=sys.stderr)
+        return EXIT_INCOMPLETE
 
     if args.starvation:
         # One blob, one section, same deadline machinery as every other read

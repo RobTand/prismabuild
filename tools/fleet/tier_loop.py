@@ -55,6 +55,7 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
+import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
@@ -5576,6 +5577,7 @@ def cycle(
 ) -> list[dict[str, object]]:
     """Discover, mint, announce; returns the records it announced."""
 
+    cycle_started = time.monotonic()
     # Before minting, so this cycle's announced supply and this cycle's window
     # both see the bandwidth a finished copy is no longer drawing (#636).
     for event in reclaim_idle_rates(queue):
@@ -5951,6 +5953,13 @@ def cycle(
     # (#914).  Silent when it retires nothing; a stalled or refused
     # retirement is reported once per change.
     for event in produced_output.origin_retirement_tick(queue):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
+    # Deferred consumers whose producers have committed (#913): sealed over
+    # the committed batches and published, until this cycle's interval runs
+    # out or MAX_RELEASES_PER_CYCLE have gone.  After window publication, so a
+    # burst cannot delay this cycle's windows.  Silent while nothing is filed.
+    for event in deferred_release.release_tick(
+            queue, deadline=cycle_started + CYCLE_INTERVAL_S):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
     # its free tokens go now, its held ones as their holders finish, and its
