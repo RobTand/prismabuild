@@ -162,6 +162,8 @@ from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 #: from a number this file copied would drift the moment either moved.
 from prismabuild import pytest_test_bound  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
+#: The recorder every shard's pytest runs under, and the reader of its record.
+import pbtest_outcomes  # noqa: E402
 
 
 def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
@@ -251,6 +253,78 @@ def shard(files: list[str], count: int) -> list[list[str]]:
     for index, name in enumerate(files):
         buckets[index % count].append(name)
     return buckets
+
+
+#: The interpreter program every shard runs.  It carries the modules it runs
+#: as text, so the action key names their bytes and no helper path has to
+#: exist on the worker -- the rule the dependency guard already followed.
+SHARD_PROGRAM = """\
+# A pbtest shard: pytest under pbtest_outcomes' recorder.
+import sys
+import types
+
+SOURCES = @SOURCES@
+
+
+def load(name):
+    module = types.ModuleType(name)
+    module.__file__ = "<pbtest " + name + ">"
+    sys.modules[name] = module
+    exec(compile(SOURCES[name], module.__file__, "exec"), module.__dict__)
+    return module
+
+
+pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
+raise SystemExit(load("pbtest_outcomes").main(
+    preflight=None if pins is None else pins.preflight))
+"""
+
+
+def shard_entry(python: str, checkout: Path) -> list[str]:
+    """The argv that runs a shard's pytest under the outcome recorder.
+
+    Every shard reports each counted outcome by node ID (#942), so every
+    shard runs through ``pbtest_outcomes``.  A checkout that pins a reviewed
+    dependency (``tools/resolve_<module>_dev_pin.py``) also carries the guard,
+    which runs before pytest and refuses on drift.  Both travel as source in
+    the argv, never as a path.  Reading either file can raise ``OSError``,
+    which the caller reports.
+    """
+
+    here = Path(__file__)
+    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text()}
+    if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
+        sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
+    return [python, "-c", SHARD_PROGRAM.replace("@SOURCES@", repr(sources))]
+
+
+def recorded_skips(record: dict | None) -> list[dict] | None:
+    """Every skip a shard's record holds, with its reason; ``None`` without one."""
+
+    if record is None:
+        return None
+    skips = []
+    for row in record.get("reports") or ():
+        entry = dict(zip(pbtest_outcomes.REPORT_FIELDS, row))
+        if entry.get("category") == "skipped":
+            skips.append({"nodeid": entry["nodeid"], "when": entry["when"],
+                          "reason": entry.get("reason") or "",
+                          "location": entry.get("location")})
+    return skips
+
+
+def summary_count(summary: str, word: str) -> int:
+    """The ``N <word>`` count in a pytest summary line, ``0`` when absent."""
+
+    match = re.search(rf"(?:^|[ =,])(\d+) {re.escape(word)}\b", summary)
+    return int(match.group(1)) if match else 0
+
+
+def displayed(output: str) -> list[str]:
+    """A shard's output lines for a human, without its outcome record."""
+
+    return [line for line in (output or "").strip().splitlines()
+            if not line.startswith(pbtest_outcomes.PREFIX)]
 
 
 # A closed vocabulary prevents resource controls, config indirection, and
@@ -460,14 +534,11 @@ def main() -> int:
     # Embed the guard bytes in argv so neither a target-local helper path nor
     # an older receipt can silently omit the check. Unpinned projects retain
     # their existing commands and identities.
-    python_entry = [args.python, "-m", "pytest"]
-    if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
-        try:
-            guard = Path(__file__).with_name("pbtest_pins.py").read_text()
-        except OSError as exc:
-            sys.stderr.write(f"pbtest: cannot load dependency pin guard: {exc}\n")
-            return 2
-        python_entry = [args.python, "-c", guard]
+    try:
+        python_entry = shard_entry(args.python, checkout)
+    except OSError as exc:
+        sys.stderr.write(f"pbtest: cannot load the shard program: {exc}\n")
+        return 2
     # ``pbrun`` transports the checkout but never itself: it seals its own
     # ``prismabuild_worker.py`` as an absolute path into the action.  Out of
     # the published runtime that path is on every box; out of a worktree it is
@@ -610,11 +681,30 @@ def main() -> int:
             else:
                 summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
                            f"(the shard ended {how}, before or outside pytest)")
+        # Each skip by node ID, with its reason (#942).  ``None`` is "this
+        # shard printed no record", which is not "it skipped nothing".
+        skipped = recorded_skips(pbtest_outcomes.parse(out))
         results.append({"shard": index, "files": bucket,
                         "returncode": proc.returncode, "summary": summary,
-                        "ran": ran, "output": out})
+                        "ran": ran, "skipped": skipped, "output": out})
         state = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
         print(f"shard {index:>3} {state:<8} {summary}", flush=True)
+        counted = summary_count(summary, "skipped") if ran else 0
+        if skipped is None and counted:
+            print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "
+                  "the shard printed no outcome record", flush=True)
+        elif skipped is not None and len(skipped) != counted:
+            print(f"shard {index:>3} records {len(skipped)} skip(s) and its "
+                  f"summary counts {counted}", flush=True)
+
+    skips = [(r["shard"], skip) for r in results for skip in r["skipped"] or ()]
+    if skips:
+        print(f"\n{len(skips)} skipped, each with its reason:")
+        for index, skip in skips:
+            where = f" ({skip['location']})" if skip["location"] else ""
+            when = "" if skip["when"] in ("setup", "call") else f" [{skip['when']}]"
+            print(f"  shard {index:>3} {skip['nodeid']}{when} - "
+                  f"{skip['reason'] or '(no reason given)'}{where}")
 
     # A shard is green when it exited 0 AND pytest reported a terminal summary.
     # ``ran`` has been computed, printed and written to the JSON since #213, and
@@ -626,7 +716,7 @@ def main() -> int:
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
-        print("\n".join((r["output"] or "").strip().splitlines()[-25:]))
+        print("\n".join(displayed(r["output"])[-25:]))
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=1))
     return 1 if failed else 0
