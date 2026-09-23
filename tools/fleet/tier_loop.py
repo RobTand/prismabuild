@@ -6073,10 +6073,11 @@ def publish_landing_expectations(
     plan is ``unpublished``, because the window republishes it (#627).
 
     On a tier the claim order ranks (#1011), the range a held-back consumer
-    waits for is ``held-by-claim-order``: it names the consumer ranked ahead
-    of it (``held_back_by``), the head it waits on (``waiting_on``), the GiB
-    it waits for and its rank, and ``expected_landing_unix`` is the order's
-    priced landing, a lower bound (:func:`_rank_claims`).
+    waits for is ``unpublished`` and names the consumer ranked ahead of it
+    (``held_back_by``), the head it waits on (``waiting_on``), the GiB it
+    waits for and its rank, and ``expected_landing_unix`` is the order's
+    priced landing, a lower bound (:func:`_rank_claims`).  The state is one
+    the reader knows: it drops a record that lists any other.
 
     The record is information for the reader, ``pbstatus`` and pricing,
     never a deadline.  Its reader waits while the mover is coming and uses
@@ -6232,7 +6233,7 @@ def publish_landing_expectations(
                     ahead_key = ranked.get("ahead")
                     head_key = ranked.get("waiting_on")
                     row.update({
-                        "state": residency_map.LANDING_HELD_BY_CLAIM_ORDER,
+                        "state": "unpublished",
                         "held_back_by": ahead_key, "waiting_on": head_key,
                         "waiting_gib": ranked.get("need_gib"),
                         "claim_rank": ranked.get("rank"),
