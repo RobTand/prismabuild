@@ -5209,33 +5209,68 @@ def _consumer_release(queue_root: str | Path, instance: Mapping[str, object],
 
 def release_origin_consumer(queue, ref: Mapping[str, object], *,
                             consumer_action_key: str, by: str,
-                            reason: str = "") -> dict[str, object]:
-    """Release one consumer's declaration on one consumed batch (#926).
+                            reason: str = "",
+                            live_runtime: str | Path | None = None,
+                            cas_root: str | Path | None = None
+                            ) -> dict[str, object]:
+    """Release one consumer's declaration on one consumed batch (#926, #945).
 
     The operator's remedy for a declaration that can never succeed: a
     consumer that failed or was withdrawn and will not be run again under
-    that key. It files ``released-consumers/<batch_id>/<key>.json`` beside
-    the declarations; the retirement tick then counts that consumer as
-    resolved, and retires the batch once every other declared consumer has
-    succeeded, with its usual identity checks. Nothing is deleted here.
+    that key, or one that was declared and never published (#945). It files
+    ``released-consumers/<batch_id>/<key>.json`` beside the declarations; the
+    retirement tick then counts that consumer as resolved, and retires the
+    batch once every other declared consumer has succeeded, with its usual
+    identity checks. Nothing is deleted here. From then on the key cannot
+    declare the batch again (`declare_origin_consumer`), so no later
+    submission of it can reach the queue as a reader of the batch.
 
-    Under the batch's output-prefix lock, the lock declarations and
-    retirement take: the batch must be committed over the ref's digest,
-    ``consumed``, and neither retiring nor reclaimed; the consumer must be
-    declared against it; and its latest generation must be ``failed`` or
-    ``withdrawn``. A consumer that is queued, claimed or being moved is
-    refused (``origin-consumer-live``), and so is one whose records cannot
-    be read. Releasing the same consumer again finds its own record.
+    The consumer's transition lock is taken first, without waiting: a
+    submitter holds it from its declarations through its row
+    (`pbrun.submission_window`), so a consumer being submitted is refused
+    (``origin-consumer-submitting``). Then, under the batch's output-prefix
+    lock, the lock declarations and retirement take: the batch must be
+    committed over the ref's digest, ``consumed``, and neither retiring nor
+    reclaimed; the consumer must be declared against it; and its latest
+    generation must be ``failed``, ``withdrawn`` or ``unpublished``. A
+    consumer that is queued, claimed or being moved is refused
+    (``origin-consumer-live``), and so is one whose records cannot be read.
+
+    An ``unpublished`` consumer needs two more facts, read from ``cas_root``
+    and the queue: the generation that sealed its request is not
+    ``live_runtime`` (a submitter on the live generation clears the hold by
+    submitting the key again), and no pinned, unpublished deferred release
+    names it (`action_edges.pending_release_of`), because that release still
+    publishes it. Without ``live_runtime`` and ``cas_root`` it is refused
+    (``origin-consumer-unpublished-unknown``). Releasing the same consumer
+    again finds its own record.
 
     Returns ``{"ok": True, "released": bool, "state": ...}``; raises
     `ProducedOutputError` naming the refusal.
     """
 
-    from prismabuild import pool as pool_mod
-
     checked_ref = _checked_origin_ref(ref)
     consumer = _hex64(consumer_action_key, where="consumer_action_key")
     instance, _template = _origin_ref_scope(queue.root, checked_ref)
+    with queue._transition_locked(consumer, blocking=False) as owned:
+        if not owned:
+            raise ProducedOutputError(
+                f"origin-consumer-submitting: {consumer[:12]} is being "
+                "submitted or moved; release it once that has finished")
+        return _release_origin_consumer_locked(
+            queue, instance, checked_ref, consumer, by=by, reason=reason,
+            live_runtime=live_runtime, cas_root=cas_root)
+
+
+def _release_origin_consumer_locked(
+        queue, instance: Mapping[str, object], checked_ref: Mapping[str, str],
+        consumer: str, *, by: str, reason: str,
+        live_runtime: str | Path | None,
+        cas_root: str | Path | None) -> dict[str, object]:
+    """`release_origin_consumer` under the consumer's transition lock."""
+
+    from prismabuild import pool as pool_mod
+
     batch_id = checked_ref["batch_id"]
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         commitments = _read_commitments(_commitments_path(queue.root, instance))
@@ -5268,16 +5303,26 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
             raise ProducedOutputError(
                 f"origin-consumer-live: {consumer[:12]} is queued, claimed or "
                 "being moved; release it once it has failed or been withdrawn")
-        if state not in _TERMINAL_CONSUMER_STATES:
+        sealed: dict[str, str] = {}
+        if state == "unpublished":
+            if live_runtime is None or cas_root is None:
+                raise ProducedOutputError(
+                    f"origin-consumer-unpublished-unknown: {consumer[:12]} is "
+                    "unpublished, and without the live runtime generation and "
+                    "the CAS nothing shows that no submitter can publish it")
+            sealed = _unpublished_release_evidence(
+                queue, consumer, live_runtime=live_runtime, cas_root=cas_root)
+        elif state not in _TERMINAL_CONSUMER_STATES:
             raise ProducedOutputError(
                 f"origin-consumer-not-terminal: {consumer[:12]} is {state}; "
-                "only a failed or withdrawn consumer can be released")
+                "only a failed, withdrawn or unpublished consumer can be "
+                "released")
         directory = _released_consumers_dir(queue.root, instance, batch_id)
         directory.mkdir(parents=True, exist_ok=True)
         body = {"schema": ORIGIN_CONSUMER_RELEASE_SCHEMA_V1,
                 "consumer_action_key": consumer, "ref": dict(checked_ref),
                 "state": state, "by": str(by), "reason": str(reason),
-                "released_unix": time.time()}
+                "released_unix": time.time(), **sealed}
         try:
             pool_mod._publish_immutable(
                 directory / f"{consumer}.json",
@@ -5288,6 +5333,49 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
             raise ProducedOutputError(
                 f"origin-consumer-release-conflict: {exc}") from None
     return {"ok": True, "released": True, "state": state}
+
+
+def _unpublished_release_evidence(queue, consumer: str, *,
+                                  live_runtime: str | Path,
+                                  cas_root: str | Path) -> dict[str, str]:
+    """Why an unpublished consumer's key cannot reach the queue (#945).
+
+    A declaration with no row is a submission that stopped between its
+    declaration and its row, or one still between them. The caller holds the
+    consumer's transition lock, which every submitter holds across that
+    window, so none is between them now. What could still publish the key is
+    a submitter on the live generation, which clears the hold by submitting
+    it again, or a pinned deferred release that resumes. This refuses both,
+    and anything it cannot read, and returns what the release records: the
+    wrapper that sealed the key.
+    """
+
+    from . import action_edges
+
+    live_wrapper = str(Path(live_runtime) / "tools")
+    try:
+        wrapper = action_edges.request_wrapper(
+            cas_root, consumer, where=f"sealed request {consumer[:12]}")
+    except Exception as exc:                                  # noqa: BLE001
+        raise ProducedOutputError(
+            f"origin-consumer-unpublished-unknown: {consumer[:12]} has no "
+            f"readable sealed request: {exc}") from None
+    if wrapper == live_wrapper:
+        raise ProducedOutputError(
+            f"origin-consumer-unpublished-live: {consumer[:12]} was sealed by "
+            "the live runtime generation, whose pbrun can still publish it; "
+            "submit the same key again to clear the hold")
+    try:
+        pending = action_edges.pending_release_of(queue.root, consumer)
+    except (OSError, action_edges.ActionEdgeError) as exc:
+        raise ProducedOutputError(
+            f"origin-consumer-unpublished-unknown: deferred releases "
+            f"unreadable: {exc}") from None
+    if pending is not None:
+        raise ProducedOutputError(
+            f"origin-consumer-release-pending: deferred release "
+            f"{pending[:12]} pinned {consumer[:12]} and will publish it")
+    return {"sealed_wrapper": wrapper}
 
 
 def _resolved_consumers(queue, instance: Mapping[str, object], batch_id: str,
@@ -5313,7 +5401,13 @@ def _resolved_consumers(queue, instance: Mapping[str, object], batch_id: str,
     for key in declared:
         state = _consumer_state(queue, key)
         item: dict[str, object] = {"action_key": key, "state": state}
-        if state in _TERMINAL_CONSUMER_STATES:
+        if state == "unpublished":
+            # Released only through `release_origin_consumer`'s proof that
+            # nothing can publish the key (#945); nothing supersedes it.
+            if _consumer_release(queue.root, instance, batch_id, key,
+                                 checked_ref) is not None:
+                item["state"] = "released"
+        elif state in _TERMINAL_CONSUMER_STATES:
             if _consumer_release(queue.root, instance, batch_id, key,
                                  checked_ref) is not None:
                 item["state"] = "released"
@@ -5343,8 +5437,9 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
     retirement takes -- the batch must be committed over the ref's digest and
     neither retiring nor reclaimed. A ``consumed`` batch gets the file
     ``consumers/<batch_id>/<consumer_action_key>.json`` under its instance;
-    the same consumer declaring again finds its own file and succeeds. A
-    ``retain`` batch is never retired, so nothing is filed for it.
+    the same consumer declaring again finds its own file and succeeds, unless
+    an operator released its declaration (``origin-consumer-released``,
+    #945). A ``retain`` batch is never retired, so nothing is filed for it.
 
     Returns ``{"ok": True, "declared": bool}``; raises `ProducedOutputError`
     naming the refusal.
@@ -5372,6 +5467,14 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
             raise ProducedOutputError(f"origin-batch-retiring: {batch_id}")
         if _entry_lifetime(entry) != ORIGIN_LIFETIME_CONSUMED:
             return {"ok": True, "declared": False}
+        if _consumer_release(queue.root, instance, batch_id, consumer,
+                             checked_ref) is not None:
+            # A released key no longer holds the batch, so a row for it
+            # could outlive the delete (#945).
+            raise ProducedOutputError(
+                f"origin-consumer-released: {consumer[:12]}'s declaration of "
+                f"{batch_id} was released; this key cannot read the batch "
+                "again")
         directory = _consumers_dir(queue.root, instance, batch_id)
         directory.mkdir(parents=True, exist_ok=True)
         body = {"schema": ORIGIN_CONSUMER_SCHEMA_V1,

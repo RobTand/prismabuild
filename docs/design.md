@@ -4854,7 +4854,14 @@ under the batch's instance directory. The call takes the batch's
 output-prefix lock, one batch at a time, and refuses a batch that is retiring
 or reclaimed. So every queued consumer of a consumed batch is on file before
 the retirement can see its row. The same key declaring again finds its own
-file. A `retain` batch files nothing.
+file, unless an operator released that declaration: a released key is
+refused (`origin-consumer-released`, #945). A `retain` batch files nothing.
+From its first declaration through its row, `pbrun` holds the consumer key's
+transition lock (`pbrun.submission_window`, #945), in `main` and in the
+deferred release alike. The declarations take their output-prefix locks
+inside it, in the usual transition-then-ownership order, and the row's own
+publication takes the same transition lock again, which nests. A consumer
+that declares no consumed batch takes no lock.
 
 **The decision.** `tier_loop.cycle` calls `origin_retirement_tick` once per
 cycle, after it retires terminal output funding. The tick scans the
@@ -4875,8 +4882,8 @@ output-prefix lock and decides:
   `published_unix` answers for the key. The claim-intent marker outlives its
   claim and is not read. Each key's state is read twice, and two reads that
   disagree read as unknown. A failed or withdrawn consumer stops holding the
-  batch in two cases (#926), listed below under "Replacing a failed
-  consumer".
+  batch in two cases (#926), and an unpublished one in one (#945), listed
+  below under "Replacing a failed consumer".
 - If no consumer is declared, the batch is an orphan once its producer
   attempt is dead: the owner's claim names another attempt, or its latest
   generation ended `failed` or `withdrawn`, or it is `done` by another
@@ -4940,18 +4947,56 @@ in either of two ways:
   calls `release_origin_consumer`, which files
   `released-consumers/<batch_id>/<consumer_key>.json` beside the
   declarations, with the consumer's state, who released it, and `--reason`.
-  Under the output-prefix lock it refuses a batch that is `retain`,
+  It first takes the consumer key's transition lock without waiting, and
+  refuses while a submitter holds it (`origin-consumer-submitting`, #945).
+  Then, under the output-prefix lock, it refuses a batch that is `retain`,
   uncommitted, retiring or reclaimed; a key that did not declare the batch;
-  and a consumer that is queued, claimed or being moved
-  (`origin-consumer-live`), or whose state is anything but failed or
-  withdrawn. The consumer's state then reads `released`. The declaration
-  file stays.
+  a consumer that is queued, claimed or being moved
+  (`origin-consumer-live`); and one whose state is anything but failed,
+  withdrawn or unpublished. The consumer's state then reads `released`. The
+  declaration file stays, and the key can no longer declare the batch.
 
-Either way, the old consumer's own state answers first while it is queued,
-running or has succeeded, so a key that runs again is never released under
-itself. A batch retires once every declared consumer is `succeeded`,
-`superseded` or `released`, with the same delete as above. The other
-declared consumers still hold it.
+**Releasing an unpublished consumer (#945).** A declaration with no queue
+record is left by a submitter that died between its declaration and its
+row, or belongs to one still between them. A release accepts it only when
+nothing can publish that key any more, which it shows from these facts:
+
+- **No submitter is in the window.** Every submitter holds the key's
+  transition lock from its first declaration through its row, and the
+  release holds it too, so no submitter is between the two while the
+  release decides.
+- **The live generation did not seal it.** The key's sealed request (the
+  one `pbrun` publishes before it declares) leads its `PATH` with the
+  wrapper of the generation that sealed it (`action_edges.request_wrapper`,
+  which `--as-sealed-by` also reads). If that is the live generation
+  (`SH/repo`), the release refuses (`origin-consumer-unpublished-live`):
+  submitting the same key again clears the hold and runs the work. Without
+  a readable request or a live generation it refuses too
+  (`origin-consumer-unpublished-unknown`).
+- **No pinned release names it.** A deferred release (#913) pins its key
+  before it publishes anything. One that stopped before its row resumes on
+  a later tick and publishes exactly that key, sealed into the retained
+  generation its template froze. While such a pin is unpublished the
+  release refuses (`origin-consumer-release-pending`,
+  `action_edges.pending_release_of`). A pin it cannot read also refuses.
+- **The key cannot come back.** After the release, `declare_origin_consumer`
+  refuses the key (`origin-consumer-released`), under the same
+  output-prefix lock. A later submission of it, whether an identical
+  resubmission or `--as-sealed-by` from a retained generation, dies at its
+  declaration, before any row. So the release does not have to prove that
+  nobody will ever submit the key again: it makes that submission unable to
+  read the batch.
+
+The release records the wrapper that sealed the key as `sealed_wrapper`.
+The retirement tick reads an unpublished consumer with a release as
+`released`; nothing supersedes an unpublished consumer, because
+`--supersedes` accepts only a failed or withdrawn key.
+
+The old consumer's own state answers first while it is queued, running or
+has succeeded. Since #945 a released key also cannot declare the batch
+again, so it never holds it again. A batch retires once every declared
+consumer is `succeeded`, `superseded` or `released`, with the same delete as
+above. The other declared consumers still hold it.
 
 A batch is *blocked* when every consumer still holding it (every declared
 consumer that is not `succeeded`, `superseded` or `released`) is `failed` or
@@ -4988,12 +5033,24 @@ Limits:
 
 - A consumer that `pbrun` declared and that never reached the queue (the
   submitter died in between) holds the batch, and the stall names it
-  `unpublished`. Submitting the same key again clears it. After a publish
-  that key can no longer be submitted, and neither #926 remedy applies:
-  `--supersedes` and `--release-origin-consumer` both refuse a key with no
-  failed or withdrawn record, because it may be a submission still in
-  progress. Such a batch is not listed as blocked, and only deleting the
-  declaration by hand frees it.
+  `unpublished`. On the live generation, submitting the same key again
+  clears it. After a publish it can be released (#945, above). A publish
+  alone does not stop a key being submitted again: `--as-sealed-by` reseals
+  it from a retained generation, and an old-generation `pbrun` that is still
+  running can still publish its row. The release therefore makes the key
+  unable to declare the batch again, not unsubmittable.
+- A `pbrun` older than #945 does not hold the key's transition lock between
+  its declaration and its row. If one is still running when its declaration
+  is released, its row can land after the batch retired, and the consumer
+  then reads origin paths the retirement deleted.
+- `pbstatus --blocked-origins` does not list a batch that an unpublished
+  consumer holds, because a submission may still be in its window. The stall
+  line names the consumer `unpublished`; `--release-origin-consumer` decides
+  whether it can be released.
+- A key that an operator released cannot be the key of a later deferred
+  release that reads the same batch: its declaration is refused, and the
+  release is refused each tick with the producer's batches held for it.
+  That needs two submissions to seal to one key.
 - Every declared key must succeed, be superseded by a key declared against
   the same batch, or be released. A failed consumer resubmitted under a
   different key without `--supersedes` keeps holding the batch until an
