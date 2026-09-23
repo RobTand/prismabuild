@@ -4953,9 +4953,13 @@ the published one or pass the retained-generation check below. A `pbrun` in a
 development checkout freezes its own wrapper, which is neither. The
 optional `--data-manifest` is the consumer's static part (for example, a
 model head); it is ingested and kept beside the template. The command may
-carry `{pb.data_manifest}` once, as a whole argument. At release it becomes
-the CAS path of the resolved manifest, as `decomposition.resolve_task_batch`
-does for a batch path.
+carry `{pb.data_manifest}` and `{pb.data_manifest_sha256}`, each at most once
+and as a whole argument. At release the first becomes the CAS path of the
+resolved manifest, as `decomposition.resolve_task_batch` does for a batch
+path, and the second the SHA-256 the sealed request binds for it
+(`params.data_manifest.input.sha256`), which is the digest of the file at
+that path (#933). A consumer that hashes the file and compares detects a
+manifest that changed after its release; the key covers both values.
 
 The frozen template, the static manifest, the edges and the publication
 options (priority, attempts, retry safety and the residency options) form a
@@ -5089,9 +5093,9 @@ missing directory and prints nothing.
 
 Limits:
 
-- One placeholder. A consumer that needs values derived from the batches,
-  such as a handoff path or a digest, reads them from the manifest the
-  placeholder names; PB substitutes nothing else.
+- Two placeholders, the manifest's path and its digest. A consumer that
+  needs values derived from the batches, such as a handoff path or its
+  digest, reads them from the manifest; PB substitutes nothing else.
 - The once-per-change memory lives in the tier-loop process, so a standing
   hold prints once more after a restart.
 - A record the tick cannot release stays filed until an operator supersedes

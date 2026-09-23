@@ -56,6 +56,9 @@ SUPERSESSION_SCHEMA_V1 = "prismabuild.supersession.v1"
 RELEASED_EVENT = "deferred-released"
 
 DATA_MANIFEST_PLACEHOLDER = "{pb.data_manifest}"
+#: The digest the sealed request binds for that manifest (#933): the
+#: SHA-256 of its bytes, so a consumer can verify the file it reads.
+DATA_MANIFEST_SHA256_PLACEHOLDER = "{pb.data_manifest_sha256}"
 
 PRODUCER_KEY = "key"
 PRODUCER_PENDING = "pending"
@@ -854,24 +857,31 @@ def merged_manifest(static: Mapping[str, object] | None,
     })
 
 
-def resolve_command(command: Sequence[str], manifest_path: str | Path) -> list[str]:
-    """Put the resolved manifest's path where the command reserved it.
+def resolve_command(command: Sequence[str], manifest_path: str | Path,
+                    manifest_sha256: str) -> list[str]:
+    """Put the resolved manifest's path and digest where the command asks.
 
-    Substitution of a whole argument, as ``decomposition.resolve_task_batch``
-    does; a command may carry the placeholder at most once, or not at all.
+    ``{pb.data_manifest}`` becomes the manifest's path and
+    ``{pb.data_manifest_sha256}`` the digest the sealed request binds for
+    it, which is the SHA-256 of the file at that path.  Substitution of a
+    whole argument, as ``decomposition.resolve_task_batch`` does; a command
+    may carry each placeholder at most once, or not at all.
     """
 
-    count = sum(part == DATA_MANIFEST_PLACEHOLDER for part in command)
-    if count > 1:
-        raise ActionEdgeError(
-            f"the command carries {DATA_MANIFEST_PLACEHOLDER} {count} times; "
-            "at most once, as a whole argument")
-    return [str(manifest_path) if part == DATA_MANIFEST_PLACEHOLDER else part
-            for part in command]
+    values = {DATA_MANIFEST_PLACEHOLDER: str(manifest_path),
+              DATA_MANIFEST_SHA256_PLACEHOLDER: str(manifest_sha256)}
+    for placeholder in values:
+        count = sum(part == placeholder for part in command)
+        if count > 1:
+            raise ActionEdgeError(
+                f"the command carries {placeholder} {count} times; "
+                "at most once, as a whole argument")
+    return [values.get(part, part) for part in command]
 
 
 __all__ = [
-    "ActionEdgeError", "DATA_MANIFEST_PLACEHOLDER", "DEFERRED_SCHEMA_V1",
+    "ActionEdgeError", "DATA_MANIFEST_PLACEHOLDER",
+    "DATA_MANIFEST_SHA256_PLACEHOLDER", "DEFERRED_SCHEMA_V1",
     "DEFERRED_SUBDIR", "MAX_LINKS", "PRODUCER_KEY", "PRODUCER_PENDING",
     "PUBLISHED_SCHEMA_V1", "RELEASES_SUBDIR", "RELEASE_SCHEMA_V1",
     "SUPERSESSIONS_SUBDIR", "SUPERSESSION_SCHEMA_V1", "committed_batch_refs",

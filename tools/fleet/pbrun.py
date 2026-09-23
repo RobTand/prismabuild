@@ -5995,8 +5995,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "--data-manifest (the static part, optional) followed by every "
              "origin-only batch the producer's successful attempt committed "
              "under the template, seals the action and publishes it.  The "
-             f"command may carry {action_edges.DATA_MANIFEST_PLACEHOLDER} once, "
-             "as a whole argument; it becomes that manifest's path.  "
+             f"command may carry {action_edges.DATA_MANIFEST_PLACEHOLDER} and "
+             f"{action_edges.DATA_MANIFEST_SHA256_PLACEHOLDER}, each once, as a "
+             "whole argument; they become that manifest's path and the SHA-256 "
+             "the sealed request binds for it.  "
              "Repeatable; pool transport only",
     )
     ap.add_argument(
@@ -6921,7 +6923,7 @@ def submit_deferred(prepared: Mapping[str, object],
     q = pool.PoolQueue(SH / "pb-queue")
     edges = resolve_after_edges(q, Path(cas.root), args.after)
     try:
-        action_edges.resolve_command(template["params"]["command"], "")
+        action_edges.resolve_command(template["params"]["command"], "", "")
     except action_edges.ActionEdgeError as exc:
         raise SystemExit(f"pbrun: {exc}") from None
     require_releasable_template(template)
@@ -7118,7 +7120,8 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                "entry_count": manifest["entry_count"],
                "total_bytes": manifest["total_bytes"]}
     command = action_edges.resolve_command(
-        template["params"]["command"], cas.input_path(manifest_input))
+        template["params"]["command"], cas.input_path(manifest_input),
+        str(manifest_input["sha256"]))
     action = seal_action_from_template(
         template, command=command, extra_inputs=[manifest_input],
         extra_params={"data_manifest": summary})
