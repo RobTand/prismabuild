@@ -262,13 +262,17 @@ def test_the_captures_layer_3_publishes_on_the_cycle_that_sees_its_report(
 
 def test_the_captures_layer_3_publishes_after_its_lead_is_given_back(
         tmp_path: Path) -> None:
-    """23:03:53Z on: the egresses ran and the gate re-reads the capture as new.
+    """23:03:53Z on: the egresses ran and the capture's first range is gone.
 
     From here the live loop logged ``window-gated joint-fit-stall`` 60 times
-    in 300 s.  The joint gate counts R12's two queued rows (44 GiB) beside
-    the capture's 14, so the relief is 528 + 44 + 14 - 530 = 56 GiB past
-    the 2 free: ``chain-019``, ``chain-020`` and ``chain-022`` go (66 GiB)
-    and ``layer-3`` publishes in the same cycle.
+    in 300 s, because the joint gate re-read the running capture as a
+    newcomer once ``head`` was egressed.  Under #903 alone the newcomer
+    relief then counted R12's two queued rows (44 GiB) beside the capture's
+    14 and gave back ``chain-022``, ``chain-020`` and ``chain-019`` (66 GiB,
+    R12 kept 462).  Since #908 a claimed consumer is never a newcomer:
+    ``layer-3`` is an admitted window's advance, the would-publish term asks
+    for its 14 GiB against the 2 free, and ``chain-019`` alone (22 GiB)
+    goes.  R12 keeps 506 GiB and ``layer-3`` publishes in the same cycle.
     """
 
     shift = time.time() - DATA["capture"]["egressed_unix"]
@@ -285,8 +289,7 @@ def test_the_captures_layer_3_publishes_after_its_lead_is_given_back(
 
     assert queue.item_path(pool.READY, layer_3).exists()
     held = _r12_held(queue)
-    assert [name for name in LANDED if not held[name]] == [
-        "chain-022", "chain-020", "chain-019"]
-    assert sum(held.values()) == 462
+    assert [name for name in LANDED if not held[name]] == ["chain-019"]
+    assert sum(held.values()) == 506
     assert _claim_shortage(queue, layer_3, 14) is None
     assert_ledger_matches_the_stage(queue)

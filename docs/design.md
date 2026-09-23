@@ -5137,7 +5137,13 @@ reclaimable bytes: the sweep relieved one phase, the gate kept refusing on
 cur+next, and nothing re-pressured (2026-09-20, attributable pristine-main
 failure `44b15d345804`). `window_pressure` probes each newcomer through
 `gate_newcomer` itself. A newcomer has an unpublished lead: adopted later
-ranges do not admit its missing head (#829). Both the pressure probe and
+ranges do not admit its missing head (#829). A newcomer is also not running:
+a claimed consumer passed the claim's residency gate on its leads, so its
+window is admitted for the rest of its run, even after its first range is
+egressed and so reads as unpublished again (#908). Its next range is an
+admitted window's advance, fenced and counted in `existing_min_next`, and
+never a newcomer's current asking the gate for held + queued + current +
+next. Both the pressure probe and
 the publication gate use that identity and the next still-unpublished legs,
 with conservative obligations (full queued demand and a minimum next-step term
 from progressing windows). The relief is stated as the free the sweep must reach
@@ -5475,10 +5481,9 @@ publish" asks it with the horizon:
 * `window` publishes no range of a later phase that starts at or past the
   horizon. That is the normal state of a rolling window, not a stall, and
   files no `window-stalled`.
-* `advance_needs` lists no such range in `waiting`, so a window re-gated as
-  a newcomer after its original lead retired does not ask the joint gate for
-  two ranges it will not publish, and its fence protects the range after the
-  frontier only when that range is inside the horizon.
+* `advance_needs` lists no such range in `waiting`, so a window's advance
+  asks the gate for no range it will not publish, and its fence protects the
+  range after the frontier only when that range is inside the horizon.
 * `window_pressure` counts no such range as pressure, whether as a probe or
   as a row queued before the horizon existed.
 
@@ -5524,7 +5529,9 @@ orphans plus these ranges. That is what the 23:03Z capture lacked twice: on
 the cycle that saw its `layer-3` report, the would-publish term asked for
 14 GiB and the sweep had no orphan to give; after its `head` egress retired
 its original lead, the gate re-read it as a newcomer, and the relief was
-bounded to orphans, which were zero.
+bounded to orphans, which were zero. Since #908 the second case does not
+arise: a claimed consumer is never re-read as a newcomer, and its `layer-3`
+is an admitted window's advance, which the would-publish term covers.
 
 **Assumptions and limits.**
 
@@ -5550,9 +5557,10 @@ the tier loop's cycle on R12's and the capture's live byte ranges, copy rates
 and claim times (`tests/fixtures/r12_stage_20260922.json`). One cycle gives
 back `chain-019` for the capture's 3 GiB lead (R12 keeps 506 of 528 GiB);
 on the cycle that sees the capture's `layer-3` report, `chain-019` goes and
-`layer-3` publishes; after the capture's lead retires, `chain-022`,
-`chain-020` and `chain-019` go (the gate counts R12's two queued rows) and
-`layer-3` publishes.
+`layer-3` publishes; after the capture's lead retires, `chain-019` alone goes
+and `layer-3` publishes. Before #908 that last case re-read the capture as a
+newcomer, whose relief counted R12's two queued rows, and gave back
+`chain-022`, `chain-020` and `chain-019` (R12 kept 462 GiB).
 
 ### Adopting a resident range, and when an orphan is evicted
 
@@ -6266,6 +6274,23 @@ file only they name, and the loop composes them and recomposes after every
 eviction, because a rename cannot merge and a map naming an evicted range points
 at deleted files. The launcher puts the composed map's path in
 `PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
+
+**The map lives as long as its consumer runs (#908).** When a consumer has
+nothing staged, the loop's answer depends on whether it is running:
+
+* A consumer in `ready` has no map. The claim's residency gate reads that as
+  `map_not_composed` and waits a cycle.
+* A claimed consumer keeps its map, emptied: the tier, stage root, manifest
+  and generation it adopted, with no entries and no leads. This is the gap
+  between an egress of the last range it read and the landing of the next.
+
+A reader answers a declared span that is not staged the same way from an
+empty map as from a missing one: it waits. A missing map, though, is refused
+whole and logged as `residency map is unreadable`. On 2026-09-22 capture
+`a92f62783e8f` logged that line after its `layer-2` egress, and it read as the
+cause of the stall when the cause was a `layer-3` range nobody published
+(#903). The next fragment to land recomposes the map as usual. A claimed
+consumer requeued into `ready` loses the emptied map on the next cycle.
 
 Neither that variable nor `PRISMABUILD_ACTION_KEY` is sealed. Every map entry
 carries the manifest's own digest, so an action that reads a staged copy computes

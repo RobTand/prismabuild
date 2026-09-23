@@ -430,9 +430,11 @@ def test_a_running_consumer_regated_after_its_lead_retires_still_preempts(
     Once ``head`` was given back the joint gate read the capture as a
     newcomer again (its original lead holds nothing), and 60 cycles logged
     ``window-gated joint-fit-stall`` until PB stopped it.  The newcomer's
-    relief was bounded by the tier's orphans, and there were none.  After
-    the fix the ranges past the reader's horizon count toward that bound:
-    the same seven go, the gate admits and ``layer-3`` publishes.
+    relief was bounded by the tier's orphans, and there were none.  #903
+    counted the ranges past the reader's horizon toward that bound; since
+    #908 the claimed capture is not a newcomer at all, and its ``layer-3``
+    is an admitted window's advance.  Either way the same seven go and
+    ``layer-3`` publishes.
     """
 
     capacity = PHASE_GIB * WIDE + 1
