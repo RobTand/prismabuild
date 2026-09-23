@@ -5361,6 +5361,15 @@ def reclaim_origin(queue, instance: Mapping[str, object],
 ORIGIN_RETIRED_EVENT = "output-origin-retired"
 ORIGIN_RETIREMENT_STALLED_EVENT = "output-origin-retirement-stalled"
 ORIGIN_RETIREMENT_REFUSED_EVENT = "output-origin-retirement-refused"
+#: The events it returns for a write-only prewrite whose attempt ended
+#: before committing (#949): the reservation was dropped, or its files
+#: belong to no batch and wait for an operator.
+ORIGIN_PREWRITE_RECLAIMED_EVENT = "output-prewrite-reclaimed"
+ORIGIN_PREWRITE_ORPHANED_EVENT = "output-prewrite-orphaned"
+
+#: Attempt states after which an attempt can never commit again: its owner
+#: gate (`_require_live_owner`) refuses a claim it no longer holds.
+_ENDED_ATTEMPT_STATES = frozenset({"dead", "succeeded"})
 
 #: Consumer states that hold a consumed batch and are reported as a stall:
 #: the consumer ended without succeeding, or was declared and never
@@ -6259,6 +6268,219 @@ def _unfiled_report(instance: Mapping[str, object], batch_id: str,
     return event
 
 
+def _outstanding_prewrite_ids(scope: Path,
+                              batches: Mapping[str, object]) -> list[str]:
+    """Batch ids with a prewrite record in ``scope`` and no committed batch.
+
+    A commit consumes its prewrite, so a record whose batch id is not in the
+    commitments is outstanding. Raises ``OSError`` when the directory cannot
+    be listed.
+    """
+
+    try:
+        with os.scandir(scope / "prewrites") as iterator:
+            names = sorted(entry.name for entry in iterator
+                           if entry.name.endswith(".prewrite.json"))
+    except FileNotFoundError:
+        return []
+    ids = [name[:-len(".prewrite.json")] for name in names]
+    return [batch_id for batch_id in ids if batch_id not in batches]
+
+
+def _sibling_path_owners(queue, instance: Mapping[str, object],
+                         template: Mapping[str, object]
+                         ) -> tuple[dict[str, dict[str, str]],
+                                    dict[str, dict[str, str]]]:
+    """The origin paths other attempts of this owner and template name (#949).
+
+    Returns ``(committed, pending)``, each mapping a path to the attempt's
+    ``{"nonce", "batch_id"}``. ``committed`` holds every path of another
+    attempt's committed origin-only batch that is not reclaimed: that attempt
+    wrote the file again and its commit recorded the file's identity, so the
+    file is that batch's. ``pending`` holds every path of another attempt's
+    outstanding prewrite while that attempt can still commit it, which is
+    anything but ended: a retry that is writing, or one whose state cannot
+    be read. An ended attempt's prewrite names no owner. Raises
+    `ProducedOutputError` on a record that cannot be read.
+    """
+
+    own = instance_dir(queue.root, instance)
+    prefix = f"{instance['template_id']}."
+    committed: dict[str, dict[str, str]] = {}
+    pending: dict[str, dict[str, str]] = {}
+    try:
+        siblings = sorted(child for child in own.parent.iterdir()
+                          if child.is_dir() and child != own
+                          and child.name.startswith(prefix))
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    for scope in siblings:
+        try:
+            sibling = validate_instance(json.loads(
+                (scope / "instance.json").read_text()))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            raise ProducedOutputError(
+                f"unknown-retain: {scope.name}: {exc}") from None
+        if (instance_dir(queue.root, sibling) != scope
+                or sibling["template_sha256"] != instance["template_sha256"]):
+            continue
+        attempt = sibling["owner_attempt"]
+        assert isinstance(attempt, dict)
+        nonce = str(attempt["nonce"])
+        batches = _read_commitments(scope / "commitments.json")["batches"]
+        assert isinstance(batches, Mapping)
+        for batch_id, entry in sorted(batches.items()):
+            if (not isinstance(entry, Mapping)
+                    or entry.get("origin_only") is not True
+                    or entry.get("origin_reclaimed")):
+                continue
+            indexed = entry.get("paths")
+            if isinstance(indexed, list):
+                paths = [str(item) for item in indexed]
+            else:
+                _filed, sealed = _load_batch_record(
+                    queue.root, sibling, template, entry, batch_id)
+                paths = [str(desc["path"]) for desc in sealed]
+            for path in paths:
+                committed.setdefault(path, {"nonce": nonce, "batch_id": batch_id})
+        try:
+            outstanding = _outstanding_prewrite_ids(scope, batches)
+        except OSError as exc:
+            raise ProducedOutputError(f"unknown-retain: {exc}") from None
+        if not outstanding or (_producer_attempt_state(queue, sibling)
+                               in _ENDED_ATTEMPT_STATES):
+            continue
+        for batch_id in outstanding:
+            record = _read_prewrite(
+                _prewrites_dir(queue.root, sibling) / f"{batch_id}.prewrite.json")
+            for path in (record or {}).get("paths", []):
+                pending.setdefault(str(path), {"nonce": nonce, "batch_id": batch_id})
+    return committed, pending
+
+
+def _ended_prewrite_disposition(queue, instance: Mapping[str, object],
+                                template: Mapping[str, object],
+                                record: Mapping[str, object]
+                                ) -> dict[str, object] | None:
+    """What an ended attempt's outstanding write-only prewrite is now (#949).
+
+    ``None`` while the attempt can still commit it (live, queued, or
+    unknown). Once the attempt has ended, nothing can: the owner gate
+    refuses a claim it no longer holds. Its planned paths then decide:
+
+    * all absent: ``reclaim``, reason ``absent``. Nothing durable is left,
+      the rule `abort_prewrite` applies.
+    * each present one is a committed batch's of another attempt of the
+      same key and template (`_sibling_path_owners`): ``reclaim``, reason
+      ``superseded``. A retry reusing the batch id wrote those files again
+      and committed them, so they are that batch's, charged once, there.
+    * any present one is still planned by another attempt that can commit,
+      and none belongs to nobody: ``hold``, until that attempt commits or
+      ends.
+    * otherwise ``orphaned``: files that belong to no batch. PB never
+      deletes a file whose identity no commit recorded, so an operator
+      removes them, and then the reservation is reclaimed as ``absent``.
+
+    The output prefix must be a directory on this host first, or an absent
+    file proves nothing: ``refused``, reason ``output-prefix-unreachable``.
+    Raises `ProducedOutputError` on unreadable state.
+    """
+
+    if _producer_attempt_state(queue, instance) not in _ENDED_ATTEMPT_STATES:
+        return None
+    try:
+        prefix_mode = os.stat(str(instance["output_prefix"])).st_mode
+    except OSError as exc:
+        return {"action": "refused", "reason": "output-prefix-unreachable",
+                "detail": str(exc)}
+    if not stat.S_ISDIR(prefix_mode):
+        return {"action": "refused", "reason": "output-prefix-unreachable",
+                "detail": "not a directory on this host"}
+    present: list[str] = []
+    for path in record.get("paths", []):
+        try:
+            os.lstat(str(path))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ProducedOutputError(f"unknown-retain: {exc}") from None
+        present.append(str(path))
+    if not present:
+        return {"action": "reclaim", "reason": "absent", "superseded": []}
+    committed, pending = _sibling_path_owners(queue, instance, template)
+    superseded = [{"path": path, **committed[path]}
+                  for path in present if path in committed]
+    held = [path for path in present
+            if path not in committed and path in pending]
+    orphaned = [path for path in present
+                if path not in committed and path not in pending]
+    if orphaned:
+        return {"action": "orphaned", "paths": orphaned,
+                "superseded": superseded, "held": held}
+    if held:
+        return {"action": "hold"}
+    return {"action": "reclaim", "reason": "superseded",
+            "superseded": superseded}
+
+
+def _sweep_ended_prewrite(queue, instance: Mapping[str, object],
+                          template: Mapping[str, object],
+                          batch_id: str) -> dict[str, object] | None:
+    """One sweep step for one outstanding write-only prewrite (#949).
+
+    Under the output-prefix lock, which `require_prewrite` and
+    `commit_origin_batch` also take, so no attempt of this template can
+    prewrite or commit between the decision and its effect. A ``reclaim``
+    removes the record, which frees the reservation the instance's
+    accounting charged for it (`_outstanding_sums`), and returns
+    ``output-prewrite-reclaimed``. An ``orphaned`` or ``refused`` prewrite
+    is reported once per change (``output-prewrite-orphaned``,
+    ``output-origin-retirement-refused``); anything else returns ``None``.
+    """
+
+    report_key = f"{_batch_report_key(instance, batch_id)}.prewrite"
+    path = _prewrites_dir(queue.root, instance) / f"{batch_id}.prewrite.json"
+    base = {"prewrite": _batch_report_key(instance, batch_id)}
+    with queue.stage_ownership_lock(str(instance["output_prefix"])):
+        record = _read_prewrite(path)
+        if record is None:
+            _UNFILED_REPORTS.pop(report_key, None)
+            return None
+        disposition = _ended_prewrite_disposition(
+            queue, instance, template, record)
+        if disposition is None or disposition["action"] == "hold":
+            _UNFILED_REPORTS.pop(report_key, None)
+            return None
+        base["class_bytes"] = dict(record["class_bytes"])
+        if disposition["action"] == "reclaim":
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return None
+            _fsync_directories([str(path)])
+            _UNFILED_REPORTS.pop(report_key, None)
+            return {"event": ORIGIN_PREWRITE_RECLAIMED_EVENT, **base,
+                    "reason": disposition["reason"],
+                    "superseded": disposition["superseded"]}
+        if disposition["action"] == "orphaned":
+            event = {"event": ORIGIN_PREWRITE_ORPHANED_EVENT, **base,
+                     "paths": disposition["paths"],
+                     "superseded": disposition["superseded"],
+                     "held": disposition["held"]}
+        else:
+            event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                     "reason": disposition["reason"],
+                     "detail": disposition["detail"]}
+    signature = hashlib.sha256(json.dumps(
+        event, sort_keys=True).encode()).hexdigest()
+    if _UNFILED_REPORTS.get(report_key) == signature:
+        return None
+    _UNFILED_REPORTS[report_key] = signature
+    return event
+
+
 def blocked_origin_batches(queue) -> dict[str, list]:
     """The consumed batches held only by consumers that ended (#926), read-only.
 
@@ -6274,25 +6496,38 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     that is retiring, reclaimed, or has no declared consumer is not listed;
     neither is one held for a deferred consumer's release (#913), which is
     waiting, not blocked. If those holds cannot be read, nothing is listed.
-    Returns ``{"blocked": [...], "unreadable": [...]}``. Each blocked entry
-    carries the batch's ``ref`` and ``bytes``, every declared consumer's
-    state as the tick resolves it (`_resolved_consumers`), the ``holding``
-    ones, and ``reported``: whether the entry carries the tick's report
-    memo.
+    Returns ``{"blocked": [...], "orphaned_prewrites": [...],
+    "unreadable": [...]}``. Each blocked entry carries the batch's ``ref``
+    and ``bytes``, every declared consumer's state as the tick resolves it
+    (`_resolved_consumers`), the ``holding`` ones, and ``reported``: whether
+    the entry carries the tick's report memo.
+
+    ``orphaned_prewrites`` lists each write-only prewrite whose attempt ended
+    before committing and whose files belong to no batch (#949,
+    `_ended_prewrite_disposition`): its ``prewrite`` coordinates
+    (owner/template.nonce/batch), ``class_bytes``, the orphaned ``paths``, and
+    the ``superseded`` and ``held`` ones.
     """
 
     from . import action_edges
 
     blocked: list[dict[str, object]] = []
+    orphaned: list[dict[str, object]] = []
     unreadable: list[str] = []
+
+    def found() -> dict[str, list]:
+        return {"blocked": blocked, "orphaned_prewrites": orphaned,
+                "unreadable": unreadable}
+
     scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except FileNotFoundError:
-        return {"blocked": blocked, "unreadable": unreadable}
+        return found()
     except OSError as exc:
-        return {"blocked": blocked, "unreadable": [f"output scopes: {exc}"]}
+        unreadable.append(f"output scopes: {exc}")
+        return found()
     holds: set[tuple[str, str]] | None = None
     for owner in owners:
         try:
@@ -6316,7 +6551,12 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                    and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
                    and not entry.get("origin_reclaimed")
                    and not entry.get("retiring")]
-            if not due:
+            try:
+                outstanding = _outstanding_prewrite_ids(scope, batches)
+            except OSError as exc:
+                unreadable.append(f"{where}/prewrites: {exc}")
+                outstanding = []
+            if not due and not outstanding:
                 continue
             try:
                 instance = validate_instance(json.loads(
@@ -6332,6 +6572,25 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             if (instance_dir(queue.root, instance) != scope
                     or template_sha256(template) != instance["template_sha256"]):
                 continue
+            for batch_id in (outstanding if is_write_only(template) else []):
+                try:
+                    record = _read_prewrite(
+                        scope / "prewrites" / f"{batch_id}.prewrite.json")
+                    disposition = (None if record is None else
+                                   _ended_prewrite_disposition(
+                                       queue, instance, template, record))
+                except (ProducedOutputError, OSError, ValueError) as exc:
+                    unreadable.append(f"{where}/{batch_id}.prewrite: {exc}")
+                    continue
+                if disposition is not None and disposition["action"] == "orphaned":
+                    orphaned.append({
+                        "prewrite": _batch_report_key(instance, batch_id),
+                        "class_bytes": dict(record["class_bytes"]),
+                        "paths": disposition["paths"],
+                        "superseded": disposition["superseded"],
+                        "held": disposition["held"]})
+            if not due:
+                continue
             if holds is None:
                 try:
                     holds = action_edges.held_producer_batches(queue)
@@ -6340,7 +6599,8 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     # waiting for a deferred release; list none rather than
                     # all of them.
                     unreadable.append(f"deferred holds: {exc}")
-                    return {"blocked": [], "unreadable": unreadable}
+                    blocked.clear()
+                    return found()
             if _held_for_deferred(instance, holds):
                 continue
             for batch_id, entry in due:
@@ -6369,7 +6629,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                         "ref": ref, "bytes": total, "consumers": consumers,
                         "holding": [str(item["action_key"]) for item in holding],
                         "reported": "retirement_report" in entry})
-    return {"blocked": blocked, "unreadable": unreadable}
+    return found()
 
 
 def origin_retirement_tick(queue) -> list[dict[str, object]]:
@@ -6382,11 +6642,16 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
     yet reclaimed. A ``retain`` batch is never touched, whatever became of
     its producer.
 
+    It also sweeps the outstanding prewrites of a write-only template whose
+    attempt ended before committing (`_sweep_ended_prewrite`, #949).
+
     Returns the events to log: one ``output-origin-retired`` per retired
     batch (its ref, bytes, consumers and the origin identity each deleted
     file was checked against), and ``output-origin-retirement-stalled`` or
     ``-refused`` once per change of what holds a batch. A tick with nothing
-    to retire and nothing new to report returns ``[]``. An instance whose
+    to retire and nothing new to report returns ``[]``. A swept prewrite
+    adds ``output-prewrite-reclaimed``, or ``output-prewrite-orphaned`` once
+    per change. An instance whose
     commitments cannot be read is skipped, as the other scans skip it: its
     batches stay charged and on disk.
     """
@@ -6420,7 +6685,11 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
                    and entry.get("origin_only") is True
                    and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
                    and not entry.get("origin_reclaimed")]
-            if not due:
+            try:
+                outstanding = _outstanding_prewrite_ids(scope, batches)
+            except OSError:
+                outstanding = []
+            if not due and not outstanding:
                 continue
             try:
                 instance = validate_instance(json.loads(
@@ -6440,6 +6709,20 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
                 continue
             if (instance_dir(queue.root, instance) != scope
                     or template_sha256(template) != instance["template_sha256"]):
+                continue
+            if outstanding and is_write_only(template):
+                # An attempt that ended before committing (#949).
+                for batch_id in outstanding:
+                    try:
+                        event = _sweep_ended_prewrite(
+                            queue, instance, template, batch_id)
+                    except (ProducedOutputError, OSError, ValueError) as exc:
+                        event = _unfiled_report(instance, f"{batch_id}.prewrite", {
+                            "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                            "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+                    if event is not None:
+                        events.append(event)
+            if not due:
                 continue
             if holds is None:
                 from . import action_edges

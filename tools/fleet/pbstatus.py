@@ -1814,6 +1814,13 @@ def blocked_origin_remedies(ref: Mapping[str, object], key: str) -> dict[str, st
     }
 
 
+#: What frees an orphaned write-only prewrite (#949). PB never deletes a
+#: file whose identity no commit recorded, so the operator does.
+ORPHANED_PREWRITE_REMEDY = (
+    "these files belong to no committed batch: check and remove them, and "
+    "the next tier cycle drops the prewrite's reservation")
+
+
 def read_blocked_origins(queue_root: str | Path) -> dict:
     """List the consumed origin batches that only an operator can free (#926).
 
@@ -1823,6 +1830,10 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
     holding consumer is listed with its state, any ``superseded_by`` that did
     not apply, and the remedies.  ``complete`` is false when a record could
     not be read; the unreadable ones are named.
+
+    ``orphaned_prewrites`` lists the write-only prewrites whose attempt
+    ended before committing and whose files belong to no batch (#949), each
+    with the remedy.
     """
 
     queue = pool.PoolQueue(queue_root)
@@ -1840,7 +1851,10 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
                 for item in batch["consumers"]
                 if item["action_key"] in holding],
         })
+    orphaned = [{**item, "remedy": ORPHANED_PREWRITE_REMEDY}
+                for item in found["orphaned_prewrites"]]
     return {"schema": BLOCKED_ORIGINS_SCHEMA_V1, "blocked": blocked,
+            "orphaned_prewrites": orphaned,
             "unreadable": list(found["unreadable"]),
             "complete": not found["unreadable"]}
 
@@ -2994,7 +3008,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print one JSON blob listing every consumed origin batch whose "
              "remaining consumers all failed or were withdrawn, with the "
              "pbrun --release-origin-consumer and --supersedes remedies for "
-             "each (#926), and nothing else")
+             "each (#926), and every write-only prewrite whose attempt ended "
+             "before committing and whose files belong to no batch (#949), "
+             "and nothing else")
     parser.add_argument(
         "--starvation", action="store_true",
         help="print one JSON blob answering what is waiting on data "
