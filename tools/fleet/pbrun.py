@@ -45,6 +45,7 @@ dirty to anything else.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import hashlib
 import inspect
@@ -2033,6 +2034,25 @@ def declare_origin_consumers(queue, refs: Sequence[Mapping[str, object]], *,
             raise SystemExit(
                 f"pbrun: cannot declare {consumer_action_key[:12]} as a consumer "
                 f"of a produced-output batch: {exc}") from None
+
+
+def submission_window(q, key: str, refs: Sequence[Mapping[str, object]]):
+    """Hold ``key``'s transition lock from its declarations through its row (#945).
+
+    A consumer declares its consumed batches before its row exists, so for a
+    moment it holds a batch with no queue record at all. An operator's
+    release of such an ``unpublished`` declaration
+    (`produced_output.release_origin_consumer`) takes the same lock without
+    waiting and refuses while it is held, so it can never release a key whose
+    row is about to land. A consumer that declares nothing takes no lock.
+    ``publish_consumer_row`` and ``PoolQueue.publish`` take the same lock
+    again, which nests, and the declarations take their output-prefix locks
+    inside it: transition, then ownership, as everywhere.
+    """
+
+    if not refs:
+        return contextlib.nullcontext(True)
+    return q._transition_locked(key)
 
 
 def require_deployed_read_plan_storage(*, source_root: Path | None = None,
@@ -4669,15 +4689,7 @@ def reseal_wrapper(key: str) -> Path:
     """
     require_reseal_key(key)
     where = f"--as-sealed-by {key}"
-    request = SH / "cas" / "requests" / key[:2] / f"{key}.json"
-    raw = pb._read_regular_file_nofollow(
-        request, where=where, require_readonly=True, max_bytes=16 * 1024 * 1024)
-    action = pb.validate_action(pb._decode_strict_json(raw, where=where))
-    if action["action_key"] != key:
-        raise ValueError(f"{where}: request does not match its address")
-    if action["task"]["definition_id"] != "fleet/pbrun":
-        raise ValueError(f"{where}: request is not a pbrun action")
-    prefix = action["environment"]["variables"].get("PATH", "").split(":", 1)[0]
+    prefix = action_edges.request_wrapper(SH / "cas", key, where=where)
     return verify_retained_wrapper(prefix, where=where)
 
 
@@ -7226,13 +7238,14 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                 except produced_mod.ProducedOutputError as exc:
                     raise action_edges.ActionEdgeError(str(exc)) from None
         cas.publish_action_request(action)
-        declare_origin_consumers(q, all_refs, consumer_action_key=key)
         options = argparse.Namespace(**dict(record["publication"]))
         sealed = {**template,
                   "params": {**template["params"], "data_manifest": summary},
                   "inputs": [*template["inputs"], manifest_input]}
-        _queued, generation = publish_consumer_row(
-            q, action, sealed, key=key, args=options, cas=cas, attach=True)
+        with submission_window(q, key, all_refs):
+            declare_origin_consumers(q, all_refs, consumer_action_key=key)
+            _queued, generation = publish_consumer_row(
+                q, action, sealed, key=key, args=options, cas=cas, attach=True)
     elif state == "unknown" or existing is None or isinstance(
             existing.get("published_unix"), bool) or not isinstance(
             existing.get("published_unix"), (int, float)):
@@ -7372,9 +7385,17 @@ def release_origin_consumer_cli(batch_ref: str, consumer_key: str, *,
             f"pbrun: --release-origin-consumer: BATCH_REF is not JSON: {exc}"
         ) from None
     q = pool.PoolQueue(SH / "pb-queue")
+    # What an unpublished declaration's release compares against (#945): the
+    # generation live now, and the CAS its sealed request sits in.  Unknown,
+    # it refuses that case alone.
+    try:
+        live_runtime = (SH / "repo").resolve(strict=True)
+    except OSError:
+        live_runtime = None
     try:
         result = produced_mod.release_origin_consumer(
-            q, ref, consumer_action_key=consumer_key, by=by, reason=reason)
+            q, ref, consumer_action_key=consumer_key, by=by, reason=reason,
+            live_runtime=live_runtime, cas_root=SH / "cas")
     except (produced_mod.ProducedOutputError, OSError, ValueError) as exc:
         raise SystemExit(f"pbrun: --release-origin-consumer: {exc}") from None
     print(json.dumps({**result, "consumer_action_key": consumer_key,
@@ -7540,18 +7561,21 @@ def main() -> int:
     # A consumer of consumed produced-output batches is filed against them
     # before its row exists, so their retirement cannot run ahead of it.  A
     # crash after this and before the row leaves the batches held and
-    # reported, never deleted (#914).
-    if template.get(_ORIGIN_BATCHES_TEMPLATE_KEY):
-        declare_origin_consumers(
-            q, template[_ORIGIN_BATCHES_TEMPLATE_KEY], consumer_action_key=key)
-    # Filed before the row, so an edge that names the replaced key follows
-    # this one from the moment it can run (#913).
-    if args.supersedes is not None:
-        file_supersession_or_exit(q, args.supersedes, new=key,
-                                  new_kind=action_edges.PRODUCER_KEY)
+    # reported, never deleted (#914).  From the first declaration through
+    # the row this process holds the key's transition lock, so an operator
+    # cannot release the declaration while the row is still to come (#945).
+    origin_refs = template.get(_ORIGIN_BATCHES_TEMPLATE_KEY) or []
+    with submission_window(q, key, origin_refs):
+        if origin_refs:
+            declare_origin_consumers(q, origin_refs, consumer_action_key=key)
+        # Filed before the row, so an edge that names the replaced key
+        # follows this one from the moment it can run (#913).
+        if args.supersedes is not None:
+            file_supersession_or_exit(q, args.supersedes, new=key,
+                                      new_kind=action_edges.PRODUCER_KEY)
 
-    queued_path, generation = publish_consumer_row(
-        q, action, template, key=key, args=args, cas=cas)
+        queued_path, generation = publish_consumer_row(
+            q, action, template, key=key, args=args, cas=cas)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

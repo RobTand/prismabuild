@@ -457,6 +457,49 @@ def generation_name(root: str | Path) -> str:
     return root.name if root.parent.name == "runtime-generations" else str(root)
 
 
+def request_wrapper(cas_root: str | Path, key: str, *, where: str) -> str:
+    """The Docker-wrapper directory a sealed pbrun request's ``PATH`` leads with.
+
+    The request is the one ``pbrun`` publishes before anything else, and its
+    ``PATH`` leads with the wrapper of the generation that sealed it, as a
+    template's does (`template_wrapper`).  ``--as-sealed-by`` reads it to
+    find the wrapper to reseal with, and a release of an unpublished
+    declaration (#945) reads it to tell whether the live generation sealed
+    the key.  Raises ``ValueError`` (or ``OSError``, or
+    ``PrismaBuildError``) naming what failed.
+    """
+
+    request = Path(cas_root) / "requests" / key[:2] / f"{key}.json"
+    raw = pb._read_regular_file_nofollow(
+        request, where=where, require_readonly=True, max_bytes=16 * 1024 * 1024)
+    action = pb.validate_action(pb._decode_strict_json(raw, where=where))
+    if action["action_key"] != key:
+        raise ValueError(f"{where}: request does not match its address")
+    if action["task"]["definition_id"] != "fleet/pbrun":
+        raise ValueError(f"{where}: request is not a pbrun action")
+    return str(action["environment"]["variables"].get("PATH", "")).split(":", 1)[0]
+
+
+def pending_release_of(queue_root: str | Path, key: str) -> str | None:
+    """The pending id of a pinned, unpublished release of ``key``, or ``None``.
+
+    A release pins its key before it publishes anything, and a release that
+    stopped before its row resumes on a later tick and publishes exactly that
+    key, sealed into the generation its template froze, retained or live
+    (`pbrun.release_deferred`, #913). So while one is pinned and not
+    published, ``key`` can still reach the queue. Raises `ActionEdgeError`
+    when a pinned release cannot be read or fails validation, and ``OSError``
+    when the records cannot be listed: either could hide that release.
+    """
+
+    key = _hex64(key, where="consumer key")
+    for pending_id in unreleased_ids(queue_root):
+        pinned = read_release(queue_root, pending_id)
+        if pinned is not None and pinned["action_key"] == key:
+            return pending_id
+    return None
+
+
 # --------------------------------------------------------------------------
 # Releases
 # --------------------------------------------------------------------------
