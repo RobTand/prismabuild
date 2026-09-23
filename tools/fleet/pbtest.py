@@ -320,6 +320,120 @@ def summary_count(summary: str, word: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+#: Summary parts that are not outcomes, though the same line prints them.
+NOT_OUTCOMES = {"warning", "warnings", "deselected"}
+_COLLECTED_COUNT = re.compile(r"^(?:no tests|(\d+)(?:/\d+)? tests?) collected\b")
+
+
+def summary_outcomes(summary: str) -> tuple[dict[str, int] | None, int | None]:
+    """A summary line's outcome counts by category, and its collected count.
+
+    Outcomes are keyed the way the outcome record keys them: pytest prints
+    ``N error``/``N errors`` for the ``error`` category, and every other
+    counted word is the category itself.  A ``--collect-only`` summary
+    counts items, not outcomes, and answers ``(None, N)``.
+    """
+
+    line = ANSI.sub("", summary).strip()
+    line = re.sub(r"^=+ | =+$", "", line)
+    body = line.rsplit(" in ", 1)[0]
+    collected = _COLLECTED_COUNT.match(body)
+    if collected:
+        return None, int(collected.group(1) or 0)
+    counts: dict[str, int] = {}
+    for part in body.split(", "):
+        match = re.fullmatch(r"(\d+) (.+)", part)
+        if match is None or match.group(2) in NOT_OUTCOMES:
+            continue
+        word = "error" if match.group(2) == "errors" else match.group(2)
+        counts[word] = counts.get(word, 0) + int(match.group(1))
+    return counts, None
+
+
+def reconcile_shards(results: list[dict]) -> None:
+    """Reconcile each shard by node ID, and the shards with each other (#941).
+
+    Each shard that reported a summary gets ``reconciliation``: its own
+    collection matched against its outcomes (``pbtest_outcomes.reconcile``).
+    A shard that reported a summary and printed no outcome record cannot be
+    reconciled, and says so.  Then every node ID collected by two shards is a
+    problem of each: files are disjoint across shards, so a test in two of
+    them ran twice.
+    """
+
+    owners: dict[str, list[int]] = {}
+    for result in results:
+        if not result["ran"]:
+            result["reconciliation"] = None
+            continue
+        record = pbtest_outcomes.parse(result["output"])
+        if record is None:
+            result["reconciliation"] = {"problems": [
+                "no outcome record: the shard's tests cannot be matched "
+                "against its collection"]}
+            continue
+        counts, collected = summary_outcomes(result["summary"])
+        result["reconciliation"] = pbtest_outcomes.reconcile(record, counts, collected)
+        for nodeid in dict.fromkeys(record.get("collected") or ()):
+            owners.setdefault(nodeid, []).append(result["shard"])
+    for nodeid, shards in owners.items():
+        if len(shards) < 2:
+            continue
+        for result in results:
+            if result["shard"] in shards:
+                reconciliation = result["reconciliation"]
+                reconciliation.setdefault("in_other_shards", []).append(nodeid)
+                message = "node ID(s) also collected by another shard"
+                if not any(message in problem for problem in reconciliation["problems"]):
+                    reconciliation["problems"].append(message)
+
+
+def _names(label: str, names, limit: int = 20) -> None:
+    names = list(names)
+    for name in names[:limit]:
+        print(f"    {label} {name}")
+    if len(names) > limit:
+        print(f"    ... and {len(names) - limit} more {label}; the --json "
+              "report lists them all")
+
+
+def print_reconciliation(results: list[dict]) -> None:
+    """The run's reconciliation: totals, how a summary exceeds its tests, and
+    every shard that did not reconcile, by name."""
+
+    reconciled = [r for r in results if r.get("reconciliation")
+                  and "collected" in r["reconciliation"]]
+    if reconciled:
+        total = {key: sum(r["reconciliation"][key] for r in reconciled)
+                 for key in ("collected", "ran", "outcomes")}
+        at_collection = [(r["shard"], item) for r in reconciled
+                         for item in r["reconciliation"]["at_collection"]]
+        extra = [(r["shard"], nodeid, kinds) for r in reconciled
+                 for nodeid, kinds in r["reconciliation"]["extra_phases"].items()]
+        extra_count = sum(len(kinds) - 1 for _, _, kinds in extra)
+        print(f"\nreconciliation: {total['collected']} collected, {total['ran']} "
+              f"ran; the summaries count {total['outcomes']} outcome(s) = "
+              f"{total['outcomes'] - len(at_collection) - extra_count} test(s) + "
+              f"{len(at_collection)} at collection + {extra_count} extra phase(s)")
+        for index, item in at_collection:
+            print(f"  shard {index:>3} at collection: {item['nodeid']} "
+                  f"{item['category']}"
+                  + (f" - {item['reason']}" if item["reason"] else ""))
+        for index, nodeid, kinds in extra:
+            print(f"  shard {index:>3} counted {len(kinds)} times: {nodeid} "
+                  f"({', '.join(kinds)})")
+    for result in results:
+        reconciliation = result.get("reconciliation")
+        if not reconciliation or not reconciliation["problems"]:
+            continue
+        print(f"UNRECONCILED shard {result['shard']:>3}: "
+              + "; ".join(reconciliation["problems"]))
+        _names("never ran:", reconciliation.get("never_ran") or ())
+        _names("not collected:", reconciliation.get("not_collected") or ())
+        _names("collected twice:", reconciliation.get("collected_twice") or ())
+        _names("also in another shard:", reconciliation.get("in_other_shards") or ())
+
+
 def displayed(output: str) -> list[str]:
     """A shard's output lines for a human, without its outcome record."""
 
@@ -706,13 +820,19 @@ def main() -> int:
             print(f"  shard {index:>3} {skip['nodeid']}{when} - "
                   f"{skip['reason'] or '(no reason given)'}{where}")
 
+    reconcile_shards(results)
+    print_reconciliation(results)
+
     # A shard is green when it exited 0 AND pytest reported a terminal summary.
     # ``ran`` has been computed, printed and written to the JSON since #213, and
     # the verdict never read it: ``returncode != 0`` alone called a shard that
     # started no test green, and returned 0 to whoever was deciding a merge on
     # it.  That is the #208 defect one level in -- the diagnostic improved and
-    # the thing acting on it did not read the diagnostic.
-    failed = [r for r in results if r["returncode"] != 0 or not r["ran"]]
+    # the thing acting on it did not read the diagnostic.  And it reconciled:
+    # a collected test with no outcome, or one two shards ran, is a missing or
+    # doubled result that no exit code reports (#941).
+    failed = [r for r in results if r["returncode"] != 0 or not r["ran"]
+              or (r.get("reconciliation") or {}).get("problems")]
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")

@@ -11,6 +11,8 @@ import sys
 
 import pytest
 
+from pbtest_shard_output import ONE_PASS  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -158,7 +160,7 @@ def test_pin_resolution_waits_for_worker_execution(tmp_path, monkeypatch):
     class Queued:
         returncode = 0
         def communicate(self):
-            return "1 passed in 0.01s\n", None
+            return ONE_PASS, None
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or Queued())
     monkeypatch.setattr(sys, "argv", [

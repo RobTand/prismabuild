@@ -24,6 +24,8 @@ import sys
 
 import pytest
 
+from pbtest_shard_output import ONE_PASS, shard_output  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -193,8 +195,7 @@ def test_a_shard_that_started_no_test_is_not_green(
 def test_a_shard_that_ran_is_still_green(tmp_path: Path, monkeypatch) -> None:
     """The other side of the same line: reading `ran` must not fail a pass."""
 
-    exit_code, record = _one_shard(
-        tmp_path, monkeypatch, "1 passed in 0.01s\n", 0, with_exit=True)
+    exit_code, record = _one_shard(tmp_path, monkeypatch, ONE_PASS, 0, with_exit=True)
 
     assert record["ran"] is True
     assert exit_code == 0
@@ -215,7 +216,8 @@ def test_a_cache_hit_is_read_through_to_the_shards_own_output(
     """
 
     payload = tmp_path / "payload.txt"
-    payload.write_text("......   [100%]\n\n561 passed, 1 skipped in 28.51s\n")
+    payload.write_text(shard_output(561, 1, duration="28.51s",
+                                    prefix="......   [100%]\n\n"))
     receipt = ('{"payload_path": "%s", "receipt": {"worker_id": "dl380g10"}, '
                '"status": "cache_hit"}\n' % payload)
 
