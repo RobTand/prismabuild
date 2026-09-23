@@ -25,6 +25,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1070,6 +1071,9 @@ def _ensure_real_directory(path: Path, *, root: Path, where: str) -> None:
     final modes are synced before advancing to the next component.
     """
 
+    # The walk below starts at ``root.parent`` and creates each component
+    # through a directory FD, so name the whole path to audit hooks (#1019).
+    sys.audit(pb.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
@@ -1134,6 +1138,7 @@ def _open_directory_nofollow(path: Path, *, where: str) -> int:
         raise pb.CASTamperError(
             f"{where} directory must be absolute and contain no parent traversal"
         )
+    sys.audit(pb.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
     # PrismaBuild's SLURM adapter is Linux-only.  Do not silently weaken the
     # no-follow contract on a platform lacking these openat flags.
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW

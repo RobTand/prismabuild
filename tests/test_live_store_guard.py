@@ -93,6 +93,7 @@ def test_a_reachable_store_with_a_blocked_traversal_is_not_certified(
     config = SimpleNamespace(pluginmanager=Plugins())
     session = SimpleNamespace(config=config)
     monkeypatch.setattr(conftest, "LIVE_ROOT", live)
+    monkeypatch.setattr(conftest, "LIVE_CENSUS", True)
     monkeypatch.setattr(conftest, "LIVE_CENSUS_TIMEOUT_S", 0.1)
     monkeypatch.setattr(conftest, "reachable", lambda _root: True)
     monkeypatch.setattr(conftest, "_walk", blocked)
@@ -168,8 +169,11 @@ def test_real_session_rejects_a_leak_from_its_test_worker(tmp_path: Path, worker
     tests = suite / "tests"
     tests.mkdir(parents=True)
     (tests / "conftest.py").symlink_to(Path(conftest.__file__).resolve())
+    # Marked, so the call-time hook lets the write through and the census has
+    # something to find: this case is about the census, not the hook.
     (tests / "test_writer.py").write_text(
-        "import os\nfrom pathlib import Path\n"
+        "import os\nfrom pathlib import Path\nimport pytest\n"
+        "@pytest.mark.live_store(reason='the census must still catch this')\n"
         "def test_write(tmp_path):\n"
         "    root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
         "    (root / 'pb-queue/done/leak.json').write_text(str(tmp_path))\n"
@@ -393,3 +397,161 @@ def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
     assert "1 failed" in result.stdout, output
     assert str(live / "cas") in result.stdout, output
     assert "live-store guard" in result.stdout, output
+
+
+def test_the_census_is_opt_in(monkeypatch, capsys) -> None:
+    """Without the opt-in, a session neither probes nor walks the store."""
+
+    class Plugins:
+        @staticmethod
+        def get_plugin(_name: str):
+            return None
+
+    config = SimpleNamespace(pluginmanager=Plugins())
+    session = SimpleNamespace(config=config, exitstatus=0)
+    monkeypatch.setattr(conftest, "LIVE_CENSUS", False)
+    monkeypatch.setattr(conftest, "reachable", lambda *_a, **_k: pytest.fail(
+        "an opted-out session probed the store"))
+    monkeypatch.setattr(conftest, "bounded_listing", lambda *_a, **_k: pytest.fail(
+        "an opted-out session walked the store"))
+    monkeypatch.setattr(conftest, "bounded_leaked_entries", lambda *_a, **_k: pytest.fail(
+        "an opted-out session walked the store"))
+    conftest.pytest_sessionstart(session)
+    conftest.pytest_sessionfinish(session, 0)
+    assert session.exitstatus == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.fixture
+def guarded(tmp_path: Path, monkeypatch) -> Path:
+    """A scratch store the in-process hook guards in place of the real one."""
+
+    live = _store(tmp_path / "guarded-live")
+    (live / "pb-queue/done/old.json").write_text("{}")
+    monkeypatch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
+    yield live
+    # The refusals below were expected; do not let the swallowed-refusal
+    # check fail the test that asked for them.
+    conftest.REFUSALS.clear()
+
+
+_REFUSED_CALLS = {
+    "open for writing": lambda live, out: open(live / "pb-queue/done/x.json", "w"),
+    "open for reading": lambda live, out: open(live / "pb-queue/done/old.json"),
+    "os.open of the directory": lambda live, out: os.open(live / "cas", os.O_RDONLY),
+    "Path.write_text": lambda live, out: (live / "slurm/x.json").write_text("{}"),
+    "os.listdir": lambda live, out: os.listdir(live / "pb-queue"),
+    "os.scandir": lambda live, out: os.scandir(live),
+    "os.walk": lambda live, out: next(os.walk(live)),
+    "os.mkdir": lambda live, out: os.mkdir(live / "new"),
+    "Path.mkdir(parents=True)": lambda live, out: (live / "cas/requests/ab").mkdir(
+        parents=True, exist_ok=True),
+    "os.rename into": lambda live, out: os.rename(out, live / "pb-queue/done/y.json"),
+    "os.rename out of": lambda live, out: os.rename(live / "pb-queue/done/old.json", out),
+    "os.replace into": lambda live, out: os.replace(out, live / "pb-queue/done/y.json"),
+    "os.link into": lambda live, out: os.link(out, live / "pb-queue/done/y.json"),
+    "os.symlink placed in": lambda live, out: os.symlink(out, live / "link"),
+    "os.remove": lambda live, out: os.remove(live / "pb-queue/done/old.json"),
+    "os.unlink": lambda live, out: os.unlink(live / "pb-queue/done/old.json"),
+    "os.rmdir": lambda live, out: os.rmdir(live / "slurm"),
+    "os.chmod": lambda live, out: os.chmod(live / "pb-queue/done/old.json", 0o600),
+    "os.truncate": lambda live, out: os.truncate(live / "pb-queue/done/old.json", 0),
+    "os.utime": lambda live, out: os.utime(live / "pb-queue/done/old.json"),
+    "shutil.rmtree": lambda live, out: __import__("shutil").rmtree(live / "slurm"),
+    "the store root itself": lambda live, out: os.listdir(live),
+    "a path that leaves and re-enters the store": lambda live, out: open(
+        live.parent / "elsewhere/../guarded-live/pb-queue/done/z.json", "w"),
+}
+
+
+@pytest.mark.parametrize("call", sorted(_REFUSED_CALLS))
+def test_each_audited_call_under_the_store_is_refused_before_it_runs(
+        guarded: Path, tmp_path: Path, call: str) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}")
+
+    def inventory() -> list[str]:
+        with conftest._LiveAccess():
+            return sorted(str(p) for p in guarded.rglob("*"))
+
+    before = inventory()
+    with pytest.raises(RuntimeError, match="live-store guard") as refused:
+        _REFUSED_CALLS[call](guarded, outside)
+    assert str(guarded) in str(refused.value)
+    assert outside.read_text() == "{}"
+    conftest.REFUSALS.clear()
+    assert inventory() == before
+
+
+def test_a_relative_path_is_placed_against_the_working_directory(
+        guarded: Path, monkeypatch) -> None:
+    monkeypatch.chdir(guarded.parent)
+    with pytest.raises(RuntimeError, match=str(guarded / "pb-queue/done/r.json")):
+        open("guarded-live/pb-queue/done/r.json", "w")
+    assert not (guarded / "pb-queue/done/r.json").exists()
+
+
+def test_calls_outside_the_store_pass(guarded: Path, tmp_path: Path) -> None:
+    """Including a link whose *target* is in the store: making it reads nothing."""
+
+    (tmp_path / "sibling-of-guarded-live").mkdir()  # a shared prefix, not a child
+    (tmp_path / "sibling-of-guarded-live/ok.json").write_text("{}")
+    os.symlink(guarded / "pb-queue", tmp_path / "pointer")
+    assert os.listdir(tmp_path / "sibling-of-guarded-live") == ["ok.json"]
+    assert conftest.REFUSALS == []
+
+
+def test_a_sibling_whose_name_extends_the_root_is_not_the_store(
+        tmp_path: Path, monkeypatch) -> None:
+    live = tmp_path / "live"
+    live.mkdir()
+    monkeypatch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
+    (tmp_path / "live-2").mkdir()
+    (tmp_path / "live-2/ok.json").write_text("{}")
+    assert os.listdir(tmp_path / "live-2") == ["ok.json"]
+
+
+@pytest.mark.live_store(reason="proves the marker lets a test through")
+def test_a_marked_test_is_let_through(guarded: Path) -> None:
+    assert "old.json" in os.listdir(guarded / "pb-queue/done")
+    assert conftest.REFUSALS == []
+
+
+def test_a_cas_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
+    """The no-follow walk announces the absolute directory before descending."""
+
+    from prismabuild import core as pb
+
+    with pytest.raises(RuntimeError, match=str(guarded / "cas/requests/ab")):
+        pb._open_directory_nofollow(guarded / "cas/requests/ab", where="test",
+                                    create=True)
+    assert not (guarded / "cas/requests").exists()
+
+
+def test_a_slurm_lane_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
+    from prismabuild import slurm
+
+    with pytest.raises(RuntimeError, match=str(guarded / "slurm/jobs/x")):
+        slurm._ensure_real_directory(guarded / "slurm/jobs/x",
+                                     root=guarded / "slurm", where="test")
+    with pytest.raises(RuntimeError, match=str(guarded / "slurm")):
+        slurm._open_directory_nofollow(guarded / "slurm", where="test")
+    assert not (guarded / "slurm/jobs").exists()
+
+
+def test_a_caught_refusal_still_fails_the_test(tmp_path: Path) -> None:
+    """Code that swallows exceptions cannot turn a refused call into a pass."""
+
+    live, result = _child_session(tmp_path, (
+        "import os\nfrom pathlib import Path\n"
+        "def test_swallow():\n"
+        "    root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    try:\n"
+        "        (root / 'pb-queue/done/s.json').write_text('{}')\n"
+        "    except Exception:\n"
+        "        pass\n"
+    ))
+    output = result.stdout + result.stderr
+    assert not (live / "pb-queue/done/s.json").exists(), output
+    assert result.returncode == 1, output
+    assert "the refusal was caught" in result.stdout, output
