@@ -132,7 +132,8 @@ class FsProbe:
     ``opens`` every ``open``, ``io.open`` and ``os.open``.  On the NFS
     mount each is at least one LOOKUP or GETATTR unless the client answers
     it from its attribute cache, so their sum is the lookup count #1020
-    measures.
+    measures.  The exporter's read of its own ``/proc/self/status`` (its
+    resident-memory gauges) is not a queue lookup and is not counted.
     """
 
     def __init__(self) -> None:
@@ -174,7 +175,8 @@ class FsProbe:
             return real["os_open"](path, *args, **kwargs)
 
         def open_(file, *args, **kwargs):
-            if not isinstance(file, int):
+            if (not isinstance(file, int)
+                    and not os.fspath(file).startswith("/proc/")):
                 self.opens.append(os.fspath(file))
             return real["open"](file, *args, **kwargs)
 
@@ -566,6 +568,23 @@ def frozen_clock(now: float):
         yield
 
 
+def queue_readings(text: str) -> str:
+    """``text`` without the exporter's reports on itself.
+
+    ``pbmetrics.EXPORTER_FAMILIES`` -- scrape time, per-scrape reads and
+    resident memory -- are readings of the exporter, not of the queue, and
+    differ between any two scrapes; every other line is compared whole.
+    """
+
+    def family(line: str) -> str:
+        if line.startswith("# "):
+            return line.split(" ", 3)[2]
+        return line.split("{", 1)[0].split(" ", 1)[0]
+
+    return "".join(line + "\n" for line in text.splitlines()
+                   if family(line) not in pbmetrics.EXPORTER_FAMILIES)
+
+
 def golden_text(root: Path) -> str:
     """What the exporter reports for the small fixture at ``GOLDEN_NOW``."""
 
@@ -581,41 +600,186 @@ def test_output_is_mains(tmp_path):
 
     ``tests/data/pbmetrics_kept_reads_main.prom`` was written by main's
     exporter (``72b98a871bbb``) from this fixture, with
-    ``python tests/test_pbmetrics_kept_reads.py --golden``.
+    ``python tests/test_pbmetrics_kept_reads.py --golden``.  The families
+    the exporter adds about itself are the only difference, and are present.
     """
 
-    assert golden_text(tmp_path / "pb-queue") == GOLDEN.read_text()
+    text = golden_text(tmp_path / "pb-queue")
+    assert queue_readings(text) == GOLDEN.read_text()
+    for family in pbmetrics.EXPORTER_FAMILIES:
+        assert f"# TYPE {family} gauge" in text
+    for kind in pbmetrics.SCRAPE_READ_KINDS:
+        assert f'prismabuild_scrape_reads{{kind="{kind}"}} ' in text
 
 
 # --------------------------------------------------------------------------
 # Profile harness: the before/after numbers in #1020
 # --------------------------------------------------------------------------
 
+#: The scrapes the profile measures.  ``first`` builds what is kept,
+#: ``second`` is an unchanged queue, and each ``changed-*`` scrape follows
+#: one change a busy queue makes between two scrapes (#1020 review: about
+#: 62% of live scrapes see a new ending).
+SCENARIOS = ("first", "second", "changed-ending", "changed-receipt",
+             "changed-ending-and-receipt", "changed-withdrawal")
+
+
+def _change(root: Path, scenario: str, serial: int) -> None:
+    """File what ``scenario`` files, by rename, as every queue writer does."""
+
+    now = time.time()
+    if scenario in ("changed-ending", "changed-ending-and-receipt"):
+        key = _key(f"late-ending-{serial}", 0)
+        _replace(root / pool.DONE / f"{key}.json",
+                 _ending(key, "executed", "sparky", now - 1.0, profiled=True))
+    if scenario in ("changed-receipt", "changed-ending-and-receipt"):
+        key = _key(f"late-receipt-{serial}", 0)
+        _replace(root / pool.MOVERS / f"{key}.json", {
+            "schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": key,
+            "tier_id": STAGE_TIER, "host": "dl380g10", "unix": now - 1.0,
+            "complete": True, "bytes_staged": storage_tiers.GIB,
+            "disk_pacing": {"mean_pool_read_mb_s": 900.0,
+                            "pool_read_bytes": storage_tiers.GIB}})
+    if scenario == "changed-withdrawal":
+        key = _key(f"late-withdrawal-{serial}", 0)
+        decision = root / pool.WITHDRAWN / "decisions" / key
+        decision.mkdir(parents=True)
+        _replace(decision / "1.000000.json",
+                 {"status": "withdrawn", "action_key": key})
+        _replace(root / pool.WITHDRAWN / f"{key}.json",
+                 _ending(key, "withdrawn", "sparky", now - 1.0, profiled=False))
+
+
+def _use_tools(tools: Path | None) -> str:
+    """Import the exporter from ``tools`` (another tree's ``tools/fleet``).
+
+    How the base exporter is profiled with this harness: every module this
+    tree's ``tools/fleet`` loaded is dropped and ``pbmetrics`` imported
+    again from ``tools``.  Returns the sha256 of the ``pbmetrics.py`` in use,
+    so a report names the bytes it measured.
+    """
+
+    global pbmetrics
+    if tools is not None:
+        here = str(REPOSITORY / "tools" / "fleet")
+        for name, module in list(sys.modules.items()):
+            origin = getattr(module, "__file__", None) or ""
+            if origin.startswith(here + os.sep):
+                del sys.modules[name]
+        sys.path.remove(here)
+        sys.path.insert(0, str(tools))
+        import pbmetrics as imported  # noqa: PLC0415
+        pbmetrics = imported
+    return hashlib.sha256(Path(pbmetrics.__file__).read_bytes()).hexdigest()
+
+
+def _resident() -> dict[str, int]:
+    found = {}
+    for line in Path("/proc/self/status").read_text().splitlines():
+        name, _, value = line.partition(":")
+        if name in ("VmRSS", "VmHWM"):
+            found[name] = int(value.split()[0]) * 1024
+    return found
+
+
+def _exporter_child(argv: list[str]) -> int:
+    """One exporter, alone in its process: scrape on each line of stdin."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--tools", type=Path)
+    args = parser.parse_args(argv)
+    _use_tools(args.tools)
+    cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)
+    for line in sys.stdin:
+        clock = time.perf_counter()
+        text = cache.get()
+        print(json.dumps({"request": line.strip(),
+                          "wall_s": round(time.perf_counter() - clock, 4),
+                          "success": "prismabuild_collection_success 1" in text,
+                          **_resident()}), flush=True)
+    return 0
+
+
+def _memory(root: Path, tools: Path | None) -> dict[str, object]:
+    """The exporter's resident memory, alone in its process, and its growth.
+
+    Scrapes the live-shaped queue, then files ``GROWTH`` more terminal
+    records -- about a day and a half of the live queue's busiest day -- and
+    scrapes again, so the resident bytes each kept entry costs is measured,
+    not estimated.
+    """
+
+    import subprocess  # noqa: PLC0415
+
+    command = [sys.executable, __file__, "--exporter-child", "--root", str(root)]
+    if tools is not None:
+        command += ["--tools", str(tools)]
+    child = subprocess.Popen(command, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)
+
+    def scrape(label: str) -> dict:
+        child.stdin.write(label + "\n")
+        child.stdin.flush()
+        return json.loads(child.stdout.readline())
+
+    try:
+        readings = [scrape("first"), scrape("second")]
+        entries = sum(1 for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN,
+                                      pool.MOVERS)
+                      for _ in os.scandir(root / state))
+        now = time.time()
+        for index in range(GROWTH):
+            key = _key("growth", index)
+            _put(root / pool.DONE / f"{key}.json",
+                 _ending(key, "executed", "sparky", now - 7200.0 - index,
+                         profiled=False), now - 7200.0 - index)
+        settle()
+        readings += [scrape("grown"), scrape("grown-second")]
+    finally:
+        child.stdin.close()
+        child.wait()
+    grown = readings[2]["VmRSS"] - readings[1]["VmRSS"]
+    return {"history_entries": entries, "growth_entries": GROWTH,
+            "readings": readings,
+            "bytes_per_history_entry": round(grown / GROWTH, 1)}
+
+
+#: Terminal records the memory measurement adds: the live queue filed
+#: 13,451 history entries on its busiest recent day (2026-09-23).
+GROWTH = 20_000
+
+
 def _profile(argv: list[str]) -> int:
     import cProfile
     import pstats
+    import statistics
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--label", required=True)
+    parser.add_argument("--tools", type=Path,
+                        help="profile the exporter in this tools/fleet instead")
+    parser.add_argument("--rounds", type=int, default=5)
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
+    exporter = _use_tools(args.tools)
     started = time.time()
     build_queue(args.root, started, LIVE_SHAPE)
     settle()
     report: dict[str, object] = {"label": args.label, "shape": LIVE_SHAPE,
+                                 "pbmetrics_sha256": exporter,
+                                 "pbmetrics": pbmetrics.__file__,
                                  "directories": directories_under(args.root),
                                  "filesystem": stage_move._filesystem_type(
                                      os.lstat(args.root).st_dev)}
+    serial = 0
     cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)
-    for scrape in ("first", "second", "one-ending"):
-        if scrape == "one-ending":
-            # One action finishes between scrapes: the busy queue's case.
-            key = _key("late-ending", 0)
-            _replace(args.root / pool.DONE / f"{key}.json",
-                     _ending(key, "executed", "sparky", time.time() - 1.0,
-                             profiled=True))
+    for scrape in SCENARIOS:
+        if scrape.startswith("changed-"):
+            serial += 1
+            _change(args.root, scrape, serial)
             settle()
         probe = FsProbe()
         profile = cProfile.Profile()
@@ -636,28 +800,24 @@ def _profile(argv: list[str]) -> int:
                                             for p in probe.listings).most_common(8),
                           "opened": Counter(Path(p).parent.name
                                             for p in probe.opens).most_common(8)}
-    # The same three cases with no probe and no profiler: what the scrape
-    # costs the box that runs it.
-    plain: dict[str, float] = {}
-    clock = time.perf_counter()
-    pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT).get()
-    plain["first"] = time.perf_counter() - clock
-    settle()
-    clock = time.perf_counter()
-    cache.get()
-    plain["second"] = time.perf_counter() - clock
-    key = _key("late-ending", 1)
-    _replace(args.root / pool.DONE / f"{key}.json",
-             _ending(key, "executed", "sparky", time.time() - 1.0, profiled=True))
-    settle()
-    clock = time.perf_counter()
-    cache.get()
-    plain["one-ending"] = time.perf_counter() - clock
-    report["uninstrumented_wall_s"] = {name: round(value, 4)
-                                       for name, value in plain.items()}
-    import resource
-    report["max_rss_mib"] = round(
-        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+    # The same scrapes with no probe and no profiler, ``rounds`` times each
+    # from a new exporter: what a scrape costs the box that runs it.
+    plain: dict[str, list[float]] = {scrape: [] for scrape in SCENARIOS}
+    for _round in range(args.rounds):
+        cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)
+        for scrape in SCENARIOS:
+            if scrape.startswith("changed-"):
+                serial += 1
+                _change(args.root, scrape, serial)
+            settle()
+            clock = time.perf_counter()
+            cache.get()
+            plain[scrape].append(time.perf_counter() - clock)
+    report["uninstrumented_wall_s"] = {
+        scrape: {"median": round(statistics.median(values), 4),
+                 "min": round(min(values), 4), "max": round(max(values), 4)}
+        for scrape, values in plain.items()}
+    report["memory"] = _memory(args.root, args.tools)
     (args.out / f"{args.label}.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
     return 0
@@ -675,6 +835,10 @@ def _golden(argv: list[str]) -> int:
 if __name__ == "__main__" and "--golden" in sys.argv:
     sys.argv.remove("--golden")
     raise SystemExit(_golden(sys.argv[1:]))
+
+if __name__ == "__main__" and "--exporter-child" in sys.argv:
+    sys.argv.remove("--exporter-child")
+    raise SystemExit(_exporter_child(sys.argv[1:]))
 
 if __name__ == "__main__" and "--profile" in sys.argv:
     sys.argv.remove("--profile")

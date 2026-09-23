@@ -4844,21 +4844,31 @@ argv drifts from the declaration or when a publish retires its generation. The
 role holds no work, so it is always idle for that purpose, and SIGTERM ends
 `serve_forever`. The server takes the role's singleton lock
 (`worker_loop.role_singleton`) before it binds the port, so a second exporter
-on the box exits `3`. `--once` writes nothing and keeps nothing, so it takes
-no lock. Deploying #1020 retires the three installed units in the order
-`docs/pb_metrics.md` gives.
+on the box exits `3`. If the port is already bound -- by an installed unit
+beside the role, whose lock the role cannot see -- the server also exits `3`
+and writes one JSON record naming the port and, where `/proc` lets it, the
+holder's pid and argv (`pbmetrics.REFUSAL_SCHEMA`), not a traceback. The
+supervisor still spawns a role that exited this way on its next tick, so the
+refusal repeats once a tick until the unit is stopped. `--once` writes nothing
+and keeps nothing, so it takes no lock. Deploying #1020 retires the three
+installed units in the order `docs/pb_metrics.md` gives.
 
 **What a refresh reads.** `MetricsCache` holds one `pbmetrics.KeptReads` for
 the life of the server; `--once` and `collect_metrics` without a reader use a
-fresh one, which reads everything. The reader keeps listings in a
-`stage_release.DirectoryRecords` under the #992 stamp argument above and,
-where it helps, a value computed from a directory under a fence taken before
-the computation and checked after it. It keeps only what the gauges read,
-never whole records:
+fresh one, which reads everything. The reader keeps listings under the #992
+stamp argument above and, where it helps, a value computed from a directory
+under a fence taken before the computation and checked after it. It keeps
+only what the gauges read, never whole records:
 
-- **Terminal history.** Each listed record keeps its name and the `stat` the
-  listing took. The window's 500 rows are projected by `pbstatus.ending_row`
-  and kept on their entries. The selection itself is kept, fenced on
+- **Terminal history.** `done/`, `failed/`, `withdrawn/`, each withdrawal
+  decision directory and `movers/` are kept by `KeptReads.history`, not by
+  `DirectoryRecords`. A changed one is walked as the plain reader walks it:
+  one `scandir`, one `stat` per name, and nothing else per name. An entry
+  whose #761 version held is the same object as before, carrying what was
+  derived from it. The window's 500 rows are projected by
+  `pbstatus.ending_row` and kept on their entries. The selection is the plain
+  reader's, `heapq.nlargest` over the same sequence the plain reader sorts,
+  so ties fall in the same order. The selection itself is kept, fenced on
   `done/`, `failed/`, `withdrawn/`, `withdrawn/decisions/` and each decision
   directory, so unchanged history is not walked at all.
 - **Unstarted releases.** `withdrawn/superseded/` is listed by name only
@@ -4884,6 +4894,17 @@ read is forgotten (`DirectoryRecords.retain`), so what is kept is bounded by
 what is on disk now, not by history. A read that failed is never kept, so an
 unreadable record reads as unreadable on every refresh.
 
+**Failures.** A kept refresh fails where a fresh one does, and keeps nothing
+from the failure. A history directory that cannot be listed, or holds a name
+that cannot be `stat`-ed, raises as `pbstatus._ending_paths` does: the
+terminal section reports `prismabuild_terminal_collection_success 0` and the
+snapshot `prismabuild_collection_success 0`, and the receipt walk reports an
+incomplete move window, as the previous exporter's did. A residency plan that
+cannot be `stat`-ed counts as an unreadable plan. A `FileNotFoundError` is an
+absent directory only when a second `stat` of the directory says so. The
+kept selection is dropped before it is recomputed, so a recomputation that
+raises leaves nothing behind.
+
 **Cost contract.** On the queue's host:
 
 - An unchanged queue costs one `lstat` per directory the census reads (the
@@ -4892,7 +4913,9 @@ unreadable record reads as unreadable on every refresh.
 - A changed directory costs one listing and one `stat` per entry in it, and a
   read of each entry whose #761 version changed. Every entry is `stat`-ed for
   the reason the tier loop's are: records are replaced under their own names,
-  and an inode number can be reused.
+  and an inode number can be reused. For the history directories that is the
+  plain reader's cost exactly, so a changed refresh costs no more than a
+  fresh one (measured below).
 - `claimed/` changes on every lease heartbeat, so it is listed on nearly every
   refresh and each changed lease is read. That cost follows live work, not
   history.
@@ -4908,39 +4931,62 @@ and is not seen until the directory next changes.
 
 **Output.** On the same fixture the exporter reports the same families, labels
 and values as before (`tests/data/pbmetrics_kept_reads_main.prom`, written by
-the previous exporter). One ordering changed: terminal records with equal
-modification times are now taken in name order, where the previous exporter
-took them in directory order. That changes the output only when records with
-equal times straddle the 500-record cut.
+the previous exporter), and five families about itself, per snapshot:
+
+| Family | What it reads |
+|---|---|
+| `prismabuild_scrape_seconds` | Wall time the snapshot took to collect, up to rendering. |
+| `prismabuild_scrape_reads{kind}` | `listed` and `kept`: directories listed and directories answered from a kept listing. `parsed`: records `DirectoryRecords` read. `computed` and `reused`: values computed from record bytes, and values reused because their file had not changed. |
+| `prismabuild_exporter_resident_bytes` | The process's `VmRSS`. |
+| `prismabuild_exporter_resident_peak_bytes` | The process's `VmHWM`. |
+| `prismabuild_exporter_resident_ceiling_bytes` | `RESIDENT_CEILING_BYTES`, derived in `docs/pb_metrics.md`. |
+
+The fixture measures what the kept reads save and cost; these families measure
+it on the live queue. The kept reads are justified by what these read after
+deployment, not by the fixture.
 
 **Measured.** `python tests/test_pbmetrics_kept_reads.py --profile` builds a
 queue shaped like the live one on local ext4 (30,000 done, 7,000 failed, 1,900
 withdrawn, 1,800 decisions, 1,500 releases, 6,000 receipts, 40 plans, 1,853
-directories) and times three refreshes of one server: its first, one with
-nothing changed, and one after a new ending. It counts listings, `stat`s and opens with
-the same probe on both sides and records a cProfile of each refresh.
+directories). It times a server's first refresh, one with nothing changed,
+and one after each change a busy queue makes: a new ending, a new receipt,
+both, and a new withdrawal with its decision. It counts listings, `stat`s and
+opens with one probe for both exporters, records a cProfile of each refresh,
+and times each refresh five more times with no probe and no profiler ("plain",
+the median). `--tools` points it at another tree's exporter. Both runs were
+on sparky with the page cache warm: before is the previous exporter
+(`tools/fleet` at `72b98a87`, pbrun action `4428c9fc465e`), after is this
+change (action `79003e2f6647`).
 
-| Refresh | Before: calls (listings / `stat` / opens) | After: calls (listings / `stat` / opens) | Before: wall, plain | After: wall, plain |
+| Refresh | Before: calls (listings / `stat` / opens) | After: calls (listings / `stat` / opens) | Before: plain wall | After: plain wall |
 |---|---|---|---|---|
-| First | 51,236 (1,927 / 47,011 / 2,298) | 63,669 (1,917 / 59,501 / 2,251) | 0.185 s | 0.712 s |
-| Nothing changed | 51,236 (1,927 / 47,011 / 2,298) | 1,845 (0 / 1,845 / 0) | 0.187 s | 0.045 s |
-| One new ending | 51,237 (1,927 / 47,012 / 2,298) | 35,461 (1 / 35,459 / 1) | 0.186 s | 0.354 s |
+| First | 51,236 (1,927 / 47,011 / 2,298) | 63,669 (1,917 / 59,501 / 2,251) | 0.190 s | 0.267 s |
+| Nothing changed | 51,236 (1,927 / 47,011 / 2,298) | 1,845 (0 / 1,845 / 0) | 0.189 s | 0.021 s |
+| New ending | 51,237 (1,927 / 47,012 / 2,298) | 35,458 (1 / 35,456 / 1) | 0.189 s | 0.139 s |
+| New receipt | 51,238 (1,927 / 47,013 / 2,298) | 7,850 (1 / 7,848 / 1) | 0.189 s | 0.035 s |
+| New ending and receipt | 51,240 (1,927 / 47,015 / 2,298) | 41,465 (2 / 41,461 / 2) | 0.190 s | 0.153 s |
+| New withdrawal | 51,243 (1,928 / 47,017 / 2,298) | 9,168 (3 / 9,164 / 1) | 0.189 s | 0.059 s |
 
-"Plain" is the same refresh timed again without the probe or the profiler.
-Before is the previous exporter, pbrun action `2c351e87c17f`; after is this
-change, action `b8049ef3fab8`, both on sparky with the page cache warm. The
-kept state raised the harness's peak RSS from 129 MiB to 193 MiB, a figure
-that includes the fixture builder and a second, throwaway reader.
+Every refresh after the first costs less than the previous exporter's in both
+calls and wall time. The first costs more, once per process: it takes a fence
+on each of the 1,800 decision directories and checks it again after reading,
+which is what lets the next refresh skip them.
 
-The probe counts filesystem calls, which on NFS are round trips. The previous
-exporter on NFS paid its 51,236 calls on every refresh; the new one on the
-queue's host pays none over NFS. A refresh right after a new ending costs more
-CPU than the previous exporter did on a local disk: the changed `done/` is
-listed and each of its 30,000 names `stat`-ed and walked in Python. The first
-refresh after a start costs about four times the previous one, for the same
-reason over every directory. The box-level numbers after deployment
-(Netdata on dl380g10 and the Sparks' NFS client counters) do not exist until
-the role is deployed.
+A changed refresh first cost 0.354 s against the previous exporter's
+0.186 s. The cost was not the `stat`s, which matched the plain walk's, but
+what was done per name in Python: `DirectoryRecords` built a `Path` for each
+of the 30,000 names, sorted them by name, and called the parse for each.
+`KeptReads.history` does none of that: its per-name work is the `scandir`
+entry, the `stat` and one version compare. The cProfile of a new-ending
+refresh shows the rest: 0.24 s of 0.32 s (instrumented) in the endings
+selection, of which the `stat`s are 0.06 s and the probe's own wrappers most
+of the remainder.
+
+On NFS every refresh pays the previous exporter's 51,236 calls as round
+trips; on the queue's host none of them crosses NFS. The box-level numbers
+after deployment (Netdata on dl380g10 and the Sparks' NFS client counters)
+do not exist until the role is deployed; the families above are how they
+will be read.
 
 ### What a stage tier's capacity counts
 

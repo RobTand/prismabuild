@@ -6,11 +6,15 @@ import argparse
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import errno
+import heapq
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import math
 import os
 from pathlib import Path
 import re
+import socket
 import stat as statmod
 import sys
 import threading
@@ -163,6 +167,8 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # record's row, a receipt's projection, a plan's census totals.  Whatever
 # failed to read is never kept, so unreadable stays freshly unreadable, and
 # anything no longer on disk is dropped when its directory is next listed.
+# A listing that could not ``stat`` every entry fails the scrape exactly as
+# the plain walk's raise does, and is not kept either.
 
 
 class _Stat:
@@ -186,17 +192,17 @@ class _KeptEntry:
     whenever the file's version changes (``DirectoryRecords``).
     """
 
-    __slots__ = ("path", "name", "_stat", "derived")
+    __slots__ = ("path", "name", "mtime", "version", "_stat", "derived")
 
-    def __init__(self, path: Path, info: os.stat_result) -> None:
-        self.path = str(path)
-        self.name = path.name
+    def __init__(self, path: str, name: str, info: os.stat_result,
+                 version: tuple) -> None:
+        self.path = path
+        self.name = name
+        self.mtime = info.st_mtime
+        #: The #761 version (``stage_move._metadata_version``).
+        self.version = version
         self._stat = _Stat(info)
         self.derived: object = None
-
-    @property
-    def mtime(self) -> float:
-        return self._stat.st_mtime
 
     def stat(self) -> _Stat:
         return self._stat
@@ -206,11 +212,14 @@ def _kept_entry(path: Path, info: os.stat_result | None) -> _KeptEntry | None:
     """``DirectoryRecords``' parse for a listing of files: no read at all.
 
     ``info`` is the ``stat`` the listing took for the file's version.
-    ``None`` for a file that could not be stat-ed; it is not kept, so the
-    directory is listed again next scrape.
+    ``None`` for a file that could not be stat-ed: the listing is then not
+    kept, and a caller must count the entry as unreadable, never skip it.
     """
 
-    return None if info is None else _KeptEntry(path, info)
+    if info is None:
+        return None
+    return _KeptEntry(str(path), path.name, info,
+                      stage_move._metadata_version(info))
 
 
 def _entry_kept(entry: _KeptEntry | None) -> bool:
@@ -300,12 +309,26 @@ class KeptReads:
     not touch is dropped at its end, so what is kept is bounded by what is
     on disk now.
 
-    Counters: ``listed``/``kept`` are ``DirectoryRecords``' own, and
-    ``computed``/``reused`` count the per-file and per-plan memos.
+    Counters, exported per scrape by :meth:`scrape_counts`: ``listed`` and
+    ``kept`` count directories listed and directories answered from a kept
+    listing, ``parsed`` the records ``DirectoryRecords`` read, and
+    ``computed``/``reused`` the per-file, per-record and per-plan values
+    computed from bytes and reused.
+
+    The history directories -- ``done/``, ``failed/``, ``withdrawn/`` and
+    ``movers/``, 50,000 names on the live queue and growing -- are kept by
+    :meth:`history` instead of ``DirectoryRecords``: one ``scandir`` and one
+    ``stat`` per name when the directory changed, exactly the plain walk's
+    cost, so a changed scrape costs no more than a fresh one.
     """
 
     def __init__(self) -> None:
         self.records = stage_release.DirectoryRecords()
+        #: Directory -> ``(stamp, {name: entry})`` for :meth:`history`.
+        self._histories: dict[str, tuple[tuple, dict[str, _KeptEntry]]] = {}
+        self._history_listed = 0
+        self._history_kept = 0
+        self._at_begin: tuple[int, ...] = (0, 0, 0, 0, 0)
         #: path -> ``(fenced directory, stamp, value)`` for single files.
         self._files: dict[str, tuple[str, tuple, object]] = {}
         #: memo key -> ``(fence, value)`` for derived values.
@@ -322,17 +345,33 @@ class KeptReads:
 
     # -- scrape boundaries -------------------------------------------------
 
+    def _totals(self) -> tuple[int, ...]:
+        return (self.records.listed + self._history_listed,
+                self.records.kept + self._history_kept,
+                self.records.parsed, self.computed, self.reused)
+
+    def scrape_counts(self) -> dict[str, int]:
+        """What this scrape has done so far: listed, kept, parsed, computed, reused."""
+
+        return {name: now - then for name, now, then in zip(
+            ("listed", "kept", "parsed", "computed", "reused"),
+            self._totals(), self._at_begin)}
+
     def begin(self) -> None:
         self._versions = {}
         self._reads = {}
         self._named = set()
         self._touched = set()
         self._derived_now = {}
+        self._at_begin = self._totals()
 
     def end(self) -> None:
         # A directory this scrape did not read -- a withdrawal decision's,
         # once the decision is gone -- is forgotten with its records.
-        self.records.retain(set(self._reads) | self._named)
+        wanted = set(self._reads) | self._named
+        self.records.retain(wanted)
+        for name in [name for name in self._histories if name not in wanted]:
+            del self._histories[name]
         for name in [name for name in self._files if name not in self._touched]:
             del self._files[name]
         for key in [key for key in self._memos if key not in self._touched]:
@@ -421,14 +460,17 @@ class KeptReads:
         """
 
         self._touched.add(key)
-        kept = self._memos.get(key)
+        kept = self._memos.pop(key, None)
         if kept is not None and self.holds(kept[0]):
+            self._memos[key] = kept
             self.reused += 1
             # A fenced directory is unchanged, so what ``DirectoryRecords``
             # keeps for it is still good: it must survive this scrape's end
             # even though nothing read it.
             self._named.update(fence[0] for fence in kept[0])
             return kept[1]
+        # Nothing is kept while ``compute`` runs: one that raises leaves no
+        # value behind, stale or otherwise.
         fences = make_fences()
         value = compute()
         self.computed += 1
@@ -485,6 +527,74 @@ class KeptReads:
         """The files in ``directory``, each with the version it was listed at."""
 
         return self._read(directory, select, _kept_entry, _entry_kept)
+
+    def history(self, directory: Path, *, select=_json_file,
+                absent_ok: bool = True) -> Iterable[_KeptEntry]:
+        """Every entry ``select`` keeps in ``directory``, in listing order.
+
+        ``pbstatus._ending_paths``' walk, kept: while the directory's stamp
+        holds its kept entries are returned without a listing, and when it
+        moved it is listed and every entry ``stat``-ed -- one ``scandir`` and
+        one ``stat`` per name, what the plain walk costs -- and an entry whose
+        #761 version held is the same object as before, carrying what was
+        derived from it.  Nothing else is done per name: no ``Path``, no
+        sort, so a changed history directory costs what a fresh walk does.
+
+        Failures are the plain walk's.  ``FileNotFoundError`` while listing
+        is an absent directory only if a second ``stat`` of the directory
+        says so (``absent_ok``, else it is raised); any other error, or a
+        name that vanished from a directory still there, is raised.  A
+        listing that raised is not kept.
+        """
+
+        name = os.fspath(directory)
+        done = self._reads.get(name)
+        if done is not None:
+            if done[0] is not _HISTORY or done[1] is not select:
+                raise AssertionError(f"{name} read under two meanings")
+            return done[2]
+        kept = self._histories.pop(name, None)
+        if kept is not None and self.version(name) == kept[0]:
+            self._histories[name] = kept
+            self._history_kept += 1
+            out = kept[1].values()
+        else:
+            out = self._list_history(name, select, absent_ok,
+                                     kept[1] if kept is not None else {})
+        self._reads[name] = (_HISTORY, select, out)
+        return out
+
+    def _list_history(self, name: str, select, absent_ok: bool,
+                      previous: dict[str, _KeptEntry]) -> Iterable[_KeptEntry]:
+        directory = Path(name)
+        stamp = stage_move._trusted_directory_stamp(directory)
+        entries: dict[str, _KeptEntry] = {}
+        stat = os.stat
+        version_of = stage_move._metadata_version
+        try:
+            with os.scandir(name) as scan:
+                for entry in scan:
+                    if not select(entry):
+                        continue
+                    info = stat(entry.path)
+                    version = version_of(info)
+                    kept = previous.get(entry.name)
+                    if kept is None or kept.version != version:
+                        kept = _KeptEntry(entry.path, entry.name, info, version)
+                    entries[entry.name] = kept
+        except FileNotFoundError:
+            try:
+                os.stat(name)
+            except FileNotFoundError:
+                if absent_ok:
+                    return ()
+            # The directory exists, but a selected entry was not readable.
+            raise
+        self._history_listed += 1
+        if (stamp is not None
+                and stage_move._current_directory_version(directory) == stamp):
+            self._histories[name] = (stamp, entries)
+        return entries.values()
 
     def names(self, directory: Path, *, select) -> frozenset[str]:
         """The names ``select(name)`` keeps in ``directory``; nothing stat-ed."""
@@ -583,6 +693,10 @@ class KeptReads:
             if path.name == wanted:
                 return parsed.record
         return None
+
+
+#: The ``_reads`` meaning of a :meth:`KeptReads.history` listing.
+_HISTORY = object()
 
 
 def _fresh(reader: KeptReads | None) -> KeptReads:
@@ -770,8 +884,9 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
     summary filed for it -- taken from listings kept between scrapes, and
     the same projection, ``pbstatus.ending_row``, of each selected record,
     kept on its entry while its version holds.  An unreadable record is
-    projected again every scrape.  Records with equal modification times are
-    taken in name order rather than in the order the directory listed them.
+    projected again every scrape, and an entry that cannot be ``stat``-ed
+    raises, as the plain walk does.  Records with equal modification times
+    are taken in listing order, as the plain walk's stable sort takes them.
 
     The whole selection is also kept, fenced on every directory it came
     from, so a scrape of unchanged history does not even walk the kept
@@ -789,7 +904,8 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
             return None
         # Listed after ``decisions/``' own stamp, so the list is the one
         # that stamp covers; a decision filed since moves that stamp.
-        subdirectories = reader.fences(reader.subdirectories(decisions))
+        subdirectories = reader.fences(
+            entry.path for entry in reader.history(decisions, select=_a_directory))
         return None if subdirectories is None else taken + subdirectories
 
     rows, used = reader.memo(
@@ -801,29 +917,38 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
     return list(rows)
 
 
+def _mtime(entry: _KeptEntry) -> float:
+    return entry.mtime
+
+
 def _select_endings(reader: KeptReads, queue_root: Path, states: list[Path],
                     decisions: Path, limit: int) -> tuple[list[dict], list[_KeptEntry]]:
-    entries: list[tuple[float, _KeptEntry]] = []
+    """``pbstatus._ending_paths``' selection, from :meth:`KeptReads.history`.
+
+    ``heapq.nlargest`` is ``sorted(..., reverse=True)[:limit]`` by
+    definition, ties included, over the same sequence the plain walk sorts:
+    ``done``, ``failed``, ``withdrawn`` and the decisions, each in listing
+    order.
+    """
+
+    entries: list[_KeptEntry] = []
     withdrawal_mtimes: dict[str, float] = {}
     for directory in states:
-        for _path, entry in reader.entries(directory):
-            if entry is None:
-                continue
-            entries.append((entry.mtime, entry))
-            if directory.name == pool.WITHDRAWN:
+        listed = reader.history(directory)
+        entries.extend(listed)
+        if directory.name == pool.WITHDRAWN:
+            for entry in listed:
                 withdrawal_mtimes[entry.name[:-5]] = entry.mtime
     # A cancellation is durable before its visible summary is written. Keep
     # that ending visible if the operator crashed between the two writes.
-    for directory in reader.subdirectories(decisions):
-        candidates = [(entry.mtime, entry) for _path, entry
-                      in reader.entries(directory, select=_json_name)
-                      if entry is not None]
+    for directory in list(reader.history(decisions, select=_a_directory)):
+        candidates = list(reader.history(Path(directory.path), select=_json_name,
+                                         absent_ok=False))
         if candidates:
-            newest = max(candidates, key=lambda pair: pair[0])
-            if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
+            newest = max(candidates, key=_mtime)
+            if newest.mtime > withdrawal_mtimes.get(directory.name, float("-inf")):
                 entries.append(newest)
-    entries.sort(key=lambda pair: pair[0], reverse=True)
-    chosen = [entry for _mtime, entry in entries[: max(0, int(limit))]]
+    chosen = heapq.nlargest(max(0, int(limit)), entries, key=_mtime)
     rows = [reader.derive("ending", entry,
                           lambda entry=entry: pbstatus.ending_row(entry, queue_root),
                           keep=lambda row: not row.get("unreadable"))
@@ -1623,13 +1748,14 @@ def _promotion_metrics(
     # signal, not a reason to drop the row.
     plan_root = queue.root / pool.RESIDENCY_PLANS
     try:
-        plan_listing = [(path, entry) for path, entry
-                        in reader.entries(plan_root, select=_json_name)
-                        if entry is not None]
+        plan_listing = reader.entries(plan_root, select=_json_name)
         plan_listing_error: OSError | None = None
     except OSError as exc:
         plan_listing, plan_listing_error = [], exc
-    plan_files = {path.name: entry for path, entry in plan_listing}
+    # A plan that could not be stat-ed is counted below as an unreadable
+    # plan, which is what main's read of it reported; it names no tier here.
+    plan_files = {path.name: entry for path, entry in plan_listing
+                  if entry is not None}
     waiting: dict[str, int] = defaultdict(int)
     quiet_max: dict[str, float] = {}
     for key in consumers:
@@ -1689,12 +1815,15 @@ def _promotion_metrics(
     if plan_listing_error is not None:
         ok = False
     try:
-        receipts = {path.name[:-len(".json")]: entry for path, entry
-                    in reader.entries(queue.root / pool.MOVERS, select=_json_name)
-                    if entry is not None}
+        receipts = {entry.name[:-len(".json")]: entry for entry
+                    in reader.history(queue.root / pool.MOVERS, select=_json_name)}
     except OSError:
         receipts = None
     for path, entry in plan_listing:
+        if entry is None:
+            invalid_plans += 1
+            unreadable = True
+            continue
         census = _plan_census(reader, queue, path, entry, ready=ready,
                               claimed=claimed, claimed_listed=claimed_listed,
                               announced=announced,
@@ -1763,20 +1892,22 @@ def _promotion_metrics(
     # the adoption signal is jobs beside measured jobs, never the byte
     # ratio. Byte sums gate on receipts carrying BOTH counters, so each sum
     # covers one population, not two.
-    # ``DirectoryRecords`` reads an absent directory as empty: no mover has
-    # ever filed a receipt.
+    # ``KeptReads.history`` reads an absent directory as empty: no mover has
+    # ever filed a receipt.  Any other failure, a receipt that could not be
+    # stat-ed included, is main's: no window, and an incomplete scrape.
     if receipts is None:
         receipts = {}
         ok = False
-    candidates = sorted(((entry.mtime, entry.path, entry)
-                         for entry in receipts.values()), reverse=True)
-    move_complete = len(candidates) <= _MOVE_RECEIPT_CAP
+    candidates = heapq.nlargest(_MOVE_RECEIPT_CAP,
+                                ((entry.mtime, entry.path, entry)
+                                 for entry in receipts.values()))
+    move_complete = len(receipts) <= _MOVE_RECEIPT_CAP
     move_jobs: dict[str, int] = defaultdict(int)
     measured_jobs: dict[str, int] = defaultdict(int)
     move_staged: dict[str, float] = defaultdict(float)
     move_pool_read: dict[str, float] = defaultdict(float)
     move_rates: dict[str, list[float]] = defaultdict(list)
-    for _mtime, _path, entry in candidates[:_MOVE_RECEIPT_CAP]:
+    for _mtime, _path, entry in candidates:
         receipt = reader.derive("receipt", entry,
                                 lambda entry=entry: _receipt_projection(entry),
                                 keep=lambda projected: projected is not _UNREADABLE)
@@ -1882,6 +2013,7 @@ def collect_metrics(
     to this module so that two collectors cannot silently difference against
     each other's readings.
     """
+    started = time.monotonic()
     reader = KeptReads() if reader is None else reader
     reader.begin()
     try:
@@ -1889,7 +2021,7 @@ def collect_metrics(
             return _collect(queue_root, now=now,
                             terminal_window_seconds=terminal_window_seconds,
                             terminal_limit=terminal_limit, previous=previous,
-                            reader=reader)
+                            reader=reader, started=started)
     finally:
         reader.end()
 
@@ -1902,6 +2034,7 @@ def _collect(
     terminal_limit: int,
     previous: dict[tuple[str, str], tuple[float, float]] | None,
     reader: KeptReads,
+    started: float,
 ) -> str:
     sampled = time.time() if now is None else float(now)
     root = Path(queue_root).absolute()
@@ -2216,11 +2349,91 @@ def _collect(
             "by its file cap and every selected receipt was readable.",
         ).add(0)
 
+    _exporter_metrics(metrics, reader, started)
     metrics.family(
         "prismabuild_collection_success",
         "Whether critical queue inputs and selected terminal records were read and validated for this snapshot.",
     ).add(1 if success else 0)
     return metrics.render()
+
+
+#: The ceiling the exporter's resident memory is read against (#1020).  The
+#: role runs under the supervisor, which bounds no role's memory, so the
+#: bound is this gauge pair rather than a unit's ``MemoryMax``.  Derived in
+#: docs/pb_metrics.md ("How much memory the exporter may use") from the
+#: measured peak on the live-shaped fixture and the growth of the history
+#: directories.
+RESIDENT_CEILING_BYTES = 680 * 1024 * 1024
+
+#: The per-scrape counters of :meth:`KeptReads.scrape_counts`.
+SCRAPE_READ_KINDS = ("listed", "kept", "parsed", "computed", "reused")
+
+#: The families this module adds about its own work, none of them a reading
+#: of the queue.  A comparison of two snapshots' queue readings leaves
+#: these out: two scrapes of one queue take different times.
+EXPORTER_FAMILIES = frozenset((
+    "prismabuild_scrape_seconds", "prismabuild_scrape_reads",
+    "prismabuild_exporter_resident_bytes",
+    "prismabuild_exporter_resident_peak_bytes",
+    "prismabuild_exporter_resident_ceiling_bytes",
+))
+
+
+def _resident_bytes() -> tuple[float | None, float | None]:
+    """``VmRSS`` and ``VmHWM`` of this process, in bytes; ``None`` if unread."""
+
+    try:
+        with open("/proc/self/status", "rb") as stream:
+            status = stream.read()
+    except OSError:
+        return None, None
+    found: dict[bytes, float] = {}
+    for line in status.splitlines():
+        field_name, _, value = line.partition(b":")
+        if field_name in (b"VmRSS", b"VmHWM"):
+            parts = value.split()
+            if len(parts) == 2 and parts[1] == b"kB" and parts[0].isdigit():
+                found[field_name] = float(int(parts[0]) * 1024)
+    return found.get(b"VmRSS"), found.get(b"VmHWM")
+
+
+def _exporter_metrics(metrics: Metrics, reader: KeptReads, started: float) -> None:
+    """What this snapshot cost, and what the exporter holds (#1020).
+
+    The kept reads are justified by these, not by the fixture: a scrape's
+    wall time and its reads, per snapshot, show what keeping saved on the
+    live queue, and resident memory against its ceiling shows what keeping
+    costs.
+    """
+
+    reads = metrics.family(
+        "prismabuild_scrape_reads",
+        "What this snapshot did: directories listed, directories answered "
+        "from a kept listing (kept), records parsed, values computed from "
+        "record bytes (computed) and values reused because their file had "
+        "not changed (reused).",
+    )
+    for kind, count in reader.scrape_counts().items():
+        reads.add(count, kind=kind)
+    resident, peak = _resident_bytes()
+    metrics.family(
+        "prismabuild_exporter_resident_bytes",
+        "The exporter process's resident memory (VmRSS) at this snapshot.",
+    ).add(resident)
+    metrics.family(
+        "prismabuild_exporter_resident_peak_bytes",
+        "The exporter process's peak resident memory (VmHWM) since it started.",
+    ).add(peak)
+    metrics.family(
+        "prismabuild_exporter_resident_ceiling_bytes",
+        "The resident memory the exporter is sized for; above it, what it "
+        "keeps has outgrown the derivation in docs/pb_metrics.md.",
+    ).add(RESIDENT_CEILING_BYTES)
+    # Last, so it covers everything this snapshot did before rendering.
+    metrics.family(
+        "prismabuild_scrape_seconds",
+        "Wall time this snapshot took to collect, up to rendering it.",
+    ).add(time.monotonic() - started)
 
 
 class MetricsCache:
@@ -2323,28 +2536,118 @@ def main(argv: list[str] | None = None) -> int:
     # no lock.
     import worker_loop as runtime_gate  # noqa: PLC0415 -- the server only
 
+    refused = runtime_gate.ROLE_SINGLETON_HELD_EXIT
+    lock = runtime_gate.role_lock_path(Path(__file__))
     try:
         with runtime_gate.role_singleton(Path(__file__)):
-            return _serve(args)
+            return _serve(args, refused=refused)
     except runtime_gate.RoleLockHeld as held:
-        print(f"pbmetrics: refusing a second metrics exporter; "
-              f"{runtime_gate.role_lock_path(Path(__file__))} is held by "
+        print(f"pbmetrics: refusing a second metrics exporter; {lock} is held by "
               + (f"pid {held.holder}" if held.holder is not None
                  else "an unreadable holder"),
               file=sys.stderr, flush=True)
-        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+        _refusal_record("role-lock-held", args, refused,
+                        lock=str(lock), holder_pid=held.holder)
+        return refused
     except runtime_gate.RoleLockUnavailable as exc:
         print(f"pbmetrics: refusing to serve without the metrics role "
               f"singleton lock: {exc}", file=sys.stderr, flush=True)
-        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+        _refusal_record("role-lock-unavailable", args, refused,
+                        lock=str(lock), detail=str(exc))
+        return refused
 
 
-def _serve(args: argparse.Namespace) -> int:
+#: The schema of the one-line record a refusing exporter writes to its log.
+REFUSAL_SCHEMA = "prismabuild.pbmetrics.refusal.v1"
+
+
+def _refusal_record(reason: str, args: argparse.Namespace, code: int,
+                    **detail: object) -> None:
+    """One JSON line on stderr -- the role's log -- saying why it will not serve.
+
+    The supervisor sends a role's output to ``pb-role-metrics.log``, so the
+    refusal is found where the role's other output is, as one parseable
+    line rather than a traceback.
+    """
+
+    record = {"schema": REFUSAL_SCHEMA, "role": "metrics", "reason": reason,
+              "exit": code, "host": socket.gethostname(), "pid": os.getpid(),
+              "unix": round(time.time(), 3), "listen": args.listen,
+              "port": args.port, **detail}
+    print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _port_holder(port: int) -> tuple[int | None, list[str] | None]:
+    """The pid and argv listening on TCP ``port``, where cheap to find.
+
+    The listening socket's inode from ``/proc/net/tcp`` and ``tcp6``, then
+    the process whose descriptor table holds it.  Only processes this user
+    may inspect are found; ``(None, None)`` otherwise, which is the answer
+    for a holder owned by another user.
+    """
+
+    inodes: set[str] = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table) as stream:
+                next(stream, None)
+                for line in stream:
+                    fields = line.split()
+                    if len(fields) < 10 or fields[3] != "0A":   # LISTEN
+                        continue
+                    if int(fields[1].rsplit(":", 1)[1], 16) == port:
+                        inodes.add(fields[9])
+        except (OSError, ValueError, IndexError):
+            continue
+    wanted = {f"socket:[{inode}]" for inode in inodes if inode != "0"}
+    if not wanted:
+        return None, None
+    try:
+        pids = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return None, None
+    for pid in pids:
+        try:
+            descriptors = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                if os.readlink(f"/proc/{pid}/fd/{descriptor}") not in wanted:
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as stream:
+                    argv = [part.decode(errors="replace")
+                            for part in stream.read().split(b"\0") if part]
+            except OSError:
+                argv = None
+            return int(pid), argv
+    return None, None
+
+
+def _serve(args: argparse.Namespace, *, refused: int) -> int:
     cache = MetricsCache(
         args.queue_root.absolute(), args.cache_seconds,
         args.terminal_window_seconds, args.terminal_limit,
     )
-    server = ThreadingHTTPServer((args.listen, args.port), _handler(cache))
+    try:
+        server = ThreadingHTTPServer((args.listen, args.port), _handler(cache))
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        # Another exporter -- an installed unit beside the supervised role,
+        # whose lock this role cannot see -- already serves the port.  A
+        # refusal, not a crash: exit as a held lock does, and say who.
+        holder, argv = _port_holder(args.port)
+        print(f"pbmetrics: refusing to serve; {args.listen}:{args.port} is "
+              "already in use by "
+              + (f"pid {holder}" if holder is not None else "another process"),
+              file=sys.stderr, flush=True)
+        _refusal_record("port-in-use", args, refused, holder_pid=holder,
+                        holder_argv=argv)
+        return refused
     try:
         server.serve_forever()
     except KeyboardInterrupt:

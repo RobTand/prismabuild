@@ -69,8 +69,8 @@ class Scrapes:
         self.reader = pbmetrics.KeptReads()
 
     def check(self, label: str) -> str:
-        kept = _collect(self.root, self.now, self.reader)
-        fresh = _collect(self.root, self.now, None)
+        kept = shaped.queue_readings(_collect(self.root, self.now, self.reader))
+        fresh = shaped.queue_readings(_collect(self.root, self.now, None))
         if kept != fresh:
             differ = sorted(set(kept.splitlines()) ^ set(fresh.splitlines()))
             pytest.fail(f"{label}: the kept scrape differs from a fresh one: "
@@ -274,10 +274,10 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
-    records = scrapes.reader.records
+    histories = scrapes.reader._histories
     decisions = queue.root / pool.WITHDRAWN / "decisions"
     gone = sorted(decisions.iterdir())[0]
-    assert str(gone) in records._directories
+    assert str(gone) in histories
     receipts = sorted((queue.root / pool.MOVERS).glob("*.json"))
     for path in receipts[: len(receipts) // 2]:
         path.unlink()
@@ -286,8 +286,8 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     gone.rmdir()
     settle()
     scrapes.check("half the receipts and one decision gone")
-    assert str(gone) not in records._directories
-    movers = records._directories[str(queue.root / pool.MOVERS)][1]
+    assert str(gone) not in histories
+    movers = histories[str(queue.root / pool.MOVERS)][1]
     assert len(movers) == len(receipts) - len(receipts) // 2
     derived = scrapes.reader._derived_entries.get("receipt", {})
     assert len(derived) <= len(movers)

@@ -35,8 +35,15 @@ The supervisor restarts it when its argv no longer matches the declaration or
 when a publish retires the generation it runs from, so a change to the
 exporter reaches it with the next publish. The server takes the role's
 host-local singleton lock before it binds the port, so a second exporter on
-the box exits `3` instead of scanning the queue again. `--once` reads and
-reports, and takes no lock.
+the box exits `3` instead of scanning the queue again. If the port is already
+in use it also exits `3`, and its last line in the role's log
+(`pb-role-metrics.log`) is one JSON record: `schema`
+`prismabuild.pbmetrics.refusal.v1`, `reason` `port-in-use`, the `listen`
+address and `port`, and the holder's `holder_pid` and `holder_argv` when
+`/proc` shows them to the role's user (`null` otherwise). The supervisor
+spawns the role again on its next tick, so that record repeats once a tick
+until whatever holds the port is stopped. `--once` reads and reports, and
+takes no lock.
 
 Between scrapes the server keeps what it read, and reuses a directory's
 listing and records while the directory provably has not changed. That proof
@@ -56,15 +63,50 @@ fleet-wide series as the dl380g10 copy. Retiring them is part of deploying
 1. On dl380g10, stop the installed unit before the runtime that declares the
    role is published: `sudo systemctl disable --now prismabuild-metrics.service`.
    The unit runs with `PrivateTmp=yes`, so the role's lock cannot see it, and a
-   unit left running holds port 9469: the supervised role would fail to bind
-   and be respawned every supervisor tick.
+   unit left running holds port 9469: the supervised role would refuse with
+   exit `3` and a `port-in-use` record, once every supervisor tick, until the
+   unit is stopped.
 2. Publish. The dl380g10 supervisor starts the `metrics` role on its next
-   tick, on the same `127.0.0.1:9469`, so the box's existing Netdata job keeps
-   scraping it without a change.
-3. On sparky and sparklina, run the same `systemctl disable --now`. Their
-   Netdata `prismabuild` jobs then scrape nothing. Either remove those jobs, or
-   point them at dl380g10, which needs the role to listen on an address those
-   boxes can reach instead of loopback (a change to its declared `--listen`).
+   tick, on the same `127.0.0.1:9469`. dl380g10's local Netdata `prismabuild`
+   job keeps scraping `127.0.0.1:9469` without a change, and is the fleet's
+   one metrics job.
+3. On sparky and sparklina, run the same `systemctl disable --now`, and remove
+   their Netdata `prismabuild` jobs from `/etc/netdata/go.d/prometheus.conf`.
+   Nothing on those boxes serves the port any more, and the fleet-wide series
+   are dl380g10's.
+
+The unit's `MemoryMax=256M` does not carry over: the supervisor bounds no
+role's memory. The exporter reports its own resident memory against a stated
+ceiling instead, derived below.
+
+### How much memory the exporter may use
+
+The exporter keeps one entry per history record (`done/`, `failed/`,
+`withdrawn/`, `movers/`), so what it holds grows with the history until
+terminal records and receipts are retired, which nothing does today. The
+ceiling, `pbmetrics.RESIDENT_CEILING_BYTES`, is 680 MiB, from these
+measurements:
+
+- **Peak today.** The previous exporter's peak resident memory on the live
+  queue was 222.5 MiB (sparky, `VmHWM` 227,808 kB over 2.4 days; dl380g10's
+  was 194.4 MiB), read from `/proc` on 2026-09-23. It reads every plan and
+  every selected record each refresh; the new exporter does the same on its
+  first refresh.
+- **What keeping adds.** Alone in its process on the live-shaped fixture, the
+  new exporter's resident memory grew by 1,056 bytes for each history record
+  added (82.4 MiB to 102.6 MiB for 20,000 records; profile action
+  `79003e2f6647`). The live queue held 49,759 history records on
+  2026-09-23, so keeping adds at most 50.1 MiB: 272.6 MiB today.
+- **Growth.** On its busiest recent day the live queue filed 13,451 history
+  records (8,902 done, 662 failed, 69 withdrawn, 3,818 receipts); over the
+  last seven days it averaged 4,715 a day. At 1,056 bytes each that is
+  13.5 MiB a day at the busiest rate and 4.7 MiB a day on average.
+
+272.6 MiB plus 30 days at the busiest rate (405 MiB) is 677.6 MiB, rounded up
+to 680 MiB: 30 days of the fastest growth measured, or about 86 days at the
+average. `prismabuild_exporter_resident_bytes` above
+`prismabuild_exporter_resident_ceiling_bytes` means the history has outgrown
+this derivation: retire history, or measure and derive again.
 
 ## Running it, and keeping what it says
 
@@ -156,7 +198,7 @@ it in memory and pruned each refresh to the claims that are live, so it cannot
 grow with the queue's history. Labels are drawn
 from bounded sets: worker host, resource, CPU/GPU job kind, terminal outcome,
 timing statistic, timing phase, memory domain, residency tier, queue state,
-fill statistic, denial reason, and promotion leg. Action keys, command lines,
+fill statistic, denial reason, promotion leg, and scrape read kind. Action keys, command lines,
 nonces, tokens, and result digests are never labels. A waiting consumer or
 movement record that names no usable tier counts under the single `unknown`
 tier value, which keeps the per-tier series accounting complete without
@@ -188,6 +230,11 @@ growing label cardinality with the queue.
 | `prismabuild_admission_plateau` | `host,resource=gpu` | Whether persisted GPU `power_feedback.status` last recorded a plateau. The age metric must be consulted with it. |
 | `prismabuild_queue_unstarted_releases` | `state=ready\|claimed` | Sum of `unstarted_releases` over readable records now in that state. A claim whose lease never appeared and whose attempt was never published is released back to `ready` uncharged and counted on the item (issue #222); this reports what the queue is still holding, so it is not windowed and does not fall as records age. |
 | `prismabuild_collection_success` | none | `1` when critical active-queue inputs and the selected terminal records were readable and valid, otherwise `0`. A stale valid worker offer does not make collection fail. |
+| `prismabuild_scrape_seconds` | none | Wall time this snapshot took to collect, up to rendering it (#1020). |
+| `prismabuild_scrape_reads` | `kind=listed\|kept\|parsed\|computed\|reused` | What this snapshot did, not a running total: directories listed, directories answered from a kept listing, records parsed, values computed from record bytes, and values reused because their file had not changed. |
+| `prismabuild_exporter_resident_bytes` | none | The exporter process's resident memory (`VmRSS`) at this snapshot. |
+| `prismabuild_exporter_resident_peak_bytes` | none | The exporter process's peak resident memory (`VmHWM`) since it started; it starts again with the process. |
+| `prismabuild_exporter_resident_ceiling_bytes` | none | The ceiling derived in "How much memory the exporter may use". Resident memory above it means the history has outgrown that derivation. |
 
 A telemetry record is stamped by the box executing the action and read by
 whichever box runs the exporter, so the two clocks are not the same clock and a
