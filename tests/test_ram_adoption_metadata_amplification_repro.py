@@ -496,10 +496,13 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
     Four ``_Copier`` workers adopt every destination under the constrained
     budget while a second adoption caller -- an ordinary ``try_adopt``
     caller on another thread, not a reader lease -- walks the same forest.
-    The first metadata decode is gated: it holds the ownership lock until
-    the competing caller has entered its own acquisition of that lock (a
-    wrapper around ``stage_ownership_lock`` records the attempt), so the
-    two are demonstrably overlapping rather than merely started together.
+    The first metadata decode is gated: it holds the publisher's lookup
+    lock until the competing caller has entered its own proof search (a
+    wrapper around ``_proof_search`` records the entry), so the two are
+    demonstrably overlapping rather than merely started together.  The
+    rendezvous was the stage ownership lock until #981 moved the proof
+    outside it; the decode now runs under the lookup lock only, so the
+    competing caller is observed where it now meets the copier.
     This is a correctness and work-bound regression under concurrency:
     every adoption must land exactly once, no caller may see a wrong
     answer, and the compact index must keep the work at one decode per
@@ -526,32 +529,22 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
         with gate:
             if not first_decode.is_set():
                 first_decode.set()
-                # Hold the decode (and with it the ownership lock) until the
-                # competing caller has entered its own acquisition of it.
+                # Hold the decode (and with it the lookup lock) until the
+                # competing caller has entered its own proof search.
                 assert competing_entered.wait(30), (
-                    "the competing adopter never reached the ownership lock")
+                    "the competing adopter never reached its proof search")
         return counted_read(path)
 
     monkeypatch.setattr(stage_move, "_read_metadata", gated_read)
 
-    real_lock = pool.PoolQueue.stage_ownership_lock
+    real_search = publisher._proof_search
 
-    def watched_lock(self, stage_root, *, blocking=True):
-        manager = real_lock(self, stage_root, blocking=blocking)
-        if threading.current_thread().name != "competing-adopter":
-            return manager
+    def watched_search(*args, **kwargs):
+        if threading.current_thread().name == "competing-adopter":
+            competing_entered.set()
+        return real_search(*args, **kwargs)
 
-        class _Watched:
-            def __enter__(self):
-                competing_entered.set()
-                return manager.__enter__()
-
-            def __exit__(self, *exc):
-                return manager.__exit__(*exc)
-
-        return _Watched()
-
-    monkeypatch.setattr(pool.PoolQueue, "stage_ownership_lock", watched_lock)
+    monkeypatch.setattr(publisher, "_proof_search", watched_search)
 
     competing_results: list[bool] = []
     competing_errors: list[BaseException] = []
