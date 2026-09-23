@@ -6149,6 +6149,15 @@ def publish_landing_expectations(
                                     (entry["claimed_unix"] for entry in order
                                      if entry["mover_action_key"] == mover), None)
                                 if state == pool.CLAIMED else None})
+                    if state == pool.READY:
+                        # What ``bytes_ahead`` counts, by name: the verdict
+                        # reads their leases while a hold freezes the bytes
+                        # (#1022 review round 2).  The queue print below
+                        # carries every key and state, so the list is
+                        # rewritten whenever it changes.
+                        row["movers_ahead"] = [
+                            str(entry["mover_action_key"]) for entry in
+                            order[:int(expected[mover]["queue_position"])]]  # type: ignore[call-overload]
                     ranges.append(row)
                     continue
                 inside = (leg["phase"] == reading if horizon is None

@@ -116,7 +116,10 @@ _LANDING_RANGE_KEYS = frozenset({
     "basis", "landed_bytes", "reported_unix", "live_bytes_per_s",
     # A range the claim order holds back (#1011).
     "held_back_by", "waiting_on", "waiting_gib", "claim_rank",
-    "expected_landing_basis"})
+    "expected_landing_basis",
+    # A ready range: the movers queued ahead of it in the tier's order,
+    # whose bytes ``bytes_ahead`` counts (#1022 review round 2).
+    "movers_ahead"})
 #: The values ``basis`` may take (#1010).
 LANDING_BASES = ("reported", "claim", "queue")
 
@@ -678,6 +681,12 @@ def validate_landing(value: object) -> dict[str, object]:
         for name in ("reported_unix", "live_bytes_per_s"):
             if name in entry:
                 row[name] = _finite_or_none(entry[name], where=name)
+        if "movers_ahead" in entry:
+            movers = entry["movers_ahead"]
+            if not isinstance(movers, list):
+                raise ResidencyMapError("movers_ahead must be an array")
+            row["movers_ahead"] = [_action_key(mover, where="movers_ahead")
+                                   for mover in movers]
         if state in ("ready", "claimed"):
             if expected is None:
                 raise ResidencyMapError("a queued range carries its expected landing")

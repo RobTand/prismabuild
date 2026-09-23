@@ -6630,18 +6630,28 @@ class PoolQueue:
             withhold (``MOVER_REFUSAL_REASONS``, ``MOVER_WITHHOLD_*``; the
             entry names it as ``refusal`` or ``withhold``).  Nothing copies
             it while that stands, and the hold accrues nothing.  Otherwise
-            it is exempt while the bytes queued ahead of it in the
-            consumer's landing record (``bytes_ahead``, written by the tier
-            loop) fell within the evidence window: the first look is the
-            ``baseline``, a fall renews it (``bytes-ahead-fell``), and a
-            whole window without one ends it (``none``).
+            it is exempt while a mover that was queued ahead of it when the
+            wait first looked (``waiting_behind``, from the landing record's
+            ``movers_ahead``) is claimed with a live lease
+            (``copy-ahead-live``), or while the bytes queued ahead of it in
+            the consumer's landing record (``bytes_ahead``, written by the
+            tier loop) fell within the evidence window: the first look is
+            the ``baseline``, a fall renews it (``bytes-ahead-fell``), and a
+            whole window with neither ends it (``none``).
           - a ``claimed`` mover is exempt while its own progress report
             (``claimed/<key>.progress``, whose landed bytes the reporter
             commits only when they grow) or, before its first report, its
             claim is at most ``movement_actions.mover_report_latency_s()``
             (two heartbeats) old: ``progress`` or ``claimed``.  Or while the
             report's landed bytes grew since the previous check
-            (``progress-grew``).  Else ``none``.
+            (``progress-grew``).  Or while its lease is live: the worker
+            running it heartbeats it within ``LEASE_TIMEOUT_S`` and has not
+            ended it (``lease-live``).  Else ``none``.
+
+          Both lease readings are the mover's own worker's judgment: it ends
+          a copy that stalls, and credits a pacer hold or pool contention
+          on evidence it samples itself (#1010), which a frozen report or
+          ``bytes_ahead`` cannot tell from a stall (#1022 review round 2).
 
           A claimed mover whose worker died is reaped by its lease, and the
           next read sees it ready or failed.
@@ -6788,8 +6798,9 @@ class PoolQueue:
             if state == READY:
                 if landing is None:
                     landing = self._landing_bytes_ahead(key)
+                ahead_bytes, ahead_movers = landing.get(mover, (None, None))
                 entry.update(self._ready_mover_evidence(
-                    mover, bytes_ahead=landing.get(mover),
+                    mover, bytes_ahead=ahead_bytes, movers_ahead=ahead_movers,
                     prior=prior_movers.get(mover), now=moment, window_s=window))
                 exempt = exempt or entry["evidence"] not in (
                     "none", "refused", "withheld")
@@ -6867,11 +6878,15 @@ class PoolQueue:
         return {"landed_bytes": units, "reported_unix": float(at),
                 "landed_phase": str(record["phase"])}
 
-    def _landing_bytes_ahead(self, consumer: str) -> dict[str, int]:
-        """``bytes_ahead`` per queued mover in ``consumer``'s landing record.
+    def _landing_bytes_ahead(self, consumer: str
+                             ) -> dict[str, tuple[int | None, list[str] | None]]:
+        """``(bytes_ahead, movers_ahead)`` per queued mover in ``consumer``'s
+        landing record.
 
         Empty when the record is missing or does not read: then a ready
-        mover has no fall to show, and only its baseline counts.
+        mover has no fall and no mover ahead to show, and only its baseline
+        counts.  ``movers_ahead`` is ``None`` on a record that does not carry
+        it.
         """
 
         try:
@@ -6879,11 +6894,16 @@ class PoolQueue:
                 self.residency_fragment_root(), consumer))
         except (OSError, ValueError, RecursionError):
             return {}
-        out: dict[str, int] = {}
+        out: dict[str, tuple[int | None, list[str] | None]] = {}
         for row in record.get("ranges") or ():             # type: ignore[union-attr]
-            ahead = row.get("bytes_ahead") if isinstance(row, Mapping) else None
-            if isinstance(ahead, int) and not isinstance(ahead, bool):
-                out[str(row["mover_action_key"])] = ahead
+            if not isinstance(row, Mapping):
+                continue
+            ahead = row.get("bytes_ahead")
+            movers = row.get("movers_ahead")
+            out[str(row["mover_action_key"])] = (
+                ahead if isinstance(ahead, int) and not isinstance(ahead, bool)
+                else None,
+                [str(key) for key in movers] if isinstance(movers, list) else None)
         return out
 
     def _mover_refusal(self, mover: str) -> tuple[str, str, str] | None:
@@ -6922,8 +6942,23 @@ class PoolQueue:
 
     def _ready_mover_evidence(self, mover: str, *, bytes_ahead: int | None,
                               prior: Mapping[str, object] | None, now: float,
-                              window_s: float) -> dict[str, object]:
-        """What says a ``ready`` mover is coming (#1022 review, item 1)."""
+                              window_s: float,
+                              movers_ahead: list[str] | None = None,
+                              ) -> dict[str, object]:
+        """What says a ``ready`` mover is coming (#1022 review, item 1).
+
+        The claim pass's refusal or withhold first: not coming.  Then the
+        movers queued ahead of it when this staged wait first looked
+        (``waiting_behind``, the landing record's ``movers_ahead`` at that
+        look, carried on the verdict): while one of them is claimed and its
+        lease live (:meth:`_mover_lease`), the queue ahead of this mover is
+        being worked through (``copy-ahead-live``).  That holds through a
+        pacer hold on the copy ahead, when neither its report nor
+        ``bytes_ahead`` moves (#1022 review round 2).  The list is frozen at
+        the first look, so a copy claimed later -- one the claim pass placed
+        instead of this mover -- does not renew it.  Otherwise the fall in
+        ``bytes_ahead`` within the window, as before.
+        """
 
         refusal = self._mover_refusal(mover)
         if refusal is not None:
@@ -6933,7 +6968,22 @@ class PoolQueue:
         out: dict[str, object] = {"bytes_ahead": bytes_ahead}
         then = prior.get("evidence_unix") if isinstance(prior, Mapping) else None
         before = prior.get("bytes_ahead") if isinstance(prior, Mapping) else None
-        if isinstance(then, bool) or not isinstance(then, (int, float)):
+        behind = (prior.get("waiting_behind") if isinstance(prior, Mapping)
+                  else None)
+        if not isinstance(behind, list):
+            behind = list(movers_ahead or ())
+        behind = [str(key) for key in behind]
+        out["waiting_behind"] = behind
+        live = self._first_live_copy(behind, now=now)
+        if live is not None:
+            copy, lease = live
+            out.update({"evidence": "copy-ahead-live",
+                        "evidence_unix": now - float(
+                            lease["lease_heartbeat_age_s"]),  # type: ignore[arg-type]
+                        "copy_ahead": copy,
+                        "copy_ahead_heartbeat_age_s": lease["lease_heartbeat_age_s"],
+                        "copy_ahead_hold_credited_s": lease.get("hold_credited_s")})
+        elif isinstance(then, bool) or not isinstance(then, (int, float)):
             out.update({"evidence": "baseline", "evidence_unix": now})
         elif (isinstance(bytes_ahead, int) and isinstance(before, int)
                 and not isinstance(before, bool) and bytes_ahead < before):
@@ -6954,7 +7004,11 @@ class PoolQueue:
         the report's landed bytes grew since the previous rung check
         (``prior``): ``progress-grew``.  The second covers one entry that
         takes longer than two heartbeats to land, which the reporter cannot
-        report until it lands.  Otherwise ``none``.
+        report until it lands.  Or its lease is live (:meth:`_mover_lease`):
+        ``lease-live``.  The reporter commits only when landed bytes grow,
+        so a pacer hold freezes the report for as long as it lasts, while the
+        worker keeps the lease and credits the hold (#1022 review round 2).
+        Otherwise ``none``.
         """
 
         from . import movement_actions
@@ -6986,8 +7040,79 @@ class PoolQueue:
                 and isinstance(before, int) and not isinstance(before, bool)
                 and int(report["landed_bytes"]) > before):   # type: ignore[call-overload]
             out["evidence"] = "progress-grew"
+        if out["evidence"] == "none":
+            # A pacer hold stops the report, not the lease (#1022 review
+            # round 2): the mover's own rung is the judge of its stall.
+            lease = self._mover_lease(mover, claim, now=now)
+            if lease is not None:
+                out.update(lease)
+                if lease["lease_live"]:
+                    out.update({"evidence": "lease-live",
+                                "evidence_unix": now - float(
+                                    lease["lease_heartbeat_age_s"])})  # type: ignore[arg-type]
         out["evidence_fresh_s"] = fresh_s
         return out
+
+    def _mover_lease(self, mover: str, claim: Mapping[str, object] | None, *,
+                     now: float) -> dict[str, object] | None:
+        """What a claimed mover's lease says of it (#1022 review round 2).
+
+        The worker that runs a stage mover heartbeats its lease while the
+        copy runs, whatever the copy lands, and ends the mover by its own
+        ``no_progress`` rung when it stalls: the mover's landed-bytes grace,
+        less the pacer holds and pool contention the worker credits on
+        evidence it samples itself (``ProgressWatch``,
+        ``pool_contention_exempt_s`` and ``start_gate_exempt_s``, #1010).  So
+        a lease that belongs to this claim, with a heartbeat within
+        ``LEASE_TIMEOUT_S`` -- the bound :meth:`reap_stale` applies before it
+        takes a claim back -- says the mover's own judge has not ended it:
+        ``lease_live``.  The credited seconds are recorded, not judged.
+        ``None`` when the lease does not read, names another claim, or its
+        heartbeat is not a usable time.
+        """
+
+        if not isinstance(claim, Mapping):
+            return None
+        try:
+            lease = _read_json(self.lease_path(mover))
+        except (OSError, ValueError, PoolContractError):
+            return None
+        if (not isinstance(lease, Mapping)
+                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+            return None
+        age = offer_timing(lease.get("heartbeat_unix"), now=now).age_s
+        if age is None:
+            return None
+        out: dict[str, object] = {"lease_heartbeat_age_s": round(age, 3),
+                                  "lease_live": age <= LEASE_TIMEOUT_S}
+        observation = lease.get("progress_observation")
+        if isinstance(observation, Mapping):
+            credited = [float(value) for value in (
+                observation.get("pool_contention_exempt_s"),
+                observation.get("start_gate_exempt_s"))
+                if isinstance(value, (int, float)) and not isinstance(value, bool)]
+            if credited:
+                out["hold_credited_s"] = sum(credited)
+        return out
+
+    def _first_live_copy(self, movers: list[str], *, now: float
+                         ) -> tuple[str, dict[str, object]] | None:
+        """The first of ``movers`` that is claimed with a live lease, or ``None``.
+
+        One claim read per mover until one answers, and one lease read for
+        a claimed one.  A mover that has landed, failed or is still queued
+        is not claimed, so it answers nothing.
+        """
+
+        for mover in movers:
+            try:
+                claim = _read_json(self.item_path(CLAIMED, mover))
+            except (OSError, ValueError, PoolContractError):
+                continue
+            lease = self._mover_lease(mover, claim, now=now)
+            if lease is not None and lease["lease_live"]:
+                return mover, lease
+        return None
 
     def _tier_commitment_standing(self, tier_id: str, key: str, *, now: float,
                                   prior: Mapping[str, object] | None = None,
