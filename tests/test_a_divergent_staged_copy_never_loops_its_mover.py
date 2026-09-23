@@ -497,16 +497,19 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
     assert not receipt.get("invalidated")
 
 
+@pytest.mark.parametrize("requeued", ["consumer", "mover"])
 def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
-        fleet, tmp_path, monkeypatch) -> None:
+        fleet, tmp_path, monkeypatch, requeued) -> None:
     """A remembered ending does not outlive the owner's resubmission.
 
     The owner is proven ended before the copy and remembered for the run.
-    The same consumer key is then resubmitted -- the dead-consumer pass and
-    an operator both do this -- before the copy publishes.  The publication
-    must see the queue record the resubmission wrote, judge the owner again,
-    and refuse the live owner by name, never replace its bytes on the
-    strength of the remembered ending.
+    One of its keys is then resubmitted -- the dead-consumer pass and an
+    operator both do this -- before the copy publishes.  The publication
+    must see the queue record the resubmission wrote and judge the owner
+    again, never replace its bytes on the strength of the remembered
+    ending.  A resubmitted consumer is live, so the copy refuses it by
+    name; a resubmitted mover alone leaves the ending unproven, so the copy
+    defers, retryably.
     """
 
     queue, stage, _ = fleet
@@ -520,9 +523,10 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
     def resubmit_then_publish(self, *args, **kwargs):
         if not resubmitted:
             resubmitted.append(True)
-            queue.publish(action_key=consumer, cas_root="/cas",
-                          checkout_root="/co", worker_script="/w.py",
-                          resources={"cpu": 1})
+            queue.publish(
+                action_key=consumer if requeued == "consumer" else mover,
+                cas_root="/cas", checkout_root="/co", worker_script="/w.py",
+                resources={"cpu": 1})
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(stage_move._StagedPublisher, "publish",
@@ -535,12 +539,21 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
                                                  before.st_mtime_ns)
     assert path.read_bytes() == OLD
-    assert rc == 1 and receipt["refusal"] == "staged_destination_conflict", (
-        receipt.get("refusal"), receipt.get("errors"))
-    assert receipt["conflict"]["owners"] == [
-        {"consumer_action_key": consumer, "mover_action_key": mover,
-         "state": "live"}]
     assert not receipt.get("invalidated")
     # Judged before the copy, and again once its return was seen.
     timings = receipt["phase_timings"]
     assert timings["thread_seconds"]["owner_judgement"]["calls"] == 2
+    if requeued == "consumer":
+        assert rc == 1, (rc, receipt.get("errors"))
+        assert receipt["refusal"] == "staged_destination_conflict"
+        assert receipt["conflict"]["owners"] == [
+            {"consumer_action_key": consumer, "mover_action_key": mover,
+             "state": "live"}]
+    else:
+        assert rc == 0 and receipt.get("refusal") is None, (
+            rc, receipt.get("refusal"), receipt.get("errors"))
+        assert receipt["complete"] is False
+        assert receipt.get("conflict") is None
+        assert residency_plan.superseded(queue, world.plan) is None
+        assert any(NAMES[1] in error for error in receipt["errors"]), (
+            json.dumps(receipt["errors"]))
