@@ -8646,15 +8646,20 @@ every kept namespace and why. `pbstatus --spool-retirements` prints both.
 |---|---|---|---|
 | Spool namespace `<spool root>/<instance_namespace>/` and its groups | `ProducedSpool.__init__` and `reserve_group`, in the producer | Payloads: `release_group` in the live producer after each acknowledgement. Everything else: the worker loop's spool retirement tick on the host that owns the root (#1001) | Once the owner attempt is `dead` or `succeeded`, a group at a time, never while its export is `ready` or `claimed` |
 | Transition lock `transition-locks/<sha256(key)>.lock` | `posix_lock.held` on first use of a key | `pb_gc --queue-root --apply --all-lock-takers-verify`, through `posix_lock.retire` (#995) | The key has a `done`, `failed` or `withdrawn` record older than `pool.LEASE_TIMEOUT_S` and no `ready` or `claimed` entry, and nobody holds the lock |
-| Residency namespace `residency/<consumer>/` | `residency_map.write_fragment`, on a mover's first fragment | The same `pb_gc` run, by `rmdir` (#995) | Empty, and its consumer terminal as above; a fragment that lands first makes the `rmdir` fail |
+| Residency namespace `residency/<consumer>/` and its map `residency/<consumer>.map.json` | `residency_map.write_fragment`, on a mover's first fragment; the map by the tier loop's `compose_map` | The tier loop's `compose_map` unlinks the map of a consumer that is not running and has no stage fragment. The same `pb_gc` run removes the directory by `rmdir` and the map with it (#995) | Empty or gone, and its consumer terminal as above, re-read under the consumer's transition lock; a fragment that lands first makes the `rmdir` fail and keeps the map |
+| Landing record `residency/<consumer>.landing.json` | The tier loop's `publish_landing_expectations`, for a claimed consumer (#989) | `publish_landing_expectations` for a consumer it sees that is not claimed; the plan reaper (`_sweep_dead_consumer`) with a plan it reaps; `pb_gc --queue-root` for the rest, such as a finished consumer that was never superseded | Its consumer terminal as above, re-read under the consumer's transition lock, fragments or not |
 | Tier-loop events `residency-events/<consumer>/` | The tier loop's `_emit` (#990) | `sweep_consumer_events` in the tier loop | The consumer is terminal or withdrawn |
+| Spool retirement records `produced-spool-retirements/<host>.jsonl` and `<host>.tick.json` | The spool retirement tick (#1001) | Never: the lines are records, one per retired namespace, so they grow with producer attempts as `done/` does. The tick file is replaced by each tick | Not applicable |
+| GC receipts `gc-receipts/<utc>-<host>-<pid>.json` | Each `pb_gc --queue-root` run | Never: one record per operator run | Not applicable |
 
-The lock files and the residency namespaces are retired by an operator's
-`pb_gc` run rather than by a loop, because the retirement protocol needs every
-lock taker on the fleet to run the post-lock check first
-(`--all-lock-takers-verify` states it). `pb_gc` writes a receipt with the
-counts, the reasons it kept each entry and the survey and sweep seconds to
-`<queue>/gc-receipts/`.
+The lock files, the residency namespaces and the landing records are retired
+by an operator's `pb_gc` run rather than by a loop, because the retirement
+protocol needs every lock taker on the fleet to run the post-lock check first
+(`--all-lock-takers-verify` states it). The residency rows run first: each
+takes its consumer's transition lock, which creates the lock file when the
+survey saw none, and the run retires those lock files too. `pb_gc` writes a
+receipt with the counts, the reasons it kept each entry and the survey and
+sweep seconds to `<queue>/gc-receipts/`.
 
 ### Declared outputs enter the pool under a fill reservation and a pace (#747)
 

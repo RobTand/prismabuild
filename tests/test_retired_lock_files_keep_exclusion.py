@@ -231,21 +231,38 @@ def test_a_young_ending_keeps_its_lock_and_an_apply_needs_the_acknowledgement(tm
 
 
 def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
+    """Empty namespaces, their maps and landing records of ended consumers go.
+
+    The landing record (#989) is retired with a terminal consumer whether or
+    not its fragments remain; a namespace only when its directory is empty.
+    """
+
     queue = _queue(tmp_path)
     old = pool.LEASE_TIMEOUT_S + 60
     residency = queue.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     dead = [_key(f"dead-{index}") for index in range(20)]
-    for key in dead:
+    for index, key in enumerate(dead):
         _file(queue, pool.FAILED, key, age_s=old)
         (residency / key).mkdir()
+        if index < 5:
+            # A finished consumer's map and landing record, beside it.
+            (residency / f"{key}.map.json").write_text("{}")
+            (residency / f"{key}.landing.json").write_text("{}")
     running = _key("running")
     _file(queue, pool.CLAIMED, running, age_s=old)
     (residency / running).mkdir()
+    (residency / f"{running}.map.json").write_text("{}")
+    (residency / f"{running}.landing.json").write_text("{}")
     holding = _key("holding")
     _file(queue, pool.DONE, holding, age_s=old)
     (residency / holding).mkdir()
     (residency / holding / f"{_key('mover')}.json").write_text("{}")
+    (residency / f"{holding}.map.json").write_text("{}")
+    (residency / f"{holding}.landing.json").write_text("{}")
+    landing_only = _key("landing-only")
+    _file(queue, pool.DONE, landing_only, age_s=old)
+    (residency / f"{landing_only}.landing.json").write_text("{}")
     unknown = _key("never-queued")
     (residency / unknown).mkdir()
     other = residency / "produced-output-scopes"
@@ -255,12 +272,79 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
     assert pb_gc.main(["--queue-root", str(queue.root), "--apply",
                        "--all-lock-takers-verify", "--receipt", str(receipt_path)]) == 0
     left = {entry.name for entry in os.scandir(residency)}
-    assert left == {running, holding, unknown, "produced-output-scopes"}
-    namespaces = json.loads(receipt_path.read_text())["kinds"][pb_gc.KIND_RESIDENCY_NAMESPACE]
+    assert left == {running, f"{running}.map.json", f"{running}.landing.json",
+                    holding, f"{holding}.map.json", unknown, "produced-output-scopes"}
+    receipt = json.loads(receipt_path.read_text())
+    namespaces = receipt["kinds"][pb_gc.KIND_RESIDENCY_NAMESPACE]
     assert (namespaces["scanned"], namespaces["removed"]) == (23, 20)
     assert namespaces["kept"] == {"its consumer is ready or claimed": 1,
                                   "holds fragments": 1,
                                   "no terminal record names its consumer": 1}
+    landings = receipt["kinds"][pb_gc.KIND_LANDING_RECORD]
+    assert (landings["scanned"], landings["removed"]) == (8, 7)
+    assert landings["kept"] == {"its consumer is ready or claimed": 1}
+    # Taking a dead consumer's lock to remove its namespace made its lock
+    # file; the same run retired it, so no lock file is left behind.
+    assert receipt["own_locks_retired"] == 22
+    assert _lock_names(queue) == set()
+
+
+def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
+    """The removal re-reads the consumer under its transition lock."""
+
+    queue = _queue(tmp_path)
+    residency = queue.residency_fragment_root()
+    residency.mkdir(parents=True, exist_ok=True)
+    key = _key("resubmitted")
+    _file(queue, pool.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
+    (residency / key).mkdir()
+    (residency / f"{key}.map.json").write_text("{}")
+    (residency / f"{key}.landing.json").write_text("{}")
+    plan = pb_gc.survey_queue(Path(queue.root))
+    assert len(plan["remove"]) == 2
+    _file(queue, pool.READY, key, age_s=0)      # queued again after the survey
+    outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
+    assert outcome["removed"] == []
+    assert {why for _row, why in outcome["skipped"]} == {"its consumer was queued again"}
+    assert {entry.name for entry in os.scandir(residency)} == {
+        key, f"{key}.map.json", f"{key}.landing.json"}
+
+    # A consumer whose lock is held when the sweep reaches it is left alone.
+    queue.item_path(pool.READY, key).unlink()
+    plan = pb_gc.survey_queue(Path(queue.root))
+    with queue._transition_locked(key):
+        context = multiprocessing.get_context("fork")
+        results = context.Queue()
+        worker = context.Process(target=_sweep_in_child, args=(plan, results))
+        worker.start()
+        skipped = results.get(timeout=60)
+        worker.join(timeout=60)
+    # Both residency rows, and the key's own lock file ("held").
+    assert sorted(skipped) == ["held", "its consumer's transition lock is held",
+                               "its consumer's transition lock is held"]
+    assert {entry.name for entry in os.scandir(residency)} == {
+        key, f"{key}.map.json", f"{key}.landing.json"}
+
+
+def _sweep_in_child(plan, results) -> None:
+    outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
+    results.put([why for _row, why in outcome["skipped"]])
+
+
+def test_an_unsafe_lock_inode_is_refused_and_released(tmp_path):
+    """The post-lock check refuses a hard-linked lock file and lets it go."""
+
+    path = tmp_path / "locks" / "unsafe.lock"
+    path.parent.mkdir()
+    path.touch()
+    os.link(path, tmp_path / "locks" / "second-name")
+    try:
+        with posix_lock.held(path):
+            raise AssertionError("an unsafe lock file was held")
+    except OSError as exc:
+        assert "unsafe POSIX transition lock" in str(exc)
+    os.unlink(tmp_path / "locks" / "second-name")
+    assert _probe(path), "the refused acquisition kept the lock"
 
 
 def _hold_repeatedly(root: str, keys: list[str], marks: str, stop_at: float,

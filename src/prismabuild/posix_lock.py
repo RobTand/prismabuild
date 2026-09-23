@@ -132,8 +132,9 @@ def held(path: Path, *, blocking: bool = True):
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         while True:
+            # One ``fstat`` per acquisition, after the lock: it answers both
+            # whether the inode is a safe lock file and whether it was retired.
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-            _unsafe(os.fstat(descriptor), path)
             try:
                 _lockf(descriptor, blocking)
             except OSError as exc:
@@ -155,7 +156,9 @@ def held(path: Path, *, blocking: bool = True):
     finally:
         try:
             if acquired:
-                owners.remove(key)
+                # ``discard``: ``_retired`` can raise (an unsafe inode) after
+                # ``acquired`` is set and before ``owners`` gains the key.
+                owners.discard(key)
                 fcntl.lockf(descriptor, fcntl.LOCK_UN)
         finally:
             try:

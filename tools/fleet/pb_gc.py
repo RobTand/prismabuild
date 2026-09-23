@@ -27,13 +27,18 @@ when ``--queue-root`` names it (#995).  A *transition lock* is
 ``transition-locks/<sha256(key)>.lock``; one is a candidate when its key has
 a ``done``, ``failed`` or ``withdrawn`` record older than the lease timeout
 and no ``ready`` or ``claimed`` entry.  A *residency namespace* is
-``residency/<consumer>/``; one is a candidate under the same rule when it is
-also empty.  Neither needs a quiescent store.  A lock file is removed only
-through ``posix_lock.retire``, whose protocol keeps mutual exclusion against
-a holder racing the sweep, provided every lock taker runs the post-lock check
-(``--all-lock-takers-verify`` acknowledges that).  A namespace is removed by
-``rmdir``, which fails on a fragment that landed after the survey.  An
-applied queue sweep writes a JSON receipt under ``<queue>/gc-receipts/``.
+``residency/<consumer>/`` with its map ``<consumer>.map.json``; one is a
+candidate under the same rule when the directory is also empty or gone.  A
+*landing record* is ``residency/<consumer>.landing.json`` (#989); one is a
+candidate under the same rule alone.  None needs a quiescent store.  A lock
+file is removed only through ``posix_lock.retire``, whose protocol keeps
+mutual exclusion against a holder racing the sweep, provided every lock
+taker runs the post-lock check (``--all-lock-takers-verify`` acknowledges
+that).  A namespace or landing record is removed under its consumer's
+transition lock after re-reading that the consumer was not queued again,
+and a namespace's ``rmdir`` fails on a fragment that landed after the
+survey.  An applied queue sweep writes a JSON receipt under
+``<queue>/gc-receipts/``.
 
 Canary run namespaces (``pb-canary/<run-id>/``) are a separate root with
 their own kind: the canary driver seals one per run, its receipts are CAS
@@ -85,7 +90,13 @@ KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST,
 #: The two queue-root kinds (#995), surveyed only under ``--queue-root``.
 KIND_TRANSITION_LOCK = "transition lock"
 KIND_RESIDENCY_NAMESPACE = "residency namespace"
-QUEUE_KINDS = (KIND_TRANSITION_LOCK, KIND_RESIDENCY_NAMESPACE)
+KIND_LANDING_RECORD = "landing record"
+#: In removal order: the residency kinds take their consumer's transition
+#: lock, so they go before the lock files are retired.
+QUEUE_KINDS = (KIND_RESIDENCY_NAMESPACE, KIND_LANDING_RECORD, KIND_TRANSITION_LOCK)
+#: ``residency_map.map_path`` and ``residency_map.landing_path``.
+MAP_SUFFIX = ".map.json"
+LANDING_SUFFIX = ".landing.json"
 #: ``pool.PoolQueue._transition_locked`` and ``residency_fragment_root``.
 TRANSITION_LOCK_SUBPATH = ("transition-locks",)
 RESIDENCY_SUBPATH = (pool.RESIDENCY,)
@@ -1051,47 +1062,99 @@ def _survey_transition_locks(queue_root: Path, *, live: set[str],
     return {"scanned": scanned, "remove": remove, "keep": keep}
 
 
+def _residency_entries(root: Path) -> dict[str, dict[str, Path]]:
+    """Each consumer's residency state under ``residency/``, by kind.
+
+    A consumer's namespace is its fragment directory ``<consumer>/`` and the
+    composed map ``<consumer>.map.json`` beside it
+    (``residency_map.map_path``); its landing record is
+    ``<consumer>.landing.json`` (``residency_map.landing_path``, #989).  The
+    produced-output subtrees under the same root are none of these.
+    """
+
+    found: dict[str, dict[str, Path]] = {}
+    for entry in _entries(root):
+        name = entry.name
+        if _is_digest(name) and entry.is_dir(follow_symlinks=False):
+            found.setdefault(name, {})["directory"] = Path(entry.path)
+            continue
+        for part, suffix in (("map", MAP_SUFFIX), ("landing", LANDING_SUFFIX)):
+            key = name[:-len(suffix)]
+            if (name.endswith(suffix) and _is_digest(key)
+                    and entry.is_file(follow_symlinks=False)):
+                found.setdefault(key, {})[part] = Path(entry.path)
+    return found
+
+
+def _terminal_why(key: str, *, live: set[str], terminal: Mapping[str, float],
+                  now: float, grace_s: float, subject: str) -> tuple[str, float]:
+    """Why ``key``'s state is kept (``""`` when it is not), and its age."""
+
+    if key in live:
+        return f"{subject} is ready or claimed", 0.0
+    if key not in terminal:
+        return f"no terminal record names {subject}", 0.0
+    age = max(0.0, now - terminal[key])
+    if age < grace_s:
+        return "terminal for less than the lease timeout", age
+    return "", age
+
+
 def _survey_residency_namespaces(queue_root: Path, *, live: set[str],
                                  terminal: Mapping[str, float], now: float,
-                                 grace_s: float) -> dict:
+                                 grace_s: float) -> tuple[dict, dict]:
+    """The residency-namespace and landing-record sections, from one listing.
+
+    A namespace is a candidate when its consumer is terminal as a lock is
+    and its fragment directory is empty or gone; its map goes with it,
+    because a map composed from no stage fragment is what the tier loop's
+    ``compose_map`` itself unlinks for a consumer that is not running.  A
+    landing record is a candidate under the terminal rule alone, fragments
+    or not: ``publish_landing_expectations`` keeps one only for a claimed
+    consumer, and the plan reaper removes it only for a plan it reaps, so a
+    finished consumer that was never superseded kept its record forever.
+    """
+
     root = queue_root.joinpath(*RESIDENCY_SUBPATH)
-    remove: list[dict] = []
-    keep: list[dict] = []
-    scanned = 0
-    for entry in _entries(root):
-        # Only ``<consumer>/`` directories; the produced-output subtrees and
-        # the ``<consumer>.map.json`` documents beside them are not this kind.
-        if not (_is_digest(entry.name) and entry.is_dir(follow_symlinks=False)):
+    namespaces = {"scanned": 0, "remove": [], "keep": []}
+    landings = {"scanned": 0, "remove": [], "keep": []}
+    for key, parts in sorted(_residency_entries(root).items()):
+        path = root / key
+        if "landing" in parts:
+            landings["scanned"] += 1
+            why, age = _terminal_why(key, live=live, terminal=terminal, now=now,
+                                     grace_s=grace_s, subject="its consumer")
+            if why:
+                landings["keep"].append(_retain(KIND_LANDING_RECORD, parts["landing"], why))
+            else:
+                landings["remove"].append({
+                    "kind": KIND_LANDING_RECORD, "path": parts["landing"], "key": key,
+                    "bytes": 0, "age_s": age,
+                    "why": "its consumer is terminal and nothing is queued for it"})
+        if not ({"directory", "map"} & set(parts)):
             continue
-        scanned += 1
-        path = Path(entry.path)
-        key = entry.name
-        if key in live:
-            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
-                                "its consumer is ready or claimed"))
+        namespaces["scanned"] += 1
+        why, age = _terminal_why(key, live=live, terminal=terminal, now=now,
+                                 grace_s=grace_s, subject="its consumer")
+        if why:
+            namespaces["keep"].append(_retain(KIND_RESIDENCY_NAMESPACE, path, why))
             continue
-        if key not in terminal:
-            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
-                                "no terminal record names its consumer"))
-            continue
-        age = max(0.0, now - terminal[key])
-        if age < grace_s:
-            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
-                                "terminal for less than the lease timeout"))
-            continue
-        try:
-            contents = _entries(path)
-        except SweepError as exc:
-            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path, str(exc)))
-            continue
-        if contents:
-            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
-                                "holds fragments"))
-            continue
-        remove.append({"kind": KIND_RESIDENCY_NAMESPACE, "path": path, "key": key,
-                       "bytes": 0, "age_s": age,
-                       "why": "empty, and its consumer is terminal"})
-    return {"scanned": scanned, "remove": remove, "keep": keep}
+        if "directory" in parts:
+            try:
+                contents = _entries(parts["directory"])
+            except SweepError as exc:
+                namespaces["keep"].append(_retain(KIND_RESIDENCY_NAMESPACE, path, str(exc)))
+                continue
+            if contents:
+                namespaces["keep"].append(_retain(KIND_RESIDENCY_NAMESPACE, path,
+                                                  "holds fragments"))
+                continue
+        namespaces["remove"].append({
+            "kind": KIND_RESIDENCY_NAMESPACE, "path": path, "key": key,
+            "directory": parts.get("directory"), "map": parts.get("map"),
+            "bytes": 0, "age_s": age,
+            "why": "empty, and its consumer is terminal"})
+    return namespaces, landings
 
 
 def survey_queue(queue_root: Path, *, now: float | None = None,
@@ -1110,10 +1173,12 @@ def survey_queue(queue_root: Path, *, now: float | None = None,
     started = time.monotonic()
     now = time.time() if now is None else float(now)
     live, terminal = queue_key_states(queue_root)
+    namespaces, landings = _survey_residency_namespaces(
+        queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s)
     sections = {
+        KIND_RESIDENCY_NAMESPACE: namespaces,
+        KIND_LANDING_RECORD: landings,
         KIND_TRANSITION_LOCK: _survey_transition_locks(
-            queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s),
-        KIND_RESIDENCY_NAMESPACE: _survey_residency_namespaces(
             queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s),
     }
     return {
@@ -1128,18 +1193,45 @@ def survey_queue(queue_root: Path, *, now: float | None = None,
     }
 
 
-def _remove_queue_row(row: Mapping[str, object]) -> str:
-    path = Path(str(row["path"]))
-    if row["kind"] == KIND_TRANSITION_LOCK:
-        return posix_lock.retire(path)
-    try:
-        os.rmdir(path)
-    except FileNotFoundError:
-        return "absent"
-    except OSError as exc:
-        return "a fragment landed after the survey" if exc.errno in (
-            errno.ENOTEMPTY, errno.EEXIST) else f"cannot remove: {exc}"
+def _remove_residency_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> str:
+    """Remove one consumer's namespace or landing record, or say why not.
+
+    Under the consumer's transition lock, taken without waiting, and after
+    re-reading that the consumer is neither ``ready`` nor ``claimed``: a
+    resubmission publishes the same key under that lock, so a consumer queued
+    again after the survey is seen here and keeps its state
+    (``tier_loop._sweep_dead_consumer``'s rule).  A fragment that lands after
+    the survey makes the ``rmdir`` fail, and the map is then kept with it.
+    """
+
+    key = str(row["key"])
+    with queue._transition_locked(key, blocking=False) as acquired:
+        if not acquired:
+            return "its consumer's transition lock is held"
+        if (queue.item_path(pool.READY, key).exists()
+                or queue.item_path(pool.CLAIMED, key).exists()):
+            return "its consumer was queued again"
+        if row["kind"] == KIND_LANDING_RECORD:
+            Path(str(row["path"])).unlink(missing_ok=True)
+            return ""
+        directory = row.get("directory")
+        if directory is not None:
+            try:
+                os.rmdir(Path(str(directory)))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                return "a fragment landed after the survey" if exc.errno in (
+                    errno.ENOTEMPTY, errno.EEXIST) else f"cannot remove: {exc}"
+        if row.get("map") is not None:
+            Path(str(row["map"])).unlink(missing_ok=True)
     return ""
+
+
+def _remove_queue_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> str:
+    if row["kind"] == KIND_TRANSITION_LOCK:
+        return posix_lock.retire(Path(str(row["path"])))
+    return _remove_residency_row(queue, row)
 
 
 def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False) -> dict:
@@ -1154,15 +1246,31 @@ def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False)
         raise SweepError("removal requires --all-lock-takers-verify: every "
                          "lock taker must run posix_lock's post-lock check")
     started = time.monotonic()
+    queue = pool.PoolQueue(Path(str(plan["queue_root"])))
     removed: list[dict] = []
     skipped: list[tuple[dict, str]] = []
+    # ``plan["remove"]`` is in ``QUEUE_KINDS`` order: the residency rows take
+    # their consumer's transition lock, so they run before the lock files are
+    # retired, not after (taking a retired lock would create its file again).
     for row in plan["remove"]:  # type: ignore[index]
-        why = _remove_queue_row(row)
+        why = _remove_queue_row(queue, row)
         if why:
             skipped.append((dict(row), why))
         else:
             removed.append(dict(row))
-    return {"removed": removed, "skipped": skipped,
+    # A residency row whose consumer had no lock file at the survey created
+    # one by taking it.  A removed row's key met the lock rule under that
+    # lock (the rows share the rule), so its lock file is retired too rather
+    # than left for the next run.
+    planned = {str(row["key"]) for row in plan["remove"]  # type: ignore[index]
+               if row["kind"] == KIND_TRANSITION_LOCK}
+    locks = Path(str(plan["queue_root"])).joinpath(*TRANSITION_LOCK_SUBPATH)
+    own = 0
+    for key in sorted({str(row["key"]) for row in removed
+                       if row["kind"] != KIND_TRANSITION_LOCK} - planned):
+        if not posix_lock.retire(locks / transition_lock_name(key)):
+            own += 1
+    return {"removed": removed, "skipped": skipped, "own_locks_retired": own,
             "sweep_s": round(time.monotonic() - started, 3)}
 
 
@@ -1201,6 +1309,9 @@ def queue_receipt(plan: Mapping[str, object], outcome: Mapping[str, object] | No
         "terminal_keys": plan["terminal_keys"],
         "survey_s": plan["survey_s"],
         "sweep_s": (outcome or {}).get("sweep_s"),
+        # Lock files the residency rows created by taking their consumers'
+        # locks, retired in the same run; not among any kind's candidates.
+        "own_locks_retired": (outcome or {}).get("own_locks_retired", 0),
         "kinds": kinds,
     }
 
