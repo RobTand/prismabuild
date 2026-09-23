@@ -1945,6 +1945,23 @@ def _legs(plan: Mapping[str, object], *, mover_role: str) -> list[dict[str, obje
     return legs
 
 
+def legs_over(plan: Mapping[str, object], start_bytes: int, end_bytes: int,
+              *, mover_role: str) -> list[dict[str, object]]:
+    """The legs of one tier that overlap ``[start_bytes, end_bytes)``, in read order.
+
+    Asked across tiers: which promotions sit over a stage range's bytes
+    (#906), when the two legs may be chunked differently.
+    """
+
+    if mover_role not in _MOVEMENT_ROLES:
+        raise ResidencyPlanError(
+            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+            f"not {mover_role!r}")
+    return [leg for leg in _legs(plan, mover_role=mover_role)
+            if int(leg["start_bytes"]) < int(end_bytes)
+            and int(leg["end_bytes"]) > int(start_bytes)]
+
+
 def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            free_gib: int, capacity_gib: int | None = None,
            published: Sequence[str] = (),
@@ -2282,6 +2299,7 @@ __all__ = [
     "freeze",
     "lead_mover_row",
     "leads_for",
+    "legs_over",
     "mover_keys",
     "ram_mover_keys",
     "read",

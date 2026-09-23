@@ -1,0 +1,463 @@
+{
+ "about": "R12 (683cb3caa5ea) ram leg on ram:dl380g10, read from the live queue for the #906 check that R12's ram window is unchanged by its ram horizon. Byte ranges, sizes, promotion receipts (bytes_staged, seconds), claim and report times and reservations are the live ones; keys are not.",
+ "sampled_unix": 1790138429.3437517,
+ "claimed_unix": 1790112229.3075132,
+ "reported_unix": 1790138358.1215892,
+ "accepted_phase": "chain-029",
+ "mem_gb": 100,
+ "gpu_memory_budget_bytes": 85899345920,
+ "ram": {
+  "capacity_gib": 160,
+  "free_gib": 23,
+  "held_gib": 137,
+  "prefill_depth": null,
+  "live_interval_s": 5
+ },
+ "phases": [
+  {
+   "name": "head",
+   "start_bytes": 0,
+   "end_bytes": 10968622116,
+   "stage_gib": 11,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 10968622116,
+    "seconds": 47.413
+   }
+  },
+  {
+   "name": "forward-044",
+   "start_bytes": 10968622116,
+   "end_bytes": 34386638196,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23418016080,
+    "seconds": 47.695
+   }
+  },
+  {
+   "name": "chain-044",
+   "start_bytes": 34386638196,
+   "end_bytes": 57804654276,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23418016080,
+    "seconds": 51.831
+   }
+  },
+  {
+   "name": "chain-043",
+   "start_bytes": 57804654276,
+   "end_bytes": 81195938468,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23391284192,
+    "seconds": 51.78
+   }
+  },
+  {
+   "name": "chain-042",
+   "start_bytes": 81195938468,
+   "end_bytes": 104613437060,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417498592,
+    "seconds": 48.795
+   }
+  },
+  {
+   "name": "chain-041",
+   "start_bytes": 104613437060,
+   "end_bytes": 128030935716,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417498656,
+    "seconds": 49.795
+   }
+  },
+  {
+   "name": "chain-040",
+   "start_bytes": 128030935716,
+   "end_bytes": 151448389452,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417453736,
+    "seconds": 99.198
+   }
+  },
+  {
+   "name": "chain-039",
+   "start_bytes": 151448389452,
+   "end_bytes": 174839164340,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23390774888,
+    "seconds": 61.722
+   }
+  },
+  {
+   "name": "chain-038",
+   "start_bytes": 174839164340,
+   "end_bytes": 198256662972,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417498632,
+    "seconds": 62.994
+   }
+  },
+  {
+   "name": "chain-037",
+   "start_bytes": 198256662972,
+   "end_bytes": 221674116788,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417453816,
+    "seconds": 62.589
+   }
+  },
+  {
+   "name": "chain-036",
+   "start_bytes": 221674116788,
+   "end_bytes": 245092177692,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23418060904,
+    "seconds": 52.16
+   }
+  },
+  {
+   "name": "chain-035",
+   "start_bytes": 245092177692,
+   "end_bytes": 268483461884,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23391284192,
+    "seconds": 45.641
+   }
+  },
+  {
+   "name": "chain-034",
+   "start_bytes": 268483461884,
+   "end_bytes": 291900960508,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417498624,
+    "seconds": 52.389
+   }
+  },
+  {
+   "name": "chain-033",
+   "start_bytes": 291900960508,
+   "end_bytes": 315318414332,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23417453824,
+    "seconds": 43.068
+   }
+  },
+  {
+   "name": "chain-032",
+   "start_bytes": 315318414332,
+   "end_bytes": 338736475244,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23418060912,
+    "seconds": 45.394
+   }
+  },
+  {
+   "name": "chain-031",
+   "start_bytes": 338736475244,
+   "end_bytes": 362127759436,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23391284192,
+    "seconds": 49.627
+   }
+  },
+  {
+   "name": "chain-030",
+   "start_bytes": 362127759436,
+   "end_bytes": 385545820084,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": {
+    "bytes_staged": 23418060648,
+    "seconds": 49.854
+   }
+  },
+  {
+   "name": "chain-029",
+   "start_bytes": 385545820084,
+   "end_bytes": 408962248156,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23416428072,
+    "seconds": 49.366
+   }
+  },
+  {
+   "name": "chain-028",
+   "start_bytes": 408962248156,
+   "end_bytes": 432380309060,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23418060904,
+    "seconds": 45.346
+   }
+  },
+  {
+   "name": "chain-027",
+   "start_bytes": 432380309060,
+   "end_bytes": 455771593260,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23391284200,
+    "seconds": 51.515
+   }
+  },
+  {
+   "name": "chain-026",
+   "start_bytes": 455771593260,
+   "end_bytes": 479189091916,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23417498656,
+    "seconds": 49.562
+   }
+  },
+  {
+   "name": "chain-025",
+   "start_bytes": 479189091916,
+   "end_bytes": 502606545692,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23417453776,
+    "seconds": 49.189
+   }
+  },
+  {
+   "name": "chain-024",
+   "start_bytes": 502606545692,
+   "end_bytes": 526024606588,
+   "stage_gib": 22,
+   "ram_held": true,
+   "ram_receipt": {
+    "bytes_staged": 23418060896,
+    "seconds": 49.938
+   }
+  },
+  {
+   "name": "chain-023",
+   "start_bytes": 526024606588,
+   "end_bytes": 549415890780,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-022",
+   "start_bytes": 549415890780,
+   "end_bytes": 572833389428,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-021",
+   "start_bytes": 572833389428,
+   "end_bytes": 596250843220,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-020",
+   "start_bytes": 596250843220,
+   "end_bytes": 619669149076,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-019",
+   "start_bytes": 619669149076,
+   "end_bytes": 643059923964,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-018",
+   "start_bytes": 643059923964,
+   "end_bytes": 666477422564,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-017",
+   "start_bytes": 666477422564,
+   "end_bytes": 689894964028,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-016",
+   "start_bytes": 689894964028,
+   "end_bytes": 713312937012,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-015",
+   "start_bytes": 713312937012,
+   "end_bytes": 736704221204,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-014",
+   "start_bytes": 736704221204,
+   "end_bytes": 760121719804,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-013",
+   "start_bytes": 760121719804,
+   "end_bytes": 783539218460,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-012",
+   "start_bytes": 783539218460,
+   "end_bytes": 806957234548,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-011",
+   "start_bytes": 806957234548,
+   "end_bytes": 830348518748,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-010",
+   "start_bytes": 830348518748,
+   "end_bytes": 853766509052,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-009",
+   "start_bytes": 853766509052,
+   "end_bytes": 877182935196,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-008",
+   "start_bytes": 877182935196,
+   "end_bytes": 900600413140,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-007",
+   "start_bytes": 900600413140,
+   "end_bytes": 923992233932,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-006",
+   "start_bytes": 923992233932,
+   "end_bytes": 947409731564,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-005",
+   "start_bytes": 947409731564,
+   "end_bytes": 970828848428,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-004",
+   "start_bytes": 970828848428,
+   "end_bytes": 994247956860,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-003",
+   "start_bytes": 994247956860,
+   "end_bytes": 1017640396900,
+   "stage_gib": 22,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-002",
+   "start_bytes": 1017640396900,
+   "end_bytes": 1026812344932,
+   "stage_gib": 9,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-001",
+   "start_bytes": 1026812344932,
+   "end_bytes": 1035983277628,
+   "stage_gib": 9,
+   "ram_held": false,
+   "ram_receipt": null
+  },
+  {
+   "name": "chain-000",
+   "start_bytes": 1035983277628,
+   "end_bytes": 1045154210324,
+   "stage_gib": 9,
+   "ram_held": false,
+   "ram_receipt": null
+  }
+ ]
+}

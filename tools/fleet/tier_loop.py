@@ -858,6 +858,12 @@ def _ram_window_state(
     # holds is the room its advance publishes into (#906).
     free = int(ledger.available().get(kind, 0)) + int(own_fence_gib)
     capacity = int(ledger.capacity().get(kind, 0))
+    # Bounded by the consumer's refill horizon on the tmpfs, as the stage
+    # window is on the stage (#906): a promotion past it publishes on the
+    # cycle the consumer's progress brings it inside.  ``prefill_depth`` is
+    # still honoured as a declared ceiling; ``None`` for either changes
+    # nothing.
+    horizon_end = _horizon_end(_ram_horizon(queue, consumer, plan, tiers))
     decision = residency_plan.window(
         plan, accepted_phase=consumer["accepted_phase"],
         free_gib=free, capacity_gib=capacity,
@@ -866,7 +872,8 @@ def _ram_window_state(
         # The two sets name promotion keys, so the decision must test
         # promotion keys: against stage keys its evict side would never fire
         # and its already-published skip would never skip (#640).
-        mover_role="ram_mover_row", withdrawn=withdrawn)
+        mover_role="ram_mover_row", withdrawn=withdrawn,
+        horizon_end_bytes=horizon_end)
     phases = {str(phase["name"]): phase for phase in plan["phases"]}
     publishable = []
     for entry in decision["publish"]:
@@ -885,7 +892,8 @@ def _ram_window_state(
             "phases": phases, "publishable": publishable,
             "already": already, "staged": staged,
             "stage_resident": stage_resident,
-            "stage_resident_known": stage_known, "free_gib": free}
+            "stage_resident_known": stage_known, "free_gib": free,
+            "horizon_end_bytes": horizon_end}
 
 
 def ram_residency_window(
@@ -915,11 +923,18 @@ def ram_residency_window(
         return events
     cancelled = _withdrawn_keys(queue, withdrawn)
     depth = _prefill_depth(load_ram_policy())
+
+    def ram_horizon_of(consumer, plan, _tier_id):
+        # One horizon per window for the gate and the publication alike, as
+        # on the stage (#903, #906): the gate reserves room for exactly the
+        # promotions the window would publish.
+        return _horizon_end(_ram_horizon(queue, consumer, plan, tiers))
+
     ram_protection = _protect_tier_advances(
         queue, tiers, mover_role="ram_mover_row",
         tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
                               if residency_plan.ram_mover_keys(plan) else ""),
-        state_of=_ram_mover_state)
+        state_of=_ram_mover_state, horizon_of=ram_horizon_of)
     ram_gated = ram_protection["gated"]
     assert isinstance(ram_gated, dict)
     ram_grants = ram_protection["grants"]
@@ -1133,7 +1148,7 @@ def ram_residency_window(
         queue, tiers, mover_role="ram_mover_row",
         tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
                               if residency_plan.ram_mover_keys(plan) else ""),
-        state_of=_ram_mover_state)
+        state_of=_ram_mover_state, horizon_of=ram_horizon_of)
     events.extend(ram_protection_again["events"])  # type: ignore[arg-type]
     events.extend(_settle_protected(queue, ram_protection_again))
     return events
@@ -2077,20 +2092,46 @@ def _sealed_fill_bytes_per_s(plan: Mapping[str, object],
     return min(demands) if demands else None
 
 
-def _stage_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
-                   plan: Mapping[str, object],
-                   tier_record: Mapping[str, object] | None,
-                   ) -> dict[str, object] | None:
-    """A claimed consumer's refill horizon on its stage, or ``None`` (#903).
+def _announced_fill_supply(tier_record: Mapping[str, object] | None
+                           ) -> float | None:
+    """The fill supply a tier record announces, in MB/s, or ``None``."""
+
+    if not isinstance(tier_record, Mapping):
+        return None
+    tokens = tier_record.get("tokens")
+    if not isinstance(tokens, Mapping):
+        return None
+    value = tokens.get(storage_tiers.FILL_KIND)
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value > 0):
+        return float(value)
+    return None
+
+
+def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
+                      plan: Mapping[str, object],
+                      tier_record: Mapping[str, object] | None, *,
+                      mover_role: str) -> dict[str, object] | None:
+    """A claimed consumer's refill horizon on one of its tiers, or ``None``.
 
     :func:`residency_plan.refill_horizon` with this box's measurements: the
     consumer's reservations for its read-ahead, the slowest complete copy of
-    its plan for the landing rate (before any copy lands, the smallest fill
-    its copies were sealed with), the tier's announced fill supply for its
-    consumption before that is measured, and one heartbeat plus one cycle
-    for the time an accepted phase takes to reach a decision.  ``None`` --
-    a ready consumer, no accepted progress, nothing measured -- leaves every
-    decision what it was before the horizon existed.
+    this leg of its plan for the landing rate, the tier's announced fill
+    supply for its consumption before that is measured, and one heartbeat
+    plus one cycle for the time an accepted phase takes to reach a decision.
+    ``None`` -- a ready consumer, no accepted progress, nothing measured --
+    leaves every decision what it was before the horizon existed.
+
+    The two legs differ only in what stands in before their first copy
+    lands.  A stage leg (#903) is priced at the smallest fill its copies
+    were sealed with, then at the tier's fill supply.  A ram leg (#906) has
+    no stand-in: a promotion copies the stage into the tmpfs, a path neither
+    number measures, so until a promotion of this plan lands the ram horizon
+    is undefined and the ram window keeps its #633 bound.  A ram horizon
+    that comes out short costs less than a short stage horizon: the consumer
+    reads a range from the stage while its ram copy is not there yet, which
+    is slower but never a stall.  So the ram leg is priced at the promotion's
+    own landing rate alone, not at the stage copy plus the promotion.
     """
 
     if consumer.get("state") != pool.CLAIMED:
@@ -2101,21 +2142,17 @@ def _stage_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     readahead = _readahead_bytes(consumer.get("item"))
     if readahead is None:
         return None
-    tier_id = str(plan.get("tier_id") or "")
-    rates = [rate for rate in (_landing_rate(queue, key) for key in
-                               residency_plan.stage_mover_keys(plan))
+    ram = mover_role == "ram_mover_row"
+    keys = (residency_plan.ram_mover_keys(plan) if ram
+            else residency_plan.stage_mover_keys(plan))
+    rates = [rate for rate in (_landing_rate(queue, key) for key in keys)
              if rate is not None]
-    landing = min(rates) if rates else _sealed_fill_bytes_per_s(plan, tier_id)
-    supply = None
-    if isinstance(tier_record, Mapping):
-        tokens = tier_record.get("tokens")
-        if isinstance(tokens, Mapping):
-            value = tokens.get(storage_tiers.FILL_KIND)
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and value > 0):
-                supply = float(value)
-    if landing is None and supply is not None:
-        landing = supply * storage_tiers.MB
+    supply = _announced_fill_supply(tier_record)
+    landing: float | None = min(rates) if rates else None
+    if landing is None and not ram:
+        landing = _sealed_fill_bytes_per_s(plan, str(plan.get("tier_id") or ""))
+        if landing is None and supply is not None:
+            landing = supply * storage_tiers.MB
     try:
         return residency_plan.refill_horizon(
             plan, accepted,                                      # type: ignore[arg-type]
@@ -2123,10 +2160,42 @@ def _stage_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
             reported_unix=consumer.get("reported_unix"),
             readahead_bytes=readahead, landing_bytes_per_s=landing,
             report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
-            fill_supply_mb_s=supply)
+            fill_supply_mb_s=supply, mover_role=mover_role)
     except (residency_plan.ResidencyPlanError, KeyError, TypeError,
             ValueError):
         return None
+
+
+def _stage_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
+                   plan: Mapping[str, object],
+                   tier_record: Mapping[str, object] | None,
+                   ) -> dict[str, object] | None:
+    """A claimed consumer's refill horizon on its stage, or ``None`` (#903)."""
+
+    return _consumer_horizon(queue, consumer, plan, tier_record,
+                             mover_role="mover_row")
+
+
+def _ram_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
+                 plan: Mapping[str, object],
+                 tiers: Mapping[str, Mapping[str, object]],
+                 ) -> dict[str, object] | None:
+    """A claimed consumer's refill horizon on its ram tier, or ``None`` (#906).
+
+    ``None`` as well for a plan with no ram leg, or whose ram tier this box
+    did not announce: another box's loop owns that window.
+    """
+
+    ram_tier_id = plan.get("ram_tier_id")
+    if not isinstance(ram_tier_id, str) or not ram_tier_id:
+        return None
+    record = tiers.get(ram_tier_id)
+    if not isinstance(record, Mapping) or record.get("tier") != "ram":
+        return None
+    if not residency_plan.ram_mover_keys(plan):
+        return None
+    return _consumer_horizon(queue, consumer, plan, record,
+                             mover_role="ram_mover_row")
 
 
 def _horizon_end(horizon: Mapping[str, object] | None) -> int | None:
@@ -2138,64 +2207,147 @@ def _horizon_end(horizon: Mapping[str, object] | None) -> int | None:
     return int(end) if isinstance(end, int) and not isinstance(end, bool) else None
 
 
+def _landed_past(queue: pool.PoolQueue, key: str,
+                 horizon: Mapping[str, object], tier_id: str,
+                 ) -> list[dict[str, object]]:
+    """One consumer's landed legs on one tier past its horizon, as candidates.
+
+    A leg is a candidate when its copy is complete and holds the tier's
+    tokens and nothing is queued or running on it -- not its mover (a copy
+    in flight is not a landed range) and not its egress (already being given
+    back).  The advance, the first leg past the horizon, is never in
+    ``beyond``.
+    """
+
+    out: list[dict[str, object]] = []
+    beyond = horizon.get("beyond")
+    if not isinstance(beyond, list):
+        return out
+    try:
+        ledger = queue.tier_ledger(tier_id)
+    except (OSError, pool.PoolContractError, ValueError):
+        return out
+    kind = storage_tiers.capacity_kind_of(tier_id)
+    for leg in beyond:
+        mover = str(leg["mover_action_key"])
+        egress = leg.get("egress_row")
+        egress_key = (str(egress.get("action_key"))
+                      if isinstance(egress, Mapping) else "")
+        try:
+            held = int(ledger.holder_tokens(mover).get(kind, 0))
+            busy = any(
+                queue.item_path(state, name).exists()
+                for state in (pool.READY, pool.CLAIMED)
+                for name in (mover, egress_key) if name)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if held <= 0 or busy or _landing_rate(queue, mover) is None:
+            continue
+        out.append({
+            "tier_id": tier_id, "consumer_action_key": key,
+            "mover_action_key": mover, "phase": leg["phase"],
+            "chunk_index": leg.get("chunk_index"), "stage_gib": held,
+            "start_bytes": int(leg["start_bytes"]),
+            "end_bytes": int(leg["end_bytes"]),
+            "seconds_until_needed": float(leg["seconds_until_needed"]),
+        })
+    return out
+
+
+def _held_ram_copies(queue: pool.PoolQueue, plan: Mapping[str, object],
+                     start: int, end: int) -> list[str] | None:
+    """The plan's promotions over ``[start, end)`` that hold ram tokens.
+
+    ``None`` when the ram ledger cannot be read: a stage range whose ram
+    copies are unknown is not a range this pass may give back (#640).
+    """
+
+    ram_tier_id = plan.get("ram_tier_id")
+    if not isinstance(ram_tier_id, str) or not ram_tier_id:
+        return []
+    kind = storage_tiers.capacity_kind_of(ram_tier_id)
+    held: list[str] = []
+    try:
+        ledger = queue.tier_ledger(ram_tier_id)
+        for leg in residency_plan.legs_over(plan, start, end,
+                                            mover_role="ram_mover_row"):
+            mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if int(ledger.holder_tokens(mover).get(kind, 0)) > 0:
+                held.append(mover)
+    except (OSError, pool.PoolContractError, ValueError, KeyError,
+            residency_plan.ResidencyPlanError):
+        return None
+    return held
+
+
 def _beyond_horizon_candidates(
     queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
     consumers: list, cancelled: frozenset[str],
 ) -> dict[str, list[dict[str, object]]]:
-    """Per stage tier, the landed ranges no reader needs before a refill (#903).
+    """Per tier, the landed ranges no reader needs before a refill (#903, #906).
 
     A range is a candidate when its consumer is claimed and reporting, the
-    range lies past that consumer's refill horizon, its copy is complete and
-    holds the tier's tokens, and nothing is queued or running on it -- not
-    its mover (a copy in flight is not a landed range) and not its egress
-    (already being given back).  Ranges inside a horizon never appear, nor
-    do a superseded or withdrawn window's (the orphan sweep and the
-    successor's adoption own those).  Farthest first: the range whose
-    reader reaches it last is the one to give back first, measured in
-    seconds at each reader's own consumption rate so two readers' ranges
-    compare in one unit.
+    range lies past that consumer's refill horizon on the range's own tier
+    (the stage horizon for a stage range, the ram horizon for a promotion),
+    its copy is complete and holds the tier's tokens, and nothing is queued
+    or running on it.  Ranges inside a horizon never appear, nor do a
+    superseded or withdrawn window's (the orphan sweep and the successor's
+    adoption own those).  Farthest first: the range whose reader reaches it
+    last is the one to give back first, measured in seconds at each reader's
+    own consumption rate so two readers' ranges compare in one unit.
+
+    A stage range whose promotion still holds the tmpfs goes only with that
+    ram copy, ram first (#640): a ram range whose stage source is gone is one
+    the consumer's map can no longer read (``overlay_ram`` reads a ram entry
+    only beside its stage entry), so it would hold the tmpfs for nothing.  A
+    stage row therefore names the ram copies it takes with it in
+    ``ram_first``, and a stage range whose ram copy is not itself a candidate
+    -- inside the ram horizon, busy, on a tier this box does not own, or
+    unknown -- is not a candidate either.
     """
 
     out: dict[str, list[dict[str, object]]] = {}
     for key, consumer, plan, tier_id in consumers:
-        if key in cancelled or tier_id not in tiers:
-            continue
-        if tiers[tier_id].get("tier") != "stage":
+        if key in cancelled:
             continue
         try:
             if residency_plan.superseded(queue, plan) is not None:
                 continue
-            horizon = _stage_horizon(queue, consumer, plan, tiers.get(tier_id))
-            if horizon is None:
-                continue
-            ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError, ValueError):
             continue
-        kind = storage_tiers.capacity_kind_of(tier_id)
-        beyond = horizon.get("beyond")
-        if not isinstance(beyond, list):
-            continue
-        for leg in beyond:
-            mover = str(leg["mover_action_key"])
-            egress = leg.get("egress_row")
-            egress_key = (str(egress.get("action_key"))
-                          if isinstance(egress, Mapping) else "")
+        ram_rows: dict[str, dict[str, object]] = {}
+        ram_tier_id = str(plan.get("ram_tier_id") or "")
+        ram_record = tiers.get(ram_tier_id) if ram_tier_id else None
+        if isinstance(ram_record, Mapping) and ram_record.get("tier") == "ram":
             try:
-                held = int(ledger.holder_tokens(mover).get(kind, 0))
-                busy = any(
-                    queue.item_path(state, name).exists()
-                    for state in (pool.READY, pool.CLAIMED)
-                    for name in (mover, egress_key) if name)
+                ram_horizon = _ram_horizon(queue, consumer, plan, tiers)
             except (OSError, pool.PoolContractError, ValueError):
+                ram_horizon = None
+            if ram_horizon is not None:
+                for row in _landed_past(queue, key, ram_horizon, ram_tier_id):
+                    ram_rows[str(row["mover_action_key"])] = row
+                    out.setdefault(ram_tier_id, []).append(row)
+        if tier_id not in tiers or tiers[tier_id].get("tier") != "stage":
+            continue
+        try:
+            horizon = _stage_horizon(queue, consumer, plan, tiers.get(tier_id))
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if horizon is None:
+            continue
+        ram_root = (str(ram_record.get("mountpoint") or "")
+                    if isinstance(ram_record, Mapping) else "")
+        for row in _landed_past(queue, key, horizon, tier_id):
+            copies = _held_ram_copies(queue, plan, int(row["start_bytes"]),  # type: ignore[arg-type]
+                                      int(row["end_bytes"]))  # type: ignore[arg-type]
+            if copies is None or any(copy not in ram_rows for copy in copies):
                 continue
-            if held <= 0 or busy or _landing_rate(queue, mover) is None:
-                continue
-            out.setdefault(tier_id, []).append({
-                "tier_id": tier_id, "consumer_action_key": key,
-                "mover_action_key": mover, "phase": leg["phase"],
-                "chunk_index": leg.get("chunk_index"), "stage_gib": held,
-                "seconds_until_needed": float(leg["seconds_until_needed"]),
-            })
+            row["ram_first"] = [
+                {"tier_id": ram_tier_id, "mover_action_key": copy,
+                 "stage_root": ram_root,
+                 "stage_gib": ram_rows[copy]["stage_gib"]}
+                for copy in copies]
+            out.setdefault(tier_id, []).append(row)
     for rows in out.values():
         rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
                                    str(row["mover_action_key"])))
@@ -2580,7 +2732,8 @@ def window_pressure(
             published=sorted(state["already"]),                  # type: ignore[arg-type]
             staged=sorted(state["staged"]),                      # type: ignore[arg-type]
             runahead_cap_gib=depth, mover_role="ram_mover_row",
-            withdrawn=sorted(cancelled))
+            withdrawn=sorted(cancelled),
+            horizon_end_bytes=state["horizon_end_bytes"])        # type: ignore[arg-type]
         ram_published = ram_decision["publish"]
         assert isinstance(ram_published, list)
         ram_phases = {str(phase["name"]): phase for phase in plan["phases"]}  # type: ignore[union-attr]
@@ -2596,7 +2749,8 @@ def window_pressure(
                                     int(ram_wanted[0]["stage_gib"]))
             ram_needs = residency_plan.advance_needs(
                 plan, accepted, published=sorted(state["already"]),
-                staged=sorted(state["staged"]), mover_role="ram_mover_row")
+                staged=sorted(state["staged"]), mover_role="ram_mover_row",
+                horizon_end_bytes=state["horizon_end_bytes"])    # type: ignore[arg-type]
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
                 newcomers.setdefault(ram_tier_id, []).append(ram_needs)
             elif str(ram_wanted[0]["phase"]) != reading:
@@ -4525,16 +4679,18 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                          pressure: Mapping[str, int] | None,
                          withdrawn: frozenset[str] | None = None,
                          ) -> list[dict[str, object]]:
-    """Give back landed ranges past their readers' refill horizons (#903).
+    """Give back landed ranges past their readers' refill horizons (#903, #906).
 
     Runs after the orphan sweep, on the same ``pressure``: when a stage tier
-    is still short of the free a live window needs -- a running consumer's
-    in-horizon range, a newcomer's lead, a ready consumer's claim -- the
-    ranges no reader needs before a refill could land are the room.  They go
-    farthest-needed first (Belady's order across every reader on the tier),
-    one at a time, re-reading the ledger after each, and stop when the tier
-    has the room.  A tier that could not reach the room even after every
-    candidate went evicts nothing (#632: no futile eviction).
+    or a ram tier is still short of the free a live window needs -- a
+    running consumer's in-horizon range, a newcomer's lead, a ready
+    consumer's claim -- the ranges no reader needs before a refill could
+    land are the room.  They go farthest-needed first (Belady's order across
+    every reader on the tier), one at a time, re-reading the ledger after
+    each, and stop when the tier has the room.  A tier that could not reach
+    the room even after every candidate went evicts nothing (#632: no futile
+    eviction).  Ram tiers go first, so the tokens of the smaller tier come
+    back before the bytes that feed it leave (#640).
 
     Each eviction is all or nothing (``stage_release.evict`` with
     ``whole``): a range a reader has pinned, that a promotion is reading,
@@ -4544,6 +4700,12 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     range's mover holds no tokens afterwards, so it reads as unpublished and
     its window publishes it again, whole, on the cycle the reader's
     progress brings it back inside the horizon.
+
+    A stage range goes with the ram copies it names in ``ram_first``, ram
+    first.  A copy another eviction already took is skipped.  A copy whose
+    eviction is declined keeps its stage range too, because deleting the
+    stage source under a live ram copy is the state #640 forbids, and the
+    next candidate goes instead.
     """
 
     events: list[dict[str, object]] = []
@@ -4554,7 +4716,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     for tier_id, needed in pressure.items():
         record = tiers.get(tier_id)
         if (int(needed) <= 0 or not isinstance(record, Mapping)
-                or record.get("tier") != "stage"):
+                or record.get("tier") not in ("stage", "ram")):
             continue
         try:
             free = int(queue.tier_ledger(tier_id).available().get(
@@ -4566,7 +4728,71 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     if not short:
         return events
     candidates = _beyond_horizon_candidates(queue, tiers, consumers, cancelled)
-    for tier_id, needed in sorted(short.items()):
+
+    def evicted(row: Mapping[str, object], tier_id: str, stage_root: str,
+                needed: int) -> tuple[bool, dict[str, object]]:
+        receipt = stage_release.evict(
+            queue, str(row["mover_action_key"]),
+            consumer_action_key=str(row["consumer_action_key"]),
+            stage_root=stage_root, reason="beyond-horizon", whole=True)
+        done = bool(receipt.get("complete"))
+        return done, {
+            "event": ("beyond-horizon-evicted" if done
+                      else "beyond-horizon-eviction-declined"),
+            "tier_id": tier_id,
+            "consumer": row["consumer_action_key"],
+            "mover": row["mover_action_key"],
+            "phase": row.get("phase"), "chunk_index": row.get("chunk_index"),
+            "stage_gib": row["stage_gib"],
+            "seconds_until_needed": (
+                round(float(row["seconds_until_needed"]), 1)  # type: ignore[arg-type]
+                if row.get("seconds_until_needed") is not None else None),
+            "needed_gib": needed,
+            "tokens_released": receipt.get("tokens_released"),
+            "tokens_decharged": receipt.get("tokens_decharged"),
+            "declined": receipt.get("declined") or [],
+            "live_pins": receipt.get("live_pins") or [],
+            "errors": receipt.get("errors") or []}
+
+    def ram_first(row: Mapping[str, object], needed: int) -> bool:
+        """Evict a stage row's ram copies; ``False`` keeps the stage row."""
+
+        for copy in row.get("ram_first") or []:        # type: ignore[union-attr]
+            assert isinstance(copy, Mapping)
+            copy_tier = str(copy["tier_id"])
+            try:
+                held = int(queue.tier_ledger(copy_tier).holder_tokens(
+                    str(copy["mover_action_key"])).get(
+                        storage_tiers.capacity_kind_of(copy_tier), 0))
+            except (OSError, pool.PoolContractError, ValueError):
+                return False
+            if held <= 0:
+                continue      # already given back, by the ram tier's own pass
+            root = str(copy.get("stage_root") or "")
+            refusal = (stage_release.stage_root_refusal(queue, root)
+                       if root else "no ram root announced")
+            if refusal is not None:
+                events.append({"event": "beyond-horizon-eviction-refused",
+                               "tier_id": copy_tier, "stage_root": root,
+                               "refusal": refusal,
+                               "stage_range": row["mover_action_key"]})
+                return False
+            done, event = evicted({**copy, "consumer_action_key":
+                                   row["consumer_action_key"],
+                                   "phase": row.get("phase"),
+                                   "chunk_index": row.get("chunk_index"),
+                                   "seconds_until_needed":
+                                   row.get("seconds_until_needed")},
+                                  copy_tier, root, needed)
+            event["stage_range"] = row["mover_action_key"]
+            events.append(event)
+            if not done:
+                return False
+        return True
+
+    for tier_id, needed in sorted(
+            short.items(),
+            key=lambda item: (tiers[item[0]].get("tier") != "ram", item[0])):
         rows = candidates.get(tier_id, [])
         if not rows:
             continue
@@ -4593,26 +4819,16 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         for row in rows:
             if free >= needed:
                 break
-            receipt = stage_release.evict(
-                queue, str(row["mover_action_key"]),
-                consumer_action_key=str(row["consumer_action_key"]),
-                stage_root=stage_root, reason="beyond-horizon", whole=True)
-            events.append({
-                "event": ("beyond-horizon-evicted" if receipt.get("complete")
-                          else "beyond-horizon-eviction-declined"),
-                "tier_id": tier_id,
-                "consumer": row["consumer_action_key"],
-                "mover": row["mover_action_key"],
-                "phase": row["phase"], "chunk_index": row["chunk_index"],
-                "stage_gib": row["stage_gib"],
-                "seconds_until_needed": round(
-                    float(row["seconds_until_needed"]), 1),  # type: ignore[arg-type]
-                "needed_gib": needed,
-                "tokens_released": receipt.get("tokens_released"),
-                "tokens_decharged": receipt.get("tokens_decharged"),
-                "declined": receipt.get("declined") or [],
-                "live_pins": receipt.get("live_pins") or [],
-                "errors": receipt.get("errors") or []})
+            try:
+                if int(ledger.holder_tokens(str(row["mover_action_key"])).get(
+                        kind, 0)) <= 0:
+                    continue      # given back since the candidates were read
+            except (OSError, pool.PoolContractError, ValueError):
+                continue
+            if not ram_first(row, needed):
+                continue
+            _done, event = evicted(row, tier_id, stage_root, needed)
+            events.append(event)
             try:
                 free = int(ledger.available().get(kind, 0))
             except (OSError, pool.PoolContractError, ValueError):

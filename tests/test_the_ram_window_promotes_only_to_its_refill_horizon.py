@@ -525,3 +525,99 @@ def test_the_ram_horizon_is_the_docstring_arithmetic(tmp_path: Path) -> None:
     assert horizon["advance"] == _promotion("reader", ADVANCE)
     assert [leg["phase"] for leg in horizon["beyond"]] == [
         f"phase-{ordinal}" for ordinal in BEYOND]
+
+
+# ------------------------------------------------------ R12's live numbers
+
+
+R12_RAM = json.loads((Path(__file__).resolve().parent / "fixtures"
+                      / "r12_ram_20260923.json").read_text())
+
+
+@pytest.mark.parametrize("interval_s", [R12_RAM["ram"]["live_interval_s"],
+                                        tier_loop.CYCLE_INTERVAL_S])
+def test_r12s_ram_window_is_unchanged_by_its_ram_horizon(
+        tmp_path: Path, interval_s: float) -> None:
+    """R12's own ram leg, read from the live queue on 2026-09-23.
+
+    47 phases of 9 to 22 GiB, six promotions held (``chain-029`` to
+    ``chain-024``) on a 160 GiB tmpfs, and 23 complete promotion receipts,
+    the slowest at 231 MB/s.  R12 reserves 100 GiB of memory and an 80 GiB
+    GPU budget, which is more than the tmpfs holds, so its ram horizon ends
+    past anything the #633 bound (160 - 22 = 138 GiB of run-ahead) would
+    promote.  The horizon changes nothing for R12: with the tmpfs's live free
+    room and with an empty one, the window promotes the same ranges and stops
+    at the same run-ahead stall.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    built = []
+    for ordinal, phase in enumerate(R12_RAM["phases"]):
+        start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+        gib = int(phase["stage_gib"])
+        total = int(R12_RAM["phases"][-1]["end_bytes"])
+        built.append({
+            "name": phase["name"], "start_bytes": start, "end_bytes": end,
+            "stage_gib": gib,
+            "mover_row": {
+                **_row(queue, _mover("r12", ordinal),
+                       {STAGE_KIND: gib, "mem_gb": 1}),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                    "manifest_sha256": READER_MANIFEST, "manifest_bytes": total,
+                    "range_start_bytes": start, "range_end_bytes": end}},
+            "egress_row": _row(queue, _hexkey(f"r12egress{ordinal}"),
+                               {"mem_gb": 1}),
+            "ram_mover_row": {
+                **_row(queue, _promotion("r12", ordinal),
+                       {RAM_KIND: gib, "mem_gb": 1}),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
+                    "manifest_sha256": READER_MANIFEST, "manifest_bytes": total,
+                    "range_start_bytes": start, "range_end_bytes": end}},
+            "ram_egress_row": _row(queue, _hexkey(f"r12ramrelease{ordinal}"),
+                                   {"mem_gb": 1}),
+        })
+    plan = residency_plan.build_plan(
+        consumer_action_key=READER, tier_id=TIER, stage_root="/stage/prewarm",
+        manifest_sha256=READER_MANIFEST,
+        manifest_bytes=int(R12_RAM["phases"][-1]["end_bytes"]),
+        phases=built, ram_tier_id=RAM_TIER)
+    receipts = [phase["ram_receipt"] for phase in R12_RAM["phases"]
+                if phase["ram_receipt"]]
+    landing = min(receipt["bytes_staged"] / receipt["seconds"]
+                  for receipt in receipts)
+    assert len(receipts) == 23 and 230e6 < landing < 232e6
+
+    horizon = residency_plan.refill_horizon(
+        plan, R12_RAM["accepted_phase"],
+        claimed_unix=R12_RAM["claimed_unix"],
+        reported_unix=R12_RAM["reported_unix"],
+        readahead_bytes=(int(R12_RAM["mem_gb"]) * GIB
+                         + int(R12_RAM["gpu_memory_budget_bytes"])),
+        landing_bytes_per_s=landing,
+        report_latency_s=pool.HEARTBEAT_S + float(interval_s),
+        mover_role="ram_mover_row")
+    assert horizon is not None and horizon["horizon_end_bytes"] is not None
+
+    held = [str(built[ordinal]["ram_mover_row"]["action_key"])
+            for ordinal, phase in enumerate(R12_RAM["phases"])
+            if phase["ram_held"]]
+    assert len(held) == 6
+    capacity = int(R12_RAM["ram"]["capacity_gib"])
+    for free in (int(R12_RAM["ram"]["free_gib"]), capacity):
+        arguments = dict(
+            accepted_phase=R12_RAM["accepted_phase"], free_gib=free,
+            capacity_gib=capacity, published=held, staged=held,
+            runahead_cap_gib=R12_RAM["ram"]["prefill_depth"],
+            mover_role="ram_mover_row")
+        before = residency_plan.window(plan, **arguments)
+        after = residency_plan.window(
+            plan, **arguments, horizon_end_bytes=horizon["horizon_end_bytes"])
+        assert after == before, free
+        stall = before["stall"]
+        assert isinstance(stall, dict) and stall["reason"] == "runahead_budget"
+        blocked = next(phase for phase in R12_RAM["phases"]
+                       if phase["name"] == stall["blocked_phase"])
+        assert int(blocked["start_bytes"]) < int(horizon["horizon_end_bytes"])

@@ -4042,8 +4042,10 @@ measure the live forest's size or its exact decode multiplier.
 the stage window's own semantics, pointed at the ram ledger: admission
 needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
 through the ledger — bounded by the #633 run-ahead budget on the consumer's
-accepted progress (`prefill_depth` may cap it), in the plan's read order,
-and reported as `ram-window-stalled` when it declines. Chunked (#673), the
+accepted progress (`prefill_depth` may cap it) and, since #906, by the
+consumer's refill horizon on the tmpfs (see "The ram window stages only to
+its refill horizon too" below), in the plan's read order, and reported as
+`ram-window-stalled` when it declines. Chunked (#673), the
 window publishes the next *chunk* when free `ram_gib` covers it and the
 budget admits it: chunks of the phase being read are the reader's near-term
 food and promote as soon as their turn comes, while later chunks spend the
@@ -5543,8 +5545,8 @@ is an admitted window's advance, which the would-publish term covers.
   than its reservations ahead. A consumer that prefetches past its
   reservations can find a range evicted; the PrismaQuant layer reader then
   waits `STAGED_RANGE_WAIT_S` (300 s) for the window to publish it again.
-* The RAM window keeps its own bounds (`prefill_depth`, #642) and is not
-  bounded by the horizon.
+* Since #906 the ram window is bounded by its own horizon as well (next
+  section).
 * The horizon does not jointly admit consumers: two readers whose horizons
   together exceed the tier still contend through the joint gate, as before.
 * A consumer claimed before #903 keeps its landed ranges until another
@@ -5565,6 +5567,66 @@ on the cycle that sees the capture's `layer-3` report, `chain-019` goes and
 and `layer-3` publishes. Before #908 that last case re-read the capture as a
 newcomer, whose relief counted R12's two queued rows, and gave back
 `chain-022`, `chain-020` and `chain-019` (R12 kept 462 GiB).
+
+### The ram window stages only to its refill horizon too (#906)
+
+#903 bounded the stage window by the refill horizon. The ram window kept its
+own bounds only: #633's run-ahead (capacity minus one step) and the ram
+policy's optional `prefill_depth`. A consumer with a small reservation could
+promote as far ahead as the tmpfs had room, and no other consumer's promotion
+could take any of it back, because every promotion it held belonged to a live
+plan.
+
+**The ram horizon.** `tier_loop._ram_horizon` is the same
+`residency_plan.refill_horizon`, asked of the plan's ram legs: the same
+reading phase, read-ahead and consumption rate, and the refill priced at the
+slowest complete *promotion* receipt of the plan (`bytes_staged / seconds`
+from `ram_promote`'s receipt). Every decision that asks what the ram window
+will publish asks it with this horizon: `_ram_window_state`'s `window`, both
+ram passes of `_protect_tier_advances`, and the ram probe and `advance_needs`
+in `window_pressure`. `prefill_depth` still applies as a declared ceiling.
+
+A ram horizon has no stand-in before it is measured. A promotion copies the
+stage into the tmpfs, which neither a sealed fill nor the tier's fill supply
+measures, so until one of the plan's promotions lands the ram horizon is
+undefined and the ram window keeps its #633 bound. Pricing the refill at the
+promotion alone, rather than at a stage copy plus a promotion, is safe for a
+different reason than on the stage. A short stage horizon makes the consumer
+wait. A short ram horizon means the consumer reads a range from the stage
+while its ram copy is not there yet: slower, but never a stall.
+
+For R12 on 2026-09-23: 22 complete promotions landed at 231 to 544 MB/s
+(median 470), on legs of 9 to 22 GiB. Its read-ahead (180 GiB) is larger than
+the 160 GiB tmpfs, so the ram horizon ends past anything the #633 bound
+(160 − 22 = 138 GiB of run-ahead) would publish, and R12's ram window is
+unchanged. The horizon binds a consumer whose reservation is small beside the
+tmpfs, which is the case where another consumer's promotion needs the room.
+
+**Ram ranges past the horizon are room.** `evict_beyond_horizon` now runs on
+ram tiers as well as stage tiers, on the same pressure (`window_pressure`'s
+ram leg) and the same rules: farthest-needed first, whole or not at all,
+never inside a horizon or the advance, and not when the room cannot be made.
+The eviction is `stage_release.evict` against the announced ram root. The
+newcomer and claim relief terms count these ranges on the ram tier as they
+do on the stage.
+
+**A stage range takes its ram copy with it, ram first (#640).** A ram range
+whose stage source is gone is one the consumer's map can no longer read:
+`overlay_ram` reads a ram entry only beside its stage entry. So a stage range
+past its horizon is a candidate only when each promotion over its bytes that
+still holds ram tokens is itself a ram candidate (past the ram horizon, not
+the ram advance, nothing queued or running on it). Its eviction gives back
+those ram copies first. A copy whose eviction is declined (a reader's pin,
+say) keeps its stage range too, and the next candidate goes. Ram tiers are
+processed before stage tiers, so the tokens of the smaller tier come back
+before the bytes that feed it leave, the order the ram egress already keeps.
+
+**The ram window reads its own fence back.** The stage window has always read
+the consumer's own advance fence back into free, because that fence is the
+room its advance publishes into (#745). `_ram_window_state` took the same
+figure as `own_fence_gib` and did not add it. On a tmpfs with room for
+exactly the current promotion and its advance, the advance could then never
+publish. It now adds it.
 
 ### Adopting a resident range, and when an orphan is evicted
 
