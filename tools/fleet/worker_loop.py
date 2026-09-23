@@ -1043,6 +1043,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--assume-idle", action="store_true",
                     help="offer declared CPU and host memory without observing "
                          "them (debug); GPU evidence remains mandatory")
+    ap.add_argument("--mem-margin-gb", type=int,
+                    default=box_capacity.MEMORY_MARGIN_GB,
+                    help="host memory, in GiB, this box keeps back from its "
+                         "live offer: the offer is at most what the pool holds "
+                         "here plus MemAvailable minus this margin (#980)")
     ap.add_argument("--observe-samples", type=int,
                     default=box_capacity.DEFAULT_SAMPLES,
                     help="consecutive observations that must agree before the "
@@ -1064,6 +1069,8 @@ def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None
         ap.error("--gpu-slots cannot be negative")
     if args.spool_gb < 0:
         ap.error("--spool-gb cannot be negative")
+    if args.mem_margin_gb < 0:
+        ap.error("--mem-margin-gb cannot be negative")
 
 
 def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str, int]:
@@ -1080,6 +1087,26 @@ def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str,
     if args.spool_gb > 0:
         declared["spool_gb"] = args.spool_gb
     return declared
+
+
+def capacity_observer(args: argparse.Namespace, *, gpu_capable: bool,
+                      ledger_total: dict[str, int] | None
+                      ) -> box_capacity.CapacityObserver | None:
+    """The observer that sets this loop's live offer, or ``None``.
+
+    ``None`` under ``--assume-idle`` on a box without a GPU: the loop then
+    offers its declaration unobserved.  Otherwise the observer holds
+    ``--observe-samples`` readings and keeps ``--mem-margin-gb`` of host
+    memory back from the offer (#980).
+    """
+
+    if args.assume_idle and not gpu_capable:
+        return None
+    return box_capacity.CapacityObserver(
+        samples=args.observe_samples,
+        margin_gb=args.mem_margin_gb,
+        ledger_total=ledger_total,
+    )
 
 
 def _run_loop(stop_requested):
@@ -1305,11 +1332,10 @@ def _run_loop(stop_requested):
             time.sleep(args.poll_s)
             continue
         if not observer_initialized:
-            observer = (None if args.assume_idle and not gpu_capable else
-                        box_capacity.CapacityObserver(
-                            samples=args.observe_samples,
-                            ledger_total=queue.ledger().capacity(),
-                        ))
+            observer = capacity_observer(
+                args, gpu_capable=gpu_capable,
+                ledger_total=(None if args.assume_idle and not gpu_capable
+                              else queue.ledger().capacity()))
             observer_initialized = True
         gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None
         if args.gpu:

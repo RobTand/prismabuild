@@ -700,9 +700,8 @@ def worker_evidence(host: str, roster_path: Path | None = None) -> dict[str, Any
             "container_inventory": inventory}
 
 
-def _declared_demand(host: str, roster_path: Path | None) -> dict[str, int]:
+def _declared_demand(host: str, args: list[str]) -> dict[str, int]:
     """Declared capacity parsed from the roster loop args (never invented)."""
-    args = roster_loop_args(host, roster_path)
     demand: dict[str, int] = {"cpu": 1}
     if "--gpu" in args:
         demand["gpu"] = 1
@@ -712,6 +711,27 @@ def _declared_demand(host: str, roster_path: Path | None) -> dict[str, int]:
         except (ValueError, IndexError) as exc:
             raise ValueError(f"roster mem-gb unparsable for {host}: {exc}")
     return demand
+
+
+def _declared_margin_gb(host: str, args: list[str]) -> int:
+    """The host-memory margin the roster's loop args declare (#980).
+
+    The loops' own ``--mem-margin-gb``, so the join qualification observes
+    the offer those loops will publish; ``box_capacity.MEMORY_MARGIN_GB``
+    when the roster names none.
+    """
+
+    from prismabuild import box_capacity
+
+    if "--mem-margin-gb" not in args:
+        return box_capacity.MEMORY_MARGIN_GB
+    try:
+        margin = int(args[args.index("--mem-margin-gb") + 1])
+    except (ValueError, IndexError) as exc:
+        raise ValueError(f"roster mem-margin-gb unparsable for {host}: {exc}")
+    if margin < 0:
+        raise ValueError(f"roster mem-margin-gb negative for {host}: {margin}")
+    return margin
 
 
 def qualify_host(
@@ -783,8 +803,10 @@ def qualify_host(
     try:
         from prismabuild import box_capacity
 
-        declared = _declared_demand(host, roster_path)
-        observe_kwargs: dict[str, Any] = {}
+        args = roster_loop_args(host, roster_path)
+        declared = _declared_demand(host, args)
+        observe_kwargs: dict[str, Any] = {
+            "margin_gb": _declared_margin_gb(host, args)}
         if gpu_sample is not None:
             observe_kwargs["gpu_sample"] = gpu_sample
         if mem_gb is not None:

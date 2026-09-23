@@ -3237,6 +3237,26 @@ not hidden or treated as parked. Investigate the logged failure and retained
 PID/start-time identity. Lock-path errors, resource failures and storage stalls
 have different causes; the log alone does not diagnose an NFS fault.
 
+### A box's host-memory margin
+
+Each worker loop observes host memory before it publishes its offer. The offer
+is at most `--mem-gb`, and at most what the pool already holds on the box plus
+`MemAvailable` minus a margin. The margin is the loop's `--mem-margin-gb`, in
+GiB (#980). It defaults to 8 (`box_capacity.MEMORY_MARGIN_GB`) and must not be
+negative. Set it per box in the roster `args` in
+`tools/fleet/fleet_boxes.json`; the supervisor passes those arguments to the
+loops, and the join qualification reads the same flag.
+
+sparky and sparklina set 4, so a 104 GiB action fits when `MemAvailable` is
+108 GiB or more. On sparky, where the agent sessions run, `MemAvailable` is
+about 110 GiB. An action that uses all 104 GiB there leaves about 6 GiB, below
+the 8.5 GiB at which sparky stalled on 2026-09-14. dl380g10 keeps the default
+of 8. The `_mem_margin_gb` note in the roster records the reason and the risk.
+A changed margin reaches a box after a publish, as each idle loop is replaced
+with one on the new arguments. To see what a box keeps back, run
+`pgrep -af worker_loop` on it and read the number after `--mem-margin-gb`; no
+flag means 8.
+
 ### A box's local disk budget
 
 A box offers local disk to produced-output spool windows and declared scratch

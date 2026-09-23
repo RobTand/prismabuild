@@ -13,6 +13,8 @@
     "--gpu",
     "--mem-gb",
     "104",
+    "--mem-margin-gb",
+    "4",
     "--spool-gb",
     "auto",
     "--timeout-s",
@@ -23,7 +25,8 @@
     "15",
     "--all-cores"
    ],
-   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value."
+   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value.",
+   "_mem_margin_gb": "--mem-margin-gb 4 (2026-09-23, #980). Rob: \"the sparks have 121 GiB of ram. 104GB should fit. Raise limits if necessary.\" The live memory offer is min(--mem-gb, held + MemAvailable - margin). With the default margin of 8 and MemAvailable about 110 GiB (the agent sessions run on sparky), sparky offered 102 GiB, so a 104 GiB job never fit. Risk, stated plainly: on 2026-09-14 box hang #5 stalled sparky with MemAvailable still at 8.5 GiB (PSI memory full avg10 89). A job that uses its full 104 GiB on sparky at MemAvailable 110 leaves about 6 GiB, below that stall point. dl380g10 keeps the default 8."
   },
   "gx10-6b77": {
    "_alias": "sparklina",
@@ -40,6 +43,8 @@
     "--gpu",
     "--mem-gb",
     "104",
+    "--mem-margin-gb",
+    "4",
     "--spool-gb",
     "auto",
     "--timeout-s",
@@ -52,7 +57,8 @@
     "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
     "--all-cores"
    ],
-   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value."
+   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value.",
+   "_mem_margin_gb": "--mem-margin-gb 4 (2026-09-23, #980). Rob: \"the sparks have 121 GiB of ram. 104GB should fit. Raise limits if necessary.\" The live memory offer is min(--mem-gb, held + MemAvailable - margin). With the default margin of 8 and MemAvailable about 110 GiB (the agent sessions run on sparky), sparky offered 102 GiB, so a 104 GiB job never fit. Risk, stated plainly: on 2026-09-14 box hang #5 stalled sparky with MemAvailable still at 8.5 GiB (PSI memory full avg10 89). A job that uses its full 104 GiB on sparky at MemAvailable 110 leaves about 6 GiB, below that stall point. dl380g10 keeps the default 8."
   },
   "dl380g10": {
    "loops": 16,

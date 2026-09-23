@@ -43,6 +43,10 @@ drain. Preserve the 8 GiB host margin and all ownership/pressure gates; require
 at least 112 GiB MemAvailable for this request. The GPU controller's weaker
 2% free-memory reserve does not replace that requirement.
 
+2026-09-23 addendum: #980 made the margin a per-box loop flag,
+`--mem-margin-gb`, and set it to 4 GiB on sparky and sparklina on Rob's
+instruction, so a 104 GiB request needs 108 GiB MemAvailable there.
+
 The supervisor adopts the changed versioned arguments through the normal
 reviewed publication and idle-worker replacement path. No unit edits, forced
 reservation release, worker interruption, or deployment is part of this change.
