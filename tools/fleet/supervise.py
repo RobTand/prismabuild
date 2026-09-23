@@ -374,6 +374,40 @@ def _claim_holders() -> frozenset[int] | None:
         return None
 
 
+def _roster_entry(host: str) -> tuple[dict, dict] | None:
+    """This box's raw roster entry and the roster file it came from.
+
+    The roster document travels with the entry because a box's declaration
+    can depend on a fleet-wide value beside ``boxes`` -- the local-disk free
+    floor that ``--spool-gb`` is checked against -- and both must come from
+    the same file, never one from the live generation and one from the
+    checkout.  ``None`` is the same "no answer" ``_box_entry`` documents.
+    """
+
+    # A supervisor intentionally outlives a generation.  Prefer the current
+    # live generation; CONFIG is only the checkout/bootstrapping fallback.
+    for path in (_current_root() / "tools" / "fleet_boxes.json", CONFIG):
+        try:
+            document = json.loads(path.read_text())
+            boxes = document["boxes"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(boxes, dict):
+            continue
+        if host in boxes and isinstance(boxes[host], dict):
+            return boxes[host], document
+        # The second Spark was renamed from gx10-6b77 to sparklina.  Its
+        # declared alias names the same machine, not a second capacity offer.
+        # Keep one shape so the old and new hostname cannot drift apart.
+        aliases = [(name, shape) for name, shape in boxes.items()
+                   if isinstance(shape, dict) and shape.get("_alias") == host]
+        if len(aliases) > 1:
+            raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
+        if aliases:
+            return aliases[0][1], document
+    return None
+
+
 def _box_entry(host: str) -> dict | None:
     """This box's raw roster entry, or ``None`` when no file names it.
 
@@ -384,27 +418,8 @@ def _box_entry(host: str) -> dict | None:
     key and its ``_alias`` name the same machine.
     """
 
-    # A supervisor intentionally outlives a generation.  Prefer the current
-    # live generation; CONFIG is only the checkout/bootstrapping fallback.
-    for path in (_current_root() / "tools" / "fleet_boxes.json", CONFIG):
-        try:
-            boxes = json.loads(path.read_text())["boxes"]
-        except (OSError, ValueError, KeyError):
-            continue
-        if not isinstance(boxes, dict):
-            continue
-        if host in boxes and isinstance(boxes[host], dict):
-            return boxes[host]
-        # The second Spark was renamed from gx10-6b77 to sparklina.  Its
-        # declared alias names the same machine, not a second capacity offer.
-        # Keep one shape so the old and new hostname cannot drift apart.
-        aliases = [(name, shape) for name, shape in boxes.items()
-                   if isinstance(shape, dict) and shape.get("_alias") == host]
-        if len(aliases) > 1:
-            raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
-        if aliases:
-            return aliases[0][1]
-    return None
+    found = _roster_entry(host)
+    return None if found is None else found[0]
 
 
 def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
@@ -475,8 +490,159 @@ def declared_shape(host: str, override_loops: int,
         if previous is None:
             raise
         return previous
-    return (override_loops or int(config.get("loops", 1)),
-            [str(a) for a in config.get("args", [])])
+    args = [str(a) for a in config.get("args", [])]
+    if SPOOL_FLAG in args or any(a.startswith(SPOOL_FLAG + "=") for a in args):
+        # Only a box that declares a spool budget reads anything more; every
+        # other box's arguments are the file's, byte for byte (#910).
+        found = _roster_entry(host)
+        document = found[1] if found is not None else {}
+        args = spool_declaration(host, config, document, args)
+    return (override_loops or int(config.get("loops", 1)), args)
+
+
+#: The worker loop flag that declares this box's local spool budget, in GiB
+#: (#747), and the roster fields it is checked against (#910).
+SPOOL_FLAG = "--spool-gb"
+#: Per box: the directory whose filesystem the declared ``--spool-gb`` is
+#: carved from.  The spool root itself is the producer's sealed
+#: ``PRISMABUILD_PRODUCED_SPOOL_ROOT``, not something a box knows, so the
+#: roster names the disk rather than the supervisor guessing it.
+LOCAL_DISK_FIELD = "local_disk"
+#: Fleet-wide, beside ``boxes``: the share of a local filesystem, in whole
+#: percent of its size, that the fleet keeps free.  It is Rob's disk-headroom
+#: rule, stated in the file rather than assumed by the code.
+LOCAL_DISK_FLOOR_FIELD = "local_disk_free_floor_percent"
+GIB = 1 << 30
+#: One verdict per distinct declaration for the life of this process, so the
+#: check runs at supervisor start -- and again after a publish, which re-execs
+#: -- rather than every tick.  A spool that is filling lowers free space, and a
+#: per-tick check would retract the box's offer because its own producer was
+#: using it, then restore it when the producer drained.
+_SPOOL_VERDICTS: dict[tuple, list[str]] = {}
+
+
+def local_disk_room(path: str, floor_percent: int, *,
+                    statvfs=os.statvfs) -> dict[str, int]:
+    """What the filesystem under ``path`` can still give, above the floor.
+
+    ``free_bytes`` is what an unprivileged writer can allocate (``f_bavail``,
+    which already withholds root's reserve) and ``floor_bytes`` is
+    ``floor_percent`` of the filesystem's size, rounded up.  ``room_bytes``
+    is the first minus the second and may be negative.
+    """
+
+    stat_result = statvfs(path)
+    size = int(stat_result.f_blocks) * int(stat_result.f_frsize)
+    free = int(stat_result.f_bavail) * int(stat_result.f_frsize)
+    floor = -(-size * floor_percent // 100)
+    return {"size_bytes": size, "free_bytes": free, "floor_bytes": floor,
+            "room_bytes": free - floor}
+
+
+def _spool_gb_of(args: list[str]) -> int:
+    """The one ``--spool-gb`` value ``args`` declares, or ``ValueError``."""
+
+    if any(a.startswith(SPOOL_FLAG + "=") for a in args):
+        raise ValueError(f"spell {SPOOL_FLAG} as two arguments, flag and value")
+    positions = [i for i, a in enumerate(args) if a == SPOOL_FLAG]
+    if len(positions) != 1:
+        raise ValueError(f"{SPOOL_FLAG} appears {len(positions)} times")
+    try:
+        value = args[positions[0] + 1]
+    except IndexError:
+        raise ValueError(f"{SPOOL_FLAG} has no value") from None
+    if not value.isascii() or not value.isdigit():
+        raise ValueError(f"{SPOOL_FLAG} {value!r} is not a whole number of GiB")
+    return int(value)
+
+
+def _without_spool(args: list[str]) -> list[str]:
+    """``args`` with every ``--spool-gb`` declaration removed."""
+
+    out: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg == SPOOL_FLAG:
+            skip = True
+            continue
+        if arg.startswith(SPOOL_FLAG + "="):
+            continue
+        out.append(arg)
+    return out
+
+
+def _check_spool_declaration(host: str, entry: dict, document: dict,
+                             args: list[str], *, statvfs=os.statvfs) -> str | None:
+    """Why this box's ``--spool-gb`` cannot stand, or ``None`` if it can.
+
+    The declaration stands only when the roster names the local filesystem
+    it is carved from, the fleet states its free floor, the path is a local
+    disk, and the filesystem's free space minus that floor covers it.  A
+    zero declaration declares nothing and needs no disk.
+    """
+
+    try:
+        declared = _spool_gb_of(args)
+    except ValueError as exc:
+        return str(exc)
+    if declared == 0:
+        return None
+    path = entry.get(LOCAL_DISK_FIELD)
+    if not isinstance(path, str) or not path.startswith("/"):
+        return (f"{host} declares {SPOOL_FLAG} {declared} but no absolute "
+                f"{LOCAL_DISK_FIELD!r} path naming the filesystem it is on")
+    floor = document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None
+    if type(floor) is not int or not 0 <= floor < 100:
+        return (f"the roster states no {LOCAL_DISK_FLOOR_FIELD!r} as a whole "
+                f"percent from 0 to 99 (found {floor!r}), so there is no floor "
+                f"to check {SPOOL_FLAG} {declared} against")
+    try:
+        from prismabuild import produced_spool
+
+        produced_spool._local_disk(Path(path))
+    except Exception as exc:  # noqa: BLE001 - any failure refuses the declaration
+        return f"{LOCAL_DISK_FIELD} {path} is not a usable local disk: {exc}"
+    try:
+        room = local_disk_room(path, floor, statvfs=statvfs)
+    except OSError as exc:
+        return f"cannot read free space on {LOCAL_DISK_FIELD} {path}: {exc}"
+    if declared * GIB > room["room_bytes"]:
+        return (f"{SPOOL_FLAG} {declared} ({declared * GIB} B) exceeds "
+                f"{path}'s free space minus the {floor}% floor: "
+                f"{room['free_bytes']} B free - {room['floor_bytes']} B floor "
+                f"= {room['room_bytes']} B")
+    return None
+
+
+def spool_declaration(host: str, entry: dict, document: dict,
+                      args: list[str], *, statvfs=os.statvfs) -> list[str]:
+    """The loop arguments with ``--spool-gb`` kept, or dropped with a reason.
+
+    Checked once per distinct declaration in this process (see
+    ``_SPOOL_VERDICTS``).  A refusal drops the flag rather than exiting: this
+    supervisor runs under ``Restart=always``, so an exit would take every
+    loop on the box with it, where a refused spool budget should cost the box
+    only the spool kind.  Producers that need it then record
+    ``never_fits_capacity`` on this box and are claimed where it fits.
+    """
+
+    key = (host, tuple(args), entry.get(LOCAL_DISK_FIELD),
+           document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None)
+    if key not in _SPOOL_VERDICTS:
+        reason = _check_spool_declaration(host, entry, document, args,
+                                          statvfs=statvfs)
+        if reason is None:
+            _SPOOL_VERDICTS[key] = list(args)
+            print(f"[{host}] {SPOOL_FLAG} declaration accepted: "
+                  f"{' '.join(args)}", flush=True)
+        else:
+            _SPOOL_VERDICTS[key] = _without_spool(args)
+            print(f"[{host}] {SPOOL_FLAG} declaration refused, so this box "
+                  f"offers no spool_gb: {reason}", flush=True)
+    return list(_SPOOL_VERDICTS[key])
 
 
 def declared_roles(host: str) -> list[tuple[str, list[str]]]:

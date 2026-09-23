@@ -3185,6 +3185,27 @@ not hidden or treated as parked. Investigate the logged failure and retained
 PID/start-time identity. Lock-path errors, resource failures and storage stalls
 have different causes; the log alone does not diagnose an NFS fault.
 
+### A box's local spool budget
+
+A box offers local disk to produced-output spool windows only when its roster
+`args` in `tools/fleet/fleet_boxes.json` carry `--spool-gb N` (#747, #910).
+Such a box also names `local_disk`, a directory on the filesystem the budget
+comes from, and the roster states the fleet's free floor once, as
+`local_disk_free_floor_percent` (5). To change a budget, edit the roster and
+publish. Each supervisor start, including the re-exec after a publish, checks
+that `f_bavail` on `local_disk` minus the floor covers N GiB. If it does not,
+the supervisor starts its loops without `--spool-gb` and logs a line that
+begins `--spool-gb declaration refused` and names the three numbers. The box
+keeps offering its other kinds; an opted-in producer records
+`never_fits_capacity` there and waits for a box whose budget fits. To see what
+a box offers, run `pgrep -af worker_loop` on it and look for `--spool-gb`.
+
+A refused or removed declaration does not take back `spool_gb` tokens the host
+ledger already minted: the ledger only grows, and a loop retires free tokens
+only for the kinds it offers. Lower a budget by publishing a smaller positive
+value. The producer's own `statvfs` check still refuses a spool group the disk
+cannot hold.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
