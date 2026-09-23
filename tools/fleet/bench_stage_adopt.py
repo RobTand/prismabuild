@@ -205,7 +205,29 @@ def mover_argv(args, queue: pool.PoolQueue, stage: Path, window, mover: str,
             "--range-end-bytes", str(window["bytes"]),
             "--readers", str(args.workers), "--max-readers", str(args.workers),
             "--warm-after-copy", "never", "--unpaced",
-            "--receipt", str(receipt)]
+            "--receipt", str(receipt)] + (
+                ["--progress-interval-s", str(args.progress_interval_s)]
+                if args.progress_interval_s is not None else [])
+
+
+def mover_env(args, out: Path, scenario: str, label: str) -> dict[str, str] | None:
+    """The progress channel a worker would give the mover (#1010), or ``None``.
+
+    With ``--progress-interval-s`` each mover reports into its own file under
+    ``out``, as a sealed mover does into ``claimed/<key>.progress``.
+    """
+
+    if args.progress_interval_s is None:
+        return None
+    from prismabuild import progress as pb_progress
+    from prismabuild import movement_actions
+    env = dict(os.environ)
+    env[pb_progress.ACTION_PROGRESS_PATH_ENV] = str(
+        out / f"{scenario}-{label}.progress")
+    env[pb_progress.ACTION_PROGRESS_TOKEN_ENV] = _key(f"{scenario}-{label}")[:32]
+    env[pb_progress.ACTION_PROGRESS_PHASES_ENV] = json.dumps(
+        list(movement_actions.MOVER_PROGRESS_PHASES))
+    return env
 
 
 def run_movers(args, queue, stage, out: Path, scenario: str,
@@ -224,7 +246,8 @@ def run_movers(args, queue, stage, out: Path, scenario: str,
                     "--format", "raw", "--output", str(profile), "--"] + argv
         log = open(out / f"{scenario}-{label}.log", "w")
         procs.append((label, window, receipt, profile, log,
-                      subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT)))
+                      subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+                                       env=mover_env(args, out, scenario, label))))
     results = []
     for label, window, receipt, profile, log, proc in procs:
         code = proc.wait()
@@ -385,6 +408,7 @@ def summarize(scenario: str, results: list[dict[str, object]], entries: int,
             "entries_per_s": round(entries / seconds, 1) if seconds else None,
             "ms_per_entry": round(1000 * seconds / entries, 2) if entries else None,
             "phase_timings": receipt.get("phase_timings"),  # type: ignore[union-attr]
+            "progress_report": receipt.get("progress_report"),  # type: ignore[union-attr]
             "proc_io": {k: v for k, v in (receipt.get("proc_io") or {}).items()  # type: ignore[union-attr]
                         if k in ("read_bytes", "write_bytes", "rchar", "wchar")},
             "cpu_seconds": receipt.get("cpu_seconds"),  # type: ignore[union-attr]
@@ -427,6 +451,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--produced-fragment-dirs", type=int, default=1957,
                         help="subdirectories of the produced-output fragment "
                              "directory")
+    parser.add_argument("--progress-interval-s", type=float, default=None,
+                        help="give every mover a progress channel and report "
+                             "at this interval (#1010); unset gives none, as "
+                             "an unmeasured mover has")
     args = parser.parse_args(argv)
 
     work = Path(args.work).resolve()
@@ -460,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         "python": sys.version.split()[0], "entries_per_window": args.entries,
         "workers_per_mover": args.workers, "forest": forest,
         "setup_s": round(setup_s, 2), "profiled": bool(args.py_spy),
+        "progress_interval_s": args.progress_interval_s,
         "scenarios": []}
     published: dict[str, list[int | None]] = {}
     checks: list[str] = []
