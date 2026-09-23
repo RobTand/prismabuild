@@ -405,7 +405,9 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
     other, _other_claim = _first_attempt(queue, template, running)
     assert _prewrite(queue, other, template, "b1", [prefix / "other.bin"], 4)["ok"]
     # A running producer's instance is never read: a read would report it.
-    (po.instance_dir(queue.root, other) / "instance.json").write_text("{")
+    filed = po.instance_dir(queue.root, other) / "instance.json"
+    filed.unlink()
+    filed.write_text("{")
 
     reads: list[str] = []
     scans: list[str] = []
