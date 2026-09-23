@@ -550,6 +550,18 @@ Budget and durability requirements for produced workloads:
   A missing initial phase may wait before GPU admission; mid-phase waits
   carry explicit grace and progress semantics (no forward movement within
   grace → terminal reason, not silent stall).
+  A reader blocked on its own staged range is not "no forward movement"
+  while that range is still coming (PB#989): the tier loop publishes each
+  pending range's mover, state and expected landing in
+  `<consumer>.landing.json`; the reader waits while the mover is `ready` or
+  `claimed`, or while the range is `unpublished` and the tier loop is alive,
+  and refuses at once, naming the state, on `terminal-no-receipt` or a
+  silent tier loop. The expectation is information, never a deadline. The
+  reader declares the wait (`<progress>.staged-wait`), and the
+  `no_progress` rung exempts the blocked time only after checking every
+  named mover against the consumer's own plan, recording
+  `staged_wait_exempt_s` and the movers' states. Without a landing record
+  the reader's bounded wait applies and its refusal says so.
 - PRG-04 no circular hold-and-wait by assertion: PRG-03's "holds current
   window" alone proves nothing with multiple consumers. The contract
   requires the formal inequality over all competing consumers —
@@ -794,6 +806,7 @@ launch attempts and the defects below ran on:
 | PB#944 | Movers `68fdb8728f38` and `750a4f8c65eb` of consumer `d54952c1fcac` inherited `task_class: measurement`; refused `measurement_host_not_idle` on 1,596 passes over 134 s | INV-11, PRG-03, LIVE-01 | Fixed by #948 (`abb13ff58bf7`); deployed in `a0fdcd2f7482`; not yet exercised |
 | PB#965 | Chunk mover `8faf2233c63a` (consumer `a7d31a4da9c1`) cut a manifest entry and refused `residency_overran_reservation` on every attempt | SM-02, PRG-02, PRG-03, LIVE-01 | Fixed by #970 (`0411c83330da`); deployed in `a0fdcd2f7482`; not yet exercised; consumers sealed on an older generation need a resubmit |
 | PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Fix in review on branch `fix/966-mover-dead-owner` (Fixes #966): a divergent name is settled by its owners' states; not merged, not deployed |
+| PB#989, PQ#1107 | A stage-fed reader refused a declared range at a fixed 300 s whatever its mover was doing; the live (b) and R13 seals raised the wait to 840 s, just under the 900 s phase grace. A third R12-shaped consumer's next range lands behind the other two consumers' queued ranges, after either constant | PRG-03, LIVE-01 | Fix in review on branches `fix/989-expected-landing` (PB, Fixes #989) and `fix/1107-wait-on-expected-landing` (PQ, Closes #1107): landing record, reader rule and staged-wait exemption; not merged, not deployed |
 | PQ#1080 | Stage A seed `2c164969c33c` did not prefetch its first layer and refused a cold source read, rc 1 after 282 s | PRG-02 (INV-06 held: the reader refused and did not fall back) | Fixed by PQ#1079 (`f12313f9903d`); use in a campaign unknown |
 
 ### Corrections to earlier status

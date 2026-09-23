@@ -1926,7 +1926,7 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
               if leg["phase"] in ahead_names[1:]]
     largest = max((int(leg["end_bytes"]) - int(leg["start_bytes"])
                    for leg in future), default=0)
-    landing_s = largest / float(landing_bytes_per_s)         # type: ignore[arg-type]
+    landing_s = landing_seconds(largest, landing_bytes_per_s)   # type: ignore[arg-type]
     latency = float(report_latency_s) + landing_s
     reach_end = read_through + int(readahead_bytes)
     refill_bytes = rate * latency
@@ -1970,6 +1970,61 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
             "seconds_until_needed": (int(leg["start_bytes"]) - read_through) / rate,
         } for leg in outside[1:]],
     }
+
+
+def landing_seconds(range_bytes: float, landing_bytes_per_s: float) -> float:
+    """How long a copy of ``range_bytes`` takes to land, at the landing rate.
+
+    The one landing model: :func:`refill_horizon` prices its refill with it,
+    and :func:`expected_landings` prices every queued range with it (#989).
+    ``landing_bytes_per_s`` is the slowest complete copy of the plan
+    (``tier_loop._plan_landing``), so the answer errs long.
+    """
+
+    return float(range_bytes) / float(landing_bytes_per_s)
+
+
+def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
+                      now: float, landing_bytes_per_s: float,
+                      ) -> dict[str, dict[str, object]]:
+    """When each stage mover queued on one tier is expected to land (#989).
+
+    ``tier_queue`` is every ``ready`` or ``claimed`` stage mover of the
+    tier's live plans, claimed ones first (oldest claim first) and then the
+    ready ones in the queue's own claim order, each with
+    ``mover_action_key``, ``state``, ``range_bytes`` and, when claimed,
+    ``claimed_unix``.
+
+    :func:`refill_horizon`'s landing term, extended over the queue: a
+    claimed copy lands :func:`landing_seconds` of its own bytes after its
+    claim.  A ready one lands after every copy ahead of it -- the claimed
+    copies' bytes still to land at that rate, then each ready range before
+    it -- and its own.  Serial, at the plan's slowest measured rate, so it
+    errs long, as the horizon does.  It is an expectation for records and
+    readers, never a deadline.
+
+    Returns, per mover, ``queue_position`` (its place in that order),
+    ``bytes_ahead`` and ``expected_landing_unix``.
+    """
+
+    rate = float(landing_bytes_per_s)
+    out: dict[str, dict[str, object]] = {}
+    ahead = 0.0
+    for position, mover in enumerate(tier_queue):
+        own = int(mover["range_bytes"])                       # type: ignore[call-overload]
+        key = str(mover["mover_action_key"])
+        if mover.get("state") == "claimed" and _finite_number(mover.get("claimed_unix")):
+            claimed = float(mover["claimed_unix"])            # type: ignore[arg-type]
+            expected = claimed + landing_seconds(own, rate)
+            out[key] = {"queue_position": position, "bytes_ahead": 0,
+                        "expected_landing_unix": expected}
+            ahead += max(0.0, expected - float(now)) * rate
+            continue
+        out[key] = {"queue_position": position, "bytes_ahead": int(round(ahead)),
+                    "expected_landing_unix": float(now) + landing_seconds(
+                        ahead + own, rate)}
+        ahead += own
+    return out
 
 
 def _finite_number(value: object) -> bool:
@@ -2430,8 +2485,10 @@ __all__ = [
     "accepted",
     "advance_needs",
     "build_plan",
+    "expected_landings",
     "find_mover_leg",
     "freeze",
+    "landing_seconds",
     "lead_mover_row",
     "leads_for",
     "legs_over",

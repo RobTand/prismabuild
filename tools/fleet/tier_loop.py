@@ -1692,6 +1692,11 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
             queue, key, reason=f"consumer-{state}",
             plan=plan, filing=incarnation)
         if reaped is not None:
+            # The landing record describes a window nobody reads any more
+            # (#989); it goes with the plan, as the event file does.
+            residency_map.landing_path(
+                queue.residency_fragment_root(), key).unlink(missing_ok=True)
+            _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
             events.append({
                 "event": "residency-plan-reaped", "consumer": key,
                 "tier_id": str(plan["tier_id"]),
@@ -5273,6 +5278,253 @@ def _report_commitments(queue: pool.PoolQueue,
     return events
 
 
+#: What each consumer's landing record was last written from (#989): the
+#: tier's queued movers, the consumer's pending legs and the rates.  Keyed by
+#: queue root and consumer.  An unchanged fingerprint keeps the record on
+#: disk, so its expectations stay anchored to when the queue last moved and
+#: no cycle rewrites the shared mount for nothing (``_compose_fingerprint``'s
+#: pattern).  The loop is single-threaded, so no lock guards it.
+_LANDING_FINGERPRINTS: dict[tuple[str, str], tuple[object, ...]] = {}
+
+
+def _plan_landing_rates(queue: pool.PoolQueue,
+                        plan: Mapping[str, object]) -> list[float]:
+    """Every complete stage copy's landing rate for this plan, slowest first."""
+
+    return sorted(rate for rate in (
+        _landing_rate(queue, key) for key in residency_plan.stage_mover_keys(plan))
+        if rate is not None)
+
+
+def _queued_mover(queue: pool.PoolQueue, mover: str
+                  ) -> tuple[str, dict[str, object]] | None:
+    """``(state, record)`` for a ready or claimed mover, else ``None``."""
+
+    for state in (pool.CLAIMED, pool.READY):
+        path = queue.item_path(state, mover)
+        try:
+            record = json.loads(path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return state, {}
+        if isinstance(record, dict):
+            if state == pool.READY:
+                record["passes"] = queue.passes(mover)
+            return state, record
+        return state, {}
+    return None
+
+
+def publish_landing_expectations(
+        queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
+        consumers: Sequence[Mapping[str, object]],
+        now: float | None = None) -> list[dict[str, object]]:
+    """Write each running consumer's landing record beside its map (#989).
+
+    For every pending range of a claimed consumer's stage plan -- a range it
+    has still to read that is not resident -- the record names the mover,
+    its read-order bytes and its state.  A queued range (``ready`` or
+    ``claimed``) carries :func:`residency_plan.expected_landings`' answer:
+    its place in the tier's queue, the bytes ahead of it and when it is
+    expected to land.  The rate is the slowest complete copy among the
+    tier's live plans (:func:`_plan_landing`, the refill horizon's own
+    landing rate), and the record carries every measured rate beside it.
+
+    A range the window has not published is listed with no expectation and
+    what it waits for.  It is ``terminal-no-receipt`` only when nothing will
+    publish it again: the plan is superseded.  A failed copy under a live
+    plan is ``unpublished``, because the window republishes it (#627).
+
+    The record is information for the reader, ``pbstatus`` and pricing,
+    never a deadline.  Its reader waits while the mover is coming and uses
+    ``tier_loop_liveness_s`` against the tier record's age to tell whether
+    the loop that publishes and composes is alive.  A consumer that is not
+    running loses its record, as it loses its map.
+    """
+
+    moment = time.time() if now is None else float(now)
+    began = time.monotonic()
+    events: list[dict[str, object]] = []
+    root = queue.residency_fragment_root()
+    per_tier: dict[str, list[tuple[str, Mapping[str, object],
+                                   dict[str, object]]]] = {}
+    for consumer in consumers:
+        key = str(consumer["action_key"])
+        try:
+            plan, _incarnation = residency_plan.read_filed(queue, key)
+        except (OSError, ValueError, pool.PoolContractError):
+            plan = None
+        if plan is None:
+            continue
+        tier_id = str(plan["tier_id"])
+        if (tier_id not in tiers or storage_tiers.capacity_kind_of(tier_id)
+                != storage_tiers.STAGE_CAPACITY_KIND):
+            continue
+        if consumer.get("state") != pool.CLAIMED:
+            residency_map.landing_path(root, key).unlink(missing_ok=True)
+            _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
+            continue
+        per_tier.setdefault(tier_id, []).append((key, consumer, plan))
+    for tier_id, members in sorted(per_tier.items()):
+        claimed: list[tuple[float, dict[str, object]]] = []
+        ready: list[tuple[tuple[int, int, float], dict[str, object]]] = []
+        states: dict[str, str] = {}
+        rates: list[float] = []
+        landing: float | None = None
+        landing_basis = "none"
+        for _key, _consumer, plan in members:
+            rates.extend(_plan_landing_rates(queue, plan))
+            rate, basis = _plan_landing(queue, plan)
+            if rate is not None and (landing is None or rate < landing):
+                landing, landing_basis = rate, basis
+            for leg in residency_plan.legs_over(plan, 0, 1 << 62,
+                                                mover_role="mover_row"):
+                mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                found = _queued_mover(queue, mover)
+                if found is None:
+                    continue
+                state, record = found
+                states[mover] = state
+                entry = {"mover_action_key": mover, "state": state,
+                         "range_bytes": int(leg["end_bytes"]) - int(leg["start_bytes"]),
+                         "claimed_unix": record.get("claimed_unix")}
+                if state == pool.CLAIMED:
+                    stamp = record.get("claimed_unix")
+                    claimed.append((float(stamp) if isinstance(stamp, (int, float))
+                                    and not isinstance(stamp, bool) else moment, entry))
+                else:
+                    order = queue._queue_order_of(record) or (0, 0, moment)
+                    ready.append((order, entry))
+        order = ([entry for _stamp, entry in sorted(
+                    claimed, key=lambda pair: (pair[0], pair[1]["mover_action_key"]))]
+                 + [entry for _order, entry in sorted(
+                    ready, key=lambda pair: (pair[0], pair[1]["mover_action_key"]))])
+        expected = ({} if landing is None else residency_plan.expected_landings(
+            order, now=moment, landing_bytes_per_s=landing))
+        queue_print = tuple((entry["mover_action_key"], entry["state"],
+                             entry["claimed_unix"], entry["range_bytes"])
+                            for entry in order)
+        for key, consumer, plan in members:
+            try:
+                superseded = residency_plan.superseded(queue, plan) is not None
+                resident = residency_plan.resident_movers(
+                    queue, plan, tier_id, tier_record=tiers.get(tier_id))
+                horizon = _stage_horizon(queue, consumer, plan, tiers.get(tier_id))
+            except (OSError, ValueError, pool.PoolContractError,
+                    residency_plan.ResidencyPlanError) as exc:
+                events.append({"event": "landing-unpublished", "consumer": key,
+                               "tier_id": tier_id, "error": repr(exc)})
+                continue
+            end = _horizon_end(horizon)
+            ahead = residency_plan.remaining(plan, consumer.get("accepted_phase"))  # type: ignore[arg-type]
+            names = [str(phase["name"]) for phase in ahead]
+            reading = names[0] if names else None
+            ranges: list[dict[str, object]] = []
+            for leg in residency_plan.legs_over(plan, 0, 1 << 62,
+                                                mover_role="mover_row"):
+                if leg["phase"] not in names:
+                    continue
+                mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                if mover in resident:
+                    continue
+                start, stop = int(leg["start_bytes"]), int(leg["end_bytes"])
+                row: dict[str, object] = {
+                    "mover_action_key": mover, "phase": str(leg["phase"]),
+                    "chunk_index": leg.get("chunk_index"),
+                    "range_start_bytes": start, "range_end_bytes": stop}
+                state = states.get(mover)
+                if state is not None and mover in expected:
+                    row.update({"state": state, **expected[mover],
+                                "claimed_unix": next(
+                                    (entry["claimed_unix"] for entry in order
+                                     if entry["mover_action_key"] == mover), None)
+                                if state == pool.CLAIMED else None})
+                    ranges.append(row)
+                    continue
+                inside = (leg["phase"] == reading if horizon is None
+                          else end is None or start < end)
+                # A finished copy whose range is not resident: landed and
+                # holding its tokens (adoption has not caught up), or evicted
+                # and holding none, which the window publishes again once the
+                # range is back inside the horizon (``evict_beyond_horizon``).
+                # Error-visible: a holder this cannot list falls through to
+                # the plain unpublished label rather than a guess.
+                finished: str | None = None
+                if state is None and not superseded and queue.item_path(
+                        pool.DONE, mover).exists():
+                    try:
+                        finished = ("done-not-resident" if pool.held_names_visible(
+                            queue.tier_ledger(tier_id), mover) else "evicted")
+                    except (OSError, ValueError, pool.PoolContractError):
+                        finished = None
+                if finished == "done-not-resident":
+                    row.update({"state": finished, "expected_landing_unix": None,
+                                "waiting_for": "adoption: the copy finished and "
+                                               "holds its tokens, and the range "
+                                               "is not resident yet"})
+                    ranges.append(row)
+                    continue
+                if not inside and state is None:
+                    continue
+                if finished == "evicted":
+                    row.update({"state": finished, "expected_landing_unix": None,
+                                "waiting_for": "the window: the range was "
+                                               "evicted, and is published again "
+                                               "when it is back inside the "
+                                               "horizon and the tier's room allows"})
+                    ranges.append(row)
+                    continue
+                failed = queue.item_path(pool.FAILED, mover).exists()
+                if superseded:
+                    row.update({"state": "terminal-no-receipt",
+                                "waiting_for": "nothing: the plan is superseded, "
+                                               "so no mover will publish this range"})
+                elif state is not None:
+                    row.update({"state": "unpublished",
+                                "waiting_for": "a landing rate: no copy of the "
+                                               "tier's plans has landed or "
+                                               "declared one"})
+                else:
+                    row.update({"state": "unpublished", "waiting_for": (
+                        "the window's recopy of a failed copy" if failed else
+                        "the window: it publishes this range when the horizon "
+                        "and the tier's room allow")})
+                row["expected_landing_unix"] = None
+                ranges.append(row)
+            path = residency_map.landing_path(root, key)
+            fingerprint = (queue_print, tuple(
+                (row["mover_action_key"], row["state"]) for row in ranges),
+                landing, tuple(rates))
+            cache_key = (str(queue.root), key)
+            if _LANDING_FINGERPRINTS.get(cache_key) == fingerprint and path.exists():
+                continue
+            record = {
+                "schema": residency_map.RESIDENCY_LANDING_SCHEMA_V1,
+                "consumer_action_key": key, "tier_id": tier_id,
+                "manifest_sha256": str(plan["manifest_sha256"]),
+                "written_unix": moment,
+                "landing_bytes_per_s": landing, "landing_basis": landing_basis,
+                "rates_measured_bytes_per_s": sorted(rates),
+                "rate_min_bytes_per_s": min(rates) if rates else None,
+                "rate_max_bytes_per_s": max(rates) if rates else None,
+                "report_latency_s": pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
+                "tier_loop_liveness_s": pool.OFFER_TIMEOUT_S,
+                # What this pass had spent when it composed the record: the
+                # queue and plan reads for every consumer before this one.
+                "publish_s": round(time.monotonic() - began, 4),
+                "ranges": ranges}
+            try:
+                residency_map.write_landing(path, record)
+            except (OSError, residency_map.ResidencyMapError) as exc:
+                _LANDING_FINGERPRINTS.pop(cache_key, None)
+                events.append({"event": "landing-unpublished", "consumer": key,
+                               "tier_id": tier_id, "error": repr(exc)})
+                continue
+            _LANDING_FINGERPRINTS[cache_key] = fingerprint
+    return events
+
+
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
                      now: float | None = None,
                      withdrawn: frozenset[str] | None = None) -> list[dict[str, object]]:
@@ -5630,6 +5882,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # and the consumer on the pool: slower, never wrong.
             published.append({"event": "map-compose-failed", "consumer": key,
                               "error": repr(exc)})
+    published.extend(publish_landing_expectations(
+        queue, tiers=tiers, consumers=cycle_consumers, now=now))
     published.extend(_settle_protected(queue, protection))
     # Second pass binds what this cycle published: the blind pre-publish
     # take already holds the room, so the bind commits no new capacity and

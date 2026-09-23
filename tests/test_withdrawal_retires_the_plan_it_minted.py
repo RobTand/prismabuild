@@ -309,6 +309,25 @@ def test_a_dead_consumers_movers_are_withdrawn_and_its_plan_reaped(
     assert not queue.item_path(pool.READY, queued).exists()
 
 
+def test_a_reaped_plan_takes_its_landing_record_with_it(
+        queue: pool.PoolQueue) -> None:
+    """#989: a dead consumer's ``<consumer>.landing.json`` is not left behind."""
+
+    from prismabuild import residency_map
+
+    plan = _plan(queue, FIRST, label="first")
+    _publish_consumer(queue, FIRST, plan)
+    landing = residency_map.landing_path(queue.residency_fragment_root(), FIRST)
+    landing.parent.mkdir(parents=True, exist_ok=True)
+    landing.write_text("{}")
+    _fail_consumer(queue, FIRST)
+
+    events = tier_loop.withdraw_dead_consumer_movers(queue)
+
+    assert any(event.get("event") == "residency-plan-reaped" for event in events)
+    assert not landing.exists()
+
+
 def test_a_withdrawn_consumer_still_cancels_its_children_before_reaping(
         queue: pool.PoolQueue) -> None:
     """Marking must not hide the plan from the pass that stops its movers."""
