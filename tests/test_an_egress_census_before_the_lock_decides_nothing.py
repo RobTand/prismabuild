@@ -271,6 +271,7 @@ def test_reconcile_leaves_a_file_that_changed_after_its_walk(
     assert not steady.exists()
     assert receipt["entries_deleted"] == 1, receipt
     assert receipt["entries_judged"] == 2, receipt
+    assert receipt["left_since_walk"] == 1, receipt
     assert isinstance(receipt["lock_held_s"], float), receipt
 
 
@@ -292,6 +293,7 @@ def test_reconcile_keeps_a_file_a_fragment_names_after_its_walk(
 
     assert named.exists(), "a file a wanted fragment names went"
     assert receipt["entries_deleted"] == 0, receipt
+    assert receipt["left_since_walk"] == 1, receipt
 
 
 def test_reconcile_skips_before_the_lock_while_a_mover_is_in_flight(

@@ -3585,6 +3585,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         "tokens_released": 0,
         "partials_deleted": 0,
         "unowned_left": 0,
+        "left_since_walk": 0,
         "complete": True,
         "errors": [],
         "host": socket.gethostname(),
@@ -3672,10 +3673,11 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         receipt["census_validate_s"] = round(
             time.perf_counter() - validate_started, 6)
         receipt["entries_judged"] = len(candidates)
-        deleted = bytes_deleted = partials = 0
+        deleted = bytes_deleted = partials = left = 0
         errors: list[str] = list(walk_errors)
         for path, identity, partial in candidates:
             if os.path.normpath(str(path)) in attributed:
+                left += 1   # an owner or a pin named it after the walk
                 continue
             try:
                 info = os.lstat(path)
@@ -3686,7 +3688,8 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                 continue
             if (not statmod.S_ISREG(info.st_mode)
                     or _metadata_version(info) != identity):
-                continue    # changed since the walk: the next pass decides
+                left += 1   # changed since the walk: the next pass decides
+                continue
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -3702,6 +3705,9 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         receipt["bytes_deleted"] = bytes_deleted
         receipt["partials_deleted"] = partials
         receipt["unowned_left"] = unowned_left
+        # Candidates the walk found that the locked re-check kept: a
+        # fragment or pin named them, or the file changed, after the walk.
+        receipt["left_since_walk"] = left
         receipt["errors"] = errors
         receipt["complete"] = not errors
 
