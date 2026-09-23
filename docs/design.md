@@ -7995,7 +7995,11 @@ it stalls instead, its own rung ends it and returns its room. When relief is
 futile and every ranked consumer is blocked, nobody reads and nothing will
 return room. The verdict then exempts nobody on the tier, and `no_progress`
 ends the wait as it did before #1011. The order does not choose which
-consumer that kill falls on.
+consumer that kill falls on. A tier that stays over-committed once no
+consumer is blocked also reports `futile`, every cycle, with one
+`claim-order-eviction-futile` event each: the eight-consumer drain's
+cycles 9 and 10 do. That is not a stuck order, because no ranked consumer
+is blocked, so the verdict keeps its exemptions.
 
 **Cost.** The order adds one commitment census a cycle, which the tier's
 commitment record reuses, so a cycle with no newcomer takes one census as
