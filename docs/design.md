@@ -3341,9 +3341,10 @@ neighbour's local contention only when the CPUs this claim's own free tokens
 would map to are all idle (`per_cpu_busy <= .05`) and none is held by another
 action, in which case the claim proceeds on those disjoint free tokens and
 borrowing is disabled for that decision. Measurements, unbounded demand that
-declares no CPU count, and full-width reservations keep the pressure refusal
-whatever their per-CPU reading says; a learned cheap cost and an all-zero
-reading do not reopen it. Missing, malformed or out-of-range per-CPU evidence
+declares no CPU count, and full-width reservations need the host idle, and
+are judged on busy CPUs and PSI together against the host's own idle baseline
+instead (below); a learned cheap cost and an all-zero reading do not reopen a
+refusal. Missing, malformed or out-of-range per-CPU evidence
 under fresh high pressure is unknown, and unknown refuses. CPU tokens are
 ordinals mapped through the preferred and fallback tiers, so "the CPUs this
 claim would be given" is exactly that mapping; processes outside PrismaBuild
@@ -3353,6 +3354,82 @@ meaning: the current gates do not run, and an ordinary bounded claim on free
 tokens can still be placed, while borrowing and measurement need fresh
 evidence. A local lock serializes each host's adaptive decisions, while the
 shared queue's rename still decides ownership.
+
+**Idle baseline (#997).** "Idle" is what the host itself shows while none of
+the pool's work runs on it, not a fixed fraction of its CPUs. The 5% line
+(1.0 CPU on a 20-CPU GB10) and the PSI 0.10 line refused measurements on a
+Spark whose housekeeping alone reached them: on 2026-09-23 at 12:16Z sparky
+read 0.373 busy CPUs with no pool work (idle Claude Code sessions, containerd,
+dockerd, netdata). `adaptive_cpu.idle_judgement` keeps the host's history in
+`idle-baseline.json` under the host-local admission state, and every fresh
+decision feeds it:
+
+* An *idle sample* is a fresh sample taken with no holder on the host and no
+  holder seen since its interval began. A sample whose interval overlaps a
+  holder's tail measures the holder (`state: holder_tail`) and neither admits
+  nor joins.
+* The *baseline* is the idle samples kept before the current one, at most
+  `IDLE_WINDOW` (256). The window is a storage bound, not a threshold: the
+  rule compares the sample with the baseline's maximum, so on a host whose
+  idle load is stationary an idle sample is refused with probability
+  `1 / (IDLE_WINDOW + 1)` (0.4%), and a refused measurement is judged again
+  on the next pass.
+* A sample *exceeds* when busy CPUs or PSI `some` is above the baseline's
+  maximum. There is no multiplier: the maximum is the largest load the host
+  has shown while idle. Each refusal (`measurement_host_not_idle`,
+  `unbounded_cpu_not_exclusive`) carries the baseline it was judged against:
+  sample count, span, and per field the mean, standard deviation, maximum and
+  `margin` (maximum less mean), next to the current sample and the window
+  bound. An admitted exclusive claim stamps the same record into its holder
+  metadata and its claim record as `idle_baseline`, so measurements can be
+  compared afterwards on the baselines they ran against.
+* A run of samples above the baseline is an *excursion*, judged against the
+  samples before it began, so a sustained foreign load is refused for as long
+  as it runs and not only on its first pass. A run that lasts as long as the
+  samples before it span has outlived what the window remembers, and the
+  host's idle state is taken to have changed. Every idle sample joins the
+  window, the excursion's included.
+* With no idle history nothing about the host is measured yet, and the
+  pre-#997 line judges the sample (`busy_cpus > .05 x CPUs` or `psi_some >=
+  .10`), labelled `basis: unmeasured` with the line it applied; the sample
+  seeds the window, so the next pass is judged against it. This is the same
+  rule as the unmeasured export slot count (#999): with no measurement, the
+  previous value applies and says so. Refusing an unmeasured host outright
+  would delay every first exclusive claim by one pass and protect nothing,
+  since the next pass would be judged against the sample it refused.
+* With holders present the sample measures them too. It is judged against
+  the whole window (`state: holders_present`) and never joins it: above the
+  history it refuses the measurement `measurement_host_not_idle`, as the
+  fixed line did, and otherwise the holders refuse it `measurement_holder`
+  (#982). A full-width reservation beside holders keeps the pre-#997 PSI
+  refusal, because only there can the lending path place it and the
+  baseline cannot say which part of the load is the holders'.
+
+The GPU controller applies the same judgement to a measurement's host pressure
+(`memory_pressure_some`, `memory_pressure_full`, `cpu_pressure_some`, the
+kernel's 10 s PSI averages, so a sample reaches 10 s back for the holder-tail
+test), kept in `gpu-state.json` as `idle_baseline` and keyed to the device,
+with the pre-#997 congestion lines as its unmeasured rule. Its refusals carry
+the baseline too.
+
+**Where each admission threshold comes from.** Every threshold these
+controllers apply, what it is judged against, and why a constant stays where
+one does:
+
+| Threshold | Source | Judged against |
+|---|---|---|
+| Measurement, unbounded and full-width idleness (busy CPUs, PSI `some`) | The host's own idle baseline, above | The largest idle sample; `1/(IDLE_WINDOW+1)` false refusal when stationary |
+| The same, on a host with no idle history (`busy_cpus > .05 x CPUs`, `psi_some >= .10`) | The pre-#997 lines, labelled `basis: unmeasured` | One pass, until the host's first idle sample exists |
+| Full-width reservation beside holders, `psi_some >= .10` | Constant, unchanged | The baseline cannot separate the holders' load from foreign load |
+| GPU measurement host pressure (memory PSI `some`/`full`, CPU PSI `some`) | The same baseline, in `gpu-state.json` | The same |
+| Host saturation, `busy_cpus >= .95 * cpus` | Constant, unchanged | Refuses every CPU claim; out of #997's scope |
+| Ordinary claim PSI gate, `psi_some >= .10` | Constant, unchanged | Only decides whether to look at the claim's own CPUs; the per-CPU proof decides |
+| `IDLE_BUSY_FRACTION` (.05 per CPU) | Constant, owned by #985 | Separates "nobody ran here" from "someone ran here" on one CPU |
+| GPU sharing congestion (memory PSI `some` 1%, `full` .1%, CPU PSI `some` 10%) | Constant, unchanged | Judged with holders present, where a no-holder baseline has nothing to say |
+| GPU host reserve, `max(2 GiB, 2%)` | Constant, unchanged | Derivable from the kernel's `high` watermark (sparky: 196,637 pages, 0.8 GB, 2026-09-23); a 3x looser margin on unified memory is not changed without a served A/B |
+| `STARVATION_FLOOR` (3) | Policy, not derived | Denials before an item may withhold; "small, and less than five" |
+| `WITHHOLD_CEILING_S` (900 s) | Policy, not derived | How long a veto lasts before it keeps its place without blocking; per holder since #924, and the item's own clock only for holders the pool cannot read |
+| Export slots `k` | Derived (#999, below), else `unmeasured` | `ceil(max landing_s / min spacing_s)` |
 
 Every held action begins at its full declared CPU cost. A complete, fresh
 aggregate telemetry interval may lower the estimated cost of a generation
@@ -3389,8 +3466,17 @@ on room the producer reserved with its own claim. A claimed row carrying a
 `produced_output` reference whose sealed environment names
 `PRISMABUILD_PRODUCED_SPOOL_ROOT` is charged, at claim and with its own
 reservation, `k` times the export demand (`adaptive_cpu.EXPORT_DEMAND`, one CPU
-and one GiB), where `k` is `PRISMABUILD_PRODUCED_SPOOL_EXPORT_SLOTS` (default
-1; `0` opts out). The allowance is derived from the sealed request, like the
+and one GiB). `k` is `PRISMABUILD_PRODUCED_SPOOL_EXPORT_SLOTS` when the sealed
+environment declares it (`0` opts out), and otherwise derived (#999) by
+`adaptive_cpu.export_slots` from this host's completed exports of the
+producer's produced-output template: `ceil(max landing_s / min spacing_s)`,
+the longest export landing over the shortest group spacing, which is the
+most exports one producer has in flight. Landing is an export's own wall
+time, and spacing the gap between one producer's successive exports, both
+learned at completion into the host-local `export-rates.json`, the last 32 of
+each per template. Where either side is unmeasured, as on a template's first
+claim, `k` is `DEFAULT_EXPORT_SLOTS` (1). The allowance metadata records which
+(`basis`: `declared`, `measured` with both numbers, or `unmeasured`). The allowance is derived from the sealed request, like the
 #747 `spool_gb` window, but at claim rather than at seal, so already sealed
 producers get it when a runtime carrying it claims them; a producer claimed
 before that keeps no allowance. The last `k` CPUs the claim takes are kept out
@@ -3417,10 +3503,32 @@ beside a measurement it is fitted into the remaining capacity and priced like
 any sibling, as #982 left it. Every refusal of a dependent names its producer
 (`dependent_of`, in the decision and in the denial evidence) and, when the
 allowance did not cover it, why (`allowance`). The allowance covers the host
-kinds `cpu` and `mem_gb` only. A paced export's fill rate
-(`fill_mb_s_pool_side:<tier>`) is still taken from the tier's pool after host
-admission, so the producer's own movers can refuse it
-`tier_reservation_unavailable`; that denial names `dependent_of` too. A
+kinds `cpu` and `mem_gb` only.
+
+**A paced export borrows its family's fill (#999).** A paced export's fill
+rate (`fill_mb_s_pool_side:<tier>`) is taken from the tier's pool after host
+admission, priced at the tier's whole offer, and the producer's own refill
+movers hold that fill while they refill its window. When the pool refuses it
+`tier_reservation_unavailable`, the claim path (`PoolQueue._borrow_family_fill`)
+takes what is free and borrows the rest from fill the producer's family
+holds: the producer's own claim, every mover and egress its residency plan
+publishes (`residency_plan.child_keys`), and its other exports (claim rows
+whose `dependent_of` is the producer). A stranger's tokens are never counted,
+so a foreign paced write at the same ceiling is still refused, and so is the
+export when a stranger holds any of the fill it needs; that refusal names
+`dependent_of` and `family_fill: not_enough_family_fill`. Only the fill kind
+is borrowed. Nothing is reserved for the producer's lifetime: reserving the
+export's whole-offer fill at claim would stop the producer's own movers for
+as long as it runs, the producer waiting on them and they on it. The borrow
+takes no token, so while the export runs the tier's pool traffic can exceed
+its offer by what the family lent, which is the family's own work. The claim
+records it as `tier_fill_borrowed` (per tier: `demand`, `taken_free`,
+`borrowed`, `funded_by`, `lent`), and `finish` adds the lenders that released
+before the export ended and the overcommit they left
+(`lenders_released_before_end`, `overcommit_mb_s`) before the export's own
+tokens go back; the reapers' conclusions do not annotate. Scheduling tier
+bandwidth across a producer's movers and exports belongs in the tier loop's
+window (#905), which is where a successor goes. A
 dependent never holds `gpu`: a demand outside the allowance's kinds is
 `demand_outside_allowance` and takes ordinary admission, where the GPU
 controller refuses any GPU demand beside a measurement `exclusive_holder`.

@@ -210,7 +210,10 @@ def _assert_on_allowance(spool, export_key: str) -> None:
     # sealed demand, and the allowance CPU is out of its own affinity.
     assert _tokens(queue, owner, "cpu") == PRODUCER_DEMAND["cpu"] + 1
     assert _tokens(queue, owner, "mem_gb") == PRODUCER_DEMAND["mem_gb"] + 1
-    assert producer["dependent_allowance"] == {"slots": 1, "cpus": [0], "mem_gb": 1}
+    allowance = dict(producer["dependent_allowance"])
+    # One slot, and the allowance says it was not measured (#999).
+    assert allowance.pop("basis")["basis"] == "unmeasured"
+    assert allowance == {"slots": 1, "cpus": [0], "mem_gb": 1}
     assert producer["allocation"] == {"preferred": CPU_TIERS["preferred"], "fallback": []}
     export = _meta(queue, export_key)
     assert export["funded_by"] == owner
@@ -428,9 +431,14 @@ def test_the_allowance_is_derived_only_from_a_sealed_spool_root(tmp_path) -> Non
 
     root = {adaptive_cpu.SPOOL_ROOT_ENV: "/spool"}
     assert adaptive_cpu.producer_allowance(item({})) is None
-    assert adaptive_cpu.producer_allowance(item(root)) == {"slots": 1, "cpu": 1, "mem_gb": 1}
-    assert adaptive_cpu.producer_allowance(
-        item({**root, adaptive_cpu.EXPORT_SLOTS_ENV: "2"})) == {"slots": 2, "cpu": 2, "mem_gb": 2}
+    def counts(allowance):
+        return {k: v for k, v in allowance.items() if k != "basis"}
+
+    assert counts(adaptive_cpu.producer_allowance(item(root))) == {"slots": 1, "cpu": 1, "mem_gb": 1}
+    assert adaptive_cpu.producer_allowance(item(root))["basis"]["basis"] == "unmeasured"
+    declared = adaptive_cpu.producer_allowance(item({**root, adaptive_cpu.EXPORT_SLOTS_ENV: "2"}))
+    assert counts(declared) == {"slots": 2, "cpu": 2, "mem_gb": 2}
+    assert declared["basis"]["basis"] == "declared"
     for opted_out in ("0", "-1", "x", ""):
         assert adaptive_cpu.producer_allowance(
             item({**root, adaptive_cpu.EXPORT_SLOTS_ENV: opted_out})) is None

@@ -159,6 +159,11 @@ def test_measurement_neither_lends_nor_borrows(rig, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('measurement', True))
     assert claim() is None
     queue.finish(first['action_key'], status='executed', detail={})
+    # The rig's .1 busy CPUs was its holder's load: once the holder is gone
+    # and a sample no longer reaches back into it, the host reads idle as it
+    # did before the holder ran (#997 judges a measurement on that history).
+    clock[0] += 2
+    state['busy_cpus'] = 0.
     measurement = claim()
     assert measurement
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))

@@ -32,7 +32,24 @@ SETTLE_S = 2.0
 MAX_ACTIONS = 256
 FEEDBACK_SAMPLES = 3
 FEEDBACK_WINDOW = 6
+#: The broker's host pressure fields a measurement is judged idle on (#997),
+#: against this host's own idle history (``adaptive_cpu.idle_judgement``).
+IDLE_PRESSURE_FIELDS = ('memory_pressure_some', 'memory_pressure_full', 'cpu_pressure_some')
+#: How far back those fields reach: they are the kernel's PSI ``avg10``
+#: (``gpu_capacity``), a 10 s running average.
+PSI_AVG10_S = 10.0
 GIB = 1024 ** 3
+
+
+def _prior_pressure(current):
+    # The pre-#997 lines, applied to a measurement only while the host has
+    # no idle history; sharing congestion keeps them (see ``decision``).
+    return (current['memory_pressure_some'] >= 1. or current['memory_pressure_full'] >= .1
+            or current['cpu_pressure_some'] >= 10.)
+
+
+_prior_pressure.__doc__ = ('memory_pressure_some >= 1 or memory_pressure_full >= .1 '
+                           'or cpu_pressure_some >= 10')
 
 
 #: ``gpu_capacity.TELEMETRY_MEMORY_ONLY``. Spelled here rather than imported so
@@ -469,9 +486,13 @@ class Controller:
         shape, measurement, exclusive, budget = (
             action_contract(item, demand) if contract is None else contract)
         holders = []
+        # Any holder at all, GPU or not: the idle baseline (#997) keeps only
+        # samples the pool's own work did not load.
+        occupied = False
         for holder in self.ledger.held_dir.iterdir():
             if not holder.is_dir():
                 continue
+            occupied = True
             meta = adaptive_cpu.read_json(holder / METADATA)
             if meta or any(holder.glob('gpu-*')):
                 holders.append((holder, meta))
@@ -520,12 +541,25 @@ class Controller:
         feedback_allowed = False
         sw_cap_exception = None
         members = sorted(f"{holder.name}:{meta.get('admitted_unix')}" for holder, meta in holders)
+        idle = None
         if valid:
+            idle, state['idle_baseline'] = adaptive_cpu.idle_judgement(
+                state.get('idle_baseline'), sample, holders=occupied,
+                identity=device['uuid'], fields=IDLE_PRESSURE_FIELDS, interval_s=PSI_AVG10_S,
+                prior_rule=_prior_pressure)
             reserve = max(2 * GIB, .02 * sample['host_total_bytes'])
-            pressure = (sample['memory_pressure_some'] >= 1.
-                        or sample['memory_pressure_full'] >= .1
-                        or sample['cpu_pressure_some'] >= 10.
-                        or sample['host_available_bytes'] < reserve + demand.get('mem_gb', 0) * GIB)
+            short = sample['host_available_bytes'] < reserve + demand.get('mem_gb', 0) * GIB
+            if measurement:
+                # A measurement needs the host idle, and idle is what this
+                # host shows with nothing of the pool's running (#997).
+                pressure = short or idle['exceeds']
+            else:
+                # Sharing congestion: judged with holders present, where a
+                # no-holder baseline has nothing to say.
+                pressure = (sample['memory_pressure_some'] >= 1.
+                            or sample['memory_pressure_full'] >= .1
+                            or sample['cpu_pressure_some'] >= 10.
+                            or short)
             # ``gpu_idle`` (clocks dropping because nothing runs) is normal.
             # Software power cap, thermal, power-brake, HW slowdown, SW thermal
             # and sync-boost slowdown are congestion even if the sampled power
@@ -574,7 +608,8 @@ class Controller:
                               power_reference_scope=reference_scope,
                               power_reference_source=reference_source,
                               limited=limited,
-                              sw_cap_idle_exception=sw_cap_exception)
+                              sw_cap_idle_exception=sw_cap_exception,
+                              **({'baseline': idle} if measurement else {}))
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):
@@ -591,7 +626,7 @@ class Controller:
             return refuse("sample_invalid_or_stale")
         if measurement and (not valid or not low or sample['foreign_processes']):
             return refuse("measurement_device_not_idle", low=low,
-                          foreign_processes=sample['foreign_processes'])
+                          foreign_processes=sample['foreign_processes'], baseline=idle)
         if holders:
             if (not valid or not low or not shape or not feedback_allowed or state.get('low_samples', 0) < 2
                     or state.get('consumed_sample_id') == sample['sample_id']

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import socket
 import stat
+import statistics
 import time
 import uuid
 
@@ -121,9 +122,41 @@ SPOOL_ROOT_ENV = 'PRISMABUILD_PRODUCED_SPOOL_ROOT'
 EXPORT_SLOTS_ENV = 'PRISMABUILD_PRODUCED_SPOOL_EXPORT_SLOTS'
 #: What ``ProducedSpool.submit_group`` seals for one export.
 EXPORT_DEMAND = {'cpu': 1, 'mem_gb': 1}
-#: One export at a time: an export takes 6-21 s against one group per ~41 s
-#: on the Stage A chain (2026-09-23).  ``EXPORT_SLOTS_ENV=0`` opts out.
+#: The slot count when nothing is measured yet (#999): one export at a time,
+#: labelled ``unmeasured`` in the allowance.  Measured, the count is derived
+#: by :func:`export_slots`; declared, ``EXPORT_SLOTS_ENV`` wins and
+#: ``EXPORT_SLOTS_ENV=0`` opts out.
 DEFAULT_EXPORT_SLOTS = 1
+#: Measured export landings and group spacing per produced-output template
+#: (#999), host-local beside ``profiles.json`` and learned the same way.
+EXPORT_RATES = 'export-rates.json'
+#: How many landings and gaps a template keeps: the memory ``profiles`` keeps
+#: of completions.
+EXPORT_RATE_MEMORY = 32
+
+
+def export_slots(rates, template_sha256):
+    """``(slots, basis)`` for a producer of ``template_sha256`` (#999).
+
+    Little's law with both sides taken at their worst: exports in flight are
+    at most the longest landing over the shortest group spacing, so
+    ``slots = ceil(max landing_s / min spacing_s)``, never below one.  Both
+    come from this host's own completed exports of the template (:func:`
+    learn_export`).  With either side unmeasured the count is
+    :data:`DEFAULT_EXPORT_SLOTS` and the basis says ``unmeasured``.
+    """
+    entry = rates.get(template_sha256) if isinstance(rates, dict) and template_sha256 else None
+    entry = entry if isinstance(entry, dict) else {}
+    landings = [v for v in entry.get('landing_s', []) if type(v) in (int, float) and v > 0]
+    gaps = [v for v in entry.get('spacing_s', []) if type(v) in (int, float) and v > 0]
+    if not landings or not gaps:
+        return DEFAULT_EXPORT_SLOTS, {'basis': 'unmeasured', 'template_sha256': template_sha256,
+                                      'landings': len(landings), 'spacings': len(gaps)}
+    landing, spacing = max(landings), min(gaps)
+    return max(1, math.ceil(landing / spacing)), {
+        'basis': 'measured', 'rule': 'ceil(max landing_s / min spacing_s)',
+        'template_sha256': template_sha256, 'landing_s': round(landing, 3),
+        'spacing_s': round(spacing, 3), 'landings': len(landings), 'spacings': len(gaps)}
 
 
 #: The last sealed request :func:`action_identity` read, as ``(path, action)``
@@ -179,12 +212,15 @@ def dependent_owner(item):
     return owner if _is_key(owner) else None
 
 
-def producer_allowance(item):
+def producer_allowance(item, rates=None):
     """The export allowance this item's sealed environment declares, or ``None``.
 
-    ``{'slots': k, 'cpu': k, 'mem_gb': k}`` for a producer whose sealed
-    environment names a spool root (#985), ``None`` for everything else, for
-    ``EXPORT_SLOTS_ENV=0`` and for anything unreadable or malformed.
+    ``{'slots': k, 'cpu': k, 'mem_gb': k, 'basis': {...}}`` for a producer
+    whose sealed environment names a spool root (#985), ``None`` for
+    everything else, for ``EXPORT_SLOTS_ENV=0`` and for anything unreadable or
+    malformed.  ``k`` is the sealed ``EXPORT_SLOTS_ENV`` when declared, else
+    :func:`export_slots` over ``rates`` (the host's ``EXPORT_RATES``) for the
+    row's produced-output template; ``basis`` says which (#999).
     """
     action = _sealed_request(item)
     if action is None:
@@ -192,11 +228,17 @@ def producer_allowance(item):
     variables = action.get('environment', {}).get('variables', {})
     if not isinstance(variables, dict) or not variables.get(SPOOL_ROOT_ENV):
         return None
-    raw = variables.get(EXPORT_SLOTS_ENV, str(DEFAULT_EXPORT_SLOTS))
-    if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
-        return None
-    slots = int(raw)
-    return {'slots': slots, **{kind: need * slots for kind, need in EXPORT_DEMAND.items()}}
+    raw = variables.get(EXPORT_SLOTS_ENV)
+    if raw is None:
+        ref = item.get('produced_output') if isinstance(item, dict) else None
+        template = ref.get('template_sha256') if isinstance(ref, dict) else None
+        slots, basis = export_slots(rates, template if isinstance(template, str) else None)
+    else:
+        if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
+            return None
+        slots, basis = int(raw), {'basis': 'declared', 'env': EXPORT_SLOTS_ENV}
+    return {'slots': slots, **{kind: need * slots for kind, need in EXPORT_DEMAND.items()},
+            'basis': basis}
 
 
 def counters(cpus):
@@ -466,6 +508,141 @@ def local_telemetry_path(base, action_key):
     return local_state_base(base) / 'telemetry' / f'{action_key}.json'
 
 
+#: The host's own idle history (#997), host-local beside ``cpu-sample.json``.
+IDLE_BASELINE = 'idle-baseline.json'
+IDLE_BASELINE_SCHEMA = 'prismabuild.idle_baseline.v1'
+#: What an idle sample carries, and what a measurement is judged on.
+IDLE_FIELDS = ('busy_cpus', 'psi_some')
+#: How many idle samples a host keeps.  A storage bound, not a decision
+#: threshold: the rule below compares a sample with the largest idle sample
+#: in the window, so on a box whose idle load is stationary a truly idle
+#: sample is refused with probability ``1 / (IDLE_WINDOW + 1)`` (the chance
+#: that it is the largest of ``IDLE_WINDOW + 1`` exchangeable draws), 0.4%
+#: here, and a refused measurement is judged again on the next pass.  The
+#: file is rewritten under the admission lock once per new idle sample, so
+#: the bound also keeps that write to a few kilobytes.
+IDLE_WINDOW = 256
+
+
+def _idle_statistics(samples, field):
+    values = [float(s[field]) for s in samples]
+    mean = sum(values) / len(values)
+    top = max(values)
+    return {'mean': round(mean, 6), 'max': round(top, 6), 'margin': round(top - mean, 6),
+            'stdev': round(statistics.pstdev(values), 6) if len(values) > 1 else 0.}
+
+
+def _judge_idle(verdict, reference, current, fields, prior_rule):
+    """Whether ``current`` is above ``reference``'s maximum on any field.
+
+    With no reference there is no measurement of this host's idle state, and
+    ``prior_rule`` -- the caller's pre-#997 fixed line -- decides, labelled
+    ``basis: unmeasured`` (#997 ruling, as for the unmeasured export slots of
+    #999).  Without a prior rule an unmeasured sample exceeds.
+    """
+    verdict['samples'] = len(reference)
+    verdict['current'] = current
+    if reference:
+        verdict['basis'] = 'measured'
+        verdict['span_s'] = round(reference[-1]['sampled_unix'] - reference[0]['sampled_unix'], 3)
+        for field in fields:
+            verdict[field] = _idle_statistics(reference, field)
+        return any(current[field] > verdict[field]['max'] for field in fields)
+    verdict['basis'] = 'unmeasured'
+    if prior_rule is None:
+        return True
+    verdict['prior'] = prior_rule.__doc__ or getattr(prior_rule, '__name__', 'prior')
+    return bool(prior_rule(current))
+
+
+def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, interval_s=None,
+                   prior_rule=None):
+    """Judge one host sample against the host's own idle history (#997).
+
+    Returns ``(verdict, state)``: ``verdict['exceeds']`` is whether the sample
+    is outside what this host has been observed doing while PrismaBuild ran
+    nothing, with the evidence a refusal records, and ``state`` is the history
+    to persist (unchanged when ``state is`` the returned one).
+
+    * An **idle sample** is a fresh one taken with no holder on the host and
+      no holder seen since its interval began: a sample whose interval
+      overlaps a holder's tail measures that holder, not the host.
+    * The **baseline** is every idle sample kept before this one, less an
+      ongoing excursion: a run of consecutive idle samples each above the
+      baseline's maximum.  The run is judged against the samples before it
+      began, so a sustained foreign load is refused for as long as it runs,
+      not only on its first pass.  A run that has lasted as long as the
+      samples before it span has outlived what the window remembers of the
+      host's earlier state, and the host's idle state is taken to have
+      changed: the whole window becomes its baseline.
+    * A sample **exceeds** when any of ``fields`` (default :data:`IDLE_FIELDS`)
+      is above the
+      baseline's maximum.  No multiplier: the maximum is the largest load
+      this host has shown while idle, and ``margin`` (maximum less mean) is
+      recorded beside the standard deviation so a reader sees it in units of
+      the host's own variation.
+    * With no idle history nothing about this host is measured, and
+      ``prior_rule`` (the caller's pre-#997 fixed line) judges the sample,
+      labelled ``basis: unmeasured``; it seeds the window, so the next idle
+      pass is judged against it.  Without a prior rule it exceeds.
+    * With holders present the sample is judged against the whole window
+      (``state: holders_present``) but never joins it: it measures the
+      holders too, so exceeding says the host is not idle, and not exceeding
+      leaves the holders to refuse an exclusive claim themselves.
+    * Every idle sample joins the window, bounded by :data:`IDLE_WINDOW`.
+
+    ``interval_s`` is how far back the sample's reading reaches, when the
+    sample does not say (the GPU broker's PSI fields are the kernel's 10 s
+    averages).
+    """
+    state = dict(state) if isinstance(state, dict) else {}
+    if state.get('schema') != IDLE_BASELINE_SCHEMA or state.get('identity') != identity:
+        # A changed CPU topology or device is a different host for this purpose.
+        state = {'schema': IDLE_BASELINE_SCHEMA, 'identity': identity, 'samples': []}
+    samples = [s for s in state.get('samples', []) if isinstance(s, dict)
+               and all(type(s.get(k)) in (int, float) and math.isfinite(s[k])
+                       for k in ('sampled_unix',) + tuple(fields))]
+    now = sample.get('sampled_unix')
+    seen = state.get('holders_seen_unix')
+    seen = float(seen) if type(seen) in (int, float) and math.isfinite(seen) else None
+    verdict = {'window_bound': IDLE_WINDOW}
+    current = {field: float(sample[field]) for field in fields}
+    if holders:
+        verdict['state'] = 'holders_present'
+        verdict['exceeds'] = _judge_idle(verdict, samples, current, fields, prior_rule)
+        if type(now) in (int, float) and (seen is None or now > seen):
+            state['holders_seen_unix'] = now
+        return verdict, state
+    started = now - (sample['interval_s'] if interval_s is None else interval_s)
+    if seen is not None and started <= seen:
+        verdict.update(state='holder_tail', exceeds=True, holders_seen_unix=seen,
+                       interval_start_unix=started)
+        return verdict, state
+    prior = [s for s in samples if s['sampled_unix'] < now]
+    run = state.get('excursion_unix')
+    run = float(run) if type(run) in (int, float) and math.isfinite(run) else None
+    reference = prior
+    if run is not None:
+        before = [s for s in prior if s['sampled_unix'] < run]
+        span = (before[-1]['sampled_unix'] - before[0]['sampled_unix']) if before else 0.
+        if before and now - run < span:
+            reference = before
+        else:
+            run = None
+    verdict['state'] = 'idle'
+    exceeds = verdict['exceeds'] = _judge_idle(verdict, reference, current, fields, prior_rule)
+    if run is not None and exceeds:
+        verdict['excursion_s'] = round(now - run, 3)
+    if all(s['sampled_unix'] != now for s in samples):
+        samples.append({'sampled_unix': now, **current})
+        state['samples'] = samples[-IDLE_WINDOW:]
+        if exceeds and reference:
+            state['excursion_unix'] = run if run is not None else now
+        else:
+            state.pop('excursion_unix', None)
+    return verdict, state
+
+
 class Controller:
     def __init__(self, ledger, tiers):
         self.ledger = ledger
@@ -473,6 +650,32 @@ class Controller:
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
         self.base = local_state_base(ledger.base)
         self._host_sample = None
+        self._idle = None
+
+    def idle(self, sample, holders):
+        """This pass's :func:`idle_judgement`, persisted host-local (#997).
+
+        Under the admission lock, like every other file in ``self.base``.  One
+        judgement per sample and holder state: a pass that decides several
+        candidates reads the history once and writes it at most once.
+        """
+        key = (sample.get('sampled_unix'), bool(holders))
+        if self._idle is not None and self._idle[0] == key:
+            return self._idle[1]
+        state = read_json(self.base / IDLE_BASELINE)
+        cpus = len(self.cpus)
+
+        def prior_rule(current):
+            # The pre-#997 lines, applied only while this host has no idle
+            # history to judge against.
+            return current['busy_cpus'] > .05 * cpus or current['psi_some'] >= .10
+        prior_rule.__doc__ = f'busy_cpus > {.05 * cpus:g} (.05 x {cpus} CPUs) or psi_some >= .10'
+        verdict, updated = idle_judgement(state, sample, holders=bool(holders),
+                                          identity=cpus, prior_rule=prior_rule)
+        if updated != state:
+            self.write_state(IDLE_BASELINE, updated)
+        self._idle = (key, verdict)
+        return verdict
 
     def write_state(self, name, value):
         write_json(self.base / name, value)
@@ -677,6 +880,15 @@ class Controller:
         # ownership paths below all need the same answer rather than a second
         # read of the same CAS record.
         shape, measurement = action_identity(item) if identity is None else identity
+        declared = int(demand.get('cpu', 0))
+        unbounded_cpu = not declared
+        # Measurements, unbounded demand and full-width reservations need the
+        # host idle.  "Idle" is judged against the host's own idle history
+        # (#997), which every fresh decision feeds, not a fixed fraction of
+        # the CPUs that housekeeping alone can cross.
+        idle = (self.idle(sample, holders) if fresh else
+                {'state': 'sample_not_fresh', 'exceeds': True})
+        exclusive_need = measurement or unbounded_cpu or declared == len(self.cpus)
         if isinstance(owner, str) and not measurement:
             # A dependent runs on the room its producer reserved (#985).  Host
             # pressure is not its gate: its CPUs are reserved, so nothing the
@@ -698,14 +910,18 @@ class Controller:
                         'active_cpu_cost': 0., 'pending_cpu_cost': 0., 'borrowable_cpus': []}
         if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
             return refuse("host_pressure", fresh=fresh)
-        declared = int(demand.get('cpu', 0))
-        unbounded_cpu = not declared
         # True only when a high "some" was believed because the CPUs this
         # claim would actually be given are idle.  It keeps the proof and the
         # claim's real selection in step: the lending path below can hand a
         # claim a *held* CPU, which that proof never saw.
         pressure_override = False
-        if fresh and sample['psi_some'] >= .10:
+        # The exclusive needs are judged on PSI by the idle baseline below,
+        # which carries ``psi_some``: a pinned neighbour's local contention, or
+        # the host's own housekeeping, is not a reason to refuse them unless it
+        # is above what this host shows while idle (#997).
+        full_width = declared == len(self.cpus) and not measurement and not unbounded_cpu
+        if fresh and sample['psi_some'] >= .10 and (
+                not exclusive_need or (full_width and holders)):
             # System-wide CPU PSI "some" counts any task anywhere waiting for a
             # CPU, so one job pinned to a few cores with more runnable threads
             # than cores holds it high while most of the box is idle (measured:
@@ -727,13 +943,11 @@ class Controller:
                     or any(type(busy) not in (int, float) or not math.isfinite(busy)
                            or busy < 0 or busy > 1 for busy in per_cpu.values())):
                 return refuse("host_pressure_unproven", fresh=fresh)
-            # Fresh high pressure refuses these paths whatever the per-CPU
-            # reading says.  A measurement needs a host it can trust as idle,
-            # unbounded demand has no CPU set the proof could cover, and a
-            # full-width reservation would take the whole box for one action.
-            # A learned cheap cost and an all-zero reading are not evidence of
-            # ownership, so neither reopens this refusal.
-            if measurement or unbounded_cpu or declared == len(self.cpus):
+            if full_width:
+                # Beside holders the baseline cannot say what is foreign, so
+                # a full-width reservation keeps the pre-#997 refusal under
+                # pressure; a learned cheap cost and an all-zero reading do
+                # not reopen it.
                 return refuse("host_pressure", fresh=fresh)
             held = set()
             for holder in holders:
@@ -747,8 +961,15 @@ class Controller:
             if busy:
                 return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
             pressure_override = True
-        if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
-            return refuse("measurement_host_not_idle", fresh=fresh)
+        # With holders present the sample measures them too: above the
+        # host's idle history it refuses here, as the fixed line did, and
+        # otherwise the holder loop below refuses the measurement
+        # ``measurement_holder`` (naming ``isolated_by``, #982).
+        if measurement and (not fresh or idle['exceeds']):
+            return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
+        if full_width and fresh and not holders and idle['exceeds']:
+            # A reservation of every CPU needs the host idle too.
+            return refuse("host_pressure", fresh=fresh, baseline=idle)
         if len(holders) >= MAX_ACTIONS:
             return refuse("max_actions", holders=len(holders))
         # Legacy producers sometimes reserved only GPU/memory. Their children
@@ -756,8 +977,9 @@ class Controller:
         # use, never evidence of zero use. Keep that historical demand intact
         # but serialize it on a freshly idle host until the producer declares
         # an enforceable CPU allocation.
-        if unbounded_cpu and (holders or not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
-            return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh)
+        if unbounded_cpu and (holders or not fresh or idle['exceeds']):
+            return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh,
+                          baseline=idle)
         profiles = read_json(self.base / 'profiles.json')
         recent = read_json(self.base / 'jobs.json')
         next_recent = {}
@@ -871,7 +1093,7 @@ class Controller:
         # test permits only incidental activity, never real foreign load or a
         # competing reservation; PSI pressure was refused before this point.
         full_width_idle = (fresh and not holders and declared == len(self.cpus)
-                           and sample['busy_cpus'] <= .05 * len(self.cpus))
+                           and not idle['exceeds'])
         # Unbounded legacy work already proved the same exclusive idle host.
         if (fresh and not unbounded_cpu and not full_width_idle
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
@@ -926,6 +1148,9 @@ class Controller:
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
                 'dependent_allowance': dict(allowance) if allowance else None,
+                # What an exclusive admission was judged idle against, so
+                # measurements can be compared on the baselines they ran on.
+                'idle_baseline': idle if exclusive_need and fresh else None,
                 'admitted_unix': now,
                 'preferred_borrow': preferred_borrow,
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
@@ -971,6 +1196,46 @@ class Controller:
                 or current.get('sampled_unix') != metadata.get('sampled_unix')):
             return
         self.write_state('last-borrow.json', previous or {})
+
+
+def learn_export(ledger, template_sha256, owner, published_unix, landing_s):
+    """Remember one landed export of ``template_sha256`` (#999).
+
+    ``landing_s`` is the export's own wall time; ``published_unix`` its row's
+    publication, whose gap from the same producer's previous export is one
+    group spacing.  Kept per template, ``EXPORT_RATE_MEMORY`` of each, under
+    the admission lock and never waited for: a busy box learns it next time.
+    """
+    if (not isinstance(template_sha256, str) or not _is_key(owner)
+            or not all(type(v) in (int, float) and math.isfinite(v) and v > 0
+                       for v in (published_unix, landing_s))):
+        return False
+    tiers = read_json(ledger.base / 'cpu-map.json')
+    if not tiers:
+        return False
+    controller = Controller(ledger, tiers)
+    try:
+        with controller.locked():
+            rates = read_json(controller.base / EXPORT_RATES)
+            entry = dict(rates.get(template_sha256) or {})
+            last = dict(entry.get('last_published') or {})
+            previous = last.get(owner)
+            if type(previous) in (int, float) and published_unix <= previous:
+                return False
+            if type(previous) in (int, float):
+                entry['spacing_s'] = (list(entry.get('spacing_s', []))
+                                      + [published_unix - previous])[-EXPORT_RATE_MEMORY:]
+            entry['landing_s'] = (list(entry.get('landing_s', []))
+                                  + [landing_s])[-EXPORT_RATE_MEMORY:]
+            last[owner] = published_unix
+            entry['last_published'] = dict(sorted(last.items(), key=lambda x: x[1])[-EXPORT_RATE_MEMORY:])
+            entry['learned_unix'] = time.time()
+            rates[template_sha256] = entry
+            rates = dict(sorted(rates.items(), key=lambda x: x[1].get('learned_unix', 0))[-512:])
+            controller.write_state(EXPORT_RATES, rates)
+    except AdmissionBusy:
+        return False
+    return True
 
 
 def record_completion(ledger, item, telemetry):
