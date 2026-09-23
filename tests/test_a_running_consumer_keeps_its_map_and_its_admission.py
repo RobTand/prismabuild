@@ -250,7 +250,10 @@ def test_a_newcomer_cannot_take_the_room_a_running_consumers_current_needs(
              if event.get("event") == "window-gated"
              and event.get("consumer") == NEWCOMER]
     assert gated, "the newcomer was not gated"
-    assert {event.get("reason") for event in gated} == {"joint-fit-stall"}
+    # Both gates refuse (44 of 40 on the minimums; the capture's footprint
+    # beside the newcomer's 30 on the commitment), and since #907 the
+    # commitment names it.
+    assert {event.get("reason") for event in gated} == {"joint-commitment-stall"}
 
 
 def test_a_running_consumer_is_never_an_admission_newcomer(

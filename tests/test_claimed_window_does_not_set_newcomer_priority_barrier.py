@@ -26,8 +26,17 @@ def advanced_consumer(queue, *, key, rank):
 
 
 def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tmp_path):
+    """The stalled claimed window sets no barrier for a lead that fits beside it.
+
+    The 40 GiB holder is an orphan -- its receipt names a consumer that is
+    gone -- so the admission commitment (#907) counts it as room eviction
+    can make: the claimed window's 44 GiB footprint and the lead's 3 fit the
+    60.  The joint-fit gate still counts it held, so the claimed window
+    stalls on its 22 GiB current while the lead publishes into the 20 free.
+    """
     queue = base._queue(tmp_path, capacity_gib=60)
     assert queue.tier_ledger(base.TIER).acquire('e' * 64, {'stage_gib': 40})
+    queue.record_move('e' * 64, {'consumer_action_key': 'd' * 64})
     high = 'f' * 64
     plan = advanced_consumer(queue, key=high, rank=0)
     low = priority.publish_consumer(queue, '1' * 64, gib=3, priority=-10)
@@ -44,6 +53,28 @@ def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tm
     # Existing larger-window credit gate was not bypassed to make this pass.
     assert all(not queue.item_path(base.pool.READY, phase['mover_row']['action_key']).exists()
                for phase in plan['phases'])
+
+
+def test_a_lead_waits_for_the_footprint_of_a_window_a_static_holder_starves(tmp_path):
+    """The same claimed window beside a holder nothing can evict (#907).
+
+    The 40 GiB holder has no receipt, so no eviction returns it, and the
+    claimed window's 44 GiB footprint already exceeds the 20 GiB left: the
+    tier is over-committed, and every newcomer waits until it is not,
+    whatever its priority.  The lead is refused on the commitment -- not on
+    a priority barrier, which the claimed window still does not set.
+    """
+    queue = base._queue(tmp_path, capacity_gib=60)
+    assert queue.tier_ledger(base.TIER).acquire('e' * 64, {'stage_gib': 40})
+    high = 'f' * 64
+    advanced_consumer(queue, key=high, rank=0)
+    low_key = '1' * 64
+    low = priority.publish_consumer(queue, low_key, gib=3, priority=-10)
+    events = priority.cycle(queue, tmp_path)
+    assert not queue.item_path(base.pool.READY, low).exists()
+    reasons = {e.get('reason') for e in events
+               if e.get('event') == 'window-gated' and e.get('consumer') == low_key}
+    assert reasons == {'joint-commitment-stall'}, events
 
 
 def test_claimed_window_cannot_be_deferred_by_ready_newcomer_priority_barrier(tmp_path):

@@ -192,7 +192,9 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     assert len(gated) == 1
     gated_consumer = CONSUMER_B if first_consumer == CONSUMER_A else CONSUMER_A
     assert gated[0]["consumer"] == gated_consumer
-    assert gated[0]["reason"] == "joint-fit-stall"
+    # Both gates refuse, and since #907 the commitment names it: no
+    # eviction admits the second window while the first is running.
+    assert gated[0]["reason"] == "joint-commitment-stall"
     assert gated[0]["permanent"] is False
     # The wedge interleaving is unreachable through the policy: the gated
     # consumer has no published mover, so no joint hold can form.
