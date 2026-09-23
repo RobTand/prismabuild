@@ -326,6 +326,10 @@ def test_an_ended_owner_is_invalidated_and_the_mover_is_not_republished(
     assert timings["thread_seconds"]["owner_judgement"]["calls"] == 1
     assert timings["outcomes"].get("replaced_ended_owner") == 1, (
         timings["outcomes"])
+    # The owners' locks are held once per arbitration, and the hold is
+    # recorded: at the adoption proof and at publication, or at publication.
+    held = timings["thread_seconds"]["owner_locks_held"]["calls"]
+    assert held == (2 if step == "adopt" else 1), held
 
 
 @pytest.mark.parametrize("step", STEPS)

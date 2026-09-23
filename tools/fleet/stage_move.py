@@ -777,11 +777,11 @@ class _PhaseClock:
     (``pace_wait``, ``copy_read``, ``copy_write``, ``hash``, ``fsync``) are
     added once per entry; the publisher's (``adopt_proof``,
     ``publish_decide``, ``ownership_lock_wait``, ``ownership_lock_held``,
-    ``publish_poll_sleep``, and ``owner_judgement`` for a divergent name's
-    owners, #966) once per call.  ``outcomes`` counts how each entry ended:
-    adopted before any copy, published by its own rename, adopted at
-    publication after copying, or -- a name every owner of which had ended
-    -- replaced at publication.
+    ``publish_poll_sleep``, and, for a divergent name, ``owner_judgement``
+    and ``owner_locks_held``, #966) once per call.  ``outcomes`` counts how
+    each entry ended: adopted before any copy, published by its own rename,
+    adopted at publication after copying, or -- a name every owner of which
+    had ended -- replaced at publication.
     """
 
     def __init__(self) -> None:
@@ -1330,6 +1330,9 @@ class _StagedPublisher:
                                f"owner mover {key[:12]}'s transition lock "
                                f"is held")
                         return
+                taken = time.perf_counter()
+                held.callback(lambda: self.clock.add(
+                    "owner_locks_held", time.perf_counter() - taken))
                 if pending:
                     with self.clock.timing("owner_judgement"):
                         rows = self._judge_owners(set(pending))
