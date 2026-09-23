@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 import socket
 import sys
 
@@ -36,7 +37,9 @@ import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
 import deferred_release as dr  # noqa: E402
+import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
+import pbstatus  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _charged, _commit, _entry, _publish_consumer, _queue, _run_consumer,
     _template,
@@ -316,3 +319,89 @@ def test_a_retained_batch_has_nothing_to_release(tmp_path: Path) -> None:
         po.release_origin_consumer(queue, committed["ref"],
                                    consumer_action_key=fx._hexkey("any"), by="op")
     assert path.exists()
+
+
+# -- reporting blocked batches -------------------------------------------------
+
+
+def test_the_blocked_listing_names_each_dead_holder_and_its_exact_remedy(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """``pbstatus --blocked-origins`` lists only the batches no live consumer
+    will free, and its release command frees them as printed.
+
+    Three batches: one held by a withdrawn consumer alone (blocked); one held
+    by a failed consumer and a queued one (waiting, not blocked); one whose
+    failed consumer was superseded by a queued declared successor (waiting).
+    """
+
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    _pbrun_env(tmp_path, queue, monkeypatch)
+    batches = {}
+    for seed in ("blocked", "mixed", "handed"):
+        instance, path, committed = _commit(queue, template, seed)
+        queue.finish(instance["owner_action_key"], status="executed")
+        batches[seed] = (instance, path, committed["ref"])
+
+    def declare(seed: str, key: str) -> None:
+        po.declare_origin_consumer(queue, batches[seed][2], consumer_action_key=key)
+
+    gone, dead, live = fx._hexkey("gone"), fx._hexkey("dead"), fx._hexkey("live")
+    first, second = fx._hexkey("first"), fx._hexkey("second")
+    declare("blocked", gone)
+    _publish_consumer(queue, gone)
+    queue.withdraw(gone, reason="gave up", signal_child=False)
+    for seed, key in (("mixed", dead), ("handed", first)):
+        declare(seed, key)
+        _publish_consumer(queue, key)
+        _run_consumer(queue, key, "failed")
+    declare("mixed", live)
+    _publish_consumer(queue, live)
+    declare("handed", second)
+    _publish_consumer(queue, second)
+    ae.file_supersession(queue, first, new=second, new_kind=ae.PRODUCER_KEY)
+
+    def listing() -> tuple[int, dict]:
+        capsys.readouterr()
+        code = pbstatus.main(["--blocked-origins", "--queue-root", str(queue.root)])
+        return code, json.loads(capsys.readouterr().out)
+
+    code, before = listing()
+    assert code == 0 and before["complete"] is True and before["unreadable"] == []
+    assert before["schema"] == pbstatus.BLOCKED_ORIGINS_SCHEMA_V1
+    [row] = before["blocked"]
+    _instance, path, ref = batches["blocked"]
+    assert (row["ref"], row["bytes"], row["holding"]) == (ref, path.stat().st_size, [gone])
+    assert row["consumers"] == [{"action_key": gone, "state": "withdrawn"}]
+    assert row["reported"] is False, "the tick has not run"
+    [remedy] = row["remedies"]
+    assert (remedy["action_key"], remedy["state"]) == (gone, "withdrawn")
+    assert remedy["resubmit"].startswith(f"pbrun.py --priority -10 --supersedes {gone} ")
+
+    stalls = {event["ref"]["owner_action_key"] for event in _events(queue, STALLED)}
+    assert batches["blocked"][2]["owner_action_key"] in stalls
+    assert batches["mixed"][2]["owner_action_key"] in stalls, (
+        "the tick reports a failed holder beside a live one; the listing does not")
+    assert listing()[1]["blocked"][0]["reported"] is True
+
+    session = pbmcp.Session(queue_root=queue.root, cas_root=tmp_path / "cas",
+                            repo_link=tmp_path / "repo")
+    body = session.call("pb_blocked_origins")
+    assert body["census_complete"] is True
+    assert json.loads(json.dumps(body["blocked"])) == listing()[1]["blocked"]
+
+    # The release command runs as printed, save the reason.
+    argv = shlex.split(remedy["release"])
+    assert argv[0] == "pbrun.py" and argv[-1] == "<why>"
+    answer = _pbrun(monkeypatch, capsys, *argv[1:-1], "abandoned band")
+    assert (answer["released"], answer["state"]) == (True, "withdrawn")
+    assert listing()[1]["blocked"] == []
+    [retired] = _events(queue, RETIRED)
+    assert retired["ref"] == ref and not path.exists()
+
+    # A declaration it cannot read is named, and the listing says it is partial.
+    broken = po._consumers_dir(queue.root, batches["mixed"][0], "b1") / f"{live}.json"
+    broken.write_text("{")
+    code, partial = listing()
+    assert code == pbstatus.EXIT_INCOMPLETE and partial["complete"] is False
+    assert partial["blocked"] == [] and len(partial["unreadable"]) == 1

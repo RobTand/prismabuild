@@ -4953,11 +4953,31 @@ itself. A batch retires once every declared consumer is `succeeded`,
 `superseded` or `released`, with the same delete as above. The other
 declared consumers still hold it.
 
-A batch whose non-succeeded consumers are all `failed` or `withdrawn` with
-neither remedy is blocked. Its stall line names each consumer's terminal
-state, and `superseded_by` where a supersession did not apply, once per
-change. That line and the remedies above are how the leak is found and
-cleared.
+A batch is *blocked* when every consumer still holding it (every declared
+consumer that is not `succeeded`, `superseded` or `released`) is `failed` or
+`withdrawn`: nothing queued or running will free it. The stall line fires
+earlier, as soon as any holding consumer has failed, so it also covers a
+batch that a live consumer still holds; that batch is waiting, not blocked.
+The stall line names each consumer's terminal state, and `superseded_by`
+where a supersession did not apply, once per change, and its bytes stay
+identical to #914's.
+
+`pbstatus --blocked-origins` lists the blocked batches at any time, so the
+leak does not scroll away with the log. It reads the same records the tick
+does through `produced_output.blocked_origin_batches`, takes no lock and
+writes nothing. It skips a batch that is retiring, reclaimed or without a
+declared consumer, and one held for an unreleased deferred consumer (#913),
+which is waiting. Each entry carries the batch's `ref` and `bytes`, every
+declared consumer's resolved state, the holding keys, `reported` (whether
+the entry carries the tick's report memo) and, per holding consumer,
+`remedies`: the exact `pbrun --release-origin-consumer` command, and the
+`--supersedes` resubmission with the consumer's own options and command left
+as placeholders. The remedies are computed when the listing is printed and
+never stored in the event or the entry. A record it cannot read goes to
+`unreadable`, `complete` turns false and the command exits 3; if the deferred
+holds cannot be read, it lists nothing, because no batch can then be told
+apart from one waiting for a release. The MCP tool `pb_blocked_origins`
+serves the same reader.
 
 **Where it runs.** Only dl380g10 runs the tiers role. There `/mnt/shared` is
 the local ZFS dataset, so the tick stats origin paths as they are written;
@@ -4977,7 +4997,8 @@ Limits:
   different batch of the same producer, for example after the producer was
   retried, leaves the first batch's declaration to an operator release.
 - The stall line is logged once per change. A batch that stays blocked is
-  not logged again until something about it changes.
+  not logged again until something about it changes; `pbstatus
+  --blocked-origins` lists it until it is freed.
 - A consumer submitted by a `pbrun` older than this change files no
   declaration, and the orphan sweep can delete a consumed batch under it once
   the producer is dead. Only a producer running this change can commit a
@@ -7266,7 +7287,8 @@ the per-plan cursor join from the same census, adding the full consumer key
 and the progress record's own timestamp for the accepted phase. Both keep
 the census's own completeness under its own name beside the envelope's,
 because "the mount answered" and "every record answered" are different
-facts.
+facts. `pb_blocked_origins` serves `pbstatus --blocked-origins`'s reader the
+same way, with its completeness as `census_complete` (#926).
 
 `pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
 the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.

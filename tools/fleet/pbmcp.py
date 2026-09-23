@@ -1778,6 +1778,30 @@ class Session:
             "notes": blob.get("notes"),
         }
 
+    # -- pb_blocked_origins ------------------------------------------------
+
+    def pb_blocked_origins(self, call: Call) -> dict:
+        """The consumed origin batches only an operator can free (#926).
+
+        ``pbstatus --blocked-origins``'s own reader, served whole: a batch is
+        blocked when every declared consumer still holding it failed or was
+        withdrawn, and each such consumer comes with the release and
+        resubmit-with-supersede commands.  ``census_complete`` is false when
+        a record could not be read; ``unreadable`` names them.
+        """
+
+        blob = call.read(
+            "blocked-origins",
+            lambda: pbstatus.read_blocked_origins(self.queue_root))
+        blob = blob if isinstance(blob, Mapping) else {}
+        return {
+            "queue_root": str(self.queue_root),
+            "blocked_origins_schema": blob.get("schema"),
+            "census_complete": blob.get("complete"),
+            "blocked": blob.get("blocked"),
+            "unreadable": blob.get("unreadable"),
+        }
+
     # -- pb_cursors --------------------------------------------------------
 
     def pb_cursors(self, call: Call, *, key_prefix: str | None = None) -> dict:
@@ -2400,6 +2424,19 @@ TOOLS: tuple[dict, ...] = (
             },
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "pb_blocked_origins",
+        "description": "Consumed origin batches (#914) that only an operator "
+                       "can free: every declared consumer still holding the "
+                       "batch failed or was withdrawn. Each such consumer is "
+                       "listed with its state, any supersession that did not "
+                       "apply, and the two remedies: the exact pbrun "
+                       "--release-origin-consumer command, and the "
+                       "resubmit-with---supersedes form. Read-only and "
+                       "deadline-bounded; check `census_complete`.",
+        "inputSchema": {"type": "object", "properties": {},
+                        "additionalProperties": False},
     },
 )
 

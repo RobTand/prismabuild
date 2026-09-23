@@ -5835,6 +5835,109 @@ def _unfiled_report(instance: Mapping[str, object], batch_id: str,
     return event
 
 
+def blocked_origin_batches(queue) -> dict[str, list]:
+    """The consumed batches held only by consumers that ended (#926), read-only.
+
+    A batch is *blocked* when every declared consumer still holding it is
+    ``failed`` or ``withdrawn``: nothing that is queued or running will
+    release it, and it waits for a superseding resubmission or an operator
+    release (`release_origin_consumer`). The tick reports that once per
+    change; this reads the same records again, for a listing that does not
+    scroll away.
+
+    It scans the produced-output scopes as `origin_retirement_tick` does,
+    takes no lock and writes nothing. A batch that is retiring, reclaimed,
+    or has no declared consumer is not listed; neither is one held for a
+    deferred consumer's release (#913), which is waiting, not blocked.
+    Returns ``{"blocked": [...], "unreadable": [...]}``. Each blocked entry
+    carries the batch's ``ref`` and ``bytes``, every declared consumer's
+    state as the tick resolves it (`_resolved_consumers`), the ``holding``
+    ones, and ``reported``: whether the entry carries the tick's report
+    memo.
+    """
+
+    from . import action_edges
+
+    blocked: list[dict[str, object]] = []
+    unreadable: list[str] = []
+    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    try:
+        owners = _scope_owners(scopes_root)
+    except FileNotFoundError:
+        return {"blocked": blocked, "unreadable": unreadable}
+    except OSError as exc:
+        return {"blocked": blocked, "unreadable": [f"output scopes: {exc}"]}
+    holds: set[tuple[str, str]] | None = None
+    for owner in owners:
+        try:
+            scopes = sorted(child for child in (scopes_root / owner).iterdir()
+                            if child.is_dir())
+        except OSError as exc:
+            unreadable.append(f"{owner[:12]}: {exc}")
+            continue
+        for scope in scopes:
+            where = f"{owner[:12]}/{scope.name}"
+            try:
+                commitments = _read_commitments(scope / "commitments.json")
+            except ProducedOutputError as exc:
+                unreadable.append(f"{where}: {exc}")
+                continue
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            due = [(batch_id, entry) for batch_id, entry in sorted(batches.items())
+                   if isinstance(entry, Mapping)
+                   and entry.get("origin_only") is True
+                   and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
+                   and not entry.get("origin_reclaimed")
+                   and not entry.get("retiring")]
+            if not due:
+                continue
+            try:
+                instance = validate_instance(json.loads(
+                    (scope / "instance.json").read_text()))
+            except (OSError, ValueError) as exc:
+                unreadable.append(f"{where}: {exc}")
+                continue
+            if holds is None:
+                try:
+                    holds = action_edges.held_producer_batches(queue)
+                except (OSError, ValueError) as exc:
+                    # Without the holds no batch can be told apart from one
+                    # waiting for a deferred release; list none rather than
+                    # all of them.
+                    unreadable.append(f"deferred holds: {exc}")
+                    return {"blocked": [], "unreadable": unreadable}
+            if _held_for_deferred(instance, holds):
+                continue
+            for batch_id, entry in due:
+                try:
+                    ref = origin_batch_ref(
+                        instance, batch_id=batch_id,
+                        manifest_digest=str(entry["manifest_digest"]))
+                    checked_ref = _checked_origin_ref(ref)
+                    declared = _declared_consumers(
+                        queue.root, instance, batch_id, checked_ref)
+                    if not declared:
+                        continue
+                    consumers = _resolved_consumers(
+                        queue, instance, batch_id, checked_ref, declared)
+                    total = sum(_check_class_bytes(
+                        entry.get("class_bytes"),
+                        where=f"committed batch {batch_id!r}").values())
+                except (ProducedOutputError, KeyError, ValueError) as exc:
+                    unreadable.append(f"{where}/{batch_id}: {exc}")
+                    continue
+                holding = [item for item in consumers
+                           if item["state"] not in _RESOLVED_CONSUMER_STATES]
+                if holding and all(item["state"] in _TERMINAL_CONSUMER_STATES
+                                   for item in holding):
+                    blocked.append({
+                        "ref": ref, "bytes": total, "consumers": consumers,
+                        "holding": [str(item["action_key"]) for item in holding],
+                        "reported": "retirement_report" in entry})
+    return {"blocked": blocked, "unreadable": unreadable}
+
+
 def origin_retirement_tick(queue) -> list[dict[str, object]]:
     """Retire the consumed origin batches whose time has come (#914).
 
@@ -6972,6 +7075,7 @@ __all__ = [
     "reclaim_origin",
     "declare_origin_consumer",
     "release_origin_consumer",
+    "blocked_origin_batches",
     "origin_retirement_tick",
     "ORIGIN_LIFETIME_RETAIN",
     "ORIGIN_LIFETIME_CONSUMED",
