@@ -24,12 +24,20 @@ changed must:
 And a change must still be seen: a receipt filed and a fragment written
 between two cycles are read by the next one.
 
+What the loop keeps is handed to every later cycle, so it must stay what is
+on disk: after several cycles every kept fragment and receipt equals a fresh
+parse of its file.  And a receipt directory that cannot be read is skipped
+and named on the cycle's record, as the plain read skipped it; it does not
+fail every cycle, which would stop the windows and landing records the
+loop publishes.
+
 Nothing here touches the live queue, a real stage root or a real device.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -43,6 +51,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
+import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 #: CPU seconds one steady cycle may take at this shape.  Derived from the
@@ -89,15 +98,27 @@ def _shape() -> argparse.Namespace:
         files_per_range=64, ready_noise=30, claimed_noise=28)
 
 
+def _small_shape() -> argparse.Namespace:
+    """The same parts at a handful each, for what is not about width."""
+
+    return argparse.Namespace(
+        done=5, failed=2, withdrawn=2, receipts=10, passes=3,
+        empty_dirs=2, small_dirs=1, big_fragments="20",
+        produced_fragment_dirs=2, live_consumers=2, phases=3,
+        files_per_range=4, ready_noise=2, claimed_noise=2)
+
+
 class _Loop:
     """A tmp_path queue and stage, and the loop's own kept reads."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path,
+                 shape: argparse.Namespace | None = None) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
         self.queue.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
-        self.counts = bench.build_queue(self.queue, self.stage, _shape())
+        self.counts = bench.build_queue(self.queue, self.stage,
+                                        shape or _shape())
         self.receipts = tier_loop.ReceiptCache()
 
     def cycle(self) -> list[dict[str, object]]:
@@ -229,3 +250,81 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
     kept = loop.receipts.census.namespaces.get(str(root / namespace))
     assert kept is not None
     assert [name for name, _document in kept[1]] == [late]
+
+
+def _write_late_fragment(loop: _Loop, name: str) -> None:
+    root = loop.queue.residency_fragment_root()
+    namespace = sorted(entry.name for entry in os.scandir(root)
+                       if entry.is_dir() and len(entry.name) == 64)[0]
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": namespace,
+        "mover_action_key": bench._key(name),
+        "tier_id": bench.TIER, "stage_root": str(loop.stage),
+        "manifest_sha256": "a" * 64,
+        "entries": {
+            residency_map.residency_map_key(str(loop.stage / name), 0): {
+                "stage_path": str(loop.stage / name), "bytes": 1,
+                "sha256": "b" * 64, "offset": 0}}})
+
+
+def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
+    """Every kept document equals a fresh parse of its file, cycles later.
+
+    The kept census documents and receipts are the objects every later
+    cycle is handed; a step that changed one in place would change what
+    every following cycle reads without touching the file.
+    """
+
+    loop.cycle()
+    loop.cycle()
+    loop.queue.record_move(bench._key("kept-receipt"), {
+        "tier_id": bench.TIER, "unix": time.time(), "complete": True})
+    _write_late_fragment(loop, "kept-fragment")
+    loop.cycle()
+    loop.cycle()
+    census = loop.receipts.census
+    assert len(census.fragments) >= 100, len(census.fragments)
+    for key, (_version, document) in census.fragments.items():
+        with open(key) as stream:
+            fresh = residency_map.validate_fragment(json.load(stream))
+        assert document == fresh, key
+        paths = census.paths_of(document)
+        if paths is not None:
+            assert paths == stage_release._fragment_stage_paths(fresh), key
+    remembered = {id(document) for _version, document
+                  in census.fragments.values()}
+    assert census.namespaces
+    for directory, (_stamp, found, _files) in census.namespaces.items():
+        for mover, document in found:
+            assert id(document) in remembered, (directory, mover)
+    receipts = loop.queue.root / tier_loop.MOVER_RECEIPTS
+    kept = loop.receipts.records._directories[str(receipts)][1]
+    assert len(kept) >= 6000, len(kept)
+    for name, (_version, record) in kept.items():
+        assert record == pool._read_json(receipts / name), name
+
+
+def test_an_unreadable_receipt_directory_is_skipped_and_named(
+        tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode")
+    small = _Loop(tmp_path, _small_shape())
+    prewarm = small.queue.root / pool.PREWARM
+    prewarm.mkdir(parents=True, exist_ok=True)
+    small.cycle()
+    assert tier_loop.LAST_CYCLE["completed"] is True
+    assert not tier_loop.LAST_CYCLE.get("receipts_unreadable")
+    before = small.cycle()[0]["fill_records"]
+    prewarm.chmod(0)
+    try:
+        small.cycle()
+        recorded = tier_loop.LAST_CYCLE
+        assert recorded["completed"] is True
+        assert list(recorded["receipts_unreadable"]) == [str(prewarm)], (
+            recorded.get("receipts_unreadable"))
+    finally:
+        prewarm.chmod(0o755)
+    after = small.cycle()[0]["fill_records"]
+    assert not tier_loop.LAST_CYCLE.get("receipts_unreadable")
+    assert after == before
