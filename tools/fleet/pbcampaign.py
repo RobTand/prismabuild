@@ -1192,7 +1192,9 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
             "residency_tier": policy["residency_tier"],
             "residency_ram": policy["residency_ram"],
             "residency_mover_readers": policy["mover_readers"],
-            "residency_mover_mem_gb": policy["mover_mem_gb"]})
+            "residency_mover_mem_gb": policy["mover_mem_gb"],
+            "residency_prefetch_depth_gib": policy.get("prefetch_depth_gib"),
+            "residency_read_mb_s": policy.get("read_mb_s")})
         tier = None
         movement_receipts = None
         rows = []

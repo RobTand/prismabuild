@@ -6360,7 +6360,10 @@ R12-shaped R13 beside R12 was refused at 413 MB/s (242 GiB) and admitted at
 and `--residency-read-mb-s` seal a `reader` block on the residency plan
 (`prefetch_depth_bytes`, `read_mb_s`), separate from the memory reservation.
 A deferred submission (#913) carries both as optional publication options, so
-a record filed before #909 still releases, undeclared. The tier loop prices:
+a record filed before #909 still releases, undeclared. A logical campaign
+declares them once for every child, as the optional `prefetch_depth_gib` and
+`read_mb_s` fields of its `task_data_manifest` policy; a policy without them
+freezes the same parent identity as before. The tier loop prices:
 
 | Term | First of | Basis names |
 |---|---|---|

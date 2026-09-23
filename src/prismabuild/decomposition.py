@@ -449,10 +449,17 @@ def validate_common_spec(value: object) -> dict[str, Any]:
     }
 
 
+#: The reader's declaration (#909), both optional: a policy without them
+#: validates, and freezes its parent identity, exactly as before.
+_TASK_DATA_READER_KEYS = frozenset({"prefetch_depth_gib", "read_mb_s"})
+
+
 def validate_task_data_policy(value: object) -> dict[str, Any]:
+    declared = (_TASK_DATA_READER_KEYS & set(value)
+                if isinstance(value, Mapping) else set())
     policy = pb._exact_mapping(value, keys={
         "schema", "payload_field", "mount_prefix", "residency_tier",
-        "residency_ram", "mover_readers", "mover_mem_gb"},
+        "residency_ram", "mover_readers", "mover_mem_gb", *declared},
         where="task data manifest policy")
     if policy["schema"] != TASK_DATA_MANIFEST_SCHEMA_V1:
         pb._fail("unsupported task data manifest policy schema")
@@ -473,9 +480,20 @@ def validate_task_data_policy(value: object) -> dict[str, Any]:
         "produced_by": {}, "annotations": {}, "mount_prefix": prefix,
         "entries": [{"path": prefix + "/validation", "offset": 0, "bytes": 1, "sha256": None}],
         "entry_count": 1, "total_bytes": 1})
+    # Each child's consumer declares its reading as pbrun's
+    # --residency-prefetch-depth-gib and --residency-read-mb-s would.
+    reader = {}
+    if "prefetch_depth_gib" in policy:
+        reader["prefetch_depth_gib"] = pb._nonnegative_integer(
+            policy["prefetch_depth_gib"], where="task data prefetch depth")
+    if "read_mb_s" in policy:
+        reader["read_mb_s"] = pb._nonnegative_integer(
+            policy["read_mb_s"], where="task data read rate")
+        if reader["read_mb_s"] < 1:
+            pb._fail("task data read rate must be positive")
     return {"schema": TASK_DATA_MANIFEST_SCHEMA_V1, "payload_field": field,
             "mount_prefix": prefix, "residency_tier": tier, "residency_ram": ram,
-            "mover_readers": readers, "mover_mem_gb": memory}
+            "mover_readers": readers, "mover_mem_gb": memory, **reader}
 
 
 def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -> dict[str, Any] | None:

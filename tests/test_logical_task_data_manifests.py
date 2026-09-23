@@ -174,3 +174,39 @@ def test_prepared_membership_reuses_one_roster_hash_and_preserves_wire_bytes(tmp
         assert dc.document_bytes(prepared.membership(ordinal)) == dc.document_bytes(expected)
         assert [task['id'] for task in prepared.envelope(ordinal)['tasks']] == task_ids
     assert seen == ['roster']
+
+
+def _child_plans(fixture, group):
+    plans = [residency_plan.read(fixture['queue'], child['action_key'])
+             for child in group['children']
+             if child['params'].get('data_manifest') is not None]
+    assert plans
+    return plans
+
+
+def test_an_undeclared_policy_seals_children_without_a_reader(tmp_path, monkeypatch):
+    fixture, request = setup_request(tmp_path, monkeypatch)
+    _, group = decompose(request)
+    assert all('reader' not in plan for plan in _child_plans(fixture, group))
+
+
+def test_each_child_seals_the_policys_reader_declaration(tmp_path, monkeypatch):
+    """#909: a decomposed consumer declares its reading as pbrun's would."""
+    fixture, request = setup_request(tmp_path, monkeypatch)
+    undeclared = decompose(request)[1]['plan']['parent_key']
+    declared = deepcopy(request)
+    declared['task_data_manifest'].update(prefetch_depth_gib=22, read_mb_s=21)
+    _, group = decompose(dc.validate_logical_request(declared))
+    assert group['plan']['parent_key'] != undeclared
+    for plan in _child_plans(fixture, group):
+        assert plan['reader'] == {'prefetch_depth_bytes': 22 << 30, 'read_mb_s': 21}
+
+
+@pytest.mark.parametrize('field,value', [('prefetch_depth_gib', -1),
+    ('prefetch_depth_gib', True), ('read_mb_s', 0), ('read_mb_s', 2.5)])
+def test_a_malformed_reader_declaration_refuses(tmp_path, monkeypatch, field, value):
+    fixture, request = setup_request(tmp_path, monkeypatch)
+    request['task_data_manifest'][field] = value
+    with pytest.raises(pb.ActionContractError):
+        dc.validate_logical_request(request)
+    assert not fixture['queue'].ready_items()
