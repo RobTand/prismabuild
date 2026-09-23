@@ -1413,6 +1413,19 @@ exit 2 before any action is submitted.
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
 
+Each shard also seals a deadline, `execution_timeout_s`: the smaller of
+`--timeout-s` and the smallest execution ceiling announced by a box that could
+claim the shard, which is the deadline a claim would apply anyway. Admission
+reads it as the shard's declared end, so an item waiting behind a shard can
+tell whether the shard leaves soon (#939). With no `--timeout-s` and no
+announced ceiling, a shard seals none. Each test in the shard is bounded one
+heartbeat inside that deadline (`PRISMABUILD_TEST_TIMEOUT_S`), so a test that
+hangs fails by name before the deadline ends the lease. `--test-timeout-s`
+sets a tighter bound from a measured duration, and `0` removes it. A box's
+ceiling can be long -- a loop set for campaign work may announce a day -- so
+pass `--timeout-s` when a hung test should be named sooner. `pbtest` prints the
+deadline it sealed and the ceilings it read.
+
 `--gpu` requests a GPU for **every shard**. A placement tag alone never grants
 CUDA visibility. With the published runtime, the default tag changes from
 `x86` to `gb10`; override `--tag` for another class with the named interpreter.
@@ -1866,7 +1879,8 @@ a cause the next step cannot see (#351).
     measurement is the precondition holding, not starvation. It is starvation
     when the denial ends `_starved` or `_past_ceiling`: the holders in its way
     do not drain soon (a progress-governed campaign action with no timeout, a
-    bounded one past `WITHHOLD_CEILING_S` with no end inside it), the load is
+    bounded one past `WITHHOLD_CEILING_S` with no end inside it, or one past
+    its own declared end), the load is
     not the pool's, or work ahead of it kept refilling the box.
     `pbstatus --starvation` lists these under `starved`, with the holders
     named. Dropping `--measurement` to get admitted buys a number measured

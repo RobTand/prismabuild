@@ -1662,7 +1662,8 @@ def _starvation_starved(jobs: Sequence[Mapping[str, object]]) -> list[dict]:
     A starved item withholds its box only while the holders in its way will
     drain soon.  When one of them will not -- a progress-governed campaign
     holder with no total bound, a bounded one already past the pool's
-    transient line, load the pool does not own, or a veto that work ahead of
+    transient line, one past its own declared end (#939), load the pool does
+    not own, or a veto that work ahead of
     it kept refilling -- the item stops holding the box shut, and this is
     where it says so instead of going quiet.  Each row is the host's latest
     verdict for this exact submission, with the reason and the holders it
