@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from pbtest_shard_output import ONE_PASS  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -33,7 +35,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
         returncode = 0
 
         def communicate(self):
-            return "1 passed in 0.01s\n", None
+            return ONE_PASS, None
 
     def popen(command, **_kwargs):
         calls.append(command)
@@ -82,7 +84,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
         returncode = 0
 
         def communicate(self):
-            return "1 passed in 0.01s\n", None
+            return ONE_PASS, None
 
     def popen(command, **_kwargs):
         calls.append(command)

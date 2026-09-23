@@ -918,6 +918,20 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+`pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
+carries `reconciliation`: its collected tests matched against the outcomes its
+recorder saw, and its record's counts matched against its summary line. A
+shard is not green, whatever its exit code, when a collected test has no
+outcome, an outcome belongs to no collected test, a node ID is collected twice,
+another shard also collected one of its node IDs, its counts disagree with its
+summary, or it reported a summary and printed no record. A `--collect-only`
+shard is matched on its collected count instead. Two differences are not
+failures, and the report names each: an outcome at collection (a module that
+skipped or failed at import, which the summary counts and a `--collect-only`
+pass does not) and a test the summary counts in more than one phase (a pass
+whose teardown errors or skips). The report's totals line states the sum:
+outcomes equal tests, plus outcomes at collection, plus extra phases.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
@@ -4972,7 +4986,9 @@ in either of two ways:
   a consumer that is queued, claimed or being moved
   (`origin-consumer-live`); and one whose state is anything but failed,
   withdrawn or unpublished. The consumer's state then reads `released`. The
-  declaration file stays, and the key can no longer declare the batch.
+  declaration file stays, and the key can no longer declare the batch. Before
+  its record, the release files an entry in the queue-wide index (#954,
+  below), so a claim refuses any row of the key.
 
 **Releasing an unpublished consumer (#945).** A declaration with no queue
 record is left by a submitter that died between its declaration and its
@@ -5003,12 +5019,50 @@ nothing can publish that key any more, which it shows from these facts:
   resubmission or `--as-sealed-by` from a retained generation, dies at its
   declaration, before any row. So the release does not have to prove that
   nobody will ever submit the key again: it makes that submission unable to
-  read the batch.
+  read the batch. A row that a `pbrun` older than #945 still publishes, after
+  declaring before the release, is failed at claim (#954, below).
 
 The release records the wrapper that sealed the key as `sealed_wrapper`.
 The retirement tick reads an unpublished consumer with a release as
 `released`; nothing supersedes an unpublished consumer, because
 `--supersedes` accepts only a failed or withdrawn key.
+
+**Refusing a released key at claim (#954).** The declaration refusal runs
+only in live `pbrun`. A `pbrun` older than #945 takes no lock and makes no
+check between its declaration and its row, so its row can land after the
+release, reading a batch the retirement tick may already be deleting. The
+release is therefore enforced where live code always runs:
+
+- **The index.** `release_origin_consumer` files
+  `released-origin-consumers/<consumer_key>.<ref sha256>.json` at the queue
+  root, naming the key and the ref, before the release record. Only the
+  record makes the release real: an entry without one is a release that
+  stopped before its record, and `origin_consumer_release` reads it as no
+  release. The order is the point. A record with no entry would let the
+  retirement tick delete the batch while the claim, which lists only the
+  index, ran a row of the key. Running a release again for a record that has
+  no entry, such as one filed before #954, files the entry.
+- **The claim.** `PoolQueue._claim` lists the index once per scan, as it
+  lists `withdrawn/`, and for a listed key confirms the release against its
+  record under the key's transition lock, which a release also holds while
+  it writes the entry and the record. A confirmed key's ready row is failed
+  before placement, so any box's scan files it: status
+  `origin_consumer_released`, with `refusal: origin-consumer-released`, the
+  ref, and the release's state, author and time in its `detail`. The row
+  keeps its `published_unix`, so the submitter's wait loop reads it as its
+  generation's ending, and its ready bytes are kept under
+  `withdrawn/superseded/`. The release binds the key, not one generation: a
+  key seals its data manifest, so every row of it reads the batch. A
+  release that cannot be read is a denial,
+  `origin_consumer_release_unreadable`, and the row stays ready. The row is
+  captured in `ready-transitions/` (kind `origin-released`) before its ending
+  is written, so `sweep_ready_transitions` restores it after a crash and the
+  next claim files it.
+- **The tier loop.** `tier_loop.live_consumers` leaves out a ready consumer
+  whose key has a confirmed release, or one it cannot read, so the window
+  publishes no phase of its frozen plan, not even its lead. Once the claim
+  has failed the row, the dead-consumer sweep (#620) archives the plan. A
+  claimed consumer is never left out: it was claimed before any release.
 
 The old consumer's own state answers first while it is queued, running or
 has succeeded. Since #945 a released key also cannot declare the batch
@@ -5058,9 +5112,16 @@ Limits:
   running can still publish its row. The release therefore makes the key
   unable to declare the batch again, not unsubmittable.
 - A `pbrun` older than #945 does not hold the key's transition lock between
-  its declaration and its row. If one is still running when its declaration
-  is released, its row can land after the batch retired, and the consumer
-  then reads origin paths the retirement deleted.
+  its declaration and its row. A row it publishes after the release is
+  failed at claim (#954). One it publishes after the release has read the
+  consumer's state but before the release's record lands can be claimed
+  first. It then runs, and the retirement tick waits for it, because a
+  claimed consumer reads `live` whatever its release says; only a batch the
+  tick had already started to retire can go from under it.
+- A worker or tier loop still running a generation older than #954 does not
+  read the index, so the claim refusal holds only on boxes that run #954.
+  A release filed by a generation between #945 and #954 has no index entry
+  until its release command is run again.
 - `pbstatus --blocked-origins` does not list a batch that an unpublished
   consumer holds, because a submission may still be in its window. The stall
   line names the consumer `unpublished`; `--release-origin-consumer` decides

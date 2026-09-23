@@ -152,6 +152,13 @@ ORIGIN_CONSUMER_SCHEMA_V1 = "prismabuild.produced_output_origin_consumer.v1"
 #: The declaration itself is never removed.
 ORIGIN_CONSUMER_RELEASE_SCHEMA_V1 = (
     "prismabuild.produced_output_origin_consumer_release.v1")
+#: The queue-wide index of those releases (#954): one file per released
+#: consumer and batch, ``<consumer_key>.<ref sha256>.json`` under
+#: `pool.PoolQueue.released_origin_consumers_dir`, so a claim finds a
+#: released key by listing one directory. It is written before the release
+#: record, and only the record makes the release real.
+ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1 = (
+    "prismabuild.produced_output_origin_consumer_release_index.v1")
 #: The mover's typed refusal when a declared window's origin directories are
 #: not on the tier host (`stage_move.origin_reachability_diagnosis`). Spelled
 #: as data: this package imports no fleet tool.
@@ -5412,6 +5419,99 @@ def _consumer_release(queue_root: str | Path, instance: Mapping[str, object],
     return dict(body)
 
 
+def _release_index_body(consumer: str, checked_ref: Mapping[str, str]) -> bytes:
+    # Deterministic, so a second release of the same pair publishes the same
+    # bytes and `_publish_immutable` accepts them.
+    return json.dumps(
+        {"schema": ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1,
+         "consumer_action_key": consumer, "ref": dict(checked_ref)},
+        sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def _release_index_path(queue, consumer: str,
+                        checked_ref: Mapping[str, str]) -> Path:
+    digest = hashlib.sha256(json.dumps(
+        dict(checked_ref), sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    return queue.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
+
+
+def _index_release(queue, consumer: str, checked_ref: Mapping[str, str]) -> None:
+    """File the queue-wide index entry for one release (#954).
+
+    Written before the release record, never after it: a release whose
+    record is filed is then always visible to `pool.PoolQueue._claim`'s one
+    listing. A crash between the two leaves an entry with no record, which
+    `origin_consumer_release` reads as no release.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    path = _release_index_path(queue, consumer, checked_ref)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        pool_mod._publish_immutable(
+            path, _release_index_body(consumer, checked_ref),
+            where="produced-output origin consumer release index")
+    except pool_mod.PoolContractError as exc:
+        raise ProducedOutputError(
+            f"origin-consumer-release-conflict: {exc}") from None
+
+
+def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
+    """The release of any batch ``key`` declared, or ``None`` (#954).
+
+    What a claim asks before it runs a row for ``key``, and what the tier
+    loop asks before it stages one. An action key seals its data manifest, so
+    every row of a key reads the batches its declarations name; one release
+    among them is enough. The index entries name the refs; each is confirmed
+    by its release record, read through the same `_consumer_release` the
+    retirement tick reads. An entry without a record is a release that
+    stopped before its record, and does not count.
+
+    Raises `ProducedOutputError` when an entry, its batch's scope or its
+    record cannot be read: unknown is neither a release nor its absence.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    consumer = _hex64(key, where="consumer action key")
+    directory = queue.released_origin_consumers_dir()
+    try:
+        names = sorted(name for name in os.listdir(directory)
+                       if name.startswith(f"{consumer}.")
+                       and name.endswith(".json"))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: release index unreadable: {exc}") from None
+    for name in names:
+        try:
+            body = pool_mod._read_json(directory / name)
+        except (OSError, pool_mod.PoolContractError) as exc:
+            raise ProducedOutputError(
+                f"unknown-retain: release index {name} unreadable: {exc}"
+            ) from None
+        if (not isinstance(body, Mapping)
+                or body.get("schema") != ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1
+                or body.get("consumer_action_key") != consumer):
+            raise ProducedOutputError(
+                f"unknown-retain: release index {name} does not name "
+                f"{consumer[:12]}")
+        checked_ref = _checked_origin_ref(body.get("ref"))
+        if _release_index_path(queue, consumer, checked_ref).name != name:
+            raise ProducedOutputError(
+                f"unknown-retain: release index {name} names another batch")
+        instance, _template = _origin_ref_scope(queue.root, checked_ref)
+        release = _consumer_release(queue.root, instance,
+                                    checked_ref["batch_id"], consumer,
+                                    checked_ref)
+        if release is not None:
+            return release
+    return None
+
+
 def release_origin_consumer(queue, ref: Mapping[str, object], *,
                             consumer_action_key: str, by: str,
                             reason: str = "",
@@ -5428,7 +5528,12 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
     batch once every other declared consumer has succeeded, with its usual
     identity checks. Nothing is deleted here. From then on the key cannot
     declare the batch again (`declare_origin_consumer`), so no later
-    submission of it can reach the queue as a reader of the batch.
+    submission of it can reach the queue as a reader of the batch. A row an
+    older ``pbrun`` publishes anyway, one that declared before the release,
+    is refused where live code runs (#954): the release first files an entry
+    in the queue-wide index (`origin_consumer_release`), the claim fails any
+    ready row of the key with ``origin-consumer-released``, and the tier loop
+    stages nothing for it.
 
     The consumer's transition lock is taken first, without waiting: a
     submitter holds it from its declarations through its row
@@ -5502,6 +5607,10 @@ def _release_origin_consumer_locked(
                 f"{batch_id}")
         if _consumer_release(queue.root, instance, batch_id, consumer,
                              checked_ref) is not None:
+            # A record filed before the index existed (#945's releases) gets
+            # its entry here, so running the release again makes the claim
+            # see it (#954).
+            _index_release(queue, consumer, checked_ref)
             return {"ok": True, "released": False, "state": "released"}
         state = _consumer_state(queue, consumer)
         if state == "live":
@@ -5528,6 +5637,10 @@ def _release_origin_consumer_locked(
                 "consumer_action_key": consumer, "ref": dict(checked_ref),
                 "state": state, "by": str(by), "reason": str(reason),
                 "released_unix": time.time(), **sealed}
+        # The index first (#954). The record is what makes the release real
+        # to the retirement tick; a record the claim's listing could not see
+        # would let a row for this key run while the tick deletes its batch.
+        _index_release(queue, consumer, checked_ref)
         try:
             pool_mod._publish_immutable(
                 directory / f"{consumer}.json",
@@ -7399,12 +7512,14 @@ __all__ = [
     "reclaim_origin",
     "declare_origin_consumer",
     "release_origin_consumer",
+    "origin_consumer_release",
     "blocked_origin_batches",
     "origin_retirement_tick",
     "ORIGIN_LIFETIME_RETAIN",
     "ORIGIN_LIFETIME_CONSUMED",
     "ORIGIN_CONSUMER_SCHEMA_V1",
     "ORIGIN_CONSUMER_RELEASE_SCHEMA_V1",
+    "ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1",
     "ORIGIN_RETIRED_EVENT",
     "ORIGIN_RETIREMENT_STALLED_EVENT",
     "ORIGIN_RETIREMENT_REFUSED_EVENT",
