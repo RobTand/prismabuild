@@ -577,12 +577,17 @@ Budget and durability requirements for produced workloads:
   charged quiet. The landing record prices a claimed copy from its last
   report (`basis: reported`). A mover with no measured rate, or on a tier
   that names no pool members, is sealed as before (`basis: unmeasured`).
-  On a stage
-  tier whose claimed consumers are over-committed (PB#1011, in review), a
-  range the tier's claim order holds back is `held-by-claim-order` in the
-  landing record, naming the consumer ahead of it, the GiB and a priced
-  landing; the wait is exempt while that consumer advances, and not once
-  it has stalled, whose own rung then ends it.
+  A queued mover exempts its consumer only on evidence (PB#1011, in
+  review): a ready row the claim pass refuses or withholds on every host
+  exempts nothing, and otherwise the bytes queued ahead of it must fall
+  within the evidence window; a claimed mover's report must be within two
+  heartbeats or have grown since the previous check. On a stage tier whose
+  claimed consumers are over-committed, a range the tier's claim order
+  holds back is `held-by-claim-order` in the landing record, naming the
+  consumer ahead of it, the GiB and a priced landing. The wait is exempt
+  while that consumer shows growth (accepted reports, credited waits or an
+  exempt wait of its own) within the evidence window, and not once a whole
+  window passes without any; its own rung then ends it.
 - PRG-04 no circular hold-and-wait by assertion: PRG-03's "holds current
   window" alone proves nothing with multiple consumers. The contract
   requires the formal inequality over all competing consumers —
@@ -592,10 +597,15 @@ Budget and durability requirements for produced workloads:
   discharge this; the inequality or the policy is proved, named, and
   tested, else PRG-04 stays `proposed`. PB#1011 (in review) names such a
   policy for claimed consumers on an over-committed stage tier: the claim
-  order (blocked first, then claim time) serves one head a cycle and evicts
-  what is ranked after it. Its one stuck state -- relief futile with every
-  ranked consumer blocked -- is not discharged: there the `no_progress`
-  rung ends the wait as before, so the policy is tested, not proved.
+  order (blocked first, longest blocked first among them) serves one head
+  a cycle and makes its room from what is ranked after it, last from the
+  landed reading-phase chunks of blocked consumers ranked after it
+  (preemption). Its stuck state -- relief futile, nobody granted and every
+  ranked consumer blocked -- is discharged by ending one consumer a cycle,
+  the lowest ranked. The invariants and where each is enforced are in
+  `docs/design.md` ("Deadlock freedom, and where it stops"). The argument
+  stops when the tier's room is below one chunk of the head's, or a reader
+  holds a pin forever, so the policy is argued and tested, not proved.
 - PRG-05 no whole-working-set RAM requirement; windows are the unit of
   fit.
 - LIVE-01 conditional liveness: fair eligible workers + finite I/O + a
@@ -834,7 +844,7 @@ launch attempts and the defects below ran on:
 | PB#966 | Mover `950345d2b90a` could not invalidate failed consumer `2c164969c33c`'s copy, exited rc 0 with `complete: false`, and reran without end holding 365 of 730 fill tokens; consumer `a7d31a4da9c1` was never admitted | PRG-03, RNG-02, SM-02, PRG-04, LIVE-01 | Fix in review on branch `fix/966-mover-dead-owner` (Fixes #966): a divergent name is settled by its owners' states; not merged, not deployed |
 | PB#989, PQ#1107 | A stage-fed reader refused a declared range at a fixed 300 s whatever its mover was doing; the live (b) and R13 seals raised the wait to 840 s, just under the 900 s phase grace. A third R12-shaped consumer's next range lands behind the other two consumers' queued ranges, after either constant | PRG-03, LIVE-01 | Fix in review on branches `fix/989-expected-landing` (PB, Fixes #989) and `fix/1107-wait-on-expected-landing` (PQ, Closes #1107): landing record, reader rule and staged-wait exemption; not merged, not deployed |
 | PB#1010 | Since PB#989, a consumer is exempt from its `no_progress` rung while its range's mover is `claimed`; a mover sealed no progress and no bound, so a stalled copy held its claim and the consumer's GPU until the worker's 86400 s ceiling | PRG-03, LIVE-01 | Fix in review on branch `ws-mp/mover-progress-1010` (Fixes #1010): movers report landed bytes and end `no_progress` after a grace derived from the measured landing rate; quiet the worker measures as pool contention (its own sample of the sealed members against the pacer's caps, or blind telemetry) or as a start-gate wait on a live egress is credited, not charged; the landing record carries the live rate; not merged, not deployed |
-| PB#1011 | Claimed consumers whose joint commitment outgrows a stage tier wait on each other's reading: with two or eight R12-shaped consumers on a shrunk tier no next range publishes, `cycle()` reaches a fixpoint, and only `no_progress` ends it | PRG-04, PRG-03, LIVE-01 | Fix in review on branch `fix/1011-claimed-consumer-order` (Fixes #1011): claim order, relief eviction, held-back records and the verdict rule; not merged, not deployed. A range several claimed consumers read is still charged once per consumer |
+| PB#1011 | Claimed consumers whose joint commitment outgrows a stage tier wait on each other's reading: with two or eight R12-shaped consumers on a shrunk tier no next range publishes, `cycle()` reaches a fixpoint, and only `no_progress` ends it | PRG-04, PRG-03, LIVE-01 | Fix in review on branch `fix/1011-claimed-consumer-order` (Fixes #1011): claim order (blocked first, longest blocked first), relief eviction with Belady against the head's landing time and reading-phase preemption, held-back records, evidence-based exemptions and a one-victim stuck rule; not merged, not deployed. A range several claimed consumers read is still charged once per consumer (PB#1026) |
 | PQ#1080 | Stage A seed `2c164969c33c` did not prefetch its first layer and refused a cold source read, rc 1 after 282 s | PRG-02 (INV-06 held: the reader refused and did not fall back) | Fixed by PQ#1079 (`f12313f9903d`); use in a campaign unknown |
 
 ### Corrections to earlier status
