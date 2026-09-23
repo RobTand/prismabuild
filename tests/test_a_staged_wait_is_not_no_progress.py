@@ -340,25 +340,33 @@ def _judge(queue, item, progress_path, **evidence):
         **{name: value for name, value in evidence.items() if name in accepted})
 
 
-def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int) -> None:
+def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
+                   movers_ahead: list[str] | None = None) -> None:
     """The consumer's landing record, the tier loop's way: its one queued
-    range ``bytes_ahead`` behind the copies ahead of it."""
+    range ``bytes_ahead`` behind the movers ahead of it (``movers_ahead``,
+    left out when ``None``).  Written as the tier loop's JSON, not through
+    ``write_landing``, so a head whose schema lacks a field reads the record
+    as unreadable -- no evidence -- rather than failing the fixture."""
 
     residency = row["residency"]
-    residency_map.write_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), str(item["action_key"])), {
+    queued: dict[str, object] = {
+        "mover_action_key": str(row["action_key"]), "phase": "chain-043",
+        "range_start_bytes": int(residency["range_start_bytes"]),
+        "range_end_bytes": int(residency["range_end_bytes"]),
+        "state": "ready", "queue_position": len(movers_ahead or ()),
+        "bytes_ahead": int(bytes_ahead),
+        "expected_landing_unix": time.time() + 600.0,
+        "claimed_unix": None, "waiting_for": "", "basis": "queue"}
+    if movers_ahead is not None:
+        queued["movers_ahead"] = list(movers_ahead)
+    path = residency_map.landing_path(queue.residency_fragment_root(),
+                                      str(item["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
         "schema": residency_map.RESIDENCY_LANDING_SCHEMA_V1,
         "consumer_action_key": str(item["action_key"]), "tier_id": TIER,
         "manifest_sha256": MANIFEST, "written_unix": time.time(),
-        "rates_measured_bytes_per_s": [],
-        "ranges": [{"mover_action_key": str(row["action_key"]),
-                    "phase": "chain-043",
-                    "range_start_bytes": int(residency["range_start_bytes"]),
-                    "range_end_bytes": int(residency["range_end_bytes"]),
-                    "state": "ready", "queue_position": 1,
-                    "bytes_ahead": int(bytes_ahead),
-                    "expected_landing_unix": time.time() + 600.0,
-                    "basis": "queue"}]})
+        "rates_measured_bytes_per_s": [], "ranges": [queued]}))
 
 
 def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
@@ -450,3 +458,165 @@ def test_a_claimed_mover_is_waited_on_while_its_report_grows(
     assert fresh["movers"][0].get("progress_units") == 5 << 30, fresh
     assert old["exempt"] is False, old
     assert old["movers"][0].get("evidence") == "none", old
+
+
+# -- a hold stops the report, not the lease (#1022 review round 2) -----------
+#
+# The disk pacer holds a copy while the pool is over its caps.  Nothing lands,
+# so the mover's report (committed only when landed bytes grow) and the
+# landing record's ``bytes_ahead`` (rewritten only when the queue changes)
+# both freeze, for as long as the hold lasts.  The worker running the mover
+# keeps heartbeating its lease, credits the hold on evidence it samples
+# itself, and ends the copy if it stalls (#1010).  The verdict reads that
+# lease, so a consumer waiting behind a held copy waits with it.  The
+# campaign's phase grace is 900 s for a chunk; the tests hold for three.
+
+GRACE_S = 900.0
+
+
+def _other_claimed_copy(queue: pool.PoolQueue, seed: str) -> str:
+    """Another consumer's mover on the tier, claimed and copying."""
+
+    row = {**_row(queue, _hexkey(seed), {STAGE_KIND: 21, "cpu": 2, "mem_gb": 1}),
+           "residency": {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": "e" * 64, "manifest_bytes": 22 * 10 ** 9,
+                         "range_start_bytes": 0, "range_end_bytes": 22 * 10 ** 9}}
+    _hand_to_claimed(queue, row)
+    return str(row["action_key"])
+
+
+def _mover_lease(queue: pool.PoolQueue, mover: str, *, heartbeat_unix: float,
+                 held_s: float) -> None:
+    """The lease the worker running ``mover`` writes every heartbeat, with
+    the pacer hold it has credited so far (``ProgressWatch.as_record``).
+    Written directly: ``write_lease`` is the claiming worker's, and checks it
+    is that worker.  ``_hand_to_claimed`` claims at 1.0."""
+
+    queue.lease_path(mover).write_text(json.dumps({
+        "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": mover,
+        "owner": "copy-fixture", "heartbeat_unix": heartbeat_unix,
+        "claimed_unix": 1.0,
+        "progress_observation": {
+            "source": "action-progress", "accepted_count": 1,
+            "quiet_s": held_s, "grace_s": GRACE_S / 3.0,
+            "pool_contention_exempt_s": held_s, "start_gate_exempt_s": 0.0}}))
+
+
+def _hold(queue, item, progress_path, mover: str, *, start: float,
+          seconds: float) -> list[dict]:
+    """One rung check a heartbeat through a pacer hold ``seconds`` long:
+    ``mover``'s lease is refreshed and credits the hold, and nothing else
+    moves.  Each check passes the one before as its prior, as the rung does
+    (``ProgressWatch.staged_wait``)."""
+
+    verdicts: list[dict] = []
+    prior = None
+    for step in range(1, int(seconds // pool.HEARTBEAT_S) + 1):
+        now = start + step * pool.HEARTBEAT_S
+        _mover_lease(queue, mover, heartbeat_unix=now - 1.0,
+                     held_s=step * pool.HEARTBEAT_S)
+        prior = _judge(queue, item, progress_path, prior=prior,
+                       window_s=GRACE_S, now=now)
+        verdicts.append(prior)
+    return verdicts
+
+
+def test_a_claimed_mover_the_pacer_holds_keeps_its_consumer_waiting(
+        tmp_path: Path) -> None:
+    """The consumer's own mover is claimed, landed its first entry, and is
+    held for three graces.  Its report is stale after two heartbeats; its
+    lease is not.  On the first head the verdict read only the report and
+    ended the exemption two heartbeats into the hold."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    mover = str(row["action_key"])
+    start = time.time()
+    _mover_reports(queue, row, units=1 << 30, reported_unix=start)
+
+    verdicts = _hold(queue, item, progress_path, mover, start=start,
+                     seconds=3 * GRACE_S)
+
+    ended = [verdict for verdict in verdicts if not verdict["exempt"]]
+    assert ended == [], ended[:1]
+    last = verdicts[-1]["movers"][0]
+    assert last["evidence"] == "lease-live", last
+    assert last["hold_credited_s"] == pytest.approx(3 * GRACE_S), last
+    assert last["progress_units"] == 1 << 30, last
+
+
+def test_a_claimed_mover_whose_lease_went_quiet_is_not_waited_on(
+        tmp_path: Path) -> None:
+    """The report is stale and the lease's heartbeat is older than the bound
+    the reaper takes a claim back at (``LEASE_TIMEOUT_S``): nothing says the
+    copy's worker is alive, so nothing says it is coming."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    mover = str(row["action_key"])
+    now = time.time()
+    _mover_reports(queue, row, units=1 << 30, reported_unix=now - 3600.0)
+    _mover_lease(queue, mover, heartbeat_unix=now - pool.LEASE_TIMEOUT_S - 1.0,
+                 held_s=0.0)
+
+    verdict = _judge(queue, item, progress_path, now=now)
+
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "none", entry
+    assert entry.get("lease_live", False) is False, entry
+
+
+def test_a_ready_mover_behind_a_copy_the_pacer_holds_keeps_its_consumer_waiting(
+        tmp_path: Path) -> None:
+    """The consumer's mover is ready behind another consumer's copy, which
+    the pacer holds for three graces.  The landing record does not change:
+    ``bytes_ahead`` is frozen.  On the first head the evidence ran baseline,
+    carried, none, and the consumer was not exempt one window into the
+    hold."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    copy = _other_claimed_copy(queue, "heldcopy")
+    _landing_ahead(queue, item, row, bytes_ahead=22 * 10 ** 9, movers_ahead=[copy])
+
+    verdicts = _hold(queue, item, progress_path, copy, start=time.time(),
+                     seconds=3 * GRACE_S)
+
+    ended = [verdict for verdict in verdicts if not verdict["exempt"]]
+    assert ended == [], ended[:1]
+    last = verdicts[-1]["movers"][0]
+    assert last["state"] == "ready", last
+    assert last["evidence"] == "copy-ahead-live", last
+    assert last["copy_ahead"] == copy, last
+    assert last["copy_ahead_hold_credited_s"] == pytest.approx(3 * GRACE_S), last
+    assert last["waiting_behind"] == [copy], last
+
+
+def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
+        tmp_path: Path) -> None:
+    """Nothing was queued ahead of the ready mover when its wait first
+    looked.  Then another row is claimed instead of it -- the claim pass
+    placed that one and not this one -- and is copying.  Its lease is live,
+    but it was not ahead of this mover, so it says nothing about this one:
+    the exemption ends one window after the first look, as before."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    start = time.time()
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                   now=start)
+    passer = _other_claimed_copy(queue, "passer")
+    _landing_ahead(queue, item, row, bytes_ahead=22 * 10 ** 9, movers_ahead=[passer])
+    later = start + GRACE_S + 1.0
+    _mover_lease(queue, passer, heartbeat_unix=later - 1.0, held_s=0.0)
+
+    verdict = _judge(queue, item, progress_path, prior=first, window_s=GRACE_S,
+                     now=later)
+
+    assert first["exempt"] is True, first
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "none", entry
+    assert entry.get("waiting_behind", []) == [], entry

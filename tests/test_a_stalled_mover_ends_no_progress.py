@@ -1069,10 +1069,9 @@ def test_a_report_that_prices_nothing_keeps_the_claim_time(report, basis) -> Non
         assert out["landed_bytes"] == 100
 
 
-def test_the_landing_record_carries_the_claimed_movers_live_rate(
-        tmp_path: Path) -> None:
-    """One cycle's landing record: the claimed mover that reported is priced
-    from its report, and the record says so."""
+def _landing_fixture(tmp_path: Path):
+    """One consumer's two-phase plan, both movers published, the first
+    claimed and reporting 11 GB landed; the tier record."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
@@ -1116,6 +1115,15 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
                     "tier_id": TIER, "host": "dl380g10", "tier": "stage",
                     "mountpoint": str(tmp_path / "stage"),
                     "capacity_bytes": 565 * storage_tiers.GIB}}
+    return queue, consumer, movers, claimed, tiers, size
+
+
+def test_the_landing_record_carries_the_claimed_movers_live_rate(
+        tmp_path: Path) -> None:
+    """One cycle's landing record: the claimed mover that reported is priced
+    from its report, and the record says so."""
+
+    queue, consumer, movers, claimed, tiers, size = _landing_fixture(tmp_path)
 
     events = tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
@@ -1143,3 +1151,25 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
     assert rows[claimed]["basis"] == "claim"
     assert rows[claimed]["expected_landing_unix"] == pytest.approx(
         1000.0 + size / (134 * MB))
+
+
+def test_a_ready_range_names_the_movers_queued_ahead_of_it(tmp_path: Path) -> None:
+    """#1022 review round 2: ``bytes_ahead`` counts the bytes of the movers
+    queued ahead of a ready range, and the record now names them
+    (``movers_ahead``), so the staged-wait verdict can read their leases
+    while a pacer hold freezes the bytes.  A claimed range has nothing
+    ahead of it to name."""
+
+    queue, consumer, movers, claimed, tiers, _size = _landing_fixture(tmp_path)
+
+    events = tier_loop.publish_landing_expectations(
+        queue, tiers=tiers, consumers=[{"action_key": consumer,
+                                        "state": pool.CLAIMED}], now=1100.0)
+
+    assert events == []
+    doc = residency_map.read_landing(residency_map.landing_path(
+        queue.residency_fragment_root(), consumer))
+    rows = {row["mover_action_key"]: row for row in doc["ranges"]}
+    assert rows[movers[1]]["state"] == "ready"
+    assert rows[movers[1]].get("movers_ahead") == [claimed], rows[movers[1]]
+    assert "movers_ahead" not in rows[claimed], rows[claimed]

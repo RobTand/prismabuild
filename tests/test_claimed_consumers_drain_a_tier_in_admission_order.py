@@ -251,8 +251,9 @@ def _assert_held_back_records(queue: pool.PoolQueue, count: int, *, head: int,
 
     The tier's commitment record carries the rank; each held-back consumer's
     event file carries this cycle's ``window-gated`` verdict naming the one
-    ahead and the head; its landing record lists its ``chain-043`` as
-    ``held-by-claim-order`` with the GiB and a priced landing.
+    ahead and the head; its landing record lists its ``chain-043`` with the
+    one ahead, the head, the GiB and a priced landing (in a state the
+    reader knows: :func:`test_every_landing_state_the_order_writes_is_one_the_reader_reads`).
     """
 
     record = queue.tier_commitment(TIER)
@@ -286,7 +287,6 @@ def _assert_held_back_records(queue: pool.PoolQueue, count: int, *, head: int,
         assert last["expected_landing_unix"] == entry["expected_landing_unix"]
         rows = {row["phase"]: row for row in _landing(queue, key)["ranges"]}
         row = rows[READING]
-        assert row["state"] == residency_map.LANDING_HELD_BY_CLAIM_ORDER, row
         assert row["held_back_by"] == _key(older[-1]), row
         assert row["waiting_on"] == _key(head), row
         assert row["waiting_gib"] == int(PHASES[READING]["stage_gib"]), row
@@ -1047,6 +1047,79 @@ def test_chunked_consumers_holding_part_of_their_reading_phase_do_not_deadlock(
     order = (queue.tier_commitment(TIER) or {}).get("claim_order") or {}
     assert order.get("relief") != "futile", order
     assert order.get("stuck_victim") is None, order
+
+
+def test_a_reader_waiting_again_for_a_chunk_it_lost_keeps_the_one_it_holds(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Round 2, item 2: a gather that spans a chunk boundary.
+
+    Consumer 1's gather needs chunks 0 and 1 of ``chain-043``.  Chunk 0 had
+    landed and was preempted while it waited for chunk 1; chunk 1 landed,
+    the gather raised ``StagedRangeNotLanded``, and the reader's one retry
+    now waits for chunk 0 again while it holds chunk 1.  A reader reads in
+    byte order, so a blocked chunk before a landed one is that retry (or an
+    out-of-order landing).  On the first head relief preempted chunk 1 as
+    well, and the retry's gather lost it again: the second loss ends the
+    run.  Now its reading phase is protected, relief is futile, and the
+    stuck rule names it -- the lowest ranked -- for a recorded kill."""
+
+    shift = time.time() - SAMPLE_UNIX
+    queue, stage = _fixture_queue(tmp_path, DATA["tier"]["capacity_gib"])
+    head = _chunked_blocked(queue, stage, 0, shift=shift, holding=((READING, 0),))
+    retry = _chunked_blocked(queue, stage, 1, shift=shift, holding=((READING, 1),))
+    held = (int(_chunk_of(head, READING, 0)["stage_gib"])  # type: ignore[arg-type]
+            + int(_chunk_of(retry, READING, 1)["stage_gib"]))  # type: ignore[arg-type]
+    needs = (int(_chunk_of(head, READING, 1)["stage_gib"]),  # type: ignore[arg-type]
+             int(_chunk_of(retry, READING, 0)["stage_gib"]))  # type: ignore[arg-type]
+    kept = str(_chunk_of(retry, READING, 1)["mover_row"]["action_key"])  # type: ignore[index]
+
+    _chunked_cycle(queue, stage, gib=held + min(needs) - 1, chunk_gib=needs[0])
+    events = _events(capsys)
+
+    evicted = [event for event in events
+               if event.get("event") == "claim-order-evicted"]
+    assert evicted == [], evicted
+    assert queue.tier_ledger(TIER).holder_tokens(kept), events
+    order = (queue.tier_commitment(TIER) or {}).get("claim_order") or {}
+    assert order.get("head") == _key(0), order
+    assert order.get("relief") == "futile", order
+    assert order.get("stuck_victim") == _key(1), order
+    assert order.get("preempt_protected") == [_key(1)], order
+    futile = [event for event in events
+              if event.get("event") == "claim-order-eviction-futile"]
+    assert [event.get("preempt_protected") for event in futile] == [[_key(1)]], futile
+
+
+#: The range states the reader accepts: PQ ``prismaquant/residency_map.py``
+#: ``LANDING_STATES`` at PQ ``f0fa27f7e7e``.  Its ``_read_landing`` returns
+#: ``None`` for a whole record that lists any other state, and the reader
+#: then falls back to its bounded wait (``STAGED_RANGE_WAIT_S``) and declares
+#: no staged wait.  Pinned here because the test may not import the reader.
+READER_LANDING_STATES = ("ready", "claimed", "unpublished", "evicted",
+                         "done-not-resident", "terminal-no-receipt")
+
+
+def test_every_landing_state_the_order_writes_is_one_the_reader_reads(
+        tmp_path: Path) -> None:
+    """Round 2: the first head wrote the range a held-back consumer waits for
+    as ``held-by-claim-order``, a state the reader does not know.  The reader
+    drops the whole record on it, so the consumer the order holds back --
+    the case #1011 is for -- lost its landing record and waited on the
+    reader's bounded clock instead.  The range is ``unpublished``, which it
+    is, and says the rest in fields of its own."""
+
+    queue, stage, _plans, shrunk = _fixture(tmp_path, 2, TWO_HOLD)
+
+    _cycle(queue, stage, gib=shrunk)
+
+    states = {}
+    for n in range(2):
+        for row in _landing(queue, _key(n))["ranges"]:  # type: ignore[union-attr]
+            states[(n, row["phase"])] = row["state"]
+            assert row["state"] in READER_LANDING_STATES, (n, row)
+    held = {row["phase"]: row for row in _landing(queue, _key(1))["ranges"]}  # type: ignore[union-attr]
+    assert held[READING]["state"] == "unpublished", held[READING]
+    assert held[READING]["held_back_by"] == _key(0), held[READING]
 
 
 LAST = _hexkey("verdictlast")
