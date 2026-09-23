@@ -180,15 +180,24 @@ def _expected_reads(tmp_path: Path, batch: Path) -> list[tuple[str, list[str]]]:
 
 
 def _run_mover(tmp_path: Path, queue: pool.PoolQueue, key: str,
-               name: str) -> dict:
-    """Run one phase's mover and return the consumer's composed map."""
+               name: str) -> tuple[str, dict]:
+    """Run one phase's mover; return its key and the consumer's composed map."""
 
     plan = residency_plan.read(queue, key)
     [phase] = [phase for phase in plan["phases"] if phase["name"] == name]
     mover = str(phase["mover_row"]["action_key"])
     command = _request(tmp_path, mover)["params"]["command"]
     assert stage_move.main([*command[2:], "--action-key", mover, "--unpaced"]) == 0
-    return rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+    return mover, rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+
+
+def _fragment_paths(queue: pool.PoolQueue, key: str, mover: str) -> list[str]:
+    """The entries one mover's own fragment vouches for, sorted."""
+
+    fragment = rm.validate_fragment(json.loads(rm.fragment_path(
+        queue.root / pool.RESIDENCY, key, mover).read_text()))
+    return sorted(rm.parse_residency_map_key(item)[0]
+                  for item in fragment["entries"])
 
 
 def _staged_bytes(composed: dict, path: str) -> bytes:
@@ -245,20 +254,17 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
             / f"{key}.json").exists(), "declared against the batch (#914)"
 
     # Residency follows the plan: the batch second, the head again after it.
+    # Each phase's own mover stages its window, the replay's included.
     _tier_cycle(queue, tmp_path / "stage")
     assert _staged_windows(queue, key, manifest) == _expected_reads(tmp_path, path)
-    h0, h1 = _head_paths(tmp_path)
-    composed = _run_mover(tmp_path, queue, key, "head")
-    assert [_staged_bytes(composed, item) for item in (h0, h1)] == list(HEAD)
-    composed = _run_mover(tmp_path, queue, key, "handoff")
-    assert _staged_bytes(composed, str(path)) == PAYLOAD
+    source = {**dict(zip(_head_paths(tmp_path), HEAD)), str(path): PAYLOAD}
+    for name, paths in _expected_reads(tmp_path, path):
+        mover, composed = _run_mover(tmp_path, queue, key, name)
+        assert _fragment_paths(queue, key, mover) == sorted(paths), name
+        assert [_staged_bytes(composed, item) for item in paths] == [
+            source[item] for item in paths], name
     assert hashlib.sha256(_staged_bytes(composed, str(path))).hexdigest() == \
         manifest["entries"][2]["sha256"]
-    # EXPERIMENT: the replay's movers stage the head's entries again.
-    composed = _run_mover(tmp_path, queue, key, "replay-0")
-    assert _staged_bytes(composed, h0) == HEAD[0]
-    composed = _run_mover(tmp_path, queue, key, "replay-1")
-    assert _staged_bytes(composed, h1) == HEAD[1]
 
 
 def test_an_ordinary_submission_declares_the_same_plan(
