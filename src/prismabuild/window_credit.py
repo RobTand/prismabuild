@@ -84,6 +84,10 @@ REASON_STALL = "joint-fit-stall"
 REASON_OVERSIZE = "joint-fit-oversize"
 REASON_UNFUNDED = "advance-credit-unfunded"
 REASON_DEFER_UNKNOWN = "advance-deferred-unknown-evidence"
+#: A newcomer whose read footprint does not fit beside what the tier has
+#: already committed to its admitted windows (#907).  Transient: it waits
+#: for those windows to finish, and no eviction can admit it.
+REASON_COMMITMENT = "joint-commitment-stall"
 
 #: The note on a decision that counted no produced-output obligation.  The
 #: tier loop counts a producer's unheld window (``produced_output.
@@ -153,6 +157,33 @@ def gate_newcomer(*, held_gib: int, ready_gib: int, output_gib: int,
                 "output_note": note}
     return {"admit": False, "reason": REASON_STALL, "permanent": False,
             "output_note": note}
+
+
+def gate_commitment(*, committed_gib: int, growth_gib: int,
+                    capacity_gib: int, lone: bool) -> dict[str, object]:
+    """Whether a newcomer's read footprint fits beside the tier's commitments (#907).
+
+    ``committed_gib`` is what the tier has promised already: every token
+    nothing can evict, queued new money, the unheld produced-output windows,
+    and each admitted window's growth from what it holds to its read
+    footprint.  ``growth_gib`` is the newcomer's own growth.  Admitted when
+    the two fit ``capacity_gib``.
+
+    Otherwise admitted only ``lone``: when nothing else on the tier will
+    ever ask it for more room -- no other admitted window, no owed output,
+    no other queued demand.  What remains committed then is holders that
+    never grow, so the newcomer contends only with itself: its window runs
+    short of its footprint, as every window did before this gate, and a
+    refusal would be one no later cycle could lift.  The joint-fit gate
+    still decides whether it fits at all.
+    """
+
+    if committed_gib + growth_gib <= capacity_gib:
+        return {"admit": True, "reason": "", "lone": False}
+    if lone:
+        return {"admit": True, "reason": "", "lone": True}
+    return {"admit": False, "reason": REASON_COMMITMENT, "permanent": False,
+            "lone": False}
 
 
 def fence_fits(*, held_gib: int, ready_gib: int, output_gib: int,
