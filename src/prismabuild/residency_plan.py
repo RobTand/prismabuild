@@ -2175,15 +2175,17 @@ def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
     bounds ``waiting`` the way it bounds the window's publication: a leg of
     a later phase that starts at or past it is not something this window
     will publish this cycle, so it is neither the current nor the next the
-    gate reserves room for.  Without the bound a rolling window re-gated as
-    a newcomer (its original lead retired) asks the joint gate for two legs
-    it will not publish, and that phantom footprint can hold another
-    consumer's in-horizon leg out.  The fence is bounded the same way: its
-    frontier is still the earliest unstaged leg of the whole plan, but a
-    ``fence_target`` past the horizon is no advance yet -- the window will
-    not publish it until progress brings it inside -- so it is ``None``
-    this cycle, and a fence held for it would be room reserved for a leg
-    nobody asked for.  ``queued`` stays on the whole plan.  ``None``
+    gate reserves room for.  Without the bound a window asks the joint gate
+    for legs it will not publish -- a newcomer its current and next, an
+    admitted window the next the gate reserves for it -- and that phantom
+    footprint can hold another consumer's in-horizon leg out.  (Before #908
+    a rolling window whose original lead retired was also re-gated as a
+    newcomer; a claimed window no longer is.)  The fence is bounded the
+    same way: its frontier is still the earliest unstaged leg of the whole
+    plan, but a ``fence_target`` past the horizon is no advance yet -- the
+    window will not publish it until progress brings it inside -- so it is
+    ``None`` this cycle, and a fence held for it would be room reserved for
+    a leg nobody asked for.  ``queued`` stays on the whole plan.  ``None``
     changes nothing.
     """
 

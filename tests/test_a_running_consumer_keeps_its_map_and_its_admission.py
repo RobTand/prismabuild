@@ -15,7 +15,9 @@ egressed those four ranges, which was correct.  Then:
   the running capture as a newcomer: 60 cycles of ``window-gated
   joint-fit-stall``.  A claimed consumer passed the claim's residency gate,
   so its window is admitted for the rest of its run and is never a newcomer
-  again.
+  again.  Its unpublished current counts against a newcomer only on a pass
+  that permits the window, so a running window that cannot publish holds
+  no newcomer out (#881).
 
 Everything runs on a ``tmp_path`` queue and stage root; nothing touches a live
 mountpoint, the live queue or a tier file (#628).
@@ -214,6 +216,41 @@ def test_a_running_consumer_is_not_regated_after_its_first_range_is_egressed(
     assert gated == []
     assert queue.item_path(pool.READY, layer_3).exists()
     assert _claim_shortage(queue, layer_3, 14) is None
+
+
+def test_a_newcomer_cannot_take_the_room_a_running_consumers_current_needs(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The running capture's unpublished ``layer-3`` counts for a newcomer.
+
+    40 GiB free and nothing queued.  The capture is running with its 14 GiB
+    ``layer-3`` unpublished; a ready newcomer asks for a 20 GiB lead and a
+    10 GiB next.  Either fits the free room alone, but not beside the other:
+    14 + 20 + 10 = 44 of 40.  The gate permits the capture this pass, so it
+    counts the capture's current for the newcomer, which waits.  An
+    admitted window's current is counted only when the window is permitted;
+    a window gated on its own fence reserves nothing (#881, the
+    ``test_claimed_window_does_not_set_newcomer_priority_barrier`` guard).
+    """
+
+    capacity = 40
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    _capture(queue, stage, landed=(0, 1, 2, 3))
+    _egress(queue, stage, range(4))
+    plan = _plan(queue, NEWCOMER, label="newcomer", manifest=NEWCOMER_MANIFEST,
+                 sizes=[20, 10])
+    _publish_consumer(queue, NEWCOMER, plan, manifest=NEWCOMER_MANIFEST)
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])  # type: ignore[index]
+    capsys.readouterr()
+
+    _cycle(queue, stage, gib=capacity)
+
+    assert queue.item_path(pool.READY, _mover("capture", 4)).exists()
+    assert not queue.item_path(pool.READY, lead).exists()
+    gated = [event for event in _events(capsys)
+             if event.get("event") == "window-gated"
+             and event.get("consumer") == NEWCOMER]
+    assert gated, "the newcomer was not gated"
+    assert {event.get("reason") for event in gated} == {"joint-fit-stall"}
 
 
 def test_a_running_consumer_is_never_an_admission_newcomer(

@@ -5143,7 +5143,11 @@ window is admitted for the rest of its run, even after its first range is
 egressed and so reads as unpublished again (#908). Its next range is an
 admitted window's advance, fenced and counted in `existing_min_next`, and
 never a newcomer's current asking the gate for held + queued + current +
-next. Both the pressure probe and
+next. An admitted window's own unpublished current is not a next: the gate
+counts it for newcomers (as `running_extra`, like a same-pass newcomer's
+current) only when it permits the window this pass, and a window gated on
+its own fence reserves nothing, so it cannot hold every newcomer out (#881).
+Both the pressure probe and
 the publication gate use that identity and the next still-unpublished legs,
 with conservative obligations (full queued demand and a minimum next-step term
 from progressing windows). The relief is stated as the free the sweep must reach

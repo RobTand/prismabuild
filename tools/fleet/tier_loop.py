@@ -2228,6 +2228,32 @@ def _is_newcomer(consumer: Mapping[str, object], needs: Mapping[str, object],
     return _unpublished_lead(needs, published)
 
 
+def _unpublished_current_gib(needs: Mapping[str, object], *,
+                             held: Mapping[str, Mapping[str, object]],
+                             rowed: Mapping[str, object], kind: str) -> int:
+    """The GiB an admitted window's current will take from free, or 0 (#908).
+
+    Its first waiting leg, when that leg is in the phase the consumer is
+    reading and is neither queued (queued demand is counted in full) nor
+    holding its tokens (held is counted by the holder scan).  Only a
+    running window's current can be unpublished: a ready consumer's lead is
+    published, or the consumer is a newcomer.
+    """
+
+    waiting = needs.get("waiting")
+    if not isinstance(waiting, list) or not waiting:
+        return 0
+    first = waiting[0]
+    if (not isinstance(first, Mapping)
+            or first.get("phase") != needs.get("reading_phase")):
+        return 0
+    mover = str(first.get("mover_action_key") or "")
+    gib = int(first.get("stage_gib") or 0)
+    if mover in rowed or int(held.get(mover, {}).get(kind, 0)) >= gib:
+        return 0
+    return gib
+
+
 #: Opt-in switch for the produced-output obligation (#747).  ``1`` counts
 #: each tier's unheld producer window (``produced_output.unheld_window_gib``)
 #: in the joint-fit gate, the fence check and the newcomer relief; unset or
@@ -2493,12 +2519,15 @@ def window_pressure(
         assert isinstance(wanted, list)
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
-            if not stage_newcomer:
+            if not stage_newcomer and str(wanted[0]["phase"]) != reading:
                 # An admitted window's next is the joint gate's
                 # ``existing_min_next`` term, minimum first, collected so
                 # the newcomer probe asks with the same shape.  Counted
                 # for every progressing window so the probe never asks
-                # for less relief than the real gate will require.
+                # for less relief than the real gate will require.  An
+                # unpublished current is not a next: the gate counts it
+                # only for a window it permits this pass (#908), and once
+                # published it is queued demand the probe counts in full.
                 stage = int(wanted[0]["stage_gib"])
                 landed_next[tier_id] = min(landed_next.get(tier_id, stage),
                                             stage)
@@ -2567,7 +2596,8 @@ def window_pressure(
                 staged=sorted(state["staged"]), mover_role="ram_mover_row")
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
                 newcomers.setdefault(ram_tier_id, []).append(ram_needs)
-            else:
+            elif str(ram_wanted[0]["phase"]) != reading:
+                # The stage leg's rule: an unpublished current is no next.
                 ram_next = int(ram_wanted[0]["stage_gib"])
                 landed_next[ram_tier_id] = min(
                     landed_next.get(ram_tier_id, ram_next), ram_next)
@@ -3024,8 +3054,12 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         # Already-admitted windows keep their advancement authority before
         # new work. Among newcomers, honour priority before spending fresh
         # room; stable sorting preserves the existing order for equal ranks.
+        # Every admitted window sorts before every newcomer, so its
+        # unpublished current is counted before any newcomer is gated
+        # (#908).
         tier_wants = sorted(tier_wants, key=lambda want: (
-            priority_candidate(want), -priority_of(want) if priority_candidate(want) else 0))
+            bool(want["newcomer"]), priority_candidate(want),
+            -priority_of(want) if priority_candidate(want) else 0))
         try:
             ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError, ValueError) as exc:
@@ -3121,6 +3155,16 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     # what the holder scan already counts.
                     if int(held.get(mover_name, {}).get(kind, 0)) >= need_gib:
                         break
+                    if candidate.get("phase") == want["needs"].get(
+                            "reading_phase"):
+                        # The window's own unpublished current is no
+                        # landed window's next (#908).  It pays from free
+                        # when the window publishes it, so it is counted
+                        # below only for a window this pass permits;
+                        # reserving it here would let a window that cannot
+                        # publish at all -- gated on its own fence, say --
+                        # hold every newcomer out (#881).
+                        break
                     covered = 0
                 else:
                     try:
@@ -3137,6 +3181,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         expected_grants: set[str] = set()
         waiting_priority: int | None = None
         waiting_consumer: str | None = None
+        # Admitted windows' unpublished currents, counted once every
+        # admitted window has been decided and before the first newcomer is
+        # gated (#908): the newcomer gate then sees each current a
+        # permitted window is about to publish from free, exactly as it
+        # sees a same-pass newcomer's.  A window that is not permitted
+        # publishes nothing this pass and counts nothing.
+        admitted_currents: dict[str, int] = {}
+        currents_counted = False
         for want in tier_wants:
             key = str(want["key"])
             needs = want["needs"]
@@ -3146,6 +3198,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             nxt = needs.get("next_min_gib")
             next_gib = int(nxt) if isinstance(nxt, int) else 0
             added_extra = 0
+            if want["newcomer"] and not currents_counted:
+                running_extra += sum(
+                    gib for other, gib in admitted_currents.items()
+                    if (other, tier_id) in permitted)
+                currents_counted = True
+            if not want["newcomer"]:
+                admitted_currents[key] = _unpublished_current_gib(
+                    needs, held=held, rowed=ready_by_key, kind=kind)
             if want["newcomer"]:
                 priority = priority_of(want)
                 if (priority_candidate(want) and waiting_priority is not None
