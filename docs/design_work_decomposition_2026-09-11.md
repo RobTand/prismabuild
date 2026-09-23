@@ -458,6 +458,11 @@ A logical request may add `task_data_manifest`, a closed policy object with
 schema `prismabuild.task_data_manifest.v1`, `payload_field`, `mount_prefix`,
 `residency_tier` (a tier ID or null for ordinary discovery), `residency_ram`
 (`auto` or `off`), and positive integer `mover_readers`/`mover_mem_gb` bounds.
+It may also declare how each child's consumer reads (#909): an integer
+`prefetch_depth_gib` (0 or more) and a positive integer `read_mb_s`, sealed on
+every child's residency plan as pbrun's `--residency-prefetch-depth-gib` and
+`--residency-read-mb-s` would. Both are optional; a policy without them
+validates and freezes its parent identity as before.
 It is mutually exclusive with a non-null shared `common.data_manifest`.
 Each task's selected payload field is an explicit array of ordinary data-manifest
 entries (`path`, `offset`, `bytes`, `sha256`). Relative paths expand under the

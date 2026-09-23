@@ -5328,6 +5328,34 @@ def current_fill_offer(tier: Mapping[str, object],
     return storage_tiers.current_fill_offer(tier, measured)
 
 
+def reader_declaration(args) -> dict[str, int]:
+    """What the submitter declares about the consumer's reading (#909).
+
+    ``--residency-prefetch-depth-gib`` and ``--residency-read-mb-s``, as the
+    residency plan's ``reader`` block: the tier prices the window from them
+    instead of from the consumer's memory reservation and the tier's own fill
+    offer.  Either may be absent; an empty declaration adds nothing to the
+    plan.  Read with ``getattr`` because a deferred submission filed before
+    #909 carries neither.
+    """
+
+    reader: dict[str, int] = {}
+    depth = getattr(args, "residency_prefetch_depth_gib", None)
+    if depth is not None:
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            raise SystemExit(
+                "pbrun: --residency-prefetch-depth-gib must be a whole number "
+                "of GiB, 0 or more")
+        reader["prefetch_depth_bytes"] = int(depth) * storage_tiers.GIB
+    rate = getattr(args, "residency_read_mb_s", None)
+    if rate is not None:
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0:
+            raise SystemExit("pbrun: --residency-read-mb-s must be a positive "
+                             "whole MB/s")
+        reader["read_mb_s"] = int(rate)
+    return reader
+
+
 def residency_stage_rows(
     template: Mapping[str, object],
     *,
@@ -5496,6 +5524,9 @@ def residency_stage_rows(
     # per-phase read would give two phases of one plan different demands
     # because a mover finished between them.
     readers = int(args.residency_mover_readers)
+    # The consumer's own reading, as its submitter declares it (#909).  A
+    # frozen plan returned above keeps the declaration it was frozen with.
+    reader = reader_declaration(args)
     # A logical freeze supplies one invocation-local observation for all its
     # siblings. None retains the standalone submission's fresh observation;
     # an explicitly empty snapshot must not trigger another live census.
@@ -5514,13 +5545,16 @@ def residency_stage_rows(
     # The pool bandwidth a mover reserves, once anything has measured it.  It
     # is what makes concurrency a ledger decision rather than an accident: the
     # tier mints what the disks delivered plus one probe mover's worth, and a
-    # mover that reserves nothing can never be rationed against another.  None
-    # until both sides of the bound exist, because a guessed bandwidth is the
-    # habit this replaces.  The tier's *current* offer caps it: a fresh seal
-    # asks no more than admission will honour on this cycle (#708).
-    measured_fill = storage_tiers.mover_fill_demand_from_receipts(
-        receipts, tier_id=tier_id, pool_identity=tier_identity)
-    fill, offered_fill, fill_basis = current_fill_offer(tier, measured_fill)
+    # mover that reserves nothing can never be rationed against another.  One
+    # copy's measured rate (#909): the slowest landing of this manifest's
+    # latest window onto this tier, else the median single-reader share, never
+    # the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
+    # asks no more than admission will honour on this cycle (#708), and with
+    # nothing measured the offer is the stated bound, named in demand_source.
+    fill_price = storage_tiers.mover_fill_price(
+        receipts, tier_id=tier_id, pool_identity=tier_identity,
+        manifest_sha256=digest)
+    fill, offered_fill, fill_basis = current_fill_offer(tier, fill_price["mb_s"])
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
@@ -5822,7 +5856,7 @@ def residency_stage_rows(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
         stage_root=stage_root, manifest_sha256=digest,
         manifest_bytes=int(entry["bytes"]), phases=phases,
-        ram_tier_id=ram_tier_id,
+        ram_tier_id=ram_tier_id, reader=reader,
         # Which receipts priced these movers' cpu and mem_gb, so a demand in
         # the queue traces back to a measurement rather than to a habit.  On
         # the plan, not on a row: ``tier_loop`` publishes a row as
@@ -5832,6 +5866,7 @@ def residency_stage_rows(
         demand_source={**priced["demand_source"],
                        "fill_mb_s_pool_side": fill,
                        "fill": fill_basis,
+                       "fill_measured": dict(fill_price),
                        "tier_offer_mb_s": offered_fill})
     return {
         "plan": plan,
@@ -6059,6 +6094,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="paced read buffers one movement node copies through.  It is "
              "passed to the mover and declared as its cpu demand until a "
              "receipt's cpu_seconds measures one, so the two cannot disagree",
+    )
+    ap.add_argument(
+        "--residency-prefetch-depth-gib", type=int, default=None,
+        help="how many GiB this action holds ahead of the phase it is reading "
+             "(#909).  Carried on the residency plan, so the tier prices the "
+             "window's read-ahead at it rather than at this action's memory "
+             "reservation (mem_gb plus its GPU budget), which is the bound "
+             "used when nothing is declared.  A fact about the reader, "
+             "supplied by whoever knows its prefetch; 0 is a reader that "
+             "holds nothing ahead",
+    )
+    ap.add_argument(
+        "--residency-read-mb-s", type=int, default=None,
+        help="how fast this action reads its staged bytes, in MB/s (#909).  "
+             "Carried on the residency plan: the tier prices the window's "
+             "consumption at it until the action reports progress, and its "
+             "movers reserve it as their pool fill.  Undeclared, the window "
+             "is priced at its run-ahead bound until it reports",
     )
     ap.add_argument(
         "--residency-mover-max-attempts", type=int, default=3,
@@ -6841,6 +6894,9 @@ _DEFERRED_PUBLICATION_ARGS = (
     "priority", "max_attempts", "retry_safe", "residency", "residency_tier",
     "residency_ram", "residency_mover_mem_gb", "residency_mover_readers",
     "residency_mover_max_attempts",
+    # The reader's declaration (#909), which a deferred consumer's plan must
+    # carry exactly as a direct submission's does.
+    "residency_prefetch_depth_gib", "residency_read_mb_s",
 )
 
 

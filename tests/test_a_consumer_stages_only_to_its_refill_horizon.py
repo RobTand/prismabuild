@@ -594,7 +594,7 @@ def _horizon(queue: pool.PoolQueue, **overrides) -> dict[str, object] | None:
         "claimed_unix": 1000.0, "reported_unix": 1990.0,
         "readahead_bytes": 1 * GIB,
         "landing_bytes_per_s": PHASE_GIB * GIB / MOVER_SECONDS,
-        "report_latency_s": 90.0, "fill_supply_mb_s": None}
+        "report_latency_s": 90.0, "declared_bytes_per_s": None}
     arguments.update(overrides)
     return residency_plan.refill_horizon(plan, phase,        # type: ignore[arg-type]
                                          **arguments)  # type: ignore[arg-type]
@@ -616,25 +616,36 @@ def test_the_horizon_is_the_docstring_arithmetic(tmp_path: Path) -> None:
         f"phase-{ordinal}" for ordinal in BEYOND]
 
 
-def test_before_a_rate_is_measured_the_fill_supply_prices_consumption(
-        tmp_path: Path) -> None:
-    """No report after the claim: the tier's fill supply stands in, and a
-    faster consumer's refill covers more ranges, never fewer."""
+@pytest.mark.parametrize("reported_unix,declared_mb_s,basis", [
+    (1000.0, 144, "declared"),   # no report after the claim: declared alone
+    (1990.0, 144, "declared"),   # declared above the measured 2.2 MB/s
+    (1990.0, 1, "measured"),     # declared below it
+])
+def test_a_declared_read_rate_prices_consumption_when_it_is_the_larger(
+        tmp_path: Path, reported_unix: float, declared_mb_s: int,
+        basis: str) -> None:
+    """The plan's declared rate stands in before a report, and raises a slower
+    measurement (#909).  Before #909 the tier's announced fill supply stood
+    in, and the horizon moved as the loop probed the pool."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
-    horizon = _horizon(queue, reported_unix=1000.0, fill_supply_mb_s=144.0)
+    horizon = _horizon(queue, reported_unix=reported_unix,
+                       declared_bytes_per_s=declared_mb_s * storage_tiers.MB)
     assert horizon is not None
-    assert horizon["consumption_basis"] == "fill-supply"
-    # 144 MB/s over 290 s is 41.8 GB: every remaining phase is inside.
-    assert horizon["horizon_end_bytes"] is None
-    assert horizon["beyond"] == []
+    assert horizon["consumption_basis"] == basis
+    if basis == "declared":
+        # 144 MB/s over 290 s is 41.8 GB: every remaining phase is inside.
+        assert horizon["horizon_end_bytes"] is None
+        assert horizon["beyond"] == []
+    else:
+        assert horizon["horizon_end_bytes"] == ADVANCE * PHASE_GIB * GIB
 
 
 @pytest.mark.parametrize("override", [
     {"phase": None}, {"readahead_bytes": None}, {"landing_bytes_per_s": None},
     {"landing_bytes_per_s": 0.0},
-    {"reported_unix": 1000.0},          # no measured rate and no fill supply
+    {"reported_unix": 1000.0},          # no measured rate and none declared
 ])
 def test_an_undefined_horizon_leaves_the_window_as_it_was(
         tmp_path: Path, override: dict[str, object]) -> None:

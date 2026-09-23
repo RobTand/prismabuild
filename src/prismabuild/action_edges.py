@@ -73,6 +73,22 @@ _PUBLICATION_KEYS = frozenset({
     "residency_ram", "residency_mover_mem_gb", "residency_mover_readers",
     "residency_mover_max_attempts",
 })
+#: Publication options a deferred record may carry beyond the required set:
+#: the reader's declaration (#909).  Optional so that a record filed before
+#: they existed still reads, and is released with no declaration.
+_OPTIONAL_PUBLICATION_KEYS = frozenset({
+    "residency_prefetch_depth_gib", "residency_read_mb_s",
+})
+
+
+def _publication_keys_read(publication: object) -> bool:
+    """Whether a publication block names exactly the options a release reads."""
+
+    if not isinstance(publication, Mapping):
+        return False
+    keys = set(publication)
+    return (_PUBLICATION_KEYS <= keys
+            and keys <= _PUBLICATION_KEYS | _OPTIONAL_PUBLICATION_KEYS)
 
 
 class ActionEdgeError(ValueError):
@@ -197,10 +213,11 @@ def deferred_body(*, edges: Sequence[Mapping[str, object]],
                   publication: Mapping[str, object]) -> dict[str, object]:
     """The canonical body of one deferred submission, without its id."""
 
-    if set(publication) != _PUBLICATION_KEYS:
+    if not _publication_keys_read(publication):
         raise ActionEdgeError(
             "deferred publication options must be exactly "
-            f"{sorted(_PUBLICATION_KEYS)}")
+            f"{sorted(_PUBLICATION_KEYS)}, optionally with "
+            f"{sorted(_OPTIONAL_PUBLICATION_KEYS)}")
     body: dict[str, object] = {
         "schema": DEFERRED_SCHEMA_V1,
         "edges": _checked_edges([dict(edge) for edge in edges]),
@@ -240,7 +257,7 @@ def validate_deferred(value: object, *, pending_id: str | None = None
         raise ActionEdgeError(
             "a deferred template carries no data manifest; the release builds it")
     publication = value.get("publication")
-    if not isinstance(publication, Mapping) or set(publication) != _PUBLICATION_KEYS:
+    if not _publication_keys_read(publication):
         raise ActionEdgeError("a deferred record's publication options are malformed")
     static = value.get("static_manifest")
     if static is not None and not isinstance(static, Mapping):

@@ -5835,7 +5835,7 @@ again, and the marker is retired as evidence. A live marker also skips the
 `refuse_if_live` duplicate check described above, for the same reason: the
 submission is the replacement the cancellation asked for. A deliberately requested fresh
 plan seals its price through the same `pbrun --residency stage` path: the
-tier's **current announced offer** caps the measured single-reader share, so
+tier's **current announced offer** caps one copy's measured rate (#909), so
 a window sealed after the offer sank is admissible without any sealed row
 being rewritten. `residency_plan.freeze` stays first-writer; a superseded
 filing must be reaped before its successor can be sealed, and the planner
@@ -5968,14 +5968,17 @@ consumption rate is the bytes through the end of the accepted phase over the
 time from the claim to that phase's report. Counting the whole accepted phase
 as read over-states the rate, which errs toward a longer horizon.
 
-Before anything is measured, two fill numbers stand in. Until a copy of the
-plan lands, the landing rate is the smallest fill any of its movers was
-sealed with; on 2026-09-22 R12's 24 copies, all sealed at 144 MB/s, landed at
-134 to 626 MB/s (median 154). Until the consumer reports after its claim,
-its consumption is the tier's announced fill supply: a consumer that reads
-staged bytes cannot keep up a rate above what the tier refills them at, so
-the horizon priced at it is at least as long. With no accepted progress
-there is no horizon, and the #632 regime (one step) stands.
+Before anything is measured, the plan's own numbers stand in (#909). Until a
+copy of the plan lands, the landing rate is the smallest fill any of its
+movers was sealed with; on 2026-09-22 R12's 24 copies, all sealed at
+144 MB/s, landed at 134 to 626 MB/s (median 154). The consumption rate is
+the larger of the measured rate and the read rate the plan declares
+(`reader.read_mb_s`); before the consumer reports, the declared rate alone.
+With neither, or with no accepted progress, there is no horizon, and the
+window keeps its #633 run-ahead bound and the #632 regime (one step). The
+tier's announced fill supply stood in for both rates until #909, and it
+moves as the loop probes the pool; see "An unmeasured reader or mover is
+priced from a declared or measured rate" below.
 
 For R12 at 22:30Z: 81.2 GB read in 3919 s (20.7 MB/s), 180 GiB of read-ahead
 reaching to 274.5 GB (`chain-042` to `chain-034`), a 174 s landing for a
@@ -6165,13 +6168,18 @@ capacity. The horizon at each phase is priced at the consumer's rates now:
   after the claim makes that a whole phase over a few seconds: kept for the
   claim's lifetime, that peak would refuse every newcomer beside it. The
   tier loop keeps the attained rate in memory; a restart forgets it and
-  prices each claim at its current rate. Anything else — a newcomer, a
-  ready consumer, a claim with no report — has measured nothing, and the
-  tier's announced fill supply stands in, as it does for the horizon.
+  prices each claim at its current rate. A declared read rate above the
+  measured one raises it (#909). Anything else — a newcomer, a ready
+  consumer, a claim with no report — has measured nothing, and its plan's
+  declared read rate stands in; with none, the footprint is the #633
+  run-ahead bound, named `undeclared`.
 * Landing: the slowest complete copy of the plan, else the smallest fill its
-  movers were sealed with, else the fill supply, as for the horizon.
-* Read-ahead: the consumer's reservations (`mem_gb` plus its admission's GPU
-  budget), as for the horizon.
+  movers were sealed with, as for the horizon.
+* Read-ahead: the prefetch depth the plan declares
+  (`reader.prefetch_depth_bytes`), else the consumer's reservations
+  (`mem_gb` plus its admission's GPU budget), as for the horizon. The census
+  names each basis on the window (`consumption_basis`, `readahead_basis`,
+  `landing_basis`).
 
 With no consumption or landing rate the horizon is undefined, and the
 footprint is what the #633 bound alone lets the window publish.
@@ -6248,11 +6256,11 @@ against the 585 GiB stage of 2026-09-23, with the live 5 s cycle:
 * R12, claimed at `chain-043`, has a footprint of 242 GiB (measured
   20.7 MB/s, 180 GiB of read-ahead, one 22 GiB refill leg) and a 48 GiB
   output window.
-* An R12-shaped newcomer (R13) has 220 GiB before its claim: 100 GiB of
-  host read-ahead (its 80 GiB GPU budget is set at claim), with the refill
-  priced at the 413 MB/s fill supply. Beside R12 it is admitted:
-  242 + 48 + 220 + 48 = 558 GiB. Once claimed and reporting at R12's rate it
-  is R12's 242, and the two commit 580.
+* An R12-shaped newcomer (R13) that declares nothing is priced at its
+  run-ahead bound and waits beside R12 (#909). Declaring what R12 does, one
+  22 GiB layer of read-ahead at 21 MB/s, its footprint is 88 GiB and it is
+  admitted. Until #909 its refill was priced at the announced fill supply:
+  220 GiB at 413 MB/s, admitted at 558 GiB.
 * A native capture's footprint is its whole 20 GiB plan, and a Stage-B
   quantum's (a 3 GiB head and three 22 GiB layers) its whole 69 GiB.
 * R13 alone, at R12's rate, commits 290 GiB and leaves 295: four Stage-B
@@ -6268,17 +6276,17 @@ past the horizon (44). Its 264 GiB past the horizon is evictable.
 * The capture passes the commitment (308 + 20 = 328). The joint-fit gate
   refuses it until the relief gives back ranges past R12's horizon, as
   before #907, and then its lead publishes.
-* An R13 newcomer (242 GiB at this latency) is refused: 308 + 242 = 550.
+* An undeclared R13 newcomer (its 528 GiB run-ahead bound) is refused.
   Before #907 the relief gave back R12's farthest ranges for its lead; now
   nothing is evicted for it.
 * After the relief took R12's ranges past its horizon, four Stage-B quanta
   all fit the joint-fit gate (264 + 44 + 4 × 25 = 408). The commitment
   admits three (515) and the fourth waits (584).
 
-A newcomer's footprint moves with the announced fill supply, which prices its
-consumption until it reports. At the 144 MB/s the test's own cycle probes,
-R13's footprint is 176 GiB, and 308 + 176 = 484 fits: the same R13 is admitted
-on a stage that announces a slower fill.
+Until #909 a newcomer's footprint moved with the announced fill supply, which
+priced its consumption until it reported: R13 was 242 GiB and refused at
+413 MB/s, and 176 GiB and admitted at 144 (PB `ff200b3dacf1` on main
+`81d95cba`). It no longer reads the supply.
 
 **Assumptions and limits.**
 
@@ -6289,14 +6297,12 @@ on a stage that announces a slower fill.
   at claim and enters its footprint from then on, so a newcomer admitted
   beside it before then was not charged for it. R13 above is charged 220 GiB
   at admission and needs 242 at R12's measured rate: 22 GiB admitted
-  uncharged. (Between its claim and its first report the fill supply still
-  prices its consumption and its footprint reads 308, but its window
-  publishes one step until that report, #632.)
-* The read-ahead is the reservation, not a declared prefetch depth. R12's
-  180 GiB over-states a one-phase (22 GiB) lookahead by about 150 GiB. In the
-  horizon that error only cached more; here it refuses work that would fit.
-  A newcomer's supply-priced refill is the second-order term (R13 with its
-  GPU budget: 76 GiB against 4 measured).
+  uncharged. A declared prefetch depth has no such gap: it is the same
+  before and after the claim.
+* An undeclared read-ahead is the reservation. R12's 180 GiB over-states a
+  one-phase (22 GiB) lookahead by about 150 GiB. In the horizon that error
+  only cached more; here it refuses work that would fit. A consumer that
+  declares its depth is priced at it (#909).
 * A consumer whose state does not read publishes nothing while it stays
   unknown and is not counted.
 * A leg left past the horizon that no eviction took becomes the window's
@@ -6327,9 +6333,98 @@ on a stage that announces a slower fill.
   priorities never raise the barrier.
 * The census reads the ready and claimed items, every live window's movers on
   the tier and the output census, on each pass that asks it (at most three a
-  cycle, and only when a newcomer is present). Its cost is not measured.
+  cycle, and only when a newcomer is present). Its cost is measured since #909
+  (see below): about 20 ms a call from sparky over NFS.
 * Stage tiers only. A ram miss is a read from the stage, slower but never a
   stall (#906), and the ram leg keeps the joint-fit gate alone.
+
+### An unmeasured reader or mover is priced from a declared or measured rate (#909)
+
+Three numbers stood in for measurements nothing had taken yet, and two of them
+were the tier's whole fill offer:
+
+* a newcomer's consumption, and its landing when its rows were sealed with no
+  fill, was the tier's announced fill supply;
+* a mover was sealed at the largest single-reader share any receipt on the
+  tier had priced (440 MB/s live on 2026-09-23), capped by the offer
+  (428 MB/s), so every seal was the whole offer and each copy ran alone;
+* a consumer's read-ahead was its memory reservation (R12: 180 GiB, where it
+  holds about one 22 GiB layer).
+
+The supply moves as the loop probes the pool, so the same queue admitted a
+newcomer on one cycle and refused it on the next: on main at `81d95cba` an
+R12-shaped R13 beside R12 was refused at 413 MB/s (242 GiB) and admitted at
+144 (176 GiB), PB `ff200b3dacf1`.
+
+**A consumer declares its reading.** `pbrun --residency-prefetch-depth-gib`
+and `--residency-read-mb-s` seal a `reader` block on the residency plan
+(`prefetch_depth_bytes`, `read_mb_s`), separate from the memory reservation.
+A deferred submission (#913) carries both as optional publication options, so
+a record filed before #909 still releases, undeclared. A logical campaign
+declares them once for every child, as the optional `prefetch_depth_gib` and
+`read_mb_s` fields of its `task_data_manifest` policy; a policy without them
+freezes the same parent identity as before. The tier loop prices:
+
+| Term | First of | Basis names |
+|---|---|---|
+| Consumption | the larger of the measured and the declared rate; else the declared rate | `measured`, `declared`, `undeclared` |
+| Read-ahead | the declared depth; else the memory reservation | `declared`, `memory-reservation` |
+| Landing | the plan's slowest complete copy; else its smallest sealed fill | `measured`, `sealed`, `none` |
+
+Both consumption terms are lower bounds on how fast the consumer reads, and a
+faster rate only lengthens the horizon and the footprint, so the larger wins.
+A consumer that declares nothing and has measured nothing has no horizon: its
+footprint is the #633 run-ahead bound, which refuses more than any rate would
+(an undeclared R13 beside R12: 528 GiB, refused). The submitter lifts it by
+declaring. An over-reaching declaration costs speed, not correctness: a range
+the window did not stage is read from the pool, and a range under a live
+reader lease is never evicted. `residency_plan.refill_horizon` no longer
+takes a fill supply at all.
+
+**A mover is sealed at one copy's measured rate.** A seal is three things at
+once: the fill tokens the copy holds, so the offer over the seal is how many
+copies run together; the rate `_fell_short` holds the copy's own delivery
+against, which reads as saturation only when the seal is one copy's worth; and
+the landing rate the horizon assumes until the plan's first copy lands.
+`storage_tiers.mover_fill_price` seals at the first of:
+
+* `landing`: the slowest landing (`bytes_staged / seconds`) among the copies
+  of the same manifest onto the tier in its latest window -- the consumer
+  whose last receipt is newest -- each copy at its latest complete receipt
+  that read the pool. The latest window, never every window: receipts are
+  append-only, and the slowest copy ever measured would ratchet each
+  generation's seal below the last (R11's slowest copy of R12's manifest was
+  77 MB/s, R12's 116);
+* `single-reader-share`: the median over the tier's pool-reading receipts of
+  one reader's share, the same "one reader's worth" the fold's probe grows
+  by. The median, not the maximum the seal used before;
+* `none`: the tier's offer is then the stated bound (`tier-offer`), and one
+  copy runs at a time.
+
+`current_fill_offer` still caps the seal at the tier's current offer (#708).
+pbrun and the produced-output restage seal through the same rule, and the plan's
+`demand_source.fill_measured` names the statistic, its basis and the window
+it read. On the live receipts of 2026-09-23 an R13 on R12's manifest is
+sealed at 116 MB/s where it was sealed at 428, and a first submission of an
+unseen manifest at 59 (the median over 965 pool-reading receipts; the
+latest 200 have a median of 138). The fold bounds the concurrency a smaller
+seal buys: a copy that falls short of its seal sets a ceiling, and the tier
+mints no more than the ceiling plus one reader's worth.
+
+**Cost.** Each cycle that builds the commitment census reports what it cost:
+`{"event": "commitment-census", "calls", "elapsed_s", "max_s"}` on the tier
+loop's output. Measured on 2026-09-23 from sparky over NFS (the loop itself
+reads the queue locally on dl380g10), 25 warm calls per tree, as PB actions:
+
+| Queue | Before (`81d95cba`) median / p90 | After median / p90 |
+|---|---|---|
+| Live, no live window | 23.1 / 28.9 ms | 23.5 / 26.8 ms |
+| #907 replay: R12, R13, the capture, three quanta | 20.2 / 20.4 ms | 18.3 / 18.6 ms |
+
+The profile splits a loaded call about evenly between `read_footprint` (six
+calls) and the ledger's token-directory scans (`holder_tokens`,
+`_mover_state`). An undeclared newcomer's footprint is the run-ahead bound,
+which recomputes no horizon, so the after-tree is slightly cheaper.
 
 ### Adopting a resident range, and when an orphan is evicted
 
@@ -7598,9 +7693,10 @@ empty `output_note` and the producer's `refill_deferred` count.
 the pool. The read is cold, like a consumer's input mover, but the restage
 mover reserved no fill, so it read the spindles outside the ledger that
 rations them. It can now reserve `fill_mb_s_pool_side@<tier>` at the price
-pbrun gives a mover: `storage_tiers.current_fill_offer` over the movement
-receipts' single-reader share (`mover_fill_demand_from_receipts`, filtered
-by the tier's `pool_identity`), capped by the tier's current offer. The
+pbrun gives a mover: `storage_tiers.current_fill_offer` over one copy's
+measured rate (`mover_fill_demand_from_receipts` with the batch's manifest,
+#909, filtered by the tier's `pool_identity`), capped by the tier's current
+offer. The
 sealed command carries the matching `--fill-mb-s-pool-side`, so the receipt
 records what the claim reserved. The stage window still comes from the
 producer by exact transfer. The fill is not prepaid: the claim takes it from
