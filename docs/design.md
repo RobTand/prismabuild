@@ -6796,10 +6796,48 @@ If no box declares `spool_gb`, an opted-in producer is unplaceable, and
 not name as unknown, not zero, so it queues the action. Every claim then
 records `never_fits_capacity`, and the action stays in `ready`. A waiting
 `pbrun` prints `gave up waiting` when `--wait-s` expires and cancels nothing.
-Withdraw the action, or start a box with `--spool-gb`. `pbrun` does refuse
-the action at submission when every box that matches its tags declares a
-smaller `spool_gb` than the demand. On 2026-09-22, sparky had 125 GB free
-(93% used) with a 628 MB spool, and sparklina had 411 GB free with 30 MB.
+Withdraw the action, or declare `--spool-gb` for a box in the roster. `pbrun`
+does refuse the action at submission when every box that matches its tags
+declares a smaller `spool_gb` than the demand. On 2026-09-22, sparky had
+125 GB free (93% used) with a 628 MB spool, and sparklina had 411 GB free
+with 30 MB.
+
+**The roster declares each box's spool budget (#910).** A box's `--spool-gb N`
+sits in its `args` in `tools/fleet/fleet_boxes.json`, beside `--mem-gb`, so the
+supervisor passes it to every worker loop it starts. Two more roster fields
+let the supervisor check it. `local_disk`, on the box, names a directory on the
+filesystem the budget is carved from; the spool root itself is the producer's
+sealed `PRISMABUILD_PRODUCED_SPOOL_ROOT`, which no box knows in advance.
+`local_disk_free_floor_percent`, beside `boxes`, is the fleet's disk-headroom
+floor, 5% of a filesystem's size. When `supervise.py` starts, it keeps the
+declaration only if `local_disk` is an absolute path on a local disk (the same
+mount check `ProducedSpool` makes) and `f_bavail` minus the floor covers N GiB.
+Otherwise it removes `--spool-gb N` from the arguments and logs one line naming
+the free space, the floor and the declared amount. It does not exit, because
+the supervisor runs under `Restart=always` and an exit would take every loop on
+the box with it; a refused budget costs the box only the spool kind, and
+opted-in producers record `never_fits_capacity` there and are claimed where the
+budget fits. A box whose `args` carry no `--spool-gb` reads nothing new, and its
+arguments are the file's, byte for byte.
+
+The check runs once per distinct declaration in a supervisor process: at start,
+and again after a publish, which re-execs the supervisor. It does not run every
+tick, because a producer filling its own window lowers free space, and a
+per-tick check would retract the offer while the box's own producer used it.
+Two limits follow. A supervisor that starts while a producer on the box holds
+spool bytes counts those bytes as used, and may refuse a budget that fits once
+the producer drains; the next start checks again. A refusal, or a later roster
+without the flag, does not shrink the host ledger: `ensure_capacity` only grows
+it, and the worker loop retires free tokens only for the kinds its offer names,
+so `spool_gb` tokens minted by an earlier declaration stay until a smaller
+positive declaration retires them. The runtime `statvfs` check in
+`reserve_group` still fails a producer closed when the disk is short.
+
+The 2026-09-23 declarations are 32 GiB on both GB10s, one GLM Stage A spool
+window (`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` = 34,359,738,368 B), measured
+against `/home/rob`: sparky had 138,829,066,240 B free of 1,968,362,958,848 B,
+so 40,410,918,297 B (37.6 GiB) of room above the floor, and sparklina had
+436,092,063,744 B free of 982,819,848,192 B, 360.4 GiB of room.
 
 **Still open.**
 
