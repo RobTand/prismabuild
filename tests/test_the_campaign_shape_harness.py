@@ -17,13 +17,18 @@ harness over a shape small enough for the ordinary suite:
     it exists for, on the driver rather than on a fixture;
 *   a shape with nothing to cut fails as ``did_not_test`` before any byte is
     written;
-*   the committed reference table has the properties the gate claims for it.
+*   the committed reference tables have the properties the gate claims for
+    them, and the registry names exactly the tables on disk;
+*   a gate receipt is judged on its outcomes, its tree and its terminal
+    record, and each way one can be wrong refuses by name.
 
 Every root is under ``tmp_path``; ``tests/conftest.py`` repoints ``pbrun.SH``
 there, and the harness refuses any other.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -44,6 +49,7 @@ SMALL_SCALE = GIB // SMALL_UNIT
 #: units, the way real shards sit.
 ODD = 16_308_005
 REFERENCE = shape_gate.TABLE_ROOT / "682e7b0a859f.json.gz"
+LAYER_44 = shape_gate.TABLE_ROOT / "bc2a3bc8ad11.json.gz"
 
 
 def _table(phases: list[tuple[str, list[tuple[int, int, int, int]]]]) -> dict:
@@ -100,10 +106,13 @@ def _run(tmp_path: Path, table: dict) -> dict:
 
 
 def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
-        tmp_path: Path, small_units) -> None:
+        tmp_path: Path, small_units, capsys: pytest.CaptureFixture[str]) -> None:
     """Every entry lands once per tier and is read back from RAM, pool untouched."""
 
     result = _run(tmp_path, _campaign_like())
+    with capsys.disabled():
+        print(json.dumps({"shape_gate": "campaign-like", "result": result},
+                         sort_keys=True))
 
     total = result["manifest_bytes"]
     assert result["coverage"]["phases_over_chunk"] == ["chain-1"]
@@ -117,7 +126,9 @@ def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
     assert result["entries_read_strictly"] == result["entries"]
     assert result["pool_opens"] == {"promote": 0, "read": 0, "egress": 0}
     assert total > result["ram_window_bytes"] and result["ram_egresses"] >= 1
+    assert result["ram_slide"] is True
     assert result["ram_peak_bytes"] <= result["ram_window_bytes"]
+    assert result["coverage"]["chunk_edge_inside_entry"] is True
 
 
 def test_a_byte_cut_splitter_is_refused_by_name(
@@ -168,3 +179,134 @@ def test_the_reference_table_exercises_what_the_gate_claims() -> None:
     assert coverage["byte_cuts_inside_entries"] >= 1
     scaled = shape_gate.scaled_shape(table, scale=shape_gate.SCALE)
     assert (scaled["multi_range_files"], scaled["overlapping_files"]) == (6, 4)
+
+
+def _real_chunk_bytes() -> int:
+    policy = tier_loop.load_ram_policy()
+    assert policy is not None
+    return storage_tiers.promotion_chunk_gib_for_window(
+        int(policy["window_gib_default"]), policy.get("promotion_chunk_gib")) * GIB
+
+
+def test_the_layer_44_table_is_the_breadth_table() -> None:
+    """GLM layer-44 Stage B: many phases, no phase over a chunk, under the window."""
+
+    table = shape_gate.read_table(LAYER_44)
+    source = table["source"]
+    assert (source["entry_count"], source["phase_count"],
+            source["total_bytes"]) == (10344, 22, 148264339117)
+    coverage = shape_gate.shape_coverage(
+        shape_gate.scaled_shape(table, scale=1), chunk_bytes=_real_chunk_bytes())
+    assert coverage["phases_over_chunk"] == []
+    assert coverage["byte_cuts_inside_entries"] == 0
+
+
+def test_the_registry_names_exactly_the_committed_tables() -> None:
+    """Every table on disk is gated, each by its bytes, and one cuts an entry.
+
+    The flag each table carries is the table's real-GiB coverage under the
+    checkout's own policy, so a registry cannot claim a chunk edge its table
+    does not have -- and the gate set as a whole must exercise one.
+    """
+
+    on_disk = {path.name.removesuffix(".json.gz")
+               for path in shape_gate.TABLE_ROOT.glob("*.json.gz")}
+    assert set(shape_gate.REFERENCE_TABLES) == on_disk
+    chunk = _real_chunk_bytes()
+    for name, spec in shape_gate.REFERENCE_TABLES.items():
+        path = shape_gate.TABLE_ROOT / f"{name}.json.gz"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == spec["sha256"], name
+        coverage = shape_gate.shape_coverage(
+            shape_gate.scaled_shape(shape_gate.read_table(path), scale=1),
+            chunk_bytes=chunk)
+        assert bool(coverage["byte_cuts_inside_entries"]) == spec["chunk_edge_inside_entry"], name
+    assert any(spec["chunk_edge_inside_entry"]
+               for spec in shape_gate.REFERENCE_TABLES.values())
+    gate = Path(__file__).with_name("gate_campaign_shape.py").read_text()
+    test = shape_gate.REFERENCE_TEST.split("::")[1]
+    assert shape_gate.REFERENCE_TEST.startswith("tests/gate_campaign_shape.py::")
+    assert f"def {test}(" in gate
+    assert shape_gate.reference_nodes() == [
+        f"{shape_gate.REFERENCE_TEST}[{name}]"
+        for name in sorted(shape_gate.REFERENCE_TABLES)]
+
+
+def _outcomes(**changes) -> dict:
+    nodes = shape_gate.reference_nodes()
+    record = {"schema": "prismabuild.pbtest_outcomes.v1", "collect_only": False,
+              "collected": list(nodes),
+              "reports": [[node, "call", "passed", None, None] for node in nodes],
+              "uncounted": []}
+    record.update(changes)
+    return record
+
+
+def test_a_gate_run_that_passed_every_table_is_accepted() -> None:
+    shape_gate.judge_outcomes(_outcomes(), where="k")
+
+
+@pytest.mark.parametrize("record", [
+    None,
+    _outcomes(collect_only=True),
+    # Filtered to one table.
+    _outcomes(collected=shape_gate.reference_nodes()[:1],
+              reports=[[shape_gate.reference_nodes()[0], "call", "passed", None, None]]),
+    # Ran something else as well.
+    _outcomes(collected=[*shape_gate.reference_nodes(), "tests/test_x.py::test_y"]),
+    # One table skipped, one failed, one passed but errored in teardown.
+    _outcomes(reports=[[node, "call", "skipped", "no", None]
+                       for node in shape_gate.reference_nodes()]),
+    _outcomes(reports=[[node, "call", "failed", None, None]
+                       for node in shape_gate.reference_nodes()]),
+    _outcomes(reports=[row for node in shape_gate.reference_nodes()
+                       for row in ([node, "call", "passed", None, None],
+                                   [node, "teardown", "error", None, None])]),
+    _outcomes(uncounted=[[shape_gate.reference_nodes()[0], "call", "passed"]]),
+], ids=["no-record", "collect-only", "one-table", "extra-node", "skipped",
+        "failed", "teardown-error", "uncounted"])
+def test_a_gate_run_that_is_not_every_table_passing_is_refused(record) -> None:
+    with pytest.raises(shape_gate.ShapeGateFailure) as caught:
+        shape_gate.judge_outcomes(record, where="k")
+    assert caught.value.reason == "receipt_refused"
+
+
+def test_only_pbruns_closure_stamp_may_differ_from_the_commit() -> None:
+    stamp = ".pbrun-closure." + "0" * 12 + ".json"
+    assert shape_gate.closure_stamp_only([stamp], ".") == []
+    assert shape_gate.closure_stamp_only([f"sub/{stamp}"], "sub") == []
+    assert shape_gate.closure_stamp_only([f"sub/{stamp}"], ".") == [f"sub/{stamp}"]
+    assert shape_gate.closure_stamp_only(
+        [stamp, "tools/fleet/stage_move.py"], ".") == ["tools/fleet/stage_move.py"]
+
+
+def test_an_action_key_resolves_by_a_unique_prefix_only(tmp_path: Path) -> None:
+    queue = tmp_path / "pb-queue"
+    (queue / "done").mkdir(parents=True)
+    (queue / "failed").mkdir()
+    one, two = "ab" * 32, "abcdef" + "0" * 58
+    (queue / "done" / f"{one}.json").write_text("{}")
+    (queue / "failed" / f"{two}.json").write_text("{}")
+    assert shape_gate.resolve_action_key(queue, one[:12]) == one
+    assert shape_gate.resolve_action_key(queue, two.upper()[:12]) == two
+    for bad in ("abab", "ab" * 3 + "zz" * 3, "abababababab"[:11], "0" * 12):
+        with pytest.raises(shape_gate.ShapeGateFailure):
+            shape_gate.resolve_action_key(queue, bad)
+    (queue / "done" / f"{one[:12]}{'1' * 52}.json").write_text("{}")
+    with pytest.raises(shape_gate.ShapeGateFailure, match="names 2 finished actions"):
+        shape_gate.resolve_action_key(queue, one[:12])
+
+
+@pytest.mark.parametrize("done", [
+    {"status": "failed", "detail": {"returncode": 1}},
+    {"status": "executed", "detail": {"returncode": 1}},
+    {"status": "executed"},
+])
+def test_a_gate_run_that_did_not_exit_zero_is_refused(tmp_path: Path, done) -> None:
+    queue = tmp_path / "pb-queue"
+    (queue / "done").mkdir(parents=True)
+    key = "cd" * 32
+    (queue / "done" / f"{key}.json").write_text(json.dumps(done))
+    with pytest.raises(shape_gate.ShapeGateFailure, match="did not finish executed"):
+        shape_gate.verify_gate_receipt(
+            action_key=key[:12], commit="a" * 40, checkout=tmp_path,
+            queue_root=queue, cas_root=tmp_path / "cas")

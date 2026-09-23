@@ -267,7 +267,8 @@ def _publish(
     monkeypatch.setattr(
         sys, "argv",
         ["publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
-         "transport fixture has reviewed mixed-generation compatibility", *argv],
+         "transport fixture has reviewed mixed-generation compatibility",
+         "--shape-gate-waiver", "transport fixture", *argv],
     )
     assert publish_runtime.main() == 0
     return mirror

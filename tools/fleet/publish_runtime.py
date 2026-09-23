@@ -201,6 +201,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "the canary's verdict module (#688) is imported by the checkout's "
      "driver at verdict time, never executed standalone; it travels with "
      "the driver above, not with the generation"),
+    ("shape_gate.py",
+     "the pre-publish shape gate (#987) judges a candidate commit before it "
+     "becomes a generation: its reference run is a pbtest of the checkout's "
+     "tests/gate_campaign_shape.py, and this publisher imports the "
+     "checkout's copy to verify that run's receipt.  A generation never "
+     "runs it, so it does not travel with one"),
 )
 
 
@@ -651,6 +657,82 @@ class _CanaryPrecondition(Exception):
     """
 
 
+def _shape_gate_path() -> Path:
+    """The pre-publish shape gate (#987), read from the publishing checkout."""
+
+    return CHECKOUT / "tools" / "fleet" / "shape_gate.py"
+
+
+def _load_shape_gate():
+    """Import the checkout's shape gate, the module that judges its receipt."""
+
+    path = _shape_gate_path()
+    if not path.is_file():
+        raise SystemExit(
+            f"no shape gate at {path}: this checkout cannot verify a gate "
+            "receipt.  Nothing was published."
+        )
+    spec = importlib.util.spec_from_file_location("shape_gate", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load the shape gate at {path}: no import spec")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _shape_gate_record(args, *, commit: str, dirty: bool) -> dict[str, object]:
+    """The gate's verdict on ``commit``, or refuse to publish.
+
+    A fresh publication, ``--stage-only`` and ``--dry-run`` included, names
+    either a passing gate run of this commit (``--shape-gate-action``) or a
+    reason to publish without one (``--shape-gate-waiver``).  There is no
+    third way and no default: a generation's receipt says which it was, and
+    the rollout canary prints it.
+    """
+
+    waiver = args.shape_gate_waiver
+    if waiver is not None:
+        return {"verdict": "waived", "reason": waiver.strip()}
+    if args.shape_gate_action is None:
+        raise SystemExit(
+            "refusing to publish without the pre-publish shape gate (#987).  "
+            "Run it against this commit as one PB shard:\n"
+            "  pbtest.py --checkout <this tree> --python <venv>/bin/python "
+            "--tag gb10 --priority 0 --timeout-s 3600 --shards 1 "
+            "--json <receipt>.json tests/gate_campaign_shape.py\n"
+            "then pass its action key as --shape-gate-action KEY, or pass "
+            "--shape-gate-waiver REASON to publish without it.  Nothing was "
+            "published."
+        )
+    if dirty:
+        raise SystemExit(
+            "a dirty tree is not the commit the shape gate ran: the gate "
+            "receipt covers committed bytes only.  Commit and rerun the gate, "
+            "or pass --shape-gate-waiver REASON.  Nothing was published."
+        )
+    gate = _load_shape_gate()
+    try:
+        return gate.verify_gate_receipt(
+            action_key=args.shape_gate_action, commit=commit, checkout=CHECKOUT,
+            queue_root=MIRROR.parent / "pb-queue", cas_root=MIRROR.parent / "cas")
+    except gate.ShapeGateFailure as exc:
+        raise SystemExit(
+            f"the shape gate receipt does not cover {commit[:12]}: "
+            f"{exc.detail}.  Nothing was published."
+        ) from exc
+
+
+def _shape_gate_line(record: dict[str, object]) -> str:
+    """One line naming how a generation passed the shape gate."""
+
+    if record.get("verdict") == "waived":
+        return f"shape gate: WAIVED: {record.get('reason')}"
+    return (f"shape gate: passed by {str(record.get('action_key'))[:12]} "
+            f"on {record.get('finished_host')} "
+            f"(tables {', '.join(map(str, record.get('tables') or ()))})")
+
+
 def _canary_driver_path() -> Path:
     """Where crew A's driver (issue #688 deliverable 1) is expected."""
 
@@ -749,7 +831,7 @@ def _canary_record_path(store: Path, generation_name: str) -> Path:
 
 def _write_canary_record(
     path: Path, *, generation: str, commit: str, status: str,
-    exit_code: int | None, detail: str,
+    exit_code: int | None, detail: str, shape_gate: dict[str, object],
 ) -> None:
     assert status in CANARY_STATUSES, status
     _write_receipt(path, {
@@ -759,6 +841,7 @@ def _write_canary_record(
         "canary_status": status,
         "canary_exit": exit_code,
         "detail": detail,
+        "shape_gate": shape_gate,
         "recorded_unix": time.time(),
         "recorded_by": socket.gethostname(),
     })
@@ -766,6 +849,7 @@ def _write_canary_record(
 
 def _run_rollout_canary(
     *, store: Path, generation_name: str, commit: str, enabled: bool,
+    shape_gate: dict[str, object],
 ) -> int:
     """Record the canary outcome for an activated generation; return the process exit.
 
@@ -776,32 +860,35 @@ def _run_rollout_canary(
     """
 
     record = _canary_record_path(store, generation_name)
+    # A waived gate is said on every rollout, whatever the canary does.
+    print(f"{generation_name} {_shape_gate_line(shape_gate)}",
+          file=sys.stderr if shape_gate.get("verdict") == "waived" else sys.stdout)
     if not enabled:
         reason = ("--no-canary" if CANARY_DEFAULT_ENABLED
                   else "gate default-OFF (phase 1); pass --canary to verify")
         _write_canary_record(record, generation=generation_name, commit=commit,
-                             status="not_run", exit_code=None,
+                             shape_gate=shape_gate, status="not_run", exit_code=None,
                              detail=f"canary skipped: {reason}")
         print(f"canary not_run for {generation_name}: {reason}")
         return 0
     _write_canary_record(record, generation=generation_name, commit=commit,
-                         status="pending", exit_code=None,
+                         shape_gate=shape_gate, status="pending", exit_code=None,
                          detail="canary submitted against the activated generation")
     print(f"canary pending for {generation_name}; invoking the driver", flush=True)
     try:
         code, detail = _invoke_canary_driver(generation_name)
     except _CanaryPrecondition as exc:
         _write_canary_record(record, generation=generation_name, commit=commit,
-                             status="failed", exit_code=None, detail=str(exc))
+                             shape_gate=shape_gate, status="failed", exit_code=None, detail=str(exc))
         print(f"canary failed for {generation_name}: {exc}", file=sys.stderr)
         return 1
     if code == 0:
         _write_canary_record(record, generation=generation_name, commit=commit,
-                             status="verified", exit_code=code, detail=detail)
+                             shape_gate=shape_gate, status="verified", exit_code=code, detail=detail)
         print(f"canary verified for {generation_name}: {detail}")
         return 0
     _write_canary_record(record, generation=generation_name, commit=commit,
-                         status="failed", exit_code=code, detail=detail)
+                         shape_gate=shape_gate, status="failed", exit_code=code, detail=detail)
     print(f"canary failed for {generation_name} (exit {code}): {detail}; "
           "activation stands, nothing was rolled back", file=sys.stderr)
     return 1
@@ -1614,6 +1701,20 @@ def main() -> int:
         help="skip the fleet canary and record not_run in the rollout record; "
              "the escape hatch now that the gate is default-ON (phase 2).",
     )
+    gate = ap.add_mutually_exclusive_group()
+    gate.add_argument(
+        "--shape-gate-action", metavar="KEY", default=None,
+        help="the PB action key (or a unique 12-digit prefix) of a passing "
+             "pre-publish shape gate run of this commit: one pbtest shard of "
+             "tests/gate_campaign_shape.py (#987).  A fresh publication needs "
+             "this or --shape-gate-waiver.",
+    )
+    gate.add_argument(
+        "--shape-gate-waiver", metavar="REASON", default=None,
+        help="publish without a shape gate receipt; the nonblank reason is "
+             "recorded in the generation's receipt and printed by the rollout "
+             "canary.",
+    )
     args = ap.parse_args()
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
         ap.error("--barrier-wait-s must be finite and nonnegative")
@@ -1623,7 +1724,8 @@ def main() -> int:
     if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
                      or args.migrate_directory or args.default_transport
                      or args.rollout != "barrier" or args.rollout_reason
-                     or args.canary or args.no_canary):
+                     or args.canary or args.no_canary
+                     or args.shape_gate_action or args.shape_gate_waiver is not None):
         ap.error("barrier recovery cannot be combined with publication options")
     if args.rollback_barrier and not (args.rollback_reason and args.rollback_reason.strip()):
         ap.error("--rollback-barrier requires a nonblank --rollback-reason")
@@ -1635,6 +1737,12 @@ def main() -> int:
         ap.error("the canary verifies a live generation; --stage-only activates nothing")
     if args.stage_only and args.activate_generation:
         ap.error("--stage-only cannot activate an existing generation")
+    if args.activate_generation and (args.shape_gate_action
+                                     or args.shape_gate_waiver is not None):
+        ap.error("the shape gate judges a fresh publication; an existing "
+                 "generation keeps the gate record it was published with")
+    if args.shape_gate_waiver is not None and not args.shape_gate_waiver.strip():
+        ap.error("--shape-gate-waiver requires a nonblank reason")
     if args.dry_run:
         return _run_publication(args)
     with _publication_lock():
@@ -1704,8 +1812,13 @@ def _run_publication(args) -> int:
             f"canary requested but no driver at {_canary_driver_path()}: "
             "nothing was published and the live runtime still points where it did."
         )
+    # The last refusal before anything is written: the gate reads the fleet's
+    # records, and an earlier refusal is cheaper to hear first.
+    shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)
     if args.rollout == "rolling":
         print(f"rollout rolling: {rollout_reason}")
+    print(_shape_gate_line(shape_gate),
+          file=sys.stderr if shape_gate.get("verdict") == "waived" else sys.stdout)
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")
     if args.dry_run:
@@ -1776,6 +1889,9 @@ def _run_publication(args) -> int:
             **({"default_transport": args.default_transport}
                if args.default_transport else {}),
             "dirty": dirty,
+            # How this commit passed the pre-publish shape gate (#987): the
+            # verified gate run, or the waiver and its reason.
+            "shape_gate": shape_gate,
             "generation": generation_name,
             "published_unix": time.time(),
             "published_by": socket.gethostname(),
@@ -1789,7 +1905,8 @@ def _run_publication(args) -> int:
         _fsync_directory(store)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
-                              "path": str(generation), "activated": False}, sort_keys=True))
+                              "path": str(generation), "activated": False,
+                              "shape_gate": shape_gate}, sort_keys=True))
             return 0
         if args.rollout == "barrier":
             barrier_exit = _arm_barrier(generation_name, wait_s=args.barrier_wait_s)
@@ -1798,7 +1915,8 @@ def _run_publication(args) -> int:
                 # so there is no rollout record to write. The resume path owns it.
                 return barrier_exit
             return _run_rollout_canary(store=store, generation_name=generation_name,
-                                       commit=commit, enabled=canary_enabled)
+                                       commit=commit, enabled=canary_enabled,
+                                       shape_gate=shape_gate)
         legacy = _activate(
             generation, migrate_directory=args.migrate_directory
         )
@@ -1807,7 +1925,8 @@ def _run_publication(args) -> int:
         if legacy is not None:
             print(f"retained previous directory runtime at {legacy}")
         return _run_rollout_canary(store=store, generation_name=generation_name,
-                                   commit=commit, enabled=canary_enabled)
+                                   commit=commit, enabled=canary_enabled,
+                                   shape_gate=shape_gate)
     finally:
         if not activated and stage.exists():
             _remove_staging_tree(stage)

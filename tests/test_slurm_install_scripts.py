@@ -473,19 +473,22 @@ def test_cutover_refuses_before_the_kills_when_publication_would_refuse(
     assert "no pbrun is waiting" not in result.stdout
 
 
-@pytest.mark.parametrize("name, marker, boundary, expected", [
+@pytest.mark.parametrize("name, marker, boundary, expected, gate", [
     ("cutover.sh", "# step 5: publish", "# -- the state file, completed",
-     ["--default-transport", "slurm"]),
+     ["--default-transport", "slurm"], True),
     ("rollback.sh", "# step 1: point", "# -- 1b.",
-     ["--activate-generation", "gen-old"]),
+     ["--activate-generation", "gen-old"], False),
 ])
 def test_cutover_publishes_through_the_interpreter(
     tmp_path: Path, name: str, marker: str, boundary: str, expected: list[str],
+    gate: bool,
 ) -> None:
     """publish_runtime.py is checked in mode 644.
 
     Running it as a command is a "Permission denied" at the one step that has
-    no cheap retry, so both scripts name an interpreter.
+    no cheap retry, so both scripts name an interpreter.  A fresh publication
+    carries the shape gate's waiver through as data (#987); a rollback
+    activates an existing generation and carries none.
     """
 
     publisher = tmp_path / "tools" / "fleet" / "publish_runtime.py"
@@ -508,6 +511,8 @@ def test_cutover_publishes_through_the_interpreter(
     environment["TEST_REPO"] = str(tmp_path)
     reason = "Reviewed fixture transition; 'quoted' text and $(literal) stay data."
     environment["PB_ROLLOUT_REASON"] = reason
+    waiver = "Fixture waiver; 'quoted' text and $(literal) stay data."
+    environment["PB_SHAPE_GATE_WAIVER"] = waiver
     result = subprocess.run(
         ["/bin/bash", "-c", program], env=environment,
         capture_output=True, text=True, timeout=10,
@@ -515,6 +520,7 @@ def test_cutover_publishes_through_the_interpreter(
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
         *expected, "--rollout", "rolling", "--rollout-reason", reason,
+        *(["--shape-gate-waiver", waiver] if gate else []),
     ]
 
 

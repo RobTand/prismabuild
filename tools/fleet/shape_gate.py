@@ -41,9 +41,14 @@ Then, on a queue, CAS, pool, stage and RAM root of the caller's own:
    the RAM tier, hashing the bytes it reads.  An entry that is not in RAM is a
    failure; there is no pool fallback.
 
-The result says what the gate exercised and what each tier moved.  A shape that
-exercises no phase larger than a chunk, or no byte cut inside an entry, fails
-as ``did_not_test`` rather than passing.
+The result says what the gate exercised and what each tier moved.  A table
+registered as exercising a chunk edge inside an entry that, scaled, exercises
+no such edge fails as ``did_not_test`` rather than passing, and the reference
+set must hold at least one such table (:data:`REFERENCE_TABLES`).
+
+:func:`verify_gate_receipt` is what ``publish_runtime.py`` asks before it
+publishes a commit: a finished PrismaBuild action that ran the reference gate
+over every registered table, on a snapshot of exactly that commit, and passed.
 
 Nothing here touches the live queue, a real pool, ``/stage/prewarm`` or
 ``/ram/prewarm``: every root is the caller's.
@@ -60,7 +65,9 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import socket
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -100,6 +107,32 @@ HOST_PROFILE: dict[str, object] = {
     "arc_meta_used_bytes": 7421280480,
     "worker": {"cpu": 80, "mem_gb": 96},
 }
+
+#: The committed reference tables, by the first 12 hex digits of the manifest
+#: they were taken from.  ``sha256`` is the table file's own digest, so a
+#: changed table is a changed gate.  ``chunk_edge_inside_entry`` says whether
+#: the table, at :data:`SCALE` under this checkout's RAM policy, has a phase
+#: larger than a chunk whose byte-offset cut lands inside an entry; the gate
+#: refuses ``did_not_test`` when a table registered so does not.
+REFERENCE_TABLES: dict[str, dict[str, object]] = {
+    # PQ consumer a7d31a4da9c1's v2 read plan (GLM Stage A, 2026-09-22): its
+    # stage chunk 0 refused residency_overran_reservation in production (#965).
+    "682e7b0a859f": {
+        "sha256": "3ad4ab3a4f8f7461b203dc867d04ffa99c4a1a8f74edd37eb5bdd0deebb3af2c",
+        "chunk_edge_inside_entry": True,
+    },
+    # GLM layer-44 Stage B executable readset: 10,344 entries in 22 phases,
+    # 138.08 GiB.  Its largest phase is 32.01 GiB, under a 40 GiB chunk, and
+    # its total fits the 160 GiB RAM window: it tests entry count and phase
+    # count through both tiers, not chunking and not the RAM slide.
+    "bc2a3bc8ad11": {
+        "sha256": "0483746a8752ea710caca0ee539eed2bbc6be34917dcc93b5d9851781b304538",
+        "chunk_edge_inside_entry": False,
+    },
+}
+#: The pytest node that runs one reference table; the table name is its id.
+REFERENCE_TEST = ("tests/gate_campaign_shape.py::"
+                  "test_the_reference_campaign_shape_stages_and_reads_back")
 
 #: Cycles in a row that may pass with nothing claimed, nothing read and
 #: nothing announced before the harness calls the window stalled.  A mover's
@@ -459,6 +492,7 @@ class ShapeGate:
     def __init__(self, shape: Mapping[str, object], *, root: Path,
                  shared_root: Path,
                  host_profile: Mapping[str, object] = HOST_PROFILE,
+                 require_chunk_edge: bool = True,
                  seed: int = 965) -> None:
         import pbrun
         import tier_loop
@@ -475,6 +509,7 @@ class ShapeGate:
                 f"sealed there would run against another queue")
         self.pbrun = pbrun
         self.tier_loop = tier_loop
+        self.require_chunk_edge = require_chunk_edge
         self.shape = shape
         self.scale = int(shape["scale"])                     # type: ignore[arg-type]
         self.root = Path(root)
@@ -882,7 +917,9 @@ class ShapeGate:
         began = time.monotonic()
         chunk_bytes = self.chunk_gib * storage_tiers.GIB
         coverage = shape_coverage(self.shape, chunk_bytes=chunk_bytes)
-        if not coverage["phases_over_chunk"] or not coverage["byte_cuts_inside_entries"]:
+        coverage["chunk_edge_inside_entry"] = bool(
+            coverage["phases_over_chunk"] and coverage["byte_cuts_inside_entries"])
+        if self.require_chunk_edge and not coverage["chunk_edge_inside_entry"]:
             raise ShapeGateFailure(
                 "did_not_test",
                 f"no phase is larger than a {self.chunk_gib}-unit chunk, or no "
@@ -997,6 +1034,7 @@ class ShapeGate:
                                 if record["tier"] == "ram"),
             "ram_peak_bytes": self.ram_peak_bytes,
             "ram_window_bytes": self.window_gib * storage_tiers.GIB,
+            "ram_slide": total > self.window_gib * storage_tiers.GIB,
             "pool_opens": opens,
             "cycles": self.cycles,
             "adaptations": [
@@ -1010,18 +1048,21 @@ class ShapeGate:
 
 def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
              scale: int = SCALE,
-             host_profile: Mapping[str, object] = HOST_PROFILE) -> dict[str, object]:
+             host_profile: Mapping[str, object] = HOST_PROFILE,
+             require_chunk_edge: bool = True) -> dict[str, object]:
     """Scale ``table``, stage it through both tiers, read it back, and judge.
 
     Returns the result on a pass.  Raises :class:`ShapeGateFailure` otherwise:
     a refused mover, a stalled window, a read the RAM tier could not serve,
     bytes that differ, a pool open during a promotion or a read, bytes moved
-    twice, or a shape that tested nothing.
+    twice, or -- with ``require_chunk_edge`` -- a shape that cannot put a
+    chunk edge inside an entry.
     """
 
     shape = scaled_shape(table, scale=scale)
     gate = ShapeGate(shape, root=root, shared_root=shared_root,
-                     host_profile=host_profile)
+                     host_profile=host_profile,
+                     require_chunk_edge=require_chunk_edge)
     result = gate.run()
     total = int(result["manifest_bytes"])
     problems = []
@@ -1040,6 +1081,167 @@ def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
     if problems:
         raise ShapeGateFailure("result_refused", "; ".join(problems), result)
     return result
+
+
+# ------------------------------------------------------------------ receipts
+
+
+#: A pbrun snapshot adds exactly one file to the tree it seals: its closure
+#: stamp, at the root of the snapshotted subdirectory.
+_CLOSURE_STAMP = re.compile(r"\.pbrun-closure\.[0-9a-f]+\.json")
+
+
+def reference_nodes() -> list[str]:
+    """The pytest node IDs a passing gate run must have run and passed."""
+
+    return [f"{REFERENCE_TEST}[{name}]" for name in sorted(REFERENCE_TABLES)]
+
+
+def _git(checkout: Path, *argv: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(checkout), *argv], capture_output=True, text=True,
+        timeout=300)
+    if completed.returncode != 0:
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"git {' '.join(argv[:2])} failed: "
+            f"{(completed.stderr or completed.stdout).strip()}")
+    return completed.stdout
+
+
+def resolve_action_key(queue_root: Path, key: str) -> str:
+    """A full action key from a full key or a unique prefix of 12 or more."""
+
+    key = key.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{12,64}", key):
+        raise ShapeGateFailure("receipt_refused",
+                               f"{key!r} is not an action key or a 12-digit prefix")
+    if len(key) == 64:
+        return key
+    matches = sorted({path.stem for state in ("done", "failed")
+                      for path in (queue_root / state).glob(f"{key}*.json")})
+    if len(matches) != 1:
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"prefix {key} names {len(matches)} finished actions, not one")
+    return matches[0]
+
+
+def judge_outcomes(outcomes: Mapping[str, object] | None, *, where: str) -> None:
+    """Refuse unless ``outcomes`` ran every reference table and all passed.
+
+    ``outcomes`` is a shard's ``pbtest_outcomes`` record.  The collection must
+    be exactly :func:`reference_nodes` -- a run filtered to one table, or one
+    that ran something else as well, is not this commit's gate -- and each
+    node's only reported outcome must be ``passed``.
+    """
+
+    if not isinstance(outcomes, Mapping) or outcomes.get("collect_only"):
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{where}'s log carries no pbtest outcome record of a run; the "
+            f"gate runs through pbtest")
+    expected = reference_nodes()
+    collected = sorted(str(node) for node in outcomes.get("collected") or ())
+    if collected != expected:
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{where} collected {collected}, not the reference set {expected}")
+    verdicts: dict[str, set[str]] = {}
+    for report in outcomes.get("reports") or ():              # type: ignore[union-attr]
+        verdicts.setdefault(str(report[0]), set()).add(str(report[2]))
+    failing = {node: sorted(verdicts.get(node, set())) for node in expected
+               if verdicts.get(node) != {"passed"}}
+    if failing or outcomes.get("uncounted"):
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{where}: not every reference table passed: {failing}"
+            f"{'; uncounted outcomes' if outcomes.get('uncounted') else ''}")
+
+
+def closure_stamp_only(changed: Sequence[str], subdirectory: str) -> list[str]:
+    """The paths in ``changed`` that are not pbrun's closure stamp."""
+
+    return [name for name in changed
+            if not (_CLOSURE_STAMP.fullmatch(Path(name).name)
+                    and str(Path(name).parent) == (subdirectory or "."))]
+
+
+def verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
+                        queue_root: Path, cas_root: Path) -> dict[str, object]:
+    """Whether one finished action is a passing gate run of ``commit``.
+
+    Four facts, each read from the fleet's own records, never from the
+    submitter's word:
+
+    1. The queue finished the action ``executed`` with exit status 0.
+    2. Its sealed checkout snapshot is ``commit``: the two trees differ by
+       nothing but pbrun's closure stamp.  A snapshot of a dirty tree, or of
+       any other commit, differs by more and refuses.  The comparison is of
+       trees rather than parents, so a publisher running inside a pbrun
+       snapshot of the gated commit -- ``--stage-only`` through PB -- is
+       judged by the bytes it would publish.
+    3. Its CAS receipt verifies, and the result it names -- the shard's log --
+       carries a ``pbtest_outcomes`` record.
+    4. That record collected exactly :func:`reference_nodes` and every one of
+       them passed: every reference table of this commit, and nothing
+       filtered out.
+
+    Returns the record ``publish_runtime.py`` writes into the generation's
+    receipt.  Raises :class:`ShapeGateFailure` (``receipt_refused``) on the
+    first fact that does not hold.
+    """
+
+    import pbtest_outcomes
+
+    key = resolve_action_key(queue_root, action_key)
+    done = pool._read_json(queue_root / "done" / f"{key}.json")
+    detail = done.get("detail") if isinstance(done, dict) else None
+    if (not isinstance(done, dict) or done.get("status") != "executed"
+            or not isinstance(detail, dict) or detail.get("returncode") != 0):
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{key[:12]} did not finish executed with exit 0 "
+            f"(status {None if done is None else done.get('status')!r})")
+    cas = pb.PrismaBuildCAS(cas_root)
+    request = cas_root / "requests" / key[:2] / f"{key}.json"
+    try:
+        action = pb.validate_action(json.loads(request.read_text()))
+    except (OSError, ValueError, pb.ActionContractError) as exc:
+        raise ShapeGateFailure("receipt_refused",
+                               f"{key[:12]}: no readable sealed request: {exc}") from exc
+
+    try:
+        snapshot = pb.validate_pbrun_checkout_snapshot(
+            action["params"]["checkout_snapshot"])        # type: ignore[index]
+    except (KeyError, TypeError, pb.ActionContractError) as exc:
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{key[:12]} carries no pbrun checkout snapshot: {exc}") from exc
+    bundle = cas.input_path(snapshot["input"])
+    # ``unbundle`` stores the bundle's objects and writes no ref.
+    _git(checkout, "bundle", "unbundle", str(bundle))
+    changed = [name for name in _git(
+        checkout, "diff-tree", "-r", "--no-renames", "--name-only",
+        commit, str(snapshot["commit"])).splitlines() if name]
+    extra = closure_stamp_only(changed, str(snapshot.get("subdirectory") or "."))
+    if extra:
+        raise ShapeGateFailure(
+            "receipt_refused",
+            f"{key[:12]} ran a tree that differs from {commit[:12]} beyond "
+            f"pbrun's closure stamp: {extra[:5]}")
+
+    receipt = cas.lookup(action)
+    if receipt is None:
+        raise ShapeGateFailure("receipt_refused",
+                               f"{key[:12]} has no verified CAS receipt")
+    log = cas.result_path(receipt, action).read_text(errors="replace")
+    judge_outcomes(pbtest_outcomes.parse(log), where=key[:12])
+    return {"verdict": "passed", "action_key": key,
+            "tables": sorted(REFERENCE_TABLES),
+            "finished_host": done.get("finished_host"),
+            "snapshot": str(snapshot["commit"]),
+            "snapshot_parent": snapshot.get("parent")}
 
 
 # ------------------------------------------------------------------ CLI

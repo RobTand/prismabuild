@@ -32,6 +32,25 @@ after the first verified live 4-leg run: namespace
 sparky+sparklina. The running fleet adopts the flipped default only when a
 generation carrying it is published.
 
+## The shape gate comes first (#987)
+
+Before any of this runs, a fresh publication must name how its commit
+passed the pre-publish shape gate:
+
+*   `--shape-gate-action KEY`: the action key (or a unique 12-digit prefix)
+    of a passing pbtest shard of `tests/gate_campaign_shape.py` run against
+    this commit. Run it at priority 0 with `--tag gb10 --shards 1
+    --timeout-s 3600`; `docs/design.md` has the full command and what the
+    receipt check requires.
+*   `--shape-gate-waiver REASON`: publish without a receipt. The reason is
+    recorded in the generation's `RUNTIME_VERSION.json` and in its rollout
+    record, and the canary prints it on every rollout, whether the canary
+    runs or not.
+
+With neither, the publisher refuses before writing anything, `--dry-run`
+included. The rollout record below carries the gate's verdict in its
+`shape_gate` field beside the canary's own.
+
 ## The rollout record
 
 Each generation's record is the sidecar

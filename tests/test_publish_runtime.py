@@ -105,7 +105,8 @@ def test_publish_refuses_an_unproved_commit_before_touching_the_mirror(
         ),
     )
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--rollout-reason", "fixture publication"])
+                                        "--rollout-reason", "fixture publication",
+                                        "--shape-gate-waiver", "fixture publication"])
 
     with pytest.raises(SystemExit, match="cannot prove.*40-hex Git commit"):
         publish_runtime.main()
@@ -142,7 +143,8 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     # the real canary driver cannot verify a sandboxed mirror, so it skips.
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
                                         "--no-canary",
-                                        "--rollout-reason", "fixture publication"])
+                                        "--rollout-reason", "fixture publication",
+                                        "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
@@ -192,7 +194,8 @@ def test_published_torch_helper_can_be_copied_without_a_source_checkout(
     # the real canary driver cannot verify a sandboxed mirror, so it skips.
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
                                         "--no-canary",
-                                        "--rollout-reason", "fixture publication"])
+                                        "--rollout-reason", "fixture publication",
+                                        "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
     helper = generation / "tools/profile_torch.py"
@@ -231,7 +234,8 @@ def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe(commit))
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--rollout-reason", "fixture publication"])
+                                        "--rollout-reason", "fixture publication",
+                                        "--shape-gate-waiver", "fixture publication"])
     real_copy = shutil.copy2
     real_replace = publish_runtime.os.replace
     copies = []
@@ -288,7 +292,7 @@ def test_a_failure_after_sealing_still_removes_the_staging_tree(
     )
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory",
                                         "--rollout", "rolling", "--rollout-reason",
-                                        "fixture publication"])
+                                        "fixture publication", "--shape-gate-waiver", "fixture publication"])
     real_replace = publish_runtime.os.replace
     sealed_before_failure: list[bool] = []
 
@@ -446,7 +450,8 @@ def test_a_generation_store_that_cannot_be_written_is_a_refusal(
         publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
     )
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--rollout-reason", "fixture publication"])
+                                        "--rollout-reason", "fixture publication",
+                                        "--shape-gate-waiver", "fixture publication"])
     fleet.chmod(0o555)
     try:
         with pytest.raises(SystemExit, match="cannot (write the generation store|open publication lock)"):
@@ -473,7 +478,8 @@ def _publish_one_generation(
         publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40, index)
     )
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--rollout-reason", "  fixture publication  "])
+                                        "--rollout-reason", "  fixture publication  ",
+                                        "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
     return mirror
 
@@ -599,7 +605,9 @@ def _write_canary_driver(checkout: Path, body: str) -> None:
     (driver_dir / "pbcanary.py").write_text(body)
 
 
-def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str]) -> tuple[int, Path]:
+def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str],
+                 gate: tuple[str, ...] = ("--shape-gate-waiver", "fixture publication"),
+                 ) -> tuple[int, Path]:
     """Publish ``checkout`` into a private mirror with extra argv; return (exit, mirror).
 
     Phase-2 default-ON: an unflagged publication verifies its generation, so
@@ -618,7 +626,7 @@ def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str]) 
     )
     monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
                                         "--rollout-reason", "fixture publication",
-                                        *extra])
+                                        *gate, *extra])
     return publish_runtime.main(), mirror
 
 
@@ -788,3 +796,138 @@ def test_canary_flags_are_refused_with_stage_only(monkeypatch) -> None:
     with pytest.raises(SystemExit) as caught:
         publish_runtime.main()
     assert caught.value.code == 2
+
+
+# -- the pre-publish shape gate (#987) -------------------------------------
+
+
+def _fake_shape_gate(monkeypatch, verdict=None, refusal: str | None = None) -> list[dict]:
+    """Stand in for the checkout's shape gate module; record what it was asked."""
+
+    asked: list[dict] = []
+
+    class ShapeGateFailure(Exception):
+        def __init__(self, reason: str, detail: str) -> None:
+            super().__init__(f"{reason}: {detail}")
+            self.reason, self.detail = reason, detail
+
+    def verify_gate_receipt(**kwargs):
+        asked.append(kwargs)
+        if refusal is not None:
+            raise ShapeGateFailure("receipt_refused", refusal)
+        return verdict
+
+    module = SimpleNamespace(ShapeGateFailure=ShapeGateFailure,
+                             verify_gate_receipt=verify_gate_receipt)
+    monkeypatch.setattr(publish_runtime, "_load_shape_gate", lambda: module)
+    return asked
+
+
+def test_a_publication_without_the_shape_gate_refuses_and_writes_nothing(
+        tmp_path, monkeypatch) -> None:
+    """No receipt and no waiver: the dry run refuses, and says how to run the gate."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    with pytest.raises(SystemExit) as caught:
+        _run_publish(tmp_path, monkeypatch, checkout, ["--dry-run"], gate=())
+    message = str(caught.value)
+    assert "pre-publish shape gate" in message
+    assert "tests/gate_campaign_shape.py" in message
+    assert "--shape-gate-waiver" in message
+    assert not (tmp_path / "mirror").exists()
+    assert not (tmp_path / "runtime-generations").exists()
+
+
+def test_a_dry_run_with_a_waiver_prints_its_reason(tmp_path, monkeypatch, capsys) -> None:
+    checkout = _checkout(tmp_path / "checkout", "new")
+    exit_code, mirror = _run_publish(
+        tmp_path, monkeypatch, checkout, ["--dry-run"],
+        gate=("--shape-gate-waiver", "  the gate host is down  "))
+    assert exit_code == 0
+    assert "shape gate: WAIVED: the gate host is down" in capsys.readouterr().err
+    assert not mirror.exists()
+
+
+def test_a_waiver_is_recorded_in_the_receipt_and_by_the_canary(
+        tmp_path, monkeypatch, capsys) -> None:
+    """A waived generation says so in RUNTIME_VERSION.json, the canary record and output."""
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    exit_code, mirror = _run_publish(
+        tmp_path, monkeypatch, checkout, [],
+        gate=("--shape-gate-waiver", "gate run lost to a reboot"))
+    assert exit_code == 0
+    waived = {"verdict": "waived", "reason": "gate run lost to a reboot"}
+    receipt = json.loads((mirror / "RUNTIME_VERSION.json").read_text())
+    assert receipt["shape_gate"] == waived
+    record = _canary_record(mirror)
+    assert record["canary_status"] == "verified"
+    assert record["shape_gate"] == waived
+    err = capsys.readouterr().err
+    assert f"{mirror.resolve().name} shape gate: WAIVED: gate run lost to a reboot" in err
+
+
+def test_a_passing_gate_receipt_is_verified_against_the_commit_and_recorded(
+        tmp_path, monkeypatch, capsys) -> None:
+    verdict = {"verdict": "passed", "action_key": "f" * 64, "tables": ["t1", "t2"],
+               "finished_host": "sparky", "snapshot": "b" * 40,
+               "snapshot_parent": "a" * 40}
+    asked = _fake_shape_gate(monkeypatch, verdict=verdict)
+    checkout = _checkout(tmp_path / "checkout", "new")
+    exit_code, mirror = _run_publish(
+        tmp_path, monkeypatch, checkout, ["--no-canary"],
+        gate=("--shape-gate-action", "ffffffffffff"))
+    assert exit_code == 0
+    assert len(asked) == 1
+    assert asked[0]["action_key"] == "ffffffffffff"
+    assert asked[0]["commit"] == "a" * 40
+    assert asked[0]["checkout"] == checkout
+    assert asked[0]["queue_root"] == mirror.parent / "pb-queue"
+    assert asked[0]["cas_root"] == mirror.parent / "cas"
+    receipt = json.loads((mirror / "RUNTIME_VERSION.json").read_text())
+    assert receipt["shape_gate"] == verdict
+    assert _canary_record(mirror)["shape_gate"] == verdict
+    assert "shape gate: passed by ffffffffffff on sparky (tables t1, t2)" in capsys.readouterr().out
+
+
+def test_a_refused_gate_receipt_refuses_the_publication(tmp_path, monkeypatch) -> None:
+    _fake_shape_gate(monkeypatch, refusal="ffffffffffff ran a tree that differs")
+    checkout = _checkout(tmp_path / "checkout", "new")
+    with pytest.raises(SystemExit, match="does not cover aaaaaaaaaaaa: ffffffffffff ran a tree"):
+        _run_publish(tmp_path, monkeypatch, checkout, [],
+                     gate=("--shape-gate-action", "ffffffffffff"))
+    assert not (tmp_path / "mirror").exists()
+
+
+def test_a_dirty_tree_cannot_ride_a_gate_receipt(tmp_path, monkeypatch) -> None:
+    """The receipt covers committed bytes; a dirty publish needs a waiver instead."""
+
+    asked = _fake_shape_gate(monkeypatch, verdict={"verdict": "passed"})
+    checkout = _checkout(tmp_path / "checkout", "new")
+    monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: True)
+    with pytest.raises(SystemExit, match="dirty tree is not the commit the shape gate ran"):
+        _run_publish(tmp_path, monkeypatch, checkout, ["--allow-dirty", "--dry-run"],
+                     gate=("--shape-gate-action", "ffffffffffff"))
+    assert asked == []
+
+
+@pytest.mark.parametrize("argv", [
+    ["--shape-gate-action", "ffffffffffff", "--shape-gate-waiver", "both"],
+    ["--shape-gate-waiver", " \t"],
+    ["--activate-generation", "somename", "--shape-gate-waiver", "rollback"],
+    ["--resume-barrier", "epoch", "--shape-gate-waiver", "recovery"],
+])
+def test_shape_gate_flags_are_usage_errors_where_they_mean_nothing(
+        monkeypatch, argv) -> None:
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", *argv])
+    with pytest.raises(SystemExit) as caught:
+        publish_runtime.main()
+    assert caught.value.code == 2
+
+
+def test_the_shape_gate_is_a_checkout_tool_not_a_generation_member() -> None:
+    excluded = dict(publish_runtime.EXCLUDED)
+    assert "shape_gate.py" in excluded
+    assert "shape_gate.py" not in publish_runtime.FLEET_SCRIPTS
+    assert publish_runtime._shape_gate_path() == (
+        publish_runtime.CHECKOUT / "tools" / "fleet" / "shape_gate.py")

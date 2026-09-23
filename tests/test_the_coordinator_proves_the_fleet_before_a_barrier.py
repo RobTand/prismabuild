@@ -266,7 +266,8 @@ def test_default_barrier_dry_run_keeps_the_historical_preflight(fleet, monkeypat
     monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
     monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA})
     monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
-    monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py", "--dry-run"])
+    monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py", "--dry-run",
+                                                      "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
 
 
