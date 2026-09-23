@@ -853,7 +853,10 @@ def _ram_window_state(
         queue, plan, str(plan["tier_id"]), tiers)
     ledger = queue.tier_ledger(ram_tier_id)
     kind = storage_tiers.capacity_kind_of(ram_tier_id)
-    free = int(ledger.available().get(kind, 0))
+    # The consumer's own fence is read back into free for this decision
+    # alone, as the stage window reads its grant back: the room the fence
+    # holds is the room its advance publishes into (#906).
+    free = int(ledger.available().get(kind, 0)) + int(own_fence_gib)
     capacity = int(ledger.capacity().get(kind, 0))
     decision = residency_plan.window(
         plan, accepted_phase=consumer["accepted_phase"],
