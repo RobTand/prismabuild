@@ -423,13 +423,18 @@ def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
     assert_ledger_matches_the_stage(queue)
 
     # Each eviction event says what the egress held the stage lock for
-    # (#988): the hold, the entries it judged, and the census before it.
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()
-              if line.startswith("{")]
-    evicted = [event for event in events
+    # (#988): the hold, the entries it judged, and the census before it.  The
+    # event is on stdout and in the consumer's event file, which a kill's
+    # ending record reads (#990).
+    printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+               if line.startswith("{")]
+    evicted = [event for event in printed
                if event.get("event") == "beyond-horizon-evicted"]
-    assert len(evicted) == WIDE - 13, events
-    for event in evicted:
+    filed = [event for event in queue.consumer_events(READER)
+             if event.get("event") == "beyond-horizon-evicted"]
+    assert len(evicted) == WIDE - 13, printed
+    assert len(filed) == WIDE - 13, filed
+    for event in evicted + filed:
         assert set(stage_release.LOCK_SCOPE_FIELDS) <= set(event), event
         assert event["entries_judged"] > 0, event
         assert 0.0 <= event["lock_held_s"], event

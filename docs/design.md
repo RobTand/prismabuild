@@ -4389,7 +4389,8 @@ Each egress receipt records `lock_wait_s`, `lock_held_s`, `entries_judged`,
 `census_s` (before the lock), `census_validate_s` and `unlink_s` (inside
 it) and `prune_s` (after it). The `beyond-horizon-evicted` and
 `beyond-horizon-eviction-declined` events copy them
-(`stage_release.lock_scope`). Stage and RAM mover receipts record
+(`stage_release.lock_scope`), and the tier loop files those events in the
+consumer's event file, which a kill's ending record reads (#990). Stage and RAM mover receipts record
 `start_gate_wait_s`; the stage mover also records `resume_lock_wait_s`, the
 first lock it waits for, which resumes its own coverage before the gate.
 
