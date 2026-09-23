@@ -153,14 +153,19 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     assert "gave up waiting" not in err
 
 
-def test_unreaped_reader_gets_one_terminal_reread_then_ends_74(
+def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """#630 narrows the guard: patience never polls beside a retained reader,
-    but the wait spends one last bounded snapshot before reporting
-    unobserved.  A FIFO that answers neither still ends 74 -- after exactly
-    two readers and no polling loop, not one."""
+    """Patience never reads beside a retained reader, not even at the end.
+
+    #630 had a patient wait spend one terminal snapshot beside a retained
+    reader and end 74 at once. On a stuck mount that snapshot was retained
+    too, and the wait ended with hours of ``--wait-s`` left (#1033). Now the
+    wait outlasts the reader or its own deadline: a FIFO that never answers
+    ends 74 at the deadline, after exactly one reader and no terminal re-read.
+    ``wait_s=0`` keeps #630's snapshot (the test below).
+    """
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
@@ -184,13 +189,14 @@ def test_unreaped_reader_gets_one_terminal_reread_then_ends_74(
     monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
     started = time.monotonic()
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=30) == \
+        assert pbrun.await_outcome(queue, KEY, wait_s=0.5) == \
             pbrun.RECORD_WRITE_FAILED_EXIT
-        assert time.monotonic() - started < 5
-        assert len(forks) == 2 and retained == forks
+        assert 0.5 <= time.monotonic() - started < 5
+        assert len(forks) == 1 and retained == forks
         err = capsys.readouterr().err
         assert "could not be reaped" in err
-        assert "when the terminal re-read ended" in err
+        assert "still retained when --wait-s ran out" in err
+        assert "when the terminal re-read ended" not in err
         assert "when the wait ended" not in err
     finally:
         _reap_exact(forks)
