@@ -1962,6 +1962,8 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
 #: declares (#912); ``produced_output.ORIGIN_BATCHES_ANNOTATION`` is the same
 #: name.  A manifest without it is never checked against the queue.
 _ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
+#: The frozen template's copy of those refs, for `declare_origin_consumers`.
+_ORIGIN_BATCHES_TEMPLATE_KEY = "produced_output_batches"
 
 
 def require_declared_origin_batches(
@@ -2006,6 +2008,30 @@ def require_declared_origin_batches(
         raise SystemExit(
             f"pbrun: the data manifest's {_ORIGIN_BATCHES_ANNOTATION} are not "
             "in canonical form")
+
+
+def declare_origin_consumers(queue, refs: Sequence[Mapping[str, object]], *,
+                             consumer_action_key: str) -> None:
+    """File this consumer against each consumed batch it declares (#914).
+
+    Called with the sealed key, before the consumer's row is published, so
+    the retirement tick never sees a queued consumer it has no declaration
+    for.  One batch at a time: each declaration takes that batch's
+    output-prefix lock, and no caller may hold two of those at once.  A batch
+    that has started to retire, or is gone, refuses the submission; a
+    ``retain`` batch files nothing.
+    """
+
+    from prismabuild import produced_output as produced_mod
+
+    for ref in refs:
+        try:
+            produced_mod.declare_origin_consumer(
+                queue, ref, consumer_action_key=consumer_action_key)
+        except produced_mod.ProducedOutputError as exc:
+            raise SystemExit(
+                f"pbrun: cannot declare {consumer_action_key[:12]} as a consumer "
+                f"of a produced-output batch: {exc}") from None
 
 
 def require_deployed_read_plan_storage(*, source_root: Path | None = None,
@@ -4809,6 +4835,7 @@ def freeze_action_template(
         snapshot_refs=list(snapshot_refs),
     )
     inputs = [checkout_snapshot["input"]]
+    origin_batch_refs = None
     if data_manifest_path is not None:
         # Refuse a malformed source before ingestion, then derive the sealed
         # summary from verified CAS bytes. The source can be replaced between
@@ -4822,6 +4849,9 @@ def freeze_action_template(
         manifest, manifest_encoding = pb.read_data_manifest(cas.input_path(manifest_input))
         require_declared_origin_batches(
             manifest, transport=transport, queue_root=SH / "pb-queue")
+        annotations = manifest.get("annotations")
+        if isinstance(annotations, Mapping):
+            origin_batch_refs = annotations.get(_ORIGIN_BATCHES_ANNOTATION)
         inputs.append(manifest_input)
         data_manifest_summary = {
             "input": manifest_input,
@@ -4972,7 +5002,7 @@ def freeze_action_template(
         # projection of this one, never the other way around (#714).  Absent,
         # the key is byte-identical to what it was before this flag existed.
         params["container_images"] = list(container_image_refs)
-    return {
+    template = {
         "cas": cas,
         "marker_root": marker_root,
         "checkout_identity": identity,
@@ -4997,6 +5027,12 @@ def freeze_action_template(
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+    if origin_batch_refs is not None:
+        # The batches the sealed data manifest declares, for ``main`` to file
+        # this consumer against once its key is known (#914).  Only when
+        # declared, so every other template is the one it always was.
+        template[_ORIGIN_BATCHES_TEMPLATE_KEY] = list(origin_batch_refs)
+    return template
 
 
 #: The template entries that are the submitter's own handles rather than any
@@ -5019,9 +5055,13 @@ def freeze_action_template(
 #: same declaration in the parent key under two spellings; leaving it unnamed
 #: refused every Stage A freeze, because the template carries the entry --
 #: ``None`` when no template was declared -- whether or not the flag was given.
+#:
+#: ``produced_output_batches`` is a handle too: the refs are the sealed data
+#: manifest's own annotation, so the key already covers them.  The entry is
+#: present only when the manifest declares batches (#914).
 _TEMPLATE_SUBMITTER_KEYS = frozenset(
     {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name",
-     "produced_output_template"}
+     "produced_output_template", "produced_output_batches"}
 )
 
 
@@ -6868,6 +6908,14 @@ def main() -> int:
             q.item_path("withdrawn", key).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         superseding = None
+
+    # A consumer of consumed produced-output batches is filed against them
+    # before its row exists, so their retirement cannot run ahead of it.  A
+    # crash after this and before the row leaves the batches held and
+    # reported, never deleted (#914).
+    if template.get(_ORIGIN_BATCHES_TEMPLATE_KEY):
+        declare_origin_consumers(
+            q, template[_ORIGIN_BATCHES_TEMPLATE_KEY], consumer_action_key=key)
 
     # Everything the window will ever publish is sealed and written down
     # before the consumer's own row goes in, so a crash between the two leaves
