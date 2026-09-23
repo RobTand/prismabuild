@@ -18,9 +18,11 @@ pressure (#598), and there was none.
 What this file pins, through the real ``stage_move.main``, ``PoolQueue.claim``
 and ``finish``, and ``tier_loop.residency_window``:
 
-* every owner ended (FAILED, WITHDRAWN or DONE consumer; DONE mover; nothing
-  queued, leased or filed): the successor invalidates the name and restages
-  it, completes, keeps its tokens, and the window does not republish it;
+* every owner ended (a FAILED, WITHDRAWN or DONE consumer, the DONE one
+  still keeping its frozen plan as the tier loop leaves it; a DONE mover;
+  nothing of either queued or leased): the successor invalidates the name
+  and restages it, completes, keeps its tokens, and the window does not
+  republish it;
 * a live owner (its consumer still claimed): the mover refuses terminally
   with ``staged_destination_conflict``, names both owners, leaves the live
   copy untouched, exits rc 1, and retires its own window so the loop stops;
@@ -85,6 +87,11 @@ def _old_owner(fleet, consumer_state: str, *, pin: bool = False,
     sidecar that dates the *current* inode of both names, and its tier
     charge: the incident's owner exactly.  ``pin`` takes a live reader pin on
     the owner's copy before the mover concludes, as a reader would.
+
+    An ``executed`` consumer also keeps its frozen plan filed, because the
+    tier loop's dead-consumer pass leaves a DONE consumer's plan in place so
+    a retry republishes the same children; a filed plan must not read as an
+    owner that has not ended.
     """
 
     queue, stage, _ = fleet
@@ -127,7 +134,31 @@ def _old_owner(fleet, consumer_state: str, *, pin: bool = False,
         "range_end_bytes": len(NAMES) * SIZE, "errors": []})
     queue.finish(mover, status="executed", detail={"returncode": 0})
     stale._charge(queue, mover)
+    if consumer_state == "executed":
+        _keep_plan(queue, stage, consumer, mover)
     return consumer, mover
+
+
+def _keep_plan(queue: pool.PoolQueue, stage: Path, consumer: str,
+               mover: str) -> None:
+    """File the one-phase plan that sealed the old owner's mover."""
+
+    total = len(NAMES) * SIZE
+    residency_plan.freeze(queue, residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=TIER, stage_root=str(stage),
+        manifest_sha256="a" * 64, manifest_bytes=total,
+        phases=[{
+            "name": "phase-0", "start_bytes": 0, "end_bytes": total,
+            "stage_gib": 1,
+            "mover_row": {
+                **_row(queue, mover, {STAGE_KIND: 1, "cpu": 1, "mem_gb": 1}),
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                    "manifest_sha256": "a" * 64, "manifest_bytes": total,
+                    "range_start_bytes": 0, "range_end_bytes": total}},
+            "egress_row": _row(queue, base._key(), {"cpu": 1, "mem_gb": 1}),
+        }]))
+    assert queue.residency_plan_path(consumer).exists()
 
 
 def _row(queue: pool.PoolQueue, key: str,
@@ -323,8 +354,8 @@ def test_a_live_owner_is_a_terminal_conflict_naming_both_owners(
     assert world.copier not in world.window(), "#966 loop"
 
 
-GUARDS = ["no-outcome", "plan-filed", "consumer-lease", "mover-queued",
-          "mover-lease", "unreadable-fragment", "pinned"]
+GUARDS = ["no-outcome", "consumer-lease", "mover-queued", "mover-lease",
+          "unreadable-fragment", "pinned"]
 
 
 @pytest.mark.parametrize("guard", GUARDS)
@@ -349,11 +380,7 @@ def test_an_owner_whose_ending_is_unproven_is_never_replaced(
     # Damage after the claim, so the window and the claim see a clean queue
     # and only the mover's ending proof meets the missing fact.
     world.claim()
-    if guard == "plan-filed":
-        path = queue.residency_plan_path(consumer)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{}")
-    elif guard == "consumer-lease":
+    if guard == "consumer-lease":
         queue.lease_path(consumer).write_text("{}")
     elif guard == "mover-lease":
         queue.lease_path(mover).write_text("{}")

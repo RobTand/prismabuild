@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import array
 import bisect
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import errno
 from collections.abc import Mapping
 import hashlib
@@ -71,6 +71,7 @@ import prewarm_loop  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
+from prismabuild import residency_plan  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
@@ -694,9 +695,74 @@ class _PublicationRefused(OSError):
     ``OSError`` keeps catching it -- the type breaks no existing behavior.
     The copier deliberately changes its range handling for it, which is the
     point of the type.
+
+    ``refusal`` is set only on a refusal no rerun can clear (#966): a live
+    owner holds different bytes under the name.  ``conflict`` then names
+    the path and both owners, and the mover's receipt carries both, so it
+    exits nonzero and retires its own window instead of being republished
+    into the same refusal.  Every other refusal leaves them ``None`` and
+    stays retryable.
     """
 
-    pass
+    def __init__(self, *args: object, refusal: str | None = None,
+                 conflict: Mapping[str, object] | None = None) -> None:
+        super().__init__(*args)
+        self.refusal = refusal
+        self.conflict = dict(conflict) if conflict is not None else None
+
+
+#: The terminal refusal a mover files when a live owner holds different bytes
+#: under one of its staged names (#966).
+STAGED_DESTINATION_CONFLICT = "staged_destination_conflict"
+
+
+class _Owners:
+    """Who a proof search found naming one staged path it found divergent.
+
+    Filled by :meth:`_StagedPublisher._proof_search` when one is passed in:
+    every ``(consumer, mover)`` whose fragment names the path and whose
+    record is not a date for a superseded incarnation, except the
+    publisher's own pair.  ``complete`` is false when a fragment or a child
+    directory could not be read, since an unreadable record may name the
+    path too.
+    """
+
+    __slots__ = ("pairs", "complete")
+
+    def __init__(self) -> None:
+        self.pairs: set[tuple[str, str]] = set()
+        self.complete = True
+
+
+def _divergent_detail(norm: str) -> str:
+    return (f"staged destination holds different bytes than manifest "
+            f"digest for {norm}; refusing to invalidate its owner")
+
+
+def _is_action_key(value: object) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _combined_owner_state(rows: list[dict[str, object]],
+                          complete: bool) -> tuple[str, str]:
+    """One divergence's state from its judged owners (#966).
+
+    A live owner decides it even beside an unreadable fragment: that owner
+    holds different bytes under the name whatever else might.  Otherwise an
+    unreadable fragment, or any owner not proven ended, leaves it
+    uncertain, and only a complete census of ended owners is ``ended``.
+    """
+
+    if any(row["state"] == "live" for row in rows):
+        return "live", ""
+    if not complete:
+        return "uncertain", "a fragment that may name it could not be read"
+    for row in rows:
+        if row["state"] != "ended":
+            return "uncertain", str(row.get("why")
+                                    or "an owner's ending is unproven")
+    return "ended", ""
 
 
 class _PhaseClock:
@@ -711,9 +777,11 @@ class _PhaseClock:
     (``pace_wait``, ``copy_read``, ``copy_write``, ``hash``, ``fsync``) are
     added once per entry; the publisher's (``adopt_proof``,
     ``publish_decide``, ``ownership_lock_wait``, ``ownership_lock_held``,
-    ``publish_poll_sleep``) once per call.  ``outcomes`` counts how each
-    entry ended: adopted before any copy, published by its own rename, or
-    adopted at publication after copying.
+    ``publish_poll_sleep``, and ``owner_judgement`` for a divergent name's
+    owners, #966) once per call.  ``outcomes`` counts how each entry ended:
+    adopted before any copy, published by its own rename, or adopted at
+    publication after copying; and, for a name every owner of which had
+    ended, invalidated before the copy or replaced at publication.
     """
 
     def __init__(self) -> None:
@@ -792,10 +860,15 @@ class _StagedPublisher:
     * present and provably different -- a record that dates the current
       incarnation names a digest that matches neither the declared nor
       the computed digest, or the very inode a record dates was modified
-      in place (no legitimate publication writes in place): refuse at
-      once, without replacing.  A shared name with divergent content is
-      a conflict for an owner to resolve, never a blind overwrite.  A
-      record whose sidecar dates a superseded incarnation -- a different
+      in place (no legitimate publication writes in place): never a blind
+      overwrite.  On a stage mover the owners decide it (#966,
+      :meth:`_arbitration`): a live owner is a conflict for an owner to
+      resolve, refused terminally and named; an owner whose ending cannot
+      be proven is refused retryably, as before; and a name every owner of
+      which has provably ended is invalidated and restaged by this copy,
+      after the same pin, claim and in-flight censuses a heal passes.  A
+      ram promotion, which names no consumer, refuses at once as before.
+      A record whose sidecar dates a superseded incarnation -- a different
       inode, the name replaced by a real publication -- is not this: it
       is deferred like an undated vouch while another record may still
       prove the current one (#755);
@@ -893,6 +966,19 @@ class _StagedPublisher:
         self._census_done = 0
         self._census_running = False
         self._census: tuple | None = None
+        #: Whether a divergent name is settled by its owners' states (#966).
+        #: A stage mover names its consumer and does; a ram promotion names
+        #: none and keeps the retryable refusal it always had.
+        self._arbitrates = bool(self.consumer)
+        #: One divergence is arbitrated at a time per publisher: the owners'
+        #: transition locks are taken without blocking, and a sibling copy
+        #: thread holding them must read as a wait, not as another process's
+        #: contention.
+        self._arbitration_lock = threading.Lock()
+        #: The names this run invalidated because every owner had ended, each
+        #: with the owners it proved, for the receipt.  Appended under
+        #: ``_arbitration_lock``.
+        self.invalidated: list[dict[str, object]] = []
 
     @contextmanager
     def _ownership(self):
@@ -967,6 +1053,13 @@ class _StagedPublisher:
         lock and decided exactly as before.  An unknown, owned or clean
         answer acts on nothing: the copy proceeds, and its publication is
         gated under the lock.
+
+        A divergence on a stage mover is arbitrated by its owners' states
+        (#966, :meth:`_arbitration`) before anything is copied: a live owner
+        raises the terminal conflict, an unproven ending raises the
+        retryable refusal as before, and when every owner has ended the name
+        is invalidated -- unlinked under the locks -- so the copy publishes
+        it as a first publication, with no second judgment.
         """
 
         want = int(entry["bytes"])
@@ -978,24 +1071,71 @@ class _StagedPublisher:
             return None
         if not statmod.S_ISREG(present.st_mode):
             return None
+        owners = _Owners() if self._arbitrates else None
         with self.clock.timing("adopt_proof"):
             proof, standing, detail = self._proof_search(
-                norm, want, declared, source_id=source_id)
+                norm, want, declared, source_id=source_id, owners=owners)
         if proof is None and standing != "divergent":
             return None
+        if standing == "divergent" and owners is not None:
+            return self._adopt_divergent(destination, norm, want, declared,
+                                         source_id, owners, detail)
         with self._ownership():
             if proof is not None and reader_lease.file_id_matches(
                     proof[1], reader_lease.stat_identity(norm)):
                 return want, proof[0], proof[1]
+            owners = _Owners() if self._arbitrates else None
             proof, standing, detail = self._proof_search(
-                norm, want, declared, source_id=source_id)
+                norm, want, declared, source_id=source_id, owners=owners)
             if standing == "unknown":
                 return None
             if standing == "divergent":
-                raise _PublicationRefused(detail)
-            if proof is None:
+                if owners is None:
+                    raise _PublicationRefused(detail)
+            elif proof is None:
                 return None
-            return want, proof[0], proof[1]
+            else:
+                return want, proof[0], proof[1]
+        # A divergence that appeared after the lockless search: arbitrated
+        # once the stage lock is released, since the owners' transition
+        # locks come before it.
+        return self._adopt_divergent(destination, norm, want, declared,
+                                     source_id, owners, detail)
+
+    def _adopt_divergent(self, destination: Path, norm: str, want: int,
+                         declared: object, source_id: str | None,
+                         owners: _Owners, detail: str | None,
+                         ) -> tuple[int, str, dict[str, int]] | None:
+        """:meth:`try_adopt`'s answer for a name its search found divergent."""
+
+        def redo(fresh: _Owners) -> tuple:
+            return self._decide(destination, want, declared, None, source_id,
+                                heal=False, owners=fresh)
+
+        with self._arbitration(owners, redo) as (state, rows, verdict, why):
+            if state == "changed":
+                if verdict[0] == "adopt":
+                    return want, verdict[1], verdict[2]
+                return None
+            if state in ("busy", "moved"):
+                # Nothing judged, or a new owner appeared: copy, and let the
+                # publication arbitrate under the locks again.
+                return None
+            if state == "live":
+                raise self._conflict(norm, declared, detail, rows)
+            if state == "uncertain":
+                raise _PublicationRefused(f"{detail}; {why}")
+            blocked = self._invalidation_blocked(norm, destination)
+            if blocked:
+                raise _PublicationRefused(
+                    f"{detail}; every owner has ended, but {blocked}")
+            try:
+                os.unlink(destination)
+            except FileNotFoundError:
+                pass
+            self._invalidated(norm, rows)
+            self.clock.outcome("invalidated_ended_owner")
+            return None
 
     def publish(self, entry: dict[str, object], destination: Path,
                 temp_path: Path, computed: str,
@@ -1014,6 +1154,13 @@ class _StagedPublisher:
         incarnation moved -- is decided again, in full, under the lock,
         exactly as before.  A fresh destination's rename therefore holds the
         lock for one ``lstat`` and the rename, not for anybody's proof.
+
+        On a stage mover a divergent verdict is arbitrated by its owners'
+        states (#966, :meth:`_arbitration`): a live owner is the terminal
+        conflict, an unproven ending the retryable refusal, and a name every
+        owner of which has ended is replaced by this copy.  A divergence
+        first seen under the stage lock is decided on the next poll, since
+        the owners' transition locks come before that lock.
         """
 
         want = int(entry["bytes"])
@@ -1023,34 +1170,298 @@ class _StagedPublisher:
         while True:
             now = time.monotonic()
             heal = now >= deadline
+            owners = _Owners() if self._arbitrates else None
             with self.clock.timing("publish_decide"):
                 verdict = self._decide(destination, want, declared, computed,
-                                       source_id, heal=heal)
-            if verdict[0] != "wait":
+                                       source_id, heal=heal, owners=owners)
+            if verdict[0] == "divergent":
+                done = self._publish_divergent(
+                    destination, norm, temp_path, want, declared, computed,
+                    source_id, heal, owners, verdict[1])
+                if done is not None:
+                    return done
+            elif verdict[0] != "wait":
                 with self._ownership():
                     if not (verdict[0] == "adopt"
                             and reader_lease.file_id_matches(
                                 verdict[2], reader_lease.stat_identity(norm))):
                         verdict = self._decide(
                             destination, want, declared, computed, source_id,
-                            heal=heal)
-                    if verdict[0] == "replace":
-                        os.replace(temp_path, destination)
-                        self._note_replacement()
-                        self.clock.outcome("renamed")
-                        return want, computed, self._identity(destination)
-                    if verdict[0] == "adopt":
-                        temp_path.unlink(missing_ok=True)
-                        self.clock.outcome("adopted_at_publication")
-                        return want, verdict[1], verdict[2]
-                    if verdict[0] == "refuse":
-                        temp_path.unlink(missing_ok=True)
-                        raise _PublicationRefused(verdict[1])
+                            heal=heal,
+                            owners=_Owners() if self._arbitrates else None)
+                    done = self._act(verdict, destination, temp_path, want,
+                                     computed)
+                    if done is not None:
+                        return done
             if stop is not None and stop.is_set():
                 temp_path.unlink(missing_ok=True)
                 raise OSError(f"stopping before {destination} publishes")
             with self.clock.timing("publish_poll_sleep"):
                 time.sleep(_PUBLISH_POLL_S)
+
+    def _act(self, verdict: tuple, destination: Path, temp_path: Path,
+             want: int, computed: str,
+             ) -> tuple[int, str, dict[str, int] | None] | None:
+        """Carry out a publication verdict under the stage lock.
+
+        ``None`` for a verdict that acts on nothing -- a wait, or a
+        divergence first seen under the lock -- so the caller polls again.
+        """
+
+        if verdict[0] == "replace":
+            os.replace(temp_path, destination)
+            self._note_replacement()
+            self.clock.outcome("renamed")
+            return want, computed, self._identity(destination)
+        if verdict[0] == "adopt":
+            temp_path.unlink(missing_ok=True)
+            self.clock.outcome("adopted_at_publication")
+            return want, verdict[1], verdict[2]
+        if verdict[0] == "refuse":
+            temp_path.unlink(missing_ok=True)
+            raise _PublicationRefused(verdict[1])
+        return None
+
+    def _publish_divergent(self, destination: Path, norm: str,
+                           temp_path: Path, want: int, declared: object,
+                           computed: str, source_id: str | None, heal: bool,
+                           owners: _Owners, detail: str,
+                           ) -> tuple[int, str, dict[str, int] | None] | None:
+        """:meth:`publish`'s answer for a divergent verdict; ``None`` polls."""
+
+        def redo(fresh: _Owners) -> tuple:
+            return self._decide(destination, want, declared, computed,
+                                source_id, heal=heal, owners=fresh)
+
+        with self._arbitration(owners, redo) as (state, rows, verdict, why):
+            if state == "changed":
+                return self._act(verdict, destination, temp_path, want,
+                                 computed)
+            if state in ("busy", "moved"):
+                if heal:
+                    temp_path.unlink(missing_ok=True)
+                    raise _PublicationRefused(
+                        f"{detail}; {why} after the grace, deferring to retry")
+                return None
+            if state == "live":
+                temp_path.unlink(missing_ok=True)
+                raise self._conflict(norm, declared, detail, rows)
+            if state == "uncertain":
+                temp_path.unlink(missing_ok=True)
+                raise _PublicationRefused(f"{detail}; {why}")
+            blocked = self._invalidation_blocked(norm, destination)
+            if blocked:
+                temp_path.unlink(missing_ok=True)
+                raise _PublicationRefused(
+                    f"{detail}; every owner has ended, but {blocked}")
+            os.replace(temp_path, destination)
+            self._note_replacement()
+            self._invalidated(norm, rows)
+            self.clock.outcome("replaced_ended_owner")
+            return want, computed, self._identity(destination)
+
+    @contextmanager
+    def _arbitration(self, owners: _Owners, redo):
+        """Judge a divergent name's owners, then decide it again, locked (#966).
+
+        Before this, a name whose recorded owner held different bytes was
+        refused forever: the refusal was retryable, the retry met the same
+        owner, and a mover whose owner had long ended reran without end
+        while holding fill.  The owners' states now decide it.  Every owner
+        the search collected is judged under its own transition locks --
+        consumers, then movers, each set sorted, taken without blocking so a
+        long egress or claim never stalls a copy; contention is ``busy`` --
+        and then, under the stage ownership lock, the name is decided again
+        by ``redo`` with a fresh collector.  The lock order is the one every
+        holder keeps: transition before ownership.
+
+        Yields ``(state, rows, verdict, why)``:
+
+        * ``busy``: an owner's transition lock is held elsewhere; nothing
+          was judged;
+        * ``changed``: under the stage lock the name no longer diverges, and
+          ``verdict`` is the fresh decision, for the caller to act on while
+          the lock is held;
+        * ``moved``: it still diverges, but an owner nobody judged names it
+          now;
+        * ``live``: an owner's consumer is still queued or claimed -- a real
+          conflict, refused terminally and never destroyed;
+        * ``uncertain``: an ending could not be proven, or a fragment could
+          not be read; the refusal stays retryable, as it always was;
+        * ``ended``: every owner that names the name now has provably
+          ended.
+
+        ``rows`` are the judged owners that name it now, each with its
+        state.  What the judgment reads is listed in :meth:`_owner_state`;
+        it is only the owners' own queue records, under their own locks, and
+        it runs only on a divergence.
+        """
+
+        with self._arbitration_lock:
+            with ExitStack() as held:
+                consumers = sorted({c for c, _ in owners.pairs
+                                    if _is_action_key(c)})
+                movers = sorted({m for _, m in owners.pairs
+                                 if _is_action_key(m)})
+                for key in consumers:
+                    if not held.enter_context(self.queue._transition_locked(
+                            key, blocking=False)):
+                        yield ("busy", [], None,
+                               f"owner consumer {key[:12]}'s transition lock "
+                               f"is held")
+                        return
+                for key in movers:
+                    if not held.enter_context(self.queue.mover_transition_lock(
+                            key, blocking=False)):
+                        yield ("busy", [], None,
+                               f"owner mover {key[:12]}'s transition lock "
+                               f"is held")
+                        return
+                with self.clock.timing("owner_judgement"):
+                    judged = self._judge_owners(owners.pairs)
+                with self._ownership():
+                    fresh = _Owners()
+                    with self.clock.timing("publish_decide"):
+                        verdict = redo(fresh)
+                    if verdict[0] != "divergent":
+                        yield "changed", [], verdict, ""
+                        return
+                    if not fresh.pairs <= owners.pairs:
+                        yield ("moved", [], verdict,
+                               "an owner that was not judged names it now")
+                        return
+                    rows = [row for row in judged
+                            if (row["consumer_action_key"],
+                                row["mover_action_key"]) in fresh.pairs]
+                    state, why = _combined_owner_state(rows, fresh.complete)
+                    yield state, rows, verdict, why
+
+    def _judge_owners(self, pairs: set[tuple[str, str]],
+                      ) -> list[dict[str, object]]:
+        """Each owner's state, in sorted order; the caller holds its locks."""
+
+        try:
+            from stage_release import _unended_owner
+        except ImportError as exc:
+            return [{"consumer_action_key": consumer,
+                     "mover_action_key": mover, "state": "uncertain",
+                     "why": f"the ending proof is unavailable: {exc}"}
+                    for consumer, mover in sorted(pairs)]
+        rows = []
+        for consumer, mover in sorted(pairs):
+            state, why = self._owner_state(consumer, mover, _unended_owner)
+            row: dict[str, object] = {"consumer_action_key": consumer,
+                                      "mover_action_key": mover,
+                                      "state": state}
+            if why:
+                row["why"] = why
+            rows.append(row)
+        return rows
+
+    def _owner_state(self, consumer: str, mover: str,
+                     unended) -> tuple[str, str]:
+        """``live``, ``ended`` or ``uncertain``, with why when uncertain.
+
+        ``ended`` needs both facts below, each a queue record rather than a
+        clock.  The consumer is neither queued nor claimed and has exactly
+        one outcome (``stage_release._unended_owner``, the proof the
+        dead-owner sweep uses).  The fragment's mover is neither queued nor
+        claimed (``residency_plan.live_state``).  Both reads count any entry
+        under ``claimed/`` -- the record, its lease, its status sidecar --
+        as claimed, so a lease outliving its record reads as not ended.
+
+        ``live`` is a consumer whose queue record itself is in ``claimed/``
+        or ``ready/``.  Everything else -- no outcome, a lease without a
+        record, a queued or leased mover, a record that cannot be read, a
+        key that is not an action key -- is ``uncertain``.
+
+        The consumer's plan is deliberately not a fact here: a DONE
+        consumer keeps its frozen plan so a retry republishes the same
+        children (``tier_loop``'s dead-consumer pass), and the plan's other
+        movers do not name this path.  A live claim that covers it is
+        caught by :meth:`_invalidation_blocked`.
+
+        Reads, for an ended owner: two stats and, on a miss, one listing
+        each of ``ready/`` and ``claimed/``, once for the consumer and once
+        for the mover, plus the consumer's outcome records.  A live owner
+        costs one or two more stats of its consumer's record.
+        """
+
+        if not (_is_action_key(consumer) and _is_action_key(mover)):
+            return "uncertain", "its fragment does not name two action keys"
+        why = unended(self.queue, consumer)
+        if why:
+            for state in (pool.CLAIMED, pool.READY):
+                try:
+                    self.queue.item_path(state, consumer).stat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    return "uncertain", f"{why}; {exc}"
+                return "live", ""
+            return "uncertain", why
+        live, error = residency_plan.live_state(self.queue, mover)
+        if error:
+            return "uncertain", f"its mover's queue state is uncertain: {error}"
+        if live is not None:
+            return "uncertain", f"its mover {mover[:12]} is still {live}"
+        return "ended", ""
+
+    def _invalidation_blocked(self, norm: str, destination: Path) -> str:
+        """Why an ended owner's name may not be invalidated now, or ``""``.
+
+        The same censuses a replacement of unattributed residue passes: no
+        live pin, no other live mover claim covering the name, no sibling
+        copy in flight, each read clean.  Any of them refuses retryably at
+        once instead of waiting out a grace: the owners are proven ended,
+        so what remains is a reader or a sibling copy, and the retry
+        re-judges both.
+        """
+
+        pins = self._live_pins(norm)
+        if pins is None:
+            return "the pin census is unreadable"
+        if pins:
+            return f"it is live-pinned by {pins}"
+        cover, cover_detail = self._live_claim_cover(norm)
+        if cover is None:
+            return f"the claim census is unreadable: {cover_detail}"
+        if cover:
+            return "another live mover claim covers it"
+        partials = self._inflight_partials(destination)
+        if partials is None:
+            return "the copy census is unreadable"
+        if partials:
+            return f"a copy is in flight ({partials})"
+        return ""
+
+    def _invalidated(self, norm: str, rows: list[dict[str, object]]) -> None:
+        """Record one invalidated name; the caller holds the arbitration lock."""
+
+        self.invalidated.append({"stage_path": norm, "owners": list(rows)})
+
+    def _conflict(self, norm: str, declared: object, detail: str | None,
+                  rows: list[dict[str, object]]) -> _PublicationRefused:
+        """The terminal refusal for a name a live owner holds, naming both."""
+
+        live = [row for row in rows if row["state"] == "live"]
+        held_by = ", ".join(
+            f"consumer {row['consumer_action_key']} mover "
+            f"{row['mover_action_key']}" for row in live)
+        return _PublicationRefused(
+            f"{detail}; it is held by live owner {held_by}, and this copy "
+            f"is consumer {self.consumer} mover {self.mover}: a conflict "
+            f"for an owner to resolve, never retried",
+            refusal=STAGED_DESTINATION_CONFLICT,
+            conflict={
+                "stage_path": norm,
+                "consumer_action_key": self.consumer,
+                "mover_action_key": self.mover,
+                "manifest_sha256": self.manifest_sha256,
+                "declared_sha256": (declared if isinstance(declared, str)
+                                    and declared else None),
+                "owners": list(rows),
+            })
 
     @staticmethod
     def _identity(path: Path) -> dict[str, int] | None:
@@ -1063,8 +1474,16 @@ class _StagedPublisher:
             return None
 
     def _decide(self, destination: Path, want: int, declared: object,
-                computed: str, source_id: str | None, heal: bool,
-                ) -> tuple:
+                computed: str | None, source_id: str | None, heal: bool,
+                owners: _Owners | None = None) -> tuple:
+        """One publication verdict for ``destination``, deciding nothing twice.
+
+        ``owners``, when given, collects who names a divergent destination,
+        and the verdict for one is then ``("divergent", detail)`` rather than
+        a refusal, for :meth:`_arbitration` to settle (#966).  Without it a
+        divergence refuses, as it always did.
+        """
+
         norm = os.path.normpath(str(destination))
         try:
             present = os.lstat(destination)
@@ -1079,7 +1498,8 @@ class _StagedPublisher:
                     f"staged destination is not a regular file, not "
                     f"replacing: {destination}")
         proof, standing, detail = self._proof_search(
-            norm, want, declared, computed=computed, source_id=source_id)
+            norm, want, declared, computed=computed, source_id=source_id,
+            owners=owners)
         if proof is not None:
             return ("adopt", proof[0], proof[1])
         if standing == "unknown":
@@ -1087,7 +1507,7 @@ class _StagedPublisher:
                     f"staged publication proof unreadable for "
                     f"{destination}: {detail}; not replacing")
         if standing == "divergent":
-            return ("refuse", detail)
+            return ("divergent" if owners is not None else "refuse", detail)
         pins = self._live_pins(norm)
         if pins is None:
             return ("refuse",
@@ -1544,6 +1964,7 @@ class _StagedPublisher:
     def _proof_search(self, norm: str, want: int, declared: object,
                       computed: str | None = None,
                       source_id: str | None = None,
+                      owners: _Owners | None = None,
                       ) -> tuple[tuple[str, dict[str, int]] | None, str,
                                  str | None]:
         """An adoptable publication of these bytes, if one is proven.
@@ -1584,6 +2005,15 @@ class _StagedPublisher:
         it (#981).  Each search then decides its own path from that census
         in the same order, with the same verdicts, and takes the sidecar and
         the live destination stat itself, fresh.
+
+        ``owners`` (#966): without it a divergence returns at once, as it
+        always did.  With it the search reads the rest of the census, which
+        is already in memory, and collects every other ``(consumer, mover)``
+        that names the path with a record that is not a superseded
+        incarnation's date; an unreadable fragment or child directory marks
+        the collection incomplete.  Divergence still outranks an unreadable
+        record, exactly as the early return made it.  The collection is
+        filled on every search but meaningful only on a divergence.
         """
 
         census = self._shared_census()
@@ -1594,10 +2024,14 @@ class _StagedPublisher:
         standing = "clean"
         unknown: str | None = None
         found: tuple[str, dict[str, int]] | None = None
+        divergent = False
+        own = (self.consumer, str(self.mover))
         for child, name, path, fragment in census[1]:
             if name is None:
                 # The child directory itself could not be listed.
                 unknown = path
+                if owners is not None:
+                    owners.complete = False
                 continue
             if fragment is _LOOK_AGAIN:
                 observed = _observe(path)
@@ -1606,13 +2040,19 @@ class _StagedPublisher:
             candidate = self._candidate_from_record(
                 fragment, child, norm, want, declared,
                 computed=computed, source_id=source_id)
+            if (owners is not None and candidate is not None
+                    and candidate not in ("tainted", "stale")
+                    and isinstance(fragment, tuple)
+                    and (child, str(fragment[0])) != own):
+                owners.pairs.add((child, str(fragment[0])))
             if candidate == "tainted":
                 unknown = f"{child}/{name}: unreadable"
+                if owners is not None:
+                    owners.complete = False
             elif candidate == "divergent":
-                return None, "divergent", (
-                    f"staged destination holds different bytes than "
-                    f"manifest digest for {norm}; refusing to "
-                    f"invalidate its owner")
+                if owners is None:
+                    return None, "divergent", _divergent_detail(norm)
+                divergent = True
             elif candidate in ("owned", "stale"):
                 # ``owned``: a vouch without a usable date.  ``stale``:
                 # a date for an incarnation this name no longer carries
@@ -1622,6 +2062,8 @@ class _StagedPublisher:
                 standing = "owned"
             elif candidate is not None and found is None:
                 found = candidate
+        if divergent:
+            return None, "divergent", _divergent_detail(norm)
         if unknown is not None:
             return None, "unknown", unknown
         if found is not None:
@@ -1900,6 +2342,11 @@ class _Copier:
         #: lock, so a refusal recorded there cannot be followed by another
         #: entry being handed out.
         self.publication_refused = threading.Event()
+        #: The first terminal refusal the gate raised, and the conflict it
+        #: named (#966); both stay ``None`` for a retryable refusal.  Set
+        #: under the dispatch lock beside :attr:`publication_refused`.
+        self.refusal: str | None = None
+        self.conflict: dict[str, object] | None = None
 
     def _temporary(self, destination: Path) -> Path:
         """This mover's own temporary beside ``destination`` (#620).
@@ -2161,6 +2608,9 @@ class _Copier:
                     # decision and terminal.
                     with dispatch:
                         self.publication_refused.set()
+                        if exc.refusal is not None and self.refusal is None:
+                            self.refusal = exc.refusal
+                            self.conflict = exc.conflict
                     record_error(path, exc)
                     return
                 except (OSError, ValueError) as exc:
@@ -2936,6 +3386,24 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     identity = announced_pool_identity(args.pool_root, str(args.tier_id))
     if identity is not None:
         receipt["pool_identity"] = identity
+    if publisher.invalidated:
+        # Names this copy took from owners that had all ended (#966), each
+        # with the owners it proved; capped like ``errors``.
+        receipt["entries_invalidated"] = len(publisher.invalidated)
+        receipt["invalidated"] = publisher.invalidated[:20]
+    if copier.refusal is not None:
+        # A live owner holds different bytes under one of this range's names
+        # (#966).  No rerun can clear that, so the mover says so and exits
+        # nonzero, and it retires its own window: otherwise the window finds
+        # it neither queued nor pinned and republishes it into the same
+        # refusal every cycle.  Its fragment stays, so what it adopted keeps
+        # its vouch.
+        receipt["refusal"] = copier.refusal
+        receipt["complete"] = False
+        receipt["conflict"] = copier.conflict
+        receipt["plan_superseded"] = retire_conflicted_window(
+            queue, str(args.consumer_action_key), str(args.action_key),
+            copier.conflict or {})
     if overran:
         # The tokens bound what the tier can hold.  Staging past them is the
         # one failure that cannot be left to the consumer to notice, so the
@@ -2989,6 +3457,44 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                  else "residency_moved_nothing")
         receipt["refusal"] = receipt.get("refusal") or empty
     return receipt
+
+
+def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
+                             mover: str,
+                             conflict: Mapping[str, object]) -> bool:
+    """Mark the window that sealed ``mover`` superseded, naming the conflict.
+
+    The existing retirement record (#708): ``residency_window`` stops
+    publishing movers from a superseded plan, and a deliberate resubmission
+    seals a fresh one.  Bound to the filing that names this mover, under the
+    consumer's transition lock (:func:`residency_plan.mark_superseded`), so a
+    mover of a replaced plan never retires its replacement.  ``False`` when
+    nothing was marked: no plan, a plan that does not name this mover, or a
+    record that could not be read or written.
+    """
+
+    try:
+        refused: list[Exception] = []
+        plan, filing = residency_plan.read_filed(
+            queue, consumer, on_unreadable=refused.append)
+        if (plan is None or refused
+                or residency_plan.find_mover_leg(plan, mover) is None):
+            return False
+        owners = "; ".join(
+            f"consumer {row.get('consumer_action_key')} mover "
+            f"{row.get('mover_action_key')} ({row.get('state')})"
+            for row in conflict.get("owners") or ()
+            if isinstance(row, Mapping))
+        reason = (f"{STAGED_DESTINATION_CONFLICT}: "
+                  f"{conflict.get('stage_path')} holds the bytes of "
+                  f"{owners}; consumer {consumer} mover {mover} wants "
+                  f"{conflict.get('declared_sha256')}")
+        marker = residency_plan.mark_superseded(
+            queue, consumer, plan=plan, filing=filing, reason=reason,
+            movers=[mover], by="stage-move")
+    except (OSError, ValueError, pb.PrismaBuildError):
+        return False
+    return marker is not None
 
 
 def own_action_key(declared: str | None) -> str:
