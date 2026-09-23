@@ -895,12 +895,28 @@ import shadows refuse before pytest. Nothing installs into a shared venv.
 The standard-library guard is embedded in the shard command and therefore
 enters action identity; old unguarded receipts cannot satisfy guarded requests.
 Verified module, distribution, expected/installed commits and import origin
-travel in the action's stdout payload. Existing requests remain immutable and
-projects with no resolvers retain their previous commands. This trusts managed
+travel in the action's stdout payload. Existing requests remain immutable. This trusts managed
 installation metadata; it is not a package signature or a sandbox against
 tests/resolvers changing imports. Environments must remain immutable while
 actions use them, including between verification and pytest execution. Generic
 `pbrun` commands do not opt into this `pbtest` convention automatically.
+
+Every `pbtest` shard runs pytest under the outcome recorder in
+`tools/fleet/pbtest_outcomes.py` (#942). The shard command carries the recorder
+as source, beside the dependency guard when the checkout pins one, and never as
+a path. The recorder needs only the standard library and the target's pytest.
+It records each report the terminal summary counts, classified as the terminal
+classifies it: the category `pytest_report_teststatus` gives a test report, and
+`error` or `skipped` for a collection report that failed or skipped. It prints
+the record as one `pbtest-outcomes: {json}` line in the shard's stdout, which
+the pool stores with the action. The recorder is an object plugin, so under
+pytest-xdist it stays in the controller, which receives every worker's reports.
+`pbtest` reads the record into each shard's receipt entry as `skipped`: every
+skip's node ID, phase, reason and location. It prints the same list, and names
+a shard whose summary counts skips it has no record for. A shard with no record
+has `skipped: null`, which means its skip reasons are unknown, not that nothing
+was skipped. The recorder changes every shard's command, so receipts from
+before it are not cache hits for shards after it.
 
 ## Problem
 

@@ -90,13 +90,21 @@ def check_pins() -> None:
         print("pbtest dependency pin: " + json.dumps(evidence, sort_keys=True), flush=True)
 
 
-def main() -> int:
+def preflight() -> int:
+    """Check every reviewed pin; ``1`` after saying why, ``0`` when all hold."""
     try:
         check_pins()
     except ValueError as exc:
         print(f"pbtest: dependency pin refused before pytest: {exc}",
               file=sys.stderr, flush=True)
         return 1
+    return 0
+
+
+def main() -> int:
+    refused = preflight()
+    if refused:
+        return refused
     sys.argv[0] = "pytest"
     runpy.run_module("pytest", run_name="__main__", alter_sys=True)
     return 0
