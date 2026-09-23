@@ -307,11 +307,15 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
 
     elsewhere = {**placed, "annotations": {
         **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "replay-0", "refs": [ref]}]}}
-    assert "reads its declared batches" in refused(elsewhere)
+    assert "outside its slot" in refused(elsewhere)
 
     moved = _rephased(placed, (("head", [0, 1]), ("handoff", []),
                                ("replay-0", [0, 2]), ("replay-1", [1])))
-    assert "reads its declared batches" in refused(moved)
+    assert "outside its slot" in refused(moved)
+
+    mixed = _rephased(placed, (("head", [0, 1]), ("handoff", [0, 2]),
+                               ("replay-0", [0]), ("replay-1", [1])))
+    assert "reads its declared batches" in refused(mixed)
 
     changed = json.loads(json.dumps(placed))
     changed["entries"][2]["sha256"] = "0" * 64
