@@ -2104,6 +2104,13 @@ The tools:
     is reading is recorded nowhere and reads `not_observable`. One row per
     filed plan, said in `population`: a consumer the coordinator never
     staged has no cursor to report.
+*   **`pb_blocked_origins()`** — the consumed origin batches only an operator
+    can free (#926): every declared consumer still holding the batch failed
+    or was withdrawn. Each such consumer comes with its state, any
+    `superseded_by` that did not apply, and the release and
+    resubmit-with-`--supersedes` commands. It is `pbstatus --blocked-origins`'s
+    own reader; `census_complete` is false, and `unreadable` names the
+    records, when a record could not be read.
 
 Every response carries the same envelope, and two of its fields decide whether
 the rest of it can be believed. `complete` is false, and `timed_out` names the
@@ -3312,8 +3319,60 @@ as `output-origin-retirement-stalled`, naming the consumer and its state:
 grep '"output-origin-retirement-' <tier-loop log>
 ```
 
-To release the batch, resubmit the same consumer; the batch is deleted after
-that run succeeds. `output-origin-retirement-refused` means the tick would not
+To let the batch go, use one of these (#926):
+
+- **Resubmit the consumer.** A resubmission of the same key clears the hold
+  once it succeeds. A resubmission under a new key, which is what follows any
+  publish, must name the failed or withdrawn key it replaces:
+
+  ```
+  pbrun.py --priority -10 --supersedes <failed consumer key> \
+      --data-manifest manifest.json -- ...
+  ```
+
+  `--supersedes` also works with `--after`. The old declaration stops holding
+  the batch once the new key has declared the same batch, and the batch is
+  deleted after the new key succeeds. In the retirement line the old key's
+  state is `superseded`, with `superseded_by` naming the new key.
+- **Release the declaration.** When the consumer will not run again, release
+  it. BATCH_REF is the `ref` object from the stall line, as JSON or as a file:
+
+  ```
+  pbrun.py --release-origin-consumer '<ref JSON>' <consumer key> \
+      --reason "band L-1 abandoned"
+  ```
+
+  `pbrun` refuses while that consumer is queued, claimed or being moved, and
+  refuses a key that did not declare the batch. The batch is then deleted as
+  soon as every other declared consumer has succeeded.
+
+A batch is *blocked* when every consumer still holding it is `failed` or
+`withdrawn`: nothing queued or running will free it, and it is held until one
+of the above happens. A batch that a queued or running consumer still holds is
+waiting, not blocked, even when the stall line also names a failed one.
+`superseded_by` on a stall line means a supersession exists but its new key
+has not declared this batch yet, for example a deferred retry that is not
+released yet.
+
+The stall line is logged once per change. To list the blocked batches at any
+time, with the commands that free each one:
+
+```
+pbstatus.py --blocked-origins
+```
+
+It prints one JSON object. Each entry in `blocked` carries the batch's `ref`
+and `bytes`, every declared consumer's state, and, for each consumer still
+holding it, `remedies`: `release` is the exact `pbrun.py
+--release-origin-consumer` command, with only `--reason` left to fill in;
+`resubmit` is the `--supersedes` form, with the consumer's own options and
+command left to fill in. `reported` says whether the tier loop has logged the
+stall yet. A batch held for an unreleased deferred consumer (#913) is not
+listed. When a record cannot be read, `complete` is false, `unreadable` names
+it, and the command exits 3. The MCP tool `pb_blocked_origins` serves the same
+listing.
+
+`output-origin-retirement-refused` means the tick would not
 delete: the output prefix is not mounted on dl380g10, or a file is no longer
 the one the batch committed. The line names the reason and the path. A
 `retain` batch is never deleted by PB, even after its producer fails. To free

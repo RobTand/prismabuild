@@ -6232,7 +6232,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="cancel this queued or running action (a key prefix is "
                          "enough) instead of submitting; repeatable")
     ap.add_argument("--reason", default="",
-                    help="why, recorded on the withdrawal record")
+                    help="why, recorded on the withdrawal record, or on the "
+                         "release --release-origin-consumer files")
+    ap.add_argument(
+        "--release-origin-consumer", nargs=2, default=None,
+        metavar=("BATCH_REF", "CONSUMER_KEY"),
+        help="release one consumer's declaration on one consumed origin batch "
+             "instead of submitting (#926).  BATCH_REF is the batch's ref, as "
+             "JSON or a path to a JSON file (output-origin-retirement-stalled "
+             "prints it); CONSUMER_KEY is the declared consumer, which must "
+             "have failed or been withdrawn.  The tier loop then retires the "
+             "batch once every other declared consumer has succeeded")
     ap.add_argument(
         "--transport", choices=TRANSPORTS,
         default=default_transport(),
@@ -6244,6 +6254,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
     args = ap.parse_args(argv)
+    if args.release_origin_consumer is not None and (
+            args.withdraw or args.after or args.supersedes is not None
+            or args.as_sealed_by is not None):
+        ap.error("--release-origin-consumer is not a submission; it takes no "
+                 "--withdraw, --after, --supersedes or --as-sealed-by")
     if args.as_sealed_by is not None and args.withdraw:
         ap.error("--as-sealed-by cannot be combined with --withdraw")
     if args.after or args.supersedes is not None:
@@ -7335,6 +7350,37 @@ def publish_consumer_row(q, action: Mapping[str, object],
     return queued_path, generation
 
 
+def release_origin_consumer_cli(batch_ref: str, consumer_key: str, *,
+                                reason: str, by: str) -> int:
+    """``--release-origin-consumer``: release one declaration (#926)."""
+
+    from prismabuild import produced_output as produced_mod
+
+    text = batch_ref
+    if not batch_ref.lstrip().startswith("{"):
+        try:
+            text = Path(batch_ref).read_text()
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: --release-origin-consumer: BATCH_REF is neither JSON "
+                f"nor a readable file: {exc}") from None
+    try:
+        ref = json.loads(text)
+    except ValueError as exc:
+        raise SystemExit(
+            f"pbrun: --release-origin-consumer: BATCH_REF is not JSON: {exc}"
+        ) from None
+    q = pool.PoolQueue(SH / "pb-queue")
+    try:
+        result = produced_mod.release_origin_consumer(
+            q, ref, consumer_action_key=consumer_key, by=by, reason=reason)
+    except (produced_mod.ProducedOutputError, OSError, ValueError) as exc:
+        raise SystemExit(f"pbrun: --release-origin-consumer: {exc}") from None
+    print(json.dumps({**result, "consumer_action_key": consumer_key,
+                      "ref": ref}, sort_keys=True), flush=True)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     if args.withdraw:
@@ -7351,6 +7397,17 @@ def main() -> int:
             args.withdraw, transport=args.transport, reason=args.reason,
             by=f"{who}@{socket.gethostname()}",
         )
+    if args.release_origin_consumer is not None:
+        # Like a withdrawal, an operator's release is not a submission.
+        if [c for c in args.command if c != "--"]:
+            raise SystemExit("pbrun: --release-origin-consumer takes no command")
+        try:
+            who = getpass.getuser()
+        except Exception:                                        # noqa: BLE001
+            who = "unknown"
+        return release_origin_consumer_cli(
+            *args.release_origin_consumer, reason=args.reason,
+            by=f"{who}@{socket.gethostname()}")
     prepared = prepare_submission(args)
     if args.after:
         return submit_deferred(prepared, args)
