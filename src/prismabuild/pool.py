@@ -544,6 +544,10 @@ _FUNDING_KIND_ROLES = {
 }
 #: Where a tier loop files what it discovered about one tier, for readers.
 TIERS = "tiers"
+#: Per stage tier, what the tier loop's admission commitment saw this cycle
+#: (#930): one record per tier, rewritten each cycle by the loop that owns it.
+TIER_COMMITMENTS = "tier-commitments"
+TIER_COMMITMENT_SCHEMA_V1 = "prismabuild.tier_commitment.v1"
 #: The residency block an item may carry (#583): what a movement node moves,
 #: and which movement nodes a compute node waits on.  Absent on every item the
 #: fleet publishes today, and the whole mechanism is inert without it.
@@ -608,6 +612,13 @@ RESIDENCY = "residency"
 #: will ever have, named before the first one is published, so a restart
 #: resumes the same decomposition instead of cutting a new one.
 RESIDENCY_PLANS = "residency-plans"
+
+#: The queue-wide index of consumers an operator released from an origin
+#: batch (#954): one file per released key and batch, listed once per claim
+#: scan the way ``withdrawn/`` is.  Filed by
+#: ``produced_output.release_origin_consumer``; an entry is confirmed by the
+#: release record it names (``produced_output.origin_consumer_release``).
+RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
@@ -3729,7 +3740,7 @@ class PoolQueue:
     def ensure_layout(self) -> None:
         """Create the queue directories, once per process.
 
-        Fourteen ``mkdir`` calls: one per directory in ``_STATES`` plus one
+        Fifteen ``mkdir`` calls: one per directory in ``_STATES`` plus one
         per auxiliary root.  On a starved NFS mount each costs RPCs (a ``MKDIR``
         plus a stat on ``FileExistsError``), so running this on every claim
         poll billed every worker a directory walk per poll for directories
@@ -3751,6 +3762,9 @@ class PoolQueue:
         (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
         (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
         (self.root / TIERS).mkdir(parents=True, exist_ok=True)
+        # Created here so the claim's listing never meets a directory that did
+        # not exist yet, which NFS may keep answering as absent (#954).
+        self.released_origin_consumers_dir().mkdir(parents=True, exist_ok=True)
         self._layout_ensured = True
 
     # -- what the fleet can actually run ---------------------------------
@@ -9610,6 +9624,44 @@ class PoolQueue:
                 records.append(record)
         return records
 
+    def tier_commitment_path(self, tier_id: str) -> Path:
+        return self.root / TIER_COMMITMENTS / f"{self._check_tier_id(tier_id)}.json"
+
+    def file_tier_commitment(self, record: Mapping[str, object]) -> Path:
+        """File what the admission commitment saw on one stage tier (#930).
+
+        A report, never an admission input: the tier loop rewrites it every
+        cycle from the census it admitted on, so ``pbstatus --starvation``
+        can name a waiting newcomer and what it waits on without pricing the
+        tier again.  Stamped with ``filed_unix`` so a reader can age it.
+        """
+
+        tier_id = self._check_tier_id(str(record.get("tier_id", "")))
+        path = self.tier_commitment_path(tier_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, dict(record, schema=TIER_COMMITMENT_SCHEMA_V1,
+                                      filed_unix=_now()))
+        return path
+
+    def tier_commitment(self, tier_id: str) -> dict[str, object] | None:
+        """The last commitment record filed for ``tier_id``, or ``None``.
+
+        ``None`` when none was filed (a loop from before #930, or a tier no
+        loop censuses).  A record that does not parse raises, so the reader
+        can say so rather than report a tier with nothing waiting.
+        """
+
+        path = self.tier_commitment_path(tier_id)
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            return None
+        record = json.loads(text)
+        if (not isinstance(record, dict) or record.get("tier_id") != tier_id
+                or record.get("schema") != TIER_COMMITMENT_SCHEMA_V1):
+            raise ValueError(f"tier commitment record {path.name} is not one")
+        return record
+
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
         handles: dict[str, str], funded: dict[str, dict[str, object]],
@@ -12330,6 +12382,10 @@ class PoolQueue:
         # work runs again -- which is the race the operator used to have to win
         # by hand.  Read once per scan, not once per item.
         withdrawn = self.withdrawn_keys()
+        # The same listing for keys an operator released from an origin batch
+        # (#954).  Membership is only a lead; the guard below confirms it
+        # against the release record under the key's transition lock.
+        released = self.released_origin_consumer_keys()
         # One offer snapshot per scan, read only if something asks for it.
         # The cross-resource preference is the only caller and it asks on the
         # rare scans where this box is working the other resource, so an
@@ -12391,6 +12447,11 @@ class PoolQueue:
                                and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
                                for name in claimed_names)):
                     self.record_denial(item, "already_claimed")
+                    continue
+                if key in released and self._refuse_released_origin_consumer(
+                        item, key):
+                    # Before placement: failing the row is queue bookkeeping,
+                    # not execution, so any box's scan may do it (#954).
                     continue
                 if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                     if key:
@@ -14487,7 +14548,8 @@ class PoolQueue:
         for captured in sorted(_scan(self.root / "ready-transitions")):
             parts = captured.name.split(".")
             if (len(parts) != 5 or parts[-1] != "json"
-                    or parts[3] not in {"orphan", "withdraw-ready"}
+                    or parts[3] not in {"orphan", "withdraw-ready",
+                                        "origin-released"}
                     or len(parts[0]) != 64
                     or any(c not in "0123456789abcdef" for c in parts[0])):
                 continue
@@ -15971,6 +16033,107 @@ class PoolQueue:
         return frozenset(
             name[: -len(".json")] for name in names if name.endswith(".json")
         )
+
+    def released_origin_consumers_dir(self) -> Path:
+        """Where the index of released origin-batch consumers lives (#954)."""
+
+        return self.root / RELEASED_ORIGIN_CONSUMERS
+
+    def released_origin_consumer_keys(self) -> frozenset[str]:
+        """Every consumer key with an entry in the release index (#954).
+
+        Listed, not stat-ed, and loud on anything but absence, for the reasons
+        :meth:`withdrawn_keys` gives: a guard that could not see a release
+        would run a row whose batch may already be deleted.  An entry is a
+        lead, not a release: ``produced_output.origin_consumer_release``
+        confirms it against the release record it names.
+        """
+
+        try:
+            names = os.listdir(self.released_origin_consumers_dir())
+        except FileNotFoundError:
+            return frozenset()
+        return frozenset(name[:64] for name in names
+                         if name.endswith(".json") and name[64:65] == ".")
+
+    def _refuse_released_origin_consumer(self, item: Mapping[str, object],
+                                         key: str) -> bool:
+        """Fail a ready row whose key was released from an origin batch (#954).
+
+        ``produced_output.release_origin_consumer`` releases a declaration only
+        while no live code can publish the key, and a released key cannot
+        declare again.  An older ``pbrun`` that declared before the release
+        still publishes its row, without the lock or the check.  The row
+        would read a batch the retirement tick may already have deleted, so
+        it is failed here, before any placement, admission or staging:
+        status ``origin_consumer_released``, with ``origin-consumer-released``
+        and the released batch in its detail, and the ready bytes kept under
+        ``withdrawn/superseded/``.
+
+        The caller holds the key's transition lock, which a release also
+        holds while it files its index entry and record, so the two are
+        either both there, neither is, or only the entry is (a release that
+        stopped before its record, which is no release).  The release binds
+        the key, not one generation: any ready row of it reads the batch.
+
+        Returns ``True`` when the row must not be claimed: it was filed, or
+        its release could not be read (a denial, ``origin_consumer_release_
+        unreadable``, leaving it ready).  ``False`` lets the claim go on.
+        """
+
+        from . import produced_output as produced_mod
+
+        try:
+            release = produced_mod.origin_consumer_release(self, key)
+        except (produced_mod.ProducedOutputError, OSError,
+                PoolContractError) as exc:
+            self.record_denial(item, "origin_consumer_release_unreadable",
+                               {"error": str(exc)})
+            return True
+        if release is None:
+            return False
+        captured = self._capture_ready_transition(self.item_path(READY, key),
+                                                  kind="origin-released")
+        if captured is None:
+            return True       # the listing was stale: nothing of it is ready
+        try:
+            record = _read_json(captured)
+            covered = (self.terminal_outcome_covers(record, action_key=key)
+                       if record is not None else None)
+        except (OSError, PoolContractError) as exc:
+            self._restore_ready_transition(captured, key)
+            self.record_denial(item, "origin_consumer_release_unreadable",
+                               {"error": str(exc)})
+            return True
+        if record is None:
+            self._restore_ready_transition(captured, key)
+            return True
+        if covered is None:
+            ref = release["ref"]
+            assert isinstance(ref, Mapping)
+            record.update({
+                "schema": POOL_OUTCOME_SCHEMA_V1,
+                "action_key": key,
+                "status": "origin_consumer_released",
+                "finished_unix": _now(),
+                "finished_host": socket.gethostname(),
+                "detail": {
+                    "refusal": "origin-consumer-released",
+                    "reason": (
+                        f"origin-consumer-released: {key[:12]}'s declaration "
+                        f"of {ref['batch_id']} was released; this key cannot "
+                        "read the batch again"),
+                    "ref": dict(ref),
+                    "released_state": release.get("state"),
+                    "released_by": release.get("by"),
+                    "released_unix": release.get("released_unix"),
+                },
+            })
+            # Replaced, as ``finish`` files an outcome: an earlier generation's
+            # ending under this key is not this row's.
+            _write_json_atomic(self.item_path(FAILED, key), record)
+        self._finish_ready_transition(captured)
+        return True
 
     def live_withdrawal(self, action_key: str) -> dict[str, object] | None:
         """The visible cancellation marker filed for this key, if there is one.

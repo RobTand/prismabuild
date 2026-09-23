@@ -1871,6 +1871,19 @@ a cause the next step cannot see (#351).
     `pbstatus --starvation` lists these under `starved`, with the holders
     named. Dropping `--measurement` to get admitted buys a number measured
     against other tenants' noise.
+*   **Is a staged consumer waiting on the stage's commitment?** A ready
+    consumer whose lead is never published may be refused by the stage's
+    joint commitment (#907): its read footprint does not fit beside what
+    the tier has promised its admitted windows. `pbstatus --starvation`
+    lists it under `joint_commitment_waits` (#930) with its footprint, the
+    committed total, the capacity, the shortfall and the terms that make up
+    the gap: each holder or window, and whether it is evictable. A
+    non-evictable holder no live work names (`receipt-less`) is the case to
+    look at by hand. A consumer waiting behind another's commitment wait is
+    listed with `waiting_on`. The tier's own record is under
+    `tiers[].commitment`, aged by `commitment_age_s`; a tier promised more
+    than it has shows `over_committed_gib` there, and the tier loop logs
+    `tier-over-committed` on every cycle while it lasts.
 
 ### File the endings nobody asked for
 
@@ -2088,7 +2101,9 @@ The tools:
     plan's promotion state and cursor gap, what every tier offers and holds,
     which claim denials block movers, and which ready items a box refused and
     will not withhold for (`starved`, #924: the reason, why, and the holders
-    that do not drain soon). This is `pbstatus --starvation`'s
+    that do not drain soon), and which newcomers wait on a stage tier's joint
+    commitment (`joint_commitment_waits`, #930: the terms of the gap, each
+    marked evictable or not). This is `pbstatus --starvation`'s
     own reader served whole, so the tool and the command cannot disagree
     about who is waiting. `census_complete` is the census's own completeness
     -- every record it tried to read answered -- beside the envelope's
@@ -3346,7 +3361,11 @@ To let the batch go, use one of these (#926):
   being submitted, and refuses a key that did not declare the batch. The
   batch is then deleted as soon as every other declared consumer has
   succeeded. A released key cannot declare the batch again: submitting it
-  again is refused with `origin-consumer-released`.
+  again is refused with `origin-consumer-released`. A row for it that an
+  older `pbrun` still publishes is failed at claim with the same refusal
+  (status `origin_consumer_released`), and nothing is staged for it (#954).
+  For a release filed before #954, run the same command again: it answers
+  `"released": false` and files the index entry the claim reads.
 
   A consumer the stall line names `unpublished` was declared and never
   queued, usually because its submitter died. Release it the same way (#945).

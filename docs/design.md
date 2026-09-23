@@ -4984,7 +4984,9 @@ in either of two ways:
   a consumer that is queued, claimed or being moved
   (`origin-consumer-live`); and one whose state is anything but failed,
   withdrawn or unpublished. The consumer's state then reads `released`. The
-  declaration file stays, and the key can no longer declare the batch.
+  declaration file stays, and the key can no longer declare the batch. Before
+  its record, the release files an entry in the queue-wide index (#954,
+  below), so a claim refuses any row of the key.
 
 **Releasing an unpublished consumer (#945).** A declaration with no queue
 record is left by a submitter that died between its declaration and its
@@ -5015,12 +5017,50 @@ nothing can publish that key any more, which it shows from these facts:
   resubmission or `--as-sealed-by` from a retained generation, dies at its
   declaration, before any row. So the release does not have to prove that
   nobody will ever submit the key again: it makes that submission unable to
-  read the batch.
+  read the batch. A row that a `pbrun` older than #945 still publishes, after
+  declaring before the release, is failed at claim (#954, below).
 
 The release records the wrapper that sealed the key as `sealed_wrapper`.
 The retirement tick reads an unpublished consumer with a release as
 `released`; nothing supersedes an unpublished consumer, because
 `--supersedes` accepts only a failed or withdrawn key.
+
+**Refusing a released key at claim (#954).** The declaration refusal runs
+only in live `pbrun`. A `pbrun` older than #945 takes no lock and makes no
+check between its declaration and its row, so its row can land after the
+release, reading a batch the retirement tick may already be deleting. The
+release is therefore enforced where live code always runs:
+
+- **The index.** `release_origin_consumer` files
+  `released-origin-consumers/<consumer_key>.<ref sha256>.json` at the queue
+  root, naming the key and the ref, before the release record. Only the
+  record makes the release real: an entry without one is a release that
+  stopped before its record, and `origin_consumer_release` reads it as no
+  release. The order is the point. A record with no entry would let the
+  retirement tick delete the batch while the claim, which lists only the
+  index, ran a row of the key. Running a release again for a record that has
+  no entry, such as one filed before #954, files the entry.
+- **The claim.** `PoolQueue._claim` lists the index once per scan, as it
+  lists `withdrawn/`, and for a listed key confirms the release against its
+  record under the key's transition lock, which a release also holds while
+  it writes the entry and the record. A confirmed key's ready row is failed
+  before placement, so any box's scan files it: status
+  `origin_consumer_released`, with `refusal: origin-consumer-released`, the
+  ref, and the release's state, author and time in its `detail`. The row
+  keeps its `published_unix`, so the submitter's wait loop reads it as its
+  generation's ending, and its ready bytes are kept under
+  `withdrawn/superseded/`. The release binds the key, not one generation: a
+  key seals its data manifest, so every row of it reads the batch. A
+  release that cannot be read is a denial,
+  `origin_consumer_release_unreadable`, and the row stays ready. The row is
+  captured in `ready-transitions/` (kind `origin-released`) before its ending
+  is written, so `sweep_ready_transitions` restores it after a crash and the
+  next claim files it.
+- **The tier loop.** `tier_loop.live_consumers` leaves out a ready consumer
+  whose key has a confirmed release, or one it cannot read, so the window
+  publishes no phase of its frozen plan, not even its lead. Once the claim
+  has failed the row, the dead-consumer sweep (#620) archives the plan. A
+  claimed consumer is never left out: it was claimed before any release.
 
 The old consumer's own state answers first while it is queued, running or
 has succeeded. Since #945 a released key also cannot declare the batch
@@ -5070,9 +5110,16 @@ Limits:
   running can still publish its row. The release therefore makes the key
   unable to declare the batch again, not unsubmittable.
 - A `pbrun` older than #945 does not hold the key's transition lock between
-  its declaration and its row. If one is still running when its declaration
-  is released, its row can land after the batch retired, and the consumer
-  then reads origin paths the retirement deleted.
+  its declaration and its row. A row it publishes after the release is
+  failed at claim (#954). One it publishes after the release has read the
+  consumer's state but before the release's record lands can be claimed
+  first. It then runs, and the retirement tick waits for it, because a
+  claimed consumer reads `live` whatever its release says; only a batch the
+  tick had already started to retire can go from under it.
+- A worker or tier loop still running a generation older than #954 does not
+  read the index, so the claim refusal holds only on boxes that run #954.
+  A release filed by a generation between #945 and #954 has no index entry
+  until its release command is run again.
 - `pbstatus --blocked-origins` does not list a batch that an unpublished
   consumer holds, because a submission may still be in its window. The stall
   line names the consumer `unpublished`; `--release-origin-consumer` decides
@@ -6401,14 +6448,16 @@ priced its consumption until it reported: R13 was 242 GiB and refused at
 * Footprints are recomputed each pass. If admitted windows later want more
   than the tier (a claim measured faster than its stand-in), they keep
   running and contend as before; newcomers are refused until the sum fits.
-  Nothing reports the overcommit.
+  Since #930 the tier loop says `tier-over-committed` on every cycle while
+  it lasts, with the terms.
 * An admitted window that the joint-fit gate has physically stalled still
   holds its footprint in the commitment. Beside a holder nothing can evict, a
   tier can be over-committed by that window alone, and then a newcomer that
   would fit the free room waits behind a window that cannot progress either,
-  until the holder goes. Because nothing reports the overcommit, this looks
-  like a stall to an operator: the newcomer's `window-gated` event carries
-  the terms (`committed_gib` above `capacity_gib`).
+  until the holder goes. Before #930 nothing reported the overcommit, so
+  this looked like a stall to an operator: the newcomer's `window-gated`
+  event carried only the totals (`committed_gib` above `capacity_gib`). Now
+  the tier says `tier-over-committed`, and the refusal names the holder.
 * The horizon's own in-phase over-estimate is real window behavior: a claim
   whose first report lands seconds after it has a window that runs to the
   #633 bound until its next report. The footprint follows it while it lasts,
@@ -6500,7 +6549,7 @@ mints no more than the ceiling plus one reader's worth.
 
 **Cost.** Each cycle that builds the commitment census reports what it cost:
 `{"event": "commitment-census", "calls", "elapsed_s", "max_s"}` on the tier
-loop's output. Measured on 2026-09-23 from sparky over NFS (the loop itself
+loop's output. Since #930 every cycle builds at least one. Measured on 2026-09-23 from sparky over NFS (the loop itself
 reads the queue locally on dl380g10), 25 warm calls per tree, as PB actions:
 
 | Queue | Before (`81d95cba`) median / p90 | After median / p90 |
@@ -6512,6 +6561,91 @@ The profile splits a loaded call about evenly between `read_footprint` (six
 calls) and the ledger's token-directory scans (`holder_tokens`,
 `_mover_state`). An undeclared newcomer's footprint is the run-ahead bound,
 which recomputes no horizon, so the after-tree is slightly cheaper.
+
+### A joint-commitment wait and an over-committed tier are reported (#930)
+
+The #907 commitment refused a newcomer with one `window-gated` event of
+totals, and a stage tier whose admitted windows were promised more than it
+has said nothing at all. Both waits were silent: an operator saw a newcomer
+waiting and could not tell which holder or window it waited on, or whether
+any of them could be evicted.
+
+**The census names what it sums.** `_commitment_census` classifies every held
+token once, beside the sums admission reads, which do not change. Each holder
+carries a `basis` and, where a window owns it, that window (`consumer`):
+
+| Basis | Evictable | What it is |
+|---|---|---|
+| `in-horizon-leg` | no | a window's leg inside its refill horizon |
+| `fence-grant` | no | a window's advance fence |
+| `passed-leg` | yes | a leg of a phase the window has read past |
+| `beyond-horizon` | yes | a leg past the window's refill horizon |
+| `superseded-plan` | no | a leg of a plan a withdrawal superseded |
+| `live-plan` | no | a mover a live item's plan or leads name, on no window of this tier |
+| `live-item` | no | a live queue item's own tokens |
+| `receipt-names-live-item` | no | a holder whose receipt names a live item |
+| `funded-output` | no | a produced-output mover with a funding record (#929) |
+| `funding-unreadable` | no | the same, with a funding record that does not read |
+| `orphan` | yes | a holder whose receipt names no live item |
+| `receipt-less` | no | a holder with no receipt (the `6fbc96301c6c` shape) |
+
+The evictable holders sum to `evictable_gib`, and all of them to `held_gib`.
+The census also names the queued new money by the window its row stages for,
+the owed output windows by owner, and `committed_gib`: held less evictable,
+plus queued, owed output and every admitted window's growth.
+`over_committed_gib` is the part of it past the capacity.
+
+**A refusal names its gap.** A `joint-commitment-stall` refusal's
+`commitment` carries `shortfall_gib` (the committed total plus the newcomer's
+own growth, less the capacity) and `terms`: the holders grouped by basis and
+window (a holder no window owns is its own term, by key), each admitted
+window's growth, the queued rows and the owed output, each marked
+`evictable`. The non-evictable terms sum to the committed total the gate
+compared. The `window-gated` event carries both.
+
+**The record.** Every cycle, `residency_window` files one record per stage
+tier this loop announces, `tier-commitments/<tier_id>.json`
+(`prismabuild.tier_commitment.v1`), from the census the protection pass
+admitted on. It holds the totals, the terms, every holder, every window's
+footprint, and every newcomer the pass refused on the tier (`waiting`), with
+its reason and, for a commitment refusal, the gate's terms. A newcomer gated
+behind another's wait (`higher-priority-window-waiting`) names that one and
+its reason under `waiting_on`. The record is a report: admission never reads
+it.
+
+A pass that asked no newcomer took no census. The report then takes one with
+`remember=False`, which prices each window as admission would at that moment
+but does not raise the consumption memo (`_FASTEST_CONSUMPTION`), so admission
+prices every window exactly as it did before #930.
+
+**Over-commitment.** While `over_committed_gib` is positive, the loop appends
+`tier-over-committed` to the cycle's events, with the totals and the terms,
+on every cycle.
+
+**pbstatus.** `pbstatus --starvation` reads the record, and `pb_starvation`
+serves the same blob. Each tier carries `commitment` (the record, or null
+where no loop files one: not a stage tier, or a loop from before #930) and
+`commitment_age_s`. `joint_commitment_waits` names every newcomer waiting on
+the commitment: refused by it, refused because its census did not read, or
+waiting behind one of those. Each entry has the newcomer's footprint, the
+committed total, the capacity, the shortfall and the terms.
+
+**Cost.** A cycle with a newcomer reuses the admission census, so the report
+adds the record write and the terms. A cycle without one adds a census. Median
+and p90 of 25 steady-state `residency_window` calls per tree, measured on
+2026-09-23 as PB actions on sparky over NFS, on the #907 replay:
+
+| Queue | Before (`ee2420db`) | After | PB keys (before / after) |
+|---|---|---|---|
+| R12 alone, no newcomer | 21.5 / 21.8 ms | 37.5 / 37.7 ms | `4c27c6b2ac88` / `663142e0138f` |
+| R12, R13, the capture, three quanta | 75.4 / 75.7 ms | 80.1 / 81.1 ms | `e856991f8e48` / `15ae898822f4` |
+
+The census itself is unchanged: 11.9 ms beside R12 alone and 18.4 ms against
+18.6 ms loaded. The record is 5.9 KB for R12 alone (24 holders) and 9.9 KB
+loaded. The profile of an R12-alone call puts the added time in
+`_report_commitments`: the census's ledger token-directory scans
+(`holder_tokens`, `_mover_state`), as in #909, and one atomic write. At the
+loop's 60 s cadence the worst case is 16 ms a cycle.
 
 ### Adopting a resident range, and when an orphan is evicted
 

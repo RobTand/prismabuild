@@ -166,6 +166,19 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
     return min(candidates)[1]
 
 
+def _released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
+    """Whether a claim will refuse ``key`` as a released consumer (#954).
+
+    Unknown counts as released: the claim denies a row whose release it cannot
+    read, so staging it would copy bytes nothing reads.
+    """
+
+    try:
+        return produced_output.origin_consumer_release(queue, key) is not None
+    except produced_output.ProducedOutputError:
+        return True
+
+
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Every ready or claimed item that declares leads, with what it has accepted.
 
@@ -174,9 +187,17 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     and a claimed one needs the next phase staged while it reads this one.  A
     terminal consumer is deliberately absent -- its ranges are nobody's to keep
     resident, and the sweep takes them back.
+
+    So is a ready consumer whose key an operator released from an origin batch
+    (#954): the claim fails that row with ``origin-consumer-released`` and never
+    runs it, so nothing is staged for it, not even its first phase.  One whose
+    release cannot be read is absent too, because the claim will not run it
+    either until it can; the claim's denial names it.  A claimed consumer is
+    never skipped: it was claimed before any release, and it is running.
     """
 
     out: list[dict[str, object]] = []
+    released = queue.released_origin_consumer_keys()
     for state in (pool.READY, pool.CLAIMED):
         for path in pool._scan(queue.dir(state)):
             item = pool._read_json(path)
@@ -187,6 +208,9 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
                 continue
             key = item.get("action_key")
             if not isinstance(key, str):
+                continue
+            if (state == pool.READY and key in released
+                    and _released_origin_consumer(queue, key)):
                 continue
             accepted = None
             claimed_unix = None
@@ -2601,7 +2625,8 @@ _FASTEST_CONSUMPTION: dict[tuple[str, str, float], float] = {}
 
 def _footprint_consumption(queue: pool.PoolQueue,
                            consumer: Mapping[str, object],
-                           plan: Mapping[str, object],
+                           plan: Mapping[str, object], *,
+                           remember: bool = True,
                            ) -> tuple[float | None, str]:
     """The consumption rate a read footprint is priced at, and its basis (#907).
 
@@ -2623,6 +2648,10 @@ def _footprint_consumption(queue: pool.PoolQueue,
     moves as the loop probes the pool, so the same newcomer was refused on
     one cycle and admitted on the next: an R12-shaped R13 beside R12 at
     242 GiB on 413 MB/s and 176 GiB on 144.
+
+    ``remember=False`` reads :data:`_FASTEST_CONSUMPTION` without raising
+    it: the rate is the one admission would price now, and a census taken
+    only to report (#930) leaves admission's memory as admission left it.
     """
 
     claimed = consumer.get("claimed_unix")
@@ -2644,7 +2673,8 @@ def _footprint_consumption(queue: pool.PoolQueue,
         if rate > 0:
             key = (str(queue.root), str(consumer.get("action_key")), float(claimed))
             fastest = max(attained, _FASTEST_CONSUMPTION.get(key, 0.0))
-            _FASTEST_CONSUMPTION[key] = fastest
+            if remember:
+                _FASTEST_CONSUMPTION[key] = fastest
             measured = max(rate, fastest)
             declared = residency_plan.declared_read_bytes_per_s(plan)
             if declared is not None and declared > measured:
@@ -2698,6 +2728,7 @@ def _commitment_census(queue: pool.PoolQueue,
                        tiers: Mapping[str, Mapping[str, object]], *,
                        consumers: list,
                        unknown: Iterable[Mapping[str, object]] = (),
+                       remember: bool = True,
                        ) -> dict[str, dict[str, object]]:
     """Per stage tier, what admission has promised and to which window (#907).
 
@@ -2733,6 +2764,16 @@ def _commitment_census(queue: pool.PoolQueue,
     Returns ``{tier_id: {...}}``; a tier whose ledger, queue or output
     census does not read, or that a live consumer may be on uncensused,
     carries ``error`` instead, and its newcomers wait.
+
+    Each tier also names what makes up its sums (#930), for the report and
+    never for admission: ``holders``, every held token once with the
+    ``basis`` it is or is not evictable on and the window it belongs to;
+    ``queued`` and ``output_owners``, the queued new money and the owed
+    output windows by owner; and ``committed_gib``, what the tier has
+    promised its admitted windows, of which ``over_committed_gib`` is past
+    its capacity.  ``remember=False`` prices each window without raising
+    the consumption memo (:func:`_footprint_consumption`), for a census
+    taken only to report.
     """
 
     out: dict[str, dict[str, object]] = {}
@@ -2749,9 +2790,18 @@ def _commitment_census(queue: pool.PoolQueue,
                 for tier_id in tier_ids}
     live = {str(key) for key, *_rest in consumers}
     root = str(queue.root)
-    for stale in [entry for entry in _FASTEST_CONSUMPTION
-                  if entry[0] == root and entry[1] not in live]:
-        _FASTEST_CONSUMPTION.pop(stale, None)
+    if remember:
+        for stale in [entry for entry in _FASTEST_CONSUMPTION
+                      if entry[0] == root and entry[1] not in live]:
+            _FASTEST_CONSUMPTION.pop(stale, None)
+    # Which live window each mover belongs to, for naming holders (#930).
+    window_of: dict[str, str] = {}
+    for key, _consumer, plan, _plan_tier in consumers:
+        try:
+            for mover in residency_plan.mover_keys(plan):
+                window_of.setdefault(str(mover), str(key))
+        except (KeyError, TypeError, ValueError):
+            continue
     uncensused: dict[str, str] = {}
     for entry in unknown:
         consumer_key = str(entry.get("consumer") or "")
@@ -2811,9 +2861,18 @@ def _commitment_census(queue: pool.PoolQueue,
                 for entry in owed.get("unknown") or [])}
             continue
         evictable = 0
+        # Every held token once, with why it is or is not evictable (#930).
+        # Classified alongside the sums below and never read by admission.
+        basis: dict[str, tuple[str, str | None, bool]] = {}
         try:
             for holder, gib in held.items():
-                if not gib or holder in wanted or holder in owners:
+                if not gib:
+                    continue
+                if holder in owners:
+                    basis[holder] = ("live-item", holder, False)
+                    continue
+                if holder in wanted:
+                    basis[holder] = ("live-plan", window_of.get(holder), False)
                     continue
                 receipt = queue.move_record(holder)
                 named = (receipt.get("consumer_action_key")
@@ -2839,8 +2898,15 @@ def _commitment_census(queue: pool.PoolQueue,
                     except (OSError, pool.PoolContractError, ValueError):
                         funded = "corrupt"
                     if funded != "absent":
+                        basis[holder] = (
+                            "funded-output" if funded != "corrupt"
+                            else "funding-unreadable", str(named), False)
                         continue
                     evictable += gib
+                    basis[holder] = ("orphan", str(named), True)
+                    continue
+                basis[holder] = (("receipt-names-live-item", str(named), False)
+                                 if named else ("receipt-less", None, False))
         except (OSError, pool.PoolContractError, ValueError) as exc:
             out[tier_id] = {"error": f"orphan census unreadable: {exc}"}
             continue
@@ -2852,7 +2918,11 @@ def _commitment_census(queue: pool.PoolQueue,
             key = str(key)
             try:
                 if residency_plan.superseded(queue, plan) is not None:
-                    continue      # publishes nothing more: its holdings are static
+                    # Publishes nothing more: its holdings are static.
+                    for mover in residency_plan.mover_keys(plan):
+                        if str(mover) in basis:
+                            basis[str(mover)] = ("superseded-plan", key, False)
+                    continue
                 accepted = consumer.get("accepted_phase")
                 already, staged = _mover_state(queue, plan, tier_id)
                 needs = residency_plan.advance_needs(
@@ -2870,16 +2940,26 @@ def _commitment_census(queue: pool.PoolQueue,
                     mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
                     if leg["phase"] not in ahead or mover in beyond:
                         evictable += held.get(mover, 0)
+                        if held.get(mover, 0):
+                            basis[mover] = (
+                                "passed-leg" if leg["phase"] not in ahead
+                                else "beyond-horizon", key, True)
                         continue
                     holding += held.get(mover, 0) + queued.get(mover, 0)
+                    if held.get(mover, 0):
+                        basis[mover] = ("in-horizon-leg", key, False)
                 prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
                 holding += sum(gib for holder, gib in held.items()
                                if holder.startswith(prefix))
+                for holder, gib in held.items():
+                    if gib and holder.startswith(prefix):
+                        basis[holder] = ("fence-grant", key, False)
                 # Every term from the window's own declarations and
                 # measurements, none from the tier's announced supply, so the
                 # verdict for a fixed queue does not move as the loop probes
                 # the pool (#909).
-                rate, basis = _footprint_consumption(queue, consumer, plan)
+                rate, rate_basis = _footprint_consumption(
+                    queue, consumer, plan, remember=remember)
                 readahead, readahead_basis = _readahead(plan, consumer.get("item"))
                 landing, landing_basis = _plan_landing(queue, plan)
                 footprint = residency_plan.read_footprint(
@@ -2898,7 +2978,7 @@ def _commitment_census(queue: pool.PoolQueue,
                 "footprint_gib": footprint, "holding_gib": holding,
                 "growth_gib": max(0, footprint - holding),
                 "own_queued_gib": queued.get(key, 0),
-                "consumption_basis": basis,
+                "consumption_basis": rate_basis,
                 "readahead_basis": readahead_basis,
                 "landing_basis": landing_basis,
             }
@@ -2906,10 +2986,26 @@ def _commitment_census(queue: pool.PoolQueue,
             out[tier_id] = {"error": error}
             continue
         held_total = sum(held.values())
+        committed = (held_total - evictable + sum(queued.values())
+                     + int(owed["gib"])
+                     + sum(int(window["growth_gib"]) for window in windows.values()
+                           if not window["newcomer"]))
         out[tier_id] = {
             "capacity_gib": capacity_gib, "held_gib": held_total,
             "evictable_gib": evictable, "queued_gib": sum(queued.values()),
             "unheld_output_gib": int(owed["gib"]), "windows": windows,
+            "committed_gib": committed,
+            "over_committed_gib": max(0, committed - capacity_gib),
+            "holders": [
+                {"key": holder, "gib": gib, "basis": basis[holder][0],
+                 "consumer": basis[holder][1], "evictable": basis[holder][2]}
+                for holder, gib in sorted(held.items(),
+                                          key=lambda entry: (-entry[1], entry[0]))
+                if gib],
+            "queued": [{"key": row, "gib": gib, "consumer": window_of.get(row)}
+                       for row, gib in sorted(queued.items())],
+            "output_owners": {str(owner): int(gib) for owner, gib in
+                              sorted(dict(owed.get("owners") or {}).items())},
         }
     return out
 
@@ -2987,11 +3083,13 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
         return None
     growth = 0
     others = False
+    growth_from: dict[str, int] = {}
     for other, window in windows.items():
         if other == key or (window["newcomer"] and other not in admitted):
             continue
         others = True
         growth += int(window["growth_gib"])
+        growth_from[str(other)] = int(window["growth_gib"])
     committed = (int(census["held_gib"]) - int(census["evictable_gib"])  # type: ignore[arg-type]
                  + int(census["queued_gib"]) + int(census["unheld_output_gib"])  # type: ignore[arg-type]
                  + growth)
@@ -3017,7 +3115,118 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
         "landing_basis": mine["landing_basis"],
         "lone": lone,
     }
+    if not decision["admit"]:
+        # What the gap is made of (#930): a refusal that names only totals
+        # leaves the operator to guess which holder or window to look at.
+        decision["commitment"]["shortfall_gib"] = max(
+            0, committed + int(mine["growth_gib"])
+            - int(census["capacity_gib"]))            # type: ignore[arg-type]
+        decision["commitment"]["terms"] = _commitment_terms(
+            census, growth_from=growth_from)
     return decision
+
+
+def _commitment_terms(census: Mapping[str, object], *,
+                      growth_from: Mapping[str, int]) -> list[dict[str, object]]:
+    """What a stage tier's commitment is made of, by holder and window (#930).
+
+    Every held token, grouped by the ``basis`` the census classified it on
+    and the window it belongs to -- a token no window owns is its own term,
+    named by holder -- and each marked evictable or not; the growth of each
+    window in ``growth_from``; the queued new money, by the window its row
+    stages for; and each owed produced-output window.  Evictable terms are
+    held but not committed: the sweep and the horizon eviction take them
+    back.  The non-evictable terms sum to the committed total the gate
+    compares.  Non-evictable terms first, largest first.
+    """
+
+    groups: dict[tuple[str, str, str], dict[str, object]] = {}
+    for holder in census.get("holders") or ():            # type: ignore[union-attr]
+        owner = holder.get("consumer")
+        name, value = (("consumer", str(owner)) if owner
+                       else ("holder", str(holder["key"])))
+        slot = groups.setdefault((str(holder["basis"]), name, value), {
+            "basis": holder["basis"], name: value, "gib": 0, "holders": 0,
+            "evictable": bool(holder["evictable"])})
+        slot["gib"] = int(slot["gib"]) + int(holder["gib"])   # type: ignore[call-overload]
+        slot["holders"] = int(slot["holders"]) + 1           # type: ignore[call-overload]
+    terms = list(groups.values())
+    for consumer, gib in growth_from.items():
+        if gib:
+            terms.append({"basis": "window-growth", "consumer": consumer,
+                          "gib": int(gib), "evictable": False})
+    queued: dict[tuple[str, str], dict[str, object]] = {}
+    for row in census.get("queued") or ():                # type: ignore[union-attr]
+        owner = row.get("consumer")
+        name, value = (("consumer", str(owner)) if owner
+                       else ("row", str(row["key"])))
+        slot = queued.setdefault((name, value), {
+            "basis": "queued", name: value, "gib": 0, "rows": 0,
+            "evictable": False})
+        slot["gib"] = int(slot["gib"]) + int(row["gib"])     # type: ignore[call-overload]
+        slot["rows"] = int(slot["rows"]) + 1                 # type: ignore[call-overload]
+    terms.extend(queued.values())
+    for owner, gib in dict(census.get("output_owners") or {}).items():  # type: ignore[call-overload]
+        if gib:
+            terms.append({"basis": "owed-output", "consumer": str(owner),
+                          "gib": int(gib), "evictable": False})
+    return sorted(terms, key=lambda term: (
+        bool(term["evictable"]), -int(term["gib"]),          # type: ignore[call-overload]
+        str(term["basis"]), str(term.get("consumer") or term.get("holder")
+                                or term.get("row") or "")))
+
+
+def _commitment_report(tier_id: str, census: Mapping[str, object] | None,
+                       gated: Mapping[tuple[str, str], Mapping[str, object]],
+                       ) -> dict[str, object]:
+    """One stage tier's commitment record for this cycle (#930).
+
+    What the census saw -- the totals, every term of the commitment and
+    whether it is past the tier's capacity -- and every newcomer this
+    cycle's windows refused on the tier, with the reason and, for a
+    commitment refusal, the gate's own terms.  A newcomer waiting behind
+    another newcomer's wait names that one and its reason, so a wait behind
+    a commitment stall reads as one.  Filed by :func:`residency_window` for
+    ``pbstatus --starvation``; admission never reads it.
+    """
+
+    waiting: list[dict[str, object]] = []
+    for (key, gate_tier), gate in sorted(gated.items()):
+        if gate_tier != tier_id:
+            continue
+        entry: dict[str, object] = {
+            "consumer": key, "reason": str(gate.get("reason")),
+            "permanent": bool(gate.get("permanent")),
+            "need_gib": gate.get("need_gib")}
+        commitment = gate.get("commitment")
+        if isinstance(commitment, Mapping):
+            entry.update(commitment)
+        ahead = gate.get("waiting_consumer")
+        if ahead:
+            ahead_gate = gated.get((str(ahead), tier_id)) or {}
+            entry["waiting_on"] = {"consumer": str(ahead),
+                                   "reason": ahead_gate.get("reason")}
+        waiting.append(entry)
+    record: dict[str, object] = {"tier_id": tier_id, "waiting": waiting}
+    if census is None:
+        record["error"] = "not censused this cycle"
+        return record
+    if "error" in census:
+        record["error"] = str(census["error"])
+        return record
+    windows = census["windows"]
+    assert isinstance(windows, Mapping)
+    growth_from = {str(key): int(window["growth_gib"])
+                   for key, window in windows.items() if not window["newcomer"]}
+    record.update({
+        field: census[field] for field in (
+            "capacity_gib", "held_gib", "evictable_gib", "queued_gib",
+            "unheld_output_gib", "committed_gib", "over_committed_gib")})
+    record["admitted_growth_gib"] = sum(growth_from.values())
+    record["windows"] = {str(key): dict(window) for key, window in windows.items()}
+    record["terms"] = _commitment_terms(census, growth_from=growth_from)
+    record["holders"] = [dict(holder) for holder in census["holders"]]  # type: ignore[union-attr]
+    return record
 
 
 def _commitment_admissions(census: Mapping[str, Mapping[str, object]],
@@ -4510,10 +4719,16 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
+    # The census this pass admitted on, and what it would be taken over, so
+    # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
             "permitted": permitted,
             "unknown_ready": unknown_ready, "unknown_tiers": unknown_tiers,
-            "unknown_consumers": unknown_consumers, "events": events}
+            "unknown_consumers": unknown_consumers, "events": events,
+            "census": census,
+            "census_consumers": [(want["key"], want["consumer"], want["plan"],
+                                  want["tier_id"]) for want in wants],
+            "census_unknown": census_unknown}
 
 
 def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
@@ -4860,6 +5075,59 @@ def _settle_protected(queue: pool.PoolQueue,
     return events
 
 
+def _report_commitments(queue: pool.PoolQueue,
+                        tiers: Mapping[str, Mapping[str, object]],
+                        protection: Mapping[str, object],
+                        ) -> list[dict[str, object]]:
+    """File each stage tier's commitment record; say an over-commitment (#930).
+
+    #907 left a newcomer the commitment refused with one ``window-gated``
+    line of totals, and a tier promised more than it has with nothing at
+    all, so a wait behind either was silent.  Every cycle, per stage tier
+    this loop announces, this files :func:`_commitment_report` for
+    ``pbstatus --starvation`` and returns a ``tier-over-committed`` event
+    while the tier's commitment is past its capacity, naming its terms.
+
+    The report reads the census the protection pass admitted on.  A pass
+    that asked no newcomer took none, and then one is taken here with
+    ``remember=False``: the consumption memo moves only when admission
+    prices, as before.
+    """
+
+    kind = storage_tiers.STAGE_CAPACITY_KIND
+    tier_ids = sorted(str(tier_id) for tier_id in tiers
+                      if storage_tiers.capacity_kind_of(str(tier_id)) == kind)
+    if not tier_ids:
+        return []
+    gated = protection.get("gated") or {}
+    census = protection.get("census")
+    consumers = protection.get("census_consumers")
+    if consumers is not None and (not isinstance(census, Mapping) or any(
+            tier_id not in census for tier_id in tier_ids)):
+        census = _commitment_census(
+            queue, tiers, consumers=list(consumers),        # type: ignore[call-overload]
+            unknown=list(protection.get("census_unknown") or ()),  # type: ignore[call-overload]
+            remember=False)
+    events: list[dict[str, object]] = []
+    for tier_id in tier_ids:
+        record = _commitment_report(
+            tier_id, census.get(tier_id) if isinstance(census, Mapping) else None,
+            gated)                                          # type: ignore[arg-type]
+        if int(record.get("over_committed_gib") or 0) > 0:  # type: ignore[call-overload]
+            events.append({
+                "event": "tier-over-committed", "tier_id": tier_id,
+                **{field: record[field] for field in (
+                    "committed_gib", "capacity_gib", "over_committed_gib",
+                    "held_gib", "evictable_gib", "queued_gib",
+                    "unheld_output_gib", "admitted_growth_gib", "terms")}})
+        try:
+            queue.file_tier_commitment(record)
+        except (OSError, pool.PoolContractError, ValueError, TypeError) as exc:
+            events.append({"event": "tier-commitment-unfiled",
+                           "tier_id": tier_id, "error": repr(exc)})
+    return events
+
+
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
                      now: float | None = None,
                      withdrawn: frozenset[str] | None = None) -> list[dict[str, object]]:
@@ -4908,6 +5176,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     unknown_tiers = set(protection.get("unknown_tiers") or ())
     unknown_consumers = set(protection.get("unknown_consumers") or ())
     published.extend(protection["events"])  # type: ignore[arg-type]
+    published.extend(_report_commitments(queue, tiers, protection))
     try:
         cycle_consumers = live_consumers(queue)
     except (OSError, pool.PoolContractError) as exc:
@@ -5063,6 +5332,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 "output_note": str(gate.get("output_note") or ""),
                 **({"commitment": gate["commitment"]}
                    if "commitment" in gate else {}),
+                # A wait behind another newcomer's wait names that one and
+                # its reason, so the log connects it to a commitment stall
+                # as the tier's record does (#930).
+                **({"waiting_on": {
+                    "consumer": str(gate["waiting_consumer"]),
+                    "reason": (gated.get((str(gate["waiting_consumer"]),
+                                          tier_id)) or {}).get("reason")}}
+                   if gate.get("waiting_consumer") else {}),
             })
         if unknown_hit and superseded is None and gate is None:
             published.append({
