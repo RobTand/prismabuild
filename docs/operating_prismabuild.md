@@ -3361,7 +3361,11 @@ To let the batch go, use one of these (#926):
   being submitted, and refuses a key that did not declare the batch. The
   batch is then deleted as soon as every other declared consumer has
   succeeded. A released key cannot declare the batch again: submitting it
-  again is refused with `origin-consumer-released`.
+  again is refused with `origin-consumer-released`. A row for it that an
+  older `pbrun` still publishes is failed at claim with the same refusal
+  (status `origin_consumer_released`), and nothing is staged for it (#954).
+  For a release filed before #954, run the same command again: it answers
+  `"released": false` and files the index entry the claim reads.
 
   A consumer the stall line names `unpublished` was declared and never
   queued, usually because its submitter died. Release it the same way (#945).
