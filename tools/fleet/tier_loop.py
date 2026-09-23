@@ -3738,6 +3738,11 @@ def _claim_order_entry(claim_order: Mapping[str, Mapping[str, object]] | None,
 #: phase (#1022 review, item 4).
 PREEMPT_READING_PHASE = "preempt-reading-phase"
 
+#: The relief outcomes after which the head's leg has its room: free
+#: already covered every granted need plus the head's, or the relief pass
+#: reached it.  Only then does the head publish (``_protect_tier_advances``).
+RELIEF_MADE_ROOM = frozenset({"not-needed", "evicted", "preempted"})
+
 
 def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                             tier_record: Mapping[str, object] | None,
@@ -4591,7 +4596,9 @@ def _claim_order_gate(order: Mapping[str, object],
     waits on, the GiB it waits for and when that leg can land at the
     earliest.  A claimed window left out of the rank -- its claim time did
     not read, or it was claimed after the rank was taken -- waits behind
-    the whole rank.
+    the whole rank.  The head itself, when relief did not make its room,
+    waits on no consumer: its ``waiting_reason`` names the relief
+    (``claim-order-relief-<relief>``).
     """
 
     entries = [item for item in order.get("entries") or ()  # type: ignore[union-attr]
@@ -4602,6 +4609,17 @@ def _claim_order_gate(order: Mapping[str, object],
                  "need_gib": need_gib, "expected_landing_unix": None,
                  "unranked": True}
     head = order.get("head")
+    if head is not None and head == key:
+        # The head itself, waiting for relief to make its room.
+        return {
+            "reason": window_credit.REASON_CLAIM_ORDER, "permanent": False,
+            "need_gib": entry.get("need_gib", need_gib), "tier_id": tier_id,
+            "output_note": output_note, "waiting_consumer": None,
+            "waiting_reason": f"claim-order-relief-{order.get('relief')}",
+            "ahead": entry.get("ahead"), "rank": entry.get("rank"),
+            "need_phase": entry.get("need_phase"),
+            "expected_landing_unix": entry.get("expected_landing_unix"),
+            "expected_landing_basis": order.get("expected_landing_basis")}
     return {
         "reason": window_credit.REASON_CLAIM_ORDER, "permanent": False,
         "need_gib": entry.get("need_gib", need_gib), "tier_id": tier_id,
@@ -4884,15 +4902,22 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             next_gib = int(nxt) if isinstance(nxt, int) else 0
             added_extra = 0
             # The claim order (#1011): a held-back window publishes nothing
-            # and fences nothing this cycle; the rank decides its room.
+            # and fences nothing this cycle; the rank decides its room.  The
+            # head publishes only once relief has made its room: a head row
+            # published into room the walk gave a granted leg claims it
+            # first if the claim pass reaches it first (#1022 review, item 2).
             ranked_order, ranked = _claim_order_entry(claim_order, tier_id, key)
             claim_permit: str | None = None
             if (ranked_order is not None and not want["newcomer"]
                     and want["consumer"].get("state") == pool.CLAIMED):
                 standing = (str(ranked.get("standing")) if ranked is not None
                             else None)
+                head_waits = (
+                    standing == window_credit.CLAIM_HEAD
+                    and ranked_order.get("relief") not in RELIEF_MADE_ROOM
+                    and int(ranked.get("publish_gib") or 0) > 0)  # type: ignore[union-attr]
                 if standing in (window_credit.CLAIM_GRANTED,
-                                window_credit.CLAIM_HEAD):
+                                window_credit.CLAIM_HEAD) and not head_waits:
                     claim_permit = standing
                 elif standing != window_credit.CLAIM_SATISFIED:
                     target = needs.get("fence_target")

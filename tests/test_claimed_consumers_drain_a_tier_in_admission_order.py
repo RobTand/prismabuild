@@ -826,12 +826,19 @@ def test_the_second_consumer_is_served_before_the_first_blocks_again(
 
     Unchunked, R = 22 GiB, C_eff = 30 GiB (``_fixture(count=2,
     holding=())``, ``_cycle(gib=30)``).  One consumer's range fits at a
-    time.  A, the older claim, is granted on cycle 1.  Between cycles its
-    copy lands and it reads the range, gives it back and blocks on the next
-    one (``_read_and_pass``): one T_land + T_phase per cycle here.  On the
-    first head A is the older claim again every cycle and is granted again:
-    B's GPU idles and B is never killed.  The bound: with k = 2 consumers, B
-    is served within (k - 1) x (T_phase + T_land), so on cycle 2.
+    time.  A, blocked longer, is granted on cycle 1.  Between cycles every
+    copy that can claim lands (``_run_movers``), and a consumer whose range
+    landed reads it, gives it back and blocks on the next one
+    (``_read_and_pass``): one T_land + T_phase per cycle here.  On the first
+    head A is the older claim again every cycle and is granted again: B's
+    GPU idles and B is never killed.  The bound: with k = 2 consumers, B's
+    range lands within (k - 1) x (T_phase + T_land), so on cycle 2.
+
+    Served means landed, not published: a head row published before its
+    room exists sits unfit in ``ready/``, and if the claim pass reaches it
+    first it takes the room the walk gave a granted leg.  So no row may be
+    left unfit (``stuck``): the head publishes only once relief made its
+    room, and a granted leg's room is not spent by a fence.
     """
 
     count, room = 2, 30
@@ -844,13 +851,11 @@ def test_the_second_consumer_is_served_before_the_first_blocks_again(
     stuck: list[str] = []
     for cycle in range(1, 5):
         _cycle(queue, stage, gib=room)
-        now_served = [n for n in range(count)
-                      if _published(queue, _mover(n, reading[n]))]
-        served.extend((cycle, n, reading[n]) for n in now_served)
         unfit: list[str] = []
         landed = _run_movers(queue, stage, count, unfit=unfit)
         stuck.extend(f"cycle {cycle} {name}" for name in unfit)
-        for n in [n for n in now_served if f"{n}:{reading[n]}" in landed]:
+        for n in [n for n in range(count) if f"{n}:{reading[n]}" in landed]:
+            served.append((cycle, n, reading[n]))
             following = names[names.index(reading[n]) + 1]
             _read_and_pass(queue, stage, n, phase=reading[n],
                            following=following, now=time.time())
@@ -860,9 +865,7 @@ def test_the_second_consumer_is_served_before_the_first_blocks_again(
     b_served = [cycle for cycle, n, _phase in served if n == 1]
     assert b_served and b_served[0] <= 2, (served, stuck,
                                            _diagnosis(queue, events, count))
-    # A granted range can claim: the order's grant is room, not a promise
-    # an advance fence has already spent.
-    assert stuck == [], stuck
+    assert stuck == [], (stuck, served)
 
 
 # ------------------------------------------------ item 3: Belady for a blocked head
