@@ -544,12 +544,15 @@ a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
 
-Ownership mutations hold a permanent per-key POSIX record lock under
+Ownership mutations hold a per-key POSIX record lock under
 `transition-locks/<sha256(action_key)>.lock`. Publication, scope startup and
 recovery, heartbeat writes, finish, withdrawal and recovery sweeps use the same
 lock. Claim and sweeps skip busy keys; independent keys continue. A queued
-successor cannot replace an active claim or pending finish tombstone. The lock
-inode is never deleted, thread nesting retains its original descriptor, and
+successor cannot replace an active claim or pending finish tombstone. A lock
+file is removed only by `posix_lock.retire` (`pb_gc --queue-root`, #995): it
+takes the lock, writes a tombstone, and unlinks the name before it releases,
+and `posix_lock.held` lets go of a tombstoned or unlinked inode it was granted
+and opens the name again. Thread nesting retains its original descriptor, and
 process death releases kernel ownership. Cross-host POSIX lock visibility is a
 queue mount requirement; NFS client mounts with local-only locks are unsupported.
 The helper is shared with SLURM terminal-summary publication. Bidirectional
@@ -8608,8 +8611,50 @@ reverified after taking the export lock, with a source-identity census and pinne
 directory-relative unlink. Pending/failed/unknown exports and
 partial writer groups retain their local bytes and reservation for recovery.
 A repeated successful release is idempotent, including interruption after
-unlink but before updating its reservation. Metadata remains as bounded proof;
-this lane does not add an automatic orphan sweeper or change owner cancellation.
+unlink but before updating its reservation.
+
+A producer that is killed or withdrawn never calls `release_group`, so its
+payloads would stay on the host (#1001: 33 GiB on sparklina after one day of
+restarts). Every worker loop runs a spool retirement tick, one loop per box
+and once per `produced_spool.RETIRE_INTERVAL_S` (the lease timeout), under a
+host-local `flock` beside the role locks. The tick walks every spool root a
+producer's sealed environment names (`declared_roots`, read from the owners
+under the produced-output scopes) that is present on this box. For each
+namespace it finds the instance from a group manifest or the owner's filed
+instances, and acts only when `_producer_attempt_state` reads `dead` or
+`succeeded`. A new attempt writes a new namespace, because the nonce is in
+its name, and never reads an old one, so each group's only remaining reader
+is its own export action. Under the group's `.export.lock` and the
+namespace's `.reservation.lock`:
+
+- a group with a durable acknowledgement is released by `release_group`'s own
+  identity checks (`_release_acknowledged`);
+- a group whose export failed, was withdrawn or was never submitted is
+  discarded;
+- a group whose export is `ready` or `claimed` is kept byte for byte, and so
+  is anything unreadable or unrecognized.
+
+When no group is kept, the records and the namespace directory are removed.
+Each retirement is one line in `<queue>/produced-spool-retirements/<host>.jsonl`
+naming the owner, the namespace, each group with its bytes and reason, and
+the hold and walk seconds. `<host>.tick.json` holds the latest tick, including
+every kept namespace and why. `pbstatus --spool-retirements` prints both.
+
+### What creates and what retires per-key state
+
+| State | Created by | Retired by | When |
+|---|---|---|---|
+| Spool namespace `<spool root>/<instance_namespace>/` and its groups | `ProducedSpool.__init__` and `reserve_group`, in the producer | Payloads: `release_group` in the live producer after each acknowledgement. Everything else: the worker loop's spool retirement tick on the host that owns the root (#1001) | Once the owner attempt is `dead` or `succeeded`, a group at a time, never while its export is `ready` or `claimed` |
+| Transition lock `transition-locks/<sha256(key)>.lock` | `posix_lock.held` on first use of a key | `pb_gc --queue-root --apply --all-lock-takers-verify`, through `posix_lock.retire` (#995) | The key has a `done`, `failed` or `withdrawn` record older than `pool.LEASE_TIMEOUT_S` and no `ready` or `claimed` entry, and nobody holds the lock |
+| Residency namespace `residency/<consumer>/` | `residency_map.write_fragment`, on a mover's first fragment | The same `pb_gc` run, by `rmdir` (#995) | Empty, and its consumer terminal as above; a fragment that lands first makes the `rmdir` fail |
+| Tier-loop events `residency-events/<consumer>/` | The tier loop's `_emit` (#990) | `sweep_consumer_events` in the tier loop | The consumer is terminal or withdrawn |
+
+The lock files and the residency namespaces are retired by an operator's
+`pb_gc` run rather than by a loop, because the retirement protocol needs every
+lock taker on the fleet to run the post-lock check first
+(`--all-lock-takers-verify` states it). `pb_gc` writes a receipt with the
+counts, the reasons it kept each entry and the survey and sweep seconds to
+`<queue>/gc-receipts/`.
 
 ### Declared outputs enter the pool under a fill reservation and a pace (#747)
 

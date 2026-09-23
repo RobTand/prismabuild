@@ -22,6 +22,19 @@ Requests and receipts are records and are never removed. Nonempty local-result
 staging namespaces remain available for core.repair_local_result. --cas-root
 is required and --apply defaults off.
 
+Two kinds live under the pool queue rather than the CAS, and are surveyed only
+when ``--queue-root`` names it (#995).  A *transition lock* is
+``transition-locks/<sha256(key)>.lock``; one is a candidate when its key has
+a ``done``, ``failed`` or ``withdrawn`` record older than the lease timeout
+and no ``ready`` or ``claimed`` entry.  A *residency namespace* is
+``residency/<consumer>/``; one is a candidate under the same rule when it is
+also empty.  Neither needs a quiescent store.  A lock file is removed only
+through ``posix_lock.retire``, whose protocol keeps mutual exclusion against
+a holder racing the sweep, provided every lock taker runs the post-lock check
+(``--all-lock-takers-verify`` acknowledges that).  A namespace is removed by
+``rmdir``, which fails on a fragment that landed after the survey.  An
+applied queue sweep writes a JSON receipt under ``<queue>/gc-receipts/``.
+
 Canary run namespaces (``pb-canary/<run-id>/``) are a separate root with
 their own kind: the canary driver seals one per run, its receipts are CAS
 records this tool never touches, and the 24 MiB of staged chunks plus
@@ -40,12 +53,14 @@ keeps it whole.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import socket
 import stat
 import sys
 import time
@@ -56,6 +71,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Iterable, Mapping  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import pool, posix_lock  # noqa: E402
 
 #: The litter classes, in the order the report prints them.
 KIND_CLAIM = "claim"
@@ -66,6 +82,15 @@ KIND_PRIVATE_INGEST = "private ingest staging"
 KIND_CANARY = "canary namespace"
 KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST,
          KIND_PRIVATE_INGEST, KIND_CANARY)
+#: The two queue-root kinds (#995), surveyed only under ``--queue-root``.
+KIND_TRANSITION_LOCK = "transition lock"
+KIND_RESIDENCY_NAMESPACE = "residency namespace"
+QUEUE_KINDS = (KIND_TRANSITION_LOCK, KIND_RESIDENCY_NAMESPACE)
+#: ``pool.PoolQueue._transition_locked`` and ``residency_fragment_root``.
+TRANSITION_LOCK_SUBPATH = ("transition-locks",)
+RESIDENCY_SUBPATH = (pool.RESIDENCY,)
+GC_RECEIPTS_SUBPATH = ("gc-receipts",)
+GC_RECEIPT_SCHEMA = "prismabuild.pb_gc.receipt.v1"
 PRIVATE_STAGING_PREFIX = "ingest."
 PRIVATE_STAGING_OWNER = ".owner.lock"
 
@@ -949,6 +974,271 @@ def sweep(
 
 
 # --------------------------------------------------------------------------
+# The queue kinds (#995)
+# --------------------------------------------------------------------------
+
+
+def transition_lock_name(action_key: str) -> str:
+    """The ``transition-locks`` file one key's transitions take.
+
+    Mirrors ``pool.PoolQueue._transition_locked``; ``test_pb_gc_queue``
+    takes the real lock and compares the file it created with this name.
+    """
+
+    return hashlib.sha256(str(action_key).encode()).hexdigest() + ".lock"
+
+
+def queue_key_states(queue_root: Path) -> tuple[set[str], dict[str, float]]:
+    """Keys with a live entry, and each terminal key's newest record mtime.
+
+    One listing per state directory.  Any ``ready`` or ``claimed`` entry
+    whose name starts with a key -- the row, its lease, a tombstone or a
+    late-finish file -- makes that key live: a transition may be under way.
+    """
+
+    live: set[str] = set()
+    for state in (pool.READY, pool.CLAIMED):
+        for entry in _entries(queue_root / state):
+            if _is_digest(entry.name[:64]):
+                live.add(entry.name[:64])
+    terminal: dict[str, float] = {}
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        for entry in _entries(queue_root / state):
+            key = entry.name[:-5]
+            if not (entry.name.endswith(".json") and _is_digest(key)):
+                continue
+            try:
+                mtime = entry.stat(follow_symlinks=False).st_mtime
+            except OSError:
+                continue
+            terminal[key] = max(terminal.get(key, 0.0), mtime)
+    return live, terminal
+
+
+def _survey_transition_locks(queue_root: Path, *, live: set[str],
+                             terminal: Mapping[str, float], now: float,
+                             grace_s: float) -> dict:
+    root = queue_root.joinpath(*TRANSITION_LOCK_SUBPATH)
+    by_name = {transition_lock_name(key): key for key in terminal}
+    live_names = {transition_lock_name(key) for key in live}
+    remove: list[dict] = []
+    keep: list[dict] = []
+    scanned = 0
+    for entry in _entries(root):
+        path = Path(entry.path)
+        if not (entry.name.endswith(".lock") and _is_digest(entry.name[:-5])):
+            # Includes an NFS ``.nfs*`` silly-rename of a lock being retired.
+            keep.append(_retain(KIND_TRANSITION_LOCK, path, "unexpected entry"))
+            continue
+        scanned += 1
+        if entry.name in live_names:
+            keep.append(_retain(KIND_TRANSITION_LOCK, path,
+                                "its key is ready or claimed"))
+            continue
+        key = by_name.get(entry.name)
+        if key is None:
+            keep.append(_retain(KIND_TRANSITION_LOCK, path,
+                                "no terminal record names its key"))
+            continue
+        age = max(0.0, now - terminal[key])
+        if age < grace_s:
+            keep.append(_retain(KIND_TRANSITION_LOCK, path,
+                                "terminal for less than the lease timeout"))
+            continue
+        remove.append({"kind": KIND_TRANSITION_LOCK, "path": path, "key": key,
+                       "bytes": 0, "age_s": age,
+                       "why": "its key is terminal and nothing is queued for it"})
+    return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
+def _survey_residency_namespaces(queue_root: Path, *, live: set[str],
+                                 terminal: Mapping[str, float], now: float,
+                                 grace_s: float) -> dict:
+    root = queue_root.joinpath(*RESIDENCY_SUBPATH)
+    remove: list[dict] = []
+    keep: list[dict] = []
+    scanned = 0
+    for entry in _entries(root):
+        # Only ``<consumer>/`` directories; the produced-output subtrees and
+        # the ``<consumer>.map.json`` documents beside them are not this kind.
+        if not (_is_digest(entry.name) and entry.is_dir(follow_symlinks=False)):
+            continue
+        scanned += 1
+        path = Path(entry.path)
+        key = entry.name
+        if key in live:
+            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
+                                "its consumer is ready or claimed"))
+            continue
+        if key not in terminal:
+            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
+                                "no terminal record names its consumer"))
+            continue
+        age = max(0.0, now - terminal[key])
+        if age < grace_s:
+            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
+                                "terminal for less than the lease timeout"))
+            continue
+        try:
+            contents = _entries(path)
+        except SweepError as exc:
+            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path, str(exc)))
+            continue
+        if contents:
+            keep.append(_retain(KIND_RESIDENCY_NAMESPACE, path,
+                                "holds fragments"))
+            continue
+        remove.append({"kind": KIND_RESIDENCY_NAMESPACE, "path": path, "key": key,
+                       "bytes": 0, "age_s": age,
+                       "why": "empty, and its consumer is terminal"})
+    return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
+def survey_queue(queue_root: Path, *, now: float | None = None,
+                 grace_s: float = pool.LEASE_TIMEOUT_S) -> dict:
+    """Classify the queue-root kinds; reads only.
+
+    ``grace_s`` defaults to ``pool.LEASE_TIMEOUT_S``: the bound after which
+    the pool itself reads a silent claim as dead, so a key terminal for
+    longer has no attempt of its own left that could still be finishing.
+    It selects candidates; the removal's safety does not rest on it.
+    """
+
+    queue_root = Path(queue_root)
+    if not (queue_root / pool.READY).is_dir():
+        raise SweepError(f"not a pool queue: {queue_root}")
+    started = time.monotonic()
+    now = time.time() if now is None else float(now)
+    live, terminal = queue_key_states(queue_root)
+    sections = {
+        KIND_TRANSITION_LOCK: _survey_transition_locks(
+            queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s),
+        KIND_RESIDENCY_NAMESPACE: _survey_residency_namespaces(
+            queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s),
+    }
+    return {
+        "queue_root": queue_root,
+        "sections": sections,
+        "remove": [row for kind in QUEUE_KINDS for row in sections[kind]["remove"]],
+        "keep": [row for kind in QUEUE_KINDS for row in sections[kind]["keep"]],
+        "grace_s": grace_s,
+        "live_keys": len(live),
+        "terminal_keys": len(terminal),
+        "survey_s": round(time.monotonic() - started, 3),
+    }
+
+
+def _remove_queue_row(row: Mapping[str, object]) -> str:
+    path = Path(str(row["path"]))
+    if row["kind"] == KIND_TRANSITION_LOCK:
+        return posix_lock.retire(path)
+    try:
+        os.rmdir(path)
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return "a fragment landed after the survey" if exc.errno in (
+            errno.ENOTEMPTY, errno.EEXIST) else f"cannot remove: {exc}"
+    return ""
+
+
+def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False) -> dict:
+    """Remove the queue-root candidates; online, under the lock protocol.
+
+    ``lock_takers_verify`` is the operator's statement that every process
+    that takes a transition lock runs ``posix_lock.held``'s post-lock check
+    (the module's ordering rule).  Without it nothing is removed.
+    """
+
+    if not lock_takers_verify:
+        raise SweepError("removal requires --all-lock-takers-verify: every "
+                         "lock taker must run posix_lock's post-lock check")
+    started = time.monotonic()
+    removed: list[dict] = []
+    skipped: list[tuple[dict, str]] = []
+    for row in plan["remove"]:  # type: ignore[index]
+        why = _remove_queue_row(row)
+        if why:
+            skipped.append((dict(row), why))
+        else:
+            removed.append(dict(row))
+    return {"removed": removed, "skipped": skipped,
+            "sweep_s": round(time.monotonic() - started, 3)}
+
+
+def queue_receipt(plan: Mapping[str, object], outcome: Mapping[str, object] | None,
+                  *, host: str | None = None) -> dict:
+    """The gc receipt: per kind, what was scanned, removed, skipped and kept."""
+
+    kinds: dict[str, dict] = {}
+    removed = list((outcome or {}).get("removed", []))
+    skipped = list((outcome or {}).get("skipped", []))
+    for kind in QUEUE_KINDS:
+        section = plan["sections"][kind]  # type: ignore[index]
+        kept: dict[str, int] = {}
+        for row in section["keep"]:
+            kept[str(row["why"])] = kept.get(str(row["why"]), 0) + 1
+        skipped_reasons: dict[str, int] = {}
+        for row, why in skipped:
+            if row["kind"] == kind:
+                skipped_reasons[why] = skipped_reasons.get(why, 0) + 1
+        kinds[kind] = {
+            "scanned": section["scanned"],
+            "candidates": len(section["remove"]),
+            "removed": sum(1 for row in removed if row["kind"] == kind),
+            "skipped": skipped_reasons,
+            "kept": kept,
+        }
+    return {
+        "schema": GC_RECEIPT_SCHEMA,
+        "queue_root": str(plan["queue_root"]),
+        "host": host or socket.gethostname(),
+        "pid": os.getpid(),
+        "unix": round(time.time(), 3),
+        "applied": outcome is not None,
+        "grace_s": plan["grace_s"],
+        "live_keys": plan["live_keys"],
+        "terminal_keys": plan["terminal_keys"],
+        "survey_s": plan["survey_s"],
+        "sweep_s": (outcome or {}).get("sweep_s"),
+        "kinds": kinds,
+    }
+
+
+def write_queue_receipt(queue_root: Path, receipt: Mapping[str, object],
+                        path: Path | None = None) -> Path:
+    """File the receipt, by rename, under ``<queue>/gc-receipts/`` by default."""
+
+    if path is None:
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(float(receipt["unix"])))
+        path = (Path(queue_root).joinpath(*GC_RECEIPTS_SUBPATH)
+                / f"{stamp}-{receipt['host']}-{receipt['pid']}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(receipt, sort_keys=True, indent=1) + "\n")
+    os.replace(temporary, path)
+    return path
+
+
+def report_queue(plan: Mapping[str, object], *, list_paths: bool = True) -> list[str]:
+    lines = [f"pb_gc: queue {plan['queue_root']} ({plan['terminal_keys']} terminal "
+             f"keys, {plan['live_keys']} live; grace {plan['grace_s']:g}s)"]
+    for kind in QUEUE_KINDS:
+        section = plan["sections"][kind]  # type: ignore[index]
+        lines.append(f"\n{kind}: {section['scanned']} scanned, "
+                     f"{len(section['remove'])} to remove")
+        if list_paths:
+            for row in section["remove"]:
+                lines.append(f"  {row['path']}  {format_age(float(row['age_s']))}"
+                             f"  {row['why']}")
+        for why, count, examples in _group(section["keep"]):
+            lines.append(f"  kept {count}: {why}")
+            for example in examples if list_paths else []:
+                lines.append(f"    {example}")
+    return lines
+
+
+# --------------------------------------------------------------------------
 # The report
 # --------------------------------------------------------------------------
 
@@ -1032,19 +1322,33 @@ def report(plan: Mapping[str, object], *, list_paths: bool = True) -> list[str]:
     return lines
 
 
+class _Parser(argparse.ArgumentParser):
+    """Refuses a command line that names no root at all."""
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[override]
+        parsed = super().parse_args(args, namespace)
+        if parsed.cas_root is None and parsed.queue_root is None:
+            self.error("name the store to sweep: --cas-root, --queue-root, or both")
+        return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """This tool's flags.
 
-    ``--cas-root`` is required on purpose. Every other fleet tool defaults its
+    A root is required on purpose. Every other fleet tool defaults its
     roots to the live store, which is right for a tool that reports and wrong
     for one that removes: a default here would mean an operator who typed no
-    root swept the fleet's own CAS.
+    root swept the fleet's own CAS.  ``--cas-root`` and ``--queue-root`` each
+    add their own kinds; at least one must be typed.
     """
 
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--cas-root", required=True,
-                    help="the store to sweep; required, and deliberately has "
-                         "no default, because this tool removes files")
+    ap = _Parser(description=__doc__.splitlines()[0])
+    ap.add_argument("--cas-root", default=None,
+                    help="the store to sweep; deliberately has no default, "
+                         "because this tool removes files")
+    ap.add_argument("--queue-root", default=None,
+                    help="also survey the pool queue's transition locks and "
+                         "residency namespaces (#995); no default either")
     ap.add_argument("--canary-root", default=None,
                     help="also survey the pbcanary run namespaces at this "
                          "root (each holds a run's staged chunks and "
@@ -1055,13 +1359,54 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--quiescent-store", action="store_true",
                     help="acknowledge all producers on all hosts are paused, "
                          "and candidate checkout roots are absent on every "
-                         "host; required with --apply")
+                         "host; required with --apply for the CAS kinds")
+    ap.add_argument("--all-lock-takers-verify", action="store_true",
+                    help="acknowledge that every process taking a transition "
+                         "lock runs posix_lock's post-lock check (a runtime "
+                         "carrying #995 on every box and role); required "
+                         "with --apply for the queue kinds")
+    ap.add_argument("--receipt", default=None,
+                    help="where to write the queue sweep's JSON receipt "
+                         "(default <queue>/gc-receipts/<utc>-<host>-<pid>.json)")
     ap.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS,
-                    help="minimum retention age in hours; never proof of "
-                         f"remote abandonment (default {DEFAULT_MIN_AGE_HOURS:g})")
+                    help="minimum retention age in hours for the CAS kinds; "
+                         "never proof of remote abandonment "
+                         f"(default {DEFAULT_MIN_AGE_HOURS:g})")
     ap.add_argument("--summary", action="store_true",
                     help="counts and totals only, without a line per entry")
     return ap
+
+
+def _main_queue(args: argparse.Namespace) -> int:
+    """Survey, and on ``--apply`` sweep, the queue kinds; always file a receipt."""
+
+    try:
+        plan = survey_queue(Path(args.queue_root))
+    except SweepError as exc:
+        print(f"pb_gc: {exc}", file=sys.stderr)
+        return 2
+    print("\n".join(report_queue(plan, list_paths=not args.summary)))
+    outcome = None
+    if args.apply:
+        try:
+            outcome = sweep_queue(plan, lock_takers_verify=args.all_lock_takers_verify)
+        except SweepError as exc:
+            print(f"pb_gc: {exc}", file=sys.stderr)
+            return 2
+        print(f"\nremoved {len(outcome['removed'])} queue entries")
+        for row, why in outcome["skipped"]:
+            print(f"  left {row['path']}: {why}")
+    else:
+        print("\nnothing removed from the queue; re-run with --apply")
+    receipt = queue_receipt(plan, outcome)
+    try:
+        written = write_queue_receipt(Path(args.queue_root), receipt,
+                                      Path(args.receipt) if args.receipt else None)
+    except OSError as exc:
+        print(f"pb_gc: cannot write the gc receipt: {exc}", file=sys.stderr)
+        return 2
+    print(f"receipt: {written}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1069,10 +1414,28 @@ def main(argv: list[str] | None = None) -> int:
     if not math.isfinite(args.min_age_hours) or args.min_age_hours < 0:
         print("pb_gc: --min-age-hours must be finite and nonnegative", file=sys.stderr)
         return 2
-    if args.apply and not args.quiescent_store:
+    if args.cas_root is not None and args.apply and not args.quiescent_store:
         print("pb_gc: --apply requires --quiescent-store; pause all producers "
               "on all hosts and verify candidate checkout roots first", file=sys.stderr)
         return 2
+    if args.queue_root is not None and args.apply and not args.all_lock_takers_verify:
+        print("pb_gc: --apply on --queue-root requires --all-lock-takers-verify; "
+              "every lock taker must run the runtime carrying #995 first",
+              file=sys.stderr)
+        return 2
+    status = 0
+    if args.cas_root is not None:
+        status = _main_cas(args)
+        if status == 2:
+            return status
+    if args.queue_root is not None:
+        queue_status = _main_queue(args)
+        if queue_status == 2:
+            return queue_status
+    return status
+
+
+def _main_cas(args: argparse.Namespace) -> int:
     min_age_s = args.min_age_hours * 3600.0
     try:
         plan = survey(Path(args.cas_root), min_age_s=min_age_s,

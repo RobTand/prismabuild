@@ -3023,6 +3023,47 @@ local `/proc` scan cannot see remote file users. Removing an unlocked worker
 lock while producers may open it can leave a waiter on an orphan inode. The
 maintenance requirement prevents relying on those incomplete local checks.
 
+### Retire the queue's lock files and empty residency namespaces
+
+`--queue-root` adds two kinds that live under the pool queue (#995):
+
+- the transition lock `transition-locks/<sha256(key)>.lock` of every key with a
+  `done`, `failed` or `withdrawn` record older than the lease timeout and no
+  `ready` or `claimed` entry;
+- every empty `residency/<consumer>/` directory whose consumer meets the same
+  rule.
+
+Survey first:
+
+    tools/fleet/pb_gc.py --queue-root /mnt/shared/prismabuild-fleet/pb-queue --summary
+
+These kinds need no quiescent store. A lock file is removed only through
+`posix_lock.retire`, which holds the lock, tombstones the inode and unlinks it
+before it lets go, and a holder that was granted a retired inode opens the
+name again. That keeps mutual exclusion only when every process that takes a
+transition lock runs code with that check. Apply only after the generation
+carrying #995 is live on every box and every role, including the tier loop,
+which a publish does not restart:
+
+    tools/fleet/pb_gc.py --queue-root /mnt/shared/prismabuild-fleet/pb-queue --apply --all-lock-takers-verify
+
+Each run writes a JSON receipt to `<queue>/gc-receipts/`, or to `--receipt`,
+with the counts per kind, the reasons it kept each entry, and the survey and
+sweep seconds.
+
+## Read the spool retirements
+
+A killed or withdrawn producer's host spool is retired by the worker loops on
+its host (#1001). Read what they retired and what they kept:
+
+    tools/fleet/pbstatus.py --spool-retirements
+
+The JSON lists every host's retirement lines (the newest `--recent`) and each
+host's latest tick. A kept namespace names its reason: `owner-attempt-live`
+while its producer runs, `export-claimed` or `export-ready` while one of its
+exports can still run, and `unattributed` when no manifest or filed instance
+names it.
+
 `--min-age-hours` is a finite, nonnegative retention threshold (default 24),
 never proof of abandonment. Raising it does not make an online sweep safe.
 The tool retains claims whose checkout roots exist or cannot be inspected,
