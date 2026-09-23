@@ -254,6 +254,11 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
     assert _staged_bytes(composed, str(path)) == PAYLOAD
     assert hashlib.sha256(_staged_bytes(composed, str(path))).hexdigest() == \
         manifest["entries"][2]["sha256"]
+    # EXPERIMENT: the replay's movers stage the head's entries again.
+    composed = _run_mover(tmp_path, queue, key, "replay-0")
+    assert _staged_bytes(composed, h0) == HEAD[0]
+    composed = _run_mover(tmp_path, queue, key, "replay-1")
+    assert _staged_bytes(composed, h1) == HEAD[1]
 
 
 def test_an_ordinary_submission_declares_the_same_plan(
