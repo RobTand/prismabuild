@@ -4790,14 +4790,131 @@ Limits:
   earlier attempt's unreclaimed batch still names, and both stay charged.
   A consumer cannot stage the wrong bytes: the earlier batch refuses its
   identity recheck at submission, the manifest refuses a path named twice,
-  and the mover verifies digests. Retiring the earlier attempt's batch is
-  #914's orphan sweep.
-- Nothing records which consumers declared a batch, so a producer that
-  deletes its origins and reclaims can strand a consumer frozen before the
-  deletion: its mover finds the origin gone. Holding the origin until its
-  declared consumers commit is #914.
+  and the mover verifies digests. For a `consumed` batch, #914's orphan
+  sweep releases the earlier attempt's charge (next section); a `retain`
+  batch keeps it until its files are gone and `reclaim_origin` runs.
+- A `retain` batch records no consumers, so a producer that deletes its
+  origins and reclaims can strand a consumer frozen before the deletion: its
+  mover finds the origin gone. A `consumed` batch is held until its declared
+  consumers succeed (#914).
 - `pbrun` rechecks origin identities from the submitting host, and the tier
   host must mount the output prefix for its mover to copy it.
+
+#### Consumed origin batches: retired after their consumers (#914)
+
+A write-only producer gives each batch a lifetime when it commits it, with the
+`lifetime` argument of `commit_origin_batch` or
+`ProducedSpool.commit_origin_group`:
+
+- `retain`, the default, is the #912 batch. PB never deletes it, even after
+  its producer fails. Its record and its commitments entry carry no
+  `lifetime` field, so it is filed byte for byte as #912 filed it.
+- `consumed` marks a handoff that PB retires. The record and the entry carry
+  `lifetime: "consumed"`, and a replay that names another lifetime refuses
+  (`batch-lifetime-mismatch`).
+
+**Consumer declarations.** A consumer declares the batches it reads in its
+data manifest, as in #912. After `pbrun` seals the consumer's key and before
+it publishes the row, it calls `declare_origin_consumer` for each declared
+batch (`pbrun.declare_origin_consumers`, ahead of both the staged and the
+plain publication).
+For a consumed batch this files `consumers/<batch_id>/<consumer_key>.json`
+under the batch's instance directory. The call takes the batch's
+output-prefix lock, one batch at a time, and refuses a batch that is retiring
+or reclaimed. So every queued consumer of a consumed batch is on file before
+the retirement can see its row. The same key declaring again finds its own
+file. A `retain` batch files nothing.
+
+**The decision.** `tier_loop.cycle` calls `origin_retirement_tick` once per
+cycle, after it retires terminal output funding. The tick scans the
+produced-output scopes, as `unheld_window_gib` and `output_scope_tick` do.
+For each consumed batch that is not reclaimed, it takes the batch's
+output-prefix lock and decides:
+
+- If consumers are declared, every one must have succeeded. A consumer's
+  state is its action key's latest generation. A `claimed` or `ready` row,
+  or a claim a finisher or reaper is moving (a tombstone or late-finish file
+  in `claimed/`), holds the batch without a log line. A widowed lease is not
+  read. A `done` record with status `executed`
+  or `cache_hit` is success. A failed, withdrawn, unpublished (declared but
+  no row) or unreadable consumer holds the batch, and the tick logs it as a
+  stall, because a retry of that consumer needs the batch. A resubmission
+  publishes a new generation of the same key and leaves the earlier failed
+  record in `failed/`, so the terminal record with the latest
+  `published_unix` answers for the key. The claim-intent marker outlives its
+  claim and is not read. Each key's state is read twice, and two reads that
+  disagree read as unknown.
+- If no consumer is declared, the batch is an orphan once its producer
+  attempt is dead: the owner's claim names another attempt, or its latest
+  generation ended `failed` or `withdrawn`, or it is `done` by another
+  attempt. An owner that is `done` by this attempt, still claimed by it,
+  queued, being moved, or unreadable keeps the batch without a log line,
+  because a consumer may still come.
+
+**The delete.** The tick first stats the instance's output prefix. If the
+prefix is not a directory on this host, it refuses
+(`output-prefix-unreachable`) and keeps the batch, because an absent file
+proves nothing on a file system that is not mounted. It then compares each
+origin with the identity the commit recorded:
+
+- The same file is deleted.
+- An absent file is already gone.
+- A file with another inode is no longer this batch's: a retried producer
+  attempt wrote the path again (per-attempt ownership, above). The tick
+  leaves it, and the batch stops charging for it.
+- The same inode changed in place, or a stat that fails, refuses
+  (`origin-changed`, `origin-unstatable`) and keeps the batch.
+
+Before the first unlink the tick sets `retiring: {reason, consumers}` on the
+entry. From then on `declare_origin_consumer` and `load_origin_batch` refuse
+the batch (`origin-batch-retiring`), and a crash resumes the delete instead
+of deciding again. Each file is compared again just before its unlink. The
+tick then fsyncs the parent directories and sets `origin_reclaimed: true`,
+which frees the durable class bytes and the paths, as `reclaim_origin` does.
+
+**Logging.** Each retirement prints one JSON line in the tier log:
+`output-origin-retired` with `ref`, `bytes`, `reason` (`consumed` or
+`orphan`), `consumers`, `origin_identity` (the recorded identity each file
+was checked against) and the `unlinked`, `superseded` and `absent` paths. A
+stall (`output-origin-retirement-stalled`, with the consumers and their
+states) or a refusal (`output-origin-retirement-refused`, with a reason)
+prints once per change: the entry keeps a digest of its last report in
+`retirement_report`, and drops it when the hold clears. A report the tick
+cannot file on the entry, because the entry or its scope is unreadable or
+the step raised, is remembered by the tier-loop process instead and prints
+again once after a restart. A cycle with nothing to retire and nothing new to
+report prints nothing.
+
+**Where it runs.** Only dl380g10 runs the tiers role. There `/mnt/shared` is
+the local ZFS dataset, so the tick stats origin paths as they are written;
+the tier loop takes no `--mount-map`.
+
+Limits:
+
+- A consumer that `pbrun` declared and that never reached the queue (the
+  submitter died in between) holds the batch, and the stall names it
+  `unpublished`. Submitting the same key again clears it.
+- Every declared key must succeed. A failed consumer resubmitted under a
+  different key does not clear the first one, and the stall keeps naming it.
+  PB has no command yet that retires such a batch; an operator deletes its
+  files and calls `reclaim_origin`.
+- A consumer submitted by a `pbrun` older than this change files no
+  declaration, and the orphan sweep can delete a consumed batch under it once
+  the producer is dead. Only a producer running this change can commit a
+  `consumed` batch, so the gap is a consumer submitted from an older
+  checkout while a newer producer runs.
+- The comparison and the unlink of one file are two calls. A writer that
+  replaces the path between them loses its file. Only a retried attempt of
+  the same producer writes those paths, and only under its own prewrite.
+- The latest generation is ordered by `published_unix`, which each
+  submitter stamps with its own clock. Two generations of one key published
+  within the clock skew between two submitting hosts can be misordered.
+- The reachability check assumes the output prefix lies below a mount
+  point. A prefix that is itself the mount point of an unmounted file system
+  is still an empty directory, and its origins would read as absent.
+- The tick unlinks files only, never directories. An instance whose
+  commitments cannot be read is skipped, as the other scope scans skip it:
+  its batches stay on disk and charged.
 
 #### Repeat materialization: one batch, one charge, many windows
 

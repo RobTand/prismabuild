@@ -3276,6 +3276,40 @@ then the same attempt cannot prewrite those paths again. A retried attempt can,
 and the earlier batch then refuses as changed. "Write-only templates:
 origin-only batches (#912)" in `docs/design.md` lists the checks and the limits.
 
+By default PB never deletes an origin-only batch. For a handoff that only its
+consumers need, commit it with `lifetime="consumed"` (#914):
+
+```
+spool.commit_origin_group(batch_id, descriptors, lifetime="consumed")
+# or
+produced_output.commit_origin_batch(queue, instance, template, descriptors,
+                                    batch_id=batch_id, lifetime="consumed")
+```
+
+`pbrun` files each consumer against the batch when it submits it. Once every
+consumer that declared the batch has succeeded, the tier loop on dl380g10
+deletes the origin files and frees the batch's durable charge, and logs one
+`output-origin-retired` line with the batch's `ref`, `bytes`, `consumers` and
+`origin_identity`. A consumed batch that no consumer declared is deleted once
+its producer attempt fails, is withdrawn, or is superseded by a retry.
+
+A consumer that failed, was withdrawn, or was declared but never queued holds
+the batch, so that its retry can still read it. The tier log reports that once
+as `output-origin-retirement-stalled`, naming the consumer and its state:
+
+```
+grep '"output-origin-retirement-' <tier-loop log>
+```
+
+To release the batch, resubmit the same consumer; the batch is deleted after
+that run succeeds. `output-origin-retirement-refused` means the tick would not
+delete: the output prefix is not mounted on dl380g10, or a file is no longer
+the one the batch committed. The line names the reason and the path. A
+`retain` batch is never deleted by PB, even after its producer fails. To free
+one, delete its files and call `produced_output.reclaim_origin`. "Consumed
+origin batches: retired after their consumers (#914)" in `docs/design.md` lists
+the rules and the limits.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
