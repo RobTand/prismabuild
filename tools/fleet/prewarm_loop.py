@@ -220,6 +220,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
+from prismabuild import storage_tiers  # noqa: E402
 
 #: ZFS reads a whole record either way, and the pool this was measured on uses
 #: 1 MiB records; a smaller block only costs syscalls.
@@ -228,7 +229,9 @@ ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
 #: ``/sys/block/<dev>/stat`` field offsets, from
 #: ``Documentation/block/stat.rst``.  Named because the file is a bare row of
 #: integers and an off-by-one here reads writes as reads.
-STAT_READS_COMPLETED = 0
+#: Defined once in :mod:`prismabuild.storage_tiers`, which the worker's
+#: pool-contention check shares (#1010).
+STAT_READS_COMPLETED = storage_tiers.STAT_READS_COMPLETED
 #: Sectors read, always 512 bytes each whatever the device's logical block
 #: size (``stat.rst``).  The only counter on this box that sees *every* read of
 #: the pool -- ZFS issues its device reads from ``zio`` taskq threads, so a
@@ -236,11 +239,11 @@ STAT_READS_COMPLETED = 0
 #: five live mover receipts report 0 with the spindles at 77-86% utilization),
 #: and nfsd's ``export_stats`` sees only what went out over NFS, which a
 #: pool-to-stage copy on the file server itself never does.
-STAT_READ_SECTORS = 2
-STAT_READ_MS = 3
-STAT_IN_FLIGHT = 8
-STAT_IO_TICKS = 9
-STAT_WEIGHTED_IO_MS = 10
+STAT_READ_SECTORS = storage_tiers.STAT_READ_SECTORS
+STAT_READ_MS = storage_tiers.STAT_READ_MS
+STAT_IN_FLIGHT = storage_tiers.STAT_IN_FLIGHT
+STAT_IO_TICKS = storage_tiers.STAT_IO_TICKS
+STAT_WEIGHTED_IO_MS = storage_tiers.STAT_WEIGHTED_IO_MS
 SYSFS_BLOCK = "/sys/class/block"
 #: Where the kernel's own NFS server says how much it has served.  The ``io``
 #: line is ``io <read_bytes> <write_bytes>``, counted for every client of this
@@ -587,11 +590,7 @@ def whole_disk_of(path: str, *, sysfs: str = SYSFS_BLOCK) -> str | None:
 
 
 def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None:
-    try:
-        with open(f"{root}/{device}/stat") as handle:
-            return [int(field) for field in handle.read().split()]
-    except (OSError, ValueError):
-        return None
+    return storage_tiers.read_disk_stat(device, root=root)
 
 
 # ------------------------------------------------------------- stage tier
@@ -2013,29 +2012,11 @@ class DiskPacer:
         if len(previous) != len(self.devices) or elapsed <= 0:
             self._telemetry_complete = False
             return None
-        worst = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0,
-                 "in_flight": 0.0}
-        seen = False
-        sectors = 0
-        for device, row in current.items():
-            before = previous.get(device)
-            if before is None:
-                continue
-            seen = True
-            sectors += max(0, row[STAT_READ_SECTORS] - before[STAT_READ_SECTORS])
-            reads = row[STAT_READS_COMPLETED] - before[STAT_READS_COMPLETED]
-            read_ms = row[STAT_READ_MS] - before[STAT_READ_MS]
-            ticks = row[STAT_IO_TICKS] - before[STAT_IO_TICKS]
-            weighted = row[STAT_WEIGHTED_IO_MS] - before[STAT_WEIGHTED_IO_MS]
-            worst["util_pct"] = max(
-                worst["util_pct"], min(100.0, 100.0 * ticks / (elapsed * 1000.0)))
-            worst["read_await_ms"] = max(
-                worst["read_await_ms"], (read_ms / reads) if reads > 0 else 0.0)
-            worst["backlog_ms"] = max(worst["backlog_ms"], weighted / elapsed)
-            worst["in_flight"] = max(worst["in_flight"], float(row[STAT_IN_FLIGHT]))
-        if not seen:
+        interval = storage_tiers.worst_member_interval(previous, current, elapsed)
+        if interval is None:
             self._telemetry_complete = False
             return None
+        worst, sectors = interval
         # Every member, over the same interval, whoever read: another mover,
         # the prewarm loop, an NFS consumer, a scrub.  That is the point --
         # what the pool delivered is the supply, and a mover's shortfall

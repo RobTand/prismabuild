@@ -2761,6 +2761,13 @@ class _ProgressReporter:
         self.unit = (f"bytes landed of read-order range "
                      f"[{int(range_start_bytes)}, {int(range_end_bytes)})")
         self.channel = pb_progress.channel() is not None
+        declared = pb_progress.declared_phases() or ()
+        #: Whether the launch was granted a ``start`` phase: the copy phase
+        #: is then entered by a report when the copy starts, so its grace
+        #: counts from the first read, not from the interpreter's launch,
+        #: and the worker knows the start gate is behind it.
+        self.start_declared = movement_actions.MOVER_START_PHASE in declared
+        #: ``copy``, then ``warm``.
         self.phase = movement_actions.MOVER_COPY_PHASE
         self.warm_state: dict[str, int] | None = None
         self.reported_units = 0
@@ -2788,7 +2795,8 @@ class _ProgressReporter:
             units = self.units()
             if units <= self.reported_units and self.phase == self.reported_phase:
                 return
-            if units == 0 and self.reported_phase is None:
+            if (units == 0 and self.reported_phase is None
+                    and self.phase == movement_actions.MOVER_COPY_PHASE):
                 # The first phase is granted at launch; a zero count earns
                 # nothing and would only be rejected as a replay.
                 return
@@ -2810,6 +2818,24 @@ class _ProgressReporter:
     def start(self) -> None:
         if not self.channel or self._thread is not None:
             return
+        if self.start_declared and self.refusal is None:
+            # Enter ``copy`` now, with whatever is already landed (nothing,
+            # on a first attempt).  A new phase is advancement, so the copy
+            # grace runs from here.
+            with self._lock:
+                units = self.units()
+                try:
+                    written = pb_progress.commit(units, self.phase, unit=self.unit)
+                except ValueError as exc:
+                    self.refusal = str(exc)
+                    written = False
+                if written:
+                    self.reports += 1
+                    self.reported_units = max(self.reported_units, units)
+                    self.reported_phase = self.phase
+                    self.last_reported_unix = time.time()
+                elif self.refusal is None:
+                    self.unwritten += 1
 
         def loop() -> None:
             while not self._stop.wait(self.interval_s):
@@ -2823,8 +2849,9 @@ class _ProgressReporter:
         """The copy is done; count the read-back from here on."""
 
         self.report()
-        self.warm_state = state
-        self.phase = movement_actions.MOVER_WARM_PHASE
+        with self._lock:
+            self.warm_state = state
+            self.phase = movement_actions.MOVER_WARM_PHASE
         self.report()
 
     def stop(self) -> None:
@@ -2838,6 +2865,7 @@ class _ProgressReporter:
 
         return {"channel": self.channel, "interval_s": self.interval_s,
                 "reports": self.reports, "units_reported": self.reported_units,
+                "start_declared": self.start_declared,
                 "phase": self.reported_phase, "unit": self.unit,
                 "last_reported_unix": self.last_reported_unix,
                 "unwritten": self.unwritten, "refusal": self.refusal}
@@ -3822,7 +3850,7 @@ def build_parser() -> argparse.ArgumentParser:
     # pool and a mover that paced differently would not be measuring the same
     # thing.  ``prewarm_loop.py`` is owned by #589 and is not edited to share
     # them; when that lands, one definition replaces these.
-    parser.add_argument("--pace-pool", default="storage_pool",
+    parser.add_argument("--pace-pool", default=movement_actions.MOVER_PACE_POOL,
                         help="the ZFS pool whose members the pacer watches")
     parser.add_argument("--disks", default="",
                         help="name the pacer's members directly when zpool "
@@ -3838,9 +3866,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="server-side NFS byte counters the pacer samples")
     parser.add_argument("--max-util-pct", type=float, default=25.0,
                         help="hold the copy above this member utilization")
-    parser.add_argument("--max-read-await-ms", type=float, default=10.0,
+    parser.add_argument("--max-read-await-ms", type=float,
+                        default=movement_actions.MOVER_MAX_READ_AWAIT_MS,
                         help="hold the copy above this member read latency")
-    parser.add_argument("--max-backlog-ms", type=float, default=2000.0,
+    parser.add_argument("--max-backlog-ms", type=float,
+                        default=movement_actions.MOVER_MAX_BACKLOG_MS,
                         help="hold the copy above this member queue backlog")
     parser.add_argument("--pace-sample-s", type=float, default=0.25,
                         help="seconds between the pacer's device samples")

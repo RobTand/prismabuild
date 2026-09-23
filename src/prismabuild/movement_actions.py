@@ -51,13 +51,26 @@ MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
 
 #: The progress phases a stage mover reports in (#1010), in the order it
-#: enters them: the copy, then the optional read-back that warms the file
-#: server's cache (``stage_move.warm_staged``).  The sealer and the reporter
-#: import these names, because ``progress.commit`` refuses a phase the
-#: submission did not declare.
+#: enters them: its start (launch to the first read: the manifest, the
+#: resume census and ``PoolQueue.ownership_start_gate``), the copy, then the
+#: optional read-back that warms the file server's cache
+#: (``stage_move.warm_staged``).  The sealer and the reporter import these
+#: names, because ``progress.commit`` refuses a phase the submission did not
+#: declare.
+MOVER_START_PHASE = "start"
 MOVER_COPY_PHASE = "copy"
 MOVER_WARM_PHASE = "warm"
-MOVER_PROGRESS_PHASES = (MOVER_COPY_PHASE, MOVER_WARM_PHASE)
+MOVER_PROGRESS_PHASES = (MOVER_START_PHASE, MOVER_COPY_PHASE, MOVER_WARM_PHASE)
+
+#: The disk pacer's defaults for a stage mover: the storage pool it reads and
+#: the caps it holds a copy at (``stage_move.py --pace-pool``,
+#: ``--max-read-await-ms``, ``--max-backlog-ms``; pbrun passes none of them).
+#: The worker judges pool contention against the same caps
+#: (``pool.PoolContentionProbe``), so a mover's pacer and its stall check
+#: never disagree about what "the pool is the bottleneck" means.
+MOVER_PACE_POOL = "storage_pool"
+MOVER_MAX_READ_AWAIT_MS = 10.0
+MOVER_MAX_BACKLOG_MS = 2000.0
 
 #: How many entries a stage mover copies at once while nobody else reads the
 #: pool: ``stage_move.py --max-readers``' default, which pbrun does not
@@ -85,7 +98,7 @@ def mover_progress_policy(
     copy_depth: int = MOVER_MAX_READERS,
     report_latency_s: float | None = None,
 ) -> tuple[dict[str, object] | None, dict[str, object]]:
-    """The progress policy a stage mover is sealed with, and its derivation.
+    """A stage mover's progress policy and every term of it (#1010).
 
     A mover reports the bytes it has landed: an entry counts once it is
     copied, verified and renamed into place, which is the durable unit
@@ -100,28 +113,33 @@ def mover_progress_policy(
     their sum, rounded up to a whole second so float noise never moves a
     key.
 
+    Every phase gets that grace.  ``start`` covers launch to the first read,
+    so the copy's own clock starts at its first read.  ``warm`` reads back
+    the stage the copy just wrote, no slower than the pool read the rate
+    measured.
+
     ``landing_bytes_per_s`` is the slowest measured landing of the plan's
     manifest on this tier (``storage_tiers.mover_fill_price`` with basis
-    ``landing``).  ``None`` means nothing measured one.  The policy is then
-    ``None`` and the mover is sealed with no stall grace at all, which is
-    what every mover had before #1010; the derivation says
-    ``basis: "unmeasured"``.
+    ``landing``), capped by the fill the mover reserves.  ``None`` means
+    nothing measured one.  The policy is then ``None`` and the mover is
+    sealed with no stall grace at all, which is what every mover had before
+    #1010; the derivation says ``basis: "unmeasured"``.
 
-    Both declared phases get the same grace.  The read-back in ``warm`` reads
-    the stage the copy just wrote, in the same number of workers, which is no
-    slower than the pool read the rate measured.
+    The grace prices the copy, not the pool.  Time the pool is measurably
+    the bottleneck -- a pacer hold, an unadmitted reader, a live egress at
+    the start gate -- is credited by the worker from evidence it samples
+    itself (:func:`pool_contention_spec`, ``pool.PoolContentionProbe``), so
+    it never has to be priced here.
 
     Returns ``(policy, derivation)``.  ``policy`` is in the normalized form
     ``core.seal_action`` requires; ``derivation`` is for the plan's
-    ``demand_source`` and names every term.
+    ``demand_source``.
     """
 
+    depth = max(1, int(copy_depth))
+    unit = sum(sorted((int(size) for size in entry_bytes), reverse=True)[:depth])
     latency = (mover_report_latency_s() if report_latency_s is None
                else float(report_latency_s))
-    sizes = sorted((int(size) for size in entry_bytes if int(size) > 0),
-                   reverse=True)
-    depth = max(1, int(copy_depth))
-    unit = sum(sizes[:depth])
     derivation: dict[str, object] = {
         "basis": "unmeasured", "landing_bytes_per_s": None,
         "copy_depth": depth, "unit_bytes": unit,
@@ -138,6 +156,30 @@ def mover_progress_policy(
               "phases": [{"name": name, "grace_s": grace}
                          for name in MOVER_PROGRESS_PHASES]}
     return pb.validate_progress_policy(policy), derivation
+
+
+def pool_contention_spec(
+    *, members: Sequence[str], stage_root: str,
+    priced_bytes_per_s: float,
+    max_read_await_ms: float = MOVER_MAX_READ_AWAIT_MS,
+    max_backlog_ms: float = MOVER_MAX_BACKLOG_MS,
+) -> dict[str, object]:
+    """What a mover's worker checks before it charges quiet to the copy (#1010).
+
+    Sealed beside the progress policy as ``core.POOL_CONTENTION_PARAM``: the
+    pool's member devices as the storage role announced them, the pacer's
+    caps, the stage root whose ownership lock the mover's start gate takes,
+    and the rate the grace was priced at, so the kill record can put the
+    delivered rate beside it.  Normalized by ``core.validate_pool_contention``.
+    """
+
+    return pb.validate_pool_contention({
+        "schema": pb.POOL_CONTENTION_SCHEMA_V1,
+        "members": sorted({str(member) for member in members}),
+        "max_read_await_ms": float(max_read_await_ms),
+        "max_backlog_ms": float(max_backlog_ms),
+        "priced_bytes_per_s": float(priced_bytes_per_s),
+        "stage_root": str(stage_root)})
 
 
 def movement_tools(tier: Mapping[str, object], *,

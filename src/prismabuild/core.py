@@ -165,6 +165,20 @@ PROGRESS_TAG = "progress-v1"
 PROGRESS_HELPER_TAG = "progress-helper-v1"
 # Optional cyclic phase semantics; older v1 policy readers reject the field.
 PROGRESS_CYCLE_TAG = "progress-cycle-v1"
+#: The sealed request key a stage mover declares beside its progress policy
+#: (#1010): the storage pool's member devices, the disk pacer's caps, the
+#: stage root its start gate locks and the rate its grace was priced at.  The
+#: worker samples those devices itself and does not charge the stall
+#: allowance for intervals the pool is over the caps or unreadable, nor for
+#: the start gate while a live egress holds the stage's ownership lock
+#: (``pool.PoolContentionProbe``).  Sealed into the action key: a mover the
+#: worker credits is a different action from one it does not.
+POOL_CONTENTION_PARAM = "progress_pool_contention"
+POOL_CONTENTION_SCHEMA_V1 = "prismabuild.progress_pool_contention.v1"
+#: Offered by a worker whose stall check reads :data:`POOL_CONTENTION_PARAM`.
+#: A worker without it would ignore the param and kill a paced mover at the
+#: bare copy grace, so a mover that declares it requires the tag.
+POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 #: The placement tag a worker offers when it can check an action's declared
 #: container images against its own local Docker before claiming.
 #:
@@ -2766,6 +2780,14 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         declared = validate_progress_policy(normalized_params[PROGRESS_PARAM])
         if declared != normalized_params[PROGRESS_PARAM]:
             _fail("action.params.progress is valid but not in normalized form")
+    if POOL_CONTENTION_PARAM in normalized_params:
+        # Only beside a policy: a credit against no allowance is meaningless.
+        if PROGRESS_PARAM not in normalized_params:
+            _fail("action.params.progress_pool_contention needs action.params.progress")
+        contention = validate_pool_contention(normalized_params[POOL_CONTENTION_PARAM])
+        if contention != normalized_params[POOL_CONTENTION_PARAM]:
+            _fail("action.params.progress_pool_contention is valid but not in "
+                  "normalized form")
     normalized_inputs = _normalize_inputs(body["inputs"])
     if PRODUCED_OUTPUT_TEMPLATE_PARAM in normalized_params:
         # A tampered binding (declaration without its input row, or with a
@@ -7933,6 +7955,64 @@ def validate_progress_policy(value: object, *, where: str = "action.params.progr
     return result
 
 
+def validate_pool_contention(
+    value: object, *, where: str = "action.params.progress_pool_contention",
+) -> dict[str, object]:
+    """Normalize a mover's sealed pool-contention evidence spec, or refuse it.
+
+    Closed key set, for the reason the progress policy's is: the worker
+    credits quiet on exactly these terms, and a field it does not read would
+    be a promise nobody keeps.  ``members`` are ``/sys/block`` device names;
+    the caps are the pacer's, in milliseconds.
+    """
+
+    keys = {"schema", "members", "max_read_await_ms", "max_backlog_ms",
+            "priced_bytes_per_s", "stage_root"}
+    if not isinstance(value, Mapping) or set(value) != keys:
+        _fail(f"{where} must declare exactly {sorted(keys)}")
+    if value["schema"] != POOL_CONTENTION_SCHEMA_V1:
+        _fail(f"{where}.schema must be {POOL_CONTENTION_SCHEMA_V1!r}")
+    members = value["members"]
+    if (not isinstance(members, Sequence) or isinstance(members, (str, bytes))
+            or not members):
+        _fail(f"{where}.members must be a nonempty list of device names")
+    names: list[str] = []
+    for member in members:
+        if (not isinstance(member, str) or not member or "/" in member
+                or member.strip() != member or "\x00" in member
+                or member in (".", "..")):
+            _fail(f"{where}.members must be plain block device names")
+        names.append(member)
+    if names != sorted(set(names)):
+        _fail(f"{where}.members must be sorted and unique")
+    numbers: dict[str, float] = {}
+    for key in ("max_read_await_ms", "max_backlog_ms", "priced_bytes_per_s"):
+        number = value[key]
+        try:
+            finite = math.isfinite(number)
+        except (TypeError, OverflowError):
+            finite = False
+        if type(number) not in (int, float) or not finite or number <= 0:
+            _fail(f"{where}.{key} must be a positive finite number")
+        numbers[key] = float(number)
+    root = value["stage_root"]
+    if not isinstance(root, str) or not root.startswith("/") or "\x00" in root:
+        _fail(f"{where}.stage_root must be an absolute path")
+    return {"schema": POOL_CONTENTION_SCHEMA_V1, "members": names, **numbers,
+            "stage_root": root}
+
+
+def action_pool_contention(action: Mapping[str, object]) -> dict[str, object] | None:
+    """The sealed pool-contention spec of a validated action, if any (#1010)."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(POOL_CONTENTION_PARAM)
+    if declared is None:
+        return None
+    return validate_pool_contention(declared)
+
+
 def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | None:
     """The sealed progress policy of a validated action, if it declared one."""
 
@@ -8342,6 +8422,11 @@ __all__ = [
     "PROGRESS_TAG",
     "PROGRESS_HELPER_TAG",
     "PROGRESS_CYCLE_TAG",
+    "POOL_CONTENTION_PARAM",
+    "POOL_CONTENTION_SCHEMA_V1",
+    "POOL_CONTENTION_TAG",
+    "action_pool_contention",
+    "validate_pool_contention",
     "CONTAINER_IMAGE_TAG",
     "action_progress_policy",
     "report_action_progress",

@@ -5683,21 +5683,41 @@ def residency_stage_rows(
         # verified.
         "retry_safe": True,
     }
-    # A stage mover's stall grace (#1010): the time its next landing takes
-    # at the slowest measured landing of this manifest on this tier, plus
-    # the time a report takes to reach the worker's stall check
-    # (``movement_actions.mover_progress_policy``).  Measured means the
-    # ``landing`` basis only: a median share of other manifests' copies is
-    # not a landing of this one.  The sealed fill caps it from below when an
-    # offer capped the seal, so the grace errs long.  With nothing measured
-    # the mover is sealed as before, with no stall grace, and
-    # ``demand_source.mover_progress`` says ``unmeasured``.
+    # A stage mover's stall grace (#1010), from what the tier has measured
+    # (``movement_actions.mover_progress_policy``): its next landing at the
+    # slowest measured landing of this manifest on this tier, capped by the
+    # fill it reserves, plus the time a report takes to reach the stall
+    # check.  Measured means the ``landing`` basis only: a median share of
+    # other manifests' copies is not a landing of this one.  Time the pool is
+    # the bottleneck is not priced here: the worker credits it on its own
+    # sample of the pool's members (``core.POOL_CONTENTION_PARAM``), so a
+    # policy is sealed only with the members the storage role announced.
+    # With either unmeasured the mover is sealed as before, with no stall
+    # grace, and ``demand_source.mover_progress`` says which was missing.
     landing_bytes_per_s: float | None = None
     if fill_price.get("basis") == "landing" and fill_price.get("mb_s"):
         slowest = int(fill_price["mb_s"])                  # type: ignore[arg-type]
         if fill is not None:
             slowest = min(slowest, int(fill))
         landing_bytes_per_s = float(slowest * storage_tiers.MB)
+    source_members = tier.get("source_members")
+    pool_members = ([str(member) for member in source_members if member]
+                    if isinstance(source_members, Sequence)
+                    and not isinstance(source_members, (str, bytes)) else [])
+    # How many movers were copying on the tier while the pricing window
+    # landed, at most: the rate above was measured under that load, and a
+    # reviewer comparing it with the load now needs both numbers.
+    window_concurrency = None
+    if fill_price.get("basis") == "landing":
+        counts = [record.get(storage_tiers.MOVER_CONCURRENCY_FIELD)
+                  for record in receipts
+                  if isinstance(record, Mapping)
+                  and str(record.get("manifest_sha256") or "") == digest
+                  and str(record.get("consumer_action_key") or "")
+                  == str(fill_price.get("window_consumer") or "")]
+        counts = [int(count) for count in counts
+                  if isinstance(count, int) and not isinstance(count, bool)]
+        window_concurrency = max(counts) if counts else None
     entry_sizes = [int(read_entry.get("bytes", 0) or 0)
                    for read_entry in read_entries]
     entry_starts: list[int] = []
@@ -5750,6 +5770,22 @@ def residency_stage_rows(
             progress, derivation = movement_actions.mover_progress_policy(
                 chunk_entry_bytes(cstart, cend),
                 landing_bytes_per_s=landing_bytes_per_s)
+            contention: dict[str, object] | None = None
+            if progress is not None and not pool_members:
+                # No members to judge the pool by: a pacer hold would be
+                # charged to the copy, so no grace at all, as before.
+                progress = None
+                derivation = {**derivation, "basis": "unmeasured",
+                              "unmeasured": "pool members", "grace_s": None}
+            elif progress is not None:
+                contention = movement_actions.pool_contention_spec(
+                    members=pool_members, stage_root=stage_root,
+                    priced_bytes_per_s=float(landing_bytes_per_s))  # type: ignore[arg-type]
+            elif derivation["basis"] == "unmeasured":
+                derivation = {**derivation, "unmeasured": "landing rate"}
+            derivation = {**derivation,
+                          "landing_window_movers": window_concurrency,
+                          "pool_contention": contention}
             chunk_mover = seal_movement_action(
                 template,
                 command=[mover_python, mover_tool,
@@ -5775,11 +5811,13 @@ def residency_stage_rows(
                 # that enforces the contract and exports the helper
                 # environment the mover reports through.
                 tags=(tags if progress is None
-                      else [*tags, *progress_required_tags(progress)]),
+                      else [*tags, *progress_required_tags(progress),
+                            pb.POOL_CONTENTION_TAG]),
                 retry_policy=mover_retry_policy,
                 log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
                 extra_params=(None if progress is None
-                              else {pb.PROGRESS_PARAM: progress}))
+                              else {pb.PROGRESS_PARAM: progress,
+                                    pb.POOL_CONTENTION_PARAM: contention}))
             mover_progress[str(chunk_mover["action_key"])] = derivation
             chunk_egress = seal_movement_action(
                 template,
@@ -6002,10 +6040,13 @@ def residency_stage_rows(
                        "fill": fill_basis,
                        "fill_measured": dict(fill_price),
                        "tier_offer_mb_s": offered_fill,
-                       # Each stage mover's stall grace and every term of it
-                       # (#1010), by mover key: ``basis`` is ``landing`` when
-                       # a measured landing priced it, ``unmeasured`` when
-                       # the mover was sealed with no grace.
+                       # Each stage mover's stall grace and every term of
+                       # it (#1010), by mover key: ``basis`` is ``landing``
+                       # when a measured landing priced it and the tier
+                       # named the pool members the worker judges contention
+                       # by (``pool_contention``, as sealed); ``unmeasured``
+                       # (naming the missing term) when the mover was sealed
+                       # with no grace.
                        "mover_progress": mover_progress})
     return {
         "plan": plan,

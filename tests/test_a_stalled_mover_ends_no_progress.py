@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import textwrap
@@ -49,23 +50,33 @@ FILL = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{TIER}"
 HEARTBEAT = 0.05
 
 
-def _landed(digest: str, mb_s: float) -> dict[str, object]:
-    """One complete earlier copy of ``digest`` that landed at ``mb_s``."""
+def _landed(digest: str, mb_s: float, *, key: str = "1" * 64,
+            movers: int = 1) -> dict[str, object]:
+    """One complete earlier copy of ``digest`` that landed at ``mb_s``, with
+    ``movers`` movers copying on the tier while it did."""
 
-    return {"schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": "1" * 64,
+    return {"schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": key,
             "consumer_action_key": "e" * 64, "tier_id": TIER,
             "manifest_sha256": digest, "complete": True,
             "bytes_staged": int(mb_s * 10 * MB), "seconds": 10.0,
-            "unix": 100.0}
+            "unix": 100.0, storage_tiers.MOVER_CONCURRENCY_FIELD: movers}
+
+
+#: The source pool's members as the storage role announces them
+#: (``source_members``): the devices the worker reads for contention.
+MEMBERS = ["pmem-a", "pmem-b"]
 
 
 def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
                receipts: list[dict[str, object]] | None = None,
-               measured_mb_s: float | None = None) -> tuple[dict, _Cas, str]:
+               measured_mb_s: float | None = None,
+               members: list[str] | None = None,
+               movers: int = 1) -> tuple[dict, _Cas, str]:
     """Seal one window through ``pbrun.residency_stage_rows``.
 
     ``measured_mb_s`` files one complete earlier copy of this manifest at
-    that rate, which is what ``mover_fill_price`` calls a ``landing``.
+    that rate, which is what ``mover_fill_price`` calls a ``landing``, among
+    ``movers`` copies.  ``members`` is the tier's ``source_members``.
     """
 
     import pbrun
@@ -75,12 +86,15 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     queue = pool.PoolQueue(tmp_path / "seal-queue")
     queue.ensure_layout()
+    announced = list(MEMBERS if members is None else members)
 
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",
                        "mountpoint": str(tmp_path / "stage"),
-                       "capacity_bytes": 64 * storage_tiers.GIB}}
+                       "capacity_bytes": 64 * storage_tiers.GIB,
+                       "source_pool": "storage_pool",
+                       "source_members": announced}}
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
@@ -92,7 +106,7 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     records = list(receipts or [])
     if measured_mb_s is not None:
-        records.append(_landed(digest, measured_mb_s))
+        records.append(_landed(digest, measured_mb_s, movers=movers))
     cas = _Cas(manifest_path)
     staged = pbrun.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
@@ -118,7 +132,8 @@ def test_the_grace_is_the_next_landing_at_the_slowest_rate_plus_two_heartbeats(
     """Sixteen copy workers, each holding one entry, share the copy's rate.
 
     None of them lands until all of their bytes are read, so the unit is the
-    sixteen largest entries of the range, not the largest one.
+    sixteen largest entries of the range, not the largest one.  Every phase
+    gets the copy grace; nothing about the pool is priced into it.
     """
 
     from prismabuild import movement_actions as ma
@@ -133,11 +148,11 @@ def test_the_grace_is_the_next_landing_at_the_slowest_rate_plus_two_heartbeats(
                           "copy_depth": 16, "unit_bytes": unit,
                           "report_latency_s": 60.0, "grace_s": grace}
     assert policy == {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
-                      "phases": [{"name": "copy", "grace_s": grace},
+                      "phases": [{"name": "start", "grace_s": grace},
+                                 {"name": "copy", "grace_s": grace},
                                  {"name": "warm", "grace_s": grace}]}
     # A range of three entries can never have more than three in flight.
-    _policy, small = ma.mover_progress_policy(
-        [MIB] * 3, landing_bytes_per_s=1e6)
+    _policy, small = ma.mover_progress_policy([MIB] * 3, landing_bytes_per_s=1e6)
     assert small["unit_bytes"] == 3 * MIB
 
 
@@ -151,13 +166,15 @@ def test_with_no_measured_landing_there_is_no_grace(rate) -> None:
     assert derivation["grace_s"] is None
 
 
-def test_a_measured_mover_is_sealed_with_its_grace_and_placed_on_the_contract(
+def test_a_measured_mover_is_sealed_with_its_grace_and_its_pool(
         tmp_path: Path) -> None:
-    """R12's manifest landed at 116 MB/s at its slowest: every mover of the
-    next window carries a grace priced from it, and requires the tags of a
-    worker that enforces it."""
+    """R12's manifest landed at 116 MB/s at its slowest, three movers
+    copying: every mover of the next window carries a grace priced from it,
+    the pool evidence the worker judges contention by, and the tags of a
+    worker that reads both."""
 
-    staged, cas, _digest = _seal_rows(tmp_path, _manifest(), measured_mb_s=116.0)
+    staged, cas, _digest = _seal_rows(tmp_path, _manifest(), measured_mb_s=116.0,
+                                      movers=3)
     source = staged["plan"]["demand_source"]["mover_progress"]  # type: ignore[index]
     rows = _mover_rows(staged["plan"])                           # type: ignore[arg-type]
     assert rows and set(source) == {str(row["action_key"]) for row in rows}
@@ -168,51 +185,128 @@ def test_a_measured_mover_is_sealed_with_its_grace_and_placed_on_the_contract(
         assert derivation["landing_bytes_per_s"] == 116 * MB
         # Each phase of ``_manifest`` is one 2 GiB entry.
         assert derivation["unit_bytes"] == 2 * storage_tiers.GIB
-        assert derivation["grace_s"] == math.ceil(
-            2 * storage_tiers.GIB / (116 * MB) + 2 * pool.HEARTBEAT_S)
-        policy = cas.actions[key]["params"]["progress"]
-        assert [phase["grace_s"] for phase in policy["phases"]] == [
-            derivation["grace_s"]] * 2
-        tags = cas.actions[key]["params"]["placement"]["required_tags"]
-        assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG} <= set(tags)
+        grace = math.ceil(2 * storage_tiers.GIB / (116 * MB) + 2 * pool.HEARTBEAT_S)
+        assert derivation["grace_s"] == grace
+        assert derivation["landing_window_movers"] == 3
+        params = cas.actions[key]["params"]
+        assert "cycle" not in params["progress"]
+        assert [(phase["name"], phase["grace_s"])
+                for phase in params["progress"]["phases"]] == [
+            ("start", grace), ("copy", grace), ("warm", grace)]
+        contention = params[pb.POOL_CONTENTION_PARAM]
+        assert contention == derivation["pool_contention"]
+        assert contention == {
+            "schema": pb.POOL_CONTENTION_SCHEMA_V1, "members": sorted(MEMBERS),
+            "max_read_await_ms": 10.0, "max_backlog_ms": 2000.0,
+            "priced_bytes_per_s": float(116 * MB),
+            "stage_root": str(tmp_path / "stage")}
+        tags = params["placement"]["required_tags"]
+        assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG,
+                pb.POOL_CONTENTION_TAG} <= set(tags)
+        assert pb.PROGRESS_CYCLE_TAG not in tags
         assert "dl380g10" in tags
 
 
-def test_an_unmeasured_mover_is_sealed_as_before(tmp_path: Path) -> None:
-    """Nothing measured this manifest: no policy, no extra tag, and the plan
-    says ``unmeasured``.  The mover's key is what it was before #1010."""
+@pytest.mark.parametrize("measured,members,missing", [
+    (None, None, "landing rate"), (116.0, [], "pool members")])
+def test_an_unmeasured_mover_is_sealed_as_before(tmp_path: Path, measured,
+                                                  members, missing) -> None:
+    """Nothing measured this manifest's landing, or the tier named no pool
+    members to judge contention by: no policy, no extra tag, and the plan
+    says which was missing.  The mover's key is what it was before #1010."""
 
-    staged, cas, _digest = _seal_rows(tmp_path, _manifest())
+    staged, cas, _digest = _seal_rows(tmp_path, _manifest(),
+                                      measured_mb_s=measured, members=members)
     source = staged["plan"]["demand_source"]["mover_progress"]  # type: ignore[index]
     for row in _mover_rows(staged["plan"]):                     # type: ignore[arg-type]
         key = str(row["action_key"])
         assert source[key]["basis"] == "unmeasured"
+        assert source[key]["unmeasured"] == missing
         assert "progress" not in cas.actions[key]["params"]
+        assert pb.POOL_CONTENTION_PARAM not in cas.actions[key]["params"]
         assert cas.actions[key]["params"]["placement"]["required_tags"] == [
             "dl380g10"]
 
 
+def test_a_contention_spec_is_refused_without_a_policy_or_out_of_form() -> None:
+    spec = {"schema": pb.POOL_CONTENTION_SCHEMA_V1, "members": ["sdb", "sda"],
+            "max_read_await_ms": 10.0, "max_backlog_ms": 2000.0,
+            "priced_bytes_per_s": 1.0, "stage_root": "/stage"}
+    with pytest.raises(pb.ActionContractError, match="sorted"):
+        pb.validate_pool_contention(spec)
+    with pytest.raises(pb.ActionContractError, match="plain block device"):
+        pb.validate_pool_contention({**spec, "members": ["/dev/sda"]})
+    with pytest.raises(pb.ActionContractError, match="exactly"):
+        pb.validate_pool_contention({**spec, "held_s": 3.0})
+
+
 # ------------------------------------------------- the stall, end to end
 
-#: The mover under test: the real ``stage_move.main``, whose second read
-#: never returns -- a hung NFS read.  The first entry lands; the second
-#: hangs in its first chunk.
+#: The mover under test: the real ``stage_move.main`` with two seams
+#: replaced in its own process.  ``os.readv`` runs the ``read`` fixture;
+#: ``prewarm_loop.pacer_from_args`` returns a disk pacer that holds the copy
+#: once, for ``hold`` seconds, on its ``hold_on``-th wait (0: never), through
+#: the pacer's own ``_enter_hold``/``_leave_hold`` so its hook fires exactly
+#: as a real hold's does.
 MOVER = textwrap.dedent('''
-    import os, sys, time
+    import os, sys, threading, time
     sys.path.insert(0, {tools!r})
-    import stage_move
+    import prewarm_loop, stage_move
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     real = os.readv
     calls = [0]
-    def readv(fd, buffers):
+    gate = threading.Lock()
+    clock = [0.0]
+    def stall(fd, buffers):
         calls[0] += 1
         if calls[0] > 1:
             time.sleep(3600)
         return real(fd, buffers)
-    os.readv = readv
-    sys.exit(stage_move.main({argv!r}))
+    def share(fd, buffers):
+        # This mover's share of the pool: {rate!r} bytes/s over all of its
+        # copy workers together, as N movers splitting one pool see it.
+        got = real(fd, buffers)
+        with gate:
+            start = max(clock[0], time.monotonic())
+            clock[0] = start + got / {rate!r}
+            until = clock[0]
+        time.sleep(max(0.0, until - time.monotonic()))
+        return got
+    os.readv = {{"stall": stall, "share": share, "real": real}}[{read!r}]
+
+    class HoldingPacer(prewarm_loop.DiskPacer):
+        waits = 0
+        def wait(self, stop=None, abort=None):
+            with gate:
+                HoldingPacer.waits += 1
+                hold = HoldingPacer.waits == {hold_on!r}
+            if hold:
+                self._enter_hold()
+                try:
+                    time.sleep({hold!r})
+                finally:
+                    self._leave_hold()
+    prewarm_loop.pacer_from_args = lambda args: HoldingPacer(
+        [], max_util_pct=100.0, max_read_await_ms=1e9, max_backlog_ms=1e9,
+        readers=args.readers, max_readers=args.max_readers)
+    code = stage_move.main({argv!r})
+    # The action's result is the mover's receipt, when it filed one.
+    receipt = {receipt!r}
+    if receipt and os.path.exists(receipt):
+        with open(receipt, "rb") as src, open("result", "wb") as dst:
+            dst.write(src.read())
+    sys.exit(code)
 ''')
+
+
+def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
+                  hold_on: int = 0, hold: float = 0.0,
+                  heartbeat: float = HEARTBEAT) -> str:
+    receipt = (argv[argv.index("--receipt") + 1] if "--receipt" in argv else "")
+    return MOVER.format(tools=str(ROOT / "tools" / "fleet"), heartbeat=heartbeat,
+                        argv=argv, read=read, rate=float(rate),
+                        hold_on=int(hold_on), hold=float(hold), receipt=receipt)
 
 
 def _real_window(tmp_path: Path, entries: int = 3) -> dict[str, object]:
@@ -235,13 +329,22 @@ def _real_window(tmp_path: Path, entries: int = 3) -> dict[str, object]:
             "entry_count": entries, "total_bytes": total}
 
 
-def _claimed_mover(tmp_path: Path, source: str, policy) -> tuple[pool.PoolQueue, dict]:
-    """A claimed action running ``source``, sealed with ``policy``, one attempt."""
+def _claimed_mover(tmp_path: Path, source: str, policy,
+                   contention=None) -> tuple[pool.PoolQueue, dict]:
+    """A claimed action running ``source``, sealed with ``policy`` and
+    ``contention``, one attempt.
+
+    The param is spelled out rather than taken from ``pb``, so the same test
+    runs against a head that never heard of it: that head seals it as an
+    ordinary param and its worker ignores it.
+    """
 
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "task.py").write_text(source)
     params = {} if policy is None else {pb.PROGRESS_PARAM: policy}
+    if contention is not None:
+        params["progress_pool_contention"] = contention
     action = pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {"definition_id": "tests/stalled-mover", "definition_version": "v1",
@@ -327,8 +430,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
             "--range-start-bytes", "0", "--range-end-bytes", str(total),
             "--readers", "1", "--max-readers", "1", "--block", str(MIB),
             "--warm-after-copy", "never", "--unpaced"]
-    source = MOVER.format(tools=str(ROOT / "tools" / "fleet"),
-                          heartbeat=HEARTBEAT, argv=argv)
+    source = _mover_source(argv, read="stall")
     queue, item = _claimed_mover(tmp_path, source, policy)
     assert stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
@@ -365,6 +467,361 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
     # is not exempt.
     assert after["movers"][0]["state"] == "failed"
     assert after["exempt"] is False
+
+
+def _mover_argv(base: Path, *, digest: str, total: int, manifest: Path,
+                readers: int = 1) -> list[str]:
+    return ["--pool-root", str(base / "queue"),
+            "--consumer-action-key", CONSUMER, "--tier-id", TIER,
+            "--stage-root", str(base / "stage"), "--manifest-sha256", digest,
+            "--manifest", str(manifest),
+            "--range-start-bytes", "0", "--range-end-bytes", str(total),
+            "--readers", str(readers), "--max-readers", str(readers),
+            "--block", str(MIB), "--warm-after-copy", "never", "--unpaced",
+            "--receipt", str(base / "receipt.json")]
+
+
+def _policy(grace: int) -> dict[str, object]:
+    """``movement_actions.mover_progress_policy``'s shape, spelled out so the
+    same test runs against a head that sealed a different one."""
+
+    return {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+            "phases": [{"name": name, "grace_s": grace}
+                       for name in ("start", "copy", "warm")]}
+
+
+def _contention(base: Path, *, priced: float = float(MB)) -> dict[str, object]:
+    """What pbrun seals beside the policy (``pool_contention_spec``)."""
+
+    return {"schema": "prismabuild.progress_pool_contention.v1",
+            "members": sorted(MEMBERS), "max_read_await_ms": 10.0,
+            "max_backlog_ms": 2000.0, "priced_bytes_per_s": priced,
+            "stage_root": str(base / "stage")}
+
+
+class _Disks:
+    """The pool's members as the worker reads them (``pool.POOL_MEMBER_STAT``).
+
+    Each read advances a member by ten completed reads at ``await_ms`` each
+    and one millisecond of weighted I/O, so over any interval the read await
+    is ``await_ms`` and the backlog is far under its cap.  A member in
+    ``missing`` reads as absent, as a pulled disk does.
+    """
+
+    def __init__(self, await_ms: float) -> None:
+        self.await_ms = float(await_ms)
+        self.missing: set[str] = set()
+        self.rows: dict[str, list[int]] = {}
+        self.reads = 0
+        self._lock = __import__("threading").Lock()
+
+    def __call__(self, device: str) -> list[int] | None:
+        with self._lock:
+            self.reads += 1
+            if device in self.missing:
+                return None
+            row = list(self.rows.get(device, [0] * 11))
+            row[storage_tiers.STAT_READS_COMPLETED] += 10
+            row[storage_tiers.STAT_READ_SECTORS] += 80
+            row[storage_tiers.STAT_READ_MS] += int(round(10 * self.await_ms))
+            row[storage_tiers.STAT_IO_TICKS] += 1
+            row[storage_tiers.STAT_WEIGHTED_IO_MS] += 1
+            self.rows[device] = row
+            return row
+
+
+#: Over the pacer's 10 ms read-await cap, and far under it.
+OVER, UNDER = 50.0, 1.0
+
+
+def _run_mover(base: Path, source: str, policy, *, ceiling: float,
+               contention=None, heartbeat: float = HEARTBEAT,
+               before=None) -> tuple[dict, dict]:
+    """Seal, claim and execute one mover action under ``base``; return the
+    outcome and the receipt the mover filed as its result.  ``before`` runs
+    with the queue once the action is claimed, before it executes."""
+
+    import stage_release
+
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "stage").mkdir(exist_ok=True)
+    queue, item = _claimed_mover(base, source, policy, contention)
+    assert stage_release.register_stage_root(
+        queue, tier_id=TIER, stage_root=base / "stage") == "registered"
+    if before is not None:
+        before(queue)
+    outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=heartbeat,
+                            timeout_grace_s=0.5)
+    result = base / "checkout" / "result"
+    receipt = json.loads(result.read_text()) if result.exists() else {}
+    return outcome, receipt
+
+
+def _window(tmp_path: Path) -> tuple[int, str, int]:
+    """Three 1 MiB entries whose slowest landing was 1 MB/s: the grace is
+    3 MiB at 1 MB/s plus two heartbeats, rounded up, 4 s."""
+
+    window = _real_window(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(window))
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    total = int(window["total_bytes"])                   # type: ignore[arg-type]
+    return total, digest, 4
+
+
+def _brief(outcome: dict) -> str:
+    return repr({k: outcome.get(k) for k in (
+        "status", "termination_reason", "elapsed_s", "progress_observation",
+        "stall", "stderr")})
+
+
+def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 1 on #1010.  The disk pacer holds the copy after its
+    first entry lands, for three copy graces, while the worker's own sample
+    of the pool's members reads their await over the pacer's cap.  The
+    worker credits the hold, the mover completes, and the record says how
+    many seconds were credited.  Red before #1010's credit: the same hold
+    ended the mover ``no_progress`` one grace after its last landing."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    disks = _Disks(OVER)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", disks, raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    hold = 3.0 * grace
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+
+    outcome, receipt = _run_mover(
+        base, _mover_source(argv, hold_on=2, hold=hold), _policy(grace),
+        contention=_contention(base), ceiling=60.0)
+
+    assert outcome["status"] == "executed", _brief(outcome)
+    assert outcome["elapsed_s"] > hold
+    assert receipt["complete"] is True
+    assert receipt["disk_pacing"]["held_seconds"] >= hold
+    observed = outcome["progress_observation"]
+    assert observed["pool_contention_exempt_s"] >= hold - grace
+    assert observed["start_gate_exempt_s"] == 0.0
+    judged = observed["pool_contention"]
+    assert judged["intervals"]["over"] > 0 and judged["intervals"]["under"] == 0
+    assert judged["last"]["verdict"] == "over"
+    assert judged["last"]["read_await_ms"] == OVER
+
+
+def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
+               ) -> tuple[dict, dict, int]:
+    """Every entry in flight at once, delivered at a tenth of the rate the
+    grace was priced at, and no pacer hold: an unadmitted reader."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(await_ms), raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    argv = _mover_argv(base, digest=digest, total=total, readers=3,
+                       manifest=tmp_path / "manifest.json")
+    outcome, receipt = _run_mover(
+        base, _mover_source(argv, read="share", rate=MB / 10.0), _policy(grace),
+        contention=_contention(base), ceiling=90.0)
+    return outcome, receipt, grace
+
+
+def test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 2 on #1010.  The copy is delivered a tenth of its priced
+    rate, 3 MiB in about 31 s against a 4 s grace, and nothing lands until
+    the end.  The members read over the cap and no client is holding the
+    pacer: the pool is the bottleneck, so the quiet is credited and the
+    mover completes."""
+
+    outcome, receipt, grace = _slow_copy(tmp_path, monkeypatch, OVER)
+
+    assert outcome["status"] == "executed", _brief(outcome)
+    assert receipt["complete"] is True
+    assert receipt["seconds"] >= 3 * MIB / (MB / 10.0) * 0.9
+    assert outcome["progress_observation"]["pool_contention_exempt_s"] > 3 * grace
+
+
+def test_the_same_slow_copy_on_a_pool_under_its_caps_ends_at_its_allowance(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 3 on #1010.  The same copy with every member under both
+    caps: the pool is not the bottleneck, nothing is credited, and the
+    mover ends ``no_progress`` at its priced allowance.  The ending record
+    names the allowance, the last landing, and the rate delivered beside
+    the rate priced."""
+
+    outcome, _receipt, grace = _slow_copy(tmp_path, monkeypatch, UNDER)
+
+    assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
+    assert outcome["elapsed_s"] < 3 * grace
+    stall = outcome["stall"]
+    assert stall["allowance_s"] == grace
+    assert stall["credited_s"] == {"staged_wait": 0.0, "pool_contention": 0.0,
+                                   "start_gate": 0.0}
+    # The copy phase was entered when the copy started; nothing landed.
+    assert stall["last_landing"]["phase"] == "copy"
+    assert stall["last_landing"]["units_completed"] == 0
+    assert stall["priced_bytes_per_s"] == float(MB)
+    assert stall["delivered_bytes_per_s"] == 0.0
+    assert stall["pool"]["verdict"] == "under"
+    assert stall["pool"]["read_await_ms"] == UNDER
+
+
+def test_a_mover_that_holds_itself_on_a_pool_under_its_caps_earns_nothing(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 4 on #1010.  The mover's own pacer holds it for three
+    graces -- its claim that the pool is contended -- while the worker's
+    sample of the same members reads under both caps.  The claim earns no
+    credit: the mover ends ``no_progress`` one grace after its last
+    landing."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+
+    outcome, _receipt = _run_mover(
+        base, _mover_source(argv, hold_on=2, hold=3.0 * grace), _policy(grace),
+        contention=_contention(base), ceiling=60.0)
+
+    assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
+    assert outcome["elapsed_s"] < 3.0 * grace
+    assert outcome["progress_observation"]["pool_contention_exempt_s"] == 0.0
+    assert outcome["stall"]["last_landing"]["units_completed"] == MIB
+
+
+def test_a_pool_the_worker_cannot_read_is_credited_and_says_so(
+        tmp_path: Path, monkeypatch) -> None:
+    """A member missing from the worker's sample is blind telemetry.  The
+    pacer holds on it and the worker credits it, and files one event when
+    the blind stretch starts, so a mover nothing ends is not also a mover
+    nobody hears about."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    disks = _Disks(UNDER)
+    disks.missing.add(MEMBERS[1])
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", disks)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+
+    outcome, receipt = _run_mover(
+        base, _mover_source(argv, hold_on=2, hold=3.0 * grace), _policy(grace),
+        contention=_contention(base), ceiling=60.0)
+
+    assert outcome["status"] == "executed", _brief(outcome)
+    assert receipt["complete"] is True
+    judged = outcome["progress_observation"]["pool_contention"]
+    assert judged["blind_starts"] == 1
+    assert judged["intervals"]["over"] == judged["intervals"]["under"] == 0
+    queue = pool.PoolQueue(base / "queue")
+    events = [event for event in queue.consumer_events(_only_key(queue))
+              if event.get("event") == "mover-pool-blind"]
+    assert len(events) == 1
+    assert events[0]["missing"] == [MEMBERS[1]]
+
+
+def _only_key(queue: pool.PoolQueue) -> str:
+    """The one action key this queue has filed an outcome for."""
+
+    names = [name for name in os.listdir(queue.root / pool.RESIDENCY_EVENTS)]
+    assert len(names) == 1, names
+    return names[0]
+
+
+def test_a_start_gate_held_by_a_live_egress_is_credited(
+        tmp_path: Path, monkeypatch) -> None:
+    """The coordinator's addendum on #1010.  An egress holds the stage's
+    ownership lock for three graces while the mover waits at its start gate.
+    The first phase's clock starts at launch, so the wait would be charged;
+    the worker sees the lock held at both ends of each interval and credits
+    it, the mover completes, and the record carries the wait and the
+    credit."""
+
+    import threading
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+    holding, release = threading.Event(), threading.Event()
+    held_for = 3.0 * grace
+
+    def egress(queue: pool.PoolQueue) -> None:
+        def hold() -> None:
+            with queue.stage_ownership_lock(str(base / "stage")):
+                holding.set()
+                release.wait(held_for)
+        threading.Thread(target=hold, daemon=True).start()
+        assert holding.wait(10.0)
+
+    try:
+        outcome, receipt = _run_mover(
+            base, _mover_source(argv), _policy(grace),
+            contention=_contention(base), ceiling=60.0, before=egress)
+    finally:
+        release.set()
+
+    assert outcome["status"] == "executed", _brief(outcome)
+    assert receipt["complete"] is True
+    # The mover waited out the egress before its first read: in the resume
+    # census, which takes the same lock first (#988), or at the gate.
+    assert (receipt["resume_lock_wait_s"] + receipt["start_gate_wait_s"]
+            >= held_for - grace)
+    observed = outcome["progress_observation"]
+    assert observed["start_gate_exempt_s"] >= held_for - 2 * grace
+    assert observed["pool_contention"]["start_gate_held_s"] >= held_for - 2 * grace
+    assert observed["pool_contention_exempt_s"] == 0.0
+
+
+def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 5 on #1010.  Three movers split one pool at the fill
+    each reserves.  The manifest's last window landed at 1 MB/s per copy
+    with three movers copying, so each mover's grace is priced at 1 MB/s
+    and the plan records the three.  Each copies its three entries at once
+    at 1 MB/s, landing all of them in about 3.15 s, inside the 4 s grace
+    with the members under both caps: none is killed, and none needed a
+    credit."""
+
+    import concurrent.futures
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    window = _real_window(tmp_path)
+    total = int(window["total_bytes"])                   # type: ignore[arg-type]
+    staged, cas, digest = _seal_rows(tmp_path, window, measured_mb_s=1.0,
+                                     movers=3)
+    (sealed_row,) = _mover_rows(staged["plan"])          # type: ignore[arg-type]
+    key = str(sealed_row["action_key"])
+    policy = cas.actions[key]["params"]["progress"]
+    derivation = staged["plan"]["demand_source"]["mover_progress"][key]  # type: ignore[index]
+    assert derivation["landing_window_movers"] == 3
+    assert derivation["unit_bytes"] == total
+    assert derivation["grace_s"] == 4
+
+    def run(index: int) -> tuple[dict, dict]:
+        base = tmp_path / f"mover-{index}"
+        argv = _mover_argv(base, digest=digest, total=total, readers=3,
+                           manifest=tmp_path / "manifest.json")
+        return _run_mover(base, _mover_source(argv, read="share", rate=MB),
+                          policy, contention=_contention(base), ceiling=40.0)
+
+    with concurrent.futures.ThreadPoolExecutor(3) as pool_:
+        results = list(pool_.map(run, range(3)))
+
+    for outcome, receipt in results:
+        assert outcome["status"] == "executed", _brief(outcome)
+        assert receipt["complete"] is True
+        # The share really was 1 MB/s: 3 MiB took over 3 s.
+        assert receipt["seconds"] >= total / MB * 0.95
+        assert outcome["progress_observation"]["pool_contention_exempt_s"] == 0.0
 
 
 # ------------------------------------------------------ the reporter itself
