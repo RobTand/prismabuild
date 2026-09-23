@@ -4255,7 +4255,8 @@ without blocking, in the usual order: consumer, then mover, then the stage
 ownership lock. An owner has ended when its consumer is neither queued nor
 claimed and has exactly one outcome record (`stage_release._unended_owner`,
 the dead-owner sweep's proof), and its mover is neither queued nor claimed. A
-consumer whose queue record is in `ready/` or `claimed/` is live. Anything
+consumer whose queue record is in `ready/` or `claimed/` is live. A sibling,
+another mover of the copy's own consumer, is judged by its mover alone. Anything
 else is uncertain: no outcome, a lease without its record, a queued mover, or
 an unreadable fragment. Under the ownership lock the name is decided again.
 An owner that was not judged sends the decision back for another judgment.

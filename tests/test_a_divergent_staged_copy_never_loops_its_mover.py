@@ -591,3 +591,30 @@ def test_a_movers_own_record_is_not_an_owner_it_judges(fleet) -> None:
                                          owners=collected)
     assert standing == "divergent"
     assert collected.pairs == {(consumer, mover)} and collected.complete
+
+
+def test_a_sibling_movers_copy_is_judged_by_its_mover_alone(fleet) -> None:
+    """Another mover of this copy's own consumer is not a live other owner.
+
+    A forward and a reverse pass, or two phases of one plan, stage one
+    extent onto one name.  Under a digest-less manifest whose origin changed
+    between them, the later mover meets the earlier one's record dating
+    other bytes.  The owner's consumer is this copy's own, live by
+    construction, so it must not read as a conflict that retires this
+    copy's own window: the sibling is judged by its mover alone.  The same
+    owner met by a mover of another consumer is live.
+    """
+
+    queue, _stage, _ = fleet
+    consumer, sibling = base._key(), base._key()
+    base._publish(queue, consumer, max_attempts=1)
+    base._publish(queue, sibling, max_attempts=1)
+    queue.finish(sibling, status="executed", detail={"returncode": 0})
+    owner = {(consumer, sibling)}
+
+    ours = base._publisher(fleet, base._key(), consumer)
+    assert ours._judge_owners(owner) == [
+        {"consumer_action_key": consumer, "mover_action_key": sibling,
+         "state": "ended"}]
+    theirs = base._publisher(fleet, base._key(), base._key())
+    assert [row["state"] for row in theirs._judge_owners(owner)] == ["live"]

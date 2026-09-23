@@ -1426,6 +1426,12 @@ class _StagedPublisher:
         record, a queued or leased mover, a record that cannot be read, a
         key that is not an action key -- is ``uncertain``.
 
+        A sibling -- another mover of this copy's own consumer, as when a
+        forward and a reverse pass, or two phases of one plan, stage one
+        extent onto one name -- is judged by its mover alone.  Its consumer
+        is this copy's own and is live by construction, so it is no
+        conflict; the consumer's readers hold pins, which the act checks.
+
         The consumer's plan is deliberately not a fact here: a DONE
         consumer keeps its frozen plan so a retry republishes the same
         children (``tier_loop``'s dead-consumer pass), and the plan's other
@@ -1440,17 +1446,18 @@ class _StagedPublisher:
 
         if not (_is_action_key(consumer) and _is_action_key(mover)):
             return "uncertain", "its fragment does not name two action keys"
-        why = unended(self.queue, consumer)
-        if why:
-            for state in (pool.CLAIMED, pool.READY):
-                try:
-                    self.queue.item_path(state, consumer).stat()
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    return "uncertain", f"{why}; {exc}"
-                return "live", ""
-            return "uncertain", why
+        if consumer != self.consumer:
+            why = unended(self.queue, consumer)
+            if why:
+                for state in (pool.CLAIMED, pool.READY):
+                    try:
+                        self.queue.item_path(state, consumer).stat()
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        return "uncertain", f"{why}; {exc}"
+                    return "live", ""
+                return "uncertain", why
         live, error = residency_plan.live_state(self.queue, mover)
         if error:
             return ("uncertain",
