@@ -544,6 +544,10 @@ _FUNDING_KIND_ROLES = {
 }
 #: Where a tier loop files what it discovered about one tier, for readers.
 TIERS = "tiers"
+#: Per stage tier, what the tier loop's admission commitment saw this cycle
+#: (#930): one record per tier, rewritten each cycle by the loop that owns it.
+TIER_COMMITMENTS = "tier-commitments"
+TIER_COMMITMENT_SCHEMA_V1 = "prismabuild.tier_commitment.v1"
 #: The residency block an item may carry (#583): what a movement node moves,
 #: and which movement nodes a compute node waits on.  Absent on every item the
 #: fleet publishes today, and the whole mechanism is inert without it.
@@ -9619,6 +9623,44 @@ class PoolQueue:
             if isinstance(record, dict) and record.get("tier_id") == path.stem:
                 records.append(record)
         return records
+
+    def tier_commitment_path(self, tier_id: str) -> Path:
+        return self.root / TIER_COMMITMENTS / f"{self._check_tier_id(tier_id)}.json"
+
+    def file_tier_commitment(self, record: Mapping[str, object]) -> Path:
+        """File what the admission commitment saw on one stage tier (#930).
+
+        A report, never an admission input: the tier loop rewrites it every
+        cycle from the census it admitted on, so ``pbstatus --starvation``
+        can name a waiting newcomer and what it waits on without pricing the
+        tier again.  Stamped with ``filed_unix`` so a reader can age it.
+        """
+
+        tier_id = self._check_tier_id(str(record.get("tier_id", "")))
+        path = self.tier_commitment_path(tier_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, dict(record, schema=TIER_COMMITMENT_SCHEMA_V1,
+                                      filed_unix=_now()))
+        return path
+
+    def tier_commitment(self, tier_id: str) -> dict[str, object] | None:
+        """The last commitment record filed for ``tier_id``, or ``None``.
+
+        ``None`` when none was filed (a loop from before #930, or a tier no
+        loop censuses).  A record that does not parse raises, so the reader
+        can say so rather than report a tier with nothing waiting.
+        """
+
+        path = self.tier_commitment_path(tier_id)
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            return None
+        record = json.loads(text)
+        if (not isinstance(record, dict) or record.get("tier_id") != tier_id
+                or record.get("schema") != TIER_COMMITMENT_SCHEMA_V1):
+            raise ValueError(f"tier commitment record {path.name} is not one")
+        return record
 
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],

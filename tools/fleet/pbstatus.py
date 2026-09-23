@@ -66,6 +66,7 @@ from prismabuild import (  # noqa: E402
 from prismabuild import action_edges  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import window_credit  # noqa: E402
 from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
@@ -1507,6 +1508,18 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         if isinstance(capacity, dict) and isinstance(available, dict):
             held = {kind: int(capacity.get(kind, 0)) - int(available.get(kind, 0))
                     for kind in sorted(set(capacity) | set(available))}
+        # What the tier loop's admission commitment saw on its last cycle
+        # (#930), read as filed: the loop's own verdict, never re-priced
+        # here.  None where no loop files one -- not a stage tier, or a loop
+        # from before #930.
+        try:
+            commitment = queue.tier_commitment(tier_id)
+        except (OSError, ValueError, pool.PoolContractError) as exc:
+            notes.append(f"starvation tier commitment {tier_id}: {exc}")
+            unreadable.append(f"starvation tier commitment {tier_id}: {exc}")
+            commitment = None
+        filed = (commitment.get("filed_unix") if isinstance(commitment, Mapping)
+                 else None)
         tiers.append({
             "tier_id": tier_id,
             "announced": record is not None,
@@ -1538,8 +1551,44 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
             "ledger_capacity": capacity,
             "ledger_available": available,
             "ledger_held": held,
+            "commitment": commitment,
+            "commitment_age_s": (now - float(filed)
+                                 if isinstance(filed, (int, float))
+                                 and not isinstance(filed, bool) else None),
         })
     return tiers
+
+
+def _starvation_commitment_waits(tiers: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Every newcomer waiting on a stage tier's joint commitment (#930).
+
+    Flattened from each tier's filed commitment record: a newcomer the
+    commitment refused, one whose tier's census did not read, and one
+    waiting behind either.  Each carries its footprint, the committed
+    total, the capacity and the terms that make up the gap -- the holders
+    and windows, each marked evictable or not -- as the gate saw them.
+    """
+
+    waits: list[dict] = []
+    for tier in tiers:
+        record = tier.get("commitment")
+        if not isinstance(record, Mapping):
+            continue
+        for entry in record.get("waiting") or ():
+            if not isinstance(entry, Mapping):
+                continue
+            ahead = entry.get("waiting_on")
+            ahead_reason = (ahead.get("reason") if isinstance(ahead, Mapping)
+                            else None)
+            if not (entry.get("reason") == window_credit.REASON_COMMITMENT
+                    or ahead_reason == window_credit.REASON_COMMITMENT
+                    or "error" in entry):
+                continue
+            waits.append({"tier_id": tier.get("tier_id"),
+                          "age_s": tier.get("commitment_age_s"),
+                          "over_committed_gib": record.get("over_committed_gib"),
+                          **dict(entry)})
+    return waits
 
 
 def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict]:
@@ -1886,6 +1935,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             queue, path.stem, raw, ready=ready, claimed=claimed,
             notes=notes, unreadable=unreadable, now=moment))
     tiers = _starvation_tiers(queue, now=moment, notes=notes, unreadable=unreadable)
+    commitment_waits = _starvation_commitment_waits(tiers)
     denial_top = _starvation_denials(queue, notes=notes)
     starved = _starvation_starved(jobs)
     census_unreadable = _starvation_census_unreadable(
@@ -1899,6 +1949,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             "waiting_claims": waiting,
             "residency_plans": plans,
             "tiers": tiers,
+            "joint_commitment_waits": commitment_waits,
             "denial_top": denial_top,
             "starved": starved,
             "census_unreadable": census_unreadable,
