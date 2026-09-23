@@ -344,7 +344,7 @@
    },
    "id": "RNG-02",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:0979fbb6a590 (#890) names every staged input by the exact range it holds.",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:0979fbb6a590 (#890) names every staged input by the exact range it holds. PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable.",
     "path": "src/prismabuild/reader_lease.py material sidecars (reader_material.v1, per-publish uuid generation, portable ino/size/mtime/ctime identity, never st_dev); acquire/open_pinned enforce generation+identity with ABA refusal; fragment schema v1 unchanged",
     "state": "partial"
    },
@@ -352,7 +352,7 @@
    "target_enforcement": "ABA-negative plus prefetch/mmap lifetime tests",
    "text": "Staged-object identity (tier, epoch, name, length, materialization generation, content identity); same epoch/path/length MUST NOT ABA-rebind new bytes. Lease pins the physical object; acquisition/open validates bound identity and pins lifetime including async prefetch/mmap with no stat/open race.",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:50Z): #890 red f31eab248f88 (3 failed), targeted 0ec938560175, ccf248e04cc8, ba09b0fd059f, ecd323447846.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:50Z): #890 red f31eab248f88 (3 failed), targeted 0ec938560175, ccf248e04cc8, ba09b0fd059f, ecd323447846. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green 6186bcc8dece (27 passed); broad stage_move, pool and tier_loop set ad9b6e74eba6, 6e6502472823, 717f90559434, 8b3f0c33a33b, aba4c31ca934, 18bb69fd74fc, 00ecb3b61ddf, 234a3f704f64 (2,399 passed); mutants a47a79f21d40 (14 of 14 killed). Component tests only; not deployed.",
     "state": "partial"
    },
    "workload_proof": {
@@ -362,7 +362,7 @@
    "live_defects": [
     {
      "issue": "PB#966",
-     "status": "OPEN, no fix merged; WS-RM is working on it (coordinator, 2026-09-23)",
+     "status": "fix in review on branch fix/966-mover-dead-owner (Fixes #966): not merged, not deployed",
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "one staged destination name, two owners' bytes"
     }
@@ -460,7 +460,7 @@
    },
    "id": "SM-02",
    "implementation": {
-    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:3641e29332bf (#795), 793bc4238141 (#799), 94fc96b6924b (#826), 94d3b28e0611 (#803), 6f90a2304765 (#842), a1ac630ad421 (#868), f5111291c1bb (#877), 42a6ac156158 (#894), 81d95cba8d91 (#935) merged. PB#966 (a dead owner's copy that cannot be invalidated) has no fix.",
+    "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:3641e29332bf (#795), 793bc4238141 (#799), 94fc96b6924b (#826), 94d3b28e0611 (#803), 6f90a2304765 (#842), a1ac630ad421 (#868), f5111291c1bb (#877), 42a6ac156158 (#894), 81d95cba8d91 (#935) merged. PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable.",
     "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
     "state": "partial"
    },
@@ -468,7 +468,7 @@
    "target_enforcement": "retiring-mark, delete-only absent, epoch revalidation paths",
    "text": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
    "validation": {
-    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:50Z): #935 red 3c021314a259 (5 failed, 1 passed), focus fb4782667af5, 67114f94e382, 648502090230; #894 red 658caf9436cd, green cb7e98cc927b; #842 fail-before fc2ac9132507; #826 fail-before 17c2829f77ad, green 24bb24c3e6cc. Component tests only.",
+    "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim. 2026-09-23 update (snapshot 13:50Z): #935 red 3c021314a259 (5 failed, 1 passed), focus fb4782667af5, 67114f94e382, 648502090230; #894 red 658caf9436cd, green cb7e98cc927b; #842 fail-before fc2ac9132507; #826 fail-before 17c2829f77ad, green 24bb24c3e6cc. Component tests only. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green 6186bcc8dece (27 passed); broad stage_move, pool and tier_loop set ad9b6e74eba6, 6e6502472823, 717f90559434, 8b3f0c33a33b, aba4c31ca934, 18bb69fd74fc, 00ecb3b61ddf, 234a3f704f64 (2,399 passed); mutants a47a79f21d40 (14 of 14 killed). Component tests only; not deployed.",
     "state": "partial"
    },
    "workload_proof": {
@@ -484,7 +484,7 @@
     },
     {
      "issue": "PB#966",
-     "status": "OPEN, no fix merged; WS-RM is working on it (coordinator, 2026-09-23)",
+     "status": "fix in review on branch fix/966-mover-dead-owner (Fixes #966): not merged, not deployed",
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "a dead owner's copy is never retired and its tokens are never released"
     },
@@ -1076,7 +1076,7 @@
    },
    "id": "PRG-03",
    "implementation": {
-    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:abb13ff58bf7 (#948) and 0411c83330da (#970) remove two refusal loops; f5ae2a06efc9 (#969) starts no read on an expired wait. PB#966 (a deterministic refusal rerun forever) has no fix.",
+    "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:abb13ff58bf7 (#948) and 0411c83330da (#970) remove two refusal loops; f5ae2a06efc9 (#969) starts no read on an expired wait. PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable.",
     "path": "src/prismabuild/pool.py residency_verdict pending paths; mover retry/timeout policy",
     "state": "partial"
    },
@@ -1084,7 +1084,7 @@
    "target_enforcement": "mid-phase grace and stall-terminal semantics observed",
    "text": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
    "validation": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green 6186bcc8dece (27 passed); broad stage_move, pool and tier_loop set ad9b6e74eba6, 6e6502472823, 717f90559434, 8b3f0c33a33b, aba4c31ca934, 18bb69fd74fc, 00ecb3b61ddf, 234a3f704f64 (2,399 passed); mutants a47a79f21d40 (14 of 14 killed). Component tests only; not deployed.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1106,7 +1106,7 @@
     },
     {
      "issue": "PB#966",
-     "status": "OPEN, no fix merged; WS-RM is working on it (coordinator, 2026-09-23)",
+     "status": "fix in review on branch fix/966-mover-dead-owner (Fixes #966): not merged, not deployed",
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "a deterministic refusal is not terminal"
     }
@@ -1123,7 +1123,7 @@
    },
    "id": "PRG-04",
    "implementation": {
-    "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420; 2026-09-23 update (snapshot 13:50Z): PB:97faa0e67200 (#928) charges refill horizons and owed outputs jointly; 2c55b69482ef (#931) withholds per holder; 4448dd9dcec5 (#956) reports joint-commitment stalls (not deployed).",
+    "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420; 2026-09-23 update (snapshot 13:50Z): PB:97faa0e67200 (#928) charges refill horizons and owed outputs jointly; 2c55b69482ef (#931) withholds per holder; 4448dd9dcec5 (#956) reports joint-commitment stalls (not deployed). PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable.",
     "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked.",
     "state": "partial"
    },
@@ -1131,7 +1131,7 @@
    "target_enforcement": "inequality proof or deterministic next-step policy, named and tested",
    "text": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
    "validation": {
-    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate. 2026-09-23 update (snapshot 13:50Z): #928 red e05102b65674, ee8e749f8fa2; #956 red 30bd4d48e56f.",
+    "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate. 2026-09-23 update (snapshot 13:50Z): #928 red e05102b65674, ee8e749f8fa2; #956 red 30bd4d48e56f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green 6186bcc8dece (27 passed); broad stage_move, pool and tier_loop set ad9b6e74eba6, 6e6502472823, 717f90559434, 8b3f0c33a33b, aba4c31ca934, 18bb69fd74fc, 00ecb3b61ddf, 234a3f704f64 (2,399 passed); mutants a47a79f21d40 (14 of 14 killed). Component tests only; not deployed.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1141,7 +1141,7 @@
    "live_defects": [
     {
      "issue": "PB#966",
-     "status": "OPEN, no fix merged; WS-RM is working on it (coordinator, 2026-09-23)",
+     "status": "fix in review on branch fix/966-mover-dead-owner (Fixes #966): not merged, not deployed",
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "no admissible consumer while one mover holds fill without progress"
     }
