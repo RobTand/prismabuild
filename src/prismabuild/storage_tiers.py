@@ -153,15 +153,55 @@ def promotion_chunk_gib_for_window(window_gib: int,
     return max(1, window_gib // PROMOTION_CHUNKS_PER_WINDOW)
 
 
-def split_range_into_chunks(start_bytes: int, end_bytes: int,
-                            chunk_bytes: int) -> list[tuple[int, int]]:
-    """One phase's ``[start, end)`` as chunk ranges, in read order.
+class EntryExceedsWindow(ValueError):
+    """A manifest entry larger than the window of the tier it moves into (#965).
 
-    Contiguous half-open cover, the last chunk short when the range is not a
-    multiple, a single whole-range chunk when the phase fits.  A cut through
-    a manifest entry would hand a mover more bytes than its tokens reserved,
-    so phases stay entry-aligned and chunks stay phase-aligned: this splits
-    byte counts, never entries.
+    A mover stages whole entries, so no chunk can be smaller than the entry
+    it holds.  An entry larger than the tier's window would need a chunk the
+    window can never admit, and its mover would wait for capacity that never
+    comes.  The seal refuses it instead, naming the entry.
+    """
+
+    def __init__(self, *, entry_index: int, start_bytes: int, end_bytes: int,
+                 window_bytes: int) -> None:
+        self.entry_index = entry_index
+        self.start_bytes = start_bytes
+        self.end_bytes = end_bytes
+        self.window_bytes = window_bytes
+        super().__init__(
+            f"read-order entry {entry_index} at [{start_bytes}, {end_bytes}) "
+            f"is {end_bytes - start_bytes} bytes, past the {window_bytes}-byte "
+            f"window; a mover stages whole entries, so no chunk can hold it")
+
+
+def split_range_into_chunks(start_bytes: int, end_bytes: int,
+                            chunk_bytes: int, *,
+                            entry_bytes: Iterable[int],
+                            window_bytes: int | None = None,
+                            ) -> list[tuple[int, int]]:
+    """One phase's ``[start, end)`` as entry-aligned chunk ranges, in read order.
+
+    ``entry_bytes`` is the size of every manifest entry in the order the
+    action reads them (``manifest_read_entries``), and the range must start
+    and end on those entries' boundaries, as every phase from
+    ``manifest_phase_ranges`` does.  A mover stages whole entries: it covers
+    every entry its range touches.  A cut inside an entry would hand both
+    neighbouring movers more bytes than their tokens reserved, and each
+    would refuse ``residency_overran_reservation`` on every attempt (#965).
+
+    Cuts therefore fall only between entries.  Whole entries are packed in
+    read order while the chunk stays within ``chunk_bytes``.  An entry larger
+    than ``chunk_bytes`` becomes a chunk of its own.  A range that fits is one
+    chunk over the whole range.
+
+    The chunks tile the range, so their bytes sum to the phase's entry bytes
+    and each entry lands in exactly one chunk.  A chunk's reservation is its
+    bytes rounded up to whole tokens, like every reservation, so a phase's
+    chunks can reserve up to one token per extra chunk more than the whole
+    phase would.  That is rounding, not bytes counted twice.
+
+    ``window_bytes`` is the most the tier ever holds.  An entry in the range
+    larger than it raises ``EntryExceedsWindow``.  ``None`` checks nothing.
     """
 
     if (isinstance(chunk_bytes, bool) or not isinstance(chunk_bytes, int)
@@ -173,12 +213,53 @@ def split_range_into_chunks(start_bytes: int, end_bytes: int,
             raise ValueError(f"{name} must be a non-negative whole number of bytes")
     if end_bytes <= start_bytes:
         raise ValueError("a chunked range must be non-empty and half-open")
-    chunks = []
-    position = start_bytes
-    while position < end_bytes:
-        stop = min(position + chunk_bytes, end_bytes)
-        chunks.append((position, stop))
-        position = stop
+    if window_bytes is not None and (
+            isinstance(window_bytes, bool) or not isinstance(window_bytes, int)
+            or window_bytes <= 0):
+        raise ValueError("window_bytes must be a positive whole number of bytes")
+    chunks: list[tuple[int, int]] = []
+    cut: int | None = None
+    reached: int | None = None
+    position = 0
+    for index, size in enumerate(entry_bytes):
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError(
+                f"entry {index} must be a non-negative whole number of bytes")
+        entry_start, entry_end = position, position + size
+        position = entry_end
+        if entry_end <= start_bytes:
+            continue
+        if entry_start >= end_bytes:
+            break
+        if entry_start < start_bytes:
+            raise ValueError(
+                f"start_bytes {start_bytes} is not an entry boundary: entry "
+                f"{index} spans [{entry_start}, {entry_end})")
+        if entry_end > end_bytes:
+            raise ValueError(
+                f"end_bytes {end_bytes} is not an entry boundary: entry "
+                f"{index} spans [{entry_start}, {entry_end})")
+        if window_bytes is not None and size > window_bytes:
+            raise EntryExceedsWindow(
+                entry_index=index, start_bytes=entry_start,
+                end_bytes=entry_end, window_bytes=window_bytes)
+        if cut is None:
+            cut = entry_start
+        if entry_end - cut > chunk_bytes and entry_start > cut:
+            # The entry would overfill the chunk: close it before the entry.
+            chunks.append((cut, entry_start))
+            cut = entry_start
+        if entry_end - cut > chunk_bytes:
+            # Larger than a chunk on its own: a chunk of its own.
+            chunks.append((cut, entry_end))
+            cut = entry_end
+        reached = entry_end
+    if cut is None or reached != end_bytes:
+        raise ValueError(
+            f"end_bytes {end_bytes} is not an entry boundary of the read "
+            f"order, which reaches {position} bytes")
+    if cut < end_bytes:
+        chunks.append((cut, end_bytes))
     return chunks
 
 
@@ -1613,10 +1694,8 @@ def _checked_phase_boundaries(
     return boundaries
 
 
-def _read_order_sizes(
-    phases: list, entry_sizes: list[int],
-) -> list[int] | None:
-    """The byte sizes of the v2 read plan's consumption order, or ``None``.
+def _read_order_indices(phases: list, entry_count: int) -> list[int] | None:
+    """The entry indices of the v2 read plan's consumption order, or ``None``.
 
     v1 consumes ``entries`` in list order, so its boundaries are the list's
     own prefix sums.  v2 consumes them in ``read_plan`` order, which exists
@@ -1637,13 +1716,87 @@ def _read_order_sizes(
         for ref in indices:
             if isinstance(ref, bool) or not isinstance(ref, int):
                 return None
-            if ref < 0 or ref >= len(entry_sizes):
+            if ref < 0 or ref >= entry_count:
                 return None
             if ref in seen:
                 return None
             seen.add(ref)
             order.append(ref)
-    return [entry_sizes[index] for index in order]
+    return order
+
+
+def _manifest_read_layout(
+    manifest: Mapping[str, object],
+) -> tuple[list[tuple[str, int]], list[Mapping[str, object]]] | None:
+    """The validated phase boundaries and the entries in read order, or ``None``.
+
+    One reading of the manifest for both of the things a seal cuts on: the
+    phase table (``manifest_phase_ranges``) and the entry boundaries inside
+    it (``manifest_read_entries``, which ``split_range_into_chunks`` cuts
+    at).  A table this refuses describes no read order at all.
+    """
+
+    schema = manifest.get("schema")
+    if schema == "prismaquant.prismabuild.data_manifest.v2":
+        plan = manifest.get("read_plan")
+        if not isinstance(plan, Mapping):
+            return None
+        phases = plan.get("phases")
+        if not isinstance(phases, list) or not phases:
+            return None
+        for phase in phases:
+            if not isinstance(phase, Mapping):
+                return None
+        entries = manifest.get("entries", []) or []
+        entry_sizes: list[int] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                return None
+            entry_sizes.append(int(entry.get("bytes", 0) or 0))
+        total = int(manifest.get("total_bytes", 0) or 0)
+        if sum(entry_sizes) != total:
+            return None
+        read = plan.get("read_bytes")
+        if isinstance(read, bool) or not isinstance(read, int):
+            return None
+        order = _read_order_indices(phases, len(entry_sizes))
+        if order is None:
+            return None
+        read_sizes = [entry_sizes[index] for index in order]
+        if sum(read_sizes) != read:
+            return None
+        entry_boundaries: set[int] = set()
+        running = 0
+        for size in read_sizes:
+            running += size
+            entry_boundaries.add(running)
+        checked = _checked_phase_boundaries(
+            phases, total=read, entry_boundaries=entry_boundaries)
+        if checked is None:
+            return None
+        return checked, [entries[index] for index in order]
+    annotations = manifest.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return None
+    declared = annotations.get("phases")
+    if not isinstance(declared, list) or not declared:
+        return None
+    total = int(manifest.get("total_bytes", 0) or 0)
+    entries = manifest.get("entries", []) or []
+    entry_boundaries = set()
+    running = 0
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return None
+        running += int(entry.get("bytes", 0) or 0)
+        entry_boundaries.add(running)
+    if running != total:
+        return None
+    checked = _checked_phase_boundaries(
+        declared, total=total, entry_boundaries=entry_boundaries)
+    if checked is None:
+        return None
+    return checked, list(entries)
 
 
 def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, object]]:
@@ -1666,72 +1819,31 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
     both.
     """
 
-    schema = manifest.get("schema")
-    boundaries: list[tuple[str, int]] = []
-    if schema == "prismaquant.prismabuild.data_manifest.v2":
-        plan = manifest.get("read_plan")
-        if not isinstance(plan, Mapping):
-            return []
-        phases = plan.get("phases")
-        if not isinstance(phases, list) or not phases:
-            return []
-        for phase in phases:
-            if not isinstance(phase, Mapping):
-                return []
-        entries = manifest.get("entries", []) or []
-        entry_sizes: list[int] = []
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                return []
-            entry_sizes.append(int(entry.get("bytes", 0) or 0))
-        total = int(manifest.get("total_bytes", 0) or 0)
-        if sum(entry_sizes) != total:
-            return []
-        read = plan.get("read_bytes")
-        if isinstance(read, bool) or not isinstance(read, int):
-            return []
-        read_sizes = _read_order_sizes(phases, entry_sizes)
-        if read_sizes is None or sum(read_sizes) != read:
-            return []
-        entry_boundaries: set[int] = set()
-        running = 0
-        for size in read_sizes:
-            running += size
-            entry_boundaries.add(running)
-        checked = _checked_phase_boundaries(
-            phases, total=read, entry_boundaries=entry_boundaries)
-        if checked is None:
-            return []
-        boundaries = checked
-    else:
-        annotations = manifest.get("annotations")
-        if not isinstance(annotations, Mapping):
-            return []
-        declared = annotations.get("phases")
-        if not isinstance(declared, list) or not declared:
-            return []
-        total = int(manifest.get("total_bytes", 0) or 0)
-        entry_boundaries = set()
-        running = 0
-        for entry in manifest.get("entries", []) or []:
-            if not isinstance(entry, Mapping):
-                return []
-            running += int(entry.get("bytes", 0) or 0)
-            entry_boundaries.add(running)
-        if running != total:
-            return []
-        checked = _checked_phase_boundaries(
-            declared, total=total, entry_boundaries=entry_boundaries)
-        if checked is None:
-            return []
-        boundaries = checked
+    layout = _manifest_read_layout(manifest)
+    if layout is None:
+        return []
     ranges: list[dict[str, object]] = []
     previous = 0
-    for name, cumulative in boundaries:
+    for name, cumulative in layout[0]:
         if cumulative > previous:
             ranges.append({"name": name, "start_bytes": previous, "end_bytes": cumulative})
         previous = cumulative
     return ranges
+
+
+def manifest_read_entries(
+        manifest: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """The manifest's entries in the order its action reads them, or ``[]``.
+
+    The order both movers walk (``prewarm_loop.manifest_read_entries``):
+    list order for v1, the ``read_plan`` expansion for v2.  A seal cuts
+    chunks at these entries' boundaries, so the seal and the movers must
+    read one order.  A manifest whose phase table ``manifest_phase_ranges``
+    refuses yields ``[]``, because it describes no read order to cut.
+    """
+
+    layout = _manifest_read_layout(manifest)
+    return [] if layout is None else list(layout[1])
 
 
 def stage_tokens_for_bytes(range_bytes: int) -> int:
@@ -2083,6 +2195,7 @@ __all__ = [
     "mover_fill_demand_from_receipts",
     "mover_fill_price",
     "manifest_phase_ranges",
+    "manifest_read_entries",
     "capacity_kind_of",
     "promotion_chunk_gib_for_window",
     "stage_arc_eligibility",
@@ -2123,6 +2236,7 @@ __all__ = [
     "read_ram_epoch",
     "read_ram_policy",
     "split_range_into_chunks",
+    "EntryExceedsWindow",
     "read_worker_mem_gb",
     "split_demand",
     "split_demand_key",

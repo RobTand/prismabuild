@@ -5368,6 +5368,68 @@ def reader_declaration(args) -> dict[str, int]:
     return reader
 
 
+def residency_leg_cuts(
+    record: Mapping[str, object],
+    *,
+    leg: str,
+    ranges: Sequence[Mapping[str, object]],
+    read_entries: Sequence[Mapping[str, object]],
+) -> list[list[tuple[int, int]]]:
+    """Every phase's chunk ranges on one leg, in read order.
+
+    The chunk size is the tier's announced sizing, never this box's: the pin
+    when the loop mints one, else the same window-quarter derivation the
+    loop announces with.  A tier that announces no sizing seals whole-phase
+    pairs -- chunking is a sealing-time property, and an unchunkable phase
+    keeps the shape it always had.
+
+    Cuts fall only on the manifest's entry boundaries (#965).  A mover
+    stages every entry its range touches, so a cut inside an entry made both
+    neighbouring movers overrun their reservations and refuse
+    ``residency_overran_reservation`` on every attempt.  Each chunk is
+    therefore whole entries, reserved at their bytes; an entry larger than
+    the chunk is a chunk of its own.  An entry larger than the window the
+    tier announces can never be admitted, so it refuses here, by name,
+    before anything is sealed.  A record that announces no window (the
+    stage's, which carries only its host's chunk) has nothing to refuse on.
+    """
+
+    def whole_gib(value: object) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    announced_chunk = whole_gib(record.get("promotion_chunk_gib"))
+    announced_window = whole_gib(record.get("window_gib"))
+    chunk_gib = announced_chunk
+    if chunk_gib is None and announced_window is not None:
+        chunk_gib = storage_tiers.promotion_chunk_gib_for_window(announced_window)
+    spans = [(int(span["start_bytes"]), int(span["end_bytes"])) for span in ranges]
+    if chunk_gib is None:
+        return [[span] for span in spans]
+    sizes = [int(entry.get("bytes", 0) or 0) for entry in read_entries]
+    window_bytes = (None if announced_window is None
+                    else announced_window * storage_tiers.GIB)
+    cuts: list[list[tuple[int, int]]] = []
+    for span, (start, end) in zip(ranges, spans):
+        try:
+            cuts.append(storage_tiers.split_range_into_chunks(
+                start, end, chunk_gib * storage_tiers.GIB,
+                entry_bytes=sizes, window_bytes=window_bytes))
+        except storage_tiers.EntryExceedsWindow as exc:
+            entry = read_entries[exc.entry_index]
+            raise SystemExit(
+                f"pbrun: residency_entry_exceeds_window: phase "
+                f"{span['name']!r} reads {entry.get('path')!r} at offset "
+                f"{entry.get('offset')}, {exc.end_bytes - exc.start_bytes} "
+                f"bytes, which is larger than the {announced_window} GiB "
+                f"window of the {leg} tier {record.get('tier_id')}.  A mover "
+                f"stages whole entries, so no chunk can hold this one and "
+                f"its mover could never be admitted.  Nothing was sealed or "
+                f"published.") from None
+    return cuts
+
+
 def residency_stage_rows(
     template: Mapping[str, object],
     *,
@@ -5389,7 +5451,8 @@ def residency_stage_rows(
     The ranges are the manifest's own phases.  Nothing here chooses a boundary:
     a cut through an entry would hand a mover more bytes than its tokens
     reserved, and ``manifest_phase_ranges`` refuses a phase table that does not
-    describe its own manifest.
+    describe its own manifest.  Chunks inside a phase are cut at the same
+    entries' boundaries (``residency_leg_cuts``, #965).
     """
 
     manifest_input = template["params"].get("data_manifest")   # type: ignore[union-attr]
@@ -5531,6 +5594,16 @@ def residency_stage_rows(
         ram_python, ram_tool, ram_egress_tool = movement_tools(
             ram_tier, mover="ram_promote.py")
 
+    # Every chunk of both legs is cut here, before a single node is sealed or
+    # published: an entry that no chunk of a tier can hold refuses the whole
+    # submission now, rather than after half its nodes reached the CAS.
+    read_entries = storage_tiers.manifest_read_entries(manifest)
+    stage_cuts = residency_leg_cuts(tier, leg="stage", ranges=ranges,
+                                    read_entries=read_entries)
+    ram_cuts = (None if ram_tier is None else
+                residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
+                                   read_entries=read_entries))
+
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
     # per-phase read would give two phases of one plan different demands
@@ -5581,29 +5654,11 @@ def residency_stage_rows(
         # The stage leg is cut into chunks (#675) the way the ram leg is
         # (#673): one movement node plus one egress node per chunk, in read
         # order, so the SSD refills as it frees instead of sawtoothing a
-        # whole phase at a time.  The chunk size is the tier's announced
-        # sizing, never this box's: the pin when the loop mints one, else
-        # the same window-quarter derivation the loop announces with.  A
-        # phase that fits in one chunk seals today's whole-phase pair, and
-        # a tier that announces no sizing seals it too -- chunking is a
-        # sealing-time property, and an unchunkable phase keeps the shape it
-        # always had.
-        announced_chunk = tier.get("promotion_chunk_gib")
-        announced_window = tier.get("window_gib")
-        chunk_gib = None
-        if (isinstance(announced_chunk, int)
-                and not isinstance(announced_chunk, bool)
-                and announced_chunk > 0):
-            chunk_gib = announced_chunk
-        elif (isinstance(announced_window, int)
-                and not isinstance(announced_window, bool)
-                and announced_window > 0):
-            chunk_gib = storage_tiers.promotion_chunk_gib_for_window(
-                announced_window)
-        chunk_ranges = (
-            storage_tiers.split_range_into_chunks(
-                start, end, chunk_gib * storage_tiers.GIB)
-            if chunk_gib is not None else [(start, end)])
+        # whole phase at a time.  The cuts were made above, at entry
+        # boundaries, before anything was sealed (#965).  A phase that fits
+        # in one chunk seals today's whole-phase pair, and a tier that
+        # announces no sizing seals it too.
+        chunk_ranges = stage_cuts[ordinal]
 
         def seal_stage_chunk(cstart: int, cend: int,
                              csuffix: str) -> tuple[dict, dict]:
@@ -5729,28 +5784,12 @@ def residency_stage_rows(
             # The leg is cut into chunks (#673): one promotion node plus one
             # egress node per chunk, in read order, so the tmpfs refills as
             # it frees instead of sawtoothing a whole phase at a time.  The
-            # chunk size is the tier's announced sizing, never this box's:
-            # the pin when the loop mints one, else the same window-quarter
-            # derivation the loop announces with.  A phase that fits in one
-            # chunk seals today's whole-phase pair, and a tier that announces
-            # no sizing seals it too -- chunking is a sealing-time property,
-            # and an unchunkable phase keeps the shape it always had.
-            announced_chunk = ram_tier.get("promotion_chunk_gib")
-            announced_window = ram_tier.get("window_gib")
-            chunk_gib = None
-            if (isinstance(announced_chunk, int)
-                    and not isinstance(announced_chunk, bool)
-                    and announced_chunk > 0):
-                chunk_gib = announced_chunk
-            elif (isinstance(announced_window, int)
-                    and not isinstance(announced_window, bool)
-                    and announced_window > 0):
-                chunk_gib = storage_tiers.promotion_chunk_gib_for_window(
-                    announced_window)
-            chunk_ranges = (
-                storage_tiers.split_range_into_chunks(
-                    start, end, chunk_gib * storage_tiers.GIB)
-                if chunk_gib is not None else [(start, end)])
+            # cuts were made above, at entry boundaries, before anything was
+            # sealed (#965).  A phase that fits in one chunk seals today's
+            # whole-phase pair, and a tier that announces no sizing seals it
+            # too.
+            assert ram_cuts is not None
+            chunk_ranges = ram_cuts[ordinal]
 
             def seal_ram_chunk(cstart: int, cend: int,
                                csuffix: str) -> tuple[dict, dict]:
