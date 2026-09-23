@@ -868,8 +868,20 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
 def evict(queue: pool.PoolQueue, mover_action_key: str, *,
           consumer_action_key: str, stage_root: str,
           residency_root: str | Path | None = None,
-          reason: str = "egress") -> dict[str, object]:
+          reason: str = "egress", whole: bool = False) -> dict[str, object]:
     """Delete one mover's staged files and settle its tier tokens.
+
+    ``whole`` makes the eviction all or nothing (#903).  An egress of a passed
+    phase may delete part of a range and defer the rest behind a reader,
+    because nobody will read the part it deleted.  A range a live consumer
+    has not reached yet is different: it will be read, so deleting part of
+    it while its tokens and fragment stay would leave it looking staged with
+    holes in it, and nothing would copy it again.  With ``whole`` every entry
+    is judged under the ownership lock before anything is unlinked, and if
+    any entry would defer -- a reader's pin, a promotion's handoff, the
+    mover's own live copy -- or cannot be judged, the eviction declines:
+    nothing is unlinked, no retiring mark is filed, the tokens and the
+    fragment stay, and the receipt names the reason in ``declined``.
 
     Tokens for deleted bytes return; tokens for bytes staying under a
     co-owner are decharged (#733).
@@ -903,13 +915,14 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
         return _evict_locked(queue, mover_action_key,
                              consumer_action_key=consumer_action_key,
                              stage_root=stage_root,
-                             residency_root=residency_root, reason=reason)
+                             residency_root=residency_root, reason=reason,
+                             whole=whole)
 
 
 def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                   consumer_action_key: str, stage_root: str,
                   residency_root: str | Path | None = None,
-                  reason: str = "egress") -> dict[str, object]:
+                  reason: str = "egress", whole: bool = False) -> dict[str, object]:
     """:func:`evict`'s body, with the mover's transition lock already held.
 
     One staged file can have two owners: forward and reverse passes stage the
@@ -1002,7 +1015,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                             fragment_path=fragment_path, entries=entries,
                             errors=errors, reason=reason,
                             auto_reclaimed=auto_reclaimed,
-                            auto_retained=auto_retained)
+                            auto_retained=auto_retained, whole=whole)
 
 
 def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
@@ -1158,7 +1171,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  root: Path, fragment_path: Path,
                  entries: dict[str, object], errors: list[str],
                  reason: str, auto_reclaimed: list[str],
-                 auto_retained: dict[str, str]) -> dict[str, object]:
+                 auto_retained: dict[str, str],
+                 whole: bool = False) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock.
 
     ``auto_reclaimed``/``auto_retained`` are what containment reclamation did
@@ -1245,9 +1259,17 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         pins, source_paths = {}, set()
         own_generation = None
         blind = False
-    for key, entry in entries.items():
-        if blind:
-            continue
+    def judge(key: str, entry: Mapping[str, object]) -> tuple[str, object]:
+        """One entry's verdict under this lock, with nothing done yet.
+
+        ``("error", message)``, ``("handoff", pins)``, ``("own", None)``,
+        ``("shared", (co_owners, in_flight))``, ``("pinned", pins)`` or
+        ``("unlink", path)``.  Judged separately from acting so an
+        all-or-nothing eviction (``whole``, #903) can see every entry's
+        verdict before the first unlink; the ordinary pass acts on the same
+        verdicts in the same order, under the same lock.
+        """
+
         # The sharing check compares validated strings (exact, no metadata);
         # the resolve below stays as the containment fence before any unlink.
         path = Path(str(entry["stage_path"]))
@@ -1257,11 +1279,9 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 # A fragment naming a path outside the stage is not a thing to
                 # act on: the writer validated it, so this is corruption or
                 # someone else's file.
-                errors.append(f"{key}: outside {stage}")
-                continue
+                return ("error", f"{key}: outside {stage}")
         except OSError as exc:
-            errors.append(f"{key}: {exc}")
-            continue
+            return ("error", f"{key}: {exc}")
         norm = os.path.normpath(str(path))
         pinned = pins.get(norm, [])
         if os.path.normpath(resolved) in source_paths:
@@ -1291,10 +1311,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # on the same mover waits for the handoff to end before its own
             # mark is filed; deleting stays safe meanwhile because every pass
             # re-reads claims and pins under this same ownership lock.
-            deferred += 1
-            deferred_handoffs.append("promotion-handoff")
-            live_pins.extend(pinned)
-            continue
+            return ("handoff", pinned)
         if _relative_under(stage, resolved) in own_claimed:
             # This mover's own copy is still live: its claim is not a
             # distinct co-owner, so this is a deferral, not a shared skip.
@@ -1303,32 +1320,71 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             # terminal transition has retired the claim.  Sharing here would
             # decharge this mover's own duplicate and drop its only vouch
             # while the bytes stayed behind nothing (#793).
-            deferred += 1
-            own_deferred = True
-            continue
+            return ("own", None)
         co_owners = sorted(owners.get(norm, set()))
-        if co_owners or _relative_under(stage, resolved) in claimed:
+        in_flight = _relative_under(stage, resolved) in claimed
+        if co_owners or in_flight:
             # Another live fragment vouches for these bytes, or a claimed
             # copy is about to land them: keep the file, drop only this
             # mover's own vouching below.  The last owner to leave deletes.
-            shared += 1
-            shared_with.extend(
-                f"{consumer[:12]}/{mover[:12]}" for consumer, mover in co_owners)
-            if _relative_under(stage, resolved) in claimed:
-                shared_with.append("in-flight-copy")
-            bytes_shared += int(entry["bytes"])
-            continue
+            return ("shared", (co_owners, in_flight))
         if pinned:
             # A live reader holds these bytes (open FD, prefetch, mmap, or a
             # promotion source pin): defer, mark retiring for this material
             # generation, keep the file, the fragment and the charge.  The
             # next sweep deletes after the last release.
             if not own_generation:
-                errors.append(f"{key}: pinned but material unqualifiable")
-                continue
-            deferred += 1
-            live_pins.extend(pinned)
+                return ("error", f"{key}: pinned but material unqualifiable")
+            return ("pinned", pinned)
+        return ("unlink", path)
+
+    verdicts: dict[str, tuple[str, object]] = (
+        {} if blind else {key: judge(key, entry)
+                          for key, entry in entries.items()})
+    declined: list[str] = []
+    if whole:
+        # All or nothing (#903): a range a live consumer will still read is
+        # either given back whole or kept whole.  Any entry that would defer
+        # or cannot be judged declines the eviction before anything moves --
+        # no unlink, no retiring mark, the tokens and the fragment held --
+        # and the pins that caused it are named so the caller can say why.
+        declined = sorted({verdict for verdict, _detail in verdicts.values()
+                           if verdict in ("error", "handoff", "own", "pinned")})
+        if blind or errors:
+            declined = sorted(set(declined) | {"ownership-uncertain"})
+        if declined:
+            for verdict, detail in verdicts.values():
+                if verdict in ("handoff", "pinned"):
+                    live_pins.extend(detail)              # type: ignore[arg-type]
+            verdicts = {}
+    for key, (verdict, detail) in verdicts.items():
+        entry = entries[key]
+        if verdict == "error":
+            errors.append(str(detail))
             continue
+        if verdict == "handoff":
+            deferred += 1
+            deferred_handoffs.append("promotion-handoff")
+            live_pins.extend(detail)                      # type: ignore[arg-type]
+            continue
+        if verdict == "own":
+            deferred += 1
+            own_deferred = True
+            continue
+        if verdict == "shared":
+            co_owners, in_flight = detail                 # type: ignore[misc]
+            shared += 1
+            shared_with.extend(
+                f"{consumer[:12]}/{mover[:12]}" for consumer, mover in co_owners)
+            if in_flight:
+                shared_with.append("in-flight-copy")
+            bytes_shared += int(entry["bytes"])
+            continue
+        if verdict == "pinned":
+            deferred += 1
+            live_pins.extend(detail)                      # type: ignore[arg-type]
+            continue
+        path = detail                                     # type: ignore[assignment]
         try:
             os.unlink(path)
         except FileNotFoundError:
@@ -1366,7 +1422,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     # the duplicate ownership is decharged (#733) while this mover's own
     # vouching is dropped.  Ledger release is idempotent: no double-free.
     released = decharged = 0
-    if errors or deferred:
+    if errors or deferred or declined:
         pass
     elif tier_id is None:
         # No fragment at all: nothing is known shared, so every token comes
@@ -1430,7 +1486,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                     mover_action_key)
             except (OSError, pool.PoolContractError):
                 continue
-    if not errors and not deferred:
+    if not errors and not deferred and not declined:
         fragment_path.unlink(missing_ok=True)
         reader_lease.clear_retiring(
             reader_lease.leases_root(queue, root),
@@ -1474,10 +1530,13 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # (#733) and only this mover's own vouching is dropped.  A deferred
         # handoff keeps this mover's own vouching too: the promotion's ram
         # fragment cannot prove the SSD incarnation it read (#768).
-        "complete": not errors and not deferred,
+        "complete": not errors and not deferred and not declined,
         "errors": errors,
         "host": socket.gethostname(),
         "unix": time.time(),
+        # Only an all-or-nothing eviction declines (#903), and only its
+        # receipt names the key: the egress receipt keeps its shape.
+        **({"declined": declined} if whole else {}),
     }
 
 
