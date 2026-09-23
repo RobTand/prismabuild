@@ -639,3 +639,33 @@ def test_an_undefined_horizon_leaves_the_window_as_it_was(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     assert _horizon(queue, **override) is None
+
+
+def test_a_range_landed_again_is_priced_at_its_new_landing(
+        tmp_path: Path) -> None:
+    """A range copied again is priced at the copy that landed last.
+
+    An evicted range is published again when its reader nears it, and that
+    copy files its receipt under the same mover key.  When the second copy
+    lands slower, the horizon must see it: pricing the range at the first
+    copy's rate would make the landing time, and so the horizon, too short.
+    """
+
+    queue, stage = _fixture_queue(tmp_path, 40)
+    _reader(queue, stage, landed=(0, 1, 2))
+    plan = residency_plan.read(queue, READER)
+    consumer = next(entry for entry in tier_loop.live_consumers(queue)
+                    if entry["action_key"] == READER)
+    first = tier_loop._stage_horizon(queue, consumer, plan, None)
+    assert first is not None
+    assert first["landing_s"] == pytest.approx(MOVER_SECONDS)
+
+    slower = _mover("reader", 1)
+    receipt = dict(queue.move_record(slower) or {})
+    receipt["seconds"] = 10 * MOVER_SECONDS
+    queue.record_move(slower, receipt)
+
+    again = tier_loop._stage_horizon(queue, consumer, plan, None)
+    assert again is not None
+    assert again["landing_s"] == pytest.approx(10 * MOVER_SECONDS)
+    assert int(again["refill_bytes"]) > int(first["refill_bytes"])
