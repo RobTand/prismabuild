@@ -276,7 +276,11 @@ full-width CPU demand on a pressured host, and the GPU refusals for a
 measurement) when every holder is transient, and the adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
-by the token rule. Every other adaptive refusal is overtaken as before. An item
+by the token rule. Every other adaptive refusal is overtaken as before. A
+`measurement_holder` refusal whose decision names `isolated_by` -- a
+measurement already holds the box -- never withholds: that box admits only the
+measurement's own dependents, so a veto would block just the work its progress
+waits on, and it would never drain (#982). An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
@@ -3224,7 +3228,20 @@ IDs before consuming free fallback CPUs. If total free tokens are insufficient,
 the same evidence may lend reserved IDs, but only while the fresh host sample
 shows enough aggregate headroom. Unknown startup intervals are charged in full,
 protected and excluded from the lending set. CPUs assigned to any busy, unknown
-or measurement action remain protected. One sample cannot authorize an
+or measurement action remain protected.
+
+A measurement holds its host alone, with one exception (#982): an action whose
+sealed request names the holder in `params.produced_spool.owner` -- the spool
+export `ProducedSpool.submit_group` seals for each finished group, pinned to
+the producer's host -- is its dependent and is admitted beside it. The
+measurement's progress is counted when those exports land, so refusing them
+starved it until its stall watchdog ended it. A dependent is fitted into the
+host's remaining capacity on its own tokens, priced like any sibling; nothing
+is charged to the measurement's reservation, its CPUs are never lent, and its
+telemetry never trains a learned profile. Only a generation action can be a
+dependent. Every other action is refused `measurement_holder`, and the
+decision names the holder, `isolated_by` and the owner the item claimed, if
+any (`dependent_of`). One sample cannot authorize an
 unbounded burst: a successful borrowing decision consumes its freshness for the
 next borrower. That consumption is recorded under the host admission lock, in
 the same block as the decision and the reservation it belongs to, before the
