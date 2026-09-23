@@ -114,6 +114,7 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
@@ -2708,9 +2709,13 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                     if why:
                         consumer = ""
                 if not consumer:
-                    retained.append(_receiptless_refusal(
-                        key, tier_id=tier_id, stage_root=stage_root, why=why))
-                    unresolved[key] = why
+                    # A live item's own holding is named by a live claim:
+                    # kept, and not reported as anybody's mystery (#929).
+                    if not _held_by_a_live_item(queue, key, owners):
+                        retained.append(_receiptless_refusal(
+                            key, tier_id=tier_id, stage_root=stage_root,
+                            why=why))
+                        unresolved[key] = why
                     continue
             staged_unix = 0.0
             if isinstance(receipt, dict):
@@ -2882,6 +2887,31 @@ def _receiptless_refusal(mover: str, *, tier_id: str, stage_root: str,
 
 def _is_action_key(value: str) -> bool:
     return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
+                         owners: Mapping[str, str]) -> bool:
+    """Whether a live item holds this key's tokens as its own (#929).
+
+    Two holders a live claim names that are not movers: a live item's own
+    reservation -- a producer's output window, say, whose row carries no
+    residency and so is not among ``owners`` -- and a window's fence grant,
+    held under ``advance-<consumer>-...`` for a consumer that is.  The sweep
+    keeps both, as before; this only keeps the reports -- the pressure-driven
+    ``stage-receiptless-holder-retained`` and ``stage-holder-unresolved`` --
+    from calling them unresolved.
+    """
+
+    if key.startswith(window_credit.GRANT_PREFIX):
+        prefix = key[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
+        return bool(prefix) and any(owner.startswith(prefix) for owner in owners)
+    if not _is_action_key(key):
+        return False
+    try:
+        return any(not _metadata_absent(queue.item_path(state, key))
+                   for state in (pool.READY, pool.CLAIMED))
+    except OSError:
+        return False
 
 
 def produced_holder(queue: pool.PoolQueue, tier_id: str,

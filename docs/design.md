@@ -6350,7 +6350,10 @@ none, and release its tokens while its bytes stayed on the stage.
 Every held key the pass can prove neither live nor an orphan is reported as
 `stage-holder-unresolved`, naming the reason, once per change of that reason
 and whatever the tier's pressure. A holder nothing can classify is therefore
-seen once, not never and not on every cycle. The joint-commitment census
+seen once, not never and not on every cycle. A live item's own holding is not
+such a holder, and neither report names it: a producer's output window, whose
+row carries no residency, and a window's `advance-` fence grant for a live
+consumer are both named by a live claim. The joint-commitment census
 still counts a receipt-less holder as held. The one shape the sweep frees
 from that group, it frees before the cycle's windows admit. The pressure and
 adoption passes that run before the sweep still count it, so for one cycle a

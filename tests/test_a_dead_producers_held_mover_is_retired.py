@@ -210,6 +210,11 @@ def test_a_withdrawn_mover_of_a_live_producer_is_kept(tmp_path) -> None:
     assert not _about(receipts, world.mover), receipts
     assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
     assert world.batch_entry().get("retired") is not True
+    # The producer's own window is named by its own live claim: it is not
+    # reported as a holder nobody can place, under pressure or otherwise.
+    assert world.ledger.holder_tokens(world.owner) == {KIND: 1}
+    assert not _about(receipts, world.owner), receipts
+    assert not _about(world.sweep(IDLE), world.owner)
 
 
 def test_a_queued_mover_of_a_dead_producer_is_kept(tmp_path) -> None:
