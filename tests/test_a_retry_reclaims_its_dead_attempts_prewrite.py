@@ -331,6 +331,7 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     queue = _queue(tmp_path)
     owner = fx._hexkey("still-running")
     first, _claimed = _first_attempt(queue, template, owner)
+    Path(template["output_prefix"]).mkdir(parents=True)
     path = Path(template["output_prefix"]) / "never-written.bin"
     assert _prewrite(queue, first, template, "b1", [path], 4)["ok"]
 

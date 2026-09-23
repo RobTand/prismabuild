@@ -2125,7 +2125,9 @@ The tools:
     `superseded_by` that did not apply, and the release and
     resubmit-with-`--supersedes` commands. It is `pbstatus --blocked-origins`'s
     own reader; `census_complete` is false, and `unreadable` names the
-    records, when a record could not be read.
+    records, when a record could not be read. `orphaned_prewrites` lists
+    each write-only prewrite whose attempt ended before committing and whose
+    files no committed batch owns (#949).
 
 Every response carries the same envelope, and two of its fields decide whether
 the rest of it can be believed. `complete` is false, and `timed_out` names the
@@ -3422,6 +3424,18 @@ the one the batch committed. The line names the reason and the path. A
 one, delete its files and call `produced_output.reclaim_origin`. "Consumed
 origin batches: retired after their consumers (#914)" in `docs/design.md` lists
 the rules and the limits.
+
+A write-only producer attempt that died between its prewrite and its commit
+leaves files that belong to no batch (#949). A retry of the same key can
+prewrite and commit the same paths; nothing needs doing then, and the tier
+loop logs `output-prewrite-reclaimed` with reason `superseded`. When no
+attempt commits them, the tier loop logs `output-prewrite-orphaned` once, and
+`pbstatus.py --blocked-origins` lists the prewrite under `orphaned_prewrites`
+with the orphaned `paths`. PB does not delete them. Check the files and
+remove them; the next tier cycle drops the prewrite's reservation and logs
+`output-prewrite-reclaimed` with reason `absent`. "A producer attempt that
+ended before committing (#949)" in `docs/design.md` lists the rules and the
+limits.
 
 ### Submit a consumer before its producer runs
 
