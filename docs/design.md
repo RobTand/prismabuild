@@ -6387,14 +6387,16 @@ priced its consumption until it reported: R13 was 242 GiB and refused at
 * Footprints are recomputed each pass. If admitted windows later want more
   than the tier (a claim measured faster than its stand-in), they keep
   running and contend as before; newcomers are refused until the sum fits.
-  Nothing reports the overcommit.
+  Since #930 the tier loop says `tier-over-committed` on every cycle while
+  it lasts, with the terms.
 * An admitted window that the joint-fit gate has physically stalled still
   holds its footprint in the commitment. Beside a holder nothing can evict, a
   tier can be over-committed by that window alone, and then a newcomer that
   would fit the free room waits behind a window that cannot progress either,
-  until the holder goes. Because nothing reports the overcommit, this looks
-  like a stall to an operator: the newcomer's `window-gated` event carries
-  the terms (`committed_gib` above `capacity_gib`).
+  until the holder goes. Before #930 nothing reported the overcommit, so
+  this looked like a stall to an operator: the newcomer's `window-gated`
+  event carried only the totals (`committed_gib` above `capacity_gib`). Now
+  the tier says `tier-over-committed`, and the refusal names the holder.
 * The horizon's own in-phase over-estimate is real window behavior: a claim
   whose first report lands seconds after it has a window that runs to the
   #633 bound until its next report. The footprint follows it while it lasts,
@@ -6486,7 +6488,7 @@ mints no more than the ceiling plus one reader's worth.
 
 **Cost.** Each cycle that builds the commitment census reports what it cost:
 `{"event": "commitment-census", "calls", "elapsed_s", "max_s"}` on the tier
-loop's output. Measured on 2026-09-23 from sparky over NFS (the loop itself
+loop's output. Since #930 every cycle builds at least one. Measured on 2026-09-23 from sparky over NFS (the loop itself
 reads the queue locally on dl380g10), 25 warm calls per tree, as PB actions:
 
 | Queue | Before (`81d95cba`) median / p90 | After median / p90 |
@@ -6498,6 +6500,91 @@ The profile splits a loaded call about evenly between `read_footprint` (six
 calls) and the ledger's token-directory scans (`holder_tokens`,
 `_mover_state`). An undeclared newcomer's footprint is the run-ahead bound,
 which recomputes no horizon, so the after-tree is slightly cheaper.
+
+### A joint-commitment wait and an over-committed tier are reported (#930)
+
+The #907 commitment refused a newcomer with one `window-gated` event of
+totals, and a stage tier whose admitted windows were promised more than it
+has said nothing at all. Both waits were silent: an operator saw a newcomer
+waiting and could not tell which holder or window it waited on, or whether
+any of them could be evicted.
+
+**The census names what it sums.** `_commitment_census` classifies every held
+token once, beside the sums admission reads, which do not change. Each holder
+carries a `basis` and, where a window owns it, that window (`consumer`):
+
+| Basis | Evictable | What it is |
+|---|---|---|
+| `in-horizon-leg` | no | a window's leg inside its refill horizon |
+| `fence-grant` | no | a window's advance fence |
+| `passed-leg` | yes | a leg of a phase the window has read past |
+| `beyond-horizon` | yes | a leg past the window's refill horizon |
+| `superseded-plan` | no | a leg of a plan a withdrawal superseded |
+| `live-plan` | no | a mover a live item's plan or leads name, on no window of this tier |
+| `live-item` | no | a live queue item's own tokens |
+| `receipt-names-live-item` | no | a holder whose receipt names a live item |
+| `funded-output` | no | a produced-output mover with a funding record (#929) |
+| `funding-unreadable` | no | the same, with a funding record that does not read |
+| `orphan` | yes | a holder whose receipt names no live item |
+| `receipt-less` | no | a holder with no receipt (the `6fbc96301c6c` shape) |
+
+The evictable holders sum to `evictable_gib`, and all of them to `held_gib`.
+The census also names the queued new money by the window its row stages for,
+the owed output windows by owner, and `committed_gib`: held less evictable,
+plus queued, owed output and every admitted window's growth.
+`over_committed_gib` is the part of it past the capacity.
+
+**A refusal names its gap.** A `joint-commitment-stall` refusal's
+`commitment` carries `shortfall_gib` (the committed total plus the newcomer's
+own growth, less the capacity) and `terms`: the holders grouped by basis and
+window (a holder no window owns is its own term, by key), each admitted
+window's growth, the queued rows and the owed output, each marked
+`evictable`. The non-evictable terms sum to the committed total the gate
+compared. The `window-gated` event carries both.
+
+**The record.** Every cycle, `residency_window` files one record per stage
+tier this loop announces, `tier-commitments/<tier_id>.json`
+(`prismabuild.tier_commitment.v1`), from the census the protection pass
+admitted on. It holds the totals, the terms, every holder, every window's
+footprint, and every newcomer the pass refused on the tier (`waiting`), with
+its reason and, for a commitment refusal, the gate's terms. A newcomer gated
+behind another's wait (`higher-priority-window-waiting`) names that one and
+its reason under `waiting_on`. The record is a report: admission never reads
+it.
+
+A pass that asked no newcomer took no census. The report then takes one with
+`remember=False`, which prices each window as admission would at that moment
+but does not raise the consumption memo (`_FASTEST_CONSUMPTION`), so admission
+prices every window exactly as it did before #930.
+
+**Over-commitment.** While `over_committed_gib` is positive, the loop appends
+`tier-over-committed` to the cycle's events, with the totals and the terms,
+on every cycle.
+
+**pbstatus.** `pbstatus --starvation` reads the record, and `pb_starvation`
+serves the same blob. Each tier carries `commitment` (the record, or null
+where no loop files one: not a stage tier, or a loop from before #930) and
+`commitment_age_s`. `joint_commitment_waits` names every newcomer waiting on
+the commitment: refused by it, refused because its census did not read, or
+waiting behind one of those. Each entry has the newcomer's footprint, the
+committed total, the capacity, the shortfall and the terms.
+
+**Cost.** A cycle with a newcomer reuses the admission census, so the report
+adds the record write and the terms. A cycle without one adds a census. Median
+and p90 of 25 steady-state `residency_window` calls per tree, measured on
+2026-09-23 as PB actions on sparky over NFS, on the #907 replay:
+
+| Queue | Before (`ee2420db`) | After | PB keys (before / after) |
+|---|---|---|---|
+| R12 alone, no newcomer | 21.5 / 21.8 ms | 37.5 / 37.7 ms | `4c27c6b2ac88` / `663142e0138f` |
+| R12, R13, the capture, three quanta | 75.4 / 75.7 ms | 80.1 / 81.1 ms | `e856991f8e48` / `15ae898822f4` |
+
+The census itself is unchanged: 11.9 ms beside R12 alone and 18.4 ms against
+18.6 ms loaded. The record is 5.9 KB for R12 alone (24 holders) and 9.9 KB
+loaded. The profile of an R12-alone call puts the added time in
+`_report_commitments`: the census's ledger token-directory scans
+(`holder_tokens`, `_mover_state`), as in #909, and one atomic write. At the
+loop's 60 s cadence the worst case is 16 ms a cycle.
 
 ### Adopting a resident range, and when an orphan is evicted
 
