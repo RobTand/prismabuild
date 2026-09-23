@@ -18,6 +18,54 @@ Serve it:
 python3 tools/fleet/pbmetrics.py --listen 0.0.0.0 --port 9877
 ```
 
+## Where it runs: one exporter per fleet (#1020)
+
+The exporter reports the whole fleet's queue, so the fleet runs one, on the
+box whose own filesystem holds the queue: dl380g10, where
+`/mnt/shared` is a local ZFS dataset. It runs as that box's `metrics` role
+(`fleet_boxes.json`), which the supervisor spawns from the active runtime
+generation like the `storage` and `tiers` roles:
+
+```bash
+pbmetrics.py --listen 127.0.0.1 --port 9469 \
+    --queue-root /mnt/shared/prismabuild-fleet/pb-queue
+```
+
+The supervisor restarts it when its argv no longer matches the declaration or
+when a publish retires the generation it runs from, so a change to the
+exporter reaches it with the next publish. The server takes the role's
+host-local singleton lock before it binds the port, so a second exporter on
+the box exits `3` instead of scanning the queue again. `--once` reads and
+reports, and takes no lock.
+
+Between scrapes the server keeps what it read, and reuses a directory's
+listing and records while the directory provably has not changed. That proof
+needs directory timestamps from the local kernel's clock, so it holds on the
+queue host and never over NFS: an exporter on a Spark reads the whole queue
+over NFS on every refresh, as every exporter did before #1020. On an unchanged
+queue a refresh costs one `lstat` per directory the census reads and no
+listing or file read. `docs/design.md` states the full cost contract and the
+measurements.
+
+Before #1020 three exporters ran, each installed as a unit by
+`install_pbmetrics.sh` below: on sparky, on sparklina and on dl380g10. The two
+Spark copies read the queue over NFS every ten seconds and reported the same
+fleet-wide series as the dl380g10 copy. Retiring them is part of deploying
+#1020, in this order:
+
+1. On dl380g10, stop the installed unit before the runtime that declares the
+   role is published: `sudo systemctl disable --now prismabuild-metrics.service`.
+   The unit runs with `PrivateTmp=yes`, so the role's lock cannot see it, and a
+   unit left running holds port 9469: the supervised role would fail to bind
+   and be respawned every supervisor tick.
+2. Publish. The dl380g10 supervisor starts the `metrics` role on its next
+   tick, on the same `127.0.0.1:9469`, so the box's existing Netdata job keeps
+   scraping it without a change.
+3. On sparky and sparklina, run the same `systemctl disable --now`. Their
+   Netdata `prismabuild` jobs then scrape nothing. Either remove those jobs, or
+   point them at dl380g10, which needs the role to listen on an address those
+   boxes can reach instead of loopback (a change to its declared `--listen`).
+
 ## Running it, and keeping what it says
 
 A snapshot answers "what is true right now". Every queue question that costs
@@ -28,8 +76,9 @@ something runs it and something retains it. Install both on a box:
 sudo /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_pbmetrics.sh
 ```
 
-That installs `prismabuild-metrics.service`, bound to `127.0.0.1:9469` and
-running as the queue's owner, and adds one Netdata scrape job for it to the
+On the queue host the supervisor runs the exporter (see above), so do not
+install the unit there. Elsewhere, that installs `prismabuild-metrics.service`,
+bound to `127.0.0.1:9469` and running as the queue's owner, and adds one Netdata scrape job for it to the
 `jobs` sequence in `/etc/netdata/go.d/prometheus.conf`. Existing jobs and other
 settings are retained. Adding a job normalizes YAML formatting and comments;
 the original file is saved in a unique `prometheus.conf.pb-before.*` backup.
@@ -83,8 +132,8 @@ One refresh over the live queue measured 0.09-0.10s wall (708 `openat`,
 buys repetition rather than resolution; the installed job scrapes every ten.
 
 The default bind is `127.0.0.1:9469`. `GET /metrics` returns Prometheus text
-format; other paths return 404. Reads are cached for 10 seconds by default so
-multiple scrapers do not repeatedly walk the shared queue. Change that bound
+format; other paths return 404. Each refresh is cached for 10 seconds by
+default so multiple scrapers do not repeatedly walk the queue. Change that bound
 with `--cache-seconds`. The default queue is
 `/mnt/shared/prismabuild-fleet/pb-queue`; `--queue-root` selects a fixture or a
 different pull queue.

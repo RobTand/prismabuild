@@ -715,6 +715,21 @@ class DirectoryRecords:
             self._names[name] = (stamp, found)
         return found
 
+    def retain(self, directories) -> None:
+        """Forget the listing and records of every directory not named.
+
+        For a caller that reads a changing set of directories -- one per
+        withdrawal decision, say -- so what is kept stays bounded by what it
+        still reads.  A forgotten directory is listed afresh on its next
+        read.  Its :meth:`generation` counter is kept, so a number a caller
+        remembered from before is never handed out again.
+        """
+
+        wanted = {str(directory) for directory in directories}
+        for kept in (self._directories, self._names):
+            for name in [name for name in kept if name not in wanted]:
+                del kept[name]
+
     def generation(self, directory: Path) -> int:
         """A number that changes whenever ``directory``'s records change.
 
@@ -726,7 +741,7 @@ class DirectoryRecords:
         return self._generations.get(str(directory), 0)
 
     def read(self, directory: Path, *, select, parse, thaw=None,
-             keep=None) -> list[tuple[Path, object]]:
+             keep=None, stat_parse: bool = False) -> list[tuple[Path, object]]:
         """``(path, record)`` for each selected name, in name order.
 
         ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
@@ -739,15 +754,20 @@ class DirectoryRecords:
         may change the record it is handed keeps the file's bytes here and
         parses them per read, so no change leaks into the next cycle.  A
         directory that does not exist reads as empty and is not remembered.
+        With ``stat_parse`` the parse is called ``parse(path, info)``, where
+        ``info`` is the ``os.stat`` its version was taken from (``None`` when
+        that failed), so a parse that wants the file's metadata does not
+        stat the file a second time.
         """
 
-        out = self._read(directory, select=select, parse=parse, keep=keep)
+        out = self._read(directory, select=select, parse=parse, keep=keep,
+                         stat_parse=stat_parse)
         if thaw is None:
             return out
         return [(path, thaw(path, kept)) for path, kept in out]
 
     def _read(self, directory: Path, *, select, parse, keep,
-              ) -> list[tuple[Path, object]]:
+              stat_parse: bool = False) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
         if (kept is not None and kept[0] is not None
@@ -773,8 +793,13 @@ class DirectoryRecords:
         try:
             for entry in entries:
                 path = directory / entry.name
+                info = None
                 try:
-                    version = _metadata_version(os.stat(path))
+                    # The listing's own string, not ``path``: converting a
+                    # ``Path`` back to a string for every name was most of a
+                    # 30,000-name listing's cost.
+                    info = os.stat(entry.path)
+                    version = _metadata_version(info)
                 except FileNotFoundError:
                     continue
                 except OSError:
@@ -784,7 +809,7 @@ class DirectoryRecords:
                 if version is not None and hit is not None and hit[0] == version:
                     record = hit[1]
                 else:
-                    record = parse(path)
+                    record = parse(path, info) if stat_parse else parse(path)
                     self.parsed += 1
                     changed = True
                     if keep is not None and not keep(record):

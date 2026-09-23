@@ -609,7 +609,14 @@ def _profile(argv: list[str]) -> int:
                                  "filesystem": stage_move._filesystem_type(
                                      os.lstat(args.root).st_dev)}
     cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)
-    for scrape in ("first", "second"):
+    for scrape in ("first", "second", "one-ending"):
+        if scrape == "one-ending":
+            # One action finishes between scrapes: the busy queue's case.
+            key = _key("late-ending", 0)
+            _replace(args.root / pool.DONE / f"{key}.json",
+                     _ending(key, "executed", "sparky", time.time() - 1.0,
+                             profiled=True))
+            settle()
         probe = FsProbe()
         profile = cProfile.Profile()
         clock = time.perf_counter()
@@ -629,6 +636,28 @@ def _profile(argv: list[str]) -> int:
                                             for p in probe.listings).most_common(8),
                           "opened": Counter(Path(p).parent.name
                                             for p in probe.opens).most_common(8)}
+    # The same three cases with no probe and no profiler: what the scrape
+    # costs the box that runs it.
+    plain: dict[str, float] = {}
+    clock = time.perf_counter()
+    pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT).get()
+    plain["first"] = time.perf_counter() - clock
+    settle()
+    clock = time.perf_counter()
+    cache.get()
+    plain["second"] = time.perf_counter() - clock
+    key = _key("late-ending", 1)
+    _replace(args.root / pool.DONE / f"{key}.json",
+             _ending(key, "executed", "sparky", time.time() - 1.0, profiled=True))
+    settle()
+    clock = time.perf_counter()
+    cache.get()
+    plain["one-ending"] = time.perf_counter() - clock
+    report["uninstrumented_wall_s"] = {name: round(value, 4)
+                                       for name, value in plain.items()}
+    import resource
+    report["max_rss_mib"] = round(
+        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
     (args.out / f"{args.label}.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
     return 0

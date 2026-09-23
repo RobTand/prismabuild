@@ -11,12 +11,15 @@ import math
 import os
 from pathlib import Path
 import re
+import stat as statmod
 import sys
 import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 import pbstatus  # noqa: E402
+import stage_move  # noqa: E402
+import stage_release  # noqa: E402
 
 pool = pbstatus.pool
 
@@ -140,11 +143,461 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
     return result
 
 
-def _read_claim(queue: pool.PoolQueue, key: str) -> dict | None:
+# --------------------------------------------------------------------------
+# Kept reads (#1020)
+# --------------------------------------------------------------------------
+#
+# A scrape used to read the queue from nothing: every state directory listed,
+# every terminal record and movement receipt stat-ed, every residency plan
+# parsed and censused.  ``KeptReads`` is what one exporter keeps between
+# scrapes instead, under the fences the tier loop's census already trusts
+# (#992): a directory is not listed again while its ``lstat`` version equals
+# a stamp taken before its last listing (``stage_move._trusted_directory_
+# stamp``), and a record is not read again while its file version holds
+# (``stage_release.DirectoryRecords``).  Every queue writer files by rename,
+# which is what both fences stand on.  A stamp is never trusted on a network
+# filesystem or inside the clock tick it was taken in, so on NFS every
+# listing repeats, by design: the exporter belongs on the queue's own host.
+#
+# What is kept is what the gauges need, never whole records: a terminal
+# record's row, a receipt's projection, a plan's census totals.  Whatever
+# failed to read is never kept, so unreadable stays freshly unreadable, and
+# anything no longer on disk is dropped when its directory is next listed.
+
+
+class _Stat:
+    """The two ``stat`` fields a kept entry answers ``stat()`` with."""
+
+    __slots__ = ("st_mtime", "st_size")
+
+    def __init__(self, info: os.stat_result) -> None:
+        self.st_mtime = info.st_mtime
+        self.st_size = info.st_size
+
+
+class _KeptEntry:
+    """One file as a kept listing holds it: its name and the version it was listed at.
+
+    It stands in for the ``os.DirEntry`` the plain reader handed to
+    ``pbstatus.ending_row``: ``path``, ``name`` and ``stat()``, where
+    ``stat()`` is the ``stat`` taken when the entry was listed, exactly as a
+    ``DirEntry`` caches its own.  ``derived`` is whatever a gauge computed
+    from the file's bytes, kept on the entry because the entry is replaced
+    whenever the file's version changes (``DirectoryRecords``).
+    """
+
+    __slots__ = ("path", "name", "_stat", "derived")
+
+    def __init__(self, path: Path, info: os.stat_result) -> None:
+        self.path = str(path)
+        self.name = path.name
+        self._stat = _Stat(info)
+        self.derived: object = None
+
+    @property
+    def mtime(self) -> float:
+        return self._stat.st_mtime
+
+    def stat(self) -> _Stat:
+        return self._stat
+
+
+def _kept_entry(path: Path, info: os.stat_result | None) -> _KeptEntry | None:
+    """``DirectoryRecords``' parse for a listing of files: no read at all.
+
+    ``info`` is the ``stat`` the listing took for the file's version.
+    ``None`` for a file that could not be stat-ed; it is not kept, so the
+    directory is listed again next scrape.
+    """
+
+    return None if info is None else _KeptEntry(path, info)
+
+
+def _entry_kept(entry: _KeptEntry | None) -> bool:
+    return entry is not None
+
+
+@dataclass
+class _Parsed:
+    """One queue record's plain read: the record, or why it could not be had."""
+
+    record: dict | None
+    error: Exception | None
+
+
+def _parse_queue_record(path: Path) -> _Parsed:
+    """``pbstatus._pool_records``' read of one record, failure retained."""
+
     try:
-        return pool._read_json(queue.item_path(pool.CLAIMED, key))
-    except (OSError, ValueError):
+        if not statmod.S_ISREG(path.lstat().st_mode):
+            raise ValueError("not a regular queue record")
+        record = pool._read_json(path)
+        if record is None:
+            # A rename may have raced this census. Unknown, rather than a
+            # confident empty answer; a later screen can settle it.
+            raise ValueError("record disappeared or is empty")
+        return _Parsed(record, None)
+    except (OSError, ValueError) as exc:
+        return _Parsed(None, exc)
+
+
+def _parsed_ok(parsed: _Parsed) -> bool:
+    return parsed.error is None
+
+
+def _parse_json(path: Path) -> _Parsed:
+    """``pool._read_json`` of one record, failure retained."""
+
+    try:
+        return _Parsed(pool._read_json(path), None)
+    except (OSError, ValueError) as exc:
+        return _Parsed(None, exc)
+
+
+def _read_or_exception(path: Path) -> dict | None | Exception:
+    """``pbstatus._pool_sidecar``: the record, ``None``, or the failure."""
+
+    try:
+        return pool._read_json(path)
+    except (OSError, ValueError) as exc:
+        return exc
+
+
+def _json_name(entry: os.DirEntry) -> bool:
+    return entry.name.endswith(".json")
+
+
+def _json_file(entry: os.DirEntry) -> bool:
+    return entry.name.endswith(".json") and entry.is_file()
+
+
+def _visible_json(entry: os.DirEntry) -> bool:
+    # ``Path.glob("*.json")``, which ``PoolQueue.tiers`` lists with, never
+    # matches a leading dot.
+    return entry.name.endswith(".json") and not entry.name.startswith(".")
+
+
+def _a_directory(entry: os.DirEntry) -> bool:
+    return entry.is_dir()
+
+
+def _visible_directory(entry: os.DirEntry) -> bool:
+    return entry.is_dir() and not entry.name.startswith(".")
+
+
+def _listed(path: Path) -> bool:
+    return True
+
+
+class KeptReads:
+    """What one exporter keeps from one scrape to the next (#1020).
+
+    ``MetricsCache`` holds one for the life of the server, and a one-shot
+    collection takes a fresh one, which reads everything exactly as the
+    plain census does.  :meth:`begin` starts a scrape and :meth:`end`
+    finishes one: a directory's version is read at most once per scrape, a
+    directory is read at most once per scrape, and whatever the scrape did
+    not touch is dropped at its end, so what is kept is bounded by what is
+    on disk now.
+
+    Counters: ``listed``/``kept`` are ``DirectoryRecords``' own, and
+    ``computed``/``reused`` count the per-file and per-plan memos.
+    """
+
+    def __init__(self) -> None:
+        self.records = stage_release.DirectoryRecords()
+        #: path -> ``(fenced directory, stamp, value)`` for single files.
+        self._files: dict[str, tuple[str, tuple, object]] = {}
+        #: memo key -> ``(fence, value)`` for derived values.
+        self._memos: dict[object, tuple[tuple, object]] = {}
+        self._versions: dict[str, tuple | None] = {}
+        self._reads: dict[str, tuple[object, object, list]] = {}
+        self._named: set[str] = set()
+        self._touched: set[object] = set()
+        #: Entries whose ``derived`` value the previous scrape used, by kind.
+        self._derived_now: dict[str, dict[int, _KeptEntry]] = {}
+        self._derived_entries: dict[str, dict[int, _KeptEntry]] = {}
+        self.computed = 0
+        self.reused = 0
+
+    # -- scrape boundaries -------------------------------------------------
+
+    def begin(self) -> None:
+        self._versions = {}
+        self._reads = {}
+        self._named = set()
+        self._touched = set()
+        self._derived_now = {}
+
+    def end(self) -> None:
+        # A directory this scrape did not read -- a withdrawal decision's,
+        # once the decision is gone -- is forgotten with its records.
+        self.records.retain(set(self._reads) | self._named)
+        for name in [name for name in self._files if name not in self._touched]:
+            del self._files[name]
+        for key in [key for key in self._memos if key not in self._touched]:
+            del self._memos[key]
+        # A value derived for an entry the scrape did not use is dropped:
+        # the newest-first windows move on, and an entry that has left them
+        # must not keep its row for the rest of the fleet's history.
+        for kind, previous in self._derived_entries.items():
+            current = self._derived_now.get(kind, {})
+            for ident, entry in previous.items():
+                if ident not in current:
+                    entry.derived = None
+        self._derived_entries = self._derived_now
+
+    def used(self, kind: str, entry: _KeptEntry) -> None:
+        """Record that this scrape used ``entry.derived`` under ``kind``."""
+
+        self._derived_now.setdefault(kind, {})[id(entry)] = entry
+
+    def derive(self, kind: str, entry: _KeptEntry, compute, *, keep=None):
+        """``compute()`` of ``entry``'s bytes, kept on the entry while it lasts.
+
+        The entry is replaced whenever its file's version changes, so a value
+        kept on it is a value of the bytes now on disk.  ``keep(value)``
+        false (a read that failed) is returned and computed again next time.
+        """
+
+        self.used(kind, entry)
+        if entry.derived is not None:
+            self.reused += 1
+            return entry.derived
+        value = compute()
+        self.computed += 1
+        if keep is None or keep(value):
+            entry.derived = value
+        return value
+
+    # -- fences ------------------------------------------------------------
+
+    def version(self, directory: Path | str) -> tuple | None:
+        """``directory``'s version, read once per scrape."""
+
+        name = os.fspath(directory)
+        if name not in self._versions:
+            self._versions[name] = stage_move._current_directory_version(Path(name))
+        return self._versions[name]
+
+    def fence(self, directory: Path) -> tuple[str, tuple] | None:
+        """A trusted stamp on ``directory``, or on its nearest existing ancestor.
+
+        A directory that does not exist yet is fenced by its parent: making
+        it changes the parent.  ``None`` when no stamp can be trusted (a
+        network filesystem, or a change inside the current clock tick).
+        """
+
+        current = Path(directory)
+        while True:
+            stamp = stage_move._trusted_directory_stamp(current)
+            if stamp is not None:
+                return os.fspath(current), stamp
+            if os.path.lexists(current) or current.parent == current:
+                return None
+            current = current.parent
+
+    def holds(self, fences: tuple) -> bool:
+        """Whether every fence in ``fences`` still holds this scrape."""
+
+        return all(fence is not None and self.version(fence[0]) == fence[1]
+                   for fence in fences)
+
+    def still(self, fences: tuple) -> bool:
+        """Whether every fence holds now, read fresh, not from this scrape."""
+
+        return all(fence is not None
+                   and stage_move._current_directory_version(Path(fence[0])) == fence[1]
+                   for fence in fences)
+
+    def memo(self, key: object, make_fences, compute, *, keep=None):
+        """``compute()``, reused while every fence ``make_fences()`` took holds.
+
+        The fences are taken before ``compute`` runs and checked again after
+        it, and only a value with every fence trusted and unmoved across the
+        computation is kept -- the protocol ``DirectoryRecords`` keeps for a
+        listing.  ``make_fences`` returns ``None`` when no fence can be
+        trusted, and the value is then computed every scrape.
+        """
+
+        self._touched.add(key)
+        kept = self._memos.get(key)
+        if kept is not None and self.holds(kept[0]):
+            self.reused += 1
+            # A fenced directory is unchanged, so what ``DirectoryRecords``
+            # keeps for it is still good: it must survive this scrape's end
+            # even though nothing read it.
+            self._named.update(fence[0] for fence in kept[0])
+            return kept[1]
+        fences = make_fences()
+        value = compute()
+        self.computed += 1
+        if (fences is not None and self.still(fences)
+                and (keep is None or keep(value))):
+            self._memos[key] = (fences, value)
+        else:
+            self._memos.pop(key, None)
+        return value
+
+    def fences(self, directories) -> tuple | None:
+        """A trusted fence on each of ``directories``, or ``None``."""
+
+        taken = tuple(self.fence(Path(directory)) for directory in directories)
+        return None if any(fence is None for fence in taken) else taken
+
+    def ledger_fences(self, ledger: pool.ResourceLedger) -> tuple | None:
+        """Fences on everything a tier ledger's tokens are read from.
+
+        ``free/``, ``held/`` and each holder directory under ``held/``: a
+        token moves by rename between them, and a holder appears or leaves
+        by rename into or out of ``held/``.  The holders are listed after
+        ``held/``'s stamp is taken, so the list is the one that stamp
+        covers.  Taken at most once a scrape, and kept while it holds.
+        """
+
+        key = ("ledger-fences", os.fspath(ledger.base))
+        self._touched.add(key)
+        kept = self._memos.get(key)
+        if kept is not None and self.holds(kept[0]):
+            return kept[0]
+        free = self.fence(ledger.free_dir)
+        held = self.fence(ledger.held_dir)
+        if free is None or held is None:
+            self._memos.pop(key, None)
+            return None
+        try:
+            holders = sorted(os.listdir(held[0])) if held[0] == os.fspath(
+                ledger.held_dir) else []
+        except OSError:
+            self._memos.pop(key, None)
+            return None
+        taken = (free, held, *(self.fence(Path(held[0]) / name)
+                               for name in holders))
+        if any(fence is None for fence in taken):
+            self._memos.pop(key, None)
+            return None
+        self._memos[key] = (taken, None)
+        return taken
+
+    # -- reads ---------------------------------------------------------------
+
+    def entries(self, directory: Path, *, select=_json_file) -> list[tuple[Path, _KeptEntry | None]]:
+        """The files in ``directory``, each with the version it was listed at."""
+
+        return self._read(directory, select, _kept_entry, _entry_kept)
+
+    def names(self, directory: Path, *, select) -> frozenset[str]:
+        """The names ``select(name)`` keeps in ``directory``; nothing stat-ed."""
+
+        self._named.add(os.fspath(directory))
+        return self.records.names(Path(directory), select=select)
+
+    def subdirectories(self, directory: Path, *, select=_a_directory) -> list[Path]:
+        """The subdirectories of ``directory``; empty when it does not exist."""
+
+        return [path for path, _ in self._read(directory, select, _listed, None)]
+
+    def queue_records(self, directory: Path) -> list[tuple[Path, _Parsed]]:
+        """Every ``.json`` record in one queue state directory, parsed."""
+
+        return self._read(directory, _json_name, _parse_queue_record, _parsed_ok)
+
+    def json_records(self, directory: Path, *, select=_visible_json,
+                     ) -> list[tuple[Path, _Parsed]]:
+        """Every record ``select`` names, read as ``pool._read_json`` reads it."""
+
+        return self._read(directory, select, _parse_json, _parsed_ok)
+
+    def _read(self, directory: Path, select, parse, keep):
+        # One read per directory per scrape: ``ready/`` and ``claimed/`` were
+        # read three times a scrape, once by each census that wanted them.
+        # ``DirectoryRecords`` keeps one meaning per directory, so a second
+        # reading of one directory under another parse is a defect here.
+        name = os.fspath(directory)
+        done = self._reads.get(name)
+        if done is not None:
+            if done[0] is not parse or done[1] is not select:
+                raise AssertionError(f"{name} read under two meanings")
+            return done[2]
+        out = self.records.read(Path(directory), select=select, parse=parse,
+                                keep=keep, stat_parse=parse is _kept_entry)
+        self._reads[name] = (parse, select, out)
+        return out
+
+    def sidecar(self, path: Path) -> dict | None | Exception:
+        """One small record by path, reused while its directory's stamp holds.
+
+        What ``pbstatus._pool_sidecar`` returns: the record, ``None`` when
+        it is absent, or the failure.  A failure is never kept.
+        """
+
+        name = os.fspath(path)
+        self._touched.add(name)
+        kept = self._files.get(name)
+        if kept is not None and self.version(kept[0]) == kept[1]:
+            self.reused += 1
+            return kept[2]
+        fence = self.fence(Path(name).parent)
+        value = _read_or_exception(Path(name))
+        self.computed += 1
+        if (fence is not None and not isinstance(value, Exception)
+                and self.still((fence,))):
+            self._files[name] = (fence[0], fence[1], value)
+        else:
+            self._files.pop(name, None)
+        return value
+
+    # -- the pbstatus census's reads (``pbstatus.kept_reads``) -----------------
+
+    def pool_records(self, directory: Path) -> tuple[dict[str, dict | None], list[str]]:
+        """``pbstatus._pool_records``, from the kept listing."""
+
+        try:
+            listed = self.queue_records(Path(directory))
+        except OSError as exc:
+            return {}, [f"pool {directory}: {pbstatus._unreadable_reason(exc)}"]
+        records: dict[str, dict | None] = {}
+        notes: list[str] = []
+        for path, parsed in listed:
+            if parsed.error is not None:
+                records[path.stem] = None
+                notes.append(f"pool {path}: {parsed.error}")
+            else:
+                records[path.stem] = parsed.record
+        return records, notes
+
+    def endings(self, queue_root: Path, limit: int) -> list[dict]:
+        """``pbstatus.read_endings``, from the kept terminal listings."""
+
+        return _kept_endings(self, queue_root, limit)
+
+    def record(self, directory: Path, key: str) -> dict | None:
+        """One record of an already-read state directory, or ``None``."""
+
+        try:
+            listed = self.queue_records(directory)
+        except OSError:
+            return None
+        wanted = f"{key}.json"
+        for path, parsed in listed:
+            if path.name == wanted:
+                return parsed.record
         return None
+
+
+def _fresh(reader: KeptReads | None) -> KeptReads:
+    """``reader``, or a reader that keeps nothing: one read of everything."""
+
+    if reader is not None:
+        return reader
+    fresh = KeptReads()
+    fresh.begin()
+    return fresh
+
+
+def _read_claim(queue: pool.PoolQueue, key: str,
+                reader: KeptReads | None = None) -> dict | None:
+    return _fresh(reader).record(queue.dir(pool.CLAIMED), key)
 
 
 @dataclass
@@ -183,6 +636,7 @@ def _attempt_telemetry(
     queue: pool.PoolQueue,
     live_jobs: Mapping[str, list[Mapping[str, object]]],
     now: float,
+    reader: KeptReads | None = None,
 ) -> dict[str, _HostAttempts]:
     """Read each live claim's resource-scope telemetry, by claiming host.
 
@@ -205,20 +659,18 @@ def _attempt_telemetry(
     is what tells those apart, and that is done by the caller, which is the only
     party that has a previous reading.
     """
+    reader = _fresh(reader)
     answer: dict[str, _HostAttempts] = {}
     for host, jobs in live_jobs.items():
         host_attempts = _HostAttempts(jobs=len(jobs))
         for job in jobs:
             key = str(job.get("action_key") or "")
-            claim = _read_claim(queue, key)
+            claim = _read_claim(queue, key, reader)
             scope = claim.get("resource_scope") if isinstance(claim, dict) else None
             nonce = scope.get("nonce") if isinstance(scope, dict) else None
-            try:
-                record = pool._read_json(
-                    queue.ledger(host).base / "telemetry" / f"{key}.json"
-                )
-            except (OSError, ValueError):
-                record = None
+            record = reader.sidecar(
+                queue.ledger(host).base / "telemetry" / f"{key}.json")
+            record = None if isinstance(record, Exception) else record
             sampled = _number(record.get("sampled_unix")) if isinstance(record, dict) else None
             cpu_seconds = _number(record.get("cpu_seconds")) if isinstance(record, dict) else None
             wall_seconds = _number(record.get("wall_seconds")) if isinstance(record, dict) else None
@@ -309,6 +761,77 @@ def _recent_cores(
     return answer
 
 
+def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]:
+    """``pbstatus.read_endings``, from the kept terminal listings.
+
+    The same selection ``pbstatus._ending_paths`` makes -- the ``limit``
+    newest records by modification time across ``done``, ``failed`` and
+    ``withdrawn``, and a withdrawal decision only where it is newer than the
+    summary filed for it -- taken from listings kept between scrapes, and
+    the same projection, ``pbstatus.ending_row``, of each selected record,
+    kept on its entry while its version holds.  An unreadable record is
+    projected again every scrape.  Records with equal modification times are
+    taken in name order rather than in the order the directory listed them.
+
+    The whole selection is also kept, fenced on every directory it came
+    from, so a scrape of unchanged history does not even walk the kept
+    listings: 40,000 names sorted by time every ten seconds was most of an
+    idle scrape's CPU.
+    """
+
+    queue_root = Path(queue_root)
+    decisions = queue_root / pool.WITHDRAWN / "decisions"
+    states = [queue_root / state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+
+    def fences():
+        taken = reader.fences([*states, decisions])
+        if taken is None:
+            return None
+        # Listed after ``decisions/``' own stamp, so the list is the one
+        # that stamp covers; a decision filed since moves that stamp.
+        subdirectories = reader.fences(reader.subdirectories(decisions))
+        return None if subdirectories is None else taken + subdirectories
+
+    rows, used = reader.memo(
+        ("endings", os.fspath(queue_root), int(limit)), fences,
+        lambda: _select_endings(reader, queue_root, states, decisions, limit),
+        keep=lambda value: not any(row.get("unreadable") for row in value[0]))
+    for entry in used:
+        reader.used("ending", entry)
+    return list(rows)
+
+
+def _select_endings(reader: KeptReads, queue_root: Path, states: list[Path],
+                    decisions: Path, limit: int) -> tuple[list[dict], list[_KeptEntry]]:
+    entries: list[tuple[float, _KeptEntry]] = []
+    withdrawal_mtimes: dict[str, float] = {}
+    for directory in states:
+        for _path, entry in reader.entries(directory):
+            if entry is None:
+                continue
+            entries.append((entry.mtime, entry))
+            if directory.name == pool.WITHDRAWN:
+                withdrawal_mtimes[entry.name[:-5]] = entry.mtime
+    # A cancellation is durable before its visible summary is written. Keep
+    # that ending visible if the operator crashed between the two writes.
+    for directory in reader.subdirectories(decisions):
+        candidates = [(entry.mtime, entry) for _path, entry
+                      in reader.entries(directory, select=_json_name)
+                      if entry is not None]
+        if candidates:
+            newest = max(candidates, key=lambda pair: pair[0])
+            if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
+                entries.append(newest)
+    entries.sort(key=lambda pair: pair[0], reverse=True)
+    chosen = [entry for _mtime, entry in entries[: max(0, int(limit))]]
+    rows = [reader.derive("ending", entry,
+                          lambda entry=entry: pbstatus.ending_row(entry, queue_root),
+                          keep=lambda row: not row.get("unreadable"))
+            for entry in chosen]
+    rows.sort(key=lambda row: row["finished_unix"], reverse=True)
+    return rows, chosen
+
+
 def _terminal_metrics(
     metrics: Metrics,
     queue_root: Path,
@@ -316,15 +839,17 @@ def _terminal_metrics(
     now: float,
     window_seconds: float,
     limit: int,
+    reader: KeptReads | None = None,
 ) -> bool:
-    accessible = True
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
-        try:
-            with os.scandir(queue_root / state):
-                pass
-        except OSError:
-            accessible = False
-    endings = pbstatus.read_endings(queue_root, limit=limit)
+    reader = _fresh(reader)
+    # A state directory that is not there, or is not a directory, makes the
+    # window unproven.  The plain reader listed each one to find out; its
+    # version answers the same question for one ``lstat``, and a directory
+    # that exists but cannot be listed still fails the read below.
+    accessible = all(reader.version(Path(queue_root) / state) is not None
+                     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN))
+    with pbstatus.kept_reads(reader):
+        endings = pbstatus.read_endings(queue_root, limit=limit)
     selected = [
         row for row in endings
         if (age := _number(now - float(row.get("finished_unix", -math.inf)))) is not None
@@ -464,6 +989,7 @@ def _release_metrics(
     now: float,
     window_seconds: float,
     limit: int,
+    reader: KeptReads | None = None,
 ) -> bool:
     """Count the unstarted-claim releases each box produced in the window.
 
@@ -487,30 +1013,29 @@ def _release_metrics(
     whether the window was proved rather than truncated.
     """
 
+    reader = _fresh(reader)
     directory = Path(queue_root) / pool.WITHDRAWN / "superseded"
     selected: list[tuple[float, str]] = []
     readable = True
     try:
-        with os.scandir(directory) as scan:
-            for entry in scan:
-                match = RELEASE_FILING.match(entry.name)
-                if match is None:
-                    continue
-                age = now - float(match.group("when"))
-                if -_SKEW_S <= age <= window_seconds:
-                    selected.append((float(match.group("when")), entry.path))
-    except FileNotFoundError:
-        pass                     # a fleet that has never released a claim
+        # Names only: the filing time is in the name, so the window is
+        # applied to a listing kept between scrapes, with nothing stat-ed.
+        names = reader.names(directory, select=RELEASE_FILING.match)
     except OSError:
+        names = frozenset()
         readable = False
+    for name in names:
+        when = float(RELEASE_FILING.match(name).group("when"))
+        age = now - when
+        if -_SKEW_S <= age <= window_seconds:
+            selected.append((when, os.path.join(directory, name)))
     selected.sort(reverse=True)
     complete = readable and len(selected) <= limit
 
     counts: dict[str, int] = defaultdict(int)
     for _, path in selected[:limit]:
-        try:
-            record = pool._read_json(Path(path))
-        except (OSError, ValueError):
+        record = reader.sidecar(Path(path))
+        if isinstance(record, Exception):
             record = None
         if not isinstance(record, dict):
             readable = False
@@ -531,12 +1056,55 @@ def _release_metrics(
     return readable
 
 
+def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
+    """``PoolQueue.tiers``, from the kept ``tiers/`` read.
+
+    The same records in the same order, and the first unreadable one raises
+    as the plain read raises it.
+    """
+
+    records = []
+    for path, parsed in reader.json_records(queue.root / pool.TIERS):
+        if parsed.error is not None:
+            raise parsed.error
+        record = parsed.record
+        if isinstance(record, dict) and record.get("tier_id") == path.stem:
+            records.append(record)
+    return records
+
+
+def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
+    """``PoolQueue.tier_ids``, from a kept listing; any failure reads empty."""
+
+    try:
+        return sorted(path.name for path in reader.subdirectories(
+            queue.root / pool.TIER_RESERVATIONS, select=_visible_directory))
+    except OSError:
+        return []
+
+
+def _ledger_counts(reader: KeptReads, queue: pool.PoolQueue, tier_id: str):
+    """``(capacity, available)`` of one tier ledger, or the failure raised."""
+
+    ledger = queue.tier_ledger(tier_id)
+
+    def count():
+        try:
+            return ledger.capacity(), ledger.available()
+        except Exception as exc:  # noqa: BLE001 -- reported, as the plain read did
+            return exc
+
+    return reader.memo(("ledger", tier_id), lambda: reader.ledger_fences(ledger),
+                       count, keep=lambda value: not isinstance(value, Exception))
+
+
 def _starvation_metrics(
     metrics: Metrics,
     queue_root: Path,
     *,
     now: float,
     window_seconds: float,
+    reader: KeptReads | None = None,
 ) -> bool:
     """Fleet starvation gauges: tier fill, denials, mover depth (issue #661).
 
@@ -546,6 +1114,7 @@ def _starvation_metrics(
     snapshot that reports its failure rather than dropping the scrape.
     """
 
+    reader = _fresh(reader)
     ok = True
     try:
         queue = pool.PoolQueue(queue_root)
@@ -555,13 +1124,13 @@ def _starvation_metrics(
     # -- per-tier fill supply and token occupancy -------------------------
     try:
         announced = {str(record.get("tier_id")): record
-                     for record in queue.tiers()
+                     for record in _tiers(reader, queue)
                      if isinstance(record, dict) and record.get("tier_id")}
     except Exception:
         announced = {}
         ok = False
     try:
-        tier_ids = queue.tier_ids()
+        tier_ids = _tier_ids(reader, queue)
     except Exception:
         tier_ids = sorted(announced)
         ok = False
@@ -587,11 +1156,13 @@ def _starvation_metrics(
             fill.add(supply.get("probe_offer_mb_s"), tier=tier_id,
                      stat="probe_offer")
         try:
-            ledger = queue.tier_ledger(tier_id)
-            capacity, available = ledger.capacity(), ledger.available()
-        except Exception:
+            counted = _ledger_counts(reader, queue, tier_id)
+        except Exception as exc:  # noqa: BLE001 -- as the plain read's failure
+            counted = exc
+        if isinstance(counted, Exception):
             ok = False
             continue
+        capacity, available = counted
         if not isinstance(capacity, dict) or not isinstance(available, dict):
             ok = False
             continue
@@ -649,17 +1220,12 @@ def _starvation_metrics(
     for state in (pool.READY, pool.CLAIMED):
         movers = 0
         try:
-            with os.scandir(queue_root / state) as scan:
-                paths = sorted(Path(entry.path) for entry in scan
-                               if entry.name.endswith(".json"))
+            listed = reader.queue_records(Path(queue_root) / state)
         except OSError:
             ok = False
             continue
-        for path in paths:
-            try:
-                record = pool._read_json(path)
-            except (OSError, ValueError):
-                record = None
+        for _path, parsed in listed:
+            record = parsed.record
             if record is None:
                 ok = False
                 continue
@@ -695,12 +1261,269 @@ def _tier(value: object) -> str | None:
     return text
 
 
+#: A record that could not be read or did not parse: never kept, so it is read
+#: again next scrape.
+_UNREADABLE = object()
+#: A file in ``movers/`` that is not a movement receipt (an egress record).
+_NOT_A_RECEIPT = object()
+
+
+def _receipt_projection(entry: _KeptEntry):
+    """The six numbers the move gauges read from one receipt.
+
+    Kept on the receipt's entry instead of the record, because 7,500
+    receipts' records are tens of megabytes an exporter has no use for.
+    """
+
+    try:
+        record = pool._read_json(Path(entry.path))
+    except (OSError, ValueError):
+        record = None
+    if not isinstance(record, dict):
+        return _UNREADABLE
+    if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
+        return _NOT_A_RECEIPT
+    pacing = record.get("disk_pacing")
+    pacing = pacing if isinstance(pacing, Mapping) else {}
+    return (
+        _number(record.get("unix")),
+        _tier(record.get("tier_id")) or _UNKNOWN_TIER,
+        # One definition of "this window measured the pool": the same share
+        # test the fill fold prices from, so the gauge and the mint cannot
+        # disagree about which receipts count.
+        bool(pbstatus.storage_tiers._measured_the_pool(record)),
+        _number(pacing.get("mean_pool_read_mb_s")),
+        _number(record.get("bytes_staged")),
+        _number(pacing.get("pool_read_bytes")),
+    )
+
+
+@dataclass(frozen=True)
+class _PlanCensus:
+    """What the plan gauges take from one ``pbstatus._starvation_plan_entry``.
+
+    ``legs`` is ``None`` when the entry carried no cursor gap mapping, and a
+    leg's counts are ``None`` when its gap was malformed; both fail the
+    collection, as they did when the gauges read the entry directly.
+    """
+
+    valid: bool
+    unreadable: bool
+    tier_id: str = ""
+    state: str = ""
+    legs: tuple | None = None
+
+
+def _plan_slot(reader: KeptReads, entry: _KeptEntry) -> dict:
+    reader.used("plan", entry)
+    if entry.derived is None:
+        entry.derived = {}
+    return entry.derived  # type: ignore[return-value]
+
+
+def _plan_tier(reader: KeptReads, entry: _KeptEntry):
+    """The tier a filed plan names; ``None`` for an empty file.
+
+    ``_UNREADABLE`` for a plan that cannot be read or does not validate.  A
+    plan file is written once (``residency_plan.freeze``), so its tier is
+    kept for as long as the file's version holds.
+    """
+
+    slot = _plan_slot(reader, entry)
+    if "tier" in slot:
+        reader.reused += 1
+        return slot["tier"]
+    reader.computed += 1
+    try:
+        raw = pool._read_json(Path(entry.path))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return _UNREADABLE
+    if raw is None:
+        return None
+    try:
+        tier_id = str(pbstatus.residency_plan.validate_plan(raw)["tier_id"])
+    except (ValueError, KeyError):
+        return _UNREADABLE
+    slot["tier"] = tier_id
+    return tier_id
+
+
+def _project_plan(entry: Mapping[str, object], unreadable: list[str]) -> _PlanCensus:
+    """``_promotion_metrics``' reading of one plan entry, as numbers."""
+
+    if not entry.get("valid"):
+        return _PlanCensus(valid=False, unreadable=bool(unreadable))
+    gap = entry.get("cursor_gap")
+    legs: tuple | None = None
+    if isinstance(gap, Mapping):
+        counted = []
+        for leg in ("stage", "ram"):
+            leg_gap = gap.get(leg)
+            if not isinstance(leg_gap, Mapping):
+                counted.append((leg, None))
+                continue
+            staged = leg_gap.get("staged_phases")
+            phases = leg_gap.get("unstaged_phases")
+            missing = leg_gap.get("unstaged_bytes")
+            if (type(staged) is not int or not isinstance(phases, list)
+                    or type(missing) not in (int, float)):
+                counted.append((leg, None))
+                continue
+            counted.append((leg, (staged, len(phases), float(missing))))
+        legs = tuple(counted)
+    return _PlanCensus(valid=True, unreadable=bool(unreadable),
+                       tier_id=str(entry["tier_id"]), state=str(entry["state"]),
+                       legs=legs)
+
+
+def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
+                 movers: frozenset[str], ram_tier_id: str | None, *,
+                 ready: set[str], claimed: set[str], claimed_listed: set[str],
+                 announced: Mapping[str, Mapping[str, object]],
+                 receipts: Mapping[str, _KeptEntry] | None) -> tuple | None:
+    """Everything one plan's census reads outside its fenced directories.
+
+    ``pbstatus._starvation_plan_entry`` reads, besides the plan itself, the
+    fragment directory and the tier ledgers (fenced by their stamps), and:
+
+    * the consumer's queue state and, when it is claimed, the phase its
+      lease accepted -- the only thing it takes from the lease;
+    * whether each of the plan's movers is ready or claimed, and whether a
+      claim file is listed for it at all (``resident_movers`` asks the
+      filesystem, which also sees a claim too torn to parse);
+    * each mover's receipt in ``movers/``, compared by the kept entry, which
+      is replaced whenever its file's version changes;
+    * for a ram leg, the announced tier's ``epoch`` and ``mountpoint``, the
+      two fields ``residency_plan.resident_movers`` reads from it.  The
+      record itself is re-announced every tier-loop cycle, so its version
+      would miss every scrape.
+
+    ``None`` when one of them could not be read, which is never kept.  Each
+    is read from this scrape's listings, and the census reads them afresh
+    when it runs, so a change between the two is caught the scrape after:
+    the listing then differs from what was kept.
+    """
+
+    if receipts is None:
+        return None
+    state = ("claimed" if key in claimed else "ready" if key in ready else "absent")
+    accepted = None
+    if state == "claimed":
+        lease = pbstatus._starvation_sidecar(queue.lease_path(key))
+        if isinstance(lease, Exception):
+            return None
+        accepted = pbstatus._starvation_accepted_phase(lease)
+    ram = None
+    if ram_tier_id is not None:
+        record = announced.get(ram_tier_id)
+        ram = (None if record is None
+               else (record.get("epoch"), record.get("mountpoint")))
+    ordered = sorted(movers)
+    return (state, accepted, frozenset(movers & ready), frozenset(movers & claimed),
+            frozenset(movers & claimed_listed),
+            tuple(receipts.get(mover) for mover in ordered), ram_tier_id, ram)
+
+
+def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
+                 tiers: list[str | None]) -> tuple | None:
+    """Fences on the fragment directory and the ledgers one plan's census reads.
+
+    ``None`` when any of them cannot be trusted; the census is then taken
+    every scrape.
+    """
+
+    fragments = reader.fence(queue.residency_fragment_root() / key)
+    if fragments is None:
+        return None
+    taken = [fragments]
+    for tier in tiers:
+        if tier is None:
+            continue
+        try:
+            ledger = queue.tier_ledger(tier)
+        except (OSError, ValueError, pool.PoolContractError):
+            return None
+        ledger_fences = reader.ledger_fences(ledger)
+        if ledger_fences is None:
+            return None
+        taken.extend(ledger_fences)
+    return tuple(taken)
+
+
+def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
+                 entry: _KeptEntry, *, ready: set[str], claimed: set[str],
+                 claimed_listed: set[str],
+                 announced: Mapping[str, Mapping[str, object]],
+                 receipts: Mapping[str, _KeptEntry] | None,
+                 now: float) -> _PlanCensus:
+    """One plan's census, reused while nothing it read has changed.
+
+    The census (``pbstatus._starvation_plan_entry``) lists the consumer's
+    fragment directory, reads every fragment, counts each mover's ledger
+    tokens and reads their receipts: on the live queue, 330 plans and 97 MB
+    of plan documents every scrape.  It is kept on the plan's entry with a
+    fence on the fragment directory and on the ledgers of the plan's tiers
+    (:meth:`KeptReads.ledger_fences`), and with :func:`_plan_inputs`, and is
+    reused while all of them hold.  ``now`` is passed through; the census
+    does not read it.
+    """
+
+    slot = _plan_slot(reader, entry)
+    key = path.stem
+    kept = slot.get("census")
+    if kept is not None:
+        fences, movers, ram_tier_id, inputs, census = kept
+        if (_plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
+                         claimed=claimed, claimed_listed=claimed_listed,
+                         announced=announced,
+                         receipts=receipts) == inputs
+                and reader.holds(fences)):
+            reader.reused += 1
+            return census
+        slot.pop("census", None)
+    reader.computed += 1
+    raw = _read_or_exception(path)
+    if isinstance(raw, Exception):
+        return _PlanCensus(valid=False, unreadable=True)
+    fences = inputs = movers = ram_tier_id = None
+    try:
+        plan = pbstatus.residency_plan.validate_plan(raw) if isinstance(raw, Mapping) else None
+    except ValueError:
+        plan = None
+    if plan is not None:
+        movers = frozenset(pbstatus.residency_plan.mover_keys(plan))
+        ram = plan.get("ram_tier_id")
+        ram_tier_id = str(ram) if isinstance(ram, str) else None
+        fences = _plan_fences(reader, queue, key,
+                              [str(plan["tier_id"]), ram_tier_id])
+        inputs = _plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
+                              claimed=claimed, claimed_listed=claimed_listed,
+                              announced=announced,
+                              receipts=receipts)
+    notes: list[str] = []
+    unreadable: list[str] = []
+    census = _project_plan(pbstatus._starvation_plan_entry(
+        queue, key, raw, ready=ready, claimed=claimed, notes=notes,
+        unreadable=unreadable, now=now), unreadable)
+    # Only a census with nothing to report is kept: a ledger holder that
+    # could not be read is a note, not an unreadable plan, and its ``False``
+    # must be read again rather than kept.
+    if (census.valid and not census.unreadable and not notes
+            and fences is not None and inputs is not None
+            and reader.still(fences)):
+        slot["census"] = (fences, movers, ram_tier_id, inputs, census)
+    return census
+
+
 def _promotion_metrics(
     metrics: Metrics,
     queue_root: Path,
     *,
     now: float,
     window_seconds: float,
+    reader: KeptReads | None = None,
 ) -> bool:
     """Per-tier promotion lag, mover depth, and delivery (issue #660 backend).
 
@@ -726,6 +1549,7 @@ def _promotion_metrics(
     as ``read_starvation`` reads them).
     """
 
+    reader = _fresh(reader)
     ok = True
     try:
         queue = pool.PoolQueue(queue_root)
@@ -734,13 +1558,13 @@ def _promotion_metrics(
 
     try:
         announced = {str(record.get("tier_id")): record
-                     for record in queue.tiers()
+                     for record in _tiers(reader, queue)
                      if isinstance(record, dict) and record.get("tier_id")}
     except Exception:
         announced = {}
         ok = False
     try:
-        tier_ids = queue.tier_ids()
+        tier_ids = _tier_ids(reader, queue)
     except Exception:
         tier_ids = sorted(announced)
         ok = False
@@ -750,21 +1574,19 @@ def _promotion_metrics(
     depth: dict[tuple[str, str], int] = defaultdict(int)
     ready: set[str] = set()
     claimed: set[str] = set()
+    claimed_listed: set[str] = set()
     consumers: list[str] = []
     for state in (pool.READY, pool.CLAIMED):
         try:
-            with os.scandir(queue_root / state) as scan:
-                paths = sorted(Path(entry.path) for entry in scan
-                               if entry.name.endswith(".json"))
+            listed = reader.queue_records(Path(queue_root) / state)
         except OSError:
             ok = False
             continue
-        for path in paths:
+        for path, parsed in listed:
             key = path.name[:-len(".json")]
-            try:
-                record = pool._read_json(path)
-            except (OSError, ValueError):
-                record = None
+            if state == pool.CLAIMED:
+                claimed_listed.add(key)
+            record = parsed.record
             if not isinstance(record, dict) or record.get("action_key") != key:
                 # The census sets below classify plans; a row nobody could
                 # read classifies nothing, exactly as read_pool treats it.
@@ -799,9 +1621,17 @@ def _promotion_metrics(
     # leads, the plan names the tier. A waiter with no readable plan still
     # counts, under the unknown tier, because "waiting and tierless" is the
     # signal, not a reason to drop the row.
+    plan_root = queue.root / pool.RESIDENCY_PLANS
+    try:
+        plan_listing = [(path, entry) for path, entry
+                        in reader.entries(plan_root, select=_json_name)
+                        if entry is not None]
+        plan_listing_error: OSError | None = None
+    except OSError as exc:
+        plan_listing, plan_listing_error = [], exc
+    plan_files = {path.name: entry for path, entry in plan_listing}
     waiting: dict[str, int] = defaultdict(int)
     quiet_max: dict[str, float] = {}
-    plan_root = queue.root / pool.RESIDENCY_PLANS
     for key in consumers:
         lease = pbstatus._starvation_sidecar(queue.lease_path(key))
         if isinstance(lease, Exception):
@@ -814,22 +1644,16 @@ def _promotion_metrics(
         is_waiting, _rule = pbstatus._starvation_waiting(quiet, grace, child)
         if not is_waiting:
             continue
+        # No plan filed is the ordinary answer for a consumer the coordinator
+        # never staged, which still counts as a waiter whose tier is unknown
+        # rather than as a read failure.
+        plan_entry = plan_files.get(queue.residency_plan_path(key).name)
         tier_id = _UNKNOWN_TIER
-        try:
-            raw_plan = pool._read_json(queue.residency_plan_path(key))
-        except FileNotFoundError:
-            # No plan filed: the ordinary answer for a consumer the
-            # coordinator never staged, which still counts as a waiter whose
-            # tier is unknown rather than as a read failure.
-            raw_plan = None
-        except (OSError, ValueError):
-            raw_plan = None
-            ok = False
-        if raw_plan is not None:
-            try:
-                tier_id = str(pbstatus.residency_plan.validate_plan(
-                    raw_plan)["tier_id"])
-            except (ValueError, KeyError):
+        if plan_entry is not None:
+            named = _plan_tier(reader, plan_entry)
+            if isinstance(named, str):
+                tier_id = named
+            elif named is _UNREADABLE:
                 ok = False
         waiting[tier_id] += 1
         if quiet is not None:
@@ -859,50 +1683,38 @@ def _promotion_metrics(
     unstaged_phases: dict[tuple[str, str], int] = defaultdict(int)
     unstaged_bytes: dict[tuple[str, str], float] = defaultdict(float)
     invalid_plans = 0
-    notes: list[str] = []
-    unreadable: list[str] = []
-    try:
-        with os.scandir(plan_root) as scan:
-            plan_paths = sorted(Path(entry.path) for entry in scan
-                                if entry.name.endswith(".json"))
-    except FileNotFoundError:
-        plan_paths = []  # No staged consumer has ever filed a plan.
-    except OSError:
-        plan_paths = []
+    unreadable = False
+    # ``DirectoryRecords`` reads an absent directory as empty: no staged
+    # consumer has ever filed a plan.
+    if plan_listing_error is not None:
         ok = False
-    for path in plan_paths:
-        raw = pbstatus._starvation_sidecar(path)
-        if isinstance(raw, Exception):
-            unreadable.append(f"promotion plan {path.stem[:12]}: {raw}")
+    try:
+        receipts = {path.name[:-len(".json")]: entry for path, entry
+                    in reader.entries(queue.root / pool.MOVERS, select=_json_name)
+                    if entry is not None}
+    except OSError:
+        receipts = None
+    for path, entry in plan_listing:
+        census = _plan_census(reader, queue, path, entry, ready=ready,
+                              claimed=claimed, claimed_listed=claimed_listed,
+                              announced=announced,
+                              receipts=receipts, now=now)
+        unreadable = unreadable or census.unreadable
+        if not census.valid:
             invalid_plans += 1
             continue
-        entry = pbstatus._starvation_plan_entry(
-            queue, path.stem, raw, ready=ready, claimed=claimed,
-            notes=notes, unreadable=unreadable, now=now)
-        if not entry.get("valid"):
-            invalid_plans += 1
-            continue
-        tier_id = str(entry["tier_id"])
-        plans[(tier_id, str(entry["state"]))] += 1
-        gap = entry.get("cursor_gap")
-        if not isinstance(gap, Mapping):
+        plans[(census.tier_id, census.state)] += 1
+        if census.legs is None:
             ok = False
             continue
-        for leg in ("stage", "ram"):
-            leg_gap = gap.get(leg)
-            if not isinstance(leg_gap, Mapping):
+        for leg, counted in census.legs:
+            if counted is None:
                 ok = False
                 continue
-            staged = leg_gap.get("staged_phases")
-            phases = leg_gap.get("unstaged_phases")
-            missing = leg_gap.get("unstaged_bytes")
-            if (type(staged) is not int or not isinstance(phases, list)
-                    or type(missing) not in (int, float)):
-                ok = False
-                continue
-            staged_phases[(tier_id, leg)] += staged
-            unstaged_phases[(tier_id, leg)] += len(phases)
-            unstaged_bytes[(tier_id, leg)] += float(missing)
+            staged, phases, missing = counted
+            staged_phases[(census.tier_id, leg)] += staged
+            unstaged_phases[(census.tier_id, leg)] += phases
+            unstaged_bytes[(census.tier_id, leg)] += missing
     if unreadable:
         ok = False
     plans_family = metrics.family(
@@ -951,49 +1763,36 @@ def _promotion_metrics(
     # the adoption signal is jobs beside measured jobs, never the byte
     # ratio. Byte sums gate on receipts carrying BOTH counters, so each sum
     # covers one population, not two.
-    try:
-        with os.scandir(queue_root / pool.MOVERS) as scan:
-            candidates = [(entry.stat().st_mtime, entry.path)
-                          for entry in scan if entry.name.endswith(".json")]
-    except FileNotFoundError:
-        candidates = []  # No mover has ever filed a receipt.
-    except OSError:
-        candidates = []
+    # ``DirectoryRecords`` reads an absent directory as empty: no mover has
+    # ever filed a receipt.
+    if receipts is None:
+        receipts = {}
         ok = False
-    candidates.sort(reverse=True)
+    candidates = sorted(((entry.mtime, entry.path, entry)
+                         for entry in receipts.values()), reverse=True)
     move_complete = len(candidates) <= _MOVE_RECEIPT_CAP
     move_jobs: dict[str, int] = defaultdict(int)
     measured_jobs: dict[str, int] = defaultdict(int)
     move_staged: dict[str, float] = defaultdict(float)
     move_pool_read: dict[str, float] = defaultdict(float)
     move_rates: dict[str, list[float]] = defaultdict(list)
-    for _, path in candidates[:_MOVE_RECEIPT_CAP]:
-        try:
-            record = pool._read_json(Path(path))
-        except (OSError, ValueError):
-            record = None
-        if not isinstance(record, dict):
+    for _mtime, _path, entry in candidates[:_MOVE_RECEIPT_CAP]:
+        receipt = reader.derive("receipt", entry,
+                                lambda entry=entry: _receipt_projection(entry),
+                                keep=lambda projected: projected is not _UNREADABLE)
+        if receipt is _UNREADABLE:
             ok = False
             continue
-        if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
+        if receipt is _NOT_A_RECEIPT:
             continue
-        stamped = _number(record.get("unix"))
+        stamped, tier_id, measured, rate, staged, pool_read = receipt
         if stamped is None or not -_SKEW_S <= now - stamped <= window_seconds:
             continue
-        tier_id = _tier(record.get("tier_id")) or _UNKNOWN_TIER
         move_jobs[tier_id] += 1
-        # One definition of "this window measured the pool": the same share
-        # test the fill fold prices from, so the gauge and the mint cannot
-        # disagree about which receipts count.
-        if pbstatus.storage_tiers._measured_the_pool(record):
+        if measured:
             measured_jobs[tier_id] += 1
-        pacing = record.get("disk_pacing")
-        pacing = pacing if isinstance(pacing, Mapping) else {}
-        rate = _number(pacing.get("mean_pool_read_mb_s"))
         if rate is not None and rate > 0:
             move_rates[tier_id].append(rate)
-        staged = _number(record.get("bytes_staged"))
-        pool_read = _number(pacing.get("pool_read_bytes"))
         if staged is not None and pool_read is not None:
             move_staged[tier_id] += staged
             move_pool_read[tier_id] += pool_read
@@ -1067,8 +1866,14 @@ def collect_metrics(
     terminal_window_seconds: float = DEFAULT_TERMINAL_WINDOW_SECONDS,
     terminal_limit: int = DEFAULT_TERMINAL_LIMIT,
     previous: dict[tuple[str, str], tuple[float, float]] | None = None,
+    reader: KeptReads | None = None,
 ) -> str:
     """Collect one non-atomic, read-only snapshot in Prometheus text format.
+
+    ``reader`` is what the caller keeps between scrapes (``MetricsCache``
+    holds one); omitted, every record is read afresh, as ``--once`` wants.
+    The text is the same either way: a kept read is reused only while the
+    directory it came from provably has not changed.
 
     ``previous`` is the caller's store of the last refresh's per-attempt
     counters, replaced in place. Passing it opts into the recent-cores rate;
@@ -1077,6 +1882,27 @@ def collect_metrics(
     to this module so that two collectors cannot silently difference against
     each other's readings.
     """
+    reader = KeptReads() if reader is None else reader
+    reader.begin()
+    try:
+        with pbstatus.kept_reads(reader):
+            return _collect(queue_root, now=now,
+                            terminal_window_seconds=terminal_window_seconds,
+                            terminal_limit=terminal_limit, previous=previous,
+                            reader=reader)
+    finally:
+        reader.end()
+
+
+def _collect(
+    queue_root: str | Path,
+    *,
+    now: float | None,
+    terminal_window_seconds: float,
+    terminal_limit: int,
+    previous: dict[tuple[str, str], tuple[float, float]] | None,
+    reader: KeptReads,
+) -> str:
     sampled = time.time() if now is None else float(now)
     root = Path(queue_root).absolute()
     metrics = Metrics()
@@ -1086,10 +1912,8 @@ def collect_metrics(
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False
-    try:
-        with os.scandir(root / pool.WORKERS):
-            pass
-    except OSError:
+    # The census lists ``workers/`` already; this only asks that it be there.
+    if reader.version(root / pool.WORKERS) is None:
         success = False
 
     queue_summary = census.get("queue", {})
@@ -1297,7 +2121,8 @@ def collect_metrics(
             if host in oldest_by_host:
                 pinned_age.add(oldest_by_host[host], host=host)
 
-    observations = _attempt_telemetry(pool.PoolQueue(root), live_jobs, sampled)
+    observations = _attempt_telemetry(pool.PoolQueue(root), live_jobs, sampled,
+                                      reader=reader)
     observed = metrics.family(
         "prismabuild_attempt_observed_resources",
         "Aggregate complete fresh exact-scope observations for every live claim on a host; cpu is lifetime-average cores and memory is current bytes.",
@@ -1348,6 +2173,7 @@ def collect_metrics(
         success = _terminal_metrics(
             metrics, root, now=sampled,
             window_seconds=terminal_window_seconds, limit=terminal_limit,
+            reader=reader,
         ) and success
     except Exception:
         success = False
@@ -1360,6 +2186,7 @@ def collect_metrics(
         success = _release_metrics(
             metrics, root, now=sampled,
             window_seconds=terminal_window_seconds, limit=terminal_limit,
+            reader=reader,
         ) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
@@ -1371,7 +2198,7 @@ def collect_metrics(
     try:
         success = _starvation_metrics(
             metrics, root, now=sampled,
-            window_seconds=terminal_window_seconds,
+            window_seconds=terminal_window_seconds, reader=reader,
         ) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
@@ -1379,7 +2206,7 @@ def collect_metrics(
     try:
         success = _promotion_metrics(
             metrics, root, now=sampled,
-            window_seconds=terminal_window_seconds,
+            window_seconds=terminal_window_seconds, reader=reader,
         ) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
@@ -1406,6 +2233,9 @@ class MetricsCache:
         # One store per collector, so the rate is differenced only against
         # this collector's own previous reading.
         self.previous: dict[tuple[str, str], tuple[float, float]] = {}
+        # What this server keeps between scrapes (#1020): on the queue's own
+        # filesystem an unchanged queue costs one ``lstat`` per directory.
+        self.reader = KeptReads()
         self._lock = threading.Lock()
         self._expires = 0.0
         self._text = ""
@@ -1420,6 +2250,7 @@ class MetricsCache:
                 terminal_window_seconds=self.terminal_window_seconds,
                 terminal_limit=self.terminal_limit,
                 previous=self.previous,
+                reader=self.reader,
             )
             self._expires = now + self.cache_seconds
             return self._text
@@ -1482,6 +2313,33 @@ def main(argv: list[str] | None = None) -> int:
             terminal_limit=args.terminal_limit,
         ))
         return 0
+    # The server is the fleet's ``metrics`` role (#1020): one per fleet, on
+    # the queue's host, spawned by that box's supervisor from the published
+    # generation and stopped by it when a publish retires that generation.
+    # The role's host-local singleton lock is taken before the port is bound,
+    # so a second copy on the box -- a hand-started one, or an installed unit
+    # beside the supervised role -- refuses instead of scanning the queue
+    # twice.  ``--once`` answers one question and keeps nothing, so it takes
+    # no lock.
+    import worker_loop as runtime_gate  # noqa: PLC0415 -- the server only
+
+    try:
+        with runtime_gate.role_singleton(Path(__file__)):
+            return _serve(args)
+    except runtime_gate.RoleLockHeld as held:
+        print(f"pbmetrics: refusing a second metrics exporter; "
+              f"{runtime_gate.role_lock_path(Path(__file__))} is held by "
+              + (f"pid {held.holder}" if held.holder is not None
+                 else "an unreadable holder"),
+              file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+    except runtime_gate.RoleLockUnavailable as exc:
+        print(f"pbmetrics: refusing to serve without the metrics role "
+              f"singleton lock: {exc}", file=sys.stderr, flush=True)
+        return runtime_gate.ROLE_SINGLETON_HELD_EXIT
+
+
+def _serve(args: argparse.Namespace) -> int:
     cache = MetricsCache(
         args.queue_root.absolute(), args.cache_seconds,
         args.terminal_window_seconds, args.terminal_limit,
