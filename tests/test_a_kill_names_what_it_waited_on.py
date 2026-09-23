@@ -27,7 +27,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-from prismabuild import adaptive_cpu, pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import adaptive_cpu, adaptive_snapshot, pool, residency_plan, storage_tiers  # noqa: E402,E501
 import test_progress_keeps_a_working_action_alive as progress_fx  # noqa: E402
 import tier_loop  # noqa: E402
 
@@ -264,6 +264,12 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     _refuse_with(monkeypatch, ["measurement_holder", "host_pressure"])
     assert _claim_pass(queue) is None
     assert _claim_pass(queue) is None
+    # The host's latest verdict reaches a reader through the 1 Hz snapshot
+    # copy; run that copy now rather than race the coalescing publisher.
+    ledger = queue.ledger()
+    (ledger.base / "adaptive").mkdir(parents=True, exist_ok=True)
+    adaptive_snapshot.copy_snapshot(adaptive_cpu.local_state_base(ledger.base),
+                                    ledger.base / "adaptive")
 
     blob = pbstatus.read_starvation(queue.root)
 
