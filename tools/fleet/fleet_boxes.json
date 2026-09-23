@@ -2,7 +2,7 @@
  "schema": "prismaquant.prismabuild.fleet_boxes.v1",
  "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file. Raised 2026-09-04 against measurement, not intuition: see _measured_2026_09_04.",
  "local_disk_free_floor_percent": 5,
- "_local_disk_free_floor_why": "The fleet's disk-headroom floor: every box keeps at least this percent of a local filesystem's size free. It is Rob's standing rule (10% until 2026-08-26, then relaxed to 5%: \"you can change the danger threshold to 5%\"). supervise.py checks a box's --spool-gb against it at every start: the declaration stands only when the filesystem under the box's local_disk has f_bavail minus this floor left for it; otherwise the supervisor drops the flag and logs why (#910).",
+ "_local_disk_free_floor_why": "The fleet's disk-headroom floor: every box keeps at least this percent of a local filesystem's size free. It is Rob's standing rule (10% until 2026-08-26, then relaxed to 5%: \"you can change the danger threshold to 5%\"). supervise.py measures a box's --spool-gb against it at start: the box offers f_bavail on its local_disk minus this floor, in whole GiB, capped by a numeric declaration (#910, #911).",
  "boxes": {
   "sparky": {
    "loops": 5,
@@ -14,7 +14,7 @@
     "--mem-gb",
     "104",
     "--spool-gb",
-    "32",
+    "auto",
     "--timeout-s",
     "86400",
     "--max-idle",
@@ -23,7 +23,7 @@
     "15",
     "--all-cores"
    ],
-   "_spool_gb_2026_09_23": "--spool-gb 32 is the local disk this box offers produced-output spool windows (#747, #910), carved from local_disk /home/rob (ext4 on /dev/nvme0n1p2). It is sized to one GLM Stage A producer's window, PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES=34359738368 (32 GiB), the only HOST_WINDOW demand planned, and one window is all a one-GPU box runs at a time. Measured 2026-09-23T03:50Z with os.statvfs: size 1968362958848 B, f_bavail 138829066240 B free; the 5% floor is 98418147943 B, so the room is 40410918297 B (37.6 GiB) and 32 GiB leaves 6.05 GB of slack. The supervisor re-checks this at every start and drops the flag, logging both numbers, if the disk no longer covers it."
+   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value."
   },
   "gx10-6b77": {
    "_alias": "sparklina",
@@ -41,7 +41,7 @@
     "--mem-gb",
     "104",
     "--spool-gb",
-    "32",
+    "auto",
     "--timeout-s",
     "86400",
     "--max-idle",
@@ -52,7 +52,7 @@
     "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
     "--all-cores"
    ],
-   "_spool_gb_2026_09_23": "--spool-gb 32 is the local disk this box offers produced-output spool windows (#747, #910), carved from local_disk /home/rob (ext4 on /dev/nvme0n1p2). It is sized to one GLM Stage A producer's window, PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES=34359738368 (32 GiB), the only HOST_WINDOW demand planned, and one window is all a one-GPU box runs at a time. Measured 2026-09-23T03:50Z with os.statvfs: size 982819848192 B, f_bavail 436092063744 B free; the 5% floor is 49140992410 B, so the room is 386951071334 B (360.4 GiB). The declaration is demand-sized, not room-sized: raise it when a declared demand needs more."
+   "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. At start, and again after each publish's re-exec, the supervisor passes the loops f_bavail minus the 5% floor, in whole GiB. It measures only while the host ledger shows no spool_gb held; while an action holds some, the loops keep the ledger's current total. No number is written here, so freeing space on the disk raises the offer at the next start. A whole number in place of auto caps the measured value."
   },
   "dl380g10": {
    "loops": 16,

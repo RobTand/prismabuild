@@ -1,6 +1,7 @@
 """A box's explicitly configured alias survives an OS hostname rename."""
 
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -14,6 +15,10 @@ def test_the_checked_in_alias_resolves_the_same_worker_shape(monkeypatch, tmp_pa
     config = Path(__file__).resolve().parents[1] / "tools/fleet/fleet_boxes.json"
     monkeypatch.setattr(supervise, "CONFIG", config)
     monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    # Both names measure the box's disk (#911); hold it still between them.
+    reading = os.statvfs("/")
+    monkeypatch.setattr(supervise.os, "statvfs", lambda path: reading)
+    monkeypatch.setattr(supervise, "_SPOOL_VERDICTS", {})
     canonical = supervise.declared_shape("gx10-6b77", 0)
     assert supervise.declared_shape("sparklina", 0) == canonical
     assert canonical[0] == 3

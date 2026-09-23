@@ -1051,8 +1051,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cores this box offers the queue; 0 = the cores this "
                          "loop is actually pinned to")
     ap.add_argument("--spool-gb", type=int, default=0,
-                    help="local disk this box offers produced-output spools, "
-                         "in GiB; 0 declares none (#747)")
+                    help="local disk this box offers produced-output spool "
+                         "windows and declared bounded local scratch, in GiB; "
+                         "0 declares none (#747, #911)")
     return ap
 
 
@@ -1069,7 +1070,8 @@ def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str,
     """The stable host kinds this loop declares: memory, cores, and spool.
 
     ``spool_gb`` is the local disk budget produced-output producers reserve
-    their spool windows against at claim (#747).  It is declared only when
+    their spool windows against at claim (#747), and that actions declaring
+    bounded local scratch reserve their pairs against (#911).  It is declared only when
     ``--spool-gb`` is positive, so a box started without the flag offers
     exactly what it offered before the kind existed.
     """

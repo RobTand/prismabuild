@@ -6802,42 +6802,104 @@ declares a smaller `spool_gb` than the demand. On 2026-09-22, sparky had
 125 GB free (93% used) with a 628 MB spool, and sparklina had 411 GB free
 with 30 MB.
 
-**The roster declares each box's spool budget (#910).** A box's `--spool-gb N`
-sits in its `args` in `tools/fleet/fleet_boxes.json`, beside `--mem-gb`, so the
-supervisor passes it to every worker loop it starts. Two more roster fields
-let the supervisor check it. `local_disk`, on the box, names a directory on the
-filesystem the budget is carved from; the spool root itself is the producer's
-sealed `PRISMABUILD_PRODUCED_SPOOL_ROOT`, which no box knows in advance.
-`local_disk_free_floor_percent`, beside `boxes`, is the fleet's disk-headroom
-floor, 5% of a filesystem's size. When `supervise.py` starts, it keeps the
-declaration only if `local_disk` is an absolute path on a local disk (the same
-mount check `ProducedSpool` makes) and `f_bavail` minus the floor covers N GiB.
-Otherwise it removes `--spool-gb N` from the arguments and logs one line naming
-the free space, the floor and the declared amount. It does not exit, because
+**The roster declares each box's disk budget, and the supervisor measures it
+(#910, #911).** A box's `--spool-gb` sits in its `args` in
+`tools/fleet/fleet_boxes.json`, beside `--mem-gb`, so the supervisor passes it
+to every worker loop it starts. Its roster value is `auto` or a whole number of
+GiB, and the supervisor always hands the worker an integer: roster `args` are
+the supervisor's input, not a command line to copy. Two more roster fields
+define the measurement. `local_disk`, on the box, names a directory on the
+filesystem the budget comes from; the roots themselves are the actions' sealed
+variables, which no box knows in advance. `local_disk_free_floor_percent`,
+beside `boxes`, is the fleet's disk-headroom floor, 5% of a filesystem's size.
+
+When `supervise.py` starts, it measures `f_bavail` on `local_disk` minus the
+floor, in whole GiB, and passes that as `--spool-gb`. A number in the roster
+caps the measured value; `auto` does not. No measured value is written in the
+roster, so freeing space on a disk raises the box's offer at its next start.
+The supervisor refuses the declaration, and drops the flag, when `local_disk`
+is missing, relative or not on a local disk (the same mount check
+`ProducedSpool` makes), when the floor is missing, when the filesystem cannot
+be read, and when the measurement is 0 GiB. It logs one line with the reason
+and, for a measurement, the free space and the floor. It does not exit, because
 the supervisor runs under `Restart=always` and an exit would take every loop on
-the box with it; a refused budget costs the box only the spool kind, and
-opted-in producers record `never_fits_capacity` there and are claimed where the
-budget fits. A box whose `args` carry no `--spool-gb` reads nothing new, and its
-arguments are the file's, byte for byte.
+the box with it; a refused budget costs the box only the disk kind. A box whose
+`args` carry no `--spool-gb` reads nothing new, and its arguments are the
+file's, byte for byte.
 
-The check runs once per distinct declaration in a supervisor process: at start,
-and again after a publish, which re-execs the supervisor. It does not run every
-tick, because a producer filling its own window lowers free space, and a
-per-tick check would retract the offer while the box's own producer used it.
-Two limits follow. A supervisor that starts while a producer on the box holds
-spool bytes counts those bytes as used, and may refuse a budget that fits once
-the producer drains; the next start checks again. A refusal, or a later roster
-without the flag, does not shrink the host ledger: `ensure_capacity` only grows
-it, and the worker loop retires free tokens only for the kinds its offer names,
-so `spool_gb` tokens minted by an earlier declaration stay until a smaller
-positive declaration retires them. The runtime `statvfs` check in
-`reserve_group` still fails a producer closed when the disk is short.
+The measurement is taken only while the box's host ledger shows no `spool_gb`
+held, read both before and after `statvfs`. With nothing held, every used byte
+on the disk belongs to no reservation, so the measured room is exactly what the
+ledger may promise. With a holder, the room is short by what the holder has
+already written, and those bytes cannot be told from other use of the disk.
+Counting them as used would charge the holder twice. Adding the holder's whole
+reservation back, as the `mem_gb` offer does with `MemAvailable`, would credit
+the part it has not yet written, which the next holder could then reserve as
+well: a 200 GiB box holding one 166 GiB holder that has written 10 GiB would
+offer 356 GiB and admit a second 166 GiB holder. So while any `spool_gb` is
+held, the loops keep the ledger's current total, which is the last measured
+value (capped by a numeric declaration), and the supervisor measures again on
+each tick until nothing is held. The ledger's census is error-visible: a
+holder directory it cannot list makes the supervisor wait, never measure.
 
-The 2026-09-23 declarations are 32 GiB on both GB10s, one GLM Stage A spool
-window (`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` = 34,359,738,368 B), measured
-against `/home/rob`: sparky had 138,829,066,240 B free of 1,968,362,958,848 B,
-so 40,410,918,297 B (37.6 GiB) of room above the floor, and sparklina had
-436,092,063,744 B free of 982,819,848,192 B, 360.4 GiB of room.
+A settled measurement is kept once per distinct declaration in a supervisor
+process: at start, and again after a publish, which re-execs the supervisor. It
+is not repeated every tick, because other writers move free space all the time,
+and each new value would change the loops' arguments and cycle every idle loop.
+Two limits follow. The value does not fall as other writers fill the disk
+until the next start; the runtime `statvfs` check in `reserve_group` still
+fails a spool producer closed when the disk is short. A refusal, or a later
+roster without the flag, does not shrink the host ledger: `ensure_capacity`
+only grows it, and the worker loop retires free tokens only for the kinds its
+offer names, so `spool_gb` tokens minted by an earlier declaration stay until a
+smaller positive value retires them.
+
+Both GB10s declare `auto` on `/home/rob`. At 2026-09-23T03:50Z, `statvfs`
+there gave sparky 138,829,066,240 B free of 1,968,362,958,848 B, which is
+37.6 GiB above the floor, and sparklina 436,092,063,744 B free of
+982,819,848,192 B, which is 360.4 GiB.
+
+**Bounded local scratch draws from the same budget (#911).** An action can
+write scratch to a box's local disk: a replay spill, a cotangent sink, or a
+cache. PrismaQuant bounds each one with a pair of sealed variables, a root and
+a byte ceiling, and its launcher refuses a root that is not an identity bind
+of a local path. PrismaBuild could not see those pairs, so it could place two
+large scratch holders on one box, or one on a box whose disk cannot hold it.
+The action then failed closed only after it had taken its claim. An action now
+lists its pairs in one more sealed variable,
+`PRISMABUILD_LOCAL_SCRATCH_PAIRS=ROOT_ENV:MAX_ENV[,ROOT_ENV:MAX_ENV...]`.
+`pbrun` derives ceil(`MAX` / 2^30) for each pair (`local_scratch.scratch_terms`)
+and adds the sum to the same `spool_gb` kind the spool window uses, because
+both use the same disk. A producer that also opts in to the spool window
+reserves the window plus its scratch. The kind keeps the name #747 gave it,
+so boxes, the roster and the ledger need nothing new. Claim charges it
+through the host ledger like `mem_gb`, so two holders on one box can never
+reserve more than its declaration together. An action whose scratch exceeds a
+box's declaration records `never_fits_capacity` there and is claimed on a box
+where it fits.
+
+`pbrun` refuses at submission:
+- a list item that is not `ROOT_ENV:MAX_ENV`, or a name that is not a variable
+  name;
+- a name listed twice, or the list naming itself;
+- the spool window's own pair (`PRISMABUILD_PRODUCED_SPOOL_ROOT` and
+  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`), which
+  `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` already charges; listing it here
+  would charge the same bytes twice;
+- a named variable the sealed environment does not set;
+- a root that is not a canonical absolute path, or is `/`, or appears twice;
+- a ceiling that is not a positive decimal integer;
+- a typed `--demand spool_gb`;
+- any declaration on `--transport slurm`, which has no host ledger.
+
+Freeze derives the demand again from the final environment and refuses a
+sealed `spool_gb` that differs. A pair is never inferred from a variable's
+name: without the list, an environment that carries scratch-shaped variables
+seals exactly the demand it sealed before, and `pbrun` does not import the
+module. PrismaBuild charges the bound; it does not check at run time that a
+root sits on the declared `local_disk` filesystem, or that the action stays
+under its ceiling. PrismaQuant's launcher and the action's own byte bound do
+both.
 
 **Still open.**
 

@@ -3185,26 +3185,63 @@ not hidden or treated as parked. Investigate the logged failure and retained
 PID/start-time identity. Lock-path errors, resource failures and storage stalls
 have different causes; the log alone does not diagnose an NFS fault.
 
-### A box's local spool budget
+### A box's local disk budget
 
-A box offers local disk to produced-output spool windows only when its roster
-`args` in `tools/fleet/fleet_boxes.json` carry `--spool-gb N` (#747, #910).
-Such a box also names `local_disk`, a directory on the filesystem the budget
-comes from, and the roster states the fleet's free floor once, as
-`local_disk_free_floor_percent` (5). To change a budget, edit the roster and
-publish. Each supervisor start, including the re-exec after a publish, checks
-that `f_bavail` on `local_disk` minus the floor covers N GiB. If it does not,
-the supervisor starts its loops without `--spool-gb` and logs a line that
-begins `--spool-gb declaration refused` and names the three numbers. The box
-keeps offering its other kinds; an opted-in producer records
-`never_fits_capacity` there and waits for a box whose budget fits. To see what
-a box offers, run `pgrep -af worker_loop` on it and look for `--spool-gb`.
+A box offers local disk to produced-output spool windows and declared scratch
+only when its roster `args` in `tools/fleet/fleet_boxes.json` carry
+`--spool-gb` (#747, #910, #911). Its value is `auto`, the whole measured room,
+or a whole number of GiB that caps it. Such a box also names `local_disk`, a
+directory on the filesystem the budget comes from, and the roster states the
+fleet's free floor once, as `local_disk_free_floor_percent` (5). The supervisor
+turns the roster value into a number: at each start, including the re-exec
+after a publish, it passes the loops `f_bavail` on `local_disk` minus the
+floor, in whole GiB. It logs `--spool-gb auto measured N GiB` with the free
+space and the floor. Roster `args` are the supervisor's input: do not copy
+`--spool-gb auto` onto a `worker_loop.py` command line, which takes only
+integers.
 
-A refused or removed declaration does not take back `spool_gb` tokens the host
+While an action on the box holds `spool_gb`, the supervisor does not measure,
+because the disk cannot say which bytes the holder has already written. The
+loops keep the host ledger's current total, and the supervisor logs
+`--spool-gb measurement waits` once and measures on the first tick when
+nothing is held. When a declaration cannot stand (no `local_disk`, no floor, a
+disk that is not local or cannot be read, or no room above the floor), the
+supervisor starts its loops without `--spool-gb` and logs a line that begins
+`--spool-gb declaration refused`. The box keeps offering its other kinds; an
+action that needs disk records `never_fits_capacity` there and waits for a box
+where it fits. To see what a box offers, run `pgrep -af worker_loop` on it and
+read the number after `--spool-gb`.
+
+The measured value does not fall as the disk fills between starts, and a
+refused or removed declaration does not take back `spool_gb` tokens the host
 ledger already minted: the ledger only grows, and a loop retires free tokens
-only for the kinds it offers. Lower a budget by publishing a smaller positive
-value. The producer's own `statvfs` check still refuses a spool group the disk
-cannot hold.
+only for the kinds it offers. The producer's own `statvfs` check still refuses
+a spool group the disk cannot hold.
+
+### Declare an action's bounded local scratch
+
+An action that writes scratch to the executing box's local disk declares each
+bound as a pair of sealed variables, a root and a byte ceiling, and lists the
+pairs in `PRISMABUILD_LOCAL_SCRATCH_PAIRS` (#911):
+
+```
+pbrun.py --priority -10 \
+  --env PRISMAQUANT_STAGE_B_SPILL_ROOT=/home/rob/scratch/spill \
+  --env PRISMAQUANT_STAGE_B_SPILL_MAX_BYTES=178000000000 \
+  --env PRISMABUILD_LOCAL_SCRATCH_PAIRS=PRISMAQUANT_STAGE_B_SPILL_ROOT:PRISMAQUANT_STAGE_B_SPILL_MAX_BYTES \
+  -- ...
+```
+
+`pbrun` reserves ceil(178,000,000,000 / 2^30) = 166 GiB of the box's
+`spool_gb` for the whole claim. List several pairs with commas, and list only
+the pairs the action writes. Do not list the produced spool's own pair; set
+`PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` for it, and the window and the
+scratch then add up in one reservation. The action is claimed only on a box
+whose `--spool-gb` covers it; see "A box's local disk budget". When every
+matching box offers less, `pbrun` refuses the action at submission. When some box's offer does
+not name the kind, `pbrun` queues it, and every claim records
+`never_fits_capacity`. The refusals are listed in `docs/design.md` under
+"Bounded local scratch draws from the same budget".
 
 ### Keeping a supervisor alive across a reboot
 
