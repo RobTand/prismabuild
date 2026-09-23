@@ -322,7 +322,10 @@ def test_a_fragment_naming_a_consumer_the_queue_never_saw_retains(fleet) -> None
     never = dead._key()
     mover = _fragment_named(fleet, never)
     receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
-    assert not [entry for entry in receipts if entry.get("action_key") == mover]
+    # Reported once as unresolved (#929), and nothing else happens to it.
+    assert [entry.get("event") for entry in receipts
+            if entry.get("action_key") == mover] == [
+                stage_release.HOLDER_UNRESOLVED_EVENT], receipts
     _kept(queue, stage, mover)
     receipts = stage_release.sweep(
         queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
@@ -349,14 +352,20 @@ def test_a_fragment_naming_a_still_queued_consumer_retains(fleet) -> None:
 
 
 def test_an_unresolvable_holder_is_quiet_when_it_costs_nothing(fleet) -> None:
-    """Without unmet pressure a retained holder adds no line to the cycle."""
+    """Without unmet pressure a retained holder adds no line to every cycle.
+
+    It is reported once, as unresolved, the first time a pass sees it (#929):
+    an operator hears about a holder nothing can classify, and hears it once.
+    """
 
     queue, stage, _cas = fleet
     consumer = _done_consumer(queue)
     mover = _held_mover(queue, stage, consumer)
+    events = []
     for pressure in (None, {TIER: 0}, {TIER: 1}):
         receipts = stage_release.sweep(
             queue, stage_roots={TIER: str(stage)}, pressure=pressure)
-        assert not [entry for entry in receipts
-                    if entry.get("action_key") == mover], (pressure, receipts)
+        events.extend(entry.get("event") for entry in receipts
+                      if entry.get("action_key") == mover)
+    assert events == [stage_release.HOLDER_UNRESOLVED_EVENT], events
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}

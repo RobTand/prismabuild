@@ -27,7 +27,9 @@ funded, receipt or no receipt:
 A completed batch of a live producer used to be exposed the other way: its
 move receipt names the batch namespace, not a queue action, so the orphan pass
 took it for an orphan, looked for its fragment in the flat store, found none
-and released its tokens while its bytes stayed on the stage.
+and released its tokens while its bytes stayed on the stage.  The
+joint-commitment census (#907) counted the same tokens as evictable room: 22
+of R12's completed batches, 44 GiB, on 2026-09-23.
 
 Everything runs on a synthetic stage under ``tmp_path`` registered to a queue
 under ``tmp_path``; nothing reads or writes a real stage.
@@ -48,6 +50,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import stage_release  # noqa: E402
+import tier_loop  # noqa: E402
 
 from test_prepaid_writer_integration import (  # noqa: E402
     KIND, REPO, TIER, _announce_tier, _broker_control, _claim_mover,
@@ -247,6 +250,12 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
         "bytes_staged": len(PAYLOAD), "complete": True})
     world.q.finish(world.mover, status="executed")
     assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+
+    # The joint-commitment census does not offer its tokens as room either.
+    tiers = {TIER: next(record for record in world.q.tiers()
+                        if record.get("tier_id") == TIER)}
+    census = tier_loop._commitment_census(world.q, tiers, consumers=[])[TIER]
+    assert census.get("evictable_gib") == 0, census
 
     receipts = world.sweep(UNMET)
     assert not [entry for entry in _about(receipts, world.mover)

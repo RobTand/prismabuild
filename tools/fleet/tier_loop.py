@@ -2758,8 +2758,27 @@ def _commitment_census(queue: pool.PoolQueue,
                 named = (receipt.get("consumer_action_key")
                          if isinstance(receipt, Mapping) else None)
                 # A range a live item's receipt names is that item's, not an
-                # orphan, even when its plan did not read this pass.
+                # orphan, even when its plan did not read this pass.  A holder
+                # with no receipt counts as held here.  The one shape of it the
+                # sweep frees -- a produced mover whose producer attempt has
+                # ended (#929) -- it frees unconditionally, before this
+                # cycle's windows admit; only the pressure and adoption passes
+                # ahead of the sweep still count it, which errs toward freeing.
                 if named and str(named) not in owners:
+                    # A funded produced-output mover's receipt names its batch
+                    # namespace, which is never a live item, so this test
+                    # alone took every completed batch of a live producer for
+                    # an orphan -- 44 GiB of R12's on 2026-09-23.  Its lane
+                    # decides it, and the sweep never evicts it as an orphan
+                    # (#929).  A funding record that does not read is not
+                    # room either.
+                    try:
+                        _funding, funded = queue.output_funding_file_state(
+                            holder, tier_id)
+                    except (OSError, pool.PoolContractError, ValueError):
+                        funded = "corrupt"
+                    if funded != "absent":
+                        continue
                     evictable += gib
         except (OSError, pool.PoolContractError, ValueError) as exc:
             out[tier_id] = {"error": f"orphan census unreadable: {exc}"}
