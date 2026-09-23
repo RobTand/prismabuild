@@ -1,12 +1,26 @@
 # PrismaBuild — distributed campaign execution
 
-**Status: DETERMINISTIC CORE + SHARED CAS + PULL QUEUE LIVE; SLURM LANE BUILT
-AND VERIFIED AGAINST A REAL CONTROLLER IN A CONTAINER, NOT YET INSTALLED ON
-THE FLEET; DAGSTER AND OBSERVABILITY LAYERS NOT DEPLOYED.** The
-dependency-free action-key, immutable-CAS, and local-worker core lives in
-`src/prismabuild/core.py`. On 2026-09-04 Rob ratified replacing the pull queue
-with SLURM (`docs/scheduler_decision_2026-09-04.md`). The thin SLURM lane that
-implements it lives in `src/prismabuild/slurm_lane.py` (`pbrun --transport
+**Status (corrected 2026-09-23): DETERMINISTIC CORE + SHARED CAS + PULL QUEUE
+LIVE; SLURM LANE BUILT BUT PAUSED AND INSTALLED ON NO BOX; DAGSTER AND
+OBSERVABILITY LAYERS NOT DEPLOYED.** The dependency-free action-key,
+immutable-CAS, and local-worker core lives in `src/prismabuild/core.py`. The
+shared CAS, the NFS pull queue, and the worker loops on Sparky, Sparklina, and
+dl380g10 are the live execution plane. At 2026-09-23 13:50Z they run runtime
+generation `a0fdcd2f7482-1790170897-121d887b4732` (canary verified).
+`docs/staged_read_contract_2026-09-20.md` and its ledger
+`docs/staged_read_requirements_2026-09-20.json` are the acceptance measure for
+the staged-read work: the contract's top summary says what is workload-proven,
+deployed, and only validated, and a PR that changes a requirement's status
+updates its ledger row in the same PR. The fleet has dispatched Tessera and
+PrismaQuant test, quantization, and measurement campaigns.
+`docs/operating_prismabuild.md` is the usage guide for operators and agents;
+`tools/prismabuild_worker.py` is the direct batch-script entry point.
+
+SLURM: on 2026-09-04 Rob ratified replacing the pull queue with SLURM
+(`docs/scheduler_decision_2026-09-04.md`). On 2026-09-19 he paused that
+migration (PB#657): no SLURM work on the hot path until the fleet grows past
+about four hosts or orphaned terminals are observed in receipts. The lane stays
+as built. It lives in `src/prismabuild/slurm_lane.py` (`pbrun --transport
 slurm`: seal, `sbatch`, wait, CAS lookup, and the terminal records the pull
 queue's readers already look for), with the job entry in
 `tools/fleet/slurm_job.py`, the fleet's configuration under `fleet/slurm/`, and
@@ -14,37 +28,23 @@ the install runbook in `docs/slurm_runbook_2026-09-04.md`. Only SLURM's own
 variables reach a job (`--export=NIL`); the action's environment is the sealed
 one the worker builds. A SLURM `COMPLETED` state without a CAS receipt is a
 failed action, and a receipt is success whatever the exit code said. The lane
-routes work by what the action already declares: a GPU demand goes to the
-`gpu` partition (the two GB10 boxes, as `shard` GRES), untagged CPU-only work
-goes to the `cpu` partition (dl380g10), tagged work goes to the default
-partition, where its sealed constraint picks the node, and CPU-only work the
-submitter asserted portable with `pbrun --anywhere` goes to the default
-partition too, where node weight prefers dl380g10 and a GB10 box takes it
-only when dl380g10 is full. The lane has run
-against a real `slurmctld` and `slurmd` in a privileged container on sparky
-(`fleet/slurm/smoke/`, 23 rows on the fleet's 25.11.2 rebuild; the first
-eleven also on Ubuntu 24.04's 23.11.4), and across three container nodes built
-from the fleet's own `slurm.conf` (`fleet/slurm/smoke/multinode/`, 12 rows on
-both versions: placement per partition, tag and weight, a node killed under a
-job, a controller restart under a job, and the runbook's `verify.sh`). A
-re-run of receipted work submits nothing on either path: `pbrun` reads the
-receipt before `sbatch`. It is installed on no box: the install needs root,
-which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
-`cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
-`tools/fleet/pbcampaign.py` fans a manifest out over the lane and
-`pbwait.py` waits for the keys, whichever transport filed their endings;
-`pbrun --transport slurm --measurement --host-class` seals a class-keyed action
-the worker attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
-adapter, superseded by the lane and retained until the decision record's
-Phase 3. `tools/prismabuild_worker.py` is the direct batch-script entry point.
-`docs/operating_prismabuild.md` is the usage guide for operators and agents.
-The optional asset/DAG adapter lives in `src/prismabuild/dagster.py`; it
-constructs deterministic assets from sealed action keys, binds each edge to an
-expected CAS output digest, and materializes only after re-reading that
-receipt and payload from the CAS. The shared CAS, NFS pull queue, and worker
-loops on Sparky, Sparklina, and dl380g10 are deployed and remain the live
-execution plane until the cutover. The fleet has dispatched Tessera and
-PrismaQuant test, quantization, and measurement campaigns. Dagster and the
+routes a GPU demand to the `gpu` partition (the two GB10 boxes, as `shard`
+GRES), untagged CPU-only work to the `cpu` partition (dl380g10), and tagged or
+`pbrun --anywhere` work to the default partition, where the sealed constraint
+or node weight picks the node. It has run against a real `slurmctld` and
+`slurmd` in a privileged container on sparky (`fleet/slurm/smoke/`, 23 rows on
+the fleet's 25.11.2 rebuild; the first eleven also on Ubuntu 24.04's 23.11.4)
+and across three container nodes built from the fleet's own `slurm.conf`
+(`fleet/slurm/smoke/multinode/`, 12 rows on both versions). It has never run
+on the fleet: the install needs root, which is Rob's, and
+`fleet/slurm/install.sh`, `verify.sh`, `cutover.sh` and `rollback.sh` are
+the operator's four steps if the migration resumes. `tools/fleet/pbcampaign.py`
+and `pbwait.py` work over either transport. `src/prismabuild/slurm.py` is the
+earlier durable-state SLURM adapter, superseded by the lane (see "Durable
+SLURM submission" below). The optional asset/DAG adapter lives in
+`src/prismabuild/dagster.py`; it constructs deterministic assets from sealed
+action keys, binds each edge to an expected CAS output digest, and materializes
+only after re-reading that receipt and payload from the CAS. Dagster and the
 proposed observability stack remain uninstalled.
 
 Worker-offer freshness is evaluated after the complete directory and record
