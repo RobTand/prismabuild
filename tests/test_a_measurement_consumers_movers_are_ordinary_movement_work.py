@@ -200,8 +200,10 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
 
     queue.publish(**mover_row)
     claim = _claim(queue)
-    assert claim is not None, (
-        "a measurement consumer's mover must run on a stage host with foreign load")
+    if claim is None:
+        refused = _denial(queue, str(mover_row["action_key"]))["evidence"]["decision"]
+        pytest.fail("a measurement consumer's mover must run on a stage host "
+                    f"with foreign load; it was refused {refused.get('reason')}")
     assert claim["action_key"] == mover_row["action_key"]
 
     decision = _denial(queue, consumer_key)["evidence"]["decision"]
