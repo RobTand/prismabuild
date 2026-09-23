@@ -4988,7 +4988,12 @@ Limits:
 
 - A consumer that `pbrun` declared and that never reached the queue (the
   submitter died in between) holds the batch, and the stall names it
-  `unpublished`. Submitting the same key again clears it.
+  `unpublished`. Submitting the same key again clears it. After a publish
+  that key can no longer be submitted, and neither #926 remedy applies:
+  `--supersedes` and `--release-origin-consumer` both refuse a key with no
+  failed or withdrawn record, because it may be a submission still in
+  progress. Such a batch is not listed as blocked, and only deleting the
+  declaration by hand frees it.
 - Every declared key must succeed, be superseded by a key declared against
   the same batch, or be released. A failed consumer resubmitted under a
   different key without `--supersedes` keeps holding the batch until an
