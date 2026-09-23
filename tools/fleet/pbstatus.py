@@ -1681,6 +1681,7 @@ def _starvation_starved(jobs: Sequence[Mapping[str, object]]) -> list[dict]:
             evidence = denial.get("evidence")
             detail = evidence.get("starved") if isinstance(evidence, Mapping) else None
             starved.append({
+                "action_key": job.get("action_key"),
                 "action_key_prefix": job.get("action_key_prefix"),
                 "host": denial.get("host"),
                 "reason": reason,
@@ -1693,6 +1694,48 @@ def _starvation_starved(jobs: Sequence[Mapping[str, object]]) -> list[dict]:
                             if isinstance(detail, Mapping) else None),
             })
     return starved
+
+
+def _starvation_dependents(queue: pool.PoolQueue, *, notes: list[str],
+                           unreadable: list[str], now: float) -> list[dict]:
+    """A starved producer in one place (#990): what each claimed action waits on.
+
+    For every claimed action that owns rows -- a residency plan's movers,
+    egresses and RAM promotions, or produced-output exports naming it in
+    ``dependent_of`` -- the same record a kill's ending carries: the rows,
+    their state, how long they have been ready, each one's latest denial and
+    reason ring, and the tier loops' newest verdicts about the action.  One
+    census of ``ready/`` and ``claimed/`` for all of them.
+    """
+
+    live, listed = queue.live_records()
+    for error in listed:
+        notes.append(f"starvation dependents: {error}")
+        unreadable.append(f"starvation dependents: {error}")
+    owners = {str(record.get("dependent_of")) for _state, record in live.values()
+              if isinstance(record.get("dependent_of"), str)}
+    out: list[dict] = []
+    for key, (state, record) in sorted(live.items()):
+        if state != pool.CLAIMED:
+            continue
+        residency = record.get("residency")
+        planned = isinstance(residency, Mapping) and bool(residency.get("leads"))
+        if key not in owners and not planned:
+            continue
+        try:
+            found = queue.dependent_rows(key, now=now, live_records=(live, []),
+                                         include_local=False)
+        except (OSError, ValueError, pool.PoolContractError) as exc:
+            notes.append(f"starvation dependents {key[:12]}: {exc}")
+            unreadable.append(f"starvation dependents {key[:12]}: {exc}")
+            continue
+        events = queue.consumer_events(key)
+        out.append({"action_key": key, "action_key_prefix": key[:12],
+                    "node": record.get("claimed_host"),
+                    **found,
+                    "tier_events": events[-pool.MAX_ENDING_EVENTS:],
+                    "tier_events_total": len(events)})
+    return out
 
 
 def _starvation_gaps() -> list[dict]:
@@ -1723,11 +1766,12 @@ def _starvation_gaps() -> list[dict]:
          "would_need": "the coordinator publishing the last accepted phase it "
             "saw for a ready consumer, or the progress channel pre-claim"},
         {"field": "denial history for finished movers",
-         "why_not_observable": "denial snapshots hold each host's latest "
-            "verdict per live action generation; a mover that finished or was "
-            "evicted leaves no denial behind",
-         "would_need": "the tier loop's window-stalled events retained per "
-            "plan, or a bounded terminal denial archive beside done/"},
+         "why_not_observable": "each live key's reason transitions are kept "
+            "in denial-transitions/ (#991) and a live consumer's tier-loop "
+            "verdicts in residency-events/ (#990), but a finished mover's ring "
+            "is retired with it; only a kill's ending record keeps the rings "
+            "of the rows it was waiting on",
+         "would_need": "a bounded terminal denial archive beside done/"},
         {"field": "tiers[] live disk delivery",
          "why_not_observable": "the announced fill is the last cycle's learned "
             "rate from mover receipts; instantaneous pool delivery between "
@@ -1953,6 +1997,13 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
     commitment_waits = _starvation_commitment_waits(tiers)
     denial_top = _starvation_denials(queue, notes=notes)
     starved = _starvation_starved(jobs)
+    for entry in starved:
+        # The sequence, not only the latest verdict (#991).
+        entry["denial_transitions"] = (
+            queue.denial_transitions(str(entry["action_key"]))
+            if isinstance(entry.get("action_key"), str) else [])
+    dependents = _starvation_dependents(queue, notes=notes, unreadable=unreadable,
+                                        now=moment)
     census_unreadable = _starvation_census_unreadable(
         queue, notes=notes, unreadable=unreadable)
     return {"schema": STARVATION_SCHEMA_V1,
@@ -1967,6 +2018,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             "joint_commitment_waits": commitment_waits,
             "denial_top": denial_top,
             "starved": starved,
+            "claimed_dependents": dependents,
             "census_unreadable": census_unreadable,
             "not_observable": _starvation_gaps()}
 

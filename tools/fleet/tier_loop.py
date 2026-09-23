@@ -85,6 +85,150 @@ MOVER_PYTHON = sys.executable
 MOVER_TOOLS_ROOT = str(Path(__file__).resolve().parent)
 
 
+#: A verdict that stands until something changes -- a wait, a decline, a
+#: refusal, a deferral -- is recognised by its event name, and carries how long
+#: this loop has seen it stand (#990).  One-shot outcomes (published, evicted,
+#: released, failed) carry no duration.
+_STANDING_VERDICT_WORDS = ("stalled", "declined", "futile", "refused", "deferred",
+                           "gated", "unfunded", "unknown", "held", "busy")
+#: The fields that tell two standing verdicts apart: the same event about a
+#: different consumer, range, phase or reason is a different wait.
+_VERDICT_IDENTITY = ("event", "consumer", "tier_id", "holder", "mover", "stage_range",
+                     "phase", "chunk_index", "blocked_phase", "reason", "refusal",
+                     "stage_root")
+#: In-process: signature -> [first seen unix, last cycle seen].  A verdict
+#: missing from one cycle has ended; seen again, it is a new wait.
+_VERDICT_SINCE: dict[tuple, list] = {}
+#: The cycle counter those entries are dated by.
+_VERDICT_CYCLE = [0]
+#: Per event file this process writes, the lines it holds (counted once).
+_EVENT_LINES: dict[str, int] = {}
+
+
+def _begin_verdict_cycle() -> None:
+    """Start a cycle: forget standing verdicts the last cycle did not repeat."""
+
+    _VERDICT_CYCLE[0] += 1
+    current = _VERDICT_CYCLE[0]
+    for signature in [signature for signature, (_since, seen) in _VERDICT_SINCE.items()
+                      if seen < current - 1]:
+        _VERDICT_SINCE.pop(signature, None)
+
+
+def _stamp_standing(record: dict[str, object]) -> None:
+    """Add ``waited_s`` to a standing verdict: how long this loop has seen it.
+
+    Best-effort by construction: the clock is this process's observation of
+    consecutive cycles, so a restarted loop starts every wait again at zero,
+    and a wait that began before the loop first looked reads short.  It never
+    reads long.
+    """
+
+    name = str(record.get("event") or "")
+    if not any(word in name for word in _STANDING_VERDICT_WORDS):
+        return
+    signature = tuple(str(record.get(field)) for field in _VERDICT_IDENTITY)
+    now = float(record.get("unix") or time.time())  # type: ignore[arg-type]
+    current = _VERDICT_CYCLE[0]
+    slot = _VERDICT_SINCE.get(signature)
+    if slot is None or slot[1] < current - 1:
+        slot = [now, current]
+        _VERDICT_SINCE[signature] = slot
+    slot[1] = current
+    record["verdict_since_unix"] = slot[0]
+    record["waited_s"] = round(max(0.0, now - float(slot[0])), 3)
+
+
+def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
+                           record: Mapping[str, object]) -> None:
+    """Append one verdict to ``residency-events/<consumer>/<host>.jsonl``.
+
+    This host's tier loop is the file's only writer (the role singleton), so
+    an append needs no lock and never crosses the NFS client boundary.  Once
+    the file holds ``2 * MAX_CONSUMER_EVENT_LINES`` lines it is rewritten to
+    its newest ``MAX_CONSUMER_EVENT_LINES`` by an atomic rename.  Best-effort:
+    a write that fails is said on stderr and the cycle goes on; the same
+    verdict is still on stdout.
+    """
+
+    try:
+        directory = queue.consumer_events_dir(consumer)
+    except pool.PoolContractError:
+        return
+    path = directory / f"{host}.jsonl"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        count = _EVENT_LINES.get(str(path))
+        if count is None:
+            try:
+                with open(path) as stream:
+                    count = sum(1 for _line in stream)
+            except FileNotFoundError:
+                count = 0
+        with open(path, "a") as stream:
+            stream.write(json.dumps(record, default=str) + "\n")
+        count += 1
+        if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
+            with open(path) as stream:
+                kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            with open(temporary, "w") as stream:
+                stream.writelines(kept)
+            os.replace(temporary, path)
+            count = len(kept)
+        _EVENT_LINES[str(path)] = count
+    except OSError as exc:
+        _EVENT_LINES.pop(str(path), None)
+        print(json.dumps({"unix": time.time(), "event": "consumer-event-unwritten",
+                          "consumer": consumer, "error": repr(exc)}),
+              file=sys.stderr, flush=True)
+
+
+def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
+          tier_consumers: Mapping[str, Sequence[str]] | None = None,
+          stamp_unix: bool = True) -> None:
+    """Print one cycle event, and file it where its consumer's records are (#990).
+
+    stdout is not a record: every event naming a consumer is also appended to
+    that consumer's event file, which ``pbstatus --starvation`` and a kill's
+    ending record read.  A tier-level verdict that names no consumer (an
+    eviction that was futile or refused) is filed for every consumer
+    ``tier_consumers`` lists on its tier, marked ``attributed_by: tier_id``.
+    A standing verdict carries ``waited_s`` (:func:`_stamp_standing`).  The
+    filed copy adds ``host`` (the reader merges every host's file); stdout is
+    unchanged apart from that stamp.  The plan reaper's own event retires the
+    consumer's directory, and the prewarm sweep
+    (:meth:`pool.PoolQueue.sweep_consumer_events`) retires any directory a
+    late append recreated.
+    """
+
+    record = {"unix": time.time(), **event} if stamp_unix else dict(event)
+    _stamp_standing(record)
+    print(json.dumps(record, default=str), flush=True)
+    record.setdefault("host", host)    # the file is merged across hosts
+    consumer = record.get("consumer")
+    if record.get("event") == "residency-plan-reaped":
+        if isinstance(consumer, str):
+            try:
+                directory = queue.consumer_events_dir(consumer)
+            except pool.PoolContractError:
+                return
+            for name in list(_EVENT_LINES):
+                if name.startswith(f"{directory}{os.sep}"):
+                    _EVENT_LINES.pop(name, None)
+            import shutil
+            shutil.rmtree(directory, ignore_errors=True)
+        return
+    if isinstance(consumer, str) and len(consumer) == 64:
+        _append_consumer_event(queue, host, consumer, record)
+        return
+    tier_id = record.get("tier_id")
+    if consumer is None and tier_consumers and isinstance(tier_id, str):
+        for key in tier_consumers.get(tier_id, ()):
+            _append_consumer_event(queue, host, key,
+                                   {**record, "attributed_by": "tier_id"})
+
+
 def load_ram_policy() -> dict[str, object] | None:
     """The ram tier's declared sizing, read fresh on every cycle.
 
@@ -5945,10 +6089,14 @@ def cycle(
     """Discover, mint, announce; returns the records it announced."""
 
     cycle_started = time.monotonic()
+    _begin_verdict_cycle()
+    #: Per tier, the planned consumers on it: where a tier-level verdict that
+    #: names no consumer is filed (#990).  Filled once the plans are read.
+    tier_consumers: dict[str, list[str]] = {}
     # Before minting, so this cycle's announced supply and this cycle's window
     # both see the bandwidth a finished copy is no longer drawing (#636).
     for event in reclaim_idle_rates(queue):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
@@ -6245,7 +6393,7 @@ def cycle(
     # nothing reads as ram-resident until a promotion lands under the current
     # epoch.
     for event in drop_prior_ram_epochs(queue, announced_tiers):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # Incomplete promotions before anything prices the tier (#644): a
     # half-landed promotion squats on its full-range tokens until its phase
     # passes, so its tokens come back here -- partial files deleted first,
@@ -6253,7 +6401,7 @@ def cycle(
     # pressure, the sweep and both windows below see the room and republish
     # the whole range through the ordinary publish path.
     for event in release_incomplete_ram_promotions(queue, announced_tiers):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # Adopt, then evict under pressure, then publish.  The order is the policy
     # (#598): a range a live consumer's window names is taken over rather than
     # deleted and re-copied, what is left over is deleted only when a window
@@ -6266,6 +6414,11 @@ def cycle(
     # ledger, and both re-read that.
     planned_unknown: list[dict[str, object]] = []
     planned = _planned_consumers(queue, announced_tiers, unknown=planned_unknown)
+    for consumer_key, _consumer, consumer_plan, consumer_tier in planned:
+        tier_consumers.setdefault(consumer_tier, []).append(consumer_key)
+        ram_tier = consumer_plan.get("ram_tier_id")
+        if isinstance(ram_tier, str) and ram_tier != consumer_tier:
+            tier_consumers.setdefault(ram_tier, []).append(consumer_key)
     # One snapshot of the live withdrawal markers for every step below, so a
     # cancellation filed mid-cycle cannot have the adoption, the pressure
     # probe and the two windows disagree about it (#708).
@@ -6275,11 +6428,11 @@ def cycle(
     # Withdrawing only stops queued work, so adoption below still sees every
     # resident range it could take.
     for event in withdraw_dead_consumer_movers(queue):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     for event in adopt_resident_ranges(queue, tiers=announced_tiers,
                                        consumers=planned, withdrawn=withdrawn,
                                        unknown=planned_unknown):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
                                withdrawn=withdrawn, unknown=planned_unknown)
     # Failed movers' partials next: a terminal, unpinned mover that still
@@ -6287,26 +6440,27 @@ def cycle(
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
     # below sees both the room being made and the recopy it must hold back.
     for event in reclaim_failed_mover_partials(queue, planned, pressure):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
-        print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
+        _emit(queue, host, {"event": "stage-orphan-evicted", **event},
+              stamp_unix=False)
     # Orphans first, then the ranges past their readers' refill horizons
     # (#903): an orphan is nobody's, a range past a horizon is somebody's
     # later, so the sweep that returns what nobody will read goes first.
     for event in evict_beyond_horizon(queue, announced_tiers,
                                       consumers=planned, pressure=pressure,
                                       withdrawn=withdrawn):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # The ram window before the stage's, so a phase's ram egress is published
     # before its stage egress: the tokens that bound the smaller tier come
     # back first, and a ram range never outlives the stage range that feeds
     # it (#640).
     for event in ram_residency_window(queue, tiers=announced_tiers, now=now,
                                       withdrawn=withdrawn):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     for event in residency_window(queue, tiers=announced_tiers, now=now,
                                   withdrawn=withdrawn):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes
@@ -6320,14 +6474,14 @@ def cycle(
     # (#914).  Silent when it retires nothing; a stalled or refused
     # retirement is reported once per change.
     for event in produced_output.origin_retirement_tick(queue):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # Deferred consumers whose producers have committed (#913): sealed over
     # the committed batches and published, until this cycle's interval runs
     # out or MAX_RELEASES_PER_CYCLE have gone.  After window publication, so a
     # burst cannot delay this cycle's windows.  Silent while nothing is filed.
     for event in deferred_release.release_tick(
             queue, deadline=cycle_started + CYCLE_INTERVAL_S):
-        print(json.dumps({"unix": time.time(), **event}), flush=True)
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     # What the admission commitment's census cost this cycle (#909): the one
     # admission read whose cost grows with the number of windows.
     census_cost = census_cost_report()

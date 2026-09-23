@@ -1901,6 +1901,36 @@ a cause the next step cannot see (#351).
     than it has shows `over_committed_gib` there, and the tier loop logs
     `tier-over-committed` on every cycle while it lasts.
 
+### Read a starved producer in one place
+
+When a producer or staged consumer is stuck, or was killed `no_progress`,
+read what it waited on before reading any host's logs:
+
+1.  For a running action, run `tools/fleet/pbstatus.py --starvation` and find
+    the action under `claimed_dependents`. For an action that already ended,
+    read its terminal record (see [Read a terminal record](#read-a-terminal-record)):
+    a `no_progress`, `execution_deadline` or `withdrawn` ending carries the
+    same fields.
+2.  Read `dependents`. Each row is one thing the action waits on: a
+    `produced_export` (its spool exports), a `mover_row` or `ram_mover_row`
+    (its staged and promoted ranges), or an egress. A row in `ready` with a
+    large `ready_age_s` is the stuck one. `dependents_truncated: true` means
+    there were more than 32; `dependents_total` counts them.
+3.  Read that row's `last_denial` for the current reason and its
+    `denial_transitions` for the sequence, oldest first. For example,
+    `measurement_holder` for 13 minutes and then `host_pressure` is two
+    different causes, and the first one is the one that held the row.
+4.  Read `tier_events` for the tier loops' verdicts about the action:
+    `window-stalled`, `range-adoption-declined`, `beyond-horizon-eviction-*`
+    and the deferrals. `waited_s` is how long the loop has seen that verdict
+    stand. `attributed_by: tier_id` marks a tier-wide verdict filed for every
+    consumer on the tier.
+
+The latest-only denial record and the tier loop's stdout still exist, but
+neither is the only copy any more. The ring is in
+`denial-transitions/<key>.json`, and the events are in
+`residency-events/<consumer>/<host>.jsonl`, both under the queue root.
+
 ### File the endings nobody asked for
 
 Under SLURM the ending is filed by whoever polls for the key. A job that ends
