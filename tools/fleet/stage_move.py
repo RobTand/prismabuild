@@ -1262,26 +1262,31 @@ class _StagedPublisher:
 
     @contextmanager
     def _arbitration(self, owners: _Owners, redo):
-        """Judge a divergent name's owners, then decide it again, locked (#966).
+        """Judge a divergent name's owners, then decide it again (#966).
 
         Before this, a name whose recorded owner held different bytes was
         refused forever: the refusal was retryable, the retry met the same
         owner, and a mover whose owner had long ended reran without end
         while holding fill.  The owners' states now decide it.
 
-        Each owner not already proven ended in this run is judged under its
-        own transition locks -- consumers, then movers, each set sorted,
-        taken without blocking so a long egress or claim never stalls a
-        copy; contention is ``busy`` -- and then, under the stage ownership
-        lock, the name is decided again by ``redo`` with a fresh collector.
-        The lock order is the one every holder keeps: transition before
-        ownership.  An owner proven ended is remembered for the rest of the
-        run, so a range whose names one dead owner holds is judged once, not
-        once per name: an ending is terminal for the queue unless the same
-        key is deliberately resubmitted, and a consumer resubmitted after
-        this judgment meets this copy's bytes under the name and is refused
-        by name, since its own arbitration finds this consumer live.  What a
-        judgment reads is listed in :meth:`_owner_state`.
+        Every owner that names it is held by its transition locks --
+        consumers, then movers, each set sorted, taken without blocking so a
+        long egress or claim never stalls a copy; contention is ``busy`` --
+        and each owner not already proven ended in this run is judged under
+        them.  Then, under the stage ownership lock, the name is decided
+        again by ``redo`` with a fresh collector.  The lock order is the one
+        every holder keeps: transition before ownership.
+
+        An owner proven ended is remembered for the rest of the run, so a
+        range whose names one dead owner holds is judged once, not once per
+        name.  An ending is terminal for the queue unless the same key is
+        resubmitted, which the dead-consumer pass and an operator both do,
+        and a resubmitted mover may adopt the old bytes under a name this
+        run has not reached yet.  So a remembered ending is re-checked under
+        the locks at every act, by :meth:`_requeued`'s four stats rather
+        than a full judgment; a return drops it and the name is judged
+        again.  What a full judgment reads is listed in
+        :meth:`_owner_state`.
 
         Yields ``(state, rows, verdict, why)``:
 
@@ -1290,8 +1295,9 @@ class _StagedPublisher:
         * ``changed``: under the stage lock the name no longer diverges, and
           ``verdict`` is the fresh decision, for the caller to act on while
           the lock is held;
-        * ``moved``: it still diverges, but an owner that was never judged
-          names it now;
+        * ``moved``: it still diverges, but an owner that was not held and
+          judged names it now, or an owner remembered as ended is queued
+          again;
         * ``live``: an owner's consumer is still queued or claimed -- a real
           conflict, refused terminally and never destroyed;
         * ``uncertain``: an ending could not be proven, or a fragment could
@@ -1306,9 +1312,10 @@ class _StagedPublisher:
                              if pair not in self._ended_owners)
             judged: dict[tuple[str, str], dict[str, object]] = {}
             with ExitStack() as held:
-                consumers = sorted({c for c, _ in pending
+                consumers = sorted({c for c, _ in owners.pairs
                                     if _is_action_key(c)})
-                movers = sorted({m for _, m in pending if _is_action_key(m)})
+                movers = sorted({m for _, m in owners.pairs
+                                 if _is_action_key(m)})
                 for key in consumers:
                     if not held.enter_context(self.queue._transition_locked(
                             key, blocking=False)):
@@ -1339,14 +1346,43 @@ class _StagedPublisher:
                     if verdict[0] != "divergent":
                         yield "changed", [], verdict, ""
                         return
-                    known = {**self._ended_owners, **judged}
-                    if any(pair not in known for pair in fresh.pairs):
+                    if not fresh.pairs <= owners.pairs:
                         yield ("moved", [], verdict,
                                "an owner that was not judged names it now")
                         return
+                    for pair in sorted(fresh.pairs - judged.keys()):
+                        requeued = self._requeued(pair)
+                        if requeued:
+                            del self._ended_owners[pair]
+                            yield "moved", [], verdict, requeued
+                            return
+                    known = {**self._ended_owners, **judged}
                     rows = [known[pair] for pair in sorted(fresh.pairs)]
                     state, why = _combined_owner_state(rows, fresh.complete)
                     yield state, rows, verdict, why
+
+    def _requeued(self, pair: tuple[str, str]) -> str:
+        """Why an owner remembered as ended may have come back, or ``""``.
+
+        A remembered ending is re-checked at every act by the records a
+        resubmission writes: a queue record for its consumer or its mover
+        in ``ready/`` or ``claimed/``.  Four stats and no listing; the
+        caller holds both owners' transition locks, so no record appears
+        while it acts.  An unreadable stat counts as a return: the owner is
+        judged again in full.
+        """
+
+        for key in pair:
+            for state in (pool.READY, pool.CLAIMED):
+                try:
+                    self.queue.item_path(state, key).stat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    return (f"owner {key[:12]}'s {state} record is "
+                            f"unreadable: {exc}")
+                return f"owner {key[:12]} is {state} again"
+        return ""
 
     def _judge_owners(self, pairs: set[tuple[str, str]],
                       ) -> list[dict[str, object]]:
@@ -1414,7 +1450,8 @@ class _StagedPublisher:
             return "uncertain", why
         live, error = residency_plan.live_state(self.queue, mover)
         if error:
-            return "uncertain", f"its mover's queue state is uncertain: {error}"
+            return ("uncertain",
+                    f"its mover's queue state is uncertain: {error}")
         if live is not None:
             return "uncertain", f"its mover {mover[:12]} is still {live}"
         return "ended", ""
@@ -1448,7 +1485,7 @@ class _StagedPublisher:
         return ""
 
     def _invalidated(self, norm: str, rows: list[dict[str, object]]) -> None:
-        """Record one invalidated name; the caller holds the arbitration lock."""
+        """Record one replaced name; the caller holds the arbitration lock."""
 
         self.invalidated.append({"stage_path": norm, "owners": list(rows)})
 

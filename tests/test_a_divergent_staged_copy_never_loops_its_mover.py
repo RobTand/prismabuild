@@ -469,7 +469,10 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
         rows = real(self, pairs)
         if not arrived:
             arrived.append(True)
-            base._publish(queue, late_consumer, max_attempts=1)
+            # Queued, not claimed: ``claim`` could pick another row.
+            queue.publish(action_key=late_consumer, cas_root="/cas",
+                          checkout_root="/co", worker_script="/w.py",
+                          resources={"cpu": 1})
             stale._write_sidecar(queue, stage, late_consumer, late_mover,
                                  stale._entries(stage))
             stale._fragment(queue, stage, late_consumer, late_mover)
@@ -492,3 +495,52 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
     assert owners == {(consumer, mover): "ended",
                       (late_consumer, late_mover): "live"}
     assert not receipt.get("invalidated")
+
+
+def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
+        fleet, tmp_path, monkeypatch) -> None:
+    """A remembered ending does not outlive the owner's resubmission.
+
+    The owner is proven ended before the copy and remembered for the run.
+    The same consumer key is then resubmitted -- the dead-consumer pass and
+    an operator both do this -- before the copy publishes.  The publication
+    must see the queue record the resubmission wrote, judge the owner again,
+    and refuse the live owner by name, never replace its bytes on the
+    strength of the remembered ending.
+    """
+
+    queue, stage, _ = fleet
+    consumer, mover = _old_owner(fleet, "failed")
+    world = _World(fleet, tmp_path, monkeypatch, "last")
+    path = _staged(stage, NAMES[1])
+    before = os.stat(path)
+    real = stage_move._StagedPublisher.publish
+    resubmitted: list[bool] = []
+
+    def resubmit_then_publish(self, *args, **kwargs):
+        if not resubmitted:
+            resubmitted.append(True)
+            queue.publish(action_key=consumer, cas_root="/cas",
+                          checkout_root="/co", worker_script="/w.py",
+                          resources={"cpu": 1})
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(stage_move._StagedPublisher, "publish",
+                        resubmit_then_publish)
+
+    rc, receipt = world.run()
+
+    assert resubmitted
+    after = os.stat(path)
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
+                                                 before.st_mtime_ns)
+    assert path.read_bytes() == OLD
+    assert rc == 1 and receipt["refusal"] == "staged_destination_conflict", (
+        receipt.get("refusal"), receipt.get("errors"))
+    assert receipt["conflict"]["owners"] == [
+        {"consumer_action_key": consumer, "mover_action_key": mover,
+         "state": "live"}]
+    assert not receipt.get("invalidated")
+    # Judged before the copy, and again once its return was seen.
+    timings = receipt["phase_timings"]
+    assert timings["thread_seconds"]["owner_judgement"]["calls"] == 2
