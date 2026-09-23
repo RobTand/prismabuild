@@ -8043,12 +8043,19 @@ review, item 2): the rank's walk over free is its reservation. A fence for
 the window's next phase took from free the room the walk gave its current
 range, which then could not claim (a 22 GiB grant held for `chain-042` on a
 30 GiB tier left 8 GiB for `chain-043`). A grant it already holds still
-binds. The window's other gates, including the retired-prior check, still
-apply. A `held-back`
-window, or a claimed window on a ranked tier the rank left out, is gated
-`held-by-claim-order`. It publishes nothing and takes no fence, and a grant
-it already holds is kept rather than read as dangling. One head is served a
-cycle.
+binds. The head publishes only once relief has made its room (`relief` in
+`RELIEF_MADE_ROOM`: `not-needed`, `evicted` or `preempted`). A head row
+published before its room exists sits unfit in `ready/`, and when the claim
+pass reaches it first it takes the room the walk gave a granted leg: in the
+starvation fixture, A's head row claimed B's granted 22 GiB every cycle.
+Otherwise the head is gated `held-by-claim-order` with `waiting_reason`
+`claim-order-relief-<relief>`; a head whose leg is already queued is left
+as it is. With both rules the walk is the reservation: every row the order
+publishes has its room in free. The window's other gates, including the
+retired-prior check, still apply. A `held-back` window, or a claimed window
+on a ranked tier the rank left out, is gated `held-by-claim-order`. It
+publishes nothing and takes no fence, and a grant it already holds is kept
+rather than read as dangling. One head is served a cycle.
 
 **What a held-back consumer is told.** Three records name the consumer
 ranked just ahead of it (`ahead`), the head it waits on, the GiB it waits
@@ -8138,6 +8145,17 @@ and at most one candidate walk a cycle, and at most two censuses.
   cannot recall it.
 * One head is served a cycle, so N blocked consumers take N cycles to
   drain, whatever the room.
+* Every granted window publishes one leg a cycle (#1022 review, item 7).
+  Measured on two chunked R12 plans, 11 GiB (11.70 GB) chunks, with 3, 4
+  and 6 chunks of room over three cycles
+  (`test_measure_the_legs_a_granted_chunked_window_publishes_a_cycle`):
+  every granted window published exactly one leg a cycle. That caps one
+  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s here,
+  above the fixture's slowest landing rate, 134 MB/s, so the cap costs
+  nothing at this chunk size. It binds for chunks below landing rate x
+  `CYCLE_INTERVAL_S` (8.05 GB, 7.5 GiB, at 134 MB/s), where one window's
+  stream is capped at chunk bytes / 60 s.
+* A preempted chunk is copied twice.
 * Only claimed consumers are ranked. A ready consumer whose leads are
   published is bounded by the commitment it was admitted on (#907), not by
   the order.
