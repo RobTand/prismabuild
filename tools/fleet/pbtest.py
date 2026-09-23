@@ -54,6 +54,9 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import adaptive_gpu, pool  # noqa: E402
 from pbrun import require_gpu_memory_scope  # noqa: E402
+#: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
+#: of the live store reaches it: see :func:`announced_ceilings`.
+import pbrun  # noqa: E402
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -175,10 +178,17 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     empty mapping: a bound is a convenience, and failing a submission because
     the shared store was slow would be a worse trade than deriving from the
     published default.
+
+    The queue read is the one every shard is submitted to, ``pbrun.SH /
+    "pb-queue"``, the root ``pbwait`` and ``pbstatus`` read too.  This used to
+    ask a bare ``pool.PoolQueue()``, whose default root
+    (``pool.DEFAULT_POOL_ROOT``, ``/mnt/shared/pb-queue``) is a directory no
+    box has, so it found no offers and every bound fell back to the published
+    default: 7170 s on dl380g10, whose loop announces 3600 s (#939).
     """
 
     try:
-        offers = pool.PoolQueue().offers()
+        offers = pool.PoolQueue(pbrun.SH / "pb-queue").offers()
     except Exception:
         return {}
     required = set(tags)
