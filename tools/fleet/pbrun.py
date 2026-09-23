@@ -5232,10 +5232,11 @@ def seal_movement_action(
 
     See ``prismabuild.movement_actions.seal_movement_action`` for the
     construction: a movement node is a sibling that shares the submission's
-    checkout snapshot, code closure, execution scope and environment base,
-    while its command is a fleet tool, its demand is tier tokens, and it is
-    placed on the box that owns the stage. The submitter's
-    ``container_owner`` settles ownership here, exactly as before.
+    checkout snapshot, code closure and environment variables, while its
+    command is a fleet tool, its demand is tier tokens, it is placed on the
+    box that owns the stage, and it is sealed as portable generation work
+    whatever the submission is (#944). The submitter's ``container_owner``
+    settles ownership here, exactly as before.
     """
 
     return movement_actions.seal_movement_action(

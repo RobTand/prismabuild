@@ -7284,6 +7284,45 @@ both off the tier or refuses. `publish_runtime` writes every fleet script to
 both `tools/<name>` and `tools/fleet/<name>`, and a checkout keeps only the
 latter, so the loop's own directory holds `stage_move.py` in either layout.
 
+A mover is also sealed as a mover, not as its consumer (#944). A pool
+`--measurement` consumer seals `task_class: measurement`, a `platform_keyed`
+scope and the submitter's toolchain (the Spark's shell digest, `machine:
+aarch64`). Its movers used to copy all three. Admission then held each mover
+to a measurement's idle-host rule on dl380g10, which always runs the tier
+loop, the broker and pbmetrics, so every pass refused it
+`measurement_host_not_idle`, and the consumer never got a staged byte (PQ
+d54952c1fcac, movers 68fdb8728f38 and 750a4f8c65eb, 1,596 refusals in
+134 s). Had admission let one through, preflight would have refused it next:
+an x86_64 worker matches neither the scope's platform key nor the toolchain.
+`movement_actions.seal_movement_action` now seals every mover and egress, for
+pbrun, the produced-output lane and the spool alike, as `generation`,
+`generic`, `portable` work with an empty toolchain
+(`MOVEMENT_TASK`, `MOVEMENT_EXECUTION_SCOPE`). A measurement's isolation is
+its own host's: the consumer is still refused anywhere but an idle host, and
+mover traffic on the stage host while it runs is part of the design.
+
+A mover keeps only these of its consumer's fields:
+
+| Field | Why the mover keeps it |
+|---|---|
+| `task.definition_id`, `definition_version` | They name the sealing tool; `adaptive_cpu.action_identity` keys pbrun's shape on `fleet/pbrun`. |
+| `task.working_directory` | Where the wrapper starts, relative to `cwd`. |
+| `task.determinism` | Keeps every generation consumer's mover key. It matters only when one key publishes a second result: a deterministic mover whose log differs is then refused as a conflict. |
+| `inputs`, `code_closure`, `params.cwd`, `params.checkout_snapshot` | Preflight materializes and proves the consumer's snapshot before the mover runs. |
+| `params.data_manifest` | The mover copies the manifest's ranges and verifies each entry's digest against it. |
+| `environment.variables` | The runtime generation's shim `PATH`; the two container-owner variables are re-derived for the mover. |
+| Row `priority` | The consumer's urgency: a mover that ranked below its consumer would starve it. |
+| Row `checkout_snapshot` | The materialization the sealed snapshot names. |
+
+Its own, never the consumer's: the task class, artifact family and kind,
+execution scope, toolchain, `argv` and result, command, demand, placement
+(`required_tags` is the tier's host, never the consumer's tags or
+`--host-class`), a mover's `retry_policy`, `max_attempts` and `retry_safe`
+(#603), and its container owner. It carries none of the consumer's
+`execution_timeout_s`, progress, profile, GPU or container-image
+parameters. An egress, which passes no retry policy, still inherits the
+consumer's retry policy and attempt limit.
+
 ### Not built here
 
 No end-to-end campaign speedup is claimed, and none is measurable until a

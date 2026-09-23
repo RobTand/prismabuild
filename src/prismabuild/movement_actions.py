@@ -26,6 +26,29 @@ SEALED_ARGV0 = "/bin/bash"
 _MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "retry_policy",
                         "data_manifest")
 
+#: Task fields a movement action keeps off its submission template (#944).
+#: ``definition_id`` and ``definition_version`` name the sealing tool, and
+#: ``adaptive_cpu.action_identity`` reads its pbrun shape off them;
+#: ``working_directory`` is where the wrapper starts, relative to ``cwd``;
+#: ``determinism`` keeps every existing mover key (see the note in
+#: `seal_movement_action`).  Everything else in the task is the mover's own.
+_MOVEMENT_TASK_KEYS = ("definition_id", "definition_version", "determinism",
+                       "working_directory")
+
+#: What a movement action is, whatever its consumer is (#944).  A mover copies
+#: bytes on the box that owns the stage, so it is ordinary portable generation
+#: work that logs its copy.  A consumer's ``measurement`` class, its
+#: platform-keyed or host-class-keyed scope and its toolchain describe the box
+#: that will compute, and on the stage host they only refuse the copy:
+#: admission demands an idle host for a measurement
+#: (``measurement_host_not_idle``), and preflight refuses a platform or
+#: toolchain the worker does not have.  For a ``generation`` consumer these are
+#: exactly the values it already had, so its movers keep their keys.
+MOVEMENT_TASK = {"task_class": "generation", "artifact_family": "generic",
+                 "artifact_kind": "generic"}
+MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
+                            "host_class": None}
+
 
 def movement_tools(tier: Mapping[str, object], *,
                    mover: str = "stage_move.py") -> tuple[str, str, str]:
@@ -143,10 +166,19 @@ def seal_movement_action(
 
     The child keeps everything an action's identity is made of and a mover
     does not vary: the same ``inputs`` (checkout snapshot, data manifest),
-    the same code closure, the same execution scope, the same environment
-    base. Its command is a fleet tool rather than the submitter's, its
-    demand is tier tokens rather than CPU and GPU, and it is placed on the
-    box that owns the stage rather than on the box that will compute.
+    the same code closure, the same environment variables. Its command is a
+    fleet tool rather than the submitter's, its demand is tier tokens rather
+    than CPU and GPU, and it is placed on the box that owns the stage rather
+    than on the box that will compute. So its task class, artifact family,
+    execution scope and toolchain are a mover's (`MOVEMENT_TASK`,
+    `MOVEMENT_EXECUTION_SCOPE`, no toolchain), never the consumer's (#944):
+    a measurement consumer's isolation is its own host's, not the stage
+    host's.
+
+    ``determinism`` is still the consumer's, so a generation consumer's
+    movers keep their keys. It only matters when a second result is
+    published under one key: a deterministic mover whose log differs would
+    then be refused as a conflict.
 
     ``container_owner_fn`` defaults to this module's ``container_owner``
     with the template's ``checkout_identity``; pbrun passes its wrapper so
@@ -193,10 +225,12 @@ def seal_movement_action(
     )
     variables[pool.CONTAINER_OWNER_ENV] = owner
     variables[pool.CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
+    task = template["task"]
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
-            **template["task"],                           # type: ignore[dict-item]
+            **{name: task[name] for name in _MOVEMENT_TASK_KEYS},  # type: ignore[index]
+            **MOVEMENT_TASK,
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
                      f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
                      f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
@@ -206,8 +240,9 @@ def seal_movement_action(
         "inputs": template["inputs"],                     # type: ignore[index]
         "code_closure": template["code_closure"],         # type: ignore[index]
         "params": params,
-        "environment": {**template["environment"], "variables": variables},  # type: ignore[index]
-        "execution_scope": template["execution_scope"],   # type: ignore[index]
+        "environment": {**template["environment"],       # type: ignore[index]
+                        "variables": variables, "toolchain": {}},
+        "execution_scope": dict(MOVEMENT_EXECUTION_SCOPE),
     }
     try:
         return pb.seal_action(body)
