@@ -154,6 +154,47 @@ def test_retire_keeps_a_held_lock_and_retires_a_free_one(tmp_path):
     assert posix_lock.retire(path) == "absent"
 
 
+def _cut_off_retirement(path: Path, monkeypatch) -> None:
+    """Run the real ``retire`` and fail its ``unlink``: the tombstone stays linked.
+
+    That is the residue of a retirer killed between its tombstone and its
+    unlink, or of an unlink the server refused.
+    """
+
+    def refused(*_args, **_kwargs):
+        raise OSError(5, "unlink refused")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(posix_lock.os, "unlink", refused)
+        assert posix_lock.retire(path).startswith("cannot retire")
+    assert path.read_bytes() == posix_lock.TOMBSTONE
+    assert os.stat(path).st_nlink == 1
+
+
+def test_a_retirement_cut_off_before_its_unlink_does_not_wedge_the_lock(tmp_path, monkeypatch):
+    """A holder finishes a tombstoned inode the name still names, then takes a fresh one.
+
+    Before the fix every opener of the name met the same tombstoned inode,
+    let it go and opened it again, without end.
+    """
+
+    path = tmp_path / "key.lock"
+    with posix_lock.held(path):
+        pass
+    _cut_off_retirement(path, monkeypatch)
+    assert _probe(path)
+    assert path.read_bytes() == b""
+
+
+def test_retire_finishes_a_retirement_cut_off_before_its_unlink(tmp_path, monkeypatch):
+    path = tmp_path / "key.lock"
+    with posix_lock.held(path):
+        pass
+    _cut_off_retirement(path, monkeypatch)
+    assert posix_lock.retire(path) == ""
+    assert not path.exists()
+
+
 # --------------------------------------------------------------------------
 # pb_gc --queue-root
 # --------------------------------------------------------------------------
