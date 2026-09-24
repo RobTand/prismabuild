@@ -368,3 +368,33 @@ def test_a_writers_file_displaced_by_a_later_one_is_kept_and_named(
     assert str(private) in refused[0]["reason"]
     assert private.read_bytes() == b"first" and path.read_bytes() == b"second"
     assert po.origin_retirement_tick(queue) == [], "reported once"
+
+
+def test_a_file_that_names_no_prefix_does_not_stop_the_owner_lookup(
+        tmp_path: Path) -> None:
+    """Only a template's prefix is read; a file without one names no paths.
+
+    The owner lookup reads every filed template's ``output_prefix``. A file
+    beside them that is not a template PB filed -- no prefix, or not JSON
+    -- has no attempts, so it is skipped rather than refusing every
+    prewrite and every decision on the queue.
+    """
+
+    fleet = _Fleet(tmp_path)
+    templates = fleet.q.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    (templates / "template-0.json").write_text(
+        '{"schema": "prismaquant.prismabuild.produced_output_template.v1", '
+        '"index": 0}\n')
+    (templates / "torn.json").write_text("{")
+    dead = fleet.producer("r13")
+    path = fleet.prefix / "entries" / "cotangent-0-64-at-43.pt"
+    assert dead.prewrite("b43p0-g1", [path], 64)["ok"] is True
+    dead.write(path, b"at-43, never committed")
+    dead.fail()
+    live = fleet.producer("r13-resume")
+
+    events = fleet.tick()
+
+    assert [event["event"] for event in events] == [PREWRITE_ORPHANED], events
+    other = fleet.prefix / "entries" / "cotangent-0-65-at-43.pt"
+    assert live.prewrite("b43p1-g1", [other], 64)["ok"] is True

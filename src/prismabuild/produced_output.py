@@ -865,9 +865,11 @@ def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> 
 # one names.  They never list every owner's scopes, except before the index
 # is complete.
 
-#: Checked template bodies by ``(file path, inode)``.  A filed template is
-#: immutable (`declare_template`), so a body is read once per process.
-_TEMPLATE_BODIES: dict[tuple[str, int], dict[str, object]] = {}
+#: Each filed template's id and output prefix by ``(file path, inode)``, or
+#: None for a file that names no prefix (`_filed_templates`).  A filed
+#: template is immutable (`declare_template`), so a file is read once per
+#: process.
+_TEMPLATE_BODIES: dict[tuple[str, int], dict[str, object] | None] = {}
 #: ``os.path.realpath`` of each output prefix, once per process.
 _PREFIX_REALPATHS: dict[str, str] = {}
 
@@ -917,12 +919,18 @@ def _mark_attempt_index_complete(queue_root: str | Path) -> None:
 
 
 def _filed_templates(queue_root: str | Path) -> dict[str, dict[str, object]]:
-    """Every filed template, by id.
+    """Every filed template's id and output prefix, by id.
 
-    One listing of the templates directory; a body not seen before is read
-    and checked once. A template that cannot be listed or read raises
-    `ProducedOutputError`: which paths it covers is unknown, so an answer
-    that leaves it out could miss an owner.
+    One listing of the templates directory; a file not seen before is read
+    once. Only ``template_id`` and ``output_prefix`` are read, not the whole
+    schema: a template filed by an older or a newer PB still names the
+    prefix its attempts write under, and that is all an owner lookup needs.
+    A file with no absolute ``output_prefix`` -- not JSON, not an object,
+    or without one -- is not a template `declare_template` filed, and no
+    attempt can have been bound to it (`bind_instance` validates the
+    template), so it names no paths and is skipped. A file that cannot be
+    read raises `ProducedOutputError`: whether it covers a path is unknown,
+    and an answer that leaves it out could miss an owner.
     """
 
     directory = Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
@@ -938,21 +946,30 @@ def _filed_templates(queue_root: str | Path) -> dict[str, dict[str, object]]:
     found: dict[str, dict[str, object]] = {}
     for name, inode in listed:
         key = (str(directory / name), inode)
-        body = _TEMPLATE_BODIES.get(key)
-        if body is None:
+        if key not in _TEMPLATE_BODIES:
             try:
-                body = validate_template(json.loads(
-                    (directory / name).read_text()))
+                raw = (directory / name).read_text()
             except FileNotFoundError:
                 continue
-            except (OSError, ValueError) as exc:
+            except OSError as exc:
                 raise ProducedOutputError(
                     f"unknown-retain: template {name}: {exc}") from None
-            if f"{body['template_id']}.json" != name:
-                raise ProducedOutputError(
-                    f"unknown-retain: template {name} names another id")
-            _TEMPLATE_BODIES[key] = body
-        found[str(body["template_id"])] = body
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = None
+            prefix = body.get("output_prefix") if isinstance(body, Mapping) else None
+            if not isinstance(prefix, str) or not os.path.isabs(prefix):
+                _TEMPLATE_BODIES[key] = None
+            else:
+                named = body.get("template_id")
+                _TEMPLATE_BODIES[key] = {
+                    "template_id": (named if isinstance(named, str) and named
+                                    else name[:-len(".json")]),
+                    "output_prefix": prefix}
+        body = _TEMPLATE_BODIES[key]
+        if body is not None:
+            found[str(body["template_id"])] = body
     return found
 
 
