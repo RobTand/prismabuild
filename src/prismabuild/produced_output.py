@@ -8147,8 +8147,9 @@ def origin_retirement_tick(queue, *, budget=None) -> list[dict[str, object]]:
       are swept (`_sweep_ended_prewrites`, #949), whatever the template:
       a staged template's too (#1053);
     * a staged batch of an ended attempt whose stage copy was never
-      retired has its stage retirement filed
-      (`_retire_dead_staged_batch`, #1053). Its origin files are kept.
+      retired has its stage retirement filed (`_retire_dead_staged_batches`,
+      #1053), one commitments write per instance (#1072). Its origin files
+      are kept.
 
     It also files the attempt index pointer of any scope that has none, and
     marks the index complete once one full pass has indexed every scope it
