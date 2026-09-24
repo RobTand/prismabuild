@@ -206,6 +206,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "onto the synthetic queue (#1053), run from a checkout through pbrun; "
      "it is a record of one measurement rather than an operator command, "
      "and it must never be pointed at the live stage or the live queue"),
+    ("bench_stage_reconcile.py",
+     "a standalone profile of the stage reconcile's census at the live "
+     "stage shape (#1073), run from a checkout through pbrun over a "
+     "synthetic stage and a scratch queue root; it is a record of one "
+     "measurement rather than an operator command, and it must never be "
+     "pointed at the live stage or the live queue"),
     ("qualify_record_visibility.py",
      "a standalone timing of how late an NFS client of the queue sees a "
      "record another box files, run from a checkout through pbrun against "
