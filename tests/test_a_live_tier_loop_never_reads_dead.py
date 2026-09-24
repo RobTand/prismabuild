@@ -202,9 +202,21 @@ def _oldest(ages: list[tuple[float, float]]) -> float:
     return max(age for _unix, age in ages)
 
 
+def _evidence(loop: _Loop, test: str, cycles: int) -> None:
+    """One line a ``-rP`` run shows: what a reader saw, for the receipt."""
+
+    print("liveness-evidence " + json.dumps({
+        "test": test, "cycles": cycles, "bound_s": BOUND_S,
+        "oldest_age_s": round(_oldest(loop.ages), 3),
+        "retirements": loop.retirements, "censuses": loop.censuses,
+        "tier_writes": len(loop.writes),
+        "liveness": tier_loop.LAST_CYCLE.get("liveness")}, sort_keys=True))
+
+
 def test_a_first_cycle_with_a_backlog_never_reads_dead(tmp_path, monkeypatch):
     loop = _Loop(tmp_path, monkeypatch)
     loop.cycle()
+    _evidence(loop, "first-cycle", 1)
     # The cycle did charge its units: at least one of each kind ran.
     assert loop.retirements >= 1 and loop.censuses >= 1, (
         loop.retirements, loop.censuses)
@@ -221,10 +233,13 @@ def test_the_backlog_drains_and_no_cycle_reads_dead(tmp_path, monkeypatch):
     units = UNRETIRED + 2 * DEAD_OWNER_PAIRS
     # Each cycle completes at least one unit, so the backlog is gone within
     # as many cycles as it has units; one more shows the steady state.
+    cycles = 0
     for _ in range(units + 1):
         loop.cycle()
+        cycles += 1
         if not loop.unretired() and loop.censuses >= 2 * DEAD_OWNER_PAIRS:
             break
+    _evidence(loop, "drain", cycles)
     assert loop.unretired() == []
     assert loop.censuses >= 2 * DEAD_OWNER_PAIRS
     oldest = _oldest(loop.ages)
@@ -277,6 +292,10 @@ def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
 
     monkeypatch.setattr(stage_release, "prune_stale_mentions", stalled)
     loop.cycle()
+    print("liveness-evidence " + json.dumps({
+        "test": "hung", "bound_s": BOUND_S,
+        **{key: seen.get(key) for key in ("dead_at", "alive", "rewritten")}},
+        sort_keys=True))
     assert seen.get("alive") is False, seen
     assert seen["rewritten"] is False, seen
     assert BOUND_S < float(seen["dead_at"]) <= BOUND_S + 1.0, seen
