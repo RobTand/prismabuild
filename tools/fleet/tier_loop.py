@@ -2024,8 +2024,12 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
             # the lock a seal renews its children under, so a plan filed
             # after this answer is renewed after the withdrawal below.
             with queue._transition_locked(mover_key):
+                asked = time.monotonic()
                 others = residency_plan.plan_interest(
                     queue, mover_key, exclude={key})
+                # The plans listing runs under the mover's lock (it must
+                # follow the lock to see a seal's plan); its cost is stamped.
+                interest_s = round(time.monotonic() - asked, 6)
                 if others["interested"] or others["unknown"]:
                     # Told once per mover, not every cycle it stays kept.
                     told = (str(queue.root), key, mover_key)
@@ -2036,7 +2040,8 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
                             "consumer": key, "mover": mover_key,
                             "state": origin,
                             "interested": others["interested"],
-                            "unknown": others["unknown"]})
+                            "unknown": others["unknown"],
+                            "interest_s": interest_s})
                     continue
                 try:
                     outcome = queue.withdraw(
@@ -2054,7 +2059,8 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
             events.append({
                 "event": "dead-consumer-mover-withdrawn",
                 "consumer": key, "mover": mover_key, "state": origin,
-                "withdrawn": bool(done), "status": outcome.get("status")})
+                "withdrawn": bool(done), "status": outcome.get("status"),
+                "interest_s": interest_s})
         if failed:
             return      # the plan is how the next cycle retries
         reaped = residency_plan.reap(

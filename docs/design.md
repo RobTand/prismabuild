@@ -7581,7 +7581,10 @@ index that does not list, reads there as nobody. Two rules close it:
   read for the keys its bytes name, not through `validate_plan`, so a plan a
   newer generation sealed (#615) still counts, and a plan that cannot be read
   keeps the mover. The pass decides and withdraws under the mover's own
-  transition lock.
+  transition lock. The plans listing has to follow that lock to see a seal's
+  plan, so it runs inside the hold, and its seconds are stamped as
+  `interest_s` on the `dead-consumer-mover-kept` and
+  `dead-consumer-mover-withdrawn` events.
 * The seal files its plan before it renews (`seal_window`, above), and renews
   under every mover's lock. So each withdrawal the pass makes either landed
   before the renewal's listing, and is retired by it, or runs after that

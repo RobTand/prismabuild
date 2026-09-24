@@ -400,3 +400,8 @@ def test_an_unreadable_plan_keeps_the_mover_as_unknown(
     assert any(event.get("event") == "dead-consumer-mover-withdrawn"
                and event.get("mover") == lead for event in events), events
     assert queue.live_withdrawal(lead) is not None, events
+    # The listing runs under the mover's lock; its seconds are on the record.
+    decided = [event for event in events if event.get("event") in (
+        "dead-consumer-mover-kept", "dead-consumer-mover-withdrawn")]
+    assert decided and all(isinstance(event.get("interest_s"), float)
+                           for event in decided), decided
