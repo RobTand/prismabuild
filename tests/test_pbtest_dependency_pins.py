@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ONE_PASS  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,7 +157,7 @@ def test_pin_resolution_waits_for_worker_execution(tmp_path, monkeypatch):
     resolver.write_text("raise RuntimeError('must not run on the coordinator')\n")
     calls = []
 
-    class Queued:
+    class Queued(ShardProcess):
         returncode = 0
         def communicate(self):
             return ONE_PASS, None

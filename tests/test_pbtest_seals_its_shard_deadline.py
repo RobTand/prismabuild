@@ -26,7 +26,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import shard_output_for  # noqa: E402
+from pbtest_shard_output import ShardProcess, shard_output_for  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
@@ -43,7 +43,7 @@ from prismabuild import pool, pytest_test_bound  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 
 
-class _FinishedProcess:
+class _FinishedProcess(ShardProcess):
     returncode = 0
 
     def __init__(self, command):

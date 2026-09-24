@@ -2931,7 +2931,7 @@ def _isolate_child_fds(write_fd: int) -> int:
 
 
 def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
-            cap_s: float | None = None) -> dict:
+            cap_s: float | None = None, announce_retained: bool = True) -> dict:
     """Run one read of the shared mount in a child this process can abandon.
 
     The shape is ``tools/fleet/mount_latency.py`` ``MountSampler._run_probe``,
@@ -2958,6 +2958,13 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
     ``{"status": "timed_out", "elapsed_s": ...}``
         the deadline expired first, or a previous section had already spent
         the budget and this one was never started.
+
+    ``announce_retained=False`` leaves the naming of a retained reader to the
+    caller, which gets the same record in ``abandoned``.  A waiting client
+    meets a retained reader once per turn of its wait and prints its own
+    notice at its own interval (#1048); the line below is not throttled.  A
+    signal that unwinds this call still prints it, because then the caller
+    never sees ``abandoned``.
     """
     if not deadline.bounded:
         # ``--timeout-s 0``: the pre-#350 path, in-process and unchanged.
@@ -2975,8 +2982,20 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
     # Reuse the worker's signal unwinding contract so a signal aimed only at
     # this parent still reaches the exact reader it owns through cleanup.
     with _sigterm_unwinds_this_process():
-        return _bounded_reader(section, read, deadline=deadline,
-                               abandoned=abandoned, cap_s=cap_s)
+        token = _ANNOUNCE_RETAINED.set(announce_retained)
+        try:
+            return _bounded_reader(section, read, deadline=deadline,
+                                   abandoned=abandoned, cap_s=cap_s)
+        finally:
+            _ANNOUNCE_RETAINED.reset(token)
+
+
+#: Whether ``_stop_reader`` names a retained reader on stderr; ``bounded``
+#: sets it for the one call.  A context variable, so a waiting client's threads
+#: (``pbwait.wait_for_keys``) each keep their own, and every stand-in for
+#: ``_stop_reader`` keeps its signature.
+_ANNOUNCE_RETAINED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pbstatus_announce_retained", default=True)
 
 
 def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> None:
@@ -2990,8 +3009,11 @@ def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> Non
                  "since_unix": round(time.time() - (time.monotonic() - started), 3)}
         abandoned.append(child)
         # Also report ownership during cancellation, when main cannot emit JSON.
-        print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}",
-              file=sys.stderr)
+        # A caller that asked to name the reader itself cannot while an
+        # exception (a signal's unwinding) is on its way out, so say it here.
+        if _ANNOUNCE_RETAINED.get() or sys.exc_info()[1] is not None:
+            print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}",
+                  file=sys.stderr)
 
 
 def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,

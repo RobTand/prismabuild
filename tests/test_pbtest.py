@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from pbtest_shard_output import ONE_PASS  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +31,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
 
     calls: list[list[str]] = []
 
-    class FinishedProcess:
+    class FinishedProcess(ShardProcess):
         returncode = 0
 
         def communicate(self):
@@ -80,7 +80,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
 
     calls: list[list[str]] = []
 
-    class FinishedProcess:
+    class FinishedProcess(ShardProcess):
         returncode = 0
 
         def communicate(self):

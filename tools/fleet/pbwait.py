@@ -483,6 +483,40 @@ def wait_one(
                     f"{unavailable_count} consecutive unavailable read(s). The "
                     "action may still be running or may already have landed"))
             return row
+        if row is not None and row.get("retained_readers"):
+            # The reader timed out and could not be reaped (#1048).  Wait for
+            # it to exit before any later read, as ``pbrun`` does (#1033), so
+            # no second reader starts beside it.  Past the deadline this is
+            # one non-blocking reap, and the row goes back as it is.
+            unavailable_count += 1
+            still, waited_s = pbrun.wait_out_retained_readers(
+                row["retained_readers"], deadline, tool="pbwait",
+                subject=key[:12])
+            now = time.monotonic()
+            if not still and now < deadline:
+                if last_notice is None or now - last_notice >= \
+                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
+                    last_notice = now
+                    print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
+                          "the reader has exited and was reaped, "
+                          f"{unavailable_count} consecutive unavailable read(s), "
+                          "retrying inside --wait-s", file=sys.stderr, flush=True)
+                continue
+            row = dict(row, retained_readers=still)
+            if deadline > entered:
+                if still:
+                    ending = (f"that reader was still retained when the wait "
+                              f"ended, {waited_s:.1f}s after its read timed out "
+                              f"(retained reader={json.dumps(still, sort_keys=True)}), "
+                              "so no second reader was started beside it")
+                else:
+                    ending = ("its reader was reaped when the wait ended, with "
+                              "no time left to read again")
+                row["note"] = (
+                    f"{row['note']}; {ending}, after {unavailable_count} "
+                    "consecutive unavailable read(s). The action may still be "
+                    "running or may already have landed")
+            return row
         unavailable_count = 0
         if row is not None:
             return row
@@ -520,10 +554,17 @@ def _look_once(q, key: str, *, cas, **kwargs):
         # so that ``wait_one`` and a ``pbcampaign`` window can look again
         # while their deadline lasts; at the deadline it stays exit 74.
         return _row(key, "record_error", note=str(exc), observation_timed_out=True)
+    except pbrun.OutcomeReaderRetained as exc:
+        # The reader timed out and is still in the kernel.  ``wait_one`` (and
+        # a ``pbcampaign`` window) waits it out before any later read, and the
+        # row carries it by PID and starttime so they can (#1048).
+        return _row(key, "record_error", note=str(exc),
+                    retained_readers=exc.retained)
     except pbrun.OutcomeReadUnavailable as exc:
-        # A retained or failed child is the exact reader a later diagnostic
-        # read would race.  Refuse this key without another shared-filesystem
-        # observation, lookup, or record mutation.
+        # A failed child, or one that delivered and was not reaped, is the
+        # exact reader a later diagnostic read would race.  Refuse this key
+        # without another shared-filesystem observation, lookup, or record
+        # mutation.
         return _row(key, "record_error", note=str(exc))
     except (OSError, slurm_lane.SlurmLaneError) as exc:
         state = kwargs.get("state") or {}

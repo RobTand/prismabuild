@@ -913,8 +913,28 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                     # authorized by it, and the next pass looks again. The
                     # row is still recorded, so a deadline that passes on it
                     # reports exit 74 rather than a verdict.
-                    if not (row.get("observation_timed_out")
-                            and time.monotonic() < deadline):
+                    if "retained_readers" in row and time.monotonic() < deadline:
+                        # A timed-out reader still in the kernel (#1048). The
+                        # pass read at zero patience, so its reader may still
+                        # be this process's child: wait it out, inside the
+                        # campaign's deadline, before any pass reads again.
+                        # A reader still retained at the deadline stops the
+                        # window, and its row says so (exit 74).
+                        still, waited_s = (pbrun.wait_out_retained_readers(
+                            row["retained_readers"], deadline, tool="pbcampaign",
+                            subject=key[:12])
+                            if row["retained_readers"] else ([], 0.0))
+                        if still:
+                            row = dict(row, retained_readers=still, note=(
+                                f"{row['note']}; that reader was still retained "
+                                f"when the campaign's --wait-s ran out, "
+                                f"{waited_s:.1f}s after its read timed out, so "
+                                "no second reader was started beside it. The "
+                                "action may still be running or may already "
+                                "have landed"))
+                            stopped = True
+                    elif not (row.get("observation_timed_out")
+                              and time.monotonic() < deadline):
                         stopped = True
                 elif row["status"] != "waiting":
                     try:

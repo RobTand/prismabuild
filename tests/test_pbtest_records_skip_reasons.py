@@ -21,6 +21,8 @@ import sys
 
 import pytest
 
+from pbtest_shard_output import ShardProcess  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -178,7 +180,7 @@ def _mocked_shard(tmp_path: Path, monkeypatch, output: str):
     (checkout / "tests" / "test_one.py").write_text("def test_one():\n    pass\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
 
-    class Finished:
+    class Finished(ShardProcess):
         returncode = 0
 
         def communicate(self):
