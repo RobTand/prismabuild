@@ -184,7 +184,11 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
         tmp_path) -> None:
     """The movement node shape is otherwise today's: the same flags, the
     chunk's range, a chunk suffix on the log -- so the window, the sweep
-    and the map need no new node kind."""
+    and the map need no new node kind.
+
+    The consumer the mover files under is the range's share namespace, not
+    the submitter (#1026): every consumer of the range reads the one copy,
+    so no one consumer's death may retire it."""
 
     import pbrun
 
@@ -202,7 +206,8 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
         str(Path(str(tier["mover_tools_root"])) / "stage_move.py"),
         "--pool-root", str(pbrun.SH / "pb-queue"),
         "--cas-root", str(pbrun.SH / "cas"),
-        "--consumer-action-key", CONSUMER,
+        "--consumer-action-key", residency_plan.share_namespace(
+            digest, STAGE_TIER, 40 * GIB, 80 * GIB),
         "--tier-id", STAGE_TIER,
         "--stage-root", str(tier["mountpoint"]),
         "--manifest-sha256", digest,

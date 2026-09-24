@@ -48,7 +48,7 @@ import array
 import bisect
 from contextlib import ExitStack, contextmanager
 import errno
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import os
@@ -3443,6 +3443,9 @@ def served_for(args) -> dict[str, object]:
         return {"served_host": args.served_host or "",
                 "served_addresses": tuple(args.served_address or ()),
                 "served_reason": "named on the command line"}
+    shared = _shared_consumers(args)
+    if shared is not None:
+        return _served_for_sharers(args, shared)
     try:
         queue = pool.PoolQueue(Path(args.pool_root))
         claim = pool._read_json(
@@ -3458,6 +3461,71 @@ def served_for(args) -> dict[str, object]:
     return {"served_host": found["served_host"],
             "served_addresses": found["served_addresses"],
             "served_reason": str(found["served_reason"])}
+
+
+def _shared_consumers(args) -> list[str] | None:
+    """The consumers a shared range is staged for, or ``None`` if it is not one.
+
+    A shared mover (#1026) files under its range's share namespace rather
+    than under a consumer, so the consumer its reads serve is every live
+    consumer still interested in the range
+    (``stage_release.shared_interest``).  ``None`` for an ordinary mover;
+    an empty list when the range is shared and nobody's interest reads.
+    """
+
+    try:
+        queue = pool.PoolQueue(Path(args.pool_root))
+        namespace = residency_plan.share_namespace_of(
+            queue, str(args.action_key))
+    except (OSError, ValueError, pool.PoolContractError):
+        return None
+    if namespace is None or namespace != str(args.consumer_action_key):
+        return None
+    try:
+        from stage_release import shared_interest
+        interest = shared_interest(queue, str(args.action_key))
+    except (ImportError, OSError, ValueError, pool.PoolContractError):
+        return []
+    return list(interest["interested"])
+
+
+def _served_for_sharers(args, consumers: Sequence[str]) -> dict[str, object]:
+    """:func:`served_for` of a shared range: every sharer's box, joined.
+
+    Each claimed sharer's box is found the way one consumer's is -- its
+    claim names the host and that host's offer names its addresses -- and
+    the addresses are the union.  A sharer that is not claimed reads
+    nothing yet, so it adds no address; with none claimed every client is
+    protected, as for one unclaimed consumer.
+    """
+
+    queue = pool.PoolQueue(Path(args.pool_root))
+    hosts: list[str] = []
+    addresses: list[str] = []
+    reasons: list[str] = []
+    for consumer in consumers:
+        try:
+            claim = pool._read_json(queue.item_path(pool.CLAIMED, consumer))
+        except (OSError, pool.PoolContractError):
+            claim = None
+        if not isinstance(claim, dict):
+            continue
+        found = prewarm_loop.served_addresses(
+            queue, prewarm_loop.claimed_host_of(claim))
+        host = str(found["served_host"])
+        if host and host not in hosts:
+            hosts.append(host)
+        for address in found["served_addresses"]:     # type: ignore[union-attr]
+            if address not in addresses:
+                addresses.append(str(address))
+        reasons.append(f"{consumer[:12]}: {found['served_reason']}")
+    if not hosts:
+        return {"served_host": "", "served_addresses": (),
+                "served_reason": ("shared range: no sharer is claimed, so "
+                                  "every client is a client to protect")}
+    return {"served_host": ",".join(sorted(hosts)),
+            "served_addresses": tuple(addresses),
+            "served_reason": "shared range: " + "; ".join(reasons)}
 
 
 def announced_pool_identity(pool_root: str | Path,
@@ -4112,6 +4180,21 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
     record that could not be read or written.
     """
 
+    try:
+        namespace = residency_plan.share_namespace_of(queue, mover)
+    except (OSError, ValueError, pb.PrismaBuildError):
+        return False
+    if namespace is not None and namespace == consumer:
+        # A shared range's window is every sharer's (#1026): each plan that
+        # names this mover would republish it into the same refusal.
+        try:
+            from stage_release import shared_interest
+            sharers = shared_interest(queue, mover)
+        except (ImportError, OSError, ValueError, pb.PrismaBuildError):
+            return False
+        marked = [retire_conflicted_window(queue, sharer, mover, conflict)
+                  for sharer in sharers["interested"]]
+        return any(marked)
     try:
         refused: list[Exception] = []
         plan, filing = residency_plan.read_filed(

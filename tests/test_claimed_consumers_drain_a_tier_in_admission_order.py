@@ -489,73 +489,61 @@ def test_a_younger_blocked_consumer_ranks_before_an_older_read_ahead() -> None:
 # ------------------------------------------------ N consumers of one range
 
 
-def test_a_range_two_claimed_consumers_read_is_charged_to_each_of_them(
+def test_a_range_two_claimed_consumers_read_is_charged_once(
         tmp_path: Path) -> None:
-    """#1011 point 3: how joint commitment charges a range two consumers read.
+    """#1011 point 3, closed by #1026: a range two consumers read is one copy.
 
     Two claimed consumers read the same manifest, so their ``phase-0`` legs
-    name the same bytes (``tier_loop._descriptor``) and, by
-    ``stage_move.stage_relative``, the same staged name: the second copy
-    adopts the first's file.  The ledger is not told.  Each consumer's mover
-    is its own action key (the key hashes ``--consumer-action-key``), and the
-    second mover's claim takes the range's full tokens from free
-    (``PoolQueue._begin_tier_acquire``).  The census then counts the range
-    once per consumer.  This test records that per-consumer charge; it is
-    evidence for the gap the PR reports, not a behaviour to keep.
+    name the same bytes (``tier_loop._descriptor``).  Before #1026 each
+    consumer sealed its own mover for them (the key hashes
+    ``--consumer-action-key``), the second mover's claim took the range's
+    full tokens from free (``PoolQueue._begin_tier_acquire``), and the
+    census charged the range once per consumer; this test recorded that
+    double charge.  Now the first submitter registers the range's mover
+    (``residency_plan.register_shared_range``) and the second names the same
+    one, so the fixture builds both plans through the registry: one mover,
+    one holder on the ledger, staged for both windows, and one census
+    charge.  Before the fix the same assertions, over the fixture as it was,
+    fail on the second charge.
     """
+
+    from test_n_consumers_of_one_range_share_one_copy import (
+        _namespace, _shared_plan)
 
     queue, stage = _fixture_queue(tmp_path, 20)
     manifest = _hexkey("7shared")
     first, second = _hexkey("sharedfirst"), _hexkey("sharedsecond")
     plans = {}
     for key, label in ((first, "sharedfirst"), (second, "sharedsecond")):
-        plans[key] = _small_plan(queue, key, label=label, manifest=manifest,
-                                 phases=4)
+        plans[key] = _shared_plan(queue, key, label=label, manifest=manifest,
+                                  phases=4)
         _publish_consumer(queue, key, plans[key], manifest=manifest)
     lead = plans[first]["phases"][0]                       # type: ignore[index]
-    first_mover = str(lead["mover_row"]["action_key"])
-    _land(queue, stage, consumer=first, manifest=manifest, mover=first_mover,
-          name="phase-0", start=int(lead["start_bytes"]),
-          end=int(lead["end_bytes"]))
+    mover = str(lead["mover_row"]["action_key"])
+    start, end = int(lead["start_bytes"]), int(lead["end_bytes"])
+    assert str(plans[second]["phases"][0]["mover_row"]["action_key"]) == mover  # type: ignore[index]
+    _land(queue, stage, consumer=_namespace(first, manifest, start, end),
+          manifest=manifest, mover=mover, name="phase-0", start=start, end=end)
     now = time.time()
     for key in (first, second):
         _claim(queue, key, phase="phase-0", claimed_unix=now - 1000.0,
                reported_unix=now - 10.0)
-    row = dict(plans[second]["phases"][0]["mover_row"])    # type: ignore[index]
-    second_mover = str(row["action_key"])
-    queue.publish(**row)
-    received = queue.staged_range_of(first_mover)
-    assert received is not None
-    residency = row["residency"]
-    assert tier_loop._descriptor(
-        str(received["manifest_sha256"]), TIER,
-        int(received["range_start_bytes"]), int(received["range_end_bytes"])
-    ) == tier_loop._descriptor(
-        str(residency["manifest_sha256"]), TIER,
-        int(residency["range_start_bytes"]), int(residency["range_end_bytes"]))
-    assert first_mover != second_mover
     ledger = queue.tier_ledger(TIER)
-    before = int(ledger.held().get("stage_gib", 0))
 
-    handles: dict[str, str] = {}
-    funded: dict[str, dict[str, object]] = {}
-    shortage = queue._begin_tier_acquire(
-        second_mover, {TIER: {"stage_gib": PHASE_GIB}}, handles, funded)
-
-    assert shortage is None
-    # The claim wins its rename and files the tokens under the mover.
-    assert queue._commit_tier_acquire(second_mover, handles) == PHASE_GIB
-    # One range of PHASE_GIB bytes, charged twice.
-    assert int(ledger.held().get("stage_gib", 0)) == before + PHASE_GIB
-    assert before == PHASE_GIB
+    # One range of PHASE_GIB bytes, charged once, and staged for both.
+    assert int(ledger.held().get("stage_gib", 0)) == PHASE_GIB
+    for key in (first, second):
+        _published, staged = tier_loop._mover_state(queue, plans[key], TIER)
+        assert mover in staged
     tiers = {TIER: _tier_record(stage, gib=20)}
     unknown: list[dict[str, object]] = []
     consumers = tier_loop._planned_consumers(queue, tiers, unknown=unknown)
     census = tier_loop._commitment_census(queue, tiers, consumers=consumers,
                                           unknown=unknown, remember=False)[TIER]
-    charged = {entry["consumer"]: entry["gib"] for entry in census["holders"]
-               if entry["key"] in (first_mover, second_mover)}
-    assert charged == {first: PHASE_GIB, second: PHASE_GIB}, census["holders"]
+    charged = [entry["gib"] for entry in census["holders"]
+               if entry["key"] == mover]
+    assert charged == [PHASE_GIB], census["holders"]
+    assert sum(entry["gib"] for entry in census["holders"]) == PHASE_GIB
 
 
 # ------------------------------------------------ the no_progress verdict

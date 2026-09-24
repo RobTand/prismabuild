@@ -40,6 +40,16 @@ reads the token and not the receipt.
 Each cycle row then carries the stage-lock hold its sweep receipts
 recorded.
 
+``--shared-consumers`` adds the #1026 campaign shape: that many claimed
+consumers, spread over ``--shared-hosts``, each reading the same
+``--shared-phases``-phase plan of ``--shared-phase-gib`` GiB phases, with
+the first ``--shared-landed`` phases landed.  On a tree with the shared
+range registry each phase has one registered mover every plan names, landed
+once under its range's share namespace; on a tree without it, which is the
+before shape, each consumer has its own mover per phase and lands its own
+copy.  The same script, run against both trees, measures what sharing does
+to the cycle.
+
 Run it through PrismaBuild on a GB10, never on the tier host, and never
 against the live queue::
 
@@ -330,6 +340,151 @@ def build_no_range_claims(queue: pool.PoolQueue, count: int) -> dict[str, int]:
     return {"no_range_claims": count} if count else {}
 
 
+SHARED_MANIFEST = "7" * 64
+#: The tier announcement every bench registration is sealed against: one
+#: runtime generation, so every later consumer reuses the first one's row.
+BENCH_ANNOUNCEMENT = {"mover_python": "/bench/python",
+                      "mover_tools_root": "/bench/tools/fleet"}
+
+
+def _shared_row(queue: pool.PoolQueue, consumer: str, ordinal: int, *,
+                phase_gib: int, total: int) -> dict[str, object]:
+    """One consumer's mover row for one phase of the shared manifest.
+
+    Registered for sharing when the tree has the registry (#1026): the
+    first consumer's row is filed and every later consumer's plan names it.
+    """
+
+    start = ordinal * phase_gib * GIB
+    end = start + phase_gib * GIB
+    row = {
+        **_row(queue, _key(f"{consumer}:shared-mover{ordinal}"),
+               {STAGE_KIND: phase_gib, "cpu": 1, "mem_gb": 1}),
+        "residency": {
+            "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+            "manifest_sha256": SHARED_MANIFEST, "manifest_bytes": total,
+            "range_start_bytes": start, "range_end_bytes": end},
+    }
+    register = getattr(residency_plan, "register_shared_range", None)
+    if register is None:
+        return row
+    record, _sealed = register(
+        queue, manifest_sha256=SHARED_MANIFEST, tier_id=TIER, start=start,
+        end=end, seal=lambda: (row, {}), registered_by=consumer,
+        sealed_against=BENCH_ANNOUNCEMENT)
+    return dict(record["mover_row"])
+
+
+def _land_shared(queue: pool.PoolQueue, stage: Path, *, vouch_as: str,
+                 mover: str, ordinal: int, phase_gib: int,
+                 files: int) -> None:
+    """One landed range of the shared manifest, as its mover files it."""
+
+    start = ordinal * phase_gib * GIB
+    end = start + phase_gib * GIB
+    share, remainder = divmod(end - start, files)
+    entries: dict[str, object] = {}
+    for index in range(files):
+        size = share + (remainder if index == files - 1 else 0)
+        # Content-addressed, as ``stage_move.stage_relative`` names it: every
+        # consumer's copy of a range lands under the same name.
+        path = (stage / SHARED_MANIFEST[:8] / f"phase-{ordinal}"
+                / f"part-{index}.bin")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as stream:
+            stream.truncate(size)
+        entries[residency_map.residency_map_key(
+            f"/pool/{SHARED_MANIFEST[:8]}/phase-{ordinal}/part-{index}.bin",
+            0)] = {"stage_path": str(path), "bytes": size, "offset": 0,
+                   "sha256": DIGEST}
+    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": phase_gib})
+    root = queue.residency_fragment_root()
+    residency_map.write_fragment(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": vouch_as, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(stage),
+        "manifest_sha256": SHARED_MANIFEST, "entries": entries})
+    reader_lease.write_material(
+        root, consumer_action_key=vouch_as, mover_action_key=mover,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256=SHARED_MANIFEST,
+        generation="a" * 32,
+        entries={key: {**dict(mention),  # type: ignore[dict-item]
+                       "file_id": reader_lease.stat_identity(
+                           str(mention["stage_path"]))}  # type: ignore[index]
+                 for key, mention in entries.items()})
+    queue.record_move(mover, {
+        "consumer_action_key": vouch_as, "tier_id": TIER,
+        "stage_root": str(stage), "manifest_sha256": SHARED_MANIFEST,
+        "range_start_bytes": start, "range_end_bytes": end,
+        "range_bytes": end - start, "bytes_staged": end - start,
+        "entries_declared": files, "entries_staged": files,
+        "complete": True, "seconds": 150.0, "unix": time.time()})
+
+
+def build_shared_consumers(queue: pool.PoolQueue, stage: Path, *,
+                           consumers: int, phases: int, phase_gib: int,
+                           landed: int, hosts: list[str],
+                           files: int) -> dict[str, int]:
+    """The #1026 campaign shape: N consumers of one plan (see the docstring)."""
+
+    counts: collections.Counter = collections.Counter()
+    if consumers <= 0:
+        return dict(counts)
+    total = phases * phase_gib * GIB
+    share_namespace = getattr(residency_plan, "share_namespace", None)
+    landed_movers: set[str] = set()
+    for index in range(consumers):
+        consumer = _key(f"shared-consumer{index}")
+        built = []
+        for ordinal in range(phases):
+            start = ordinal * phase_gib * GIB
+            built.append({
+                "name": f"phase-{ordinal}", "start_bytes": start,
+                "end_bytes": start + phase_gib * GIB, "stage_gib": phase_gib,
+                "mover_row": _shared_row(queue, consumer, ordinal,
+                                         phase_gib=phase_gib, total=total),
+                "egress_row": _row(queue, _key(
+                    f"{consumer}:shared-egress{ordinal}"), {"mem_gb": 1}),
+            })
+        plan = residency_plan.build_plan(
+            consumer_action_key=consumer, tier_id=TIER, stage_root=str(stage),
+            manifest_sha256=SHARED_MANIFEST, manifest_bytes=total,
+            phases=built)
+        residency_plan.freeze(queue, plan)
+        queue.publish(
+            action_key=consumer, cas_root=queue.root / "cas",
+            checkout_root=queue.root / "co",
+            worker_script=queue.root / "worker.py",
+            tags=[HOST], resources={"cpu": 1, "mem_gb": 1},
+            residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                       "manifest_sha256": SHARED_MANIFEST,
+                       "manifest_bytes": total,
+                       "leads": residency_plan.leads_for(plan)})
+        for ordinal in range(min(landed, phases)):
+            mover = str(built[ordinal]["mover_row"]["action_key"])  # type: ignore[index]
+            if mover in landed_movers:
+                continue          # one copy of a shared range
+            start = ordinal * phase_gib * GIB
+            vouch_as = (share_namespace(SHARED_MANIFEST, TIER, start,
+                                        start + phase_gib * GIB)
+                        if share_namespace is not None else consumer)
+            _land_shared(queue, stage, vouch_as=vouch_as, mover=mover,
+                         ordinal=ordinal, phase_gib=phase_gib, files=files)
+            landed_movers.add(mover)
+            counts["shared_ranges_landed"] += 1
+        _claim(queue, consumer)
+        claimed = queue.item_path(pool.CLAIMED, consumer)
+        item = json.loads(claimed.read_text())
+        item["claimed_host"] = hosts[index % len(hosts)] if hosts else HOST
+        claimed.write_text(json.dumps(item))
+        counts["shared_consumers"] += 1
+    counts["shared_distinct_movers"] = len({
+        mover for index in range(consumers)
+        for mover in residency_plan.mover_keys(residency_plan.read(
+            queue, _key(f"shared-consumer{index}")) or {"phases": []})})
+    return dict(counts)
+
+
 def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
     counts = collections.Counter()
     counts.update(bench_stage_adopt.build_forest(
@@ -379,6 +534,14 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
     counts["claimed_noise"] = args.claimed_noise
     counts.update(build_no_range_claims(
         queue, getattr(args, "no_range_claims", 0)))
+    counts.update(build_shared_consumers(
+        queue, stage, consumers=getattr(args, "shared_consumers", 0),
+        phases=getattr(args, "shared_phases", 45),
+        phase_gib=getattr(args, "shared_phase_gib", 22),
+        landed=getattr(args, "shared_landed", 4),
+        hosts=[host for host in str(getattr(
+            args, "shared_hosts", "") or "").split(",") if host],
+        files=args.files_per_range))
     return dict(counts)
 
 
@@ -607,6 +770,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-range-claims", type=int, default=0,
                         help="claimed fill-rate-only exports that seal no "
                              "range (#1056)")
+    parser.add_argument("--shared-consumers", type=int, default=0,
+                        help="claimed consumers reading one shared plan "
+                             "(#1026's campaign shape: 4)")
+    parser.add_argument("--shared-phases", type=int, default=45,
+                        help="phases in the shared plan")
+    parser.add_argument("--shared-phase-gib", type=int, default=22,
+                        help="GiB in each phase of the shared plan")
+    parser.add_argument("--shared-landed", type=int, default=4,
+                        help="leading phases of the shared plan already "
+                             "landed")
+    parser.add_argument("--shared-hosts", default="sparky,sparklina",
+                        help="comma-separated hosts the shared consumers are "
+                             "claimed on, in turn")
     parser.add_argument("--run-cycles", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--cycles-out", default="", help=argparse.SUPPRESS)

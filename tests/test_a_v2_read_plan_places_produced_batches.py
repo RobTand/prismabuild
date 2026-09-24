@@ -188,6 +188,10 @@ def _run_mover(tmp_path: Path, queue: pool.PoolQueue, key: str,
     mover = str(phase["mover_row"]["action_key"])
     command = _request(tmp_path, mover)["params"]["command"]
     assert stage_move.main([*command[2:], "--action-key", mover, "--unpaced"]) == 0
+    # The mover files its vouch under the range's share namespace (#1026);
+    # the tier loop's next cycle copies it to each consumer that reads the
+    # range, before it composes that consumer's map.
+    _tier_cycle(queue, tmp_path / "stage")
     return mover, rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
 
 

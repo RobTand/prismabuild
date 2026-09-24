@@ -77,7 +77,7 @@ PHASES = {
     "planned_consumers", "withdrawn_keys", "withdraw_dead_consumer_movers",
     "adopt_resident_ranges", "window_pressure",
     "reclaim_failed_mover_partials", "sweep_orphans", "evict_beyond_horizon",
-    "ram_residency_window", "residency_window",
+    "fan_out_shared_ranges", "ram_residency_window", "residency_window",
     "retire_terminal_output_funding", "origin_retirement_tick",
     "deferred_release", "census_cost_and_retired_tiers",
 }
