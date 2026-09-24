@@ -137,6 +137,9 @@ _LANDING_RANGE_KEYS = frozenset({
     # time, ``queue`` for a ready range.  A ``reported`` range also carries
     # the report's bytes, time and the rate they landed at.
     "basis", "landed_bytes", "reported_unix", "live_bytes_per_s",
+    # The mover's own landing report (#1090): the bytes it has read, landed
+    # or not, and when its copy started.
+    "copied_bytes", "started_unix",
     # A range the claim order holds back (#1011).
     "held_back_by", "waiting_on", "waiting_gib", "claim_rank",
     "expected_landing_basis",
@@ -703,10 +706,10 @@ def validate_landing(value: object) -> dict[str, object]:
                 raise ResidencyMapError(
                     f"landing range basis must be one of {LANDING_BASES}")
             row["basis"] = entry["basis"]
-        if "landed_bytes" in entry:
-            row["landed_bytes"] = _nonnegative(entry["landed_bytes"],
-                                               where="landed_bytes")
-        for name in ("reported_unix", "live_bytes_per_s"):
+        for name in ("landed_bytes", "copied_bytes"):
+            if name in entry:
+                row[name] = _nonnegative(entry[name], where=name)
+        for name in ("reported_unix", "live_bytes_per_s", "started_unix"):
             if name in entry:
                 row[name] = _finite_or_none(entry[name], where=name)
         if "movers_ahead" in entry:

@@ -368,6 +368,27 @@ class ReceiptCache:
             self._folds[key] = kept
         return copy.deepcopy(kept[1])
 
+    def mover_cap(self, tier_id: str,
+                  pool_identity: Mapping[str, object] | None,
+                  ) -> dict[str, object]:
+        """``storage_tiers.mover_cap_from_records`` over the last :meth:`read`.
+
+        Remembered on the same rule as :meth:`fill_supply` (#1091): folded
+        again only when a receipt directory's records changed.
+        """
+
+        generations = tuple((str(directory),
+                             self.records.generation(directory))
+                            for directory in self._directories)
+        key = "mover-cap:" + json.dumps([tier_id, pool_identity],
+                                        sort_keys=True, default=str)
+        kept = self._folds.get(key)
+        if kept is None or kept[0] != generations:
+            kept = (generations, storage_tiers.mover_cap_from_records(
+                self._records, tier_id=tier_id, pool_identity=pool_identity))
+            self._folds[key] = kept
+        return copy.deepcopy(kept[1])
+
 
 def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | None:
     """The fill the oldest ready item asks of this tier, or ``None`` when none does."""
@@ -2554,6 +2575,12 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
     an incomplete one, or one that does not read: an unlanded copy measured
     nothing.  The receipt is read again whenever its file changed, because
     a re-staged range replaces it (``record_move`` writes atomically).
+
+    ``None`` too for a copy that landed faster than the whole pool delivered
+    while it ran (:func:`storage_tiers.outran_the_pool`, #1090): the ARC or
+    the stage served it, so its rate prices nothing a cold copy of the same
+    leg will do.  On 2026-09-24 such copies priced a cold 14.8 GB copy to land
+    in seconds; it took 497 s.
     """
 
     cache_key = (str(queue.root), str(mover_action_key))
@@ -2580,7 +2607,9 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
         return None
     if staged <= 0 or not math.isfinite(seconds) or seconds <= 0:
         return None
-    rate = staged / seconds
+    rate: float | None = staged / seconds
+    if storage_tiers.outran_the_pool(record):
+        rate = None
     if identity is not None:
         _LANDING_RATES[cache_key] = (identity, rate)
     return rate
@@ -2677,9 +2706,11 @@ def _plan_landing(queue: pool.PoolQueue, plan: Mapping[str, object], *,
                   ram: bool = False) -> tuple[float | None, str]:
     """A leg's landing rate for the refill horizon, and its basis (#903, #909).
 
-    The slowest complete copy of this leg of the plan (``measured``).  Before
-    one lands, a stage leg stands on the smallest fill its copies were sealed
-    with (``sealed``), a rate fixed when the plan was sealed.  A ram leg has
+    The slowest complete copy of this leg of the plan (``measured``), among
+    the copies the pool served: one that outran the pool's whole delivery
+    came off the ARC or the stage (:func:`_landing_rate`, #1090).  Before
+    such a copy lands, a stage leg stands on the smallest fill its copies
+    were sealed with (``sealed``), a rate fixed when the plan was sealed.  A ram leg has
     no stand-in (#906).  Never the tier's announced fill supply: it moves as
     the loop probes the pool, and a price read off it made the same queue
     admit a newcomer on one cycle and refuse it on the next (#909).
@@ -4147,6 +4178,114 @@ def _staged_wait(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
     if memo is not None:
         memo[cache_key] = record
     return record
+
+
+#: The tier record's field that carries :func:`reader_plan` (#1091).
+READER_PLAN_FIELD = pool.READER_PLAN_FIELD
+
+
+def declared_wait_movers(queue: pool.PoolQueue,
+                         tier_id: str) -> list[dict[str, object]]:
+    """The stage copies claimed consumers on ``tier_id`` are blocked on (#1091).
+
+    A claimed consumer whose reader declared a staged wait (#989, #1018)
+    names the movers it is blocked on.  A mover counts when the record falls
+    inside the claim (the rule :func:`_declared_wait_end` keeps), the mover
+    is one of the stage legs of that consumer's own frozen plan, and it is
+    queued on this tier, ``ready`` or ``claimed``, with no complete receipt.
+    A shared mover (#1026) is one leg of every sharer's plan, so it counts
+    when any of them waits on it, and it lists every one.
+
+    Oldest wait first.  Each row is ``{"mover_action_key", "state",
+    "consumers", "since_unix"}``.  One bounded read per claimed consumer per
+    cycle (:func:`_staged_wait`), and a plan read only for a consumer that
+    declared a wait.
+    """
+
+    waits: dict[str, dict[str, object]] = {}
+    try:
+        claimed = stage_release.queue_records(queue, pool.CLAIMED)
+    except (OSError, pool.PoolContractError):
+        return []
+    for _path, item in claimed:
+        if not isinstance(item, dict):
+            continue
+        residency = item.get("residency")
+        if (not isinstance(residency, dict) or not residency.get("leads")
+                or str(residency.get("tier_id") or "") != str(tier_id)):
+            continue
+        key = item.get("action_key")
+        stamp = item.get("claimed_unix")
+        if (not isinstance(key, str) or isinstance(stamp, bool)
+                or not isinstance(stamp, (int, float))):
+            continue
+        record = _staged_wait(queue, key)
+        if record is None:
+            continue
+        since = float(record["since_unix"])                     # type: ignore[arg-type]
+        if not math.isfinite(since) or since < float(stamp):
+            continue
+        try:
+            plan, _incarnation = residency_plan.read_filed(queue, key)
+        except (OSError, ValueError, pool.PoolContractError,
+                residency_plan.ResidencyPlanError):
+            continue
+        if plan is None or str(plan.get("tier_id") or "") != str(tier_id):
+            continue
+        legs = set(residency_plan.stage_mover_keys(plan))
+        for mover in record["movers"]:                          # type: ignore[union-attr]
+            if mover not in legs:
+                continue
+            row = waits.setdefault(str(mover), {
+                "mover_action_key": str(mover), "consumers": [],
+                "since_unix": since})
+            row["consumers"].append(key)                        # type: ignore[union-attr]
+            row["since_unix"] = min(float(row["since_unix"]), since)  # type: ignore[arg-type]
+    out: list[dict[str, object]] = []
+    for mover, row in waits.items():
+        found = _queued_mover(queue, mover)
+        if found is None:
+            continue
+        state, queued = found
+        residency = queued.get("residency")
+        if (not isinstance(residency, Mapping)
+                or str(residency.get("tier_id") or "") != str(tier_id)):
+            continue
+        if state == pool.CLAIMED and queue.copy_filed_complete(mover):
+            continue
+        row["state"] = state
+        row["consumers"] = sorted(set(row["consumers"]))        # type: ignore[arg-type]
+        out.append(row)
+    return sorted(out, key=lambda row: (float(row["since_unix"]),  # type: ignore[arg-type]
+                                        str(row["mover_action_key"])))
+
+
+def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
+                cap: Mapping[str, object]) -> dict[str, object]:
+    """What reads this stage tier's pool first, and how many copies at once (#1091).
+
+    Announced on the tier record every cycle, beside ``fill_supply``, and
+    read by the claim pass (``pool.PoolQueue.reader_plan_verdict``) and by
+    every running copy (``stage_move``):
+
+    * ``declared_wait``: :func:`declared_wait_movers`.  While it lists any
+      copy, only those copies are claimed on the tier, the fill ledger does
+      not hold them back, the disk pacer never holds them, and every other
+      running copy on the tier stands aside while one of them is
+      ``claimed`` (a ``ready`` one reads nothing, #1091 review 1).
+    * ``cap``: :func:`storage_tiers.mover_cap_from_records`, the mover count
+      at which this pool's measured delivery stops rising, with its curve
+      and its method.  No more copies than that are claimed at once.
+
+    The plan is as fresh as the record's ``announced_unix``.  A reader
+    treats a record older than ``stale_after_s`` (``pool.OFFER_TIMEOUT_S``,
+    the liveness bound readers already age the tier record by) as no plan
+    at all, which is the behavior before #1091: a dead tier loop cannot
+    freeze a tier on a wait that ended.
+    """
+
+    return {"declared_wait": declared_wait_movers(queue, tier_id),
+            "cap": dict(cap), "stale_after_s": pool.OFFER_TIMEOUT_S}
 
 
 def _declared_wait_end(queue: pool.PoolQueue, consumer: Mapping[str, object],
@@ -6680,16 +6819,37 @@ def _queued_mover(queue: pool.PoolQueue, mover: str
     return None
 
 
-def _mover_report(queue: pool.PoolQueue, mover: str
-                  ) -> dict[str, object] | None:
-    """A claimed stage mover's last landed-bytes report, or ``None`` (#1010).
+def _mover_report(queue: pool.PoolQueue, mover: str, *,
+                  claimed_unix: object = None) -> dict[str, object] | None:
+    """A claimed stage mover's last progress report, or ``None`` (#1010, #1090).
 
-    :meth:`pool.PoolQueue.mover_report`, which the staged-wait verdict reads
-    too (#1022 review, item 1).  Here it prices an expectation and gates
-    nothing.
+    The mover's own landing report (:meth:`pool.PoolQueue.mover_landing`),
+    which every launch files whether or not it has a progress channel, when
+    it started inside this claim: its ``copied_bytes`` and ``started_unix``
+    price the copy from its own live rate.  The worker channel's report
+    (:meth:`pool.PoolQueue.mover_report`, which the staged-wait verdict reads
+    too, #1022 review item 1) supplies the phase, and alone it is what a
+    mover from before #1090 leaves.  Here a report prices an expectation and
+    gates nothing.
     """
 
-    return queue.mover_report(mover)
+    channel = queue.mover_report(mover)
+    own = queue.mover_landing(mover)
+    if own is not None and (isinstance(claimed_unix, bool)
+                            or not isinstance(claimed_unix, (int, float))
+                            or float(own["started_unix"]) < float(claimed_unix)):  # type: ignore[arg-type]
+        own = None
+    if own is None:
+        return channel
+    report: dict[str, object] = {
+        "landed_bytes": max(int(own["landed_bytes"]),                # type: ignore[call-overload]
+                            int(channel["landed_bytes"]) if channel else 0),  # type: ignore[call-overload]
+        "copied_bytes": own["copied_bytes"],
+        "started_unix": own["started_unix"],
+        "reported_unix": own["reported_unix"]}
+    if channel is not None:
+        report["landed_phase"] = channel["landed_phase"]
+    return report
 
 
 def _deferred_waiting_for(deferred: str | None, *, end: int | None,
@@ -6856,8 +7016,10 @@ def publish_landing_expectations(
                          "range_bytes": int(leg["end_bytes"]) - int(leg["start_bytes"]),
                          "claimed_unix": record.get("claimed_unix")}
                 if state == pool.CLAIMED:
-                    # One bounded read per claimed mover per pass (#1010).
-                    report = _mover_report(queue, mover)
+                    # Two bounded reads per claimed mover per pass (#1010,
+                    # #1090): its own report and its channel's.
+                    report = _mover_report(
+                        queue, mover, claimed_unix=record.get("claimed_unix"))
                     if report is not None:
                         entry.update(report)
                     stamp = record.get("claimed_unix")
@@ -6874,7 +7036,8 @@ def publish_landing_expectations(
             order, now=moment, landing_bytes_per_s=landing))
         queue_print = tuple((entry["mover_action_key"], entry["state"],
                              entry["claimed_unix"], entry["range_bytes"],
-                             entry.get("landed_bytes"), entry.get("landed_phase"))
+                             entry.get("landed_bytes"), entry.get("landed_phase"),
+                             entry.get("copied_bytes"))
                             for entry in order)
         for key, consumer, plan in members:
             try:
@@ -8719,6 +8882,14 @@ def _cycle(
             tokens.pop(storage_tiers.FILL_KIND, None)
             record["fill_source"] = "none"
         record["tokens"] = tokens
+        if record.get("tier") == "stage":
+            # Which copies read the pool first, and how many at once (#1091),
+            # beside the fill numbers it is folded from the same receipts as.
+            cap = (receipts.mover_cap(tier_id, identity)
+                   if isinstance(receipts, ReceiptCache)
+                   else storage_tiers.mover_cap_from_records(
+                       fill_records, tier_id=tier_id, pool_identity=identity))
+            record[READER_PLAN_FIELD] = reader_plan(queue, tier_id, cap=cap)
         # What a movement node on this tier is run *with*, discovered on the
         # box that will run it.  A mover for the dl380g10 stage is sealed by a
         # submitter on an aarch64 Spark, whose ``sys.executable`` names a venv

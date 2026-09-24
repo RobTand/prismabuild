@@ -4116,6 +4116,128 @@ demand, the next cycle raises the fill offer to accommodate that unchanged
 demand; other admission gates still apply, so this is not a claim of immediate
 execution.
 
+### The reader plan: a waited copy goes first (#1091, #1090)
+
+Fill tokens price the pool as if it were linear in movers. The dl380g10 pool
+is not. On 2026-09-24 a consumer declared a wait on one copy for 494.8 s. That
+copy got 30.8 MB/s file side while 7 movers shared the pool. The pool delivered
+250.6 MB/s at 88% utilization, and the disk pacer held the waited copy for
+96.6 s over 54 holds. The pool's total barely moves between 5 and 10
+concurrent movers, so each extra mover only splits it further.
+
+Every cycle, the tier loop announces a `reader_plan` on each stage tier's
+record (`tier_loop.reader_plan`):
+
+* `declared_wait`: every queued stage mover on the tier that a claimed
+  consumer has declared a wait on (#1018). A wait is kept only when it began
+  inside the consumer's claim and names a mover of that consumer's plan. A
+  claimed mover whose receipt is complete is not listed. With #1026 one mover
+  can be the wait of several consumers, so the row lists all of them.
+* `cap`: how many movers may read the pool at once
+  (`storage_tiers.mover_cap_from_records`). Each usable receipt that read the
+  pool is one point: its window's `mean_pool_read_mb_s` at its
+  `movers_claimed_on_tier`, weighted by its `seconds`. For each mover count,
+  the fold takes the duration-weighted mean and its standard error. The cap is
+  the smallest count whose mean plus its standard error reaches the best
+  count's mean minus that count's standard error. A count with fewer than two
+  receipts is recorded but never a candidate. `basis` is `measured` when a
+  larger count was measured and was not better, `rising` when the knee is the
+  largest count measured (the cap is then one more, which the next receipts
+  measure), and `unmeasured` when no count has two receipts, which caps
+  nothing. The record carries `method`, the per-count `curve` and the number
+  of `receipts` it used.
+* `stale_after_s`: `pool.OFFER_TIMEOUT_S`.
+
+The claim reads the plan before it acquires tier tokens
+(`PoolQueue.reader_plan_verdict`). The plan applies only to stage mover rows,
+the rows whose residency names a range:
+
+* While `declared_wait` is not empty, a listed row is admitted with its pool
+  fill waived. The claim still takes its `stage_gib`, so the stage never
+  overfills, and records `tier_fill_waived` on the claim. Every other mover
+  row on the tier is denied `deferred_for_declared_wait`.
+* Otherwise, a row is denied `deferred_for_pool_readers` while `cap.movers`
+  movers claimed on the tier are still reading. A claimed mover that filed a
+  complete receipt has stopped reading and does not count.
+
+Both denials are transient and take no pass, like a tier shortage. A plan
+older than `OFFER_TIMEOUT_S` by its record's `announced_unix` fails open to
+the behavior before #1091, so a stopped tier loop cannot hold a tier on a wait
+that ended.
+
+The mover reads the same plan (`stage_move._ReaderPlan`), re-reading it only
+when the record's file changes:
+
+* A listed copy is exempt from the disk pacer and the admission limit. The
+  pacer still samples, so the receipt's `disk_pacing` still measures the pool,
+  but it never holds the copy while it is listed. The receipt records
+  `reader_plan.exempt`, and `held_seconds` is 0 for a copy listed from its
+  start.
+* An unlisted copy stands aside before each read while a listed copy on the
+  tier is `claimed`. The receipt records `disk_pacing.yielded_seconds`, and
+  the supply fold's shortfall test subtracts it as it subtracts
+  `held_seconds`: a copy stopped on purpose did not show the pool short.
+* A listed copy that is still `ready` reads nothing, so no running copy stands
+  aside for it. It may be unclaimable for want of the stage GiB the running
+  copies hold, and standing aside for it would then deadlock. The claim pass
+  still defers other rows for it, which holds nothing.
+
+The worker does not count a stand-aside as a stall. At a stage mover's
+`no_progress` rung it reads the same tier record itself
+(`PoolQueue.reader_plan_stand_aside`), and credits the quiet
+(`reader_plan_exempt_s`, and `credited_s.reader_plan` on a stall record)
+while the plan is fresh, lists a `claimed` waited copy that is not this mover,
+does not list this mover, and the queue holds a claim for that waited copy.
+The credit goes through `ProgressWatch`'s one crediting rule, so a stretch
+another exemption already covered is credited once. It never takes the
+mover's word for it.
+
+A claim pass reads each tier's plan and reading set once, not once per
+candidate row, so a cap that denies every mover row costs one listing of
+`claimed/` per tier per pass.
+
+**A claimed copy is priced from its own live rate (#1090).** Every
+`stage_move` launch files `residency-events/<mover>/landing.json`
+(`prismabuild.mover_landing.v1`) with the bytes it has copied and when it
+started, with or without a worker progress channel. The tier loop keeps the
+report only when it started inside the current claim, and
+`residency_plan.expected_landings` prices the claimed copy from
+`copied_bytes` over the seconds since `started_unix`. The landing rate a queued
+copy is priced from skips any receipt whose file-side rate beat the whole
+pool's delivery in its window (`storage_tiers.outran_the_pool`). Such a copy
+was served by the ARC or the stage, and a cold copy on the same leg will not
+land at that rate. On 2026-09-24 a leg's first copies landed at about
+720-820 MB/s while the pool delivered 250.6 MB/s, and the cold copy after
+them got 30.8 MB/s.
+
+Known limits:
+
+* A mover launched before #1091 carries no plan. It is paced as before and
+  does not stand aside.
+* `mover_fill_price` is unchanged, so a warm receipt can still set a mover's
+  sealed fill reservation and stall grace.
+* A listed copy that cannot be claimed, for example because the stage is
+  full, still defers every other claim on the tier until the wait ends or the
+  plan goes stale. Running copies keep reading meanwhile.
+* Listed copies bypass both the cap and the fill ledger. Their number is
+  bounded in practice by the claimed consumers times the movers each wait
+  names (usually one or two), but nothing enforces a bound.
+* A mover launched before #1091 does not stand aside, but a worker of this
+  generation credits its quiet as a stand-aside while the plan says a waited
+  copy is claimed.
+* The worker cannot tell a copy standing aside from one that is stuck, for
+  example on a hung NFS read. While a waited copy is claimed on the tier, the
+  `no_progress` rung does not end a stuck unlisted mover. The lease heartbeat's
+  `reader_plan` verdict shows the credit, but no stall-watch event is filed
+  for it, as `mover-pool-over` is for the pool-contention credit.
+* The cap is read from the claimed rows at claim time, not from a ledger, so
+  claims racing on one tier can each see room for one more mover.
+* `movers_claimed_on_tier` is counted when a copy starts, so a receipt's
+  point on the curve is the concurrency it began under. It counts every
+  claimed mover, including one that has filed its receipt and not finished,
+  while the cap counts only copies still reading. The cap can therefore admit
+  slightly more readers than the curve level it was read at.
+
 ### Demand is derived from the data manifest
 
 A movement node declares the half-open byte range of its consumer's read order

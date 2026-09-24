@@ -2035,7 +2035,12 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
     ``landed_bytes``, ``reported_unix`` and ``landed_phase``, the mover's own
     last progress report.  It is priced from them instead: the rest of its
     range at the rate it has landed at since its claim
-    (``live_bytes_per_s``), from the time of the report.  A report in the
+    (``live_bytes_per_s``), from the time of the report.  A mover's own
+    landing report (#1090) also carries ``copied_bytes``, the bytes read so
+    far whether or not their entry has landed, and ``started_unix``, when
+    the copy began after its start gate: the rate is then the copied bytes
+    since the start, so a copy of a few large entries is priced from its
+    first second rather than from its first landed entry.  A report in the
     ``warm`` phase, or one that covers the range, has landed.  A claimed
     copy with no report, or none that prices a rate, keeps the claim-time
     expectation.  ``basis`` says which: ``reported`` or ``claim``; a queued
@@ -2090,15 +2095,27 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
             or not _finite_number(at)):
         return None
     at = float(at)                                            # type: ignore[arg-type]
+    # The mover's own report (#1090): bytes read, landed or not, since the
+    # copy started.  Without it, the landed bytes since the claim.
+    copied = mover.get("copied_bytes")
+    started = mover.get("started_unix")
+    own_report = (not isinstance(copied, bool) and isinstance(copied, int)
+                  and copied >= 0 and _finite_number(started))
+    progress = max(landed, int(copied)) if own_report else landed  # type: ignore[call-overload]
+    origin = (max(claimed, float(started)) if own_report      # type: ignore[arg-type]
+              else claimed)
+    extra: dict[str, object] = ({"copied_bytes": min(progress, own),
+                                 "started_unix": float(started)}  # type: ignore[arg-type]
+                                if own_report else {})
     if mover.get("landed_phase") == "warm" or landed >= own:
         return {"expected_landing_unix": at, "landed_bytes": min(landed, own),
-                "reported_unix": at, "live_bytes_per_s": None}
-    if landed == 0 or at <= claimed:
+                "reported_unix": at, "live_bytes_per_s": None, **extra}
+    if progress == 0 or at <= origin:
         return None
-    live = landed / (at - claimed)
-    return {"expected_landing_unix": at + landing_seconds(own - landed, live),
+    live = progress / (at - origin)
+    return {"expected_landing_unix": at + landing_seconds(own - min(progress, own), live),
             "landed_bytes": landed, "reported_unix": at,
-            "live_bytes_per_s": live}
+            "live_bytes_per_s": live, **extra}
 
 
 def _finite_number(value: object) -> bool:

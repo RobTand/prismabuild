@@ -1345,13 +1345,48 @@ def _fell_short(record: Mapping[str, object]) -> bool:
     pacing = record.get("disk_pacing")
     held = 0.0
     if isinstance(pacing, Mapping):
-        value = pacing.get("held_seconds")
-        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
-            held = float(value)
+        # A copy that yielded to a declared wait (#1091) was stopped on
+        # purpose too, by the reader plan rather than the pacer.
+        for name in ("held_seconds", YIELDED_FIELD):
+            value = pacing.get(name)
+            if (not isinstance(value, bool) and isinstance(value, (int, float))
+                    and value > 0):
+                held += float(value)
     span = float(seconds) - held
     if span <= 0:
         return False
     return (float(staged) / 1e6 / span) < float(sealed)
+
+
+#: Seconds a copy stood aside for a copy a consumer is blocked on (#1091),
+#: on its receipt's ``disk_pacing`` beside ``held_seconds``.
+YIELDED_FIELD = "yielded_seconds"
+
+
+def outran_the_pool(record: Mapping[str, object]) -> bool:
+    """Whether this copy landed faster than the whole pool delivered (#1090).
+
+    ``mb_per_s_file_side`` over ``disk_pacing.mean_pool_read_mb_s``: the
+    second is what every reader of the pool drew together while the copy
+    ran, so a copy that landed faster than that was not served by the pool.
+    The ARC served it, or the stage did.  Its landing rate prices nothing a
+    cold copy will do: on 2026-09-24 a leg's first copies landed at about
+    720-820 MB/s off the ARC while the pool delivered 250.6 MB/s, and the
+    cold copy after them got 30.8 MB/s.
+
+    Sharper than :func:`_measured_the_pool` under concurrency, because
+    ``pool_read_bytes`` counts every reader: a warm copy beside cold ones
+    still clears that share.  A receipt missing either rate says nothing and
+    is not called warm.
+    """
+
+    rate = record.get("mb_per_s_file_side")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        return False
+    delivered = _delivered(record)
+    if delivered is None:
+        return False
+    return float(rate) > delivered
 
 
 def _measured_the_pool(record: Mapping[str, object]) -> bool:
@@ -1712,6 +1747,112 @@ def fill_supply_from_records(
             "receipts_priced": len(shares),
         }
     return supply
+
+
+#: How :func:`mover_cap_from_records` picks the cap, recorded next to it.
+MOVER_CAP_METHOD = (
+    "smallest mover count whose duration-weighted mean pool delivery plus "
+    "its standard error reaches the best level's mean minus that level's "
+    "standard error; levels with fewer than two receipts are recorded but "
+    "not candidates")
+
+
+def mover_cap_from_records(
+    records: Iterable[Mapping[str, object]], *, tier_id: str,
+    pool_identity: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """How many copies may read this tier's pool at once, and the curve (#1091).
+
+    Fill tokens price the pool as linear in movers: each mover reserves its
+    share and the offer grows while deliveries keep up.  The dl380g10 pool
+    measured the opposite.  Its four spindles deliver about the same total
+    to 5 movers as to 10, and every mover past the knee only splits that
+    total further, so the copy a consumer is blocked on lands later.  This
+    fold measures the knee instead of choosing it.
+
+    Each mover receipt on ``tier_id`` (under ``pool_identity``, as
+    :func:`usable_mover_receipts` gates it) is one point: the pool's delivery
+    while the copy ran (``disk_pacing.mean_pool_read_mb_s``, every reader of
+    the pool) at the number of movers claimed on the tier when it began
+    (``movers_claimed_on_tier``), weighted by its ``seconds``.  A receipt
+    that did not read the pool (:func:`_measured_the_pool`) or whose count
+    did not read is skipped.  Per level: the duration-weighted mean and its
+    standard error, ``sqrt(variance / (n_eff - 1))`` with ``n_eff`` the
+    effective sample size of the weights.
+
+    The cap is the smallest level whose mean plus its standard error reaches
+    the best level's mean minus the best level's standard error: the first
+    level the measurement cannot tell from the best.  The only tolerance is
+    the measurement's own uncertainty.  A level with fewer than two receipts
+    has no uncertainty and is recorded but never a candidate.
+
+    ``basis`` says what the number is:
+
+    * ``measured``: a larger level was measured and is not better, so the
+      rate stopped rising at ``movers``.
+    * ``rising``: the knee is the largest level measured, so the rate has not
+      been seen to stop rising.  ``movers`` is one more than it, the probe
+      rule the fill supply follows: the next receipts measure that level.
+    * ``unmeasured``: no level has two receipts.  ``movers`` is ``None`` and
+      nothing is capped.
+
+    Returns ``{"movers", "basis", "method", "receipts", "best", "curve"}``,
+    with ``curve`` one row per level:
+    ``{"movers", "receipts", "seconds", "mean_mb_s", "se_mb_s"}``.
+    """
+
+    levels: dict[int, list[tuple[float, float]]] = {}
+    counted = 0
+    for record in usable_mover_receipts(records, tier_id=tier_id,
+                                        pool_identity=pool_identity):
+        delivered = _delivered(record)
+        if delivered is None or not _measured_the_pool(record):
+            continue
+        movers = record.get(MOVER_CONCURRENCY_FIELD)
+        if isinstance(movers, bool) or not isinstance(movers, int) or movers < 1:
+            continue
+        seconds = float(record["seconds"])                     # type: ignore[arg-type]
+        if not math.isfinite(seconds) or not math.isfinite(delivered):
+            continue
+        levels.setdefault(movers, []).append((delivered, seconds))
+        counted += 1
+    curve: list[dict[str, object]] = []
+    stats: dict[int, tuple[float, float | None]] = {}
+    for movers in sorted(levels):
+        points = levels[movers]
+        total = sum(seconds for _rate, seconds in points)
+        mean = sum(rate * seconds for rate, seconds in points) / total
+        error: float | None = None
+        if len(points) >= 2:
+            variance = sum(seconds * (rate - mean) ** 2
+                           for rate, seconds in points) / total
+            effective = total * total / sum(seconds * seconds
+                                            for _rate, seconds in points)
+            if effective > 1:
+                error = math.sqrt(variance / (effective - 1))
+        stats[movers] = (mean, error)
+        curve.append({"movers": movers, "receipts": len(points),
+                      "seconds": round(total, 3), "mean_mb_s": round(mean, 3),
+                      "se_mb_s": None if error is None else round(error, 3)})
+    out: dict[str, object] = {"movers": None, "basis": "unmeasured",
+                              "method": MOVER_CAP_METHOD, "receipts": counted,
+                              "best": None, "curve": curve}
+    candidates = {movers: (mean, error) for movers, (mean, error) in stats.items()
+                  if error is not None}
+    if not candidates:
+        return out
+    best = max(candidates, key=lambda movers: (candidates[movers][0], -movers))
+    best_mean, best_error = candidates[best]
+    floor = best_mean - float(best_error)                      # type: ignore[arg-type]
+    knee = min(movers for movers, (mean, error) in candidates.items()
+               if mean + float(error) >= floor)                # type: ignore[arg-type]
+    out["best"] = {"movers": best, "mean_mb_s": round(best_mean, 3),
+                   "se_mb_s": round(float(best_error), 3)}  # type: ignore[arg-type]
+    if knee == max(candidates):
+        out.update(movers=knee + 1, basis="rising")
+    else:
+        out.update(movers=knee, basis="measured")
+    return out
 
 
 def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
@@ -2302,6 +2443,8 @@ __all__ = [
     "residency_demand",
     "mover_demand_from_receipts",
     "usable_mover_receipts",
+    "mover_cap_from_records",
+    "outran_the_pool",
     "MOVER_CPU_FIELD",
     "MOVER_RSS_FIELD",
     "stage_tokens_for_bytes",
