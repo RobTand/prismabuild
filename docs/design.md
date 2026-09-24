@@ -4225,6 +4225,11 @@ Known limits:
 * A mover launched before #1091 does not stand aside, but a worker of this
   generation credits its quiet as a stand-aside while the plan says a waited
   copy is claimed.
+* The worker cannot tell a copy standing aside from one that is stuck, for
+  example on a hung NFS read. While a waited copy is claimed on the tier, the
+  `no_progress` rung does not end a stuck unlisted mover. The lease heartbeat's
+  `reader_plan` verdict shows the credit, but no stall-watch event is filed
+  for it, as `mover-pool-over` is for the pool-contention credit.
 * The cap is read from the claimed rows at claim time, not from a ledger, so
   claims racing on one tier can each see room for one more mover.
 * `movers_claimed_on_tier` is counted when a copy starts, so a receipt's
