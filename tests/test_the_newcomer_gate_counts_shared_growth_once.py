@@ -24,6 +24,8 @@ from pathlib import Path
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -172,3 +174,138 @@ def test_a_sharers_fence_grant_is_holding_toward_every_sharer(
     assert windows[second]["holding_gib"] == 2 * PHASE_GIB, windows[second]
     assert census["held_gib"] == 2 * PHASE_GIB
     assert census["committed_gib"] == 4 * PHASE_GIB, census
+
+
+# ------------------------------------------------------- the gate's guarantee
+
+
+def _newcomer_beside_a_sharer(tmp_path: Path, capacity: int,
+                              ) -> tuple[dict[str, object], str, str]:
+    """A claimed reader and a ready newcomer over one 8 GiB plan.
+
+    Each plan's ``phase-0`` is its own range, as ``--residency-share off``
+    seals it, so the newcomer's lead is unpublished and it is a newcomer;
+    ``phase-1`` to ``phase-3`` are shared.  The reader holds its own
+    ``phase-0``.  Returns the census, the reader and the newcomer.
+    """
+
+    queue, stage = _fixture_queue(tmp_path, capacity)
+    reader, newcomer = _hexkey("1093admitted"), _hexkey("1093newcomer")
+    tail = frozenset({1, 2, 3})
+    plan = _plan(queue, reader, label="admitted", phases=4, shared=tail)
+    _plan(queue, newcomer, label="newcomer", phases=4, shared=tail)
+    _land_phase(queue, stage, plan, 0)
+    _claim_at(queue, reader)
+    return _census(queue, stage, capacity), reader, newcomer
+
+
+@pytest.mark.parametrize("capacity, admit", [(9, False), (10, True)])
+def test_a_newcomer_is_refused_one_gib_short_of_the_unique_growth(
+        tmp_path: Path, capacity: int, admit: bool) -> None:
+    """The ranges the two windows will want between them are the reader's
+    held ``phase-0``, the newcomer's own ``phase-0`` and the three shared
+    ranges once: 2 + 2 + 6 = 10 GiB.  The reader alone commits its plan,
+    8 GiB, so the newcomer grows the commitment by 2 GiB, not by its whole
+    8 GiB footprint.  At 10 GiB of capacity it is admitted, and one GiB
+    short of that it still is not: the gate never admits past what the two
+    can want at once."""
+
+    census, reader, newcomer = _newcomer_beside_a_sharer(tmp_path, capacity)
+    windows = census["windows"]
+    assert windows[reader]["newcomer"] is False
+    assert windows[newcomer]["newcomer"] is True
+    assert windows[reader]["footprint_gib"] == 4 * PHASE_GIB
+    assert windows[newcomer]["footprint_gib"] == 4 * PHASE_GIB
+    assert census["committed_gib"] == 4 * PHASE_GIB
+
+    decision = tier_loop._commitment_decision(census, newcomer, admitted=set())
+
+    terms = decision["commitment"]
+    assert terms["committed_gib"] == 4 * PHASE_GIB
+    assert terms["growth_gib"] == PHASE_GIB
+    assert decision["admit"] is admit, decision
+    if not admit:
+        assert decision["reason"] == window_credit.REASON_COMMITMENT
+        assert terms["shortfall_gib"] == 5 * PHASE_GIB - capacity
+
+
+def test_private_ranges_count_per_window_and_shared_ones_once(
+        tmp_path: Path) -> None:
+    """Two claimed readers of one 8 GiB plan whose ``phase-0`` and
+    ``phase-1`` are shared and whose ``phase-2`` and ``phase-3`` are each
+    reader's own.  The shared 4 GiB is committed once and each reader's
+    private 4 GiB once per reader: 12 GiB, where summing each window's
+    growth committed 2 + 6 + 6 = 14."""
+
+    queue, stage = _fixture_queue(tmp_path, 40)
+    keys = [_hexkey(f"1093mixed{n}") for n in range(2)]
+    head = frozenset({0, 1})
+    plans = {key: _plan(queue, key, label=f"mixed{n}", phases=4, shared=head)
+             for n, key in enumerate(keys)}
+    assert _mover(plans[keys[0]], 0) == _mover(plans[keys[1]], 0)
+    assert _mover(plans[keys[0]], 2) != _mover(plans[keys[1]], 2)
+    _land_phase(queue, stage, plans[keys[0]], 0)
+    for key in keys:
+        _claim_at(queue, key)
+
+    census = _census(queue, stage, 40)
+
+    for key in keys:
+        window = census["windows"][key]
+        assert window["footprint_gib"] == 4 * PHASE_GIB
+        assert window["holding_gib"] == PHASE_GIB
+        assert window["growth_gib"] == 3 * PHASE_GIB
+    assert census["held_gib"] == PHASE_GIB
+    assert census["committed_gib"] == 6 * PHASE_GIB, census
+    assert census["shared_ranges_gib"] == -PHASE_GIB
+
+
+def test_sharers_that_can_drift_apart_commit_both_footprints(
+        tmp_path: Path) -> None:
+    """Two claimed readers inside ``phase-0`` of one 24 GiB plan whose
+    windows are far shorter than the plan.  Reading together they want one
+    window's ranges; but nothing keeps them together, and once one reads on
+    they want two windows' ranges and the ``phase-0`` both hold now is
+    holding toward only one.  So the pair commits both footprints: the gate
+    never admits a newcomer into room a drifting sharer will take.  This is
+    more than the sum of each window's growth, which counts the shared
+    ``phase-0`` as holding toward both."""
+
+    queue, stage = _fixture_queue(tmp_path, 40)
+    keys = [_hexkey(f"1093drift{n}") for n in range(2)]
+    plans = {key: _plan(queue, key, label=f"drift{n}", phases=12,
+                        prefetch_gib=2 * PHASE_GIB)
+             for n, key in enumerate(keys)}
+    _land_phase(queue, stage, plans[keys[0]], 0)
+    for key in keys:
+        _claim_at(queue, key)
+
+    census = _census(queue, stage, 40)
+
+    footprint = census["windows"][keys[0]]["footprint_gib"]
+    assert census["windows"][keys[1]]["footprint_gib"] == footprint
+    assert 2 * footprint <= 12 * PHASE_GIB, "fixture: two windows fit the plan"
+    assert census["committed_gib"] == 2 * footprint, census
+    assert census["shared_ranges_gib"] == PHASE_GIB
+
+
+# ------------------------------------------------------------ the bound alone
+
+
+def test_the_joint_need_counts_each_range_once() -> None:
+    """``window_credit.joint_need_gib`` on its own: disjoint windows sum,
+    windows over the same ranges share them, and a window at a later phase
+    reaches only the ranges it has still to read."""
+
+    caps = {f"r{n}": 2 for n in range(6)}
+    private = {"a": ["r0", "r1"], "b": ["r2", "r3"]}
+    assert window_credit.joint_need_gib({"a": 4, "b": 4}, private, caps) == 8
+    assert window_credit.joint_need_gib({"a": 3, "b": 4}, private, caps) == 7
+    shared = {"a": ["r0", "r1", "r2"], "b": ["r0", "r1", "r2"]}
+    assert window_credit.joint_need_gib({"a": 6, "b": 6}, shared, caps) == 6
+    # b is two phases on: a's first two ranges are behind it.
+    nested = {"a": ["r0", "r1", "r2", "r3"], "b": ["r2", "r3", "r4", "r5"]}
+    assert window_credit.joint_need_gib({"a": 4, "b": 4}, nested, caps) == 8
+    assert window_credit.joint_need_gib({"a": 8, "b": 8}, nested, caps) == 12
+    assert window_credit.joint_need_gib({"a": 0, "b": 4}, nested, caps) == 4
+    assert window_credit.joint_need_gib({}, nested, caps) == 0
