@@ -480,10 +480,19 @@ The re-read is bounded by the same five-second budget, runs no mutation, and
 is the wait's last observation either way, so no polling loop ever races a
 retained reader. The one exception is patience: with `--wait-s` above 0,
 a snapshot or verification that timed out, and whose reader was killed and
-reaped, is taken again at the next poll under the same deadline. Because a
-retry follows only a reaped reader, one wait never has two readers alive;
-the terminal re-read above is the single terminal exception, and it polls
-nothing after itself. A deadline that
+reaped, is taken again at the next poll under the same deadline. A snapshot
+or verification that timed out and whose reader could not be reaped (still
+inside a read on a hard mount) is taken again too, but only after the wait
+has reaped that reader, one poll interval after the read that left it, and
+never past the deadline (#1033). A reader still retained at the deadline
+ends the wait with 74, naming it and the seconds it was waited on, with no
+terminal re-read. So, with `--wait-s` above 0, no reader starts beside a
+reader that timed out and was not reaped; the terminal re-read above follows
+only a reader that failed or delivered, which is exiting rather than
+reading, and it polls nothing after itself. A delivered-snapshot reader that
+missed its reap is collected later without blocking. `pbwait` and a
+`pbcampaign` window wait out a retained reader through the same helper
+(`pbrun.wait_out_retained_readers`, #1048). A deadline that
 passes on an unavailable read exits 74 with its own message, not 75, because
 no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.

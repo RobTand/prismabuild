@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import contextlib
+import contextvars
 import getpass
 import hashlib
 import inspect
@@ -2842,8 +2843,12 @@ def _bounded_pool_read(section: str, read, *, budget_s: float,
     """
 
     abandoned: list[dict] = []
+    # Every refusal below names the retained reader, so ``pbstatus`` need not:
+    # its own line is not throttled, and a waiting client meets a retained
+    # reader once per turn of its wait (#1048).
     result = pbstatus.bounded(
-        section, read, deadline=pbstatus.Deadline(budget_s), abandoned=abandoned)
+        section, read, deadline=pbstatus.Deadline(budget_s), abandoned=abandoned,
+        announce_retained=False)
     retained = ("; retained reader=" + json.dumps(abandoned, sort_keys=True)
                 if abandoned else "")
     if result.get("status") == "ok":
@@ -2854,6 +2859,11 @@ def _bounded_pool_read(section: str, read, *, budget_s: float,
             print(f"pbrun: {section} payload delivered but its reader could "
                   f"not be reaped on {socket.gethostname()}{retained}; using "
                   f"the delivered snapshot", file=sys.stderr, flush=True)
+            lingering = _DELIVERED_READERS.get()
+            if lingering is not None:
+                # The waiting caller reaps it later, without blocking, so a
+                # long wait does not collect a zombie per poll (#1048).
+                lingering.extend(abandoned)
         return result.get("value")
     if abandoned:
         if result.get("status") == "timed_out":
@@ -2914,6 +2924,49 @@ def _await_retained_readers(retained: list[dict], deadline: float, *,
             on_wait(alive, now - started)
         time.sleep(min(delay, remaining))
         delay = min(delay * 2, POLL_S)
+
+
+def wait_out_retained_readers(retained: list[dict], deadline: float, *,
+                              tool: str, subject: str) -> tuple[list[dict], float]:
+    """Wait out a timed-out reader that could not be reaped, as every client does.
+
+    ``await_outcome``, ``pbwait.wait_one`` and ``pbcampaign``'s window all
+    meet :class:`OutcomeReaderRetained` and must not start a second reader
+    beside the first (#1033, #1048). This is the one wait they share: reap
+    the reader as it exits (:func:`_await_retained_readers`), saying so every
+    ``UNAVAILABLE_NOTICE_INTERVAL_S`` as ``{tool}: {subject} not observed
+    yet``, until the deadline.
+
+    Returns ``(still_retained, waited_s)``. When the reader was reaped, the
+    rest of one ``POLL_S`` is slept first, bounded by the deadline, so a
+    retry after a reap reads no more often than a retry after a reaped
+    timeout does. The caller then reads again only while time is left; a
+    non-empty ``still_retained`` means the deadline came first, and nothing
+    new may start.
+    """
+
+    started = time.monotonic()
+
+    def waiting(alive, waited_s):
+        print(f"{tool}: {subject} not observed yet: its reader is still "
+              f"retained after {waited_s:.0f}s (retained reader="
+              f"{json.dumps(alive, sort_keys=True)}); waiting for it to exit "
+              "before reading again, inside --wait-s", file=sys.stderr, flush=True)
+
+    still = _await_retained_readers(retained, deadline, on_wait=waiting)
+    waited_s = time.monotonic() - started
+    if not still:
+        time.sleep(max(0.0, min(POLL_S - waited_s, deadline - time.monotonic())))
+    return still, waited_s
+
+
+#: Readers that delivered a snapshot ``await_outcome`` used but that missed
+#: their reap (#630). They have closed their pipe and are exiting, not
+#: reading, so the wait goes on beside them; it reaps them later, without
+#: blocking, rather than leaving a zombie per poll (#1048). A context
+#: variable, so each wait (and each thread) keeps its own list.
+_DELIVERED_READERS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "pbrun_delivered_readers", default=None)
 
 
 def bounded_outcome_observation(
@@ -3355,9 +3408,13 @@ def await_outcome(
     original deadline. A timed-out verification goes back to observation. A
     read that timed out and whose reader could not be reaped yet
     (``OutcomeReaderRetained``, #1033) is repeated too, but only after that
-    reader has exited and been reaped, and never past the deadline. So at most
-    one reader per wait is alive at any moment. A reader still retained at
-    the deadline ends the wait with 74, naming it, and with no terminal
+    reader has exited and been reaped, one ``POLL_S`` after the read that
+    left it, and never past the deadline. So, for ``wait_s > 0``, no reader
+    starts beside a reader that timed out and was not reaped. (A reader that
+    failed, or that delivered its payload, and could not be reaped is already
+    exiting, not reading; a snapshot reader of that kind is reaped later
+    without blocking.) A reader still retained at the deadline ends the wait
+    with 74, naming it and the seconds it was waited on, and with no terminal
     re-read, since a new reader would sit beside it. A failed reader or an
     invalid reply still ends the wait at once with 74, after one final bounded
     re-read (below). When the deadline passes and the last read was
@@ -3386,8 +3443,12 @@ def await_outcome(
     unavailable_count = 0
     last_notice = None
     host = socket.gethostname()
+    lingering: list[dict] = []
+    lingering_token = _DELIVERED_READERS.set(lingering)
     try:
         while True:
+            # One ``WNOHANG`` pass: never blocks, never forks.
+            lingering[:] = _await_retained_readers(lingering, time.monotonic())
             if first_observation and wait_s <= 0:
                 budget_s = OUTCOME_READ_TIMEOUT_S
             else:
@@ -3441,25 +3502,21 @@ def await_outcome(
                 if wait_s <= 0:
                     raise
                 unavailable, unavailable_count = exc, unavailable_count + 1
-
-                def waiting(alive, waited_s):
-                    print(f"pbrun: pool outcome for {key[:12]} not observed yet: "
-                          f"its reader is still retained after {waited_s:.0f}s "
-                          f"(retained reader={json.dumps(alive, sort_keys=True)}); "
-                          "waiting for it to exit before reading again, inside "
-                          "--wait-s", file=sys.stderr, flush=True)
-
-                still = _await_retained_readers(exc.retained, deadline,
-                                                on_wait=waiting)
+                still, waited_s = wait_out_retained_readers(
+                    exc.retained, deadline, tool="pbrun",
+                    subject=f"pool outcome for {key[:12]}")
                 if still:
                     # The deadline came before the reader left the kernel.
-                    print(f"pbrun: unavailable pool outcome for {key[:12]} on "
-                          f"{host}: {exc}. That reader was still retained when "
-                          f"--wait-s ran out (retained reader="
+                    # ``exc`` already names the host.
+                    print(f"pbrun: unavailable pool outcome for {key[:12]}: "
+                          f"{exc}. That reader was still retained when "
+                          f"--wait-s ran out, {waited_s:.1f}s after its read "
+                          f"timed out (retained reader="
                           f"{json.dumps(still, sort_keys=True)}), so no second "
                           f"reader was started beside it. Nothing was cancelled. "
                           f"Read pb-queue/{{done,failed,withdrawn}}/{key[:12]}"
-                          f"*.json or run pbwait.py {key[:12]}", file=sys.stderr)
+                          f"*.json or run pbwait.py {key[:12]}",
+                          file=sys.stderr, flush=True)
                     return RECORD_WRITE_FAILED_EXIT
                 now = time.monotonic()
                 if last_notice is None or now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
@@ -3529,6 +3586,11 @@ def await_outcome(
                   f"{key[:12]}*.json or run pbwait.py {key[:12]}",
                   file=sys.stderr)
             return RECORD_WRITE_FAILED_EXIT
+    finally:
+        # The wait's last reads are done: collect any snapshot reader that has
+        # exited since, still without blocking.
+        _await_retained_readers(lingering, time.monotonic())
+        _DELIVERED_READERS.reset(lingering_token)
     if landed is None and unavailable is not None:
         print(f"pbrun: unavailable pool outcome for {key[:12]} when the wait "
               f"ended: {unavailable_count} consecutive unavailable read(s), "

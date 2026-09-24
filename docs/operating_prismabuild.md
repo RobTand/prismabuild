@@ -845,13 +845,20 @@ Every later `pbwait` pass bounds its combined read-only submission, pool outcome
 preemption-lineage, and any needed sealed-request/CAS receipt observation to
 five seconds; a landed immutable ending-summary read gets one separate
 five-second budget. A filed terminal or unreadable terminal is checked
-before any CAS lookup. A failed or retained reader produces that key's
-`record_error` row and exit 74 without another parent diagnostic read or record
-write. A read that timed out and whose reader was reaped is retried at the next
-poll while `--wait-s` lasts; at zero patience, or when the deadline passes on
-it, it is also a `record_error` row and exit 74, and a patient wait's note says
-the read was still unavailable when the wait ended. `pbcampaign --max-inflight`
-keeps such a key pending, holding its slot, until its own deadline. The parent keeps the exact generation selected by a preemption
+before any CAS lookup. A failed reader, or one that delivered its payload and
+could not be reaped, produces that key's `record_error` row and exit 74 without
+another parent diagnostic read or record write. A read that timed out and whose
+reader was reaped is retried at the next poll while `--wait-s` lasts; at zero
+patience, or when the deadline passes on it, it is also a `record_error` row
+and exit 74, and a patient wait's note says the read was still unavailable when
+the wait ended. A read that timed out and whose reader is still in the kernel
+is retried too, as `pbrun` retries it, but only after that reader exits and is
+reaped, so no second reader starts beside it (#1033, #1048). While it waits,
+`pbwait` says so once a minute. A reader still retained when the deadline
+passes ends the key as a `record_error` row, exit 74, whose note names the
+reader and the seconds it was waited on. `pbcampaign --max-inflight` keeps
+such a key pending, holding its slot, until its own deadline, and waits out a
+retained reader before its next pass reads again. The parent keeps the exact generation selected by a preemption
 handoff and follows it immediately under the original `--wait-s` deadline.
 It defers request/CAS lookup until that successor is observed.
 SLURM resume and terminal filing stay in that parent, never in a disposable
@@ -1427,6 +1434,12 @@ sets a tighter bound from a measured duration, and `0` removes it. A box's
 ceiling can be long -- a loop set for campaign work may announce a day -- so
 pass `--timeout-s` when a hung test should be named sooner. `pbtest` prints the
 deadline it sealed and the ceilings it read.
+
+`pbtest` reads every shard's output while the shard runs and prints each
+`pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
+`queued` line with the shard's action key, and the notices of a wait that is
+outlasting a stuck read. Pytest's own output stays in the shard's result
+(#1048).
 
 `--gpu` requests a GPU for **every shard**. A placement tag alone never grants
 CUDA visibility. With the published runtime, the default tag changes from

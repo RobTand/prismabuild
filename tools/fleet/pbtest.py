@@ -43,6 +43,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -121,6 +122,38 @@ def unobserved_outcome(lines: list[str]) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+#: The prefixes of the lines a shard's submitter prints about its own wait.
+#: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
+#: reader stuck in the kernel for all of ``--wait-s``, and says so every
+#: minute, but a line that sits in a pipe until the shard ends says nothing.
+STREAMED_PREFIXES = ("pbrun:", "pbstatus:")
+
+_PRINT_LOCK = threading.Lock()
+
+
+def _say(text: str) -> None:
+    """Print one whole line; shards' drain threads print beside the main one."""
+
+    with _PRINT_LOCK:
+        print(text, flush=True)
+
+
+def drain_shard(index: int, stream, lines: list[str]) -> None:
+    """Read one shard's output as it arrives, keeping all of it in ``lines``.
+
+    Every shard gets its own thread, started as soon as the shard is, so no
+    pipe fills while ``pbtest`` is still reading an earlier shard: a full pipe
+    blocks ``pbrun`` in ``write(2)``, in the middle of its own wait (#1048).
+    Lines that start with a ``STREAMED_PREFIXES`` word are printed at once,
+    prefixed with the shard; pytest's own output stays in the shard's result.
+    """
+
+    for line in iter(stream.readline, ""):
+        lines.append(line)
+        if line.startswith(STREAMED_PREFIXES):
+            _say(f"shard {index:>3} {line.rstrip()}")
 
 
 def replayed_output(out: str) -> str:
@@ -822,12 +855,23 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
-        procs.append((index, bucket, subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
+        # ``errors="replace"``: a stray byte must not end the drain thread,
+        # which would leave the pipe to fill and the shard's wait blocked.
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            errors="replace")
+        lines: list[str] = []
+        drain = threading.Thread(target=drain_shard, args=(index, proc.stdout, lines),
+                                 name=f"pbtest-shard-{index}", daemon=True)
+        drain.start()
+        procs.append((index, bucket, proc, drain, lines))
 
     results = []
-    for index, bucket, proc in procs:
-        out, _ = proc.communicate()
+    for index, bucket, proc, drain, lines in procs:
+        # EOF comes when the shard's pbrun exits, so the join is the wait.
+        drain.join()
+        proc.wait()
+        out = "".join(lines)
         # A cache hit prints the receipt where the shard's stdout would be, so
         # look through it to the payload before asking whether pytest reported.
         out = replayed_output(out or "") or (out or "")
@@ -871,7 +915,7 @@ def main() -> int:
                         "returncode": proc.returncode, "summary": summary,
                         "ran": ran, "skipped": skipped, "output": out})
         state = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
-        print(f"shard {index:>3} {state:<8} {summary}", flush=True)
+        _say(f"shard {index:>3} {state:<8} {summary}")
         counted = summary_count(summary, "skipped") if ran else 0
         if skipped is None and counted:
             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "
