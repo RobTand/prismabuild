@@ -169,15 +169,22 @@ def _egress(queue: pool.PoolQueue, stage: Path, plan: dict[str, object],
 
 
 def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
-    """A claimed consumer reports ``phase``: its accepted progress moves on."""
+    """A claimed consumer reports ``phase``: its accepted progress moves on.
 
-    queue.write_lease(
-        key, owner="horizon-fixture",
-        claim_snapshot=json.loads(queue.item_path(pool.CLAIMED, key).read_text()),
-        progress_observation={
-            "source": "action-progress",
-            "last_accepted": {"phase": phase, "units_completed": 2,
-                              "reported_unix": time.time() - 5.0}})
+    The lease is rewritten in place.  ``write_lease`` would refuse it: the
+    fixture's claim names ``dl380g10`` while the lease ``_claim`` wrote
+    names the box the test runs on, and a second heartbeat checks the two
+    agree (``_check_claim_lease_identity``).
+    """
+
+    path = queue.lease_path(key)
+    lease = json.loads(path.read_text())
+    lease["progress_observation"] = {
+        "source": "action-progress",
+        "last_accepted": {"phase": phase, "units_completed": 2,
+                          "reported_unix": time.time() - 5.0}}
+    lease["heartbeat_unix"] = time.time()
+    path.write_text(json.dumps(lease))
 
 
 def _files(stage: Path, ordinal: int) -> Path:
@@ -396,20 +403,21 @@ def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
         queue.item_path(pool.FAILED, key).write_text(
             json.dumps({**record, "status": "failed"}))
 
-    tier_loop.withdraw_dead_consumer_movers(queue)
+    first_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, movers[1]).exists()
-    assert not queue.item_path(pool.WITHDRAWN, movers[1]).exists()
+    assert queue.item_path(pool.READY, movers[1]).exists(), first_pass
+    assert not queue.item_path(pool.WITHDRAWN, movers[1]).exists(), first_pass
 
     claimed = queue.item_path(pool.CLAIMED, SECOND)
     record = json.loads(claimed.read_text())
     claimed.unlink()
     queue.item_path(pool.FAILED, SECOND).write_text(
         json.dumps({**record, "status": "failed"}))
-    tier_loop.withdraw_dead_consumer_movers(queue)
+    second_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert not queue.item_path(pool.READY, movers[1]).exists()
-    assert queue.item_path(pool.WITHDRAWN, movers[1]).exists()
+    assert not queue.item_path(pool.READY, movers[1]).exists(), (
+        first_pass, second_pass)
+    assert queue.item_path(pool.WITHDRAWN, movers[1]).exists(), second_pass
 
 
 # ------------------------------------------------------ the crash, the stale
@@ -615,6 +623,13 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
 
     assert landings, "the window published nothing: the test proves nothing"
     assert set(landings.values()) == {1}, landings
+    # Every consumer's window is served, not only the head's: each one's
+    # first range is held for it.  Without sharing, either the others wait
+    # on copies of their own or those copies land a range twice.
+    for key in consumers:
+        _published, staged = tier_loop._mover_state(queue, plans[key], TIER)
+        lead = str(plans[key]["phases"][0]["mover_row"]["action_key"])  # type: ignore[index]
+        assert lead in staged, (key[:12], sorted(staged))
     ledger = queue.tier_ledger(TIER)
     ranges: dict[tuple[int, int], list[str]] = {}
     for holder in ledger.held_keys():
