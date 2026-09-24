@@ -322,8 +322,10 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         queue, stage, empty_dirs=args.empty_dirs, small_dirs=args.small_dirs,
         big_fragments=[int(x) for x in args.big_fragments.split(",") if x],
         produced_fragment_dirs=args.produced_fragment_dirs))
-    counts.update(build_dead_owners(queue, stage, pairs=args.dead_owner_pairs,
-                                    entries=args.dead_entries))
+    # Shapes built before #1056 name no dead owners and no no-range claims.
+    counts.update(build_dead_owners(
+        queue, stage, pairs=getattr(args, "dead_owner_pairs", 0),
+        entries=getattr(args, "dead_entries", 1680)))
     for state, count in ((pool.DONE, args.done), (pool.FAILED, args.failed),
                          (pool.WITHDRAWN, args.withdrawn)):
         _terminal(queue, state, count)
@@ -360,7 +362,8 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         _claim(queue, key)
     counts["ready_noise"] = args.ready_noise
     counts["claimed_noise"] = args.claimed_noise
-    counts.update(build_no_range_claims(queue, args.no_range_claims))
+    counts.update(build_no_range_claims(
+        queue, getattr(args, "no_range_claims", 0)))
     return dict(counts)
 
 

@@ -260,8 +260,11 @@ def test_rewriting_this_owners_fragment_reruns_the_census(fleet):
     third = _pass(queue, stage)
 
     assert _one(third, mover)["retained_reason"] == "co-owner"
-    assert _receipts_for(third, co_mover) == [], (
-        "the co-owner's own documents did not change")
+    # The rewritten fragment is also a co-owner document of the other
+    # owner, whose checkpoint fences it: that owner is censused again too.
+    assert _one(third, co_mover)["retained_reason"] == "co-owner"
+    assert _receipts_for(_pass(queue, stage), mover) == [], (
+        "the census after the rewrite installs a fresh checkpoint")
 
 
 def test_a_removed_path_under_a_co_owned_owner_reruns_the_census(fleet):
