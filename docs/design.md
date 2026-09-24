@@ -6495,6 +6495,10 @@ change with the one remedy (`ORPHANED_PREWRITE_REMEDY`): remove the files,
 or let a successor commit the same paths, and the next tier cycle drops the
 reservation.
 
+A spool export meets the same files from the other side: a successor's
+export adopts or retires a dead attempt's exported file by these records
+(#1097; see "A failed producer's exported files").
+
 **The write-only gate is gone for ended attempts.** A staged template's
 ended prewrite is swept like a write-only one (#949 above), and held while
 a pool funding intent names its batch.
@@ -10517,7 +10521,10 @@ group is independently retryable and scheduler-owned; no application copy
 thread or secondary dispatcher moves bytes. The exporter reads only the local
 sources, verifies their recorded identity and the writer's digest, writes each
 canonical temporary, fsyncs it, publishes the canonical name and fsyncs its
-parent directory. First publication never overwrites an unexpected destination.
+parent directory. First publication never overwrites an unexpected destination:
+a destination another attempt's records name is adopted or retired under the
+rules in "A failed producer's exported files" below (#1097), and any other
+present file refuses.
 Local per-file proofs bind the sealed manifest, entry, writer digest and completed
 canonical incarnation; a completed retry adopts those proofs with stat checks
 and no shared payload read. Actual bytes must fit their canonical artifact
@@ -10577,6 +10584,74 @@ Each retirement is one line in `<queue>/produced-spool-retirements/<host>.jsonl`
 naming the owner, the namespace, each group with its bytes and reason, and
 the hold and walk seconds. `<host>.tick.json` holds the latest tick, including
 every kept namespace and why. `pbstatus --spool-retirements` prints both.
+
+#### A failed producer's exported files (#1097)
+
+On 2026-09-24 Stage A round-2 q0 (`85c3c57fdf75`) failed after it exported
+its layer-39 group and part of layer 38, leaving 320 canonical files. A
+resubmit, under the same key or a new one, exports those paths first, and
+its export refused each one as `unowned or changed canonical destination`:
+the file existed and the new group had no copy proof for it. Its prewrite
+had been granted, because an attempt that has ended owns nothing a new
+write can disturb (#1053), so the export is the only place the files are
+met. The only remedy was removing them by hand.
+
+`export_group` now decides a present destination that is not its own copy
+from the #1053 ownership records, not from a second store. The first time
+an export meets such a file, `_OtherClaims` reads the attempt index for
+every template whose output prefix overlaps this one's
+(`_template_attempts`), less this export's own attempt, and each attempt's
+committed and prewritten paths (`_TickReads.owned`) and state
+(`_attempt_state`). A path's claims decide:
+
+| Who names the path | Same bytes as this entry | Other bytes |
+|---|---|---|
+| Nobody | Refused, as before | Refused, as before |
+| A live attempt, or one whose state is unknown | Refused | Refused |
+| A commit, or a prewrite of a `succeeded` attempt | Adopted | Refused: a committed file is never replaced |
+| Only prewrites of `dead` attempts, and no export of that group can still run | Adopted | Retired, then copied |
+| Only prewrites of `dead` attempts, and an export of that group is `ready` or `claimed` | Refused as `failed-group-export-live` | Refused as `failed-group-export-live` |
+
+- **Adopted** means the file is kept as it is, with no copy. The bytes are
+  hashed through the pinned directory descriptor and compared with this
+  entry's size and sha256; the inode, size and mtime must be the ones seen
+  before and after the read. The copy proof is written as a completed one
+  with an `adopted` record naming the claim, and the receipt, `poll_group`
+  and `release_group` treat it as any other completed copy. The failed
+  group's own manifest and receipt are on its producer's host and are
+  removed by the retirement tick (#1001), so the successor's entry is the
+  reference. For a deterministic regeneration it is the same digest.
+- **Retired** means #1053's rename-aside delete, `_unlink_if_committed`,
+  through the export's pinned directory descriptor: the file is deleted
+  only when the private name still has the inode, size and mtime the export
+  observed, and a file renamed onto the name meanwhile is linked back and
+  refuses. Before the delete starts, the export records the path and that
+  identity in its group's `retiring.json`. A later run of the same export
+  settles those paths first (`_settle_retiring_leftover`), so an interrupted
+  delete is finished or undone, never repeated blind.
+- A failed group's leftover `<path>.tmp` is retired the same way, under the
+  same rule: only a `dead` attempt's prewrite may name it, and no export of
+  that group may still run.
+- Whether an export of the failed group can still run is read from the
+  queue: every `ready` or `claimed` row whose `dependent_of` is the failed
+  attempt's key and whose sealed request and manifest name the same batch
+  and attempt nonce. A row that cannot be read counts as that export. The
+  rows are read twice, so a row that moves between states during one read
+  is still seen.
+- Why adoption and retirement, not one of them: a successor may need the
+  dead attempt's files (the R13 resume read 392 of 436 dead batches), and
+  those are committed files, which are only ever adopted. A file only a
+  dead attempt's prewrite names was never committed, so no consumer can
+  have read it through PB, and its bytes are either the successor's own
+  (adopted, no copy) or stale (retired, then replaced by this export's
+  copy). Nothing else is deleted, and a file nobody's records name still
+  refuses (#949).
+
+The export's answer carries `adopted` (a count) and `retired` (the paths)
+when either is nonzero. The dead attempt's prewrite is then reclaimed by
+the origin-retirement tick as `superseded` once the successor commits the
+same paths (#1053). ctime is never compared in these checks, because a
+read can recall another client's write delegation and move it (#1096).
 
 ### What creates and what retires per-key state
 
