@@ -337,7 +337,9 @@ def cpu_seconds(*, usage=resource.getrusage) -> float:
 #: permission -- expiry re-verifies, and only re-verified positive absence
 #: heals.  Covers the incremental fragment rate limit (FRAGMENT_PUBLISH_S)
 #: with wide margin; a publisher slower than this still converges, through
-#: the stall policy's retry, never through replacement.
+#: the stall policy's retry, never through replacement.  A name under
+#: positive absence whose bytes hash to the trusted digest is adopted at
+#: once and never waits for it (#1081, :meth:`_StagedPublisher._content_proof`).
 _PUBLISH_GRACE_S = 30.0
 _PUBLISH_POLL_S = 0.25
 
@@ -950,11 +952,14 @@ class _PhaseClock:
     (``pace_wait``, ``copy_read``, ``copy_write``, ``hash``, ``fsync``) are
     added once per entry; the publisher's (``adopt_proof``,
     ``publish_decide``, ``ownership_lock_wait``, ``ownership_lock_held``,
-    ``publish_poll_sleep``, and, for a divergent name, ``owner_judgement``
-    and ``owner_locks_held``, #966) once per call.  ``outcomes`` counts how
-    each entry ended: adopted before any copy, published by its own rename,
-    adopted at publication after copying, or -- a name every owner of which
-    had ended -- replaced at publication.
+    ``publish_poll_sleep``, ``content_proof`` (#1081), and, for a divergent
+    name, ``owner_judgement`` and ``owner_locks_held``, #966) once per call.
+    ``outcomes`` counts how each entry ended, one outcome per entry:
+    ``adopted`` before any copy on a record's proof, ``adopted_by_content``
+    before any copy on its own bytes (#1081), ``renamed`` by its own rename,
+    ``adopted_at_publication`` after copying on a record's proof,
+    ``adopted_by_content_at_publication`` after copying on its own bytes, or
+    -- a name every owner of which had ended -- replaced at publication.
     """
 
     def __init__(self) -> None:
@@ -1058,6 +1063,19 @@ class _StagedPublisher:
     does the copy heal the name as orphan/crash residue.  A live or
     unknown publisher always means wait/refuse, never replace.
 
+    Under that same positive absence the bytes already there are proven by
+    their content before any grace (#1081, :meth:`_content_proof`): hashed
+    and compared with the declared digest, or with the copy's own digest
+    for a digest-less manifest.  A match is adopted with no grace and no
+    rename -- before any copy when the manifest declares a digest -- so a
+    promotion restarted after a kill (its records are filed only at the end
+    of its range) takes back the copies its last attempt left instead of
+    copying each again, waiting out the grace for a record that never
+    comes, and replacing it.  A mismatch changes nothing: the name waits
+    out the grace and heals as before.  Every census that defers or refuses
+    runs first, so a live pin, a live claim, a copy in flight and any record
+    of the name keep exactly the verdicts above.
+
     Digest-less (dev/null) manifests converge like the rest: the origin
     fast path adopts without copying where the published file still
     carries the source identity this copy's source stats today
@@ -1128,6 +1146,10 @@ class _StagedPublisher:
         self._interned_cost = 0
         self._fragment_cost = 0
         self._material_cost = 0
+        #: Names whose bytes did not hash to the trusted digest, by the
+        #: identity and digest they were hashed under (#1081,
+        #: :meth:`_content_proof`); guarded by ``_lookup_lock``.
+        self._content_misses: dict[str, tuple] = {}
         #: Where this publisher's time goes, for the mover's receipt.
         self.clock = _PhaseClock()
         # The single-flight forest census (#981), see :meth:`_shared_census`.
@@ -1221,11 +1243,28 @@ class _StagedPublisher:
                   ) -> tuple[int, str, dict[str, int]] | None:
         """Adopt an already-published incarnation without copying, if proven.
 
-        Metadata-only: the same proof the publish gate requires, minus the
-        copy-compare path (no computed digest exists yet).  Returns
-        ``(want, digest, file_id)`` or ``None`` to proceed with the copy.
-        Raises ``_PublicationRefused`` for provably divergent bytes, failing
-        fast before any copy.
+        The same proof the publish gate requires, minus the copy-compare
+        path (no computed digest exists yet).  Returns ``(want, digest,
+        file_id)`` or ``None`` to proceed with the copy, and counts the
+        adoption's outcome on the receipt's clock.  Raises
+        ``_PublicationRefused`` for provably divergent bytes, failing fast
+        before any copy.
+
+        A name no record names is proven by its bytes when the manifest
+        declares a digest and every census that could defer it reads clean
+        (#1081, :meth:`_adopt_by_content`).  That is the one path here that
+        reads a payload, and it reads the destination, never the source.
+        """
+
+        adopted, outcome = self._try_adopt(entry, destination, source_id)
+        if adopted is not None:
+            self.clock.outcome(outcome)
+        return adopted
+
+    def _try_adopt(self, entry: dict[str, object], destination: Path,
+                   source_id: str | None = None,
+                   ) -> tuple[tuple[int, str, dict[str, int]] | None, str]:
+        """:meth:`try_adopt`'s decision and the outcome it counts.
 
         The proof runs without the stage ownership lock (#981); only the
         commit takes it.  Under the lock, a proof adopts only while the
@@ -1256,39 +1295,152 @@ class _StagedPublisher:
         try:
             present = os.lstat(destination)
         except OSError:
-            return None
+            return None, ""
         if not statmod.S_ISREG(present.st_mode):
-            return None
+            return None, ""
         owners = _Owners() if self._arbitrates else None
         with self.clock.timing("adopt_proof"):
             proof, standing, detail = self._proof_search(
                 norm, want, declared, source_id=source_id, owners=owners)
+        if proof is None and standing == "clean":
+            return (self._adopt_by_content(destination, norm, want, declared),
+                    "adopted_by_content")
         if proof is None and standing != "divergent":
-            return None
+            return None, ""
         if standing == "divergent" and owners is not None:
             return self._adopt_divergent(destination, norm, want, declared,
-                                         source_id, owners, detail)
+                                         source_id, owners, detail), "adopted"
         with self._ownership():
             if proof is not None and reader_lease.file_id_matches(
                     proof[1], reader_lease.stat_identity(norm)):
-                return want, proof[0], proof[1]
+                return (want, proof[0], proof[1]), "adopted"
             owners = _Owners() if self._arbitrates else None
             proof, standing, detail = self._proof_search(
                 norm, want, declared, source_id=source_id, owners=owners)
             if standing == "unknown":
-                return None
+                return None, ""
             if standing == "divergent":
                 if owners is None:
                     raise _PublicationRefused(detail)
             elif proof is None:
-                return None
+                return None, ""
             else:
-                return want, proof[0], proof[1]
+                return (want, proof[0], proof[1]), "adopted"
         # A divergence that appeared after the lockless search: arbitrated
         # once the stage lock is released, since the owners' transition
         # locks come before it.
         return self._adopt_divergent(destination, norm, want, declared,
-                                     source_id, owners, detail)
+                                     source_id, owners, detail), "adopted"
+
+    def _adopt_by_content(self, destination: Path, norm: str, want: int,
+                          declared: object,
+                          ) -> tuple[int, str, dict[str, int]] | None:
+        """Adopt a name no record names, on its own bytes, before any copy.
+
+        #1081.  A promotion files its records only at the end of its range,
+        so one killed before then -- every PB publish restarts the tier role
+        -- leaves correct copies that nothing names.  Here they are proven
+        the way the copy itself would have been: hashed and compared with
+        the declared digest.  The same censuses :meth:`_decide` runs before
+        a heal run first and in the same order, and anything they find --
+        a live pin, a live claim, a copy in flight, or a census that cannot
+        be read -- returns ``None``: the copy proceeds and its publication
+        waits or refuses exactly as it always did.  A digest-less manifest
+        has nothing to compare yet and copies; its publication compares the
+        copy's digest instead.
+
+        Everything here runs without the stage ownership lock: the hash is
+        of one file and grows with its size, so it may not run under a lock
+        every mover on the host takes (review checklist, item 1).  The
+        commit takes the lock only to confirm that the name still carries
+        every field of the identity the hash was taken under -- the same
+        check a record's proof commits with.  Adoption writes nothing, so
+        nothing else needs re-deciding there.
+        """
+
+        if not isinstance(declared, str) or not declared:
+            return None
+        pins = self._live_pins(norm)
+        if pins is None or pins:
+            return None
+        cover, _detail = self._live_claim_cover(norm)
+        if cover is None or cover:
+            return None
+        partials = self._inflight_partials(destination)
+        if partials is None or partials:
+            return None
+        file_id = self._content_proof(norm, want, declared)
+        if file_id is None:
+            return None
+        with self._ownership():
+            if reader_lease.file_id_matches(
+                    file_id, reader_lease.stat_identity(norm)):
+                return want, declared, file_id
+        return None
+
+    def _content_proof(self, norm: str, want: int, digest: object,
+                       ) -> dict[str, int] | None:
+        """The identity of ``norm`` if its bytes hash to ``digest`` (#1081).
+
+        The file is opened without following a symlink, must be a regular
+        file of exactly ``want`` bytes on the inode first stat'ed, and must
+        carry the same identity -- inode, size, mtime and ctime -- after the
+        read as before it, so the digest describes the incarnation returned
+        and not a file that changed underneath the read.  ``None`` for any
+        other answer, including an unreadable file: this only ever adopts,
+        so a failure costs a copy and never a verdict.
+
+        A mismatch is remembered for this publisher by ``(identity,
+        digest)``, so a name that waits out the grace is hashed once, not
+        once per poll; any change to the file changes its identity and is
+        hashed again.  The memo holds one row per mismatching name, at most
+        one per entry of the range, and dies with the process.  Seconds and
+        calls are recorded as the ``content_proof`` phase.
+        """
+
+        if not isinstance(digest, str) or not digest:
+            return None
+        before = reader_lease.stat_identity(norm)
+        if before is None or int(before["size"]) != want:
+            return None
+        fence = (tuple(sorted(before.items())), digest)
+        with self._lookup_lock:
+            if self._content_misses.get(norm) == fence:
+                return None
+        hasher = hashlib.sha256()
+        seen = 0
+        with self.clock.timing("content_proof"):
+            try:
+                fd = os.open(norm, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError:
+                return None
+            try:
+                info = os.fstat(fd)
+                if (not statmod.S_ISREG(info.st_mode)
+                        or info.st_ino != int(before["ino"])):
+                    return None
+                buffer = bytearray(prewarm_loop.BLOCK)
+                view = memoryview(buffer)
+                while seen < want:
+                    got = os.readv(fd, [view[:min(len(buffer), want - seen)]])
+                    if not got:
+                        break
+                    hasher.update(view[:got])
+                    seen += got
+            except OSError:
+                return None
+            finally:
+                os.close(fd)
+        after = reader_lease.stat_identity(norm)
+        if after is None or not reader_lease.file_id_matches(before, after):
+            return None
+        if seen != want or hasher.hexdigest() != digest:
+            with self._lookup_lock:
+                self._content_misses[norm] = fence
+            return None
+        with self._lookup_lock:
+            self._content_misses.pop(norm, None)
+        return after
 
     def _adopt_divergent(self, destination: Path, norm: str, want: int,
                          declared: object, source_id: str | None,
@@ -1303,7 +1455,7 @@ class _StagedPublisher:
 
         def redo(fresh: _Owners) -> tuple:
             return self._decide(destination, want, declared, None, source_id,
-                                heal=False, owners=fresh)
+                                heal=False, owners=fresh, content=False)
 
         with self._arbitration(owners, redo) as (state, rows, verdict, why):
             if state == "changed":
@@ -1369,7 +1521,8 @@ class _StagedPublisher:
                         verdict = self._decide(
                             destination, want, declared, computed, source_id,
                             heal=heal,
-                            owners=_Owners() if self._arbitrates else None)
+                            owners=_Owners() if self._arbitrates else None,
+                            content=False)
                     done = self._act(verdict, destination, temp_path, want,
                                      computed)
                     if done is not None:
@@ -1396,7 +1549,8 @@ class _StagedPublisher:
             return want, computed, self._identity(destination)
         if verdict[0] == "adopt":
             temp_path.unlink(missing_ok=True)
-            self.clock.outcome("adopted_at_publication")
+            self.clock.outcome(verdict[3] if len(verdict) > 3
+                               else "adopted_at_publication")
             return want, verdict[1], verdict[2]
         if verdict[0] == "refuse":
             temp_path.unlink(missing_ok=True)
@@ -1412,7 +1566,8 @@ class _StagedPublisher:
 
         def redo(fresh: _Owners) -> tuple:
             return self._decide(destination, want, declared, computed,
-                                source_id, heal=heal, owners=fresh)
+                                source_id, heal=heal, owners=fresh,
+                                content=False)
 
         with self._arbitration(owners, redo) as (state, rows, verdict, why):
             if state == "changed":
@@ -1715,13 +1870,19 @@ class _StagedPublisher:
 
     def _decide(self, destination: Path, want: int, declared: object,
                 computed: str | None, source_id: str | None, heal: bool,
-                owners: _Owners | None = None) -> tuple:
+                owners: _Owners | None = None, content: bool = True) -> tuple:
         """One publication verdict for ``destination``, deciding nothing twice.
 
         ``owners``, when given, collects who names a divergent destination,
         and the verdict for one is then ``("divergent", detail)`` rather than
         a refusal, for :meth:`_arbitration` to settle (#966).  Without it a
         divergence refuses, as it always did.
+
+        ``content`` lets positive absence be proven by the destination's own
+        bytes (#1081, :meth:`_content_proof`).  Every caller that holds a
+        lock passes ``False``: the hash reads a whole file, and a verdict
+        decided under a lock only confirms one decided before it.  Without
+        it positive absence waits, then heals, as it always did.
         """
 
         norm = os.path.normpath(str(destination))
@@ -1804,10 +1965,21 @@ class _StagedPublisher:
                     f"shared staged name has a copy in flight "
                     f"({partials}), deferring: {destination}")
         # Positive absence, re-verified: no fragment, no pin, no live
-        # claim, no copy in flight, every census clean.  Before the grace
-        # expires this still waits for a late fragment; only a grace that
-        # expires with the absence intact heals the name as orphan/crash
-        # residue -- elapsed time alone never permits it.
+        # claim, no copy in flight, every census clean.  Bytes that hash to
+        # the trusted digest -- the declared one, or the copy's own for a
+        # digest-less manifest -- are adopted now, grace or no grace
+        # (#1081): nothing is replaced, so nothing a late record could date
+        # is lost.  Otherwise this still waits for a late fragment before
+        # the grace expires; only a grace that expires with the absence
+        # intact heals the name as orphan/crash residue -- elapsed time
+        # alone never permits it.
+        if content:
+            trusted = (declared if isinstance(declared, str) and declared
+                       else computed)
+            file_id = self._content_proof(norm, want, trusted)
+            if file_id is not None:
+                return ("adopt", trusted, file_id,
+                        "adopted_by_content_at_publication")
         if heal:
             return ("replace",)
         return ("wait",
@@ -2703,9 +2875,9 @@ class _Copier:
             if adopted is not None:
                 # Adopting skips the copy, but a crashed predecessor's
                 # owner-keyed temp for this destination must still go:
-                # it is never the published bytes.
+                # it is never the published bytes.  ``try_adopt`` counted
+                # the outcome: a record's proof or the bytes' own.
                 temporary.unlink(missing_ok=True)
-                self.clock.outcome("adopted")
                 return adopted
         digest = hashlib.sha256()
         written = 0

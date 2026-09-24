@@ -24,9 +24,12 @@ Two things are deliberately *not* here, and both are the stage mover's:
   protected, and nothing is warmed: the bytes land in the tier the warm was
   a substitute for.
 * **No incremental fragment.**  A crashed promotion holds no tokens past its
-  reap (its receipt never landed), so its files are unattributed bytes the
-  tier's own reconciliation takes back when it needs the room.  A prefix is
-  the stage's purchase; the ram tier buys whole ranges or nothing.
+  reap (its receipt never landed), so its files are bytes no record names.
+  A retry of the range -- the same action key on a new attempt -- adopts
+  each one whose bytes hash to the declared digest, before any copy and
+  without the publication grace (#1081); anything else it copies again.
+  A prefix is the stage's purchase; the ram tier buys whole ranges or
+  nothing.
 
 The epoch is read, never created: the tier loop stamps the mount's marker at
 bootstrap, and a promotion that finds none refuses -- a range nobody can
@@ -274,6 +277,10 @@ def promote(args, *, stop=None) -> dict[str, object]:
         "cpu_seconds": round(cpu_used, 3),
         "host": socket.gethostname(),
         "errors": copier.errors,
+        # Thread-seconds per phase and how each entry ended, the stage
+        # mover's own record (#981): a restart that adopts its last
+        # attempt's copies shows here as outcomes without copy phases.
+        "phase_timings": copier.clock.report(),
         "unix": time.time(),
     }
     material_generation = reader_lease.mint_generation()
