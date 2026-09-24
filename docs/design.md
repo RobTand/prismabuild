@@ -8751,7 +8751,11 @@ work separately.
 
 An owner with nothing to act on is skipped by a process-local, **skip-only**
 checkpoint (#853, #1056). Nothing to act on means no stale path, no absent
-path and no material superset to trim. That holds for a fully coherent owner,
+path, and no material superset that this pass would trim. The trim runs only
+for an owner no co-owner protects, so an owner with a co-owned path keeps a
+superset material, as it always has; when its last co-owner leaves, the
+co-owner fence re-runs the census and the trim is reached. That holds for a
+fully coherent owner,
 for an owner whose paths co-owners protect, and for an owner some retain
 reason holds: a taint, a same-key claim, a live pin, a live claim or a
 promotion handoff. A checkpoint certifies only the path classification, and a

@@ -2827,7 +2827,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     whole charge was retained.
 
     An owner with nothing to act on -- no stale or absent path and no
-    superset material to trim, whether coherent, protected by co-owners, or
+    superset material this pass would trim (only an owner no co-owner
+    protects is trimmed), whether coherent, protected by co-owners, or
     retained for any reason above -- changes nothing and installs a skip
     checkpoint (#1056).  It fences this owner's fragment and material, every
     parent directory of its paths, and every co-owner fragment the census
@@ -3131,7 +3132,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             retained_reason = held_reason
             errors.extend(held_errors)
             # Idle means a pass without the reason would change nothing:
-            # nothing stale or absent, and no superset material to trim.
+            # nothing stale or absent, and no superset material that pass
+            # would trim (it trims only an owner no co-owner protects).
             idle = (not prune and not absent
                     and (retained_paths > 0 or exact_material))
             cacheable = idle and _install_skip_checkpoint(
