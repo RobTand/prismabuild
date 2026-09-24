@@ -7461,8 +7461,9 @@ under the consumer's transition lock:
   never read as "the old filing is gone": it either refuses by name while
   live work remains, or adopts the replacement filing that now stands.
 * `pbrun.main` holds the consumer's transition lock across the whole
-  ownership transaction -- handoff, seal, `freeze` and the consumer's own
-  publication. A dead consumer's cleanup pass rereads an
+  ownership transaction -- handoff, seal, `freeze`, renewal and the
+  consumer's own publication (`residency_plan.seal_window` does the middle
+  two, in that order). A dead consumer's cleanup pass rereads an
   old failed or withdrawn terminal every cycle; between a bare `freeze` and
   the consumer's row it would see a filed plan nobody owns and reap it.
 * Both automatic window publications (`residency_window` and
@@ -7481,7 +7482,9 @@ under the consumer's transition lock:
   attribution, every child withdrawal and the reap happen there too. Without
   the lock, a pass that read the old terminal could reach the lead the
   window had just published for a fresh resubmission and cancel it; `reap`'s locked
-  recheck runs far too late to undo that.
+  recheck runs far too late to undo that. Each withdrawal is then decided
+  under the mover's own lock, against the filed plans of every other
+  consumer (see "A retry is never superseded by its predecessor's cleanup").
 
 `handoff_safe` reads under the same discipline. It holds the consumer's lock
 across the whole scan and each child's transition lock across that child's
@@ -7529,28 +7532,78 @@ reaps it itself once the handoff is safe.
 **A deliberate seal renews the generation it replaces.** A submission
 publishes its consumer and nothing else -- every phase is the window's to
 publish, the first included -- so the visible
-cancellations a reaped predecessor left on its later children outlive both the
+cancellations a predecessor left on its children outlive both the
 plan and the ownership they were made against: the child keys are content
-hashes, and a same-body resubmission -- same consumer, price, tool and ranges
--- seals the same ones. Read as live, they would supersede the fresh plan
+hashes, a same-body resubmission -- same consumer, price, tool and ranges
+-- seals the same ones, and a shared range's mover (#1026) is named by every
+consumer of the range. Read as live, they would supersede the new plan
 before its second phase ever published, which is the same-body half of #708
-the filing-identity marker does not cover. So a fresh seal (`pbrun
---residency stage`, never a reused frozen plan) retires those *visible*
-markers as evidence: under the consumer's transition lock, after
+the filing-identity marker does not cover. So every staged submission
+(`pbrun --residency stage` and a decomposed campaign child, whether it seals a
+fresh plan or reuses its frozen one) goes through
+`residency_plan.seal_window`: the plan is filed first, and then the
+predecessor's *visible* markers are retired as evidence. The retirement runs
+under the consumer's transition lock and the transition lock of every mover
+the plan names, taken in key order, and only after
 `residency_plan.handoff_safe` proves no live consumer and no queued or claimed
-child still names the old window, and under each child's own lock in the
-parent-before-child order every writer here keeps. The immutable decision
-under `withdrawn/decisions/` stays, and the visible marker itself is filed
-under `withdrawn/superseded/`. For a later child the boundary is *that child's
-own locked retirement* in this transaction, not the submission and not the
-freeze that follows it: a cancellation filed for the child after its marker is
-moved survives, and the window's next cycle reads it as live -- it refuses to
-publish the child and marks the fresh plan superseded. The first lead is a
-child like any other here: `child_keys` names every phase, so its marker is
-retired under its own transition lock in this same pass, on the same boundary
-and with no special case. The renewal never teaches the automatic publisher to ignore a
-marker: the window's `refuse_withdrawn` publications and its supersession pass
-are unchanged, and only the deliberate submission retires one.
+child still names the old window. The immutable decision under
+`withdrawn/decisions/` stays, and the visible marker itself is filed under
+`withdrawn/superseded/`. The boundary for every child is the listing of live
+markers made while those locks are held: a cancellation filed for a child
+after it survives, and the window's next cycle reads it as live -- it refuses
+to publish the child and marks the new plan superseded. The first lead is a
+child like any other here, with no special case. A renewal that refuses or
+fails archives a plan the same call filed (reason `seal-refused`), so a
+refused submission leaves no filed plan behind. A release re-attaching to its own live
+row (#913) renews nothing. The renewal never teaches the automatic publisher
+to ignore a marker: the window's `refuse_withdrawn` publications and its
+supersession pass are unchanged, and only the deliberate submission retires
+one.
+
+**A retry is never superseded by its predecessor's cleanup (#1114).** On
+2026-09-24 a failed staged consumer left a shared range's mover queued, and
+its retry -- a new consumer key over the same manifest -- sealed a plan naming
+that mover. The dead-consumer pass then withdrew the mover for the failed
+consumer, the retry's window read the withdrawal as a cancellation of its own
+plan and marked it superseded, and the retry failed in its first staged read.
+The pass had asked about interest only through live queue rows and the
+shared-mover index, and a sealed consumer whose row is not visible yet, or an
+index that does not list, reads there as nobody. Two rules close it:
+
+* The pass withdraws per interest, for every mover, and the witness is the
+  filed plan, not the live row (`residency_plan.plan_interest`). A dead
+  consumer's queued or claimed mover stays while another consumer that is not
+  dead has a filed plan naming it, and while that cannot be told. A consumer
+  is dead only when, under its own transition lock taken without blocking, it
+  is in no live state and has a `failed`, `withdrawn` or `done` record; a busy
+  lock is a seal or resubmission in progress and counts as interest. A filed
+  plan with neither a row nor an ending counts as interest too. A plan is
+  read for the keys its bytes name, not through `validate_plan`, so a plan a
+  newer generation sealed (#615) still counts, and a plan that cannot be read
+  keeps the mover. The pass decides and withdraws under the mover's own
+  transition lock. The plans listing has to follow that lock to see a seal's
+  plan, so it runs inside the hold, and its seconds are stamped as
+  `interest_s` on the `dead-consumer-mover-kept` and
+  `dead-consumer-mover-withdrawn` events.
+* The seal files its plan before it renews (`seal_window`, above), and renews
+  under every mover's lock. So each withdrawal the pass makes either landed
+  before the renewal's listing, and is retired by it, or runs after that
+  listing and sees the filed plan. A retry therefore seals a plan free of
+  the dead attempt's cleanup -- adopting the attempt's queued movers as the
+  same work -- or refuses by name at submission.
+
+The kept mover keeps the dead consumer's plan filed, because `reap` will not
+archive it under a live child; a later pass reaps it once the mover has ended.
+A filed plan whose consumer was never published and never ended (a process
+killed between its seal and its row, or a publication that failed after the
+seal) keeps a mover it names alive until that mover ends; the copy is
+bounded, and the orphan sweep reclaims its range. No pass reaps such a plan
+yet, because the pass discovers only plans whose consumer has a terminal
+record. The
+pass's lock order stays parent before child; the one lock it takes the other
+way round, another consumer's while a mover's is held, is taken without
+blocking and never waits. The tests are in
+`tests/test_a_retry_is_not_superseded_by_its_predecessors_cleanup.py`.
 
 An operator's `--withdraw` of a historical child whose new queue row does not
 exist yet addresses that child's *old* generation: the verb re-affirms the
@@ -10158,10 +10211,13 @@ now treats one mover named by several plans as one holder:
   never replaces the generation another window published.
 
 **Withdrawal is per interest too.** A failed consumer's queued movers are
-withdrawn (#620), but a shared mover is not withdrawn while another consumer is
-interested or while interest does not read. The dead consumer's plan then stays
-filed, because `reap` does not archive a plan under a live child, and a later
-pass reaps it once the mover has ended.
+withdrawn (#620), but a mover is not withdrawn while another consumer that is
+not dead has a filed plan naming it, or while that does not read
+(`residency_plan.plan_interest`, #1114). The witness is the filed plan rather
+than `stage_release.shared_interest`'s live rows and progress, because a
+sealed consumer's plan is filed before its row is visible. The dead consumer's
+plan then stays filed, because `reap` does not archive a plan under a live
+child, and a later pass reaps it once the mover has ended.
 
 **Limits of this design.**
 

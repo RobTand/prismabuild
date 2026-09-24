@@ -77,6 +77,7 @@ the consumer never waits on a mover that is waiting on the consumer.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+import contextlib
 import hashlib
 import json
 import math
@@ -1134,10 +1135,13 @@ def handoff_safe(queue, consumer_action_key: str,
                  plan: Mapping[str, object]) -> tuple[bool, str]:
     """Whether a superseded window's ownership has ended.
 
-    A fresh plan is a different decomposition: its mover keys differ, so
-    replacing the old one while any of the old window's work is still live
-    would strand a queued or running row nobody can publish, egress or
-    attribute.  The test is the queue's own state, never a clock:
+    A fresh plan is a new decomposition.  Its keys may differ from the old
+    one's, or match them -- a same-body reseal seals the same keys, and a
+    shared range's mover (#1026) is named by every consumer of the range --
+    so replacing the old window while any of its work is still live would
+    strand a queued or running row nobody can publish, egress or attribute,
+    or retire a cancellation that row still answers to.  The test is the
+    queue's own state, never a clock:
 
     * the consumer itself must not be in ``ready/`` or ``claimed/`` -- a live
       window is not handed off from underneath it, it is withdrawn first;
@@ -1295,59 +1299,69 @@ def reap(queue, consumer_action_key: str, *,
 def retire_predecessor_cancellations(
         queue, consumer_action_key: str,
         plan: Mapping[str, object]) -> dict[str, object]:
-    """Retire a reaped window's visible child cancellations for a fresh seal.
+    """Retire a predecessor window's visible child cancellations for a seal.
 
     A submission publishes its consumer and nothing else: every phase is the
     window's to publish, the first included, as the consumer advances.  An
     action key is a content hash, so a resubmission of the same consumer,
-    price and tool seals the same child keys -- and the *visible* withdrawal
-    markers the predecessor generation left on those keys (an operator's
-    cancellation, or the dead-consumer pass stopping its movers) outlive the
-    plan's own retirement.  Read as live, they supersede the fresh plan before
-    its second phase ever published (#708 review).
+    price and tool seals the same child keys, and a shared range's mover
+    (#1026) is named by every consumer of that range.  The *visible*
+    withdrawal markers a predecessor generation left on those keys (an
+    operator's cancellation, or the dead-consumer pass stopping a dead
+    consumer's movers) outlive the ownership they were made against.  Read as
+    live, they supersede the new window before its second phase ever
+    published (#708 review, #1114).
 
-    A deliberate seal is a new generation of that consumer's window, so it
-    retires those predecessor markers: the keys are its own sealed children,
-    and the same act that re-submits the consumer is how a person asks for the
-    work again.  Three boundaries keep it honest:
+    A deliberate submission is a new generation of that consumer's window, so
+    it retires those predecessor markers: the keys are its own sealed
+    children, and the same act that re-submits the consumer is how a person
+    asks for the work again.  Four boundaries keep it honest:
 
+    * the plan is filed first (:func:`seal_window`).  From that moment the
+      dead-consumer pass counts this consumer's interest in every mover the
+      plan names (:func:`plan_interest`), so it cannot withdraw one for
+      someone else afterwards;
+    * the renewal decides while it holds the transition lock of every mover
+      the plan names, taken in key order after the consumer's own.  The pass
+      decides and withdraws under the same mover lock, so each of its
+      withdrawals either landed before this listing, and is retired here, or
+      runs after it and sees the filed plan.  Without that, a pass that read
+      interest before the filing and withdrew after the listing superseded
+      the fresh window (#1114);
     * :func:`handoff_safe` must prove the predecessor's ownership ended -- no
-      live consumer and no queued or claimed child -- under the consumer's
-      transition lock.  This is the same proof ``reap`` uses; a window whose
-      work is still live refuses by name rather than being replaced.
-    * only the *visible* marker is moved, under each child's own transition
-      lock and in the parent-before-child order every writer here keeps; the
-      immutable decision under ``withdrawn/decisions/`` stays, and the marker
-      itself is filed under ``withdrawn/superseded/`` as evidence, never
-      deleted.
-    * a marker that cannot be read is unknown state, not "no cancellation":
-      the whole renewal refuses while any hit is unreadable, and nothing is
-      retired before that refusal -- an operator resolves it.
+      live consumer and no queued or claimed child -- before anything is
+      retired.  This is the same proof ``reap`` uses; a window whose work is
+      still live refuses by name rather than being replaced;
+    * only the *visible* marker is moved; the immutable decision under
+      ``withdrawn/decisions/`` stays, and the marker itself is filed under
+      ``withdrawn/superseded/`` as evidence, never deleted.  A marker that
+      cannot be read is unknown state, not "no cancellation": the whole
+      renewal refuses while any hit is unreadable, and nothing is retired
+      before that refusal.
 
-    The boundary for a later child is *that child's own locked retirement* in
-    this transaction -- not this call, and not the freeze that follows it.  The
-    marker is moved while the child's transition lock is held, so a
-    cancellation filed for that child after that instant survives, and the
-    window's next cycle reads it as live: it refuses to publish the child and
-    marks the fresh plan superseded.  That is the rule for the first lead
-    too, with no special case: ``child_keys`` names every phase, so the
-    lead's marker is retired here under its own transition lock, on the same
-    boundary as any later child.  The automatic
-    publisher never retires a cancellation.  ``None`` from
-    ``withdrawn_keys``-backed reads is the ordinary first seal, which is not a
-    renewal at all and returns an empty answer without taking a lock.
+    The boundary for every child is this listing, made under the locks.  A
+    cancellation filed for a child after the locks are released is the new
+    window's own decision and survives: the window's next cycle reads it as
+    live, refuses to publish the child and marks the plan superseded.  The
+    automatic publisher never retires a cancellation.  With no marker on any
+    child the answer is empty and nothing is proven or moved: a live child
+    is then the same work this window asks for, adopted as it stands.
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    try:
-        cancelled = queue.withdrawn_keys()
-    except OSError as exc:
-        raise ResidencyPlanError(
-            f"the live withdrawal markers could not be listed: {exc}") from None
-    hits = sorted(child for child in child_keys(plan) if child in cancelled)
-    if not hits:
-        return {"consumer_action_key": key, "retired": []}
-    with queue._transition_locked(key):
+    with contextlib.ExitStack() as held:
+        held.enter_context(queue._transition_locked(key))
+        for mover in sorted(set(mover_keys(plan))):
+            held.enter_context(queue._transition_locked(mover))
+        try:
+            cancelled = queue.withdrawn_keys()
+        except OSError as exc:
+            raise ResidencyPlanError(
+                f"the live withdrawal markers could not be listed: {exc}") from None
+        hits = sorted(child for child in set(child_keys(plan))
+                      if child in cancelled)
+        if not hits:
+            return {"consumer_action_key": key, "retired": []}
         safe, why = handoff_safe(queue, key, plan)
         if not safe:
             raise ResidencyPlanError(
@@ -1380,6 +1394,213 @@ def retire_predecessor_cancellations(
                         f"the cancellation marker for {child[:12]} could not "
                         f"be retired: {exc}") from None
         return {"consumer_action_key": key, "retired": retired}
+
+
+def seal_window(queue, plan: Mapping[str, object], *,
+                renew: bool = True) -> dict[str, object]:
+    """File a window's plan, then take its renewal boundary (#1114).
+
+    One transaction under the consumer's transition lock, and the order is
+    the point: :func:`freeze` first, :func:`retire_predecessor_cancellations`
+    second.  Filing the plan is how this consumer's interest in the movers it
+    names becomes visible to the dead-consumer pass (:func:`plan_interest`),
+    and the renewal's locked listing is the instant after which a
+    predecessor's cleanup can no longer cancel them.  Renewed the other way
+    round, a pass that read interest just before the filing could withdraw a
+    mover just after the listing, and the fresh window's first cycle would
+    supersede it.
+
+    ``freeze`` stays first-writer, so a plan already filed for this consumer
+    (a resubmission reusing its frozen plan) is verified rather than
+    replaced, and renewed on the same boundary: its children carry the same
+    predecessor cancellations a fresh seal's would.  ``renew`` is ``False``
+    only for a caller re-attaching to its own live publication.
+
+    A renewal that refuses or fails leaves nothing behind: a plan this call
+    filed is archived under ``superseded/`` (reason ``seal-refused``) before
+    the error is raised, so no plan this call filed outlives it unpublished.
+    A plan that was already filed stays as it was.  What this cannot cover
+    is a process killed after the seal, or a publication that fails after
+    it: that plan stays filed with no row, and until it is reaped it keeps
+    any dead consumer's mover it names until the mover ends.  Returns the
+    renewal's answer (``retired`` lists the markers it retired).
+    """
+
+    checked = validate_plan(plan)
+    key = str(checked["consumer_action_key"])
+    path = queue.residency_plan_path(key)
+    with queue._transition_locked(key):
+        before, error = _stat_incarnation(path)
+        if error is not None:
+            raise ResidencyPlanError(
+                f"the filed plan for {key[:12]} could not be read before "
+                f"sealing: {error}")
+        freeze(queue, checked)
+        if not renew:
+            return {"consumer_action_key": key, "retired": []}
+        try:
+            return retire_predecessor_cancellations(queue, key, checked)
+        except Exception:
+            # Any failure, not only a refusal: an ``OSError`` out of the
+            # handoff proof or the withdrawn listing would otherwise leave a
+            # filed plan with no row and no ending, which the dead-consumer
+            # pass reads as a live seal's interest in every mover it names.
+            filed = incarnation(path)
+            if before is None and filed is not None:
+                target = (path.parent / SUPERSEDED
+                          / f"{path.stem}.{time.time():.6f}.seal-refused.json")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.replace(path, target)
+                except FileNotFoundError:            # pragma: no cover
+                    pass
+            raise
+
+
+#: Per queue root and consumer, every action key its filed plan's bytes
+#: carry, keyed by the filing's incarnation.  A filing is immutable, so the
+#: answer holds until the incarnation moves; entries for plans no longer
+#: filed are dropped.
+_FILED_KEYS: dict[tuple[str, str],
+                  tuple[tuple[int, int, int], frozenset[str]]] = {}
+
+#: One action key in a plan's bytes: 64 lowercase hex digits, not part of a
+#: longer run.
+_KEY_IN_BYTES = re.compile(rb"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+
+
+def _filed_keys(queue, consumer_action_key: str,
+                ) -> tuple[frozenset[str] | None, str]:
+    """``(keys, "")`` for one filed plan, or ``(None, why)`` when unknown.
+
+    The keys are read off the plan's bytes, not its validated body, so the
+    answer does not depend on this reader knowing the plan's schema: a plan
+    sealed by a newer generation than this reader (#615) names its movers
+    all the same, and one this reader refuses must not read as "names
+    nothing".  Every mover a plan names appears in its bytes as its key, so
+    a key absent from the bytes is a mover the plan does not name; the other
+    keys a plan carries (its consumer, its egress rows, its manifest digest)
+    are never a mover's, so the set over-states nothing a caller asks.
+    """
+
+    root = str(queue.root)
+    path = queue.residency_plan_path(consumer_action_key)
+    for _attempt in range(3):
+        before, error = _stat_incarnation(path)
+        if error is not None:
+            return None, f"its plan could not be stat-ed: {error}"
+        if before is None:
+            return frozenset(), ""             # reaped since the listing
+        kept = _FILED_KEYS.get((root, consumer_action_key))
+        if kept is not None and kept[0] == before:
+            return kept[1], ""
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return frozenset(), ""
+        except OSError as exc:
+            return None, f"its plan could not be read: {exc}"
+        after, error = _stat_incarnation(path)
+        if error is not None:
+            return None, f"its plan could not be stat-ed: {error}"
+        if after == before:
+            keys = frozenset(match.decode()
+                             for match in _KEY_IN_BYTES.findall(raw))
+            _FILED_KEYS[(root, consumer_action_key)] = (before, keys)
+            return keys, ""
+    return None, "its plan kept changing while it was read"
+
+
+def plan_interest(queue, mover_action_key: str, *,
+                  exclude: Collection[str] = ()) -> dict[str, list[str]]:
+    """The consumers whose filed plan names a mover and who are not dead.
+
+    What the dead-consumer pass asks before it withdraws a dead consumer's
+    queued or claimed mover (#1114).  A mover key is a content hash, and a
+    shared range's mover (#1026) is named by every consumer of that range,
+    so the same key is often another consumer's work too: a retry of the
+    failed consumer over the same manifest names exactly the movers the
+    failed attempt left queued.  Withdrawing one of those for the dead
+    consumer cancels the live one's window.
+
+    Read from the *filed plans*, not from live queue rows, because a plan is
+    filed before its consumer's row is published (:func:`seal_window`), and
+    that row can take a while to become visible: a sealed consumer with no
+    row yet is interested.  A plan is read as bytes (:func:`_filed_keys`)
+    rather than through :func:`validate_plan`, so a plan a newer generation
+    sealed (#615) still counts by the keys it names.  A consumer counts as
+    dead only when all of this holds, read under its own transition lock taken without blocking: it is
+    in no live state, and it has a ``failed``, ``withdrawn`` or ``done``
+    record.  So a consumer being sealed or resubmitted right now (its lock
+    is held) is never taken for the dead generation it replaces.
+
+    ``unknown`` names the consumers whose plan or state did not read, or
+    whose lock was busy; the caller counts them as interested, because
+    cancelling another consumer's work on a question nobody could answer is
+    the direction that cannot be taken back.  A plan listing that fails is
+    unknown too (``"<plans>"``).
+
+    The caller holds the mover's transition lock.  That is what makes the
+    answer good until the withdrawal it authorizes: a seal renews its
+    children under the same lock (:func:`retire_predecessor_cancellations`),
+    so a plan filed after this read is renewed after the withdrawal.
+    """
+
+    mover = _action_key(mover_action_key, where="mover_action_key")
+    skip = {str(key) for key in exclude}
+    interested: list[str] = []
+    unknown: list[str] = []
+    root = str(queue.root)
+    try:
+        filed = sorted(
+            path.stem for path in _pool._scan(queue.root / _pool.RESIDENCY_PLANS)
+            if path.suffix == ".json" and len(path.stem) == 64
+            and set(path.stem) <= _HEX)
+    except OSError:
+        return {"interested": [], "unknown": ["<plans>"]}
+    for stale in [entry for entry in _FILED_KEYS
+                  if entry[0] == root and entry[1] not in filed]:
+        del _FILED_KEYS[stale]
+    for key in filed:
+        if key in skip:
+            continue
+        keys, _why = _filed_keys(queue, key)
+        if keys is None:
+            unknown.append(key)
+            continue
+        if mover not in keys:
+            continue
+        with queue._transition_locked(key, blocking=False) as got:
+            if not got:
+                unknown.append(key)          # mid-transition: a seal, say
+                continue
+            state, why = live_state(queue, key)
+            if why:
+                unknown.append(key)
+                continue
+            if state is not None:
+                interested.append(key)
+                continue
+            ended, unreadable = False, False
+            for terminal in (_pool.FAILED, _pool.WITHDRAWN, _pool.DONE):
+                try:
+                    os.lstat(queue.item_path(terminal, key))
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    unreadable = True
+                    break
+                ended = True
+                break
+            if unreadable:
+                unknown.append(key)
+            elif not ended:
+                # Filed, never published and never ended: a seal whose row
+                # is not visible yet, or one that stopped between its plan
+                # and its row.  Either way not dead.
+                interested.append(key)
+    return {"interested": sorted(set(interested)),
+            "unknown": sorted(set(unknown))}
 
 
 def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:

@@ -120,10 +120,10 @@ _SHARED_MOVERS: list[dict[str, frozenset[str] | None] | None] = [None]
 #: consumer, mover)``: the share namespace's fragment and material versions.
 #: A copy whose source has not moved is not written again.
 _FANOUT_FINGERPRINTS: dict[tuple[str, str, str], tuple[object, ...]] = {}
-#: The ``(queue root, dead consumer, shared mover)`` keeps already told: a
-#: dead consumer's shared mover stays while others read it (#1026), and the
-#: event says so once rather than every cycle.
-_SHARED_KEPT_TOLD: set[tuple[str, str, str]] = set()
+#: The ``(queue root, dead consumer, mover)`` keeps already told: a dead
+#: consumer's mover stays while another consumer's filed plan names it
+#: (#1026, #1114), and the event says so once rather than every cycle.
+_MOVER_KEPT_TOLD: set[tuple[str, str, str]] = set()
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
 
@@ -1966,18 +1966,26 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
     recheck is far too late to undo a cancellation (#708 review).
 
     The lock order is the one every writer keeps, parent before child:
-    ``queue.withdraw`` and ``reap`` take the mover keys' own locks while this
-    consumer's is held, and nothing here waits on a child a parent does not
-    already hold.
+    each mover's lock is taken while this consumer's is held, and
+    ``queue.withdraw`` and ``reap`` nest inside them.  The one lock taken
+    the other way round -- another consumer's, while a mover's is held, by
+    :func:`residency_plan.plan_interest` -- is taken without blocking, and a
+    busy one reads as interest, so it can never wait on anything.
 
-    A shared range's mover (#1026) is every sharer's, so a dead consumer's
-    withdrawal is per interest: it is not withdrawn while another live
-    consumer's plan still reads it, or while that cannot be told.  The plan
-    then stays filed, because ``reap`` will not archive it under a live
+    Withdrawal is per interest (#1026, #1114).  A mover key is a content
+    hash and a shared range's mover is every sharer's, so a dead consumer's
+    queued mover is not withdrawn while another consumer that is not dead
+    has a filed plan naming it, or while that cannot be told.  The filed
+    plan is the witness, not a live queue row: a retry's plan is filed
+    before its row is published, and a pass that looked only at rows read a
+    sealed retry as nobody and cancelled its lead.  The answer is taken
+    under the mover's own transition lock, the lock a seal renews its
+    children under (:func:`residency_plan.seal_window`), so a plan filed
+    after it is renewed after the withdrawal.  A kept mover keeps the dead
+    consumer's plan filed, because ``reap`` will not archive it under a live
     child, and a later pass reaps it once the mover has ended.
     """
 
-    shared = _shared_movers(queue) or frozenset()
     with queue._transition_locked(key):
         item = pool._read_json(path)
         if not isinstance(item, dict):
@@ -2008,41 +2016,51 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
                 origin = pool.CLAIMED
             else:
                 continue  # finished or never published: nothing to stop
-            if mover_key in shared:
-                try:
-                    others = stage_release.shared_interest(
-                        queue, mover_key, exclude={key})
-                except (OSError, pool.PoolContractError, ValueError) as exc:
-                    others = {"interested": [], "unknown": [repr(exc)]}
+            # Withdrawal is per interest (#1026, #1114).  A mover key is a
+            # content hash and a shared range's mover is every sharer's, so
+            # the same key is often another consumer's work: a retry over the
+            # same manifest names exactly the movers this dead attempt left
+            # queued.  Asked of the filed plans under the mover's own lock,
+            # the lock a seal renews its children under, so a plan filed
+            # after this answer is renewed after the withdrawal below.
+            with queue._transition_locked(mover_key):
+                asked = time.monotonic()
+                others = residency_plan.plan_interest(
+                    queue, mover_key, exclude={key})
+                # The plans listing runs under the mover's lock (it must
+                # follow the lock to see a seal's plan); its cost is stamped.
+                interest_s = round(time.monotonic() - asked, 6)
                 if others["interested"] or others["unknown"]:
                     # Told once per mover, not every cycle it stays kept.
                     told = (str(queue.root), key, mover_key)
-                    if told not in _SHARED_KEPT_TOLD:
-                        _SHARED_KEPT_TOLD.add(told)
+                    if told not in _MOVER_KEPT_TOLD:
+                        _MOVER_KEPT_TOLD.add(told)
                         events.append({
-                            "event": "dead-consumer-shared-mover-kept",
+                            "event": "dead-consumer-mover-kept",
                             "consumer": key, "mover": mover_key,
                             "state": origin,
-                            "interested": len(others["interested"]),
-                            "unknown": len(others["unknown"])})
+                            "interested": others["interested"],
+                            "unknown": others["unknown"],
+                            "interest_s": interest_s})
                     continue
-            try:
-                outcome = queue.withdraw(
-                    mover_key, reason=f"consumer-{state}", by="tier-loop")
-            except (pool.PoolContractError, OSError) as exc:
-                events.append({
-                    "event": "dead-consumer-mover-withdraw-failed",
-                    "consumer": key, "mover": mover_key, "state": origin,
-                    "withdrawn": False, "error": repr(exc)})
-                failed = True
-                continue
+                try:
+                    outcome = queue.withdraw(
+                        mover_key, reason=f"consumer-{state}", by="tier-loop")
+                except (pool.PoolContractError, OSError) as exc:
+                    events.append({
+                        "event": "dead-consumer-mover-withdraw-failed",
+                        "consumer": key, "mover": mover_key, "state": origin,
+                        "withdrawn": False, "error": repr(exc)})
+                    failed = True
+                    continue
             done = outcome.get("status") in ("withdrawn", "already_withdrawn")
             if not done:
                 failed = True
             events.append({
                 "event": "dead-consumer-mover-withdrawn",
                 "consumer": key, "mover": mover_key, "state": origin,
-                "withdrawn": bool(done), "status": outcome.get("status")})
+                "withdrawn": bool(done), "status": outcome.get("status"),
+                "interest_s": interest_s})
         if failed:
             return      # the plan is how the next cycle retries
         reaped = residency_plan.reap(
