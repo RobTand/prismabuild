@@ -392,20 +392,41 @@ def main(argv: list[str] | None = None) -> int:
                         help="py-spy samples per second")
     parser.add_argument("--cycles", type=int, default=11,
                         help="cycles to run: one cold, the rest steady")
-    parser.add_argument("--done", type=int, default=28943)
-    parser.add_argument("--failed", type=int, default=7142)
-    parser.add_argument("--withdrawn", type=int, default=1877)
-    parser.add_argument("--receipts", type=int, default=6434)
-    parser.add_argument("--passes", type=int, default=1324)
-    parser.add_argument("--empty-dirs", type=int, default=404)
-    parser.add_argument("--small-dirs", type=int, default=30)
-    parser.add_argument("--big-fragments", default="90000,60000,50000,40000")
-    parser.add_argument("--produced-fragment-dirs", type=int, default=1957)
-    parser.add_argument("--live-consumers", type=int, default=6)
-    parser.add_argument("--phases", type=int, default=3)
-    parser.add_argument("--files-per-range", type=int, default=64)
-    parser.add_argument("--ready-noise", type=int, default=30)
-    parser.add_argument("--claimed-noise", type=int, default=28)
+    parser.add_argument("--done", type=int, default=28943,
+                        help="done/ records (the live queue held 28,943 on "
+                             "2026-09-23)")
+    parser.add_argument("--failed", type=int, default=7142,
+                        help="failed/ records (7,142 live)")
+    parser.add_argument("--withdrawn", type=int, default=1877,
+                        help="withdrawn/ records (1,877 live)")
+    parser.add_argument("--receipts", type=int, default=6434,
+                        help="movement receipts (6,434 live)")
+    parser.add_argument("--passes", type=int, default=1324,
+                        help="passes/ sidecars (1,324 live)")
+    parser.add_argument("--empty-dirs", type=int, default=404,
+                        help="empty consumer directories in the residency "
+                             "forest")
+    parser.add_argument("--small-dirs", type=int, default=30,
+                        help="consumer directories holding one to nine "
+                             "small noise fragments each")
+    parser.add_argument("--big-fragments", default="90000,60000,50000,40000",
+                        help="entries in each large noise fragment, "
+                             "comma-separated")
+    parser.add_argument("--produced-fragment-dirs", type=int, default=1957,
+                        help="subdirectories of the produced-output fragment "
+                             "directory")
+    parser.add_argument("--live-consumers", type=int, default=6,
+                        help="live consumers with frozen plans and one landed "
+                             "range each; even-numbered ones are claimed, and "
+                             "the first has a mover in flight")
+    parser.add_argument("--phases", type=int, default=3,
+                        help="phases in each live consumer's plan")
+    parser.add_argument("--files-per-range", type=int, default=64,
+                        help="files in each landed range")
+    parser.add_argument("--ready-noise", type=int, default=30,
+                        help="unrelated ready rows")
+    parser.add_argument("--claimed-noise", type=int, default=28,
+                        help="unrelated claimed rows")
     parser.add_argument("--run-cycles", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--cycles-out", default="", help=argparse.SUPPRESS)
