@@ -7756,8 +7756,10 @@ when the commitment with the newcomer admitted fits the tier. The newcomer's
 `growth_gib` is how far that moves the commitment. Adding a window can lower
 the commitment, when a grant it holds becomes holding toward a range an
 admitted window reads, so the gate reads the signed difference and the record
-shows it as at least 0. Each decision recomputes the flow over the admitted
-windows and the newcomer; the census reads nothing more per cycle than before.
+shows it as at least 0. Each decision computes the flow over the admitted
+windows and the newcomer; the flow over an admitted set is computed once per
+census and reused by every newcomer asked against it. The census reads nothing
+more per cycle than before.
 
 A live consumer the census cannot read is not free room. A plan read fails on
 a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then

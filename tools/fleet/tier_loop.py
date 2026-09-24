@@ -3689,6 +3689,12 @@ def _joint_ranges(windows: dict[str, dict[str, object]], *,
     return {"windows": shaped, "caps": caps, "tokens": tokens}
 
 
+#: The census :func:`_joint_committed` last priced and its answers by member
+#: set.  A pass asks the same admitted set once per newcomer; the reference
+#: keeps the census alive, so an identity match is that census.
+_JOINT_COMMITTED: list = [None, {}]
+
+
 def _joint_committed(joint: Mapping[str, object], members: Iterable[str]) -> int:
     """What a tier commits with windows ``members`` admitted (#1093).
 
@@ -3702,7 +3708,12 @@ def _joint_committed(joint: Mapping[str, object], members: Iterable[str]) -> int
 
     shaped = joint["windows"]
     assert isinstance(shaped, Mapping)
-    members = [key for key in members if key in shaped]
+    members = sorted({key for key in members if key in shaped})
+    if _JOINT_COMMITTED[0] is not joint:
+        _JOINT_COMMITTED[:] = [joint, {}]
+    known = _JOINT_COMMITTED[1]
+    if tuple(members) in known:
+        return known[tuple(members)]
     need = window_credit.joint_need_gib(
         {key: int(shaped[key]["need"]) for key in members},
         {key: shaped[key]["reach"] for key in members},
@@ -3710,8 +3721,10 @@ def _joint_committed(joint: Mapping[str, object], members: Iterable[str]) -> int
     holds = {token for key in members for token in shaped[key]["holds"]}
     tokens = joint["tokens"]
     assert isinstance(tokens, Mapping)
-    return int(joint["base_gib"]) + max(               # type: ignore[call-overload]
+    committed = int(joint["base_gib"]) + max(          # type: ignore[call-overload]
         0, need - sum(int(tokens[token]) for token in holds))
+    known[tuple(members)] = committed
+    return committed
 
 
 def _shared_ranges_gib(joint: Mapping[str, object],
