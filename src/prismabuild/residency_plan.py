@@ -2583,6 +2583,11 @@ SHARED = "shared"
 _SHARED_RANGES = "ranges"
 _SHARED_MOVERS = "movers"
 
+#: The fields of a stage tier's announcement a shared mover's argv is sealed
+#: with (``movement_actions.movement_tools``).  A registration records them,
+#: and it is reused only by a submission that reads the same announcement.
+SEALED_AGAINST_FIELDS = ("mover_python", "mover_tools_root")
+
 
 def share_namespace(manifest_sha256: str, tier_id: str, start: int,
                     end: int) -> str:
@@ -2652,6 +2657,15 @@ def _validate_shared_range(value: object, *, namespace: str) -> dict[str, object
         raise ResidencyPlanError(
             f"shared range {namespace[:12]} names mover {mover[:12]} but "
             f"files a row for another key")
+    sealed_against = value.get("sealed_against")
+    if (not isinstance(sealed_against, Mapping)
+            or sorted(sealed_against) != sorted(SEALED_AGAINST_FIELDS)
+            or not all(isinstance(sealed_against[field], str)
+                       and sealed_against[field]
+                       for field in SEALED_AGAINST_FIELDS)):
+        raise ResidencyPlanError(
+            f"shared range {namespace[:12]} names no tier announcement its "
+            f"mover was sealed against ({', '.join(SEALED_AGAINST_FIELDS)})")
     residency = row.get("residency")
     if (not isinstance(residency, Mapping)
             or str(residency.get("manifest_sha256")) != str(
@@ -2731,6 +2745,17 @@ def share_namespace_of(queue, mover_action_key: str) -> str | None:
     return None if record is None else str(record["share_namespace"])
 
 
+def mover_announcement(tier: Mapping[str, object]) -> dict[str, str]:
+    """The fields of ``tier``'s announcement a stage mover is sealed with.
+
+    What :func:`register_shared_range` compares a registration against.
+    The same two fields ``movement_actions.movement_tools`` builds a mover's
+    argv from, read the same way.
+    """
+
+    return {field: str(tier.get(field) or "") for field in SEALED_AGAINST_FIELDS}
+
+
 def _operator_withdrawn(queue, mover_action_key: str) -> bool:
     """Whether a live withdrawal of this mover is an operator's decision.
 
@@ -2748,39 +2773,98 @@ def _operator_withdrawn(queue, mover_action_key: str) -> bool:
     return not _pool.membership_handoff_authorized(marker)
 
 
+def _reuse_despite_stale(queue, mover_action_key: str) -> tuple[bool, str]:
+    """Whether a stale registration's mover must still be reused, and why.
+
+    A mover in ``ready/`` or ``claimed/`` is about to copy, or copying, the
+    range: sealing a second mover for it now is the double charge the
+    registry exists to prevent, and the next submission after it ends
+    replaces the registration.  A state that cannot be read is treated the
+    same way, because reuse is what the registry did before it compared
+    announcements, and a later submission asks again.
+
+    Read under the namespace's lock, not the mover's: a window that
+    publishes the old mover for a plan sealed against it just after this
+    read makes the old mover live beside the new one.  That costs what two
+    per-consumer movers of one range cost before #1026, once: two token
+    bookings, and each copy adopts the names the other already published
+    instead of copying them (``stage_move._StagedPublisher.try_adopt``).
+    """
+
+    state, why = live_state(queue, mover_action_key)
+    if state in (_pool.READY, _pool.CLAIMED):
+        return True, f"live ({state})"
+    if state is None and why:
+        return True, f"live state unknown: {why}"
+    return False, ""
+
+
 def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
                           start: int, end: int, seal,
-                          registered_by: str) -> tuple[dict[str, object], bool]:
+                          registered_by: str,
+                          sealed_against: Mapping[str, str],
+                          ) -> tuple[dict[str, object], bool]:
     """The mover every consumer of one staged range names; seal it if none.
 
     ``seal`` is called only when no usable registration exists, and returns
     ``(mover_row, derivation)`` for a mover sealed with ``--consumer-action-key``
-    set to this range's :func:`share_namespace`.  Returns ``(record,
-    sealed_here)``.
+    set to this range's :func:`share_namespace`, against the tier
+    announcement ``sealed_against`` names (:func:`mover_announcement`).  Returns
+    ``(record, sealed_here)``.
 
     First writer wins, under the namespace's transition lock, so two
     submitters of one range registering at once agree on one mover and the
     loser's sealed request is never published.  A registration is kept for
-    as long as its mover can be published: a ``done`` mover whose range was
-    evicted is published again by the window (``tier_loop._mover_state``), so
-    reuse needs no retirement.  The one exception is an operator's live
-    withdrawal of the registered mover (#708), which the window refuses to
-    republish; that registration is replaced, so a later submitter stages
-    the range under a fresh mover rather than inheriting the cancellation.
+    as long as its mover can be published under the tier announcement it was
+    sealed against: a ``done`` mover whose range was evicted is published
+    again by the window (``tier_loop._mover_state``), so reuse needs no
+    retirement.  Two things replace it, so that a later submitter stages
+    the range under a fresh mover:
+
+    * an operator's live withdrawal of the registered mover (#708), which
+      the window refuses to republish;
+    * a new tier announcement.  A mover's argv names the interpreter and
+      the tool root the tier announced when it was sealed, which is one
+      runtime generation's directory, so a registration reused across a
+      publish would run the old generation's mover for every later
+      consumer.  A registration whose ``sealed_against`` differs from this
+      submission's is stale, and it is still reused while its mover is live
+      (:func:`_reuse_despite_stale`).
+
+    The replaced record moves to ``<namespace>.<mover>.withdrawn`` or
+    ``.stale``, so the new one is a first write rather than an overwrite.
+    The old mover's index stays: plans sealed against it still name it, and
+    their fan-out, interest and egress read its namespace through it.
 
     The mover index (:func:`shared_mover_path`) is filed before the range
     record, both immutable.  A crash between the two leaves an index for a
     mover no plan names, which nothing reads.
     """
 
+    wanted = {field: str(sealed_against.get(field) or "")
+              for field in SEALED_AGAINST_FIELDS}
+    if not all(value.startswith("/") for value in wanted.values()):
+        raise ResidencyPlanError(
+            f"a shared range must be registered against a tier announcement "
+            f"that names absolute {' and '.join(SEALED_AGAINST_FIELDS)}; "
+            f"got {wanted!r}")
     namespace = share_namespace(manifest_sha256, tier_id, start, end)
     path = shared_range_path(queue, namespace)
     path.parent.mkdir(parents=True, exist_ok=True)
     with queue._transition_locked(namespace):
         current = read_shared_range(queue, namespace)
+        retire_as = ""
         if current is not None:
-            if not _operator_withdrawn(queue, str(current["mover_action_key"])):
+            mover = str(current["mover_action_key"])
+            if _operator_withdrawn(queue, mover):
+                retire_as = "withdrawn"
+            elif dict(current["sealed_against"]) == wanted:   # type: ignore[call-overload]
                 return current, False
+            else:
+                reuse, _why = _reuse_despite_stale(queue, mover)
+                if reuse:
+                    return current, False
+                retire_as = "stale"
         mover_row, derivation = seal()
         mover = _action_key(mover_row.get("action_key"),
                             where="shared mover row action_key")
@@ -2793,10 +2877,15 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
                            "range_end_bytes": int(end)},
             "mover_action_key": mover,
             "mover_row": dict(mover_row),
+            "sealed_against": dict(wanted),
             "derivation": dict(derivation or {}),
             "registered_by": str(registered_by),
             "registered_unix": time.time(),
         }
+        if current is not None:
+            record["replaces"] = {
+                "mover_action_key": str(current["mover_action_key"]),
+                "reason": retire_as}
         _validate_shared_range(record, namespace=namespace)
         index = shared_mover_path(queue, mover)
         index.parent.mkdir(parents=True, exist_ok=True)
@@ -2810,10 +2899,10 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
                 f"mover {mover[:12]} is already indexed under another "
                 f"range: {exc}") from None
         if current is not None:
-            # The operator-withdrawn registration goes to a retired name, so
-            # the replacement is a first write rather than an overwrite.
+            # The replaced registration goes to a retired name, so the
+            # replacement is a first write rather than an overwrite.
             retired = path.with_name(
-                f"{namespace}.{current['mover_action_key']}.withdrawn")
+                f"{namespace}.{current['mover_action_key']}.{retire_as}")
             os.replace(path, retired)
         try:
             _pool._publish_immutable(path, pb._canonical_bytes(record),
@@ -2828,6 +2917,7 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
 __all__ = [
     "RESIDENCY_PLAN_SCHEMA_V1",
     "ResidencyPlanError",
+    "SEALED_AGAINST_FIELDS",
     "SHARED_MOVER_SCHEMA_V1",
     "SHARED_RANGE_SCHEMA_V1",
     "accepted",
@@ -2840,6 +2930,7 @@ __all__ = [
     "lead_mover_row",
     "leads_for",
     "legs_over",
+    "mover_announcement",
     "mover_keys",
     "ram_mover_keys",
     "read",

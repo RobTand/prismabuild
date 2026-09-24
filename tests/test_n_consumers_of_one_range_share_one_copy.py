@@ -24,6 +24,7 @@ main is recorded.  Everything runs on ``tmp_path`` queues and stage roots
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -48,6 +49,10 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 MANIFEST = _hexkey("1026shared")
 FIRST = _hexkey("1026first")
 SECOND = _hexkey("1026second")
+#: The tier announcement the fixture's shared rows are sealed against: one
+#: runtime generation's interpreter and tool root.
+TOOLS_A = {"mover_python": "/gen-a/venv/bin/python",
+           "mover_tools_root": "/gen-a/tools/fleet"}
 
 
 # ------------------------------------------------------------------ fixtures
@@ -63,7 +68,8 @@ def _namespace(consumer: str, manifest: str, start: int, end: int) -> str:
 
 def _shared_plan(queue: pool.PoolQueue, consumer: str, *, label: str,
                  manifest: str = MANIFEST, phases: int = 4,
-                 phase_gib: int = PHASE_GIB) -> dict[str, object]:
+                 phase_gib: int = PHASE_GIB,
+                 tools: dict[str, str] = TOOLS_A) -> dict[str, object]:
     """One consumer's frozen plan, every stage mover registered for sharing.
 
     The per-consumer row is what the real seal makes for this consumer: a
@@ -71,9 +77,15 @@ def _shared_plan(queue: pool.PoolQueue, consumer: str, *, label: str,
     register a range files its row and every later one takes that row, the
     way ``pbrun.residency_stage_rows`` does.  Without it, each consumer keeps
     its own row, which is the seal before #1026.
+
+    ``tools`` is the tier announcement the row is sealed against.  A tree
+    whose registry does not compare announcements is not passed one.
     """
 
     register = getattr(residency_plan, "register_shared_range", None)
+    announced = ({"sealed_against": dict(tools)} if register is not None
+                 and "sealed_against" in inspect.signature(register).parameters
+                 else {})
     total = phases * phase_gib * GIB
     built = []
     for ordinal in range(phases):
@@ -90,7 +102,7 @@ def _shared_plan(queue: pool.PoolQueue, consumer: str, *, label: str,
             record, _sealed = register(
                 queue, manifest_sha256=manifest, tier_id=TIER, start=start,
                 end=end, seal=lambda row=row: (row, {}),
-                registered_by=consumer)
+                registered_by=consumer, **announced)
             row = dict(record["mover_row"])
         built.append({
             "name": f"phase-{ordinal}",
@@ -208,9 +220,28 @@ def _files(stage: Path, ordinal: int) -> Path:
 # ---------------------------------------------------------------- the seal
 
 
+def _announce(tmp_path: Path, queue: pool.PoolQueue) -> None:
+    """One tier cycle, which announces the stage tier with the loop's own
+    mover interpreter and tool root (``tier_loop.MOVER_TOOLS_ROOT``)."""
+
+    from test_the_sealed_stage_leg_is_chunked_per_phase import STAGE_TIER
+
+    records = {STAGE_TIER: {
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+        "tier_id": STAGE_TIER, "host": "dl380g10", "tier": "stage",
+        "mountpoint": str(tmp_path / "stage"), "capacity_bytes": 512 * GIB}}
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kwargs: records)
+
+
 def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
-              share: str = "auto"):
-    """Seal ``consumer``'s window through ``pbrun.residency_stage_rows``."""
+              share: str = "auto", announce: bool = True):
+    """Seal ``consumer``'s window through ``pbrun.residency_stage_rows``.
+
+    ``announce=False`` seals against the tier as last announced, for a test
+    that changes the queue between the announcement and the seal.
+    """
 
     import pbrun
     from test_the_sealed_stage_leg_is_chunked_per_phase import (
@@ -221,13 +252,8 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
         manifest_path.write_text(json.dumps(_manifest()))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
-    records = {STAGE_TIER: {
-        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
-        "tier_id": STAGE_TIER, "host": "dl380g10", "tier": "stage",
-        "mountpoint": str(tmp_path / "stage"), "capacity_bytes": 512 * GIB}}
-    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
-                    receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: records)
+    if announce:
+        _announce(tmp_path, queue)
     tier = pbrun.resolve_stage_tier(queue, None)
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,

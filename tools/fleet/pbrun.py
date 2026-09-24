@@ -5759,6 +5759,7 @@ def residency_stage_rows(
     digest = str(entry["sha256"])
     tags = [str(tier["host"])]
     mover_python, mover_tool, egress_tool = movement_tools(tier)
+    announced = residency_plan.mover_announcement(tier)
     pool_root = str(SH / "pb-queue")
     # The ram leg, when a ram tier sits in front of this stage (#640): a
     # promotion node and an egress node per phase, sealed here with the rest
@@ -6018,7 +6019,11 @@ def residency_stage_rows(
             body that carries its submission's checkout, pricing and log
             name, so a second submitter cannot derive the same key; the
             registration is how two submitters agree on it
-            (:func:`residency_plan.register_shared_range`).  The egress is
+            (:func:`residency_plan.register_shared_range`).  A registration
+            sealed against another tier announcement -- another runtime
+            generation's mover -- is reused only while its mover is live;
+            otherwise this submission seals the range's mover afresh and
+            replaces it.  The egress is
             always this consumer's own: for a shared range it drops this
             consumer's interest, and the last interest to go deletes.
             """
@@ -6032,7 +6037,13 @@ def residency_stage_rows(
                         start=cstart, end=cend,
                         seal=lambda: seal_stage_mover(
                             cstart, cend, csuffix, namespace),
-                        registered_by=consumer_action_key)
+                        registered_by=consumer_action_key,
+                        # Sealed against the announcement
+                        # ``movement_tools`` read ``mover_python`` and
+                        # ``mover_tool`` from.  A registration sealed
+                        # against another one is reused only while its
+                        # mover is live.
+                        sealed_against=announced)
                 except (residency_plan.ResidencyPlanError, OSError,
                         pool.PoolContractError) as exc:
                     raise SystemExit(

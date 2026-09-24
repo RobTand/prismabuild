@@ -341,6 +341,10 @@ def build_no_range_claims(queue: pool.PoolQueue, count: int) -> dict[str, int]:
 
 
 SHARED_MANIFEST = "7" * 64
+#: The tier announcement every bench registration is sealed against: one
+#: runtime generation, so every later consumer reuses the first one's row.
+BENCH_ANNOUNCEMENT = {"mover_python": "/bench/python",
+                      "mover_tools_root": "/bench/tools/fleet"}
 
 
 def _shared_row(queue: pool.PoolQueue, consumer: str, ordinal: int, *,
@@ -366,7 +370,8 @@ def _shared_row(queue: pool.PoolQueue, consumer: str, ordinal: int, *,
         return row
     record, _sealed = register(
         queue, manifest_sha256=SHARED_MANIFEST, tier_id=TIER, start=start,
-        end=end, seal=lambda: (row, {}), registered_by=consumer)
+        end=end, seal=lambda: (row, {}), registered_by=consumer,
+        sealed_against=BENCH_ANNOUNCEMENT)
     return dict(record["mover_row"])
 
 
