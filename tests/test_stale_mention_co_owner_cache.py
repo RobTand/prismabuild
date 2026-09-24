@@ -87,7 +87,10 @@ def _co_owner(fleet, names) -> tuple[str, str]:
     red._write_sidecar(queue, stage, consumer, mover, entries)
     _write_fragment(queue, stage, consumer, mover, _fragment_entries(entries))
     queue.finish(mover, status="executed", detail={"returncode": 0})
-    red._charge(queue, mover)
+    # The owner under test holds the one token its fixture minted; the mint
+    # sets the tier's capacity, so this owner's token needs a second one.
+    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1}) is True
     return consumer, mover
 
 
