@@ -179,6 +179,12 @@ POOL_CONTENTION_SCHEMA_V1 = "prismabuild.progress_pool_contention.v1"
 #: A worker without it would ignore the param and kill a paced mover at the
 #: bare copy grace, so a mover that declares it requires the tag.
 POOL_CONTENTION_TAG = "progress-pool-contention-v1"
+#: Offered by a worker that names the holder of a stage's ownership lock
+#: from the holder's own record and never credits an action's own hold as a
+#: start-gate wait (#1021).  A stage egress takes that lock itself, so a
+#: worker without this would credit a wedged egress's own hold and never
+#: end it; an egress sealed with a progress policy requires the tag.
+EGRESS_PROGRESS_TAG = "progress-egress-v1"
 #: The placement tag a worker offers when it can check an action's declared
 #: container images against its own local Docker before claiming.
 #:
@@ -8435,6 +8441,7 @@ __all__ = [
     "POOL_CONTENTION_PARAM",
     "POOL_CONTENTION_SCHEMA_V1",
     "POOL_CONTENTION_TAG",
+    "EGRESS_PROGRESS_TAG",
     "action_pool_contention",
     "validate_pool_contention",
     "CONTAINER_IMAGE_TAG",

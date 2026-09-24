@@ -697,6 +697,16 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
 MOVERS = "movers"
 
+#: Who holds a stage's ownership lock, as the holder itself says (#1021).  A
+#: lock file must stay empty (``posix_lock``: only a retirement writes one),
+#: so the record lives in a directory of its own, named like the lock.  A
+#: holder files it once the lock is granted and removes it before letting
+#: go; a worker reads it only when a non-blocking try finds the lock held.
+STAGE_OWNERSHIP_HOLDERS = "stage-ownership-holders"
+STAGE_OWNERSHIP_HOLDER_SCHEMA_V1 = "prismabuild.stage_ownership_holder.v1"
+#: A holder record is a few fields; anything larger is not one.
+MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
+
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
 #: Occupancy kinds are absent on purpose -- see
@@ -1397,7 +1407,9 @@ class ProgressWatch:
         """Leave a start-gate wait on a live egress out of the quiet (#1010).
 
         Called only while the action has not advanced past its first phase
-        and the stage's ownership lock is held by someone else.
+        and the stage's ownership lock is held by someone else: never by the
+        action itself, which the holder's own record names (#1021), so an
+        egress is not credited for the hold it takes for its own drain.
         """
 
         credit = self._credit(now=now, since_monotonic=since_monotonic)
@@ -1532,6 +1544,19 @@ class PoolContentionProbe:
         self.gate_held_s = 0.0
         self.gate_probes = 0
         self.gate_edges = 0
+        #: Who held the stage's ownership lock at the last look that found
+        #: it held by another action (#1021): the holder's own record, as
+        #: ``PoolQueue.stage_ownership_holder`` read it.
+        self.gate_holder: dict[str, object] | None = None
+        #: The seconds each holder was seen holding the lock at both ends of
+        #: an interval (its share of ``gate_held_s``), in first-seen order and
+        #: bounded like the events, by ``MAX_BLIND_EVENTS`` (the rest are
+        #: counted in ``gate_holders_dropped``).
+        self.gate_holders: dict[str, dict[str, object]] = {}
+        self.gate_holders_dropped = 0
+        #: Looks that found the lock held by this action itself: an egress
+        #: holds it for its own drain, and that is never a wait.
+        self.gate_self_probes = 0
         self._previous: dict[str, list[int]] | None = None
         self._previous_at = float(now)
         self._read(now)
@@ -1607,6 +1632,43 @@ class PoolContentionProbe:
                      if key != "since_monotonic"}
         return verdict
 
+    def note_gate_holder(self, holder: Mapping[str, object], *,
+                         held_s: float) -> bool:
+        """Attribute ``held_s`` of the gate's wait to ``holder`` (#1021).
+
+        ``holder`` is ``PoolQueue.stage_ownership_holder``'s verdict.  A
+        holder is keyed by its action when it names one, else by its role,
+        host and pid; an unrecorded holder is keyed ``unrecorded``.  Returns
+        whether this is a holder not seen before and now on the record, so
+        the caller files its first sighting once.
+        """
+
+        action_key = holder.get("action_key")
+        if action_key:
+            name = str(action_key)
+        elif holder.get("recorded"):
+            name = f"{holder.get('role')}@{holder.get('host')}:{holder.get('pid')}"
+        else:
+            name = "unrecorded"
+        self.gate_holder = dict(holder)
+        entry = self.gate_holders.get(name)
+        new = entry is None
+        if new:
+            if len(self.gate_holders) >= MAX_BLIND_EVENTS:
+                self.gate_holders_dropped += 1
+                return False
+            entry = {"action_key": action_key or None,
+                     "role": holder.get("role"), "host": holder.get("host"),
+                     "pid": holder.get("pid"), "recorded": bool(holder.get("recorded")),
+                     "held_s": 0.0, "looks": 0}
+            self.gate_holders[name] = entry
+        entry["looks"] = int(entry["looks"]) + 1           # type: ignore[call-overload]
+        entry["held_s"] = round(float(entry["held_s"]) + max(0.0, float(held_s)), 3)  # type: ignore[arg-type]
+        entry["live"] = holder.get("live")
+        if holder.get("why"):
+            entry["why"] = holder.get("why")
+        return new
+
     def as_record(self) -> dict[str, object]:
         return {"members": list(self.members),
                 "max_read_await_ms": self.max_read_await_ms,
@@ -1625,7 +1687,13 @@ class PoolContentionProbe:
                 "stage_root": self.stage_root,
                 "start_gate_held_s": round(self.gate_held_s, 3),
                 "start_gate_probes": self.gate_probes,
-                "start_gate_edges": self.gate_edges}
+                "start_gate_edges": self.gate_edges,
+                # Who the gate waited on, by the holder's own record (#1021).
+                "start_gate_holder": self.gate_holder,
+                "start_gate_holders": [dict(entry) for entry
+                                       in self.gate_holders.values()],
+                "start_gate_holders_dropped": self.gate_holders_dropped,
+                "start_gate_self_probes": self.gate_self_probes}
 
 
 def read_staged_wait(path: Path, *, token: str
@@ -1816,6 +1884,13 @@ def read_queue_record(path: Path) -> dict[str, object] | None:
     it. Stale-entry tolerance belongs to offer enumeration, not this API.
     """
     return _read_json(path)
+
+
+def _stage_ownership_name(stage_root) -> str:
+    """The name one stage root's ownership lock and holder record share."""
+
+    root = str(Path(stage_root).absolute())
+    return hashlib.sha256(f"stage-ownership:{root}".encode()).hexdigest()
 
 
 def _read_json(
@@ -6092,7 +6167,8 @@ class PoolQueue:
             out.append(name[:-len(".json")] if name.endswith(".json") else name)
         return sorted(out)
 
-    def move_records(self) -> list[dict[str, object]]:
+    def move_records(self, *, schemas: Container[str] = (POOL_MOVE_SCHEMA_V1,),
+                     ) -> list[dict[str, object]]:
         """Every filed movement receipt, oldest first by the time it records.
 
         The history a next submission prices itself from: ``mem_gb`` and
@@ -6101,6 +6177,10 @@ class PoolQueue:
         is read whole rather than indexed.  A record that is unreadable or not
         a move receipt is skipped, never raised: a submission must not fail
         because one older receipt was truncated.
+
+        ``schemas`` widens the read to other receipts filed in the same
+        directory: pbrun asks for egress receipts too
+        (:data:`POOL_EGRESS_SCHEMA_V1`, #1021), in the same one pass.
         """
 
         directory = self.root / MOVERS
@@ -6116,7 +6196,7 @@ class PoolQueue:
                 continue
             if not isinstance(record, dict):
                 continue
-            if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+            if record.get("schema") not in schemas:
                 continue
             out.append(record)
         out.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
@@ -8310,10 +8390,111 @@ class PoolQueue:
         taking this lock rather than under it (#780).
         """
 
-        root = str(Path(stage_root).absolute())
-        name = hashlib.sha256(f"stage-ownership:{root}".encode()).hexdigest()
-        return posix_lock.held(self.root / "stage-ownership-locks" / f"{name}.lock",
-                               blocking=blocking)
+        return posix_lock.held(
+            self.root / "stage-ownership-locks"
+            / f"{_stage_ownership_name(stage_root)}.lock", blocking=blocking)
+
+    def stage_ownership_holder_path(self, stage_root) -> Path:
+        """Where the holder of one stage root's ownership lock names itself."""
+
+        return (self.root / STAGE_OWNERSHIP_HOLDERS
+                / f"{_stage_ownership_name(stage_root)}.json")
+
+    def write_stage_ownership_holder(
+        self, stage_root, *, role: str, action_key: str | None = None,
+    ) -> dict[str, object]:
+        """Name this process as the holder of the stage's ownership lock (#1021).
+
+        Call only while holding the lock: holders are the record's only
+        writers, so the lock orders them and the record names the current
+        one.  ``action_key`` is the action this process runs as, when it is
+        one (an egress row); ``role`` says which pass holds the lock.  The
+        write is an atomic replace with no ``fsync``: a record lost in a crash
+        is lost with the hold it described.  Raises ``OSError`` when it
+        cannot be written; the caller decides whether it may go on.
+        """
+
+        record: dict[str, object] = {
+            "schema": STAGE_OWNERSHIP_HOLDER_SCHEMA_V1,
+            "stage_root": str(Path(stage_root).absolute()),
+            "role": str(role), "action_key": action_key or None,
+            "host": socket.gethostname(), "pid": os.getpid(),
+            "since_unix": _now()}
+        path = self.stage_ownership_holder_path(stage_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        temporary.write_text(json.dumps(record, sort_keys=True) + "\n",
+                             encoding="utf-8")
+        os.replace(temporary, path)
+        return record
+
+    def clear_stage_ownership_holder(self, stage_root) -> None:
+        """Remove the holder record; call while still holding the lock."""
+
+        with suppress(FileNotFoundError):
+            self.stage_ownership_holder_path(stage_root).unlink()
+
+    def stage_ownership_holder(self, stage_root) -> dict[str, object]:
+        """Who holds the stage's ownership lock, by its own record (#1021).
+
+        Read only after a non-blocking try found the lock held, so the lock
+        itself says somebody holds it; the record says who.  A POSIX lock's
+        holder is alive by construction until its NFS lease expires, but the
+        *record* can outlive its hold: a holder killed inside the lock never
+        removes it, and a later holder that files none (a mover's start
+        gate, a reader's pin) leaves it standing.  So ``live`` checks what
+        this worker can: on the holder's own host, that its pid is still a
+        process, and for an action, that its claim is still filed.  One
+        ``kill(pid, 0)`` and one stat; nothing is listed.
+
+        Returns ``recorded`` (whether a readable record was found), the
+        record's ``role``, ``action_key``, ``host``, ``pid`` and
+        ``since_unix``, ``live`` (``None`` when nothing was recorded) and
+        ``why`` whenever ``live`` is not ``True``.
+        """
+
+        path = self.stage_ownership_holder_path(stage_root)
+        try:
+            raw = pb._read_regular_file_nofollow(
+                path, where="stage ownership holder",
+                max_bytes=MAX_STAGE_OWNERSHIP_HOLDER_BYTES)
+        except FileNotFoundError:
+            return {"recorded": False, "live": None, "why": "no holder record"}
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError) as exc:
+            return {"recorded": False, "live": None,
+                    "why": f"holder record unreadable: {type(exc).__name__}"}
+        try:
+            record = pb._decode_strict_json(raw, where="stage ownership holder")
+        except (pb.ActionContractError, RecursionError):
+            record = None
+        pid = record.get("pid") if isinstance(record, dict) else None
+        if (not isinstance(record, dict)
+                or record.get("schema") != STAGE_OWNERSHIP_HOLDER_SCHEMA_V1
+                or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
+            return {"recorded": False, "live": None,
+                    "why": "holder record malformed"}
+        key = record.get("action_key")
+        key = str(key) if isinstance(key, str) and key else None
+        verdict: dict[str, object] = {
+            "recorded": True, "role": str(record.get("role") or ""),
+            "action_key": key, "host": str(record.get("host") or ""),
+            "pid": pid, "since_unix": record.get("since_unix"),
+            "live": True}
+        if verdict["host"] == socket.gethostname():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                verdict.update(live=False, why="holder process gone")
+            except PermissionError:
+                pass
+        if verdict["live"] and key is not None:
+            try:
+                if not self.item_path(CLAIMED, key).exists():
+                    verdict.update(live=False, why="holder claim ended")
+            except (OSError, ValueError):
+                verdict.update(live=False, why="holder claim unreadable")
+        return verdict
 
     def ownership_start_gate(self, stage_root) -> None:
         """Order this copy's first rename against an in-progress egress snapshot.
@@ -20047,6 +20228,22 @@ class PoolQueue:
                         held = not got
                 except OSError:
                     held = False
+                holder: dict[str, object] | None = None
+                if held:
+                    # Who holds it, by its own record (#1021).  A stage egress
+                    # takes this lock itself, and its hold is never a wait:
+                    # crediting it would keep a wedged egress alive for as
+                    # long as it stayed wedged.  An unrecorded or ended
+                    # holder is still somebody else's hold (the lock says it
+                    # is held), so it is credited as before, and named.
+                    holder = self.stage_ownership_holder(contention.stage_root)
+                    # Self only when the record names this action, from this
+                    # box (where the action runs), and its process is alive:
+                    # a record a killed earlier attempt left is not a hold.
+                    if (holder.get("live") is True and holder.get("action_key") == key
+                            and holder.get("host") == socket.gethostname()):
+                        contention.gate_self_probes += 1
+                        held = False
                 if not held:
                     if gate_held_since[0] is not None:
                         # The exit edge: the lock was released somewhere in
@@ -20057,10 +20254,13 @@ class PoolQueue:
                         contention.gate_edges += 1
                     gate_held_since[0] = None
                     return
+                assert holder is not None
+                held_s = 0.0
                 if gate_held_since[0] is not None:
                     # Held at both ends of the interval: a live egress owns
                     # the stage, and the mover's gate waits on it.
-                    contention.gate_held_s += max(0.0, now - gate_held_since[0])
+                    held_s = max(0.0, now - gate_held_since[0])
+                    contention.gate_held_s += held_s
                     watch.exempt_start_gate(now=now,
                                             since_monotonic=gate_held_since[0])
                 else:
@@ -20068,6 +20268,14 @@ class PoolQueue:
                     # the last look, which the two-sample rule cannot credit.
                     watch.grant_start_gate_edge(heartbeat_s)
                     contention.gate_edges += 1
+                if contention.note_gate_holder(holder, held_s=held_s):
+                    # The first look at each holder goes on the record, like
+                    # a blind or over stretch: a mover credited while a
+                    # holder stays wedged is what nobody would otherwise see.
+                    self._file_stall_watch_event(key, {
+                        "unix": _now(), "event": "start-gate-held",
+                        "action_key": key, "stage_root": contention.stage_root,
+                        "holder": dict(holder)})
                 gate_held_since[0] = now
 
             def ending(outcome: dict[str, object]) -> dict[str, object]:
@@ -20108,7 +20316,12 @@ class PoolQueue:
                                 contention.priced_bytes_per_s
                                 if contention is not None else None),
                             "pool": (contention.last if contention is not None
-                                     else None)}
+                                     else None),
+                            # Who held the stage's ownership lock at the
+                            # gate's last look (#1021).
+                            "start_gate_holder": (
+                                contention.gate_holder if contention is not None
+                                else None)}
                 if stall is not None:
                     # Outside the diagnosis read below, so a failure there
                     # never loses what the kill was measured against.

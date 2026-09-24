@@ -182,6 +182,153 @@ def pool_contention_spec(
         "stage_root": str(stage_root)})
 
 
+#: The progress phases a stage egress reports in (#1021), in the order it
+#: enters them.  ``snapshot`` runs from launch until every entry is judged
+#: under the stage's ownership lock: the fragment read, containment
+#: reclamation, the census taken as a hint, the wait for the lock, and the
+#: census and verdicts taken under it (``stage_release._evict_locked``,
+#: #988).  ``drain`` is the unlinks.  ``release`` returns the tokens, drops
+#: the fragment, lets the lock go, prunes and files the receipt.
+EGRESS_SNAPSHOT_PHASE = "snapshot"
+EGRESS_DRAIN_PHASE = "drain"
+EGRESS_RELEASE_PHASE = "release"
+EGRESS_PROGRESS_PHASES = (EGRESS_SNAPSHOT_PHASE, EGRESS_DRAIN_PHASE,
+                          EGRESS_RELEASE_PHASE)
+
+#: The receipt fields an egress price reads (``stage_release._evict_owned``
+#: and ``_hold_record``, #988): the census before the lock and under it,
+#: the hold, the unlinks and the prune after the lock.
+_EGRESS_TIMINGS = ("census_s", "census_validate_s", "lock_held_s", "unlink_s")
+
+
+def _seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def egress_price(records: Sequence[Mapping[str, object]], *,
+                 stage_root: str) -> dict[str, object]:
+    """The slowest measured terms of an egress on ``stage_root`` (#1021).
+
+    Read off the egress receipts the stage has filed (``pool.
+    POOL_EGRESS_SCHEMA_V1``, ``PoolQueue.move_records`` with that schema),
+    each one a complete run of ``stage_release``, split three ways:
+
+    * ``census_s``: the census before the lock plus the census under it
+      (``census_s + census_validate_s``).  It reads the whole stage's
+      claims, fragments and pins, so it is priced as the stage's cost, not
+      per entry of one range.
+    * ``unlink_s_per_entry``: the unlinks per entry judged
+      (``unlink_s / entries_judged``).
+    * ``settle_s``: the rest of the hold -- the verdicts, the token release
+      and the fragment drop -- plus the prune after it
+      (``lock_held_s - census_validate_s - unlink_s + prune_s``).
+
+    Each term is the slowest any receipt measured, so the whole price is no
+    faster than the slowest egress the stage has receipted.  A receipt that
+    judged no entry measured no unlink rate and is skipped, as is one
+    missing a timing (an interest drop, a refusal).  ``basis`` is ``egress``
+    when at least one receipt priced it and ``none`` otherwise.
+    """
+
+    census = unlink = settle = None
+    read = 0
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if record.get("schema") != pool.POOL_EGRESS_SCHEMA_V1:
+            continue
+        if str(record.get("stage_root") or "") != str(stage_root):
+            continue
+        judged = record.get("entries_judged")
+        if isinstance(judged, bool) or not isinstance(judged, int) or judged <= 0:
+            continue
+        timings = {name: _seconds(record.get(name)) for name in _EGRESS_TIMINGS}
+        prune = _seconds(record.get("prune_s", 0.0))
+        if prune is None or any(value is None for value in timings.values()):
+            continue
+        read += 1
+        this_census = timings["census_s"] + timings["census_validate_s"]  # type: ignore[operator]
+        this_unlink = timings["unlink_s"] / judged                        # type: ignore[operator]
+        this_settle = max(0.0, timings["lock_held_s"]                     # type: ignore[operator]
+                          - timings["census_validate_s"]
+                          - timings["unlink_s"]) + prune
+        census = this_census if census is None else max(census, this_census)
+        unlink = this_unlink if unlink is None else max(unlink, this_unlink)
+        settle = this_settle if settle is None else max(settle, this_settle)
+    return {"basis": "egress" if read else "none", "receipts": read,
+            "census_s": census, "unlink_s_per_entry": unlink,
+            "settle_s": settle}
+
+
+def egress_progress_policy(
+    entry_bytes: Sequence[int], *, price: Mapping[str, object],
+    report_latency_s: float | None = None,
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    """A stage egress's progress policy and every term of it (#1021).
+
+    An egress reports the bytes it has released: an entry counts once its
+    unlink has returned, or found the file already gone, which is the
+    durable unit ``progress.commit`` asks for.  Its grace is the whole
+    egress of this range at the stage's slowest measured terms
+    (:func:`egress_price`) plus the time a report takes to reach the stall
+    check (:func:`mover_report_latency_s`), rounded up to a whole second::
+
+        priced_s = census_s + entries * unlink_s_per_entry + settle_s
+        grace_s  = ceil(priced_s + report_latency_s)
+
+    Every phase gets it.  Every quiet stretch of a healthy egress is part of
+    its whole run, so at the measured terms each one fits in one grace; the
+    drain reports as it goes, so a range larger than any measured one is
+    not charged for its size, only for its quiet.  The time the egress
+    waits for another holder of the stage's lock is not priced: the worker
+    credits it (``pool.PoolContentionProbe``), and the holder's own contract
+    bounds the hold.
+
+    ``price.basis`` other than ``egress``, or an empty range, means nothing
+    measured an egress here.  The policy is then ``None`` and the egress is
+    sealed with no stall grace, which is what every egress had before
+    #1021; the derivation says ``basis: "unmeasured"``.
+
+    Returns ``(policy, derivation)``.  The derivation's
+    ``priced_bytes_per_s`` is the range's bytes over ``priced_s``: the rate
+    the grace was priced at, for the kill record.
+    """
+
+    sizes = [int(size) for size in entry_bytes]
+    entries = len(sizes)
+    range_bytes = sum(sizes)
+    latency = (mover_report_latency_s() if report_latency_s is None
+               else float(report_latency_s))
+    derivation: dict[str, object] = {
+        "basis": "unmeasured", "entries": entries, "range_bytes": range_bytes,
+        "egress_receipts": int(price.get("receipts") or 0),  # type: ignore[arg-type]
+        "census_s": None, "unlink_s_per_entry": None, "settle_s": None,
+        "priced_s": None, "priced_bytes_per_s": None,
+        "report_latency_s": latency, "grace_s": None}
+    terms = [_seconds(price.get(name))
+             for name in ("census_s", "unlink_s_per_entry", "settle_s")]
+    if (price.get("basis") != "egress" or entries <= 0 or range_bytes <= 0
+            or any(term is None for term in terms)):
+        return None, derivation
+    census, unlink, settle = (float(term) for term in terms)  # type: ignore[arg-type]
+    priced = census + entries * unlink + settle
+    if not math.isfinite(priced) or priced <= 0:
+        return None, derivation
+    grace = int(math.ceil(priced + latency))
+    derivation.update({"basis": "egress", "census_s": census,
+                       "unlink_s_per_entry": unlink, "settle_s": settle,
+                       "priced_s": priced,
+                       "priced_bytes_per_s": range_bytes / priced,
+                       "grace_s": grace})
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+              "phases": [{"name": name, "grace_s": grace}
+                         for name in EGRESS_PROGRESS_PHASES]}
+    return pb.validate_progress_policy(policy), derivation
+
+
 def movement_tools(tier: Mapping[str, object], *,
                    mover: str = "stage_move.py") -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.

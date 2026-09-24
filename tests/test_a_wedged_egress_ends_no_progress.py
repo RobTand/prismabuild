@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
+import subprocess
 import sys
 import textwrap
 import threading
 import time
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -35,8 +40,8 @@ from prismabuild import pool  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     TIER, _hexkey)
 from test_a_stalled_mover_ends_no_progress import (  # noqa: E402
-    CONSUMER, HEARTBEAT, MIB, UNDER, _Disks, _contention, _mover_source,
-    _policy, _real_window, _seal_rows)
+    CONSUMER, HEARTBEAT, MEMBERS, MIB, UNDER, _Disks, _contention,
+    _mover_source, _policy, _real_window, _seal_rows)
 
 #: The consumer the mover waiting at the gate stages for.  Its range is a
 #: second manifest, so its staged names never meet the egressed range's.
@@ -55,6 +60,7 @@ EGRESS = textwrap.dedent('''
     stage = os.path.realpath({stage!r}) + os.sep
     real = os.unlink
     calls = [0]
+    after = {after!r}
     def unlink(path, *args, **kwargs):
         name = os.fspath(path)
         if (os.path.realpath(name).startswith(stage)
@@ -62,7 +68,7 @@ EGRESS = textwrap.dedent('''
             calls[0] += 1
             with open({marker!r}, "a") as stream:
                 stream.write(name + "\\n")
-            if {after!r} is not None and calls[0] >= {after!r}:
+            if after is not None and calls[0] >= after:
                 time.sleep(3600)
             time.sleep({delay!r})
         return real(path, *args, **kwargs)
@@ -310,7 +316,10 @@ def test_a_wedged_egress_is_killed_and_the_mover_at_its_gate_proceeds(
     assert mover[:12] in landed["unit"]
     stall = egress_outcome["stall"]
     assert stall["allowance_s"] == grace
-    assert stall["credited_s"]["start_gate"] == 0.0
+    # The egress's own hold of the stage's lock is not a wait.  Its worker
+    # looks only until the drain's first report, and at most two edges of
+    # one look each can fall between the grant and the holder record.
+    assert stall["credited_s"]["start_gate"] <= 2 * HEARTBEAT + 1e-9
     # A kill names what it was waiting on (#990).
     assert "dependents_read_s" in egress_outcome
 
@@ -356,3 +365,229 @@ def test_a_slow_but_advancing_egress_is_not_killed(tmp_path: Path,
     report = receipt["progress_report"]
     assert report["units_reported"] == 3 * MIB
     assert report["unwritten"] == 0 and report["refusal"] is None
+
+
+# ------------------------------------------------------------ the price
+
+
+def _slower_receipt(stage_root: Path) -> dict[str, object]:
+    """A second receipted egress: a faster census, slower unlinks."""
+
+    return {**_egress_receipt(stage_root), "action_key": "8" * 64,
+            "entries_judged": 2, "census_s": 1.0, "census_validate_s": 0.2,
+            "lock_held_s": 3.5, "unlink_s": 3.0, "prune_s": 0.1}
+
+
+def test_an_egress_price_takes_each_term_at_its_slowest(tmp_path: Path) -> None:
+    """The census, the unlinks per entry and the settle are each the slowest
+    any receipted egress of this stage measured; the grace is the whole
+    egress of the range at those terms plus the report latency."""
+
+    from prismabuild import movement_actions as ma
+
+    stage = tmp_path / "stage"
+    stray = dict(_egress_receipt(stage))
+    del stray["unlink_s"]
+    records = [
+        _egress_receipt(stage), _slower_receipt(stage),
+        # Another stage's egress, one that judged nothing, one missing a
+        # timing, and a copy's receipt: none of them prices this stage.
+        {**_egress_receipt(tmp_path / "other"), "census_s": 100.0},
+        {**_egress_receipt(stage), "entries_judged": 0, "census_s": 100.0},
+        {**stray, "census_s": 100.0},
+        {**_egress_receipt(stage), "schema": pool.POOL_MOVE_SCHEMA_V1,
+         "census_s": 100.0}]
+    price = ma.egress_price(records, stage_root=str(stage))
+    assert price["basis"] == "egress" and price["receipts"] == 2
+    assert price["census_s"] == 4.5
+    assert price["unlink_s_per_entry"] == 1.5
+    assert price["settle_s"] == pytest.approx(1.0 - 0.5 - 0.03)
+
+    policy, derivation = ma.egress_progress_policy([MIB] * 3, price=price,
+                                                   report_latency_s=0.1)
+    priced = 4.5 + 3 * 1.5 + float(price["settle_s"])      # type: ignore[arg-type]
+    grace = math.ceil(priced + 0.1)
+    # Each term from a different receipt: neither one alone prices this.
+    assert grace == 10
+    assert derivation == {
+        "basis": "egress", "entries": 3, "range_bytes": 3 * MIB,
+        "egress_receipts": 2, "census_s": 4.5, "unlink_s_per_entry": 1.5,
+        "settle_s": price["settle_s"], "priced_s": priced,
+        "priced_bytes_per_s": 3 * MIB / priced, "report_latency_s": 0.1,
+        "grace_s": grace}
+    assert policy == {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+                      "phases": [{"name": name, "grace_s": grace}
+                                 for name in ("snapshot", "drain", "release")]}
+
+    nothing, unmeasured = ma.egress_progress_policy(
+        [MIB], price=ma.egress_price([], stage_root=str(stage)))
+    assert nothing is None
+    assert unmeasured["basis"] == "unmeasured" and unmeasured["grace_s"] is None
+    empty, _derivation = ma.egress_progress_policy([], price=price)
+    assert empty is None
+
+
+def test_a_measured_egress_is_sealed_with_its_grace_and_its_pool(
+        tmp_path: Path) -> None:
+    """Two egresses receipted on the stage price the next window's egress:
+    its policy, the pool evidence the worker credits contention by, and the
+    tags of a worker that never credits an egress's own hold.  The copy is
+    priced as before: an egress receipt is not a landing."""
+
+    from test_a_stalled_mover_ends_no_progress import _mover_rows
+
+    stage = tmp_path / "stage"
+    staged, cas, _digest = _seal_rows(
+        tmp_path, _real_window(tmp_path), measured_mb_s=1.0,
+        receipts=[_egress_receipt(stage), _slower_receipt(stage)])
+    plan = staged["plan"]
+    source = plan["demand_source"]                            # type: ignore[index]
+    (row,) = _egress_rows(plan)                               # type: ignore[arg-type]
+    (mover,) = _mover_rows(plan)                              # type: ignore[arg-type]
+    key, mover_key = str(row["action_key"]), str(mover["action_key"])
+    assert set(source["egress_progress"]) == {key}
+    derivation = source["egress_progress"][key]
+    priced = 4.5 + 3 * 1.5 + float(derivation["settle_s"])
+    grace = math.ceil(priced + 2 * pool.HEARTBEAT_S)
+    assert derivation["basis"] == "egress"
+    assert derivation["grace_s"] == grace
+    assert derivation["egress_receipts"] == 2
+    assert derivation["entries"] == 3 and derivation["range_bytes"] == 3 * MIB
+    assert derivation["mover_action_key"] == mover_key
+    params = cas.actions[key]["params"]
+    assert [(phase["name"], phase["grace_s"])
+            for phase in params[pb.PROGRESS_PARAM]["phases"]] == [
+        ("snapshot", grace), ("drain", grace), ("release", grace)]
+    contention = params[pb.POOL_CONTENTION_PARAM]
+    assert contention == derivation["pool_contention"]
+    assert contention["members"] == sorted(MEMBERS)
+    assert contention["stage_root"] == str(stage)
+    assert contention["priced_bytes_per_s"] == pytest.approx(3 * MIB / priced)
+    tags = params["placement"]["required_tags"]
+    assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.POOL_CONTENTION_TAG,
+            pb.EGRESS_PROGRESS_TAG} <= set(tags)
+    assert pb.PROGRESS_CYCLE_TAG not in tags
+    assert "dl380g10" in tags
+    assert source["mover_progress"][mover_key]["basis"] == "landing"
+
+
+@pytest.mark.parametrize("receipted,members,missing", [
+    (False, None, "egress receipts"), (True, [], "pool members")])
+def test_an_unmeasured_egress_is_sealed_as_before(
+        tmp_path: Path, receipted, members, missing) -> None:
+    """No egress receipted on the stage, or no pool members to judge
+    contention by: no policy, no extra tag, and the plan says which."""
+
+    staged, cas, _digest = _seal_rows(
+        tmp_path, _real_window(tmp_path), measured_mb_s=1.0, members=members,
+        receipts=[_egress_receipt(tmp_path / "stage")] if receipted else None)
+    source = staged["plan"]["demand_source"]["egress_progress"]  # type: ignore[index]
+    rows = _egress_rows(staged["plan"])                       # type: ignore[arg-type]
+    assert rows and set(source) == {str(row["action_key"]) for row in rows}
+    for row in rows:
+        key = str(row["action_key"])
+        assert source[key]["basis"] == "unmeasured"
+        assert source[key]["unmeasured"] == missing
+        assert source[key]["grace_s"] is None
+        params = cas.actions[key]["params"]
+        assert pb.PROGRESS_PARAM not in params
+        assert pb.POOL_CONTENTION_PARAM not in params
+        assert params["placement"]["required_tags"] == ["dl380g10"]
+
+
+# ------------------------------------------------------------ the holder
+
+
+def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
+        tmp_path: Path) -> None:
+    """The record beside the lock, and what a reader can check of it."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    stage = tmp_path / "stage"
+    path = queue.stage_ownership_holder_path(stage)
+    assert path.parent == queue.root / pool.STAGE_OWNERSHIP_HOLDERS
+    assert queue.stage_ownership_holder(stage) == {
+        "recorded": False, "live": None, "why": "no holder record"}
+
+    record = queue.write_stage_ownership_holder(stage, role="reconcile")
+    held = queue.stage_ownership_holder(stage)
+    assert held["recorded"] is True and held["live"] is True
+    assert held["role"] == "reconcile" and held["action_key"] is None
+    assert held["pid"] == os.getpid() and "why" not in held
+
+    # A holder killed inside the lock leaves its record: its process is gone.
+    ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                           capture_output=True, text=True, check=True)
+    path.write_text(json.dumps({**record, "pid": int(ended.stdout)}))
+    gone = queue.stage_ownership_holder(stage)
+    assert gone["live"] is False and gone["why"] == "holder process gone"
+
+    # An action's record outlives its claim.
+    queue.write_stage_ownership_holder(stage, role="egress", action_key="a" * 64)
+    unclaimed = queue.stage_ownership_holder(stage)
+    assert unclaimed["action_key"] == "a" * 64
+    assert unclaimed["live"] is False and unclaimed["why"] == "holder claim ended"
+
+    path.write_text(json.dumps({"schema": "something else", "pid": 1}))
+    assert queue.stage_ownership_holder(stage) == {
+        "recorded": False, "live": None, "why": "holder record malformed"}
+    queue.clear_stage_ownership_holder(stage)
+    assert not path.exists()
+    queue.clear_stage_ownership_holder(stage)
+
+
+#: An egress wedged inside its own hold, before its drain: the stage's lock
+#: taken the way ``stage_release`` takes it, then nothing.
+HOLDER = textwrap.dedent('''
+    import sys, time
+    sys.path.insert(0, {tools!r})
+    import stage_release
+    from prismabuild import pool
+    queue = pool.PoolQueue({queue!r})
+    with stage_release._stage_ownership(queue, {stage!r}, role="egress"):
+        with open({marker!r}, "w") as stream:
+            stream.write("held")
+        time.sleep(3600)
+''')
+
+
+def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
+        tmp_path: Path, monkeypatch) -> None:
+    """Wedged under the stage's lock before its drain -- a census under the
+    lock that never returns -- an egress is still in its first phase, where
+    its worker looks at the start gate.  The hold it finds there is the
+    egress's own, by its record, so it is not credited as a wait, and the
+    egress ends one grace after launch instead of at the worker's ceiling."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    (tmp_path / "stage").mkdir()
+    queue = pool.PoolQueue(tmp_path / "queue")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    grace = 2
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+              "phases": [{"name": name, "grace_s": grace}
+                         for name in ("snapshot", "drain", "release")]}
+    source = HOLDER.format(tools=str(ROOT / "tools" / "fleet"),
+                           queue=str(tmp_path / "queue"),
+                           stage=str(tmp_path / "stage"),
+                           marker=str(tmp_path / "held.txt"))
+    item = _claimed(queue, cas, tmp_path, "holder", source, {
+        pb.PROGRESS_PARAM: policy,
+        "progress_pool_contention": _contention(tmp_path)})
+    key = str(item["action_key"])
+    ceiling = 30.0
+    outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
+                            timeout_grace_s=0.5)
+
+    assert (tmp_path / "held.txt").read_text() == "held"
+    assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
+    assert outcome["elapsed_s"] < ceiling / 2
+    observed = outcome["progress_observation"]
+    contention = observed["pool_contention"]
+    assert contention["start_gate_self_probes"] > 0
+    assert all(entry["action_key"] != key
+               for entry in contention["start_gate_holders"])
+    # At most the two edges a look can land between the grant and the record.
+    assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
