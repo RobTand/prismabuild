@@ -502,7 +502,9 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
         collections.Counter)
     by_op: dict[str, collections.Counter] = collections.defaultdict(
         collections.Counter)
-    for raw in profile.read_text().splitlines():
+    # py-spy can emit a frame name that is not UTF-8 (a mangled native
+    # symbol); one such byte must not lose the whole summary.
+    for raw in profile.read_text(errors="replace").splitlines():
         stack, _, count = raw.rpartition(" ")
         try:
             samples = int(count)
