@@ -9245,32 +9245,32 @@ owners would subtract their bytes twice, so they stay uncharged.
 Instead, the dead-owner pass lists every such owner that it proves dead and
 whose paths it finds whole and current: a verdict of nothing to act on, alone
 or under a co-owner, or a skip checkpoint's hit. A partially pruned owner is
-listed on the next pass, from its rewritten fragment. The held-key pass takes them
-as candidates beside the held orphans, in the same oldest-receipt order, and
-only on a tier with pressure. With no pressure, whether the pressure is
+listed on the next pass, from its rewritten fragment. The held-key pass takes
+them as candidates beside the held orphans, in the same oldest-receipt order,
+and only on a tier with pressure. With no pressure, whether the pressure is
 empty, zero or not given, none of them is evicted. Each eviction first takes
 the death proof again under the consumer's transition lock, then the mover's,
-and confirms that the mover still holds no token. The eviction is whole
-(#903), so a live pin, a promotion handoff or the mover's own live copy keeps
-every byte. A co-owner's fragment or a claimed copy keeps its file through the
-shared verdict, and the last owner to leave deletes it. A skip checkpoint
-certifies paths, not retention reasons, so it can stand for an owner that was
-pinned or claimed when it was installed. While that reason lives, each
-pressured cycle pays one declined eviction for the owner, and that eviction's
-census runs before the decline (#1056 measured about 1.85 s per owner on the
-live stage). The ledger cannot show
-the deleted bytes until the next mint counts the grown writable, so the pass
-credits them, in whole GiB as a charged egress frees them, against the room
-the tier needs. The pass stops once the room is covered. Later passes in the
-same cycle, such as `evict_beyond_horizon`, still read the ledger, so they do
-not see the credit until that mint.
+and confirms that the mover still holds no token. The eviction is whole (#903),
+so a live pin, a promotion handoff or the mover's own live copy keeps every
+byte. A co-owner's fragment or a claimed copy keeps its file through the shared
+verdict, and the last owner to leave deletes it. A skip checkpoint certifies
+paths, not retention reasons, so it can stand for an owner that was pinned or
+claimed when it was installed. While that reason lives, each pressured cycle
+pays one declined eviction for the owner, and that eviction's census runs
+before the decline (#1056 measured about 1.85 s per owner on the live stage).
+The ledger cannot show the deleted bytes until the next mint counts the grown
+writable, so the pass credits them, in whole GiB as a charged egress frees
+them, against the room the tier needs. The pass stops once the room is covered.
+Later passes in the same cycle, such as `evict_beyond_horizon`, still read the
+ledger, so they do not see the credit until that mint.
 
-These owners are visible nowhere else, so the sweep reports each tier's set
-as `stage-uncharged-dead-owners`: the count, the bytes their fragments name
-(a file two owners name counts once for each), what this pass evicted, and
-the room the tier needed. The report is filed once per change of the set,
-including a drop to none, and whenever a pass evicts one. It is skipped for a
-pass whose discovery could not read that tier.
+These owners are visible nowhere else, so the sweep reports each tier's set as
+`stage-uncharged-dead-owners`: the count, the bytes their fragments name (a
+file two owners name counts once for each), what this pass evicted, and the
+room the tier needed. The report is filed once per change of the set, including
+a drop to none, and whenever a pass evicts one. It is skipped for a pass whose
+discovery could not read that tier, or did not reach it: a consumer the cycle
+budget (#1077) leaves for a later cycle marks its tiers the same way.
 
 A partially pruned owner is a **per-path cache, never a whole-range donor**.
 Its historical move receipt stays factual -- nothing rewrites it to hide the

@@ -519,3 +519,56 @@ def test_a_partially_pruned_owner_is_collected_from_its_rewritten_fragment(
     (report,) = _reports(third)
     assert (report["owners"], report["owners_evicted"],
             report["bytes_evicted"]) == (0, 1, red.SIZE), report
+
+
+class _RefusingBudget:
+    """A cycle budget (#1077) that lets every dead-owner unit start but one."""
+
+    def __init__(self, refused: str):
+        self.refused = refused
+        self.started: list[str] = []
+
+    def order(self, kind, keys):
+        assert kind == stage_release.DEAD_OWNER_UNIT
+        return list(keys)
+
+    def start(self, kind, key):
+        if key == self.refused:
+            return False
+        self.started.append(key)
+        return True
+
+    def done(self, kind):
+        assert kind == stage_release.DEAD_OWNER_UNIT
+
+
+def test_a_consumer_the_budget_did_not_reach_withholds_its_tiers_report(fleet):
+    """What the pass did not examine is not a census.
+
+    With one consumer deferred, the tier's collection holds only the other
+    owner.  Reporting it would announce a drop that never happened; the
+    tier's report waits for a pass that reaches both, and pressure still
+    evicts the owner the pass did prove.
+    """
+
+    queue, stage, _ = fleet
+    reached = dead_owner(fleet, ["budget-00100"], unix=100.0)
+    deferred = dead_owner(fleet, ["budget-00200"], unix=200.0)
+    budget = _RefusingBudget(deferred[0])
+
+    quiet = stage_release.sweep(queue, stage_roots={TIER: str(stage)},
+                                pressure={}, budget=budget)
+    assert budget.started == [reached[0]], budget.started
+    assert _reports(quiet) == [], "a partial pass is not a census"
+    assert _owned(queue, *reached) and _owned(queue, *deferred)
+
+    pressed = stage_release.sweep(queue, stage_roots={TIER: str(stage)},
+                                  pressure={TIER: 1},
+                                  budget=_RefusingBudget(deferred[0]))
+    assert not _owned(queue, *reached) and _owned(queue, *deferred), pressed
+    assert [r["action_key"] for r in _for(pressed, reached[1])] == [
+        reached[1]]
+    assert _reports(pressed) == []
+
+    (full,) = _reports(_sweep(queue, stage, {}))
+    assert (full["owners"], full["bytes"]) == (1, GIB), full
