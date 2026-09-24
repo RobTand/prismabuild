@@ -168,6 +168,19 @@ OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
 OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
 OUTPUT_BATCHES_SUBDIR = "produced-output-batches"
 OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
+#: One pointer per attempt of each template, ``<template_id>/<owner>.<nonce>``
+#: (#1053): how the attempts that may own an origin path are found without
+#: listing every owner's scopes. `declare_instance` files it before the
+#: instance; the tier loop's origin-retirement tick files it for any scope
+#: that predates the index. It lives inside `OUTPUT_TEMPLATES_SUBDIR`, which
+#: every residency enumerator skips as a record directory, so an egress or a
+#: census running older code never reads it as an unknown fragment
+#: namespace (#798); a template is filed as ``<template_id>.json``, and a
+#: dotted directory is never one.
+OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR = ".attempts"
+#: Filed in that directory once a tick has indexed every scope it listed.
+#: Until then the attempts are found by listing the scopes themselves.
+ATTEMPT_INDEX_COMPLETE = ".index-complete-v1"
 
 #: Sealed helper-root env name (spelling only; PB730 owns injection).
 #: PQ resolves the published runtime helper from this value and verifies
@@ -820,6 +833,12 @@ def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> 
     from prismabuild import pool as pool_mod
 
     checked = validate_instance(instance)
+    attempt = checked["owner_attempt"]
+    assert isinstance(attempt, dict)
+    # Indexed BEFORE the instance exists (#1053): an attempt that can
+    # prewrite is always one another action's prewrite gate can find.
+    _index_attempt(queue_root, str(checked["owner_action_key"]),
+                   str(checked["template_id"]), str(attempt["nonce"]))
     directory = instance_dir(queue_root, checked)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "instance.json"
@@ -832,6 +851,533 @@ def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> 
             f"a different instance is already filed for this owner/template/nonce: {exc}"
         ) from None
     return path
+
+
+# --------------------------------------------------------------------------
+# Origin-path owners across attempts and actions (#1053)
+# --------------------------------------------------------------------------
+#
+# A path under a template's output prefix can be named by any attempt of any
+# template whose prefix contains it or is contained by it: a retry of the
+# same key, or another action entirely (R13's relaunch was a new key on the
+# same template).  These helpers find those attempts through the attempt
+# index, bounded by the templates whose prefixes overlap, and read what each
+# one names.  They never list every owner's scopes, except before the index
+# is complete.
+
+#: Each filed template's id and output prefix by ``(file path, inode)``, or
+#: None for a file that names no prefix (`_filed_templates`).  A filed
+#: template is immutable (`declare_template`), so a file is read once per
+#: process.
+_TEMPLATE_BODIES: dict[tuple[str, int], dict[str, object] | None] = {}
+#: ``os.path.realpath`` of each output prefix, once per process.
+_PREFIX_REALPATHS: dict[str, str] = {}
+
+
+def _attempts_root(queue_root: str | Path) -> Path:
+    return (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            / OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR)
+
+
+def _index_attempt(queue_root: str | Path, owner_action_key: str,
+                   template_id: str, nonce: str) -> None:
+    """File one attempt's pointer, immutably and idempotently.
+
+    Raises `ProducedOutputError` when it cannot be filed, or when a
+    different body is already filed under the name.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    owner = _hex64(owner_action_key, where="attempt owner_action_key")
+    template = _name(template_id, where="attempt template_id")
+    attempt = _hex32(nonce, where="attempt nonce")
+    directory = _attempts_root(queue_root) / template
+    raw = (json.dumps({"owner_action_key": owner, "nonce": attempt,
+                       "template_id": template},
+                      sort_keys=True, separators=(",", ":")) + "\n").encode()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        pool_mod._publish_immutable(directory / f"{owner}.{attempt}", raw,
+                                    where="produced-output attempt index")
+    except (OSError, pool_mod.PoolContractError) as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: attempt index: {exc}") from None
+
+
+def _mark_attempt_index_complete(queue_root: str | Path) -> None:
+    from prismabuild import pool as pool_mod
+
+    root = _attempts_root(queue_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        pool_mod._publish_immutable(root / ATTEMPT_INDEX_COMPLETE, b"1\n",
+                                    where="produced-output attempt index")
+    except (OSError, pool_mod.PoolContractError) as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: attempt index: {exc}") from None
+
+
+def _filed_templates(queue_root: str | Path) -> dict[str, dict[str, object]]:
+    """Every filed template's id and output prefix, by id.
+
+    One listing of the templates directory; a file not seen before is read
+    once. Only ``template_id`` and ``output_prefix`` are read, not the whole
+    schema: a template filed by an older or a newer PB still names the
+    prefix its attempts write under, and that is all an owner lookup needs.
+    A file with no absolute ``output_prefix`` -- not JSON, not an object,
+    or without one -- is not a template `declare_template` filed, and no
+    attempt can have been bound to it (`bind_instance` validates the
+    template), so it names no paths and is skipped. A file that cannot be
+    read raises `ProducedOutputError`: whether it covers a path is unknown,
+    and an answer that leaves it out could miss an owner.
+    """
+
+    directory = Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    try:
+        with os.scandir(directory) as iterator:
+            listed = sorted((entry.name, entry.inode()) for entry in iterator
+                            if entry.name.endswith(".json")
+                            and not entry.name.startswith("."))
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: templates: {exc}") from None
+    found: dict[str, dict[str, object]] = {}
+    for name, inode in listed:
+        key = (str(directory / name), inode)
+        if key not in _TEMPLATE_BODIES:
+            try:
+                raw = (directory / name).read_text()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ProducedOutputError(
+                    f"unknown-retain: template {name}: {exc}") from None
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = None
+            prefix = body.get("output_prefix") if isinstance(body, Mapping) else None
+            if not isinstance(prefix, str) or not os.path.isabs(prefix):
+                _TEMPLATE_BODIES[key] = None
+            else:
+                named = body.get("template_id")
+                _TEMPLATE_BODIES[key] = {
+                    "template_id": (named if isinstance(named, str) and named
+                                    else name[:-len(".json")]),
+                    "output_prefix": prefix}
+        body = _TEMPLATE_BODIES[key]
+        if body is not None:
+            found[str(body["template_id"])] = body
+    return found
+
+
+def _resolved_prefix(prefix: str) -> str:
+    resolved = _PREFIX_REALPATHS.get(prefix)
+    if resolved is None:
+        resolved = os.path.realpath(prefix)
+        _PREFIX_REALPATHS[prefix] = resolved
+    return resolved
+
+
+def _prefixes_overlap(first: str, second: str) -> bool:
+    """Whether one output prefix contains the other, symlinks resolved."""
+
+    a, b = _resolved_prefix(first), _resolved_prefix(second)
+    common = os.path.commonpath([a, b])
+    return common == a or common == b
+
+
+def _overlapping_template_ids(queue_root: str | Path,
+                              template: Mapping[str, object]) -> list[str]:
+    """This template's id and every filed template whose prefix overlaps it."""
+
+    own = str(template["output_prefix"])
+    ids = {str(template["template_id"])}
+    for template_id, body in _filed_templates(queue_root).items():
+        if _prefixes_overlap(own, str(body["output_prefix"])):
+            ids.add(template_id)
+    return sorted(ids)
+
+
+def _template_attempts(queue_root: str | Path, template_ids: Collection[str]
+                       ) -> list[tuple[str, str, str]]:
+    """``(owner, template_id, nonce)`` for every attempt of these templates.
+
+    From the attempt index once a tick has marked it complete: one listing
+    per template. Before that, from the scopes themselves: one listing of
+    the owners and one per owner. A listing that fails raises
+    `ProducedOutputError`, never an empty answer.
+    """
+
+    wanted = set(template_ids)
+    found: set[tuple[str, str, str]] = set()
+    root = _attempts_root(queue_root)
+    if (root / ATTEMPT_INDEX_COMPLETE).exists():
+        for template_id in sorted(wanted):
+            try:
+                names = os.listdir(root / template_id)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ProducedOutputError(
+                    f"unknown-retain: attempt index: {exc}") from None
+            for name in names:
+                owner, dot, nonce = name.partition(".")
+                if (dot and len(owner) == 64 and len(nonce) == _HEX32
+                        and not name.startswith(".")):
+                    found.add((owner, template_id, nonce))
+        return sorted(found)
+    scopes_root = Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    try:
+        owners = _scope_owners(scopes_root)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: scopes: {exc}") from None
+    for owner in owners:
+        try:
+            names = os.listdir(scopes_root / owner)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ProducedOutputError(
+                f"unknown-retain: scopes {owner[:12]}: {exc}") from None
+        for name in names:
+            template_id, dot, nonce = name.rpartition(".")
+            if dot and template_id in wanted and len(nonce) == _HEX32:
+                found.add((owner, template_id, nonce))
+    return sorted(found)
+
+
+def _attempt_scope(queue_root: str | Path, owner: str, template_id: str,
+                   nonce: str) -> Path:
+    return (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
+            / f"{template_id}.{nonce}")
+
+
+def _attempt_owned_paths(queue_root: str | Path, scope: Path,
+                         batches: Mapping[str, object]
+                         ) -> tuple[dict[str, str], dict[str, str]]:
+    """``(committed, prewritten)``: the origin paths one attempt names.
+
+    Each maps a path to a batch id. ``committed`` holds every path of a
+    committed batch whose origin is not reclaimed, staged or origin-only,
+    retired or not: the commit recorded that file as the batch's.
+    ``prewritten`` holds every path of a prewrite record still filed, which
+    is permission to write it. ``batches`` is the attempt's commitments.
+    Raises `ProducedOutputError` on a record that cannot be read.
+    """
+
+    committed: dict[str, str] = {}
+    for batch_id, entry in sorted(batches.items()):
+        if not isinstance(entry, Mapping):
+            raise ProducedOutputError(
+                f"unknown-retain: {scope.name}: bad committed batch {batch_id!r}")
+        if entry.get("origin_reclaimed"):
+            continue
+        indexed = entry.get("paths")
+        if isinstance(indexed, list):
+            paths = [str(item) for item in indexed]
+        else:
+            # An entry that predates the index: its immutable record.
+            try:
+                instance = validate_instance(json.loads(
+                    (scope / "instance.json").read_text()))
+                template = validate_template(json.loads(
+                    (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+                     / f"{instance['template_id']}.json").read_text()))
+            except (OSError, ValueError) as exc:
+                raise ProducedOutputError(
+                    f"unknown-retain: {scope.name}: {exc}") from None
+            _filed, sealed = _load_batch_record(
+                queue_root, instance, template, entry, batch_id)
+            paths = [str(desc["path"]) for desc in sealed]
+        for path in paths:
+            committed.setdefault(path, batch_id)
+    prewritten: dict[str, str] = {}
+    directory = scope / "prewrites"
+    try:
+        names = sorted(name for name in os.listdir(directory)
+                       if name.endswith(".prewrite.json"))
+    except FileNotFoundError:
+        names = []
+    except OSError as exc:
+        raise ProducedOutputError(
+            f"unknown-retain: {scope.name}: {exc}") from None
+    for name in names:
+        batch_id = name[:-len(".prewrite.json")]
+        record = _read_prewrite(directory / name)
+        if record is None:
+            continue
+        reserved = record.get("paths")
+        if not isinstance(reserved, list):
+            raise ProducedOutputError(
+                f"unknown-retain: {scope.name}: bad prewrite record {batch_id!r}")
+        for path in reserved:
+            prewritten.setdefault(str(path), batch_id)
+    return committed, prewritten
+
+
+def _claimed_nonce(queue, owner: str) -> str | None:
+    """The nonce of the attempt holding ``owner``'s claim.
+
+    ``""`` when nothing holds it, ``None`` when the claim cannot be read or
+    names no attempt: unknown, which the gate treats as live.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    try:
+        live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+    except Exception:
+        return None
+    if live is None:
+        return ""
+    control = live.get("resource_scope") if isinstance(live, Mapping) else None
+    nonce = control.get("nonce") if isinstance(control, Mapping) else None
+    return nonce if isinstance(nonce, str) and nonce else None
+
+
+def _foreign_live_path_owner(queue, checked_instance: Mapping[str, object],
+                             checked_template: Mapping[str, object],
+                             planned_paths: Sequence[str]
+                             ) -> dict[str, object] | None:
+    """Another action's live attempt that owns one of these paths (#1053).
+
+    The cross-action half of `_live_path_owner`. The attempts it reads are
+    those of every template whose output prefix overlaps this one's
+    (`_template_attempts`), less this owner key's: only one attempt of a key
+    holds its claim, and this one does. Each other key's claim is read once.
+    An attempt that does not hold its key's claim cannot prewrite or commit
+    (`_require_live_owner`), so it owns nothing a new write could disturb,
+    and its records are not read at all: a dead attempt's commitments cost
+    the gate nothing. A live attempt, or one whose claim cannot be read,
+    owns every path its committed batches name (unless reclaimed) and every
+    path a prewrite record of it names (`_attempt_owned_paths`).
+
+    Returns the refusal's details for the first owned path in sorted order,
+    or ``None``. Raises `ProducedOutputError` when an attempt that may be
+    live cannot be read.
+    """
+
+    wanted = set(planned_paths)
+    own = str(checked_instance["owner_action_key"])
+    attempts = _template_attempts(
+        queue.root, _overlapping_template_ids(queue.root, checked_template))
+    claims: dict[str, str | None] = {}
+    for owner, template_id, nonce in attempts:
+        if owner == own:
+            continue
+        if owner not in claims:
+            claims[owner] = _claimed_nonce(queue, owner)
+        claimed = claims[owner]
+        if claimed == "" or (claimed is not None and claimed != nonce):
+            continue
+        scope = _attempt_scope(queue.root, owner, template_id, nonce)
+        batches = _read_commitments(scope / "commitments.json")["batches"]
+        assert isinstance(batches, Mapping)
+        committed, prewritten = _attempt_owned_paths(queue.root, scope, batches)
+        for path in sorted(wanted):
+            for kind, owned in (("batch", committed), ("prewrite", prewritten)):
+                if path in owned:
+                    return {"path": path, "owner_action_key": owner,
+                            "owner_nonce": nonce, "owner_kind": kind,
+                            "owner_batch_id": owned[path],
+                            "owner_state": "live" if claimed else "unknown"}
+    return None
+
+
+def _file_version(path: Path | str) -> tuple[int, ...] | None:
+    """``(device, inode, size, mtime, ctime)``, or ``None`` when absent.
+
+    Any other failure to ``stat`` raises `ProducedOutputError`.
+    """
+
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            int(getattr(info, "st_ctime_ns", 0)))
+
+
+class _TickReads:
+    """What one origin-retirement tick has read, so it reads each thing once.
+
+    Commitments are kept by the file's version (`_file_version`) and handed
+    back while a fresh ``stat`` returns the same version: every writer
+    replaces the file by rename (`_write_commitments`), so a changed file
+    has another version. The ``stat`` comes before the read, so a file
+    replaced between the two is read again next time, never remembered
+    under the new version with the old bytes. What an attempt owns
+    (`_attempt_owned_paths`) is kept the same way, under the versions of
+    its commitments and of each prewrite record it has. An owner key's
+    generation (`_key_generation`) and its funding census are read at most
+    once per tick.
+    """
+
+    def __init__(self, queue) -> None:
+        self.queue = queue
+        self._commitments: dict[str, tuple[tuple[int, ...], dict[str, object]]] = {}
+        self._owned: dict[str, tuple[object, dict[str, str], dict[str, str]]] = {}
+        self._generations: dict[str, tuple[str, dict[str, object] | None]] = {}
+        self._census: dict[str, tuple[list[dict], bool]] = {}
+        self._templates: dict[str, dict[str, object]] | None = None
+
+    def batches(self, scope: Path) -> dict[str, object]:
+        path = scope / "commitments.json"
+        version = _file_version(path)
+        kept = self._commitments.get(str(path))
+        if version is not None and kept is not None and kept[0] == version:
+            return kept[1]
+        batches = _read_commitments(path)["batches"]
+        assert isinstance(batches, dict)
+        if version is not None:
+            self._commitments[str(path)] = (version, batches)
+        return batches
+
+    def owned(self, scope: Path
+              ) -> tuple[object, dict[str, str], dict[str, str]]:
+        """``(fingerprint, committed, prewritten)`` for one attempt.
+
+        `_attempt_owned_paths`, re-derived only when the fingerprint -- the
+        versions of the commitments and of each prewrite record, taken
+        before either is read -- has changed.
+        """
+
+        directory = scope / "prewrites"
+        try:
+            names = sorted(name for name in os.listdir(directory)
+                           if name.endswith(".prewrite.json"))
+        except FileNotFoundError:
+            names = []
+        except OSError as exc:
+            raise ProducedOutputError(
+                f"unknown-retain: {scope.name}: {exc}") from None
+        fingerprint = (_file_version(scope / "commitments.json"),
+                       tuple((name, _file_version(directory / name))
+                             for name in names))
+        kept = self._owned.get(str(scope))
+        if kept is not None and kept[0] == fingerprint:
+            return kept
+        committed, prewritten = _attempt_owned_paths(
+            self.queue.root, scope, self.batches(scope))
+        self._owned[str(scope)] = (fingerprint, committed, prewritten)
+        return fingerprint, committed, prewritten
+
+    def generation(self, owner: str) -> tuple[str, dict[str, object] | None]:
+        if owner not in self._generations:
+            self._generations[owner] = _key_generation(self.queue, owner)
+        return self._generations[owner]
+
+    def census(self, owner: str) -> tuple[list[dict], bool]:
+        if owner not in self._census:
+            try:
+                self._census[owner] = self.queue.output_census_for_owner(owner)
+            except Exception:
+                self._census[owner] = ([], True)
+        return self._census[owner]
+
+    def templates(self) -> dict[str, dict[str, object]]:
+        if self._templates is None:
+            self._templates = _filed_templates(self.queue.root)
+        return self._templates
+
+    def path_owners(self, instance: Mapping[str, object],
+                    template: Mapping[str, object]) -> "_PathOwners":
+        """Every other attempt's claim on paths under this template's prefix.
+
+        The attempts are those of every template whose output prefix
+        overlaps this one's (`_template_attempts`), less this instance's
+        own. Read now -- the index, and each attempt's commitments and
+        prewrite records through this tick's versions -- so a caller under
+        the output-prefix lock sees every commit and prewrite filed under it
+        before the lock was taken.
+        """
+
+        own_template = str(template["template_id"])
+        ids = {own_template}
+        for template_id, body in self.templates().items():
+            if _prefixes_overlap(str(template["output_prefix"]),
+                                 str(body["output_prefix"])):
+                ids.add(template_id)
+        attempt = instance["owner_attempt"]
+        assert isinstance(attempt, dict)
+        mine = (str(instance["owner_action_key"]), own_template,
+                str(attempt["nonce"]))
+        owners = _PathOwners()
+        for owner, template_id, nonce in _template_attempts(
+                self.queue.root, sorted(ids)):
+            if (owner, template_id, nonce) == mine:
+                continue
+            scope = _attempt_scope(self.queue.root, owner, template_id, nonce)
+            version, committed, prewritten = self.owned(scope)
+            if not committed and not prewritten:
+                continue
+            state = (_attempt_state(self.generation(owner), nonce)
+                     if prewritten else "")
+            owners.add(owner, nonce, foreign=owner != mine[0],
+                       committed=committed, prewritten=prewritten,
+                       state=state)
+            owners.fingerprint.append((owner, template_id, nonce, version,
+                                       state))
+        return owners
+
+
+class _PathOwners:
+    """Who else names an origin path, per attempt, asked one path at a time.
+
+    A path is *committed* by another attempt when its commit names it (the
+    commit recorded that file), or when a prewrite of an attempt that
+    succeeded names it. It is *pending* when a prewrite of an attempt that
+    can still commit names it: live, or in a state that cannot be read. A
+    dead attempt's prewrite names nothing: it can never commit.
+    """
+
+    def __init__(self) -> None:
+        self._attempts: list[tuple[str, str, bool, dict[str, str],
+                                   dict[str, str], str]] = []
+        #: What the answers were read from: each attempt that names a path,
+        #: its records' versions and its state. Equal fingerprints give
+        #: equal answers.
+        self.fingerprint: list[tuple[object, ...]] = []
+
+    def add(self, owner: str, nonce: str, *, foreign: bool,
+            committed: dict[str, str], prewritten: dict[str, str],
+            state: str) -> None:
+        self._attempts.append((owner, nonce, foreign, committed, prewritten,
+                               state))
+
+    @staticmethod
+    def _note(owner: str, nonce: str, batch_id: str,
+              foreign: bool) -> dict[str, str]:
+        # The #949 shape for a retry of the same key; another key is named.
+        note = {"nonce": nonce, "batch_id": batch_id}
+        if foreign:
+            note["owner_action_key"] = owner
+        return note
+
+    def committed(self, path: str) -> dict[str, str] | None:
+        for owner, nonce, foreign, committed, prewritten, state in self._attempts:
+            batch_id = committed.get(path)
+            if batch_id is None and state == "succeeded":
+                batch_id = prewritten.get(path)
+            if batch_id is not None:
+                return self._note(owner, nonce, batch_id, foreign)
+        return None
+
+    def pending(self, path: str) -> dict[str, str] | None:
+        for owner, nonce, foreign, _committed, prewritten, state in self._attempts:
+            if state in _ENDED_ATTEMPT_STATES:
+                continue
+            batch_id = prewritten.get(path)
+            if batch_id is not None:
+                return self._note(owner, nonce, batch_id, foreign)
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -2396,7 +2942,11 @@ def require_prewrite(queue, instance: Mapping[str, object],
     unretired batch or another outstanding prewrite already owns refuses
     `prewrite-path-owned-by-live-batch` here rather than at the mover,
     after the bytes are written (`_live_path_owner`). Ownership ends at
-    retirement, which evicts the staged copy. Then files an immutable
+    retirement, which evicts the staged copy. Across actions (#1053), a
+    path another action's LIVE attempt has committed (unless reclaimed) or
+    prewritten refuses `prewrite-path-owned-by-live-action`, naming that
+    owner (`_foreign_live_path_owner`); a dead or finished action's paths
+    are free to regenerate, which is how a relaunch resumes. Then files an immutable
     prewrite record the later commit must present. Physical funding happens
     only at `commit_batch` (exact ledger acquire) and in the liveness
     window primitive (pending). Zero-byte classes are valid (explicit
@@ -2473,6 +3023,22 @@ def require_prewrite(queue, instance: Mapping[str, object],
                     "refusal": "prewrite-path-owned-by-live-batch",
                     "path": owned_path, "owner_kind": owner_kind,
                     "owner_batch_id": owner_batch_id}
+        # The same rule across actions (#1053): a path another action's
+        # live attempt has committed or prewritten is that attempt's. Under
+        # this lock for every template with this output prefix; a template
+        # whose prefix only overlaps takes its own lock, and the delete side
+        # (`_unlink_if_committed`) does not rely on this check alone.
+        try:
+            foreign = _foreign_live_path_owner(
+                queue, checked_instance, checked_template, planned_paths)
+        except ProducedOutputError as exc:
+            reason = str(exc)
+            if not reason.startswith("unknown-retain"):
+                reason = f"unknown-retain: {reason}"
+            return {"ok": False, "refusal": reason}
+        if foreign is not None:
+            return {"ok": False,
+                    "refusal": "prewrite-path-owned-by-live-action", **foreign}
         path = _prewrites_dir(queue.root, checked_instance) / \
             f"{batch_id}.prewrite.json"
         try:
@@ -5366,6 +5932,17 @@ ORIGIN_RETIREMENT_REFUSED_EVENT = "output-origin-retirement-refused"
 #: belong to no batch and wait for an operator.
 ORIGIN_PREWRITE_RECLAIMED_EVENT = "output-prewrite-reclaimed"
 ORIGIN_PREWRITE_ORPHANED_EVENT = "output-prewrite-orphaned"
+#: The one remedy an orphaned prewrite's event and listing name (#949,
+#: #1053). PB never deletes a file whose identity no commit recorded, so an
+#: operator does, unless a successor is about to commit the same paths.
+ORPHANED_PREWRITE_REMEDY = (
+    "these files belong to no committed batch: check and remove them, and "
+    "the next tier cycle drops the prewrite's reservation. A successor that "
+    "commits the same paths drops it too, and keeps its files")
+#: The event for a dead producer's staged batch whose stage retirement the
+#: tick filed (#1053). Its origin files are kept: ``origin_kept`` is always
+#: true, and ``superseded`` names the paths another attempt now claims.
+DEAD_PRODUCER_BATCH_RETIRED_EVENT = "output-dead-producer-batch-retired"
 
 #: Attempt states after which an attempt can never commit again: its owner
 #: gate (`_require_live_owner`) refuses a claim it no longer holds.
@@ -6038,7 +6615,8 @@ def _fsync_directories(paths: Sequence[str]) -> None:
 def _retire_consumed_batch(queue, instance: Mapping[str, object],
                            template: Mapping[str, object],
                            batch_id: str, *,
-                           deferred_holds: Collection[tuple[str, str]] = ()
+                           deferred_holds: Collection[tuple[str, str]] = (),
+                           reads: _TickReads | None = None
                            ) -> dict[str, object] | None:
     """One retirement step for one consumed batch; the event to log, or None.
 
@@ -6073,9 +6651,20 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     * the same inode changed in place, or any unreadable stat, refuses and
       keeps the batch.
 
+    Another attempt's claim is read under the same lock first (#1053),
+    over every attempt of every template whose prefix overlaps this one's
+    (`_TickReads.path_owners`): a path another attempt has committed is
+    that batch's, and is left alone as ``superseded`` even when its
+    identity is still the recorded one; a path a prewrite of an attempt
+    that can still commit names holds the batch, quietly, until that
+    attempt commits or ends.
+
     Before the first unlink the entry is marked ``retiring``: consumers can
     no longer declare it, and a crash resumes the delete rather than
-    deciding again. Afterwards ``origin_reclaimed`` frees its durable class
+    deciding again. Each delete is `_unlink_if_committed`, which moves the
+    name aside and deletes only the file it moved if that is the committed
+    one, so a writer's ``rename`` onto the name that lands at any point is
+    never deleted. Afterwards ``origin_reclaimed`` frees its durable class
     bytes and its paths, as `reclaim_origin` does.
     """
 
@@ -6205,9 +6794,21 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
             return ("refuse", "origin-changed")
 
         paths = sorted(str(desc["path"]) for desc in sealed)
+        # Another attempt's claim on these paths, read under this lock.
+        try:
+            owners = (reads or _TickReads(queue)).path_owners(instance, template)
+        except (ProducedOutputError, OSError, ValueError) as exc:
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": f"unknown-retain: path owners: {exc}"})
+        claimed = {path: note for path in paths
+                   if (note := owners.committed(path)) is not None}
+        if any(path not in claimed and owners.pending(path) is not None
+               for path in paths):
+            quiet()
+            return None
         for path in paths:
             verdict, why = classify(path)
-            if verdict == "refuse":
+            if verdict == "refuse" and path not in claimed:
                 return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                                "reason": why, "path": path})
         if not retiring:
@@ -6218,7 +6819,23 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
         unlinked: list[str] = []
         superseded: list[str] = []
         absent: list[str] = []
+        tag = hashlib.sha256(_batch_report_key(
+            instance, batch_id).encode()).hexdigest()[:16]
         for path in paths:
+            # A private name an interrupted delete left is settled first,
+            # whoever owns the path now: it may hold another writer's file.
+            outcome, why = _settle_retiring_leftover(path, recorded[path], tag)
+            if outcome == "refuse":
+                return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                               **base, "reason": why, "path": path})
+            if outcome == "unlinked":
+                unlinked.append(path)
+                continue
+            if path in claimed:
+                # Another attempt committed it: that batch's file, whatever
+                # its identity (#1053).
+                superseded.append(path)
+                continue
             # Checked again at the unlink, not only above: the name is
             # removed only while it is still the committed file.
             verdict, why = classify(path)
@@ -6226,16 +6843,16 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
                 return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                                "reason": why, "path": path})
             if verdict == "unlink":
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    absent.append(path)
-                    continue
-                except OSError as exc:
+                outcome, why = _unlink_if_committed(path, recorded[path], tag)
+                if outcome == "refuse":
                     return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
-                                   **base, "reason": f"origin-unlink: {exc}",
-                                   "path": path})
-                unlinked.append(path)
+                                   **base, "reason": why, "path": path})
+                if outcome == "unlinked":
+                    unlinked.append(path)
+                elif outcome == "superseded":
+                    superseded.append(path)
+                else:
+                    absent.append(path)
             elif verdict == "superseded":
                 superseded.append(path)
             else:
@@ -6246,9 +6863,139 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
         batches[batch_id] = entry
         _write_commitments(commitments_path, {"batches": batches})
     _UNFILED_REPORTS.pop(_batch_report_key(instance, batch_id), None)
-    return {"event": ORIGIN_RETIRED_EVENT, **base, "reason": reason,
-            "consumers": consumers, "origin_identity": dict(recorded),
-            "unlinked": unlinked, "superseded": superseded, "absent": absent}
+    event = {"event": ORIGIN_RETIRED_EVENT, **base, "reason": reason,
+             "consumers": consumers, "origin_identity": dict(recorded),
+             "unlinked": unlinked, "superseded": superseded, "absent": absent}
+    if claimed:
+        event["superseded_by"] = claimed
+    return event
+
+
+def _retiring_name(path: str, tag: str) -> str:
+    """The private name `_unlink_if_committed` moves ``path`` to."""
+
+    directory, name = os.path.split(path)
+    return os.path.join(directory, f".{name}.pb-retiring-{tag}")
+
+
+def _is_committed_file(info: os.stat_result,
+                       recorded: Mapping[str, object]) -> bool:
+    """Whether ``info`` is the file a commit recorded, at any name.
+
+    Inode, size and mtime: a rename changes only ctime. A recorded identity
+    without all three is never a match.
+    """
+
+    live = _portable_identity_of(info)
+    fields = ("ino", "size", "mtime_ns")
+    return (all(recorded.get(field) is not None for field in fields)
+            and all(live.get(field) == recorded.get(field) for field in fields))
+
+
+def _settle_retiring_leftover(path: str, recorded: Mapping[str, object],
+                              tag: str) -> tuple[str, str]:
+    """Finish what an interrupted `_unlink_if_committed` left at its private name.
+
+    Returns ``("none", "")`` when there is no private name. Otherwise the
+    private file is the committed one, which is deleted (``unlinked``), or a
+    writer's file the interrupted call moved aside:
+
+    * if ``path`` is that same file again (the call linked it back and
+      stopped before removing the private name), the private name goes;
+    * if ``path`` is free, the file is linked back and the private name
+      goes;
+    * if ``path`` holds a later file, the private one is kept and refused
+      as ``origin-displaced``, naming it for an operator.
+
+    The last two return ``superseded``; any unreadable step refuses.
+    """
+
+    private = _retiring_name(path, tag)
+    try:
+        try:
+            left = os.lstat(private)
+        except FileNotFoundError:
+            return ("none", "")
+        if _is_committed_file(left, recorded):
+            os.unlink(private)
+            return ("unlinked", "")
+        try:
+            there = os.lstat(path)
+        except FileNotFoundError:
+            there = None
+        if there is not None and there.st_ino == left.st_ino:
+            os.unlink(private)
+            return ("superseded", "")
+        if there is not None:
+            return ("refuse", f"origin-displaced: another writer's file is "
+                              f"kept at {private}")
+        return _link_back(path, private)
+    except OSError as exc:
+        return ("refuse", f"origin-unlink: {private}: {exc}")
+
+
+def _link_back(path: str, private: str) -> tuple[str, str]:
+    """Put a writer's file moved to ``private`` back at ``path``, never over one."""
+
+    try:
+        os.link(private, path)
+    except FileExistsError:
+        return ("refuse", f"origin-displaced: another writer's file is kept "
+                          f"at {private}")
+    os.unlink(private)
+    return ("superseded", "")
+
+
+def _unlink_if_committed(path: str, recorded: Mapping[str, object],
+                         tag: str) -> tuple[str, str]:
+    """Delete the file at ``path`` only if it is the one a commit recorded.
+
+    The only delete of an origin file PB makes (#1053). A plain ``unlink``
+    after an identity check removes whatever is at the name when it runs,
+    and a producer writes by ``rename(tmp, path)`` under no PB lock, so a
+    rename landing between the check and the unlink would lose its file.
+    Instead:
+
+    1. ``rename(path, private)``, where ``private`` is ``.<name>.pb-retiring-
+       <tag>`` in the same directory (`_retiring_name`). The name is now
+       free, and a writer's rename that lands from here on creates a new
+       file at ``path``;
+    2. ``lstat(private)``: if its inode, size and mtime are the recorded
+       ones (a rename changes only ctime), it is the committed file, and it
+       is unlinked -- under the private name, which no writer uses;
+    3. otherwise a writer's rename landed before step 1, and this moved its
+       file aside: it is linked back to ``path`` (the same inode, so its
+       bytes never moved) and the private name removed. If ``path`` is
+       taken again by then, the link fails: the private file is kept and
+       the refusal ``origin-displaced`` names it for an operator.
+
+    So a writer's file is never deleted, wherever its rename lands. A call
+    interrupted between the steps leaves the private name, and the caller
+    settles it before anything else (`_settle_retiring_leftover`). What
+    this does not cover, and says so: a writer that rewrites the committed
+    inode in place (``open`` and ``write`` with no rename) is outside the
+    produced-output contract, which writes every origin file by rename;
+    between steps 1 and 3 a reader of ``path`` can find it absent; and a
+    file system without hard links refuses at step 3 and keeps the file at
+    the private name, named in the refusal.
+
+    Returns ``(outcome, reason)``: ``unlinked``, ``absent`` (nothing was at
+    the name), ``superseded`` (another file was, and is again) or
+    ``refuse``.
+    """
+
+    private = _retiring_name(path, tag)
+    try:
+        try:
+            os.rename(path, private)
+        except FileNotFoundError:
+            return ("absent", "")
+        if _is_committed_file(os.lstat(private), recorded):
+            os.unlink(private)
+            return ("unlinked", "")
+        return _link_back(path, private)
+    except OSError as exc:
+        return ("refuse", f"origin-unlink: {private}: {exc}")
 
 
 def _held_for_deferred(instance: Mapping[str, object],
@@ -6299,88 +7046,12 @@ def _outstanding_prewrite_ids(scope: Path,
     return [batch_id for batch_id in ids if batch_id not in batches]
 
 
-def _sibling_path_owners(queue, instance: Mapping[str, object],
-                         template: Mapping[str, object],
-                         generation: tuple[str, dict[str, object] | None]
-                         ) -> tuple[dict[str, dict[str, str]],
-                                    dict[str, dict[str, str]]]:
-    """The origin paths other attempts of this owner and template name (#949).
-
-    Returns ``(committed, pending)``, each mapping a path to the attempt's
-    ``{"nonce", "batch_id"}``. ``committed`` holds every path of another
-    attempt's committed origin-only batch that is not reclaimed: that attempt
-    wrote the file again and its commit recorded the file's identity, so the
-    file is that batch's. ``pending`` holds every path of another attempt's
-    outstanding prewrite while that attempt can still commit it, which is
-    anything but ended: a retry that is writing, or one whose state cannot
-    be read. An ended attempt's prewrite names no owner. ``generation`` is
-    the owner key's one read (`_key_generation`), which answers for every
-    attempt of it. Raises `ProducedOutputError` on a record that cannot be
-    read.
-    """
-
-    own = instance_dir(queue.root, instance)
-    prefix = f"{instance['template_id']}."
-    committed: dict[str, dict[str, str]] = {}
-    pending: dict[str, dict[str, str]] = {}
-    try:
-        siblings = sorted(child for child in own.parent.iterdir()
-                          if child.is_dir() and child != own
-                          and child.name.startswith(prefix))
-    except OSError as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    for scope in siblings:
-        try:
-            sibling = validate_instance(json.loads(
-                (scope / "instance.json").read_text()))
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError) as exc:
-            raise ProducedOutputError(
-                f"unknown-retain: {scope.name}: {exc}") from None
-        if (instance_dir(queue.root, sibling) != scope
-                or sibling["template_sha256"] != instance["template_sha256"]):
-            continue
-        attempt = sibling["owner_attempt"]
-        assert isinstance(attempt, dict)
-        nonce = str(attempt["nonce"])
-        batches = _read_commitments(scope / "commitments.json")["batches"]
-        assert isinstance(batches, Mapping)
-        for batch_id, entry in sorted(batches.items()):
-            if (not isinstance(entry, Mapping)
-                    or entry.get("origin_only") is not True
-                    or entry.get("origin_reclaimed")):
-                continue
-            indexed = entry.get("paths")
-            if isinstance(indexed, list):
-                paths = [str(item) for item in indexed]
-            else:
-                _filed, sealed = _load_batch_record(
-                    queue.root, sibling, template, entry, batch_id)
-                paths = [str(desc["path"]) for desc in sealed]
-            for path in paths:
-                committed.setdefault(path, {"nonce": nonce, "batch_id": batch_id})
-        try:
-            outstanding = _outstanding_prewrite_ids(scope, batches)
-        except OSError as exc:
-            raise ProducedOutputError(f"unknown-retain: {exc}") from None
-        if not outstanding or (_attempt_state(generation, nonce)
-                               in _ENDED_ATTEMPT_STATES):
-            continue
-        for batch_id in outstanding:
-            record = _read_prewrite(
-                _prewrites_dir(queue.root, sibling) / f"{batch_id}.prewrite.json")
-            for path in (record or {}).get("paths", []):
-                pending.setdefault(str(path), {"nonce": nonce, "batch_id": batch_id})
-    return committed, pending
-
-
 def _ended_prewrite_dispositions(
         queue, instance: Mapping[str, object], template: Mapping[str, object],
         records: Mapping[str, Mapping[str, object]],
-        generation: tuple[str, dict[str, object] | None],
+        reads: _TickReads,
 ) -> dict[str, dict[str, object]]:
-    """What each outstanding write-only prewrite of an ended attempt is now (#949).
+    """What each outstanding prewrite of an ended attempt is now (#949, #1053).
 
     ``records`` maps batch ids to their prewrite records. The caller has read
     that the attempt ended (`_attempt_state` is ``dead`` or ``succeeded``):
@@ -6389,10 +7060,12 @@ def _ended_prewrite_dispositions(
 
     * all absent: ``reclaim``, reason ``absent``. Nothing durable is left,
       the rule `abort_prewrite` applies.
-    * each present one is a committed batch's of another attempt of the
-      same key and template (`_sibling_path_owners`): ``reclaim``, reason
-      ``superseded``. A retry reusing the batch id wrote those files again
-      and committed them, so they are that batch's, charged once, there.
+    * each present one is committed by another attempt, of this key or of
+      any other action whose template's prefix overlaps this one's
+      (`_TickReads.path_owners`): ``reclaim``, reason ``superseded``. A
+      retry or a relaunch wrote those files again and committed them, so
+      they are that batch's, charged once, there. A prewrite of an attempt
+      that succeeded counts as its commit.
     * any present one is still planned by another attempt that can commit,
       and none belongs to nobody: ``hold``, until that attempt commits or
       ends.
@@ -6417,7 +7090,7 @@ def _ended_prewrite_dispositions(
                            "reason": "output-prefix-unreachable",
                            "detail": detail}
                 for batch_id in records}
-    owners: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]] | None = None
+    owners: _PathOwners | None = None
     owners_error: str | None = None
     decided: dict[str, dict[str, object]] = {}
     for batch_id, record in records.items():
@@ -6439,51 +7112,129 @@ def _ended_prewrite_dispositions(
             continue
         if owners is None and owners_error is None:
             try:
-                owners = _sibling_path_owners(queue, instance, template,
-                                              generation)
+                owners = reads.path_owners(instance, template)
             except (ProducedOutputError, OSError, ValueError) as exc:
                 owners_error = str(exc)
         if owners is None:
             decided[batch_id] = {"action": "refused", "reason": "unknown-retain",
                                  "detail": str(owners_error)}
             continue
-        committed, pending = owners
-        superseded = [{"path": path, **committed[path]}
-                      for path in present if path in committed]
-        held = [path for path in present
-                if path not in committed and path in pending]
-        orphaned = [path for path in present
-                    if path not in committed and path not in pending]
+        superseded: list[dict[str, str]] = []
+        held: list[str] = []
+        orphaned: list[str] = []
+        for path in present:
+            note = owners.committed(path)
+            if note is not None:
+                superseded.append({"path": path, **note})
+            elif owners.pending(path) is not None:
+                held.append(path)
+            else:
+                orphaned.append(path)
         if orphaned:
             decided[batch_id] = {"action": "orphaned", "paths": orphaned,
-                                 "superseded": superseded, "held": held}
+                                 "superseded": superseded, "held": held,
+                                 "owners": owners.fingerprint}
         elif held:
-            decided[batch_id] = {"action": "hold"}
+            decided[batch_id] = {"action": "hold", "owners": owners.fingerprint}
         else:
             decided[batch_id] = {"action": "reclaim", "reason": "superseded",
                                  "superseded": superseded}
     return decided
 
 
+def _prepaid_intent_names(reads: _TickReads, instance: Mapping[str, object],
+                          template: Mapping[str, object], batch_id: str,
+                          tier: str) -> bool | None:
+    """Whether a pool funding intent still names this prewrite's batch.
+
+    The prewrite is that intent's precommit recovery authority
+    (`abort_prewrite` refuses while one exists), so it is not reclaimed
+    under it. ``None`` when the owner's funding census cannot be read.
+    """
+
+    intents, unknown = reads.census(str(instance["owner_action_key"]))
+    if unknown:
+        return None
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    digest = template_sha256(template)
+    return any(str(record.get("batch_id")) == batch_id
+               and str(record.get("tier_id")) == tier
+               and str(record.get("template_sha256")) == digest
+               and str(record.get("owner_nonce")) == str(attempt["nonce"])
+               and str(record.get("owner_scope_id")) == str(attempt["scope_id"])
+               for record in intents)
+
+
+#: What the tick last left in place for an ended attempt's prewrite (#1053),
+#: by the prewrite's report key: ``(inputs, action)``. ``action`` is
+#: ``orphaned``, or ``hold`` for a path another attempt still plans;
+#: ``inputs`` is what it was decided on -- the record's version, the
+#: version of each directory its paths are in (a file created, removed or
+#: renamed there changes it), and the other attempts' claims
+#: (`_PathOwners.fingerprint`). While all of those are unchanged the
+#: decision is too, and the tick neither takes the lock nor ``lstat``s one
+#: path: R13's 28 orphaned prewrites name 3,584 of them, every 5 s. A hold
+#: for a pool funding intent is decided again each cycle.
+_KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
+
+
+def _prewrite_inputs(record_path: Path, record: Mapping[str, object] | None,
+                     kept_dirs: Sequence[str] | None = None,
+                     seen: dict[str, object] | None = None
+                     ) -> tuple[object, ...] | None:
+    """``(record version, directories, their versions)``, or None if unreadable.
+
+    The record's version is taken before the caller reads it and the
+    directories' before any path is ``lstat``ed, so a change that lands
+    between is seen as a change next cycle, never remembered as none.
+    ``seen`` keeps each directory's version for one caller's pass: an
+    instance's prewrites usually name one directory.
+    """
+
+    def version_of(directory: str) -> object:
+        if seen is None:
+            return _file_version(directory)
+        if directory not in seen:
+            seen[directory] = _file_version(directory)
+        return seen[directory]
+
+    try:
+        version = _file_version(record_path)
+        if kept_dirs is None:
+            paths = (record or {}).get("paths", [])
+            dirs = tuple(sorted({os.path.dirname(str(path)) for path in paths}))
+        else:
+            dirs = tuple(kept_dirs)
+        return (version, dirs, tuple(version_of(item) for item in dirs))
+    except ProducedOutputError:
+        return None
+
+
 def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
                            template: Mapping[str, object],
                            batch_ids: Sequence[str],
-                           generation: tuple[str, dict[str, object] | None]
-                           ) -> list[dict[str, object]]:
-    """The sweep of one instance's outstanding write-only prewrites (#949).
+                           reads: _TickReads) -> list[dict[str, object]]:
+    """The sweep of one instance's outstanding prewrites (#949, #1053).
 
-    Nothing while the attempt can still commit them: ``generation``, the
-    owner key's one read this tick, says whether it ended. Otherwise under
-    the output-prefix lock, which `require_prewrite` and
-    `commit_origin_batch` also take, so no attempt of this template can
-    prewrite or commit between the decision and its effect
+    Nothing while the attempt can still commit them: the owner key's one
+    read this tick (`_TickReads.generation`) says whether it ended.
+    Otherwise under the output-prefix lock, which `require_prewrite` and
+    `commit_batch` also take, so no attempt of this template can prewrite
+    or commit between the decision and its effect
     (`_ended_prewrite_dispositions`). A ``reclaim`` removes the record,
     which frees the reservation the instance's accounting charged for it
     (`_outstanding_sums`), and returns ``output-prewrite-reclaimed``. An
     ``orphaned`` or ``refused`` prewrite is reported once per change
-    (``output-prewrite-orphaned``, ``output-origin-retirement-refused``).
+    (``output-prewrite-orphaned``, with its ``remedy``, and
+    ``output-origin-retirement-refused``).
 
-    ``generation`` is read before the lock. That is safe because ``dead``
+    A staged template's prewrite (#1053) is also the precommit authority of
+    any pool funding intent filed for its batch: while one names it, the
+    record is held, as `abort_prewrite` holds it, and a census that cannot
+    be read refuses. A write-only template stages nothing and has none.
+
+    The generation is read before the lock. That is safe because ``dead``
     and ``succeeded`` are final for a nonce. A sibling that ends or starts
     after the read can change only a report or a hold, never a removal,
     which depends only on the files present and the batches committed, both
@@ -6494,35 +7245,90 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             for batch_id in batch_ids}
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
+    generation = reads.generation(str(instance["owner_action_key"]))
     if _attempt_state(generation, str(attempt["nonce"])) not in _ENDED_ATTEMPT_STATES:
         for key in keys.values():
             _UNFILED_REPORTS.pop(key, None)
         return []
     directory = _prewrites_dir(queue.root, instance)
+    # First what is unchanged since the decision the tick last left in
+    # place: no lock, and no path read (`_KEPT_PREWRITES`).
+    owners_now: list[object] = []
+    seen: dict[str, object] = {}
+
+    def unchanged(batch_id: str) -> bool:
+        kept = _KEPT_PREWRITES.get(keys[batch_id])
+        if kept is None:
+            return False
+        (version, dirs, dir_versions, owners_then), _action = kept
+        inputs = _prewrite_inputs(directory / f"{batch_id}.prewrite.json",
+                                  None, kept_dirs=dirs, seen=seen)
+        if inputs is None or inputs != (version, dirs, dir_versions):
+            return False
+        if not owners_now:
+            try:
+                owners_now.append(
+                    reads.path_owners(instance, template).fingerprint)
+            except (ProducedOutputError, OSError, ValueError):
+                owners_now.append(None)
+        return owners_now[0] is not None and owners_now[0] == owners_then
+
+    batch_ids = [batch_id for batch_id in batch_ids if not unchanged(batch_id)]
+    if not batch_ids:
+        return []
+    staged = not is_write_only(template)
     reports: list[tuple[str, dict[str, object]]] = []
     reclaimed: list[dict[str, object]] = []
     unlinked: list[str] = []
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         records: dict[str, dict[str, object]] = {}
+        inputs: dict[str, tuple[object, ...] | None] = {}
+        locked_seen: dict[str, object] = {}
         for batch_id in batch_ids:
             base = {"prewrite": _batch_report_key(instance, batch_id)}
+            record_path = directory / f"{batch_id}.prewrite.json"
+            version = _prewrite_inputs(record_path, {})
             try:
-                record = _read_prewrite(directory / f"{batch_id}.prewrite.json")
+                record = _read_prewrite(record_path)
             except ProducedOutputError as exc:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
                 reports.append((batch_id, {
                     "event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                     "reason": "unknown-retain", "detail": str(exc)}))
                 continue
             if record is None:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
                 continue
             records[batch_id] = record
+            # The record's version from before it was read; its directories'
+            # from before any of its paths is.
+            dirs = _prewrite_inputs(record_path, record, seen=locked_seen)
+            inputs[batch_id] = (None if version is None or dirs is None
+                                else (version[0], dirs[1], dirs[2]))
         dispositions = _ended_prewrite_dispositions(
-            queue, instance, template, records, generation)
+            queue, instance, template, records, reads)
         for batch_id, disposition in dispositions.items():
             base = {"prewrite": _batch_report_key(instance, batch_id),
                     "class_bytes": dict(records[batch_id]["class_bytes"])}
             action = disposition["action"]
+            kept = inputs.get(batch_id)
+            if action in ("orphaned", "hold") and kept is not None:
+                _KEPT_PREWRITES[keys[batch_id]] = (
+                    (*kept, disposition["owners"]), action)
+            else:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
+            if action == "reclaim" and staged:
+                named = _prepaid_intent_names(
+                    reads, instance, template, batch_id,
+                    str(records[batch_id].get("tier")))
+                if named is None:
+                    disposition = {"action": "refused",
+                                   "reason": "unknown-retain",
+                                   "detail": "funding-census"}
+                    action = "refused"
+                elif named:
+                    action = "hold"
             if action == "hold":
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
             elif action == "reclaim":
@@ -6541,7 +7347,8 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
                     "event": ORIGIN_PREWRITE_ORPHANED_EVENT, **base,
                     "paths": disposition["paths"],
                     "superseded": disposition["superseded"],
-                    "held": disposition["held"]}))
+                    "held": disposition["held"],
+                    "remedy": ORPHANED_PREWRITE_REMEDY}))
             else:
                 reports.append((batch_id, {
                     "event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
@@ -6563,7 +7370,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
 def _orphaned_prewrites(queue, instance: Mapping[str, object],
                         template: Mapping[str, object],
                         batch_ids: Sequence[str],
-                        generation: tuple[str, dict[str, object] | None], *,
+                        reads: _TickReads, *,
                         unreadable: list[str], where: str
                         ) -> list[dict[str, object]]:
     """The listing's side of the sweep: an ended attempt's orphaned prewrites.
@@ -6574,6 +7381,7 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
 
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
+    generation = reads.generation(str(instance["owner_action_key"]))
     if _attempt_state(generation, str(attempt["nonce"])) not in _ENDED_ATTEMPT_STATES:
         return []
     directory = _prewrites_dir(queue.root, instance)
@@ -6588,14 +7396,15 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
             records[batch_id] = record
     listed: list[dict[str, object]] = []
     for batch_id, disposition in _ended_prewrite_dispositions(
-            queue, instance, template, records, generation).items():
+            queue, instance, template, records, reads).items():
         if disposition["action"] == "orphaned":
             listed.append({
                 "prewrite": _batch_report_key(instance, batch_id),
                 "class_bytes": dict(records[batch_id]["class_bytes"]),
                 "paths": disposition["paths"],
                 "superseded": disposition["superseded"],
-                "held": disposition["held"]})
+                "held": disposition["held"],
+                "remedy": ORPHANED_PREWRITE_REMEDY})
         elif (disposition["action"] == "refused"
               and disposition["reason"] == "unknown-retain"):
             unreadable.append(
@@ -6624,11 +7433,11 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     (`_resolved_consumers`), the ``holding`` ones, and ``reported``: whether
     the entry carries the tick's report memo.
 
-    ``orphaned_prewrites`` lists each write-only prewrite whose attempt ended
-    before committing and whose files belong to no batch (#949,
-    `_ended_prewrite_dispositions`): its ``prewrite`` coordinates
-    (owner/template.nonce/batch), ``class_bytes``, the orphaned ``paths``, and
-    the ``superseded`` and ``held`` ones.
+    ``orphaned_prewrites`` lists each prewrite, of any template (#1053),
+    whose attempt ended before committing and whose files belong to no batch
+    (#949, `_ended_prewrite_dispositions`): its ``prewrite`` coordinates
+    (owner/template.nonce/batch), ``class_bytes``, the orphaned ``paths``,
+    the ``superseded`` and ``held`` ones, and the ``remedy``.
     """
 
     from . import action_edges
@@ -6651,6 +7460,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
         unreadable.append(f"output scopes: {exc}")
         return found()
     holds: set[tuple[str, str]] | None = None
+    reads = _TickReads(queue)
     for owner in owners:
         try:
             scopes = sorted(child for child in (scopes_root / owner).iterdir()
@@ -6658,16 +7468,13 @@ def blocked_origin_batches(queue) -> dict[str, list]:
         except OSError as exc:
             unreadable.append(f"{owner[:12]}: {exc}")
             continue
-        generation: tuple[str, dict[str, object] | None] | None = None
         for scope in scopes:
             where = f"{owner[:12]}/{scope.name}"
             try:
-                commitments = _read_commitments(scope / "commitments.json")
+                batches = reads.batches(scope)
             except ProducedOutputError as exc:
                 unreadable.append(f"{where}: {exc}")
                 continue
-            batches = commitments["batches"]
-            assert isinstance(batches, dict)
             due = [(batch_id, entry) for batch_id, entry in sorted(batches.items())
                    if isinstance(entry, Mapping)
                    and entry.get("origin_only") is True
@@ -6684,9 +7491,8 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             if not due:
                 # As the tick: a producer that can still commit is skipped
                 # before its instance is read.
-                if generation is None:
-                    generation = _key_generation(queue, owner)
-                if (_attempt_state(generation, scope.name.rpartition(".")[2])
+                if (_attempt_state(reads.generation(owner),
+                                   scope.name.rpartition(".")[2])
                         not in _ENDED_ATTEMPT_STATES):
                     continue
             try:
@@ -6703,11 +7509,10 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             if (instance_dir(queue.root, instance) != scope
                     or template_sha256(template) != instance["template_sha256"]):
                 continue
-            if outstanding and is_write_only(template):
-                if generation is None:
-                    generation = _key_generation(queue, owner)
+            if outstanding:
+                # Any template's, as the tick sweeps them (#1053).
                 orphaned.extend(_orphaned_prewrites(
-                    queue, instance, template, outstanding, generation,
+                    queue, instance, template, outstanding, reads,
                     unreadable=unreadable, where=where))
             if not due:
                 continue
@@ -6752,28 +7557,238 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     return found()
 
 
+#: Attempts this process has filed or found in the attempt index, by queue
+#: root, owner and scope name: the tick's backfill stats each scope once
+#: per process, not once per cycle.
+_INDEXED_ATTEMPTS: set[tuple[str, str, str]] = set()
+#: Queue roots whose attempt index this process has marked complete.
+_INDEX_MARKED: set[str] = set()
+
+
+def _backfill_attempt(queue_root: str | Path, owner: str, scope_name: str) -> bool:
+    """Index one scope the tick listed, if it is not yet (#1053).
+
+    A scope filed before the index existed, or by a producer running code
+    that predates it, has no pointer; the tick files it, idempotently.
+    Returns False when it could not be filed.
+    """
+
+    key = (str(queue_root), owner, scope_name)
+    if key in _INDEXED_ATTEMPTS:
+        return True
+    template_id, dot, nonce = scope_name.rpartition(".")
+    if (not dot or not template_id or len(owner) != 64
+            or len(nonce) != _HEX32 or any(c not in _HEX for c in nonce)):
+        # Not an attempt's scope (an older flat spelling): nothing to index.
+        _INDEXED_ATTEMPTS.add(key)
+        return True
+    pointer = _attempts_root(queue_root) / template_id / f"{owner}.{nonce}"
+    try:
+        if not os.path.lexists(pointer):
+            _index_attempt(queue_root, owner, template_id, nonce)
+    except ProducedOutputError:
+        return False
+    _INDEXED_ATTEMPTS.add(key)
+    return True
+
+
+def _unretired_staged_batches(batches: Mapping[str, object]) -> list[str]:
+    """Batch ids with a stage copy not yet retired, in order.
+
+    Every committed batch that is not origin-only and whose ACTIVE
+    materialization is unretired (`_batch_stage_retired`). A malformed
+    materialization list is listed too: the retirement step reports it.
+    """
+
+    found: list[str] = []
+    for batch_id, entry in sorted(batches.items()):
+        if not isinstance(entry, Mapping) or entry.get("origin_only") is True:
+            continue
+        try:
+            if _batch_stage_retired(entry):
+                continue
+        except ProducedOutputError:
+            pass
+        found.append(batch_id)
+    return found
+
+
+def _retire_dead_staged_batch(queue, instance: Mapping[str, object],
+                              template: Mapping[str, object], batch_id: str,
+                              batches: Mapping[str, object], *,
+                              producer_state: str, reads: _TickReads
+                              ) -> dict[str, object] | None:
+    """File the stage retirement of a dead producer's batch (#1053).
+
+    R13 left ten staged batches that read ``retired: false`` for ever: its
+    movers had finished and held no tier tokens, their funding was
+    ``consumed``, and their stage copies were gone, but the producer died
+    before its own `retire_batch` filed. The #929 sweep reaches only a
+    mover that still holds tokens, so nothing retired them, and the
+    unretired batches kept their paths from every later writer.
+
+    The caller has read that the producer attempt ended (``dead`` or
+    ``succeeded``). A batch is retired here when its active
+    materialization's mover has ended (``done``, ``failed`` or
+    ``withdrawn``), holds no tier tokens (a holder is the #929 sweep's), and
+    its funding record is absent, ``consumed`` or ``released``. Then the
+    producer's own `retire_batch` runs, on the tier host only: it validates
+    the batch record, runs the ordinary egress on the batch's fragment root
+    (which finds nothing to delete once the copy is gone, and deletes a
+    copy that remains only against its fragment's identity), and files
+    ``retired``.
+
+    Retirement closes the stage records. It never reclaims, and never
+    touches, the batch's origin files: a relaunch reads them (R13's reads
+    392 of its predecessor's 436 batches), and their durable charge stays
+    until a successor supersedes them or an operator reclaims them.
+
+    A mover still queued or running, or a token holder, waits quietly.
+    Anything else that stops the retirement is reported once per change as
+    ``output-origin-retirement-refused``. Returns the event to log, or None.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    coordinates = _batch_report_key(instance, batch_id)
+    memo = f"{coordinates}.stage"
+
+    def refused(reason: str, **detail: object) -> dict[str, object] | None:
+        event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT, "batch": coordinates,
+                 "reason": reason, **detail}
+        signature = hashlib.sha256(json.dumps(
+            event, sort_keys=True, default=str).encode()).hexdigest()
+        if _UNFILED_REPORTS.get(memo) == signature:
+            return None
+        _UNFILED_REPORTS[memo] = signature
+        return event
+
+    def quiet() -> None:
+        _UNFILED_REPORTS.pop(memo, None)
+        return None
+
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        return quiet()
+    try:
+        active = _active_materialization(entry)
+    except ProducedOutputError as exc:
+        return refused(f"unknown-retain: {exc}")
+    if active.get("retired"):
+        return quiet()
+    mover = str(active.get("mover_key") or "")
+    tier = str(active.get("tier") or entry.get("tier") or "")
+    if len(mover) != 64 or not tier:
+        return refused("unknown-retain: batch-target-mismatch")
+    mover_state, _row = reads.generation(mover)
+    if mover_state in (pool_mod.READY, pool_mod.CLAIMED, "moving"):
+        return quiet()
+    if mover_state not in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+        return refused(f"unknown-retain: its mover {mover[:12]} is {mover_state}",
+                       mover_key=mover)
+    try:
+        held = queue.tier_ledger(tier).holder_tokens(mover)
+    except Exception as exc:
+        return refused(f"unknown-retain: tier ledger: {exc}", mover_key=mover)
+    if held:
+        return quiet()
+    try:
+        record, file_state = queue.output_funding_file_state(mover, tier)
+    except Exception as exc:
+        return refused(f"unknown-retain: funding: {exc}", mover_key=mover)
+    if file_state not in ("absent", "ok"):
+        return refused(f"unknown-retain: funding record is {file_state}",
+                       mover_key=mover)
+    if file_state == "ok" and str((record or {}).get("state")) not in (
+            "consumed", "released"):
+        return refused(f"funding-{(record or {}).get('state')}", mover_key=mover)
+    try:
+        tier_record = _announced_tier_record(queue, tier)
+    except Exception as exc:
+        return refused(f"unknown-retain: tier record: {exc}", mover_key=mover)
+    if tier_record is None or not tier_record.get("mountpoint"):
+        return refused(f"tier-not-announced: {tier}", mover_key=mover)
+    if not _egress_runs_in_process(tier_record):
+        # Elsewhere `retire_batch` would publish an egress action; the tick
+        # publishes nothing.  The tier loop runs on the tier host.
+        return refused("not-on-the-tier-host", mover_key=mover,
+                       tier_host=str(tier_record.get("host") or ""))
+    try:
+        import stage_release  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError:
+        return refused("stage-release-unimportable", mover_key=mover)
+    result = retire_batch(
+        queue, instance, template, batch_id,
+        stage_root=str(tier_record["mountpoint"]),
+        residency_root=output_fragment_root(
+            Path(queue.root) / pool_mod.RESIDENCY))
+    if result.get("ok") is not True:
+        receipt = result.get("receipt")
+        errors = (list(receipt.get("errors") or [])
+                  if isinstance(receipt, Mapping) else [])
+        return refused(str(result.get("refusal") or "retirement refused"),
+                       mover_key=mover, errors=errors)
+    if result.get("duplicate"):
+        return quiet()
+    receipt = result.get("receipt")
+    receipt = receipt if isinstance(receipt, Mapping) else {}
+    event: dict[str, object] = {
+        "event": DEAD_PRODUCER_BATCH_RETIRED_EVENT, "batch": coordinates,
+        "mover_key": mover, "tier": tier, "producer_state": producer_state,
+        "origin_kept": True,
+        "entries_deleted": int(receipt.get("entries_deleted") or 0),
+        "bytes_deleted": int(receipt.get("bytes_deleted") or 0),
+        "tokens_released": int(receipt.get("tokens_released") or 0),
+    }
+    # Which of its paths another attempt now claims: for the record only.
+    try:
+        owners = reads.path_owners(instance, template)
+        superseded: list[dict[str, str]] = []
+        for path in sorted(str(item) for item in entry.get("paths") or []):
+            note = owners.committed(path)
+            kind = "committed"
+            if note is None:
+                note, kind = owners.pending(path), "prewritten"
+            if note is not None:
+                superseded.append({"path": path, "kind": kind, **note})
+        event["superseded"] = superseded
+    except (ProducedOutputError, OSError, ValueError) as exc:
+        event["superseded"] = None
+        event["superseded_unreadable"] = str(exc)
+    _UNFILED_REPORTS.pop(memo, None)
+    return event
+
+
 def origin_retirement_tick(queue) -> list[dict[str, object]]:
-    """Retire the consumed origin batches whose time has come (#914).
+    """Retire what the produced-output lane's ended attempts left (#914, #1053).
 
     Called once per `tier_loop.cycle` on the tier host. It scans the same
-    produced-output scopes `unheld_window_gib` and `output_scope_tick` scan,
-    reads each instance's commitments, and runs `_retire_consumed_batch` for
-    every origin-only batch committed with the ``consumed`` lifetime and not
-    yet reclaimed. A ``retain`` batch is never touched, whatever became of
-    its producer.
+    produced-output scopes `unheld_window_gib` and `output_scope_tick` scan
+    and reads each instance's commitments once (`_TickReads`). Then:
 
-    It also sweeps the outstanding prewrites of a write-only template whose
-    attempt ended before committing (`_sweep_ended_prewrites`, #949).
+    * every origin-only batch committed with the ``consumed`` lifetime and
+      not yet reclaimed goes to `_retire_consumed_batch`. A ``retain``
+      batch is never touched, whatever became of its producer;
+    * the outstanding prewrites of an attempt that ended before committing
+      are swept (`_sweep_ended_prewrites`, #949), whatever the template:
+      a staged template's too (#1053);
+    * a staged batch of an ended attempt whose stage copy was never
+      retired has its stage retirement filed
+      (`_retire_dead_staged_batch`, #1053). Its origin files are kept.
+
+    It also files the attempt index pointer of any scope that has none, and
+    marks the index complete once one full pass has indexed every scope it
+    listed (`_backfill_attempt`).
 
     Returns the events to log: one ``output-origin-retired`` per retired
     batch (its ref, bytes, consumers and the origin identity each deleted
-    file was checked against), and ``output-origin-retirement-stalled`` or
-    ``-refused`` once per change of what holds a batch. A tick with nothing
-    to retire and nothing new to report returns ``[]``. A swept prewrite
+    file was checked against), ``output-dead-producer-batch-retired`` per
+    stage retirement filed, and ``output-origin-retirement-stalled`` or
+    ``-refused`` once per change of what holds a batch. A swept prewrite
     adds ``output-prewrite-reclaimed``, or ``output-prewrite-orphaned`` once
-    per change. An instance whose
-    commitments cannot be read is skipped, as the other scans skip it: its
-    batches stay charged and on disk.
+    per change. A tick with nothing to do and nothing new to report returns
+    ``[]``. An instance whose commitments cannot be read is skipped, as the
+    other scans skip it: its batches stay charged and on disk.
     """
 
     events: list[dict[str, object]] = []
@@ -6783,6 +7798,8 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
     except OSError:
         return events
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    reads = _TickReads(queue)
+    indexed = True
     # What unreleased deferred consumers will read (#913), read once and only
     # when some batch is due.  A queue that cannot say keeps every batch for
     # this tick.
@@ -6792,15 +7809,15 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
             scopes = sorted(child for child in (scopes_root / owner).iterdir()
                             if child.is_dir())
         except OSError:
+            indexed = False
             continue
-        generation: tuple[str, dict[str, object] | None] | None = None
         for scope in scopes:
+            indexed = _backfill_attempt(queue.root, owner, scope.name) and indexed
+            nonce = scope.name.rpartition(".")[2]
             try:
-                commitments = _read_commitments(scope / "commitments.json")
+                batches = reads.batches(scope)
             except ProducedOutputError:
                 continue
-            batches = commitments["batches"]
-            assert isinstance(batches, dict)
             due = [batch_id for batch_id, entry in sorted(batches.items())
                    if isinstance(entry, Mapping)
                    and entry.get("origin_only") is True
@@ -6810,17 +7827,17 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
                 outstanding = _outstanding_prewrite_ids(scope, batches)
             except OSError:
                 outstanding = []
-            if not due and not outstanding:
+            staged = _unretired_staged_batches(batches)
+            if not due and not outstanding and not staged:
                 continue
-            if not due:
-                # Only an ended attempt's prewrites are swept (#949).  The
-                # scope is named for the attempt's nonce, so a producer that
-                # can still commit costs no instance or template read.
-                if generation is None:
-                    generation = _key_generation(queue, owner)
-                if (_attempt_state(generation, scope.name.rpartition(".")[2])
-                        not in _ENDED_ATTEMPT_STATES):
-                    continue
+            ended = (_attempt_state(reads.generation(owner), nonce)
+                     if staged or not due else "")
+            if not due and ended not in _ENDED_ATTEMPT_STATES:
+                # Only an ended attempt's prewrites and stage copies are the
+                # tick's (#949, #1053).  The scope is named for the attempt's
+                # nonce, so a producer that can still commit costs no
+                # instance or template read.
+                continue
             try:
                 instance = validate_instance(json.loads(
                     (scope / "instance.json").read_text()))
@@ -6840,18 +7857,28 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
             if (instance_dir(queue.root, instance) != scope
                     or template_sha256(template) != instance["template_sha256"]):
                 continue
-            if outstanding and is_write_only(template):
-                # An attempt that ended before committing (#949).  The owner
-                # key is read once for every attempt of it.
-                if generation is None:
-                    generation = _key_generation(queue, owner)
+            if outstanding:
+                # An attempt that ended before committing (#949), of any
+                # template (#1053).
                 try:
                     events.extend(_sweep_ended_prewrites(
-                        queue, instance, template, outstanding, generation))
+                        queue, instance, template, outstanding, reads))
                 except (ProducedOutputError, OSError, ValueError) as exc:
                     event = _unfiled_report(instance, "prewrites", {
                         "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
                         "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+                    if event is not None:
+                        events.append(event)
+            if staged and ended in _ENDED_ATTEMPT_STATES:
+                for batch_id in staged:
+                    try:
+                        event = _retire_dead_staged_batch(
+                            queue, instance, template, batch_id, batches,
+                            producer_state=ended, reads=reads)
+                    except (ProducedOutputError, OSError, ValueError) as exc:
+                        event = _unfiled_report(instance, f"{batch_id}.stage", {
+                            "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                            "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
                     if event is not None:
                         events.append(event)
             if not due:
@@ -6867,13 +7894,21 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
                 try:
                     event = _retire_consumed_batch(
                         queue, instance, template, batch_id,
-                        deferred_holds=holds)
+                        deferred_holds=holds, reads=reads)
                 except (ProducedOutputError, OSError, ValueError) as exc:
                     event = _unfiled_report(instance, batch_id, {
                         "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
                         "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
                 if event is not None:
                     events.append(event)
+    if indexed and str(queue.root) not in _INDEX_MARKED:
+        try:
+            if not os.path.lexists(_attempts_root(queue.root)
+                                   / ATTEMPT_INDEX_COMPLETE):
+                _mark_attempt_index_complete(queue.root)
+            _INDEX_MARKED.add(str(queue.root))
+        except ProducedOutputError:
+            pass
     return events
 
 
@@ -7881,6 +8916,8 @@ __all__ = [
     "OUTPUT_SCOPES_SUBDIR",
     "OUTPUT_BATCHES_SUBDIR",
     "OUTPUT_FRAGMENTS_SUBDIR",
+    "OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR",
+    "ATTEMPT_INDEX_COMPLETE",
     "READER_HELPER_ROOT_ENV",
     "RESTAGE_FILL_ENV",
     "SDK_DEPENDENCY",
@@ -7938,6 +8975,8 @@ __all__ = [
     "ORIGIN_RETIRED_EVENT",
     "ORIGIN_RETIREMENT_STALLED_EVENT",
     "ORIGIN_RETIREMENT_REFUSED_EVENT",
+    "ORPHANED_PREWRITE_REMEDY",
+    "DEAD_PRODUCER_BATCH_RETIRED_EVENT",
     "safe_release_instance",
     "output_scope_tick",
     "due_mover_rows",

@@ -5787,15 +5787,22 @@ origin with the identity the commit recorded:
 - A file with another inode is no longer this batch's: a retried producer
   attempt wrote the path again (per-attempt ownership, above). The tick
   leaves it, and the batch stops charging for it.
+- A path another attempt has committed, of this key or of another action
+  whose template's prefix overlaps this one's, is that batch's whatever its
+  identity, and is left as `superseded`; the event's `superseded_by` names
+  the owner. A path another attempt that can still commit has prewritten
+  holds the batch, quietly, until it commits or ends (#1053).
 - The same inode changed in place, or a stat that fails, refuses
   (`origin-changed`, `origin-unstatable`) and keeps the batch.
 
 Before the first unlink the tick sets `retiring: {reason, consumers}` on the
 entry. From then on `declare_origin_consumer` and `load_origin_batch` refuse
 the batch (`origin-batch-retiring`), and a crash resumes the delete instead
-of deciding again. Each file is compared again just before its unlink. The
-tick then fsyncs the parent directories and sets `origin_reclaimed: true`,
-which frees the durable class bytes and the paths, as `reclaim_origin` does.
+of deciding again. Each file is compared again just before its delete, and
+the delete itself never removes a file a writer renamed onto the name
+(`_unlink_if_committed`, #1053, below). The tick then fsyncs the parent
+directories and sets `origin_reclaimed: true`, which frees the durable class
+bytes and the paths, as `reclaim_origin` does.
 
 **Logging.** Each retirement prints one JSON line in the tier log:
 `output-origin-retired` with `ref`, `bytes`, `reason` (`consumed` or
@@ -5999,9 +6006,10 @@ Limits:
   the producer is dead. Only a producer running this change can commit a
   `consumed` batch, so the gap is a consumer submitted from an older
   checkout while a newer producer runs.
-- The comparison and the unlink of one file are two calls. A writer that
-  replaces the path between them loses its file. Only a retried attempt of
-  the same producer writes those paths, and only under its own prewrite.
+- A writer that rewrites the committed inode in place, with no rename, is
+  outside the produced-output contract and is not covered by the delete's
+  move-aside (#1053, below). A reader of the path can find it absent for
+  the moment between the move aside and the put-back.
 - The latest generation is ordered by `published_unix`, which each
   submitter stamps with its own clock. Two generations of one key published
   within the clock skew between two submitting hosts can be misordered.
@@ -6025,7 +6033,8 @@ its own instance), so the dead attempt's prewrite does not refuse the
 retry's prewrite of the same paths. The retry writes the files again and
 commits; the batch record holds its bytes and sha256. The dead attempt's
 late commit is refused (`stale-superseded-owner`), because the owner's
-claim names the retry.
+claim names the retry. Across action keys, a live attempt's paths refuse
+another action's prewrite (#1053, below); a dead one's never do.
 
 **What the dead record costs.** A prewrite is the attempt's reservation
 against its own instance's durable maxima (`_outstanding_sums`). No gate of
@@ -6050,11 +6059,13 @@ take:
 - Every planned path absent: the record is removed and the tick returns
   `output-prewrite-reclaimed` with reason `absent`. This is the rule
   `abort_prewrite` applies.
-- Every present path belongs to a committed, unreclaimed origin batch of
-  another attempt of the same key and template: removed, reason
-  `superseded`, with each path's `{path, nonce, batch_id}`. That attempt
-  wrote the file again and its commit recorded the file's identity, so the
-  file is that batch's and is charged once, there.
+- Every present path belongs to a committed, unreclaimed batch of another
+  attempt, of the same key or, since #1053, of any action whose template's
+  output prefix overlaps this one's: removed, reason `superseded`, with each
+  path's `{path, nonce, batch_id}` and, for another key, its
+  `owner_action_key`. That attempt wrote the file again and its commit
+  recorded the file's identity, so the file is that batch's and is charged
+  once, there. A prewrite of an attempt that succeeded counts as its commit.
 - A present path that another attempt still plans, and that could still
   commit, holds the record, silently, until that attempt commits or ends.
 - Otherwise the files belong to no batch: `output-prewrite-orphaned`, once
@@ -6072,22 +6083,22 @@ takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
 an instance's own state and for its siblings'. Per ended instance, the
-output prefix is statted once, and the sibling scan runs at most once, only
-when some planned path is present. Every scope costs one more directory
-listing than before (its `prewrites`). A scope with outstanding prewrites
-and nothing due is skipped on its attempt's state before its instance or
-template is read, because the scope directory is named for the attempt's
-nonce, so a running producer costs only that listing and its share of the
-owner's one read. An orphaned prewrite is examined again on each tick,
-because an operator's removal of its files is only seen that way; it is
-reported only when what the tick finds changes.
+output prefix is statted once, and the other attempts' paths are read at
+most once, only when some planned path is present. Every scope costs one
+more directory listing than before (its `prewrites`). A scope with
+outstanding prewrites and nothing due is skipped on its attempt's state
+before its instance or template is read, because the scope directory is
+named for the attempt's nonce, so a running producer costs only that
+listing and its share of the owner's one read.
 
-One read is still repeated. The scope loop reads every sibling's
-`commitments.json` and lists its `prewrites`, and the sibling scan of an
-ended instance reads them again. It happens only for an attempt that ended
-with a prewrite outstanding and a planned file present, once per such
-instance per tick. Removing it needs the tick to gather an owner's scopes
-before it sweeps any of them.
+Since #1053 a tick reads each `commitments.json` once, through
+`_TickReads`, which keeps it by the file's version (every writer replaces
+the file by rename, so a changed file has another version) and stats it
+before reading it. An orphaned or held prewrite is decided again only when
+its record, a directory its paths are in, or another attempt's claims have
+changed (`_KEPT_PREWRITES`); an operator's removal of its files changes the
+directory, so the next tick still sees it. Otherwise the tick takes no lock
+and reads none of its paths.
 
 The attempt's state is read before the output-prefix lock is taken. That is
 safe because `dead` and `succeeded` are final for a nonce: a superseded or
@@ -6099,10 +6110,12 @@ committed. The next tick corrects the report.
 
 Limits:
 
-- Only write-only templates are swept. `commit_origin_batch` accepts only
-  them, so an origin batch never comes from a read-back template. A
-  read-back prewrite can be cited by a staged funding intent
-  (`_output_precommit_authority`), and its lifecycle is the mover's.
+- Before #1053 only write-only templates were swept, and R13's 28 staged
+  prewrites stayed outstanding. A staged template's prewrite is swept the
+  same way, with one difference: a pool funding intent that still names its
+  batch makes the prewrite that intent's precommit authority
+  (`_output_precommit_authority`), so it is held, as `abort_prewrite` holds
+  it, and a funding census that cannot be read refuses.
 - An attempt that stays `unknown` holds its prewrite with no report: a
   record without the attempt's nonce, a key requeued as `ready`, or a cache
   hit by another attempt. The sweep acts once the key reaches a state that
@@ -6119,6 +6132,158 @@ Limits:
   files on that file system are never reported. A prefix directory that was
   never created reads as unreachable, and the prewrite is reported as
   refused until it exists.
+
+#### A dead producer's staged batches, and one writer per origin path (#1053)
+
+R13 Stage A (`03f50d8e390b`) failed at chain-042 on 2026-09-23. Its
+instance held 436 committed staged batches. Ten read `retired: false` and
+`origin_reclaimed: false`: their movers had finished and held no tier
+tokens, their funding was `consumed`, and their stage copies were gone, but
+the producer died before its own `retire_batch` filed. Its 28 outstanding
+prewrites named the at-43 plane: 1,792 `.pt` files, all present, and their
+`.tmp` names. The relaunch was a new action key on the same template and
+the same origin paths. Three things were wrong:
+
+1. Nothing retired such a batch. The #929 sweep walks only movers that
+   hold tokens, and the origin-retirement tick only origin-only batches.
+2. An ended attempt's prewrites were swept only for a write-only template
+   (#949), so a staged template's stayed outstanding.
+3. Path ownership was checked within one owner key, so a second action
+   could prewrite and commit a path another action's batch owned, with no
+   refusal and no record, and a delete could remove the second action's
+   file.
+
+**Retiring a dead producer's staged batch closes its records, never its
+origin.** `origin_retirement_tick` reads each scope's unretired staged
+batches (`_unretired_staged_batches`). Once the attempt has ended (`dead`
+or `succeeded`), `_retire_dead_staged_batch` retires a batch whose active
+materialization's mover has ended (`done`, `failed` or `withdrawn`), holds
+no tier tokens (a holder is the #929 sweep's), and whose funding record is
+absent, `consumed` or `released`. It runs the producer's own
+`retire_batch` on the tier host: the ordinary egress on the batch's
+fragment root, which finds nothing to delete once the copy is gone and
+deletes a remaining copy only against its fragment's identity, and then
+`retired` is filed. The event is `output-dead-producer-batch-retired`, with
+`origin_kept: true`, the egress counts, and `superseded`: which of the
+batch's paths another attempt has since committed or prewritten. A mover
+still queued or running, or a token holder, waits quietly; anything else is
+`output-origin-retirement-refused`, once per change.
+
+The origin files are never reclaimed here. The relaunch reads 392 of the
+dead instance's 436 batches, two of them among the ten unretired
+(`b1-g6`, `b43-g7`). The durable charge stays on the dead instance until a
+successor commits the same paths or an operator reclaims them.
+
+**One live writer per origin path, across actions.** `require_prewrite`
+already refused a path its own key's live batch or prewrite owned
+(`_live_path_owner`). `_foreign_live_path_owner` applies the same rule to
+every other key: a path committed (and not reclaimed) or prewritten by a
+live attempt of another action refuses the prewrite as
+`prewrite-path-owned-by-live-action`, with the `path`, `owner_action_key`,
+`owner_nonce`, `owner_kind` (`batch` or `prewrite`), `owner_batch_id` and
+`owner_state`. An attempt that does not hold its key's claim cannot prewrite
+or commit (`_require_live_owner`), so it owns nothing a new write could
+disturb, and its records are not read: a dead attempt costs the gate one
+claim read of its key. A claim that cannot be read counts as live.
+
+The attempts are found through an index, not by reading every instance:
+`produced-output-templates/.attempts/<template_id>/<owner>.<nonce>`, one
+immutable pointer per attempt. `declare_instance` files it before the
+instance, so every attempt that can prewrite is indexed; the tick files it
+for any scope that predates the index and, once a full pass has indexed
+every scope it listed, marks the index complete (`.index-complete-v1`).
+Until then the lookup lists the scope directories, one listing of the
+owners and one per owner, and reads no records. A lookup reads the attempts
+of this template and of every template whose output prefix contains this
+one's or is contained by it (`os.path.commonpath` of the resolved
+prefixes). The index sits inside the templates directory because every
+residency enumerator skips that directory as a record directory (#798): a
+new top-level directory under `residency/` is an unknown fragment namespace
+to the census, which taints every egress, including one running older code
+from a mover's sealed closure. Only a template's id and prefix are read
+(`_filed_templates`): a template filed by an older or newer schema still
+names its prefix, and a file that names none was not filed by
+`declare_template` and has no attempts.
+
+**Superseded, never orphaned, never deleted.** The same index answers the
+tick (`_TickReads.path_owners`, a `_PathOwners` of every other attempt): a
+present file at an ended attempt's prewrite path, or at a consumed batch's
+path, that another attempt of any key has committed is that batch's. The
+prewrite is reclaimed as `superseded` with each path's owner, and the
+consumed batch leaves the file as `superseded` with `superseded_by`. A path
+another attempt that can still commit has prewritten holds, quietly. Only a
+present file nobody claims is `output-prewrite-orphaned`, reported once per
+change with the one remedy (`ORPHANED_PREWRITE_REMEDY`): remove the files,
+or let a successor commit the same paths, and the next tier cycle drops the
+reservation.
+
+**The write-only gate is gone for ended attempts.** A staged template's
+ended prewrite is swept like a write-only one (#949 above), and held while
+a pool funding intent names its batch.
+
+**A delete never removes a successor's file.** A producer writes an origin
+file by `rename(tmp, path)` under no PB lock, and a template whose prefix
+only overlaps this one takes a different lock, so a check followed by
+`unlink(path)` can remove a file renamed onto the name between the two.
+`_unlink_if_committed` instead:
+
+1. renames `path` to a private name in the same directory
+   (`.<name>.pb-retiring-<tag>`, `_retiring_name`); from here on a writer's
+   rename creates a new file at `path`;
+2. `lstat`s the private name: if its inode, size and mtime are the recorded
+   ones (a rename changes only ctime), it is the committed file and is
+   unlinked under the private name, which no writer uses;
+3. otherwise a writer's rename landed before step 1: the file is linked
+   back to `path` and the private name removed. If `path` has been taken
+   again by then, the file is kept at the private name and the batch is
+   refused as `origin-displaced`, naming it.
+
+A private name an interrupted call left is settled before anything else
+(`_settle_retiring_leftover`): the committed file is deleted; a writer's
+file goes back if the name is free, or is refused as `origin-displaced` if
+a later file holds it. `tests/test_a_dead_producers_origin_files_survive_every_sweep.py`
+interposes on the retirement's own `rename` of the path and lands the
+successor's `os.replace` just before and just after it; on the tree before
+this change the first deletes the successor's file.
+
+**What the tier cycle reads.** Measured with
+`tools/fleet/bench_tier_cycle_r13.py`, which builds the #992 queue shape
+plus the R13 instance (`tests/r13_1053_replay.py`) and counts file-system
+calls per `tier_loop.cycle`, on sparky, 2026-09-24:
+
+| Cycle | Tick step | Tick calls |
+|---|---|---|
+| Before, steady | 10.7 ms | 39 listdir, 37 stat, 13 open, 1 scandir |
+| After, first cycle | 950 ms, once | retires 10 batches, reports 28 prewrites; 41,192 lstat |
+| After, steady | 12.7 ms | 40 listdir, 68 stat, 13 open, 2 scandir |
+| After, steady, a writer in the same directory | 21.8 ms | 40 listdir, 128 stat, 42 open, 2 scandir, 3,592 lstat |
+
+The rest of the cycle is unchanged: `stage_release.sweep` makes the same
+4,911 `lstat` calls before and after. The last row is the cost of an
+unremedied orphaned prewrite while another action writes into the same
+directory, as R13's relaunch writes into `entries/`: each such write
+changes the directory, and the 28 prewrites' 3,584 paths are read again
+under the prefix lock. It ends once the prewrites are reclaimed.
+
+Limits:
+
+- A successor inheriting the dead instance (the issue's option 1) was not
+  built.
+- A template whose prefix only overlaps this one's takes its own lock, so
+  its prewrite and this one's are not serialized against each other; each
+  still refuses the other's committed or prewritten path, and the delete's
+  move-aside covers the delete side.
+- A scope created by code older than the index after the index is marked
+  complete is not seen by the gate until the next tier cycle files its
+  pointer.
+- `declare_instance` now refuses (`unknown-retain: attempt index`) when the
+  pointer cannot be written. It is under the templates directory, which
+  `declare_template` already writes.
+- An attempt that wrote another attempt's committed path and then died is
+  reported `superseded`, not orphaned: the other commit still claims the
+  path. Nothing is deleted either way.
+- A file system without hard links refuses at the put-back, and the file
+  stays at the private name, named in the refusal.
 
 #### Deferred consumers: action edges (#913)
 

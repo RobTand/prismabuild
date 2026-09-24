@@ -484,11 +484,17 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
 
 def test_two_batches_over_one_origin_path_cannot_be_declared_together(
         tmp_path: Path) -> None:
-    """Path ownership is per owner attempt, so the manifest refuses the pair."""
+    """Two actions' batches may name one path; the manifest refuses the pair.
+
+    A live action's committed path refuses another action's prewrite
+    (#1053), so the second commits only once the first has ended: a
+    relaunch writing its predecessor's paths again.
+    """
 
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
-    _i1, path, _d1, first = _direct_batch(queue, template, "wo-first")
+    i1, path, _d1, first = _direct_batch(queue, template, "wo-first")
+    queue.finish(i1["owner_action_key"], status="executed")
     _i2, same, _d2, second = _direct_batch(queue, template, "wo-second",
                                            name=path.name)
     assert same == path
