@@ -3065,6 +3065,11 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         retained_paths = 0
         expected_ino: dict[str, int] = {}
         for key, entry in entries.items():
+            if held_reason and (prune or absent):
+                # Retained whatever the rest says, and never cacheable once
+                # a path is stale or absent: the scan has nothing left to
+                # decide, so it stops here rather than hold the lock for it.
+                return uncached(held_reason)
             if contained[key] == "absent":
                 absent.append(key)
                 continue
