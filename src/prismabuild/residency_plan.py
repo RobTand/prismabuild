@@ -2588,6 +2588,14 @@ _SHARED_MOVERS = "movers"
 #: and it is reused only by a submission that reads the same announcement.
 SEALED_AGAINST_FIELDS = ("mover_python", "mover_tools_root")
 
+#: :func:`share_namespace_of`'s answers within one tier cycle (#1026):
+#: ``{(queue root, mover key): namespace or None}``, or ``None`` outside a
+#: cycle, where every ask reads the index.  ``tier_loop.cycle`` arms it.  A
+#: mover's index is published once and never rewritten or removed, so no
+#: answer changes under a cycle for a mover it read a plan for: a submitter
+#: files the index before it freezes the plan that names the mover.
+_SHARE_NAMESPACE_MEMO: list[dict[tuple[str, str], str | None] | None] = [None]
+
 
 def share_namespace(manifest_sha256: str, tier_id: str, start: int,
                     end: int) -> str:
@@ -2739,10 +2747,24 @@ def read_shared_mover(queue, mover_action_key: str) -> dict[str, object] | None:
 
 
 def share_namespace_of(queue, mover_action_key: str) -> str | None:
-    """The namespace a shared mover files under, or ``None`` if it is not one."""
+    """The namespace a shared mover files under, or ``None`` if it is not one.
 
+    Within a tier cycle each mover's index is read once
+    (:data:`_SHARE_NAMESPACE_MEMO`): the cycle asks per plan leg, and every
+    sharer's plan names the same movers, so the same index was read once
+    per sharer.  An index that does not read is never remembered, so the
+    next ask raises again.
+    """
+
+    memo = _SHARE_NAMESPACE_MEMO[0]
+    cache_key = (str(queue.root), str(mover_action_key))
+    if memo is not None and cache_key in memo:
+        return memo[cache_key]
     record = read_shared_mover(queue, mover_action_key)
-    return None if record is None else str(record["share_namespace"])
+    namespace = None if record is None else str(record["share_namespace"])
+    if memo is not None:
+        memo[cache_key] = namespace
+    return namespace
 
 
 def mover_announcement(tier: Mapping[str, object]) -> dict[str, str]:

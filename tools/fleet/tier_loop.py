@@ -1777,6 +1777,13 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
     A consumer that has read past the range gets no copy: its egress
     dropped its interest, and a copy now would make its window egress again.
     Rewritten only when the share namespace's documents moved.
+
+    The readers are computed from the cycle's census, before the lock is
+    taken, not under it.  An egress that drops a reader's interest between
+    the census and the lock is not seen: that reader gets one more copy of
+    the vouch, and its window asks for one more egress to drop it.  The
+    cost is one copy and one egress per reader per race, and the next
+    cycle's census no longer names the reader.
     """
 
     events: list[dict[str, object]] = []
@@ -8255,6 +8262,9 @@ def cycle(
     records = getattr(receipts, "records", None)
     _STAGED_WAITS[0] = {}
     _SHARED_MOVERS[0] = {}
+    # Each shared mover's index read once per cycle, not once per plan leg
+    # that names it (#1026).
+    residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
     try:
         if isinstance(records, stage_release.DirectoryRecords):
             with stage_release.queue_records_from(records):
@@ -8271,6 +8281,7 @@ def cycle(
         global LAST_CYCLE
         _STAGED_WAITS[0] = None
         _SHARED_MOVERS[0] = None
+        residency_plan._SHARE_NAMESPACE_MEMO[0] = None
         after = _read_counts(receipts)
         LAST_CYCLE = {
             "cycle_seconds": round(time.perf_counter() - phases.started, 6),
