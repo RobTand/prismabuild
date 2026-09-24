@@ -11543,7 +11543,8 @@ class PoolQueue:
     def tier_record_path(self, tier_id: str) -> Path:
         return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
 
-    def announce_tier(self, record: Mapping[str, object]) -> Path:
+    def announce_tier(self, record: Mapping[str, object], *,
+                      now: float | None = None) -> Path:
         """File what a tier loop discovered about one tier, for submitters and readers.
 
         Not the worker offer: an offer is one record per *box*, last writer
@@ -11551,12 +11552,16 @@ class PoolQueue:
         is the admission authority -- and it says where the tier is mounted
         and what its members are, which a mover needs and a ledger does not
         carry.
+
+        ``announced_unix`` is ``now`` when given, so the tier loop knows the
+        exact stamp a reader will age (#1072); otherwise the time of the call.
         """
 
         tier_id = self._check_tier_id(str(record.get("tier_id", "")))
         path = self.tier_record_path(tier_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record, announced_unix=_now()))
+        _write_json_atomic(path, dict(record, announced_unix=(
+            _now() if now is None else float(now))))
         return path
 
     def tiers(self) -> list[dict[str, object]]:

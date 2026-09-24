@@ -3517,10 +3517,16 @@ class _TerminalNames:
         return found
 
 
+#: The unit `sweep_dead_owner_fragments` asks a cycle budget for: one dead
+#: consumer's validation and every census and egress of its movers (#1072).
+DEAD_OWNER_UNIT = "dead-owner"
+
+
 def sweep_dead_owner_fragments(
         queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         residency_root: str | Path | None = None,
         index: CensusIndex | None = None,
+        budget=None,
 ) -> list[dict[str, object]]:
     """Retire proven dead unmaterialized owners with no charge (#839, #866).
 
@@ -3564,6 +3570,14 @@ def sweep_dead_owner_fragments(
     each, and ``index`` counts the owners a checkpoint skipped
     (``stale_skipped``) and the owners censused (``stale_censused``) for
     the cycle line, since a skip files no receipt.
+
+    ``budget``, when the tier loop passes one (#1072), is asked before each
+    candidate consumer whether its unit still fits this cycle
+    (``budget.start``) and told when the unit ends (``budget.done``), after
+    the consumer's locks are released.  The consumers are taken from the one
+    it refused first last cycle (``budget.order``).  A consumer it refuses is
+    not examined, and keeps its skip checkpoints: they are chosen from the
+    whole discovery above, before any unit runs.
     """
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
@@ -3629,127 +3643,150 @@ def sweep_dead_owner_fragments(
         for consumer, children in candidates.items()
         for mover, fragment in children)
     uncertainty = (OSError, ValueError, pb.PrismaBuildError)
-    for consumer, children in candidates.items():
+    order = (list(candidates) if budget is None
+             else budget.order(DEAD_OWNER_UNIT, list(candidates)))
+    for consumer in order:
+        children = candidates[consumer]
+        if budget is not None and not budget.start(DEAD_OWNER_UNIT, consumer):
+            continue
         try:
-            with queue._transition_locked(consumer):
-                live, why = residency_plan.live_state(queue, consumer)
-                if why:
-                    refuse(f"ownership uncertain: {why}", consumer)
-                if live or why:
-                    continue
-                # Exactly one terminal record: failed or withdrawn.  Two is
-                # not a death but a question, and done is not a death at all.
-                if not _metadata_absent(queue.item_path(pool.DONE, consumer)):
-                    continue
-                consumer_failed = not _metadata_absent(
-                    queue.item_path(pool.FAILED, consumer))
-                consumer_withdrawn = not _metadata_absent(
-                    queue.item_path(pool.WITHDRAWN, consumer))
-                if consumer_failed == consumer_withdrawn:
-                    continue
-                if (not _metadata_absent(queue.lease_path(consumer))
-                        or not _metadata_absent(queue.residency_plan_path(consumer))):
-                    continue
-                if consumer_failed:
-                    failed = _owner_record(queue, pool.FAILED, consumer)
-                    # Reuse the queue's canonical history/generation/log
-                    # checks; no whole-model hashing, and only once for this
-                    # consumer.
-                    ending = queue.adopted_attempt_summary(failed)
-                    if (failed.get("status") != "failed"
-                            or ending["status"] != "failed"
-                            or ending["disposition"] != pool.FAILED):
-                        continue
-                else:
-                    # A withdrawn consumer is as dead as a failed one when its
-                    # immutable decision says so -- the proof a withdrawn
-                    # mover already needs below.  Without it, WS-P cleared
-                    # three such owners by hand on 2026-09-22.
-                    _require_exact_withdrawal(queue, consumer)
-                for mover, observed in children:
-                    try:
-                        with queue.mover_transition_lock(mover):
-                            live, why = residency_plan.live_state(queue, mover)
-                            if why:
-                                refuse(f"ownership uncertain: {why}", consumer, mover)
-                            if live or why:
-                                continue
-                            if not _metadata_absent(queue.item_path(pool.FAILED, mover)):
-                                continue
-                            done = not _metadata_absent(queue.item_path(pool.DONE, mover))
-                            if done:
-                                if not _metadata_absent(queue.item_path(pool.WITHDRAWN, mover)):
-                                    continue
-                                terminal = _owner_record(queue, pool.DONE, mover)
-                                ending = queue.adopted_attempt_summary(terminal)
-                                if (terminal.get("status") != "executed"
-                                        or ending["status"] != "executed"
-                                        or ending["disposition"] != pool.DONE):
-                                    continue
-                            else:
-                                _require_exact_withdrawal(queue, mover)
-                            tier = str(observed["tier_id"])
-                            if not _metadata_absent(queue.lease_path(mover)):
-                                continue
-                            material_present = not _metadata_absent(
-                                reader_lease.material_path(root, consumer, mover))
-                            if material_present:
-                                # #853: a material-bearing DONE owner, charged
-                                # or not.  A withdrawn one keeps whatever its
-                                # sidecar dates (no re-dispatch guarantee
-                                # exists for it here), exactly as before.
-                                if not done:
-                                    continue
-                                if _skip_checkpoint_hit(
-                                        _skip_checkpoint_key(
-                                            queue, root,
-                                            Path(stage_roots[tier]), tier,
-                                            consumer, mover),
-                                        residency_map.fragment_path(
-                                            root, consumer, mover),
-                                        reader_lease.material_path(
-                                            root, consumer, mover)):
-                                    # No receipt for a skip; the cycle line
-                                    # counts it (#1056).
-                                    if index is not None:
-                                        index.stale_skipped += 1
-                                    continue
-                                if index is not None:
-                                    index.stale_censused += 1
-                                receipts.append(prune_stale_mentions(
-                                    queue, mover, consumer_action_key=consumer,
-                                    stage=Path(stage_roots[tier]), tier_id=tier,
-                                    root=root, observed=observed))
-                                continue
-                            if not _metadata_absent(
-                                    queue.tier_ledger(tier).held_dir / mover):
-                                continue
-                            if not done and not _metadata_absent(queue.move_path(mover)):
-                                continue
-                            current = residency_map.validate_fragment(json.loads(
-                                pb._read_regular_file_nofollow(
-                                    residency_map.fragment_path(root, consumer, mover),
-                                    where="dead-owner fragment")))
-                            if current != observed:
-                                continue  # adoption/republication won discovery
-                            if done and not _partial_done_receipt_matches(
-                                    queue, consumer, mover, current):
-                                continue
-                            receipts.append(evict(
-                                queue, mover, consumer_action_key=consumer,
-                                stage_root=stage_roots[tier], residency_root=root,
-                                reason="dead-owner-sweep"))
-                    except uncertainty as exc:
-                        refuse(f"ownership uncertain: {exc}", consumer, mover)
-        except uncertainty as exc:
-            refuse(f"ownership uncertain: {exc}", consumer)
+            _dead_owner_unit(queue, consumer, children, root=root,
+                             stage_roots=stage_roots, index=index,
+                             refuse=refuse, receipts=receipts,
+                             uncertainty=uncertainty)
+        finally:
+            if budget is not None:
+                budget.done(DEAD_OWNER_UNIT)
     return receipts
+
+
+def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
+                     children: list[tuple[str, dict]], *, root: Path,
+                     stage_roots: dict[str, str], index: CensusIndex | None,
+                     refuse, receipts: list[dict[str, object]],
+                     uncertainty: tuple[type[BaseException], ...]) -> None:
+    """One candidate consumer of `sweep_dead_owner_fragments`, under its locks."""
+
+    try:
+        with queue._transition_locked(consumer):
+            live, why = residency_plan.live_state(queue, consumer)
+            if why:
+                refuse(f"ownership uncertain: {why}", consumer)
+            if live or why:
+                return
+            # Exactly one terminal record: failed or withdrawn.  Two is
+            # not a death but a question, and done is not a death at all.
+            if not _metadata_absent(queue.item_path(pool.DONE, consumer)):
+                return
+            consumer_failed = not _metadata_absent(
+                queue.item_path(pool.FAILED, consumer))
+            consumer_withdrawn = not _metadata_absent(
+                queue.item_path(pool.WITHDRAWN, consumer))
+            if consumer_failed == consumer_withdrawn:
+                return
+            if (not _metadata_absent(queue.lease_path(consumer))
+                    or not _metadata_absent(queue.residency_plan_path(consumer))):
+                return
+            if consumer_failed:
+                failed = _owner_record(queue, pool.FAILED, consumer)
+                # Reuse the queue's canonical history/generation/log
+                # checks; no whole-model hashing, and only once for this
+                # consumer.
+                ending = queue.adopted_attempt_summary(failed)
+                if (failed.get("status") != "failed"
+                        or ending["status"] != "failed"
+                        or ending["disposition"] != pool.FAILED):
+                    return
+            else:
+                # A withdrawn consumer is as dead as a failed one when its
+                # immutable decision says so -- the proof a withdrawn
+                # mover already needs below.  Without it, WS-P cleared
+                # three such owners by hand on 2026-09-22.
+                _require_exact_withdrawal(queue, consumer)
+            for mover, observed in children:
+                try:
+                    with queue.mover_transition_lock(mover):
+                        live, why = residency_plan.live_state(queue, mover)
+                        if why:
+                            refuse(f"ownership uncertain: {why}", consumer, mover)
+                        if live or why:
+                            continue
+                        if not _metadata_absent(queue.item_path(pool.FAILED, mover)):
+                            continue
+                        done = not _metadata_absent(queue.item_path(pool.DONE, mover))
+                        if done:
+                            if not _metadata_absent(queue.item_path(pool.WITHDRAWN, mover)):
+                                continue
+                            terminal = _owner_record(queue, pool.DONE, mover)
+                            ending = queue.adopted_attempt_summary(terminal)
+                            if (terminal.get("status") != "executed"
+                                    or ending["status"] != "executed"
+                                    or ending["disposition"] != pool.DONE):
+                                continue
+                        else:
+                            _require_exact_withdrawal(queue, mover)
+                        tier = str(observed["tier_id"])
+                        if not _metadata_absent(queue.lease_path(mover)):
+                            continue
+                        material_present = not _metadata_absent(
+                            reader_lease.material_path(root, consumer, mover))
+                        if material_present:
+                            # #853: a material-bearing DONE owner, charged
+                            # or not.  A withdrawn one keeps whatever its
+                            # sidecar dates (no re-dispatch guarantee
+                            # exists for it here), exactly as before.
+                            if not done:
+                                continue
+                            if _skip_checkpoint_hit(
+                                    _skip_checkpoint_key(
+                                        queue, root,
+                                        Path(stage_roots[tier]), tier,
+                                        consumer, mover),
+                                    residency_map.fragment_path(
+                                        root, consumer, mover),
+                                    reader_lease.material_path(
+                                        root, consumer, mover)):
+                                # No receipt for a skip; the cycle line
+                                # counts it (#1056).
+                                if index is not None:
+                                    index.stale_skipped += 1
+                                continue
+                            if index is not None:
+                                index.stale_censused += 1
+                            receipts.append(prune_stale_mentions(
+                                queue, mover, consumer_action_key=consumer,
+                                stage=Path(stage_roots[tier]), tier_id=tier,
+                                root=root, observed=observed))
+                            continue
+                        if not _metadata_absent(
+                                queue.tier_ledger(tier).held_dir / mover):
+                            continue
+                        if not done and not _metadata_absent(queue.move_path(mover)):
+                            continue
+                        current = residency_map.validate_fragment(json.loads(
+                            pb._read_regular_file_nofollow(
+                                residency_map.fragment_path(root, consumer, mover),
+                                where="dead-owner fragment")))
+                        if current != observed:
+                            continue  # adoption/republication won discovery
+                        if done and not _partial_done_receipt_matches(
+                                queue, consumer, mover, current):
+                            continue
+                        receipts.append(evict(
+                            queue, mover, consumer_action_key=consumer,
+                            stage_root=stage_roots[tier], residency_root=root,
+                            reason="dead-owner-sweep"))
+                except uncertainty as exc:
+                    refuse(f"ownership uncertain: {exc}", consumer, mover)
+    except uncertainty as exc:
+        refuse(f"ownership uncertain: {exc}", consumer)
 
 
 def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
           residency_root: str | Path | None = None,
           pressure: Mapping[str, int] | None = None,
-          index: CensusIndex | None = None) -> list[dict[str, object]]:
+          index: CensusIndex | None = None,
+          budget=None) -> list[dict[str, object]]:
     """Evict every pinned mover no live item still names as a lead.
 
     A consumer withdrawn between its movers finishing and its own claim would
@@ -3823,13 +3860,17 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     receipt-less owner lookup, each tier's reconciliation -- reads it, so a
     namespace or document that has not changed since the last cycle is not
     read again.  Without it each census reads from nothing, as before.
+
+    ``budget`` is the tier loop's cycle budget (#1072), handed to
+    `sweep_dead_owner_fragments`, whose per-consumer units are the pass's
+    long ones.
     """
 
     wanted, owners = live_claims(queue)
     swept: list[dict[str, object]] = []
     swept.extend(sweep_dead_owner_fragments(
         queue, stage_roots=stage_roots, residency_root=residency_root,
-        index=index))
+        index=index, budget=budget))
     # Taken once, and only when a held key has no receipt to name its
     # consumer (#892).
     fragment_owners: dict[str, list[tuple[str, bool]]] | str | None = None

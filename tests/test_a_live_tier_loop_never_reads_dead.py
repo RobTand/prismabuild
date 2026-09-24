@@ -62,6 +62,8 @@ BOUND_S = pool.OFFER_TIMEOUT_S
 #: in ``/home/rob/tmp/pb-role-tiers.log`` on dl380g10).
 LIVE_RETIREMENT_S = 129.7
 LIVE_CENSUS_S = 87.9
+#: The live loop's ``--interval-s``.
+LIVE_INTERVAL_S = 5.0
 #: Pairs of co-owned dead owners; each owner is one census unit.
 DEAD_OWNER_PAIRS = 2
 UNRETIRED = 10
@@ -111,7 +113,7 @@ class _Loop:
                                   stage=self.stage, origin_files=False)
         assert len(self.replay.unretired) == UNRETIRED
         self.receipts = tier_loop.ReceiptCache()
-        self.liveness = (tier_loop.Liveness()
+        self.liveness = (tier_loop.Liveness(interval_s=LIVE_INTERVAL_S)
                          if callable(getattr(tier_loop, "Liveness", None))
                          else None)
         #: ``(fake unix, age)`` read off the file after every charge.
