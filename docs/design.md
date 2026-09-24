@@ -7626,8 +7626,9 @@ on (`evidence`, `evidence_unix`):
 
 | Mover | Evidence | Exempt |
 |---|---|---|
-| `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) or a withhold (`deferred_behind_withholding`, `*_withholding`) | `refused` or `withheld`; the entry names the reason as `refusal` or `withhold` and the host | no, and the hold accrues nothing |
-| `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
+| `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) | `refused`; the entry names the reason as `refusal` and the host | no, and the hold accrues nothing |
+| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the withhold's epoch is at most `WITHHOLD_CEILING_S` old, `withhold-lapsed` after that or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix` and its `withhold_basis` | `withheld` only |
+| `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check, and on the first check after a withhold or after the row was `claimed`; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
 | `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `lease-live` when its own lease is live (below); `none` otherwise | yes, except `none` |
 
 **A pacer hold is not a stall** (#1022 review round 2). A mover commits its
@@ -7653,6 +7654,34 @@ renew it. Recomputing `bytes_ahead` from the live queue at each check was
 the alternative. It falls on wall-clock alone, so it keeps falling for a
 mover that died. A ready mover with nothing queued ahead of it at the first
 check has no copy to read a lease from, and it keeps the `bytes_ahead` rule.
+That is a bounded end where `main` had none: before #1022 a ready mover was
+exempt with no clock, and now, if the claim pass neither places nor
+withholds for it, the consumer's wait ends one evidence window after the
+first check, about two phase graces after the consumer went quiet.
+
+**A withhold is the pool holding the box for the row** (#1022 review round
+3). A withhold is recorded when a row that has been denied
+`STARVATION_FLOOR` times keeps its stage host shut while the holders in its
+way drain soon (#924, `PoolQueue._withhold_verdict`): the row is next. The
+pool bounds that veto by `WITHHOLD_CEILING_S` (900 s) from the episode's
+start, `epoch_unix` in the row's passes sidecar, which is the same number as
+the campaign's chunk grace. Round 2 read a withhold as "not coming", so a
+withhold that ran toward its ceiling ended a healthy consumer while the pool
+was about to place its mover. The verdict now reads it as evidence, with the
+epoch as its `evidence_unix` and the pool's own bound: `withheld` until
+`WITHHOLD_CEILING_S` past the epoch, and `withhold-lapsed` after that. A
+withhold with no episode on file (`in_flight`, `holder_tail`) is bounded by
+the row's first denial (`first_unix`), the clock the pool bounds `in_flight`
+by; `withhold_basis` says which (`episode` or `first-denial`), and a sidecar
+with neither is `withhold-lapsed`. Each new episode has a new epoch, so
+back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`.
+When a withhold lifts, the ready rule takes its own `baseline` rather than
+carry the withhold's epoch, as it does after a `claimed` row is requeued: a
+previous entry's evidence time carries only within the ready rule.
+`deferred_behind_withholding` is recorded only for a producer's export
+(`cpu_admission.dependent_owner` returns `None` for anything but a
+`generation` action with `params.produced_spool`), so no stage mover
+carries it.
 
 `placement_mismatch` (the word of a box the row is not for) is neutral, and a
 host whose latest reason is anything else is transient, so the row goes to
@@ -7672,6 +7701,7 @@ in admission order" below), and the verdict reads that order off the record:
 
 | Standing in `claim_order` | Exempt |
 |---|---|
+| any standing, when the order's last `relief` is `refused` or `unknown` (`CLAIM_ORDER_RELIEF_ENDS_WAIT`) | no: that relief made no room and names no victim, so an exemption by standing would be a wait with no end on an infrastructure fault |
 | `granted`, `head`, `satisfied` | yes: the order is serving it |
 | `held-back` | while the consumer ranked just ahead of it shows evidence (`ahead_evidence`, next list) |
 | the stuck rule's victim (`stuck_victim`): the last relief was `futile`, nobody is granted and every ranked consumer is blocked | no, as before #1011. Only the one consumer the rule names, the lowest ranked; the rest keep their standing's answer |
@@ -7690,7 +7720,15 @@ refreshes every heartbeat (`ProgressWatch.as_record`):
   counts restarted. Live.
 * `carried`: none of these now, but the last evidence is within the
   evidence window. Live.
-* `none`: a whole window without evidence. Not live.
+* `ahead-within-grace`: none of these, but its own watch has not ended it:
+  its lease heartbeat is within `LEASE_TIMEOUT_S`, and the `quiet_s` its
+  watch reported plus the heartbeat's age is within its `grace_s`. Live,
+  with the heartbeat as `evidence_unix` (#1022 review round 3). A consumer
+  ahead in a phase with a longer grace than this one's reaches its own rung
+  later, so until then its stored verdict and credited seconds say nothing;
+  its watch is the judge that ends it, as a mover's worker is for a copy.
+* `none`: a whole window without evidence, and its watch does not vouch
+  for it. Not live.
 * `unread`: the lease does not read, belongs to another claim or carries
   no counts. Live only while earlier evidence is within the window.
 
@@ -7698,10 +7736,13 @@ The slack clock this replaces (`grace + CLAIM_ORDER_AHEAD_SLACK_S`, 75 s)
 had a 15 s margin against a 60 s cycle, so a late loop on the ahead
 consumer's box stripped the exemption from the consumer behind it. A late
 lease now delays the evidence by the lateness and ends the exemption only
-past a whole window. A stalled consumer ahead shows nothing for a window,
-and its own rung ends it. The verdict records the standing (`claim_order`)
-and, for a held-back consumer, `held_back_by`, `ahead_evidence` and, for
-information only, `ahead_quiet_s` and `ahead_grace_s`.
+past a whole window. A stalled consumer ahead reports a quiet past its
+grace, shows nothing for a window, and its own rung ends it; a dead one
+stops its heartbeat, and the reaper ends its claim at `LEASE_TIMEOUT_S`,
+after which it reads `ahead-ended`. The verdict records the standing
+(`claim_order`, with the order's last `relief`) and, for a held-back
+consumer, `held_back_by`, `ahead_evidence`, `ahead_quiet_s` and
+`ahead_grace_s`.
 
 A missing or unreadable commitment record, or a tier ledger the verdict
 cannot list for a `done` mover (`held_names_visible`), is not exempt, and
@@ -8180,12 +8221,18 @@ holding its lease), I2 declines the eviction and relief stays short. The
 second is bounded by the reader's own `no_progress` rung.
 
 I5 does not cover three relief outcomes: `short` with nothing evicted,
-`refused` and `unknown`. In those, the head and granted consumers stay
-exempt with no bound. The verdict gives them `exempt` whatever the relief
-(`PoolQueue._tier_commitment_standing`), the window gives them their claim
-permit (`residency_window`), and `window_credit.stuck_victim` names a victim
-only when relief is `futile`. This predates #1022's round 2 and is tracked
-as a separate issue.
+`refused` and `unknown`. Under `refused` (the stage root refused the
+eviction) and `unknown` (the tier ledger did not read), no standing is
+exempt (`CLAIM_ORDER_RELIEF_ENDS_WAIT`, read by
+`PoolQueue._tier_commitment_standing`): every blocked consumer on the tier
+waits as it did before #1011 on an over-committed tier, and its own rung
+ends it within one grace. That is the fail-closed answer to an
+infrastructure fault. Round 1 of #1022 exempted `granted`, `head` and
+`satisfied` whatever the relief; before #1011 none of them was exempt on an
+over-committed tier. `short` with nothing evicted keeps the standing's
+answer, because a reader pins a range only while it reads it, so a decline
+clears; `futile` keeps the one-victim rule (I4), because every consumer's
+rung reads the same record. The `short` gap is tracked in #1037.
 
 A tier that stays over-committed once no consumer is blocked also reports
 `futile`, with one `claim-order-eviction-futile` event when it becomes so:

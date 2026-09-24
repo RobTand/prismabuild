@@ -578,8 +578,9 @@ Budget and durability requirements for produced workloads:
   report (`basis: reported`). A mover with no measured rate, or on a tier
   that names no pool members, is sealed as before (`basis: unmeasured`).
   A queued mover exempts its consumer only on evidence (PB#1011, in
-  review): a ready row the claim pass refuses or withholds on every host
-  exempts nothing, and otherwise the bytes queued ahead of it must fall
+  review): a ready row the claim pass refuses on every host exempts
+  nothing, one it withholds for exempts until `WITHHOLD_CEILING_S` past
+  the withhold's epoch, and otherwise the bytes queued ahead of it must fall
   within the evidence window, or a mover queued ahead of it at the wait's
   first check must be claimed with a live lease; a claimed mover's report
   must be within two heartbeats or have grown since the previous check, or
@@ -588,8 +589,10 @@ Budget and durability requirements for produced workloads:
   tier's claim order holds back is `unpublished` in the landing record,
   naming the consumer ahead of it, the GiB and a priced landing. The wait is exempt
   while that consumer shows growth (accepted reports, credited waits or an
-  exempt wait of its own) within the evidence window, and not once a whole
-  window passes without any; its own rung then ends it.
+  exempt wait of its own) within the evidence window, or its own watch has
+  not ended it (a live lease and a quiet within its own grace), and not
+  once neither holds; its own rung then ends it. Under a claim-order
+  relief of `refused` or `unknown` no standing is exempt.
 - PRG-04 no circular hold-and-wait by assertion: PRG-03's "holds current
   window" alone proves nothing with multiple consumers. The contract
   requires the formal inequality over all competing consumers —
