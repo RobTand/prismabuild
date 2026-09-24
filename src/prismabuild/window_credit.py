@@ -235,6 +235,13 @@ def claim_order(claims, *, free_gib: int) -> dict[str, object]:
     granted consumer and the head to take their needs at once; with no head
     it is what the granted consumers take.  The caller makes that room from
     ranges ranked after the head, never from a range a consumer is reading.
+
+    Two consumers can need one range (#1026): a claim may name the range it
+    needs as ``need_mover``, and consumers of one shared range name the same
+    mover.  Its GiB is spent once.  A consumer whose range an earlier
+    consumer was granted is granted too, with nothing left to spend
+    (``shared_with`` names the earlier one); otherwise it ranks as any other
+    consumer does.
     """
 
     ranked = sorted(claims, key=lambda claim: (
@@ -245,9 +252,12 @@ def claim_order(claims, *, free_gib: int) -> dict[str, object]:
     head: str | None = None
     entries: list[dict[str, object]] = []
     ahead: str | None = None
+    granted_mover: dict[str, str] = {}
     for rank, claim in enumerate(ranked):
         key = str(claim["consumer"])
         need = max(0, int(claim.get("need_gib") or 0))
+        mover = claim.get("need_mover")
+        mover = str(mover) if mover else None
         entry: dict[str, object] = {
             "consumer": key, "rank": rank,
             "claimed_unix": float(claim["claimed_unix"]),
@@ -257,6 +267,9 @@ def claim_order(claims, *, free_gib: int) -> dict[str, object]:
             entry["blocked_since_unix"] = _waited_from(claim)
         if need <= 0:
             entry["standing"] = CLAIM_SATISFIED
+        elif mover is not None and mover in granted_mover:
+            entry["standing"] = CLAIM_GRANTED
+            entry["shared_with"] = granted_mover[mover]
         elif head is not None:
             entry["standing"] = CLAIM_HELD_BACK
             entry["waiting_on"] = head
@@ -264,6 +277,8 @@ def claim_order(claims, *, free_gib: int) -> dict[str, object]:
             entry["standing"] = CLAIM_GRANTED
             left -= need
             target += need
+            if mover is not None:
+                granted_mover[mover] = key
         else:
             entry["standing"] = CLAIM_HEAD
             entry["shortfall_gib"] = need - left

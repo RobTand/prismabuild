@@ -110,6 +110,20 @@ _VERDICT_CYCLE = [0]
 #: is asked for at several steps of one cycle and the claim order reads the
 #: same record (#1018).  ``None`` outside a cycle, where every ask reads.
 _STAGED_WAITS: list[dict[tuple[str, str], dict[str, object] | None] | None] = [None]
+
+#: The shared movers' index (#1026), listed once per cycle: ``{queue root:
+#: the mover keys filed under residency-plans/shared/movers/}``, or ``None``
+#: outside a cycle, where every ask lists.
+_SHARED_MOVERS: list[dict[str, frozenset[str] | None] | None] = [None]
+
+#: What :func:`fan_out_shared_ranges` last copied per ``(queue root,
+#: consumer, mover)``: the share namespace's fragment and material versions.
+#: A copy whose source has not moved is not written again.
+_FANOUT_FINGERPRINTS: dict[tuple[str, str, str], tuple[object, ...]] = {}
+#: The ``(queue root, dead consumer, shared mover)`` keeps already told: a
+#: dead consumer's shared mover stays while others read it (#1026), and the
+#: event says so once rather than every cycle.
+_SHARED_KEPT_TOLD: set[tuple[str, str, str]] = set()
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
 
@@ -1671,6 +1685,171 @@ def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tup
     return (str(manifest_sha256), str(tier_id), int(start), int(end))
 
 
+def _shared_movers(queue: pool.PoolQueue) -> frozenset[str] | None:
+    """The movers registered as shared (#1026), or ``None`` if unreadable.
+
+    One listing of ``residency-plans/shared/movers/`` per cycle.  An absent
+    directory is the ordinary answer before any range was shared: none.
+    """
+
+    memo = _SHARED_MOVERS[0]
+    root = str(queue.root)
+    if memo is not None and root in memo:
+        return memo[root]
+    directory = residency_plan.shared_mover_path(queue, "0" * 64).parent
+    try:
+        with os.scandir(directory) as entries:
+            found: frozenset[str] | None = frozenset(
+                entry.name[:-len(".json")] for entry in entries
+                if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        found = frozenset()
+    except OSError:
+        found = None
+    if memo is not None:
+        memo[root] = found
+    return found
+
+
+def _shared_readers(queue: pool.PoolQueue, consumers: list,
+                    ) -> dict[str, tuple[str, list[str]]]:
+    """Per shared mover a live plan names, its namespace and its readers.
+
+    A reader is a live consumer whose plan names the mover in a phase it has
+    not read past: the interest ``stage_release.shared_interest`` derives,
+    read here off the cycle's own census of consumers rather than again off
+    the queue.  Only movers the shared index names appear.
+    """
+
+    shared = _shared_movers(queue)
+    out: dict[str, tuple[str, list[str]]] = {}
+    if not shared:
+        return out
+    for key, consumer, plan, tier_id in consumers:
+        try:
+            ahead = {str(phase["name"]) for phase in residency_plan.remaining(
+                plan, consumer.get("accepted_phase"))}      # type: ignore[arg-type]
+            legs = residency_plan.legs_over(plan, 0, 1 << 62,
+                                            mover_role="mover_row")
+        except (residency_plan.ResidencyPlanError, KeyError, TypeError,
+                ValueError):
+            continue
+        for leg in legs:
+            mover = str(leg["mover_row"]["action_key"])     # type: ignore[index]
+            if leg["phase"] not in ahead or mover not in shared:
+                continue
+            namespace, readers = out.setdefault(mover, (
+                residency_plan.share_namespace(
+                    str(plan["manifest_sha256"]), str(tier_id),
+                    int(leg["start_bytes"]), int(leg["end_bytes"])), []))
+            if str(key) not in readers:
+                readers.append(str(key))
+    return out
+
+
+def _stat_version(path: Path) -> tuple[int, int, int] | None:
+    try:
+        status = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (status.st_ino, status.st_mtime_ns, status.st_size)
+
+
+def fan_out_shared_ranges(queue: pool.PoolQueue,
+                          consumers: list) -> list[dict[str, object]]:
+    """Give each interested consumer its own copy of a shared range's vouch.
+
+    A shared mover (#1026) files one fragment and one material sidecar under
+    its range's share namespace.  Every reader of a range looks it up per
+    consumer -- this loop's :func:`compose_map`, ``residency_plan.
+    resident_movers``, the reader's ``reader_lease.covers_for_keys`` -- so
+    each consumer still reading the range gets the same vouch under its own
+    name, the way an adoption reissues one (#598), with no token moving.
+
+    Only entries the source material dates are copied, and the material is
+    written before the fragment.  A fragment entry with no date reads to
+    every later publisher of the same staged name as a vouch still pending,
+    which refuses forever (#1087); a date that no fragment cites is inert.
+
+    Under the mover's transition lock, non-blocking, because an egress of
+    the same range holds it while it drops a consumer's copy or evicts the
+    range: a copy written after the eviction's scan would outlive the bytes.
+    A consumer that has read past the range gets no copy: its egress
+    dropped its interest, and a copy now would make its window egress again.
+    Rewritten only when the share namespace's documents moved.
+    """
+
+    events: list[dict[str, object]] = []
+    readers_of = _shared_readers(queue, consumers)
+    if not readers_of:
+        return events
+    root = queue.residency_fragment_root()
+    for mover, (namespace, readers) in sorted(readers_of.items()):
+        source_path = residency_map.fragment_path(root, namespace, mover)
+        material_path = reader_lease.material_path(root, namespace, mover)
+        version = (_stat_version(source_path), _stat_version(material_path))
+        if version[0] is None or version[1] is None:
+            continue                  # nothing published under the range yet
+        stale = [reader for reader in sorted(set(readers))
+                 if _FANOUT_FINGERPRINTS.get(
+                     (str(queue.root), reader, mover)) != version
+                 or not residency_map.fragment_path(
+                     root, reader, mover).exists()]
+        if not stale:
+            continue
+        with queue.mover_transition_lock(mover, blocking=False) as held:
+            if not held:
+                continue              # an egress is acting on the range
+            try:
+                with open(source_path) as stream:
+                    source = residency_map.validate_fragment(json.load(stream))
+                material = reader_lease.read_material(root, namespace, mover)
+            except (OSError, ValueError) as exc:
+                events.append({"event": "shared-range-fan-out-failed",
+                               "mover": mover, "share_namespace": namespace,
+                               "error": repr(exc)})
+                continue
+            if not isinstance(material, dict):
+                continue              # undated, or unreadable: nothing to copy
+            dated_entries = dict(material.get("entries") or {})
+            entries = {
+                key: entry for key, entry in dict(source["entries"]).items()
+                if isinstance(dated_entries.get(key), Mapping)
+                and str(dated_entries[key].get("stage_path"))
+                == str(entry.get("stage_path"))
+                and dated_entries[key].get("bytes") == entry.get("bytes")
+                and str(dated_entries[key].get("sha256") or "")
+                == str(entry.get("sha256") or "")}
+            if not entries:
+                continue
+            try:
+                generation = reader_lease.adopted_generation(material)
+                for reader in stale:
+                    reader_lease.write_material(
+                        root, consumer_action_key=reader,
+                        mover_action_key=mover,
+                        tier_id=str(source["tier_id"]),
+                        stage_root=str(source["stage_root"]),
+                        manifest_sha256=str(source["manifest_sha256"]),
+                        generation=generation,
+                        entries={key: dated_entries[key] for key in entries},
+                        epoch=(str(source["epoch"])
+                               if source.get("epoch") is not None else None))
+                    residency_map.write_fragment(root, residency_map.reissue(
+                        {**source, "entries": entries},
+                        consumer_action_key=reader, mover_action_key=mover))
+                    _FANOUT_FINGERPRINTS[(str(queue.root), reader, mover)] = version
+            except (OSError, ValueError, reader_lease.ReaderLeaseError) as exc:
+                events.append({"event": "shared-range-fan-out-failed",
+                               "mover": mover, "share_namespace": namespace,
+                               "error": repr(exc)})
+                continue
+            events.append({"event": "shared-range-fanned-out", "mover": mover,
+                           "share_namespace": namespace,
+                           "consumers": stale, "entries": len(entries)})
+    return events
+
+
 def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Withdraw the still-queued movers of consumers that already failed (#620).
 
@@ -1762,8 +1941,15 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
     ``queue.withdraw`` and ``reap`` take the mover keys' own locks while this
     consumer's is held, and nothing here waits on a child a parent does not
     already hold.
+
+    A shared range's mover (#1026) is every sharer's, so a dead consumer's
+    withdrawal is per interest: it is not withdrawn while another live
+    consumer's plan still reads it, or while that cannot be told.  The plan
+    then stays filed, because ``reap`` will not archive it under a live
+    child, and a later pass reaps it once the mover has ended.
     """
 
+    shared = _shared_movers(queue) or frozenset()
     with queue._transition_locked(key):
         item = pool._read_json(path)
         if not isinstance(item, dict):
@@ -1794,6 +1980,24 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
                 origin = pool.CLAIMED
             else:
                 continue  # finished or never published: nothing to stop
+            if mover_key in shared:
+                try:
+                    others = stage_release.shared_interest(
+                        queue, mover_key, exclude={key})
+                except (OSError, pool.PoolContractError, ValueError) as exc:
+                    others = {"interested": [], "unknown": [repr(exc)]}
+                if others["interested"] or others["unknown"]:
+                    # Told once per mover, not every cycle it stays kept.
+                    told = (str(queue.root), key, mover_key)
+                    if told not in _SHARED_KEPT_TOLD:
+                        _SHARED_KEPT_TOLD.add(told)
+                        events.append({
+                            "event": "dead-consumer-shared-mover-kept",
+                            "consumer": key, "mover": mover_key,
+                            "state": origin,
+                            "interested": len(others["interested"]),
+                            "unknown": len(others["unknown"])})
+                    continue
             try:
                 outcome = queue.withdraw(
                     mover_key, reason=f"consumer-{state}", by="tier-loop")
@@ -2275,18 +2479,30 @@ def adopt_resident_ranges(
                             "commitment": refusal.get("commitment")})
                         prefix_blocked = True
                         break
+                # A shared range's mover (#1026) vouches under its share
+                # namespace, as its own copy would have: every sharer then
+                # gets the vouch from the fan-out, not only this one.
+                try:
+                    vouch_as = (residency_plan.share_namespace_of(queue, new_key)
+                                or consumer_key)
+                except residency_plan.ResidencyPlanError:
+                    prefix_blocked = True
+                    break         # whose range this is does not read
                 leg_adopted = False
                 for old_key in list(candidates):
                     if old_key == new_key:
                         continue
                     event = adopt(queue, old_key=old_key, new_key=new_key,
-                                  consumer_action_key=consumer_key,
+                                  consumer_action_key=vouch_as,
                                   tier_id=tier_id,
                                   phase=str(phase["name"]),
                                   range_start_bytes=cstart,
                                   range_end_bytes=cend,
                                   residency_root=root,
                                   chunk_index=chunk_index)
+                    if vouch_as != consumer_key:
+                        event = {**event, "consumer": consumer_key,
+                                 "share_namespace": vouch_as}
                     events.append(event)
                     if event.get("adopted"):
                         leg_adopted = True
@@ -2679,6 +2895,11 @@ def _beyond_horizon_candidates(
     ``ram_first``, and a stage range whose ram copy is not itself a candidate
     -- inside the ram horizon, busy, on a tier this box does not own, or
     unknown -- is not a candidate either.
+
+    A shared range (#1026) is a candidate only when every live consumer
+    still reading it nominates it on its own terms, and then once, at the
+    soonest any of them needs it, taking every sharer's ram copies with it.
+    One sharer inside its horizon keeps it for all of them.
     """
 
     out: dict[str, list[dict[str, object]]] = {}
@@ -2723,9 +2944,49 @@ def _beyond_horizon_candidates(
                  "stage_gib": ram_rows[copy]["stage_gib"]}
                 for copy in copies]
             out.setdefault(tier_id, []).append(row)
-    for rows in out.values():
+    readers_of = _shared_readers(queue, consumers)
+    for tier_id, rows in out.items():
+        if readers_of:
+            rows[:] = _agreed_shared_rows(rows, readers_of)
         rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
                                    str(row["mover_action_key"])))
+    return out
+
+
+def _agreed_shared_rows(rows: list[dict[str, object]],
+                        readers_of: Mapping[str, tuple[str, list[str]]],
+                        ) -> list[dict[str, object]]:
+    """One row per shared range every reader nominated; the rest unchanged.
+
+    ``rows`` are eviction candidates, one per consumer that nominated its
+    leg.  A shared range (#1026) nominated by some of its readers only is
+    dropped: the others still need it inside their horizons.  One every
+    reader nominated becomes one row at the soonest any of them needs it,
+    whose ``ram_first`` is every reader's ram copies and whose ``sharers``
+    names them.
+    """
+
+    by_mover: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        by_mover.setdefault(str(row["mover_action_key"]), []).append(row)
+    out: list[dict[str, object]] = []
+    for mover, nominated in by_mover.items():
+        sharers = readers_of.get(mover)
+        if sharers is None:
+            out.extend(nominated)
+            continue
+        if not set(sharers[1]) <= {str(row["consumer_action_key"])
+                                   for row in nominated}:
+            continue
+        soonest = min(nominated, key=lambda row: float(
+            row["seconds_until_needed"]))                   # type: ignore[arg-type]
+        merged = dict(soonest)
+        if any("ram_first" in row for row in nominated):
+            merged["ram_first"] = [copy for row in nominated
+                                   for copy in row.get("ram_first") or ()]
+        merged["sharers"] = sorted(str(row["consumer_action_key"])
+                                   for row in nominated)
+        out.append(merged)
     return out
 
 
@@ -3056,6 +3317,13 @@ def _commitment_census(queue: pool.PoolQueue,
     its capacity.  ``remember=False`` prices each window without raising
     the consumption memo (:func:`_footprint_consumption`), for a census
     taken only to report.
+
+    A shared range (#1026) is one held mover that several windows' plans
+    name.  Its tokens are counted once, and they are evictable only when
+    every window naming it has read past it or has it beyond its horizon;
+    one window still reading it inside its horizon keeps it.  Each window
+    counts it toward its own holding, because each one's footprint includes
+    it and neither needs room for a second copy.
     """
 
     out: dict[str, dict[str, object]] = {}
@@ -3194,6 +3462,9 @@ def _commitment_census(queue: pool.PoolQueue,
             continue
         windows: dict[str, dict[str, object]] = {}
         error = ""
+        # Per held mover, every window's verdict on it: a shared range is
+        # named by several (#1026), and evictable only if all of them agree.
+        verdicts: dict[str, list[tuple[str, str, bool]]] = {}
         for key, consumer, plan, plan_tier in consumers:
             if plan_tier != tier_id:
                 continue
@@ -3203,7 +3474,8 @@ def _commitment_census(queue: pool.PoolQueue,
                     # Publishes nothing more: its holdings are static.
                     for mover in residency_plan.mover_keys(plan):
                         if str(mover) in basis:
-                            basis[str(mover)] = ("superseded-plan", key, False)
+                            verdicts.setdefault(str(mover), []).append(
+                                ("superseded-plan", key, False))
                     continue
                 accepted = consumer.get("accepted_phase")
                 already, staged = _mover_state(queue, plan, tier_id)
@@ -3221,15 +3493,15 @@ def _commitment_census(queue: pool.PoolQueue,
                                                     mover_role="mover_row"):
                     mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
                     if leg["phase"] not in ahead or mover in beyond:
-                        evictable += held.get(mover, 0)
                         if held.get(mover, 0):
-                            basis[mover] = (
+                            verdicts.setdefault(mover, []).append((
                                 "passed-leg" if leg["phase"] not in ahead
-                                else "beyond-horizon", key, True)
+                                else "beyond-horizon", key, True))
                         continue
                     holding += held.get(mover, 0) + queued.get(mover, 0)
                     if held.get(mover, 0):
-                        basis[mover] = ("in-horizon-leg", key, False)
+                        verdicts.setdefault(mover, []).append(
+                            ("in-horizon-leg", key, False))
                 prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
                 holding += sum(gib for holder, gib in held.items()
                                if holder.startswith(prefix))
@@ -3267,6 +3539,11 @@ def _commitment_census(queue: pool.PoolQueue,
         if error:
             out[tier_id] = {"error": error}
             continue
+        for mover, said in verdicts.items():
+            keeping = [verdict for verdict in said if not verdict[2]]
+            basis[mover] = keeping[0] if keeping else said[0]
+            if not keeping:
+                evictable += held.get(mover, 0)
         held_total = sum(held.values())
         committed = (held_total - evictable + sum(queued.values())
                      + int(owed["gib"])
@@ -3747,13 +4024,16 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
     head_rank = next((int(entry["rank"]) for entry in order["entries"]  # type: ignore[union-attr]
                       if entry["standing"] == window_credit.CLAIM_HEAD), None)
     through = 0
+    counted: set[str] = set()      # a shared range is copied once (#1026)
     for entry in order["entries"]:                       # type: ignore[union-attr]
         claim = by_key[str(entry["consumer"])]
         for field in ("need_mover", "need_phase", "need_start_bytes",
                       "need_end_bytes", "publish_gib", "landing_bytes_per_s"):
             if field in claim:
                 entry[field] = claim[field]
-        if "need_end_bytes" in claim:
+        if ("need_end_bytes" in claim
+                and str(claim.get("need_mover")) not in counted):
+            counted.add(str(claim.get("need_mover")))
             through += int(claim["need_end_bytes"]) - int(claim["need_start_bytes"])  # type: ignore[arg-type]
         if entry["standing"] != window_credit.CLAIM_HELD_BACK:
             continue
@@ -3958,6 +4238,11 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
 
     rows: list[dict[str, object]] = []
     protected: list[str] = []
+    # A shared range (#1026) goes only when every reader still reading it
+    # nominates it under its own group's rule; each nomination is recorded,
+    # and the row keeps the soonest any of them needs it.
+    readers_of = _shared_readers(queue, consumers)
+    nominated: dict[str, set[str]] = {}
     for basis, entry, past in groups:
         key = str(entry["consumer"])
         if key not in plans:
@@ -3992,7 +4277,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-            if mover in taken:
+            if mover in taken and mover not in nominated:
                 continue
             egress = leg.get("egress_row")
             egress_key = (str(egress.get("action_key"))
@@ -4013,6 +4298,16 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
             if under_rule and (head_needs_s is None or needed_s is None
                                or needed_s <= head_needs_s):
                 continue
+            if mover in readers_of:
+                nominated.setdefault(mover, set()).add(key)
+                if mover in taken:
+                    for row in rows:
+                        if (row["mover_action_key"] == mover
+                                and needed_s is not None and (
+                                    row["seconds_until_needed"] is None
+                                    or needed_s < row["seconds_until_needed"])):
+                            row["seconds_until_needed"] = needed_s
+                    continue
             taken.add(mover)
             rows.append({
                 "tier_id": tier_id, "consumer_action_key": key,
@@ -4023,6 +4318,14 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                 "seconds_until_needed": needed_s,
                 "head_needs_s": head_needs_s,
                 "basis": basis, "for_consumer": head})
+    for mover, sharers in nominated.items():
+        if set(readers_of[mover][1]) <= sharers:
+            continue
+        taken.discard(mover)          # one reader still needs it
+        rows = [row for row in rows if row["mover_action_key"] != mover]
+    for row in rows:
+        if row["mover_action_key"] in nominated:
+            row["sharers"] = sorted(nominated[str(row["mover_action_key"])])
     if isinstance(order, dict):
         order["preempt_protected"] = protected
     return rows
@@ -4472,10 +4775,18 @@ def reclaim_failed_mover_partials(
     copy is adoption's or the sweep's, and a concluded egress that left the
     fragment behind refused rather than raced, which republishing would only
     repeat.  Each of those declines silently; only publications are events.
+
+    A shared range's mover (#1026) files its fragment under the range's share
+    namespace, so that is where its partials are read.  Every sharer's plan
+    names it, and one egress frees them all, because the eviction of a range
+    that did not land is range-wide; so once one sharer's egress is asked
+    this cycle, the others are not.
     """
 
     events: list[dict[str, object]] = []
     root = queue.residency_fragment_root()
+    shared = _shared_movers(queue) or frozenset()
+    asked: set[str] = set()
     for consumer_key, _consumer, plan, tier_id in consumers:
         if int((pressure or {}).get(tier_id, 0) or 0) <= 0:
             continue
@@ -4521,9 +4832,18 @@ def reclaim_failed_mover_partials(
                         not isinstance(receipt, Mapping)
                         or receipt.get("complete") is True):
                     continue
+                if mover_key in asked:
+                    continue      # one egress frees a shared range's partials
+                fragment_owner = consumer_key
+                if mover_key in shared:
+                    try:
+                        fragment_owner = residency_plan.share_namespace_of(
+                            queue, mover_key) or consumer_key
+                    except residency_plan.ResidencyPlanError:
+                        continue      # an unreadable index attributes nothing
                 try:
                     with open(residency_map.fragment_path(
-                            root, consumer_key, mover_key)) as stream:
+                            root, fragment_owner, mover_key)) as stream:
                         fragment = residency_map.validate_fragment(
                             json.load(stream))
                 except (OSError, ValueError):
@@ -4532,6 +4852,7 @@ def reclaim_failed_mover_partials(
                     continue
                 if (queue.item_path(pool.READY, egress_key).exists()
                         or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                    asked.add(mover_key)
                     continue      # already asked; asking again would double the row
                 if (queue.item_path(pool.DONE, egress_key).exists()
                         or queue.item_path(pool.FAILED, egress_key).exists()
@@ -4544,6 +4865,7 @@ def reclaim_failed_mover_partials(
                     # (#810).
                     queue.publish(**dict(egress_row), recompute=True,
                                   refuse_if_live=True)
+                    asked.add(mover_key)
                 except (pool.PoolContractError, OSError) as exc:
                     events.append({
                         "event": "failed-mover-egress-publish-failed",
@@ -4740,6 +5062,39 @@ def _claim_order_permit(tier_id: str, mover_role: str, mover: str,
 
     return {"advance": "claim-order", "tier_id": tier_id, "leg": mover_role,
             "mover": mover, "need_gib": int(demand), "standing": standing}
+
+
+def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
+                           tier_id: str, mover_role: str,
+                           held: Mapping[str, Mapping[str, int]],
+                           kind: str) -> dict[str, str]:
+    """Which window already fences each shared advance on one tier (#1026).
+
+    ``{mover: consumer}`` for every shared mover that is some window's
+    fence target, naming the first window in ``tier_wants`` order whose
+    grant holds tokens for it.  A shared mover no grant holds yet maps to
+    ``""``, which says the window that fences it this pass owns it.  Empty
+    when no range is shared.
+    """
+
+    shared = _shared_movers(queue) or frozenset()
+    out: dict[str, str] = {}
+    if not shared:
+        return out
+    for want in tier_wants:
+        target = want["needs"].get("fence_target")
+        if not isinstance(target, dict):
+            continue
+        mover = str(target["mover_action_key"])
+        if mover not in shared or out.get(mover):
+            continue
+        chunk = target.get("chunk_index")
+        grant = window_credit.grant_key(
+            str(want["key"]), tier_id, mover_role, str(target["phase"]),
+            chunk if isinstance(chunk, int) else None)
+        out[mover] = (str(want["key"])
+                      if int(held.get(grant, {}).get(kind, 0)) > 0 else "")
+    return out
 
 
 def _protect_tier_advances(queue: pool.PoolQueue,
@@ -4992,6 +5347,13 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         admitted_currents: dict[str, int] = {}
         currents_counted = False
         admitted_newcomers: set[str] = set()
+        # A shared range (#1026) is one advance for every window whose next
+        # it is, so it is fenced once: by the first window, in this pass's
+        # order, whose grant already holds it, else by the first to fence
+        # it this pass.  The others ride that fence.
+        fenced_by = _shared_advance_fences(
+            queue, tier_wants, tier_id=tier_id, mover_role=mover_role,
+            held=held, kind=kind)
         for want in tier_wants:
             key = str(want["key"])
             needs = want["needs"]
@@ -5141,6 +5503,36 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             grants[(key, tier_id)] = grant
             held_grant = int(held.get(grant, {}).get(kind, 0))
             mover = str(first["mover_action_key"])
+            owner: str | None = None
+            if mover in fenced_by:
+                owner = fenced_by[mover] or next(
+                    (str(other) for (other, other_tier), permit
+                     in permitted.items()
+                     if other_tier == tier_id and other != key
+                     and permit.get("mover") == mover and permit.get("grant")),
+                    None)
+            if owner is not None and owner != key:
+                if held_grant > 0:
+                    # A second fence for one shared advance: give it back.
+                    released = window_credit.cancel(ledger, grant)["released"]
+                    if released:
+                        held_total -= released
+                        events.append({"event": "advance-released",
+                                       "consumer": key, "tier_id": tier_id,
+                                       "leg": mover_role,
+                                       "reason": "shared-range-fenced",
+                                       "fenced_by": owner,
+                                       "released_gib": released})
+                if added_extra:
+                    running_extra -= next_gib
+                permitted[(key, tier_id)] = (
+                    _claim_order_permit(tier_id, mover_role, mover, demand,
+                                        claim_permit)
+                    if claim_permit is not None else {
+                        "advance": "shared", "tier_id": tier_id,
+                        "leg": mover_role, "mover": mover,
+                        "fenced_by": owner, "need_gib": demand})
+                continue
             mover_holds = int(held.get(mover, {}).get(kind, 0)) >= demand
             # A mover holding its own live fence (reserved/transferring
             # record binding those tokens) is not landed: its holdings are
@@ -6503,6 +6895,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                      withdrawn: frozenset[str] | None = None,
                      claim_order: Mapping[str, Mapping[str, object]] | None = None,
                      census: Mapping[str, Mapping[str, object]] | None = None,
+                     consumers: list | None = None,
                      ) -> list[dict[str, object]]:
     """Publish the next movers, retire the consumed ones, recompose the maps.
 
@@ -6531,10 +6924,25 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     spend the head's room.  A held-back window is gated and publishes
     nothing.  ``census`` is the cycle's commitment census, which the
     commitment record reuses when the protection pass took none.
+
+    A shared range (#1026) is one mover that every sharer's plan names, and
+    each sharer's egress drops only its own interest while another sharer
+    still reads it.  The range then keeps its tokens for the others, so it
+    still reads as staged in this consumer's window, and the window would
+    ask for the same no-op egress every cycle.  What says the interest is
+    already gone is this consumer's copy of the vouch: the egress removed
+    it.  So an egress is not asked again for a shared mover this consumer
+    holds no copy of while another sharer reads it.  ``consumers`` is the
+    cycle's census of planned consumers, which says who else reads it; left
+    out, it is read here.
     """
 
     published: list[dict[str, object]] = []
     cancelled = _withdrawn_keys(queue, withdrawn)
+    if consumers is None:
+        consumers = _planned_consumers(queue, tiers)
+    readers_of = _shared_readers(queue, consumers)
+    fragment_root = queue.residency_fragment_root()
 
     def horizon_of(consumer, plan, tier_id):
         # One horizon per window for the gate and the publication alike
@@ -6824,7 +7232,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                             "action_key": entry["mover_action_key"],
                             "reason": why})
                         break
-                    queue.publish(**row, recompute=True, refuse_withdrawn=True)
+                    # ``refuse_if_live``: a shared range's mover is named by
+                    # every sharer's plan (#1026), so a second window must
+                    # never replace a generation another window published.
+                    queue.publish(**row, recompute=True, refuse_withdrawn=True,
+                                  refuse_if_live=True)
+            except pool.ActionAlreadyLiveError:
+                continue      # published already, by a window it is shared with
             except pool.WithdrawnActionError as exc:
                 marked = residency_plan.mark_superseded(
                     queue, key, plan=plan, filing=incarnation,
@@ -6855,6 +7269,12 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             if (queue.item_path(pool.READY, egress_key).exists()
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
+            sharers = readers_of.get(str(entry["mover_action_key"]))
+            if (sharers is not None and set(sharers[1]) - {key}
+                    and not residency_map.fragment_path(
+                        fragment_root, key,
+                        str(entry["mover_action_key"])).exists()):
+                continue      # this sharer's interest is already dropped
             try:
                 # And the same question again under the queue's lock, so the
                 # look above and this publication are one decision (#810).
@@ -7059,10 +7479,13 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     def evicted(row: Mapping[str, object], tier_id: str, stage_root: str,
                 needed: int, *, prefix: str = "beyond-horizon",
                 ) -> tuple[bool, dict[str, object]]:
+        # ``range_wide``: a shared range's row was nominated by every
+        # reader still reading it (#1026), so it goes for all of them.
         receipt = stage_release.evict(
             queue, str(row["mover_action_key"]),
             consumer_action_key=str(row["consumer_action_key"]),
-            stage_root=stage_root, reason=prefix, whole=True)
+            stage_root=stage_root, reason=prefix, whole=True,
+            range_wide=True)
         done = bool(receipt.get("complete"))
         return done, {
             "event": (f"{prefix}-evicted" if done
@@ -7826,6 +8249,7 @@ def cycle(
     completed = False
     records = getattr(receipts, "records", None)
     _STAGED_WAITS[0] = {}
+    _SHARED_MOVERS[0] = {}
     try:
         if isinstance(records, stage_release.DirectoryRecords):
             with stage_release.queue_records_from(records):
@@ -7841,6 +8265,7 @@ def cycle(
     finally:
         global LAST_CYCLE
         _STAGED_WAITS[0] = None
+        _SHARED_MOVERS[0] = None
         after = _read_counts(receipts)
         LAST_CYCLE = {
             "cycle_seconds": round(time.perf_counter() - phases.started, 6),
@@ -8267,6 +8692,12 @@ def _cycle(
                                       claim_order=claim_order):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("evict_beyond_horizon")
+    # Each consumer still reading a shared range gets its own copy of the
+    # range's vouch before either window reads residency (#1026): after the
+    # evictions above, so no copy outlives a range they took back.
+    for event in fan_out_shared_ranges(queue, planned):
+        _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("fan_out_shared_ranges")
     # The ram window before the stage's, so a phase's ram egress is published
     # before its stage egress: the tokens that bound the smaller tier come
     # back first, and a ram range never outlives the stage range that feeds
@@ -8277,7 +8708,7 @@ def _cycle(
     phases.lap("ram_residency_window")
     for event in residency_window(queue, tiers=announced_tiers, now=now,
                                   withdrawn=withdrawn, claim_order=claim_order,
-                                  census=commitments):
+                                  census=commitments, consumers=planned):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("residency_window")
     # Terminal output funding last, once every step above that could still

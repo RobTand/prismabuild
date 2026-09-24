@@ -5907,8 +5907,17 @@ def residency_stage_rows(
         # announces no sizing seals it too.
         chunk_ranges = stage_cuts[ordinal]
 
-        def seal_stage_chunk(cstart: int, cend: int,
-                             csuffix: str) -> tuple[dict, dict]:
+        def seal_stage_mover(cstart: int, cend: int, csuffix: str,
+                             namespace: str) -> tuple[dict, dict]:
+            """Seal one chunk's mover, filing its fragment under ``namespace``.
+
+            ``namespace`` is the consumer's own key for a per-consumer mover,
+            and the range's :func:`residency_plan.share_namespace` for a
+            shared one (#1026): no one consumer's fragment directory may hold
+            bytes the others read, or that consumer's death would retire
+            them.  Returns the row and its stall-grace derivation.
+            """
+
             chunk_demand = storage_tiers.residency_demand(
                 tier_id=tier_id, range_start_bytes=cstart,
                 range_end_bytes=cend, fill_mb_s_pool_side=fill)
@@ -5946,7 +5955,7 @@ def residency_stage_rows(
                 command=[mover_python, mover_tool,
                          "--pool-root", pool_root,
                          "--cas-root", str(SH / "cas"),
-                         "--consumer-action-key", consumer_action_key,
+                         "--consumer-action-key", namespace,
                          "--tier-id", tier_id,
                          "--stage-root", stage_root,
                          "--manifest-sha256", digest,
@@ -5973,34 +5982,7 @@ def residency_stage_rows(
                 extra_params=(None if progress is None
                               else {pb.PROGRESS_PARAM: progress,
                                     pb.POOL_CONTENTION_PARAM: contention}))
-            mover_progress[str(chunk_mover["action_key"])] = derivation
-            chunk_egress = seal_movement_action(
-                template,
-                command=[mover_python, egress_tool,
-                         "--pool-root", pool_root,
-                         "--mover-action-key", str(chunk_mover["action_key"]),
-                         "--consumer-action-key", consumer_action_key,
-                         "--stage-root", stage_root],
-                # No tier demand: an egress *returns* capacity, and one that had to
-                # reserve some before it could give any back would deadlock exactly
-                # when the stage is full -- which is the only moment it matters.
-                # CPU and memory it must still declare, and bounded: a row without
-                # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
-                # whenever the box holds anything (#603, #607) -- and the box an
-                # egress runs on is the stage's own file server, whose resident
-                # loops mean it always holds something.  A release that cannot
-                # claim there deadlocks the tier through the same door the comment
-                # above closes: the concluding movers pin their ranges' tokens, the
-                # egress is the only node that returns them, and one waiting for an
-                # empty box waits forever.  One CPU is a declared bound, the width
-                # of the single-process unlink-and-record an egress is -- not a
-                # measurement, because an egress files no receipts of its own, and
-                # pricing it off the movers' copy receipts would measure the wrong
-                # node entirely (the #655 lesson).
-                demand={"cpu": 1, "mem_gb": 1}, tags=tags,
-                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log")
-            for action in (chunk_mover, chunk_egress):
-                cas.publish_action_request(action)
+            cas.publish_action_request(chunk_mover)
             mover_row = {
                 **publication_row(
                     chunk_mover, args=args, queue=queue,
@@ -6023,6 +6005,80 @@ def residency_stage_rows(
                     "range_end_bytes": cend,
                 },
             }
+            return mover_row, derivation
+
+        def seal_stage_chunk(cstart: int, cend: int,
+                             csuffix: str) -> tuple[dict, dict]:
+            """One chunk's mover row and this consumer's egress row for it.
+
+            With sharing on (the default, #1026) the mover is the one every
+            consumer of this exact range names: the first submitter of the
+            range seals and registers it, and every later one puts that
+            registered row in its own plan.  A mover's key is the hash of a
+            body that carries its submission's checkout, pricing and log
+            name, so a second submitter cannot derive the same key; the
+            registration is how two submitters agree on it
+            (:func:`residency_plan.register_shared_range`).  The egress is
+            always this consumer's own: for a shared range it drops this
+            consumer's interest, and the last interest to go deletes.
+            """
+
+            if str(getattr(args, "residency_share", "auto") or "auto") == "auto":
+                namespace = residency_plan.share_namespace(
+                    digest, tier_id, cstart, cend)
+                try:
+                    record, sealed_here = residency_plan.register_shared_range(
+                        queue, manifest_sha256=digest, tier_id=tier_id,
+                        start=cstart, end=cend,
+                        seal=lambda: seal_stage_mover(
+                            cstart, cend, csuffix, namespace),
+                        registered_by=consumer_action_key)
+                except (residency_plan.ResidencyPlanError, OSError,
+                        pool.PoolContractError) as exc:
+                    raise SystemExit(
+                        f"pbrun: the shared range [{cstart}, {cend}) of "
+                        f"{digest[:12]} on {tier_id} cannot be registered "
+                        f"or read ({exc}); nothing was published. "
+                        f"--residency-share off stages it per consumer."
+                    ) from None
+                mover_row = dict(record["mover_row"])        # type: ignore[arg-type]
+                mover_key = str(record["mover_action_key"])
+                derivation = {
+                    **dict(record.get("derivation") or {}),  # type: ignore[arg-type]
+                    "share_namespace": namespace,
+                    "registered_by": str(record.get("registered_by") or ""),
+                    "sealed_here": bool(sealed_here)}
+            else:
+                mover_row, derivation = seal_stage_mover(
+                    cstart, cend, csuffix, consumer_action_key)
+                mover_key = str(mover_row["action_key"])
+            mover_progress[mover_key] = derivation
+            chunk_egress = seal_movement_action(
+                template,
+                command=[mover_python, egress_tool,
+                         "--pool-root", pool_root,
+                         "--mover-action-key", mover_key,
+                         "--consumer-action-key", consumer_action_key,
+                         "--stage-root", stage_root],
+                # No tier demand: an egress *returns* capacity, and one that had to
+                # reserve some before it could give any back would deadlock exactly
+                # when the stage is full -- which is the only moment it matters.
+                # CPU and memory it must still declare, and bounded: a row without
+                # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
+                # whenever the box holds anything (#603, #607) -- and the box an
+                # egress runs on is the stage's own file server, whose resident
+                # loops mean it always holds something.  A release that cannot
+                # claim there deadlocks the tier through the same door the comment
+                # above closes: the concluding movers pin their ranges' tokens, the
+                # egress is the only node that returns them, and one waiting for an
+                # empty box waits forever.  One CPU is a declared bound, the width
+                # of the single-process unlink-and-record an egress is -- not a
+                # measurement, because an egress files no receipts of its own, and
+                # pricing it off the movers' copy receipts would measure the wrong
+                # node entirely (the #655 lesson).
+                demand={"cpu": 1, "mem_gb": 1}, tags=tags,
+                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log")
+            cas.publish_action_request(chunk_egress)
             # No block on the egress: it reserves no tier capacity, and
             # ``validate_residency`` refuses a range whose stage demand is
             # below the range's own floor.  An egress finds its mover by
@@ -6416,6 +6472,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "leg when a ram tier is live on the stage's own host, which is "
              "the tier turning on with the mount; 'off' is the A/B's other "
              "arm.  A plan already frozen keeps the leg it was frozen with",
+    )
+    ap.add_argument(
+        "--residency-share", choices=("auto", "off"), default="auto",
+        help="stage each range once for every consumer that reads it (#1026): "
+             "the first submission of a range seals and registers its mover "
+             "under the range's identity, and every later submission of the "
+             "same manifest range on the same tier names that mover, so the "
+             "tier holds one copy charged once.  'off' seals a mover per "
+             "consumer, as before, and is the A/B's other arm.  A plan "
+             "already frozen keeps the movers it was frozen with",
     )
     ap.add_argument(
         "--residency-mover-mem-gb", type=int, default=1,
@@ -7228,7 +7294,8 @@ def publication_row(
 #: its frozen template.
 _DEFERRED_PUBLICATION_ARGS = (
     "priority", "max_attempts", "retry_safe", "residency", "residency_tier",
-    "residency_ram", "residency_mover_mem_gb", "residency_mover_readers",
+    "residency_ram", "residency_share", "residency_mover_mem_gb",
+    "residency_mover_readers",
     "residency_mover_max_attempts",
     # The reader's declaration (#909), which a deferred consumer's plan must
     # carry exactly as a direct submission's does.

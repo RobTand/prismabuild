@@ -1272,6 +1272,7 @@ def _fragment_owners(root: Path, wanted: set[str], *,
                      except_mover: str = "",
                      memo: _CensusMemo | None = None,
                      named_by: list[dict[str, object]] | None = None,
+                     same_mover: list[str] | None = None,
                      ) -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
     """Which of ``wanted`` paths are still vouched for, and by whom, in one walk.
 
@@ -1293,12 +1294,23 @@ def _fragment_owners(root: Path, wanted: set[str], *,
 
     ``named_by``, when given, collects every document that names at least
     one wanted path: the co-owner fragments a verdict relies on (#1056).
+
+    ``same_mover``, when given, is a shared mover's whole-range eviction
+    (#1026): every fragment filed directly under the root for
+    ``except_mover`` -- its share namespace's and each consumer's copy the
+    tier loop fans out -- is the range's own vouch, never a co-owner, and
+    each one's namespace is collected here so the eviction can drop it.  A
+    shared mover's key is filed under many namespaces by design, which is
+    what makes "same key" self here and nowhere else.
     """
 
     owners: dict[str, set[tuple[str, str]]] = {}
     fragments, tainted = _fragment_census(root, memo)
     for namespace, mover, fragment, direct in fragments:
         if direct and namespace == except_consumer and mover == except_mover:
+            continue
+        if same_mover is not None and direct and mover == except_mover:
+            same_mover.append(namespace)
             continue
         named = memo.paths_of(fragment) if memo is not None else None
         if named is not None:
@@ -1632,11 +1644,192 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     return paths, tainted, own_paths
 
 
+def _drop_vouch(queue: pool.PoolQueue, root: Path, namespace: str,
+                mover_action_key: str) -> None:
+    """Remove one namespace's fragment, material and retiring mark for a mover.
+
+    The documents only, never a file: what they vouch for is someone else's
+    to delete.  Fragment first, because it is what composes a map and names
+    a path to the dead-owner sweep; a material left by an interruption dates
+    nothing a fragment names.
+    """
+
+    residency_map.fragment_path(root, namespace,
+                                mover_action_key).unlink(missing_ok=True)
+    try:
+        reader_lease.material_path(root, namespace,
+                                   mover_action_key).unlink(missing_ok=True)
+    except OSError:
+        pass
+    reader_lease.clear_retiring(
+        reader_lease.leases_root(queue, root),
+        consumer_action_key=namespace, mover_action_key=mover_action_key)
+
+
+def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
+                    exclude: frozenset[str] | set[str] = frozenset(),
+                    ) -> dict[str, list[str]]:
+    """The live consumers that will still read a shared range (#1026).
+
+    A consumer is interested while it is ready or claimed, its frozen plan
+    names the mover, and its accepted progress has not passed the leg's
+    phase.  Derived from the queue, the plan and the lease every time rather
+    than filed by the consumer: a filed marker would outlive a consumer
+    that died without dropping it and need a reaper of its own, and a
+    consumer requeued from its first phase would have to file it again.
+    Read this way, a restart regains its interest by construction.
+
+    ``unknown`` names the consumers whose plan or progress did not read.
+    The caller counts them as interested: deleting a range on a question
+    nobody could answer is the direction that cannot be taken back.
+    """
+
+    interested: list[str] = []
+    unknown: list[str] = []
+    for state in (pool.READY, pool.CLAIMED):
+        for path, item in queue_records(queue, state):
+            if not isinstance(item, dict):
+                continue
+            residency = item.get("residency")
+            if not isinstance(residency, dict) or not residency.get("leads"):
+                continue
+            key = (path.name[:-len(".json")] if path.name.endswith(".json")
+                   else path.name)
+            if key in exclude:
+                continue
+            refused: list[Exception] = []
+            plan = residency_plan.read(queue, key, on_unreadable=refused.append)
+            if plan is None:
+                if refused:
+                    unknown.append(key)
+                continue
+            leg = residency_plan.find_mover_leg(plan, mover_action_key)
+            if leg is None or leg.get("mover_role") != "mover_row":
+                continue
+            accepted = None
+            if state == pool.CLAIMED:
+                claimed_unix = item.get("claimed_unix")
+                if (isinstance(claimed_unix, bool)
+                        or not isinstance(claimed_unix, (int, float))):
+                    unknown.append(key)
+                    continue
+                observation = prewarm_loop.progress_phase(
+                    queue, key, float(claimed_unix))
+                if observation is not None:
+                    accepted = str(observation["phase"])
+            ahead = {str(phase["name"]) for phase in
+                     residency_plan.remaining(plan, accepted)}
+            if str(leg["phase"]) in ahead:
+                interested.append(key)
+    return {"interested": sorted(set(interested)),
+            "unknown": sorted(set(unknown))}
+
+
+def _range_live_or_landed(queue: pool.PoolQueue, mover_action_key: str) -> bool:
+    """Whether a mover is queued, running, or filed a complete receipt."""
+
+    if (queue.item_path(pool.READY, mover_action_key).exists()
+            or queue.item_path(pool.CLAIMED, mover_action_key).exists()):
+        return True
+    receipt = queue.move_record(mover_action_key)
+    return isinstance(receipt, Mapping) and receipt.get("complete") is True
+
+
+def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
+                         namespace: str, consumer_action_key: str,
+                         stage_root: str, residency_root: str | Path | None,
+                         reason: str, whole: bool,
+                         range_wide: bool) -> dict[str, object]:
+    """:func:`evict` of a shared range, with the mover's transition lock held.
+
+    An egress drops one consumer's interest (#1026).  While another live
+    consumer will still read the range, it removes only the egressing
+    consumer's own copy of the vouch -- the fragment and material the tier
+    loop fanned out to it -- and the file and the tokens stay, both under
+    the one mover every sharer names.  The last interest to go evicts the
+    range: the ordinary eviction, run as the share namespace, with every
+    fanned copy of this mover read as the range's own vouch rather than as a
+    co-owner (a co-owner keeps its file and *decharges* the tokens, which
+    for one holder would free room the bytes still occupy).
+
+    ``range_wide`` is an eviction for every consumer at once: the claim
+    order's and the refill horizon's relief, whose candidates were already
+    checked against every sharer's horizon.  An eviction named for the share
+    namespace itself -- the orphan sweep, reading the mover's receipt -- is
+    range-wide by construction.  Neither drops an interest; both take the
+    whole range or, with ``whole``, decline it whole.
+
+    So is an eviction of a range that did not land: a mover neither queued,
+    running nor complete.  Its partials are nobody's resident range, and the
+    failed-mover reclaim (#627) publishes this egress to free them for the
+    recopy.  Dropping one interest would leave them for as long as any
+    sharer's plan names the range, which is exactly as long as the recopy
+    needs the room.
+    """
+
+    root = Path(residency_root if residency_root is not None
+                else queue.root / pool.RESIDENCY)
+    if (consumer_action_key != namespace and not range_wide
+            and _range_live_or_landed(queue, mover_action_key)):
+        try:
+            others = shared_interest(queue, mover_action_key,
+                                     exclude={consumer_action_key})
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            others = {"interested": [],
+                      "unknown": [f"interest census unreadable: {exc!r}"]}
+        remaining = sorted(set(others["interested"]) | set(others["unknown"]))
+        if remaining:
+            refusal = stage_root_refusal(queue, stage_root)
+            if refusal is not None:
+                return _refused_receipt(
+                    tier_id="", stage_root=stage_root, refusal=refusal,
+                    mover_action_key=mover_action_key,
+                    consumer_action_key=consumer_action_key, reason=reason)
+            _drop_vouch(queue, root, consumer_action_key, mover_action_key)
+            return {
+                "schema": pool.POOL_EGRESS_SCHEMA_V1,
+                "action_key": mover_action_key,
+                "consumer_action_key": consumer_action_key,
+                "stage_root": str(stage_root),
+                "reason": reason,
+                "share_namespace": namespace,
+                "interest_dropped": True,
+                "interest_remaining": remaining[:SHARED_WITH_LIMIT],
+                "interest_remaining_count": len(remaining),
+                "entries_deleted": 0, "entries_already_gone": 0,
+                "entries_shared": 0, "shared_with": [],
+                "entries_deferred": 0, "live_pins": [],
+                "deferred_handoffs": [], "deferred_own": [],
+                "auto_reclaimed": [], "auto_retained": {},
+                "retiring": False, "bytes_deleted": 0, "bytes_shared": 0,
+                "tokens_released": 0, "tokens_decharged": 0,
+                "complete": True, "errors": [],
+                "host": socket.gethostname(), "unix": time.time(),
+                **({"declined": []} if whole else {}),
+            }
+    receipt = _evict_locked(queue, mover_action_key,
+                            consumer_action_key=namespace,
+                            stage_root=stage_root,
+                            residency_root=residency_root, reason=reason,
+                            whole=whole, shared=True)
+    receipt["share_namespace"] = namespace
+    receipt["egress_consumer_action_key"] = consumer_action_key
+    return receipt
+
+
 def evict(queue: pool.PoolQueue, mover_action_key: str, *,
           consumer_action_key: str, stage_root: str,
           residency_root: str | Path | None = None,
-          reason: str = "egress", whole: bool = False) -> dict[str, object]:
+          reason: str = "egress", whole: bool = False,
+          range_wide: bool = False) -> dict[str, object]:
     """Delete one mover's staged files and settle its tier tokens.
+
+    A shared range's mover (#1026, :func:`residency_plan.read_shared_mover`)
+    is evicted per interest instead: :func:`_evict_shared_locked`.  Its
+    index is read under the mover's transition lock, so the answer cannot
+    change between the read and the act; one that does not read keeps the
+    files, the fragment and the tokens, as an unreadable fragment does.
+    ``range_wide`` only matters for such a range.
 
     ``whole`` makes the eviction all or nothing (#903).  An egress of a passed
     phase may delete part of a range and defer the rest behind a reader,
@@ -1679,6 +1872,23 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
     """
 
     with queue.mover_transition_lock(str(mover_action_key)):
+        try:
+            namespace = residency_plan.share_namespace_of(
+                queue, str(mover_action_key))
+        except residency_plan.ResidencyPlanError as exc:
+            receipt = _refused_receipt(
+                tier_id="", stage_root=stage_root,
+                refusal=f"shared_range_unreadable: {exc}",
+                mover_action_key=mover_action_key,
+                consumer_action_key=consumer_action_key, reason=reason)
+            receipt["event"] = "shared-range-unreadable"
+            return receipt
+        if namespace is not None:
+            return _evict_shared_locked(
+                queue, mover_action_key, namespace=namespace,
+                consumer_action_key=consumer_action_key,
+                stage_root=stage_root, residency_root=residency_root,
+                reason=reason, whole=whole, range_wide=range_wide)
         return _evict_locked(queue, mover_action_key,
                              consumer_action_key=consumer_action_key,
                              stage_root=stage_root,
@@ -1689,7 +1899,8 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
 def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                   consumer_action_key: str, stage_root: str,
                   residency_root: str | Path | None = None,
-                  reason: str = "egress", whole: bool = False) -> dict[str, object]:
+                  reason: str = "egress", whole: bool = False,
+                  shared: bool = False) -> dict[str, object]:
     """:func:`evict`'s body, with the mover's transition lock already held.
 
     One staged file can have two owners: forward and reverse passes stage the
@@ -1789,7 +2000,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         _ownership_census(queue, mover_action_key,
                           consumer_action_key=consumer_action_key,
                           stage=stage, tier_id=tier_id, root=root,
-                          entries=entries, memo=memo)
+                          entries=entries, memo=memo, shared=shared)
         _read_own_material(root, consumer_action_key, mover_action_key, memo)
         fences = _entry_fences(stage, entries)
         census_s = time.perf_counter() - census_started
@@ -1804,7 +2015,8 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                                errors=errors, reason=reason,
                                auto_reclaimed=auto_reclaimed,
                                auto_retained=auto_retained, whole=whole,
-                               memo=memo, fences=fences, prune_after=parents)
+                               memo=memo, fences=fences, prune_after=parents,
+                               shared=shared)
     released = time.perf_counter()
     # Empty directories go after the lock.  A publisher's rename lands in a
     # directory that already holds its temporary, so ``rmdir`` cannot take
@@ -1902,7 +2114,8 @@ def _entry_fences(stage: Path, entries: Mapping[str, object],
 def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
                       consumer_action_key: str, stage: Path, tier_id: str,
                       root: Path, entries: Mapping[str, object],
-                      memo: _CensusMemo | None = None) -> dict[str, object]:
+                      memo: _CensusMemo | None = None,
+                      shared: bool = False) -> dict[str, object]:
     """The four ownership censuses one egress decides on, in snapshot order.
 
     Claimed movers first, then fragment directories, then pins, then
@@ -1917,16 +2130,19 @@ def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
     claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
         queue, tier_id, own_key=mover_action_key, memo=memo)
     named_by: list[dict[str, object]] = []
+    same_mover: list[str] | None = [] if shared else None
     owners, fragment_taint = _fragment_owners(
         root, wanted,
         except_consumer=consumer_action_key,
-        except_mover=mover_action_key, memo=memo, named_by=named_by)
+        except_mover=mover_action_key, memo=memo, named_by=named_by,
+        same_mover=same_mover)
     pins, pin_taint = reader_lease.live_for(
         queue, wanted, residency_root=root,
         memo=memo.pins if memo is not None else None)
     source_paths, source_taint = _claimed_source_paths(queue, stage, memo=memo)
     return {"claimed": claimed, "own_claimed": own_claimed, "owners": owners,
             "co_owner_documents": named_by,
+            "same_mover_namespaces": sorted(set(same_mover or ())),
             "pins": pins, "source_paths": source_paths,
             "tainted": fragment_taint + claimed_taint + pin_taint + source_taint}
 
@@ -2102,8 +2318,19 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  whole: bool = False,
                  memo: _CensusMemo | None = None,
                  fences: Mapping[str, tuple] | None = None,
-                 prune_after: set[Path] | None = None) -> dict[str, object]:
+                 prune_after: set[Path] | None = None,
+                 shared: bool = False) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock.
+
+    ``shared`` is a shared range's whole eviction (#1026), called with the
+    range's share namespace as ``consumer_action_key``.  Every fragment of
+    this mover under another namespace is the range's own vouch -- the copy
+    the tier loop fans out to each interested consumer -- so none of them is
+    a co-owner that keeps a file and decharges the tokens, and each is
+    dropped with the share namespace's own once the range is gone.  A
+    deferral files the retiring mark under each of them too: a reader
+    acquires its cover through its own consumer's copy, and the mark closes
+    a generation per ``(consumer, mover)``.
 
     ``auto_reclaimed``/``auto_retained`` are what containment reclamation did
     before this lock was taken (#780); nothing here reclaims, because
@@ -2138,6 +2365,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
     own_deferred = False
     own_claimed: set[str] = set()
     retiring_written = False
+    same_namespaces: list[str] = []
     if entries and tier_id is not None:
         # Snapshot order is the argument: claimed movers first, then fragment
         # dirs, then pins.  A claim exists before its copy starts (the start
@@ -2151,7 +2379,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         census = _ownership_census(
             queue, mover_action_key, consumer_action_key=consumer_action_key,
             stage=stage, tier_id=tier_id, root=root, entries=entries,
-            memo=memo)
+            memo=memo, shared=shared)
+        same_namespaces = list(census.get("same_mover_namespaces") or ())
         claimed = census["claimed"]
         own_claimed = census["own_claimed"]
         owners = census["owners"]
@@ -2199,6 +2428,14 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         pins, source_paths = {}, set()
         own_generation = None
         blind = False
+        if shared:
+            # No vouch of the range's own to judge, but the fanned copies
+            # may still stand, and they go with the range (#1026).
+            _owners, taint = _fragment_owners(
+                root, set(), except_consumer=consumer_action_key,
+                except_mover=mover_action_key, memo=memo,
+                same_mover=same_namespaces)
+            errors.extend(f"ownership uncertain: {item}" for item in taint)
     census_validate_s = time.perf_counter() - validate_started
     locked_parses = _locked_parse_record(memo, parse_counts)
     if fences is None and entries and not blind:
@@ -2362,6 +2599,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             reader_lease.leases_root(queue, root),
             consumer_action_key=consumer_action_key,
             mover_action_key=mover_action_key, generation=own_generation)
+        for namespace in same_namespaces:
+            reader_lease.write_retiring(
+                reader_lease.leases_root(queue, root),
+                consumer_action_key=namespace,
+                mover_action_key=mover_action_key, generation=own_generation)
         retiring_written = True
     # Retiring retains the charge until the actual delete with the last live
     # ref already absent; release-before-reclaim stays forbidden.
@@ -2436,6 +2678,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             except (OSError, pool.PoolContractError):
                 continue
     if not errors and not deferred and not declined:
+        # A shared range's fanned copies go first and its own vouch last
+        # (#1026), so an interrupted pass always leaves the share
+        # namespace's fragment for the next one to find the others by.
+        for namespace in same_namespaces:
+            _drop_vouch(queue, root, namespace, mover_action_key)
         fragment_path.unlink(missing_ok=True)
         reader_lease.clear_retiring(
             reader_lease.leases_root(queue, root),
@@ -2486,6 +2733,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # Only an all-or-nothing eviction declines (#903), and only its
         # receipt names the key: the egress receipt keeps its shape.
         **({"declined": declined} if whole else {}),
+        # A shared range's eviction names the copies it took with it.
+        **({"shared_vouches": sorted(same_namespaces)} if shared else {}),
         # What the pass under the lock cost (#988): the entries it judged,
         # the census it re-took there, the documents that census parsed
         # and reused, and its unlinks.  The caller adds the hold itself and
