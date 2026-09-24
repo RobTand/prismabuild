@@ -5824,7 +5824,16 @@ def residency_stage_rows(
     # A logical freeze supplies one invocation-local observation for all its
     # siblings. None retains the standalone submission's fresh observation;
     # an explicitly empty snapshot must not trigger another live census.
-    receipts = queue.move_records() if movement_receipts is None else movement_receipts
+    # Mover receipts and egress receipts share the movers directory, and one
+    # pass reads both (#1021): the movers price the copy, the egresses price
+    # the release (``movement_actions.egress_price``).  A caller's snapshot
+    # that holds no egress receipt seals every egress as before.
+    observed = (queue.move_records(schemas=(pool.POOL_MOVE_SCHEMA_V1,
+                                            pool.POOL_EGRESS_SCHEMA_V1))
+                if movement_receipts is None else movement_receipts)
+    receipts = [record for record in observed
+                if not (isinstance(record, Mapping) and record.get("schema")
+                        == pool.POOL_EGRESS_SCHEMA_V1)]
     # Which pools the receipts must have measured to price this window
     # (#611): the tier's current identity, as the tier loop announced it.
     # ``None`` -- a tier last announced by an older generation -- prices off
@@ -5900,6 +5909,17 @@ def residency_stage_rows(
         entry_starts.append(position)
         position += size
     mover_progress: dict[str, object] = {}
+    # A stage egress's stall grace (#1021), from the egresses this stage has
+    # receipted (``movement_actions.egress_progress_policy``): the census,
+    # this chunk's unlinks and the settle at the slowest measured terms, plus
+    # the time a report takes to reach the stall check.  Sealed only with the
+    # pool members the worker judges contention by, as a mover's is: the
+    # census reads the queue on the source pool, and time that pool is the
+    # bottleneck is credited, not priced.  Unmeasured, the egress is sealed
+    # as before, with no stall grace, and ``demand_source.egress_progress``
+    # says which term was missing.
+    egress_terms = movement_actions.egress_price(observed, stage_root=stage_root)
+    egress_progress: dict[str, object] = {}
 
     def chunk_entry_bytes(cstart: int, cend: int) -> list[int]:
         """The sizes of the read-order entries a chunk stages.
@@ -6082,6 +6102,29 @@ def residency_stage_rows(
                     cstart, cend, csuffix, consumer_action_key)
                 mover_key = str(mover_row["action_key"])
             mover_progress[mover_key] = derivation
+            egress_policy, egress_derivation = (
+                movement_actions.egress_progress_policy(
+                    chunk_entry_bytes(cstart, cend), price=egress_terms))
+            egress_contention: dict[str, object] | None = None
+            if egress_policy is not None and not pool_members:
+                # No members to judge the pool by: a census slowed by
+                # another reader would be charged to the egress, so no
+                # grace at all, as before.
+                egress_policy = None
+                egress_derivation = {**egress_derivation, "basis": "unmeasured",
+                                     "unmeasured": "pool members",
+                                     "grace_s": None}
+            elif egress_policy is not None:
+                egress_contention = movement_actions.pool_contention_spec(
+                    members=pool_members, stage_root=stage_root,
+                    priced_bytes_per_s=float(
+                        egress_derivation["priced_bytes_per_s"]))  # type: ignore[arg-type]
+            else:
+                egress_derivation = {**egress_derivation,
+                                     "unmeasured": "egress receipts"}
+            egress_derivation = {**egress_derivation,
+                                 "mover_action_key": mover_key,
+                                 "pool_contention": egress_contention}
             chunk_egress = seal_movement_action(
                 template,
                 command=[mover_python, egress_tool,
@@ -6105,9 +6148,20 @@ def residency_stage_rows(
                 # measurement, because an egress files no receipts of its own, and
                 # pricing it off the movers' copy receipts would measure the wrong
                 # node entirely (the #655 lesson).
-                demand={"cpu": 1, "mem_gb": 1}, tags=tags,
-                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log")
+                demand={"cpu": 1, "mem_gb": 1},
+                # A progress-governed egress is placed only on a worker that
+                # enforces the contract, credits the pool on its own sample,
+                # and never credits the egress's own hold of the stage's
+                # ownership lock as a wait (``core.EGRESS_PROGRESS_TAG``).
+                tags=(tags if egress_policy is None
+                      else [*tags, *progress_required_tags(egress_policy),
+                            pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG]),
+                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log",
+                extra_params=(None if egress_policy is None
+                              else {pb.PROGRESS_PARAM: egress_policy,
+                                    pb.POOL_CONTENTION_PARAM: egress_contention}))
             cas.publish_action_request(chunk_egress)
+            egress_progress[str(chunk_egress["action_key"])] = egress_derivation
             # No block on the egress: it reserves no tier capacity, and
             # ``validate_residency`` refuses a range whose stage demand is
             # below the range's own floor.  An egress finds its mover by
@@ -6287,7 +6341,14 @@ def residency_stage_rows(
                        # by (``pool_contention``, as sealed); ``unmeasured``
                        # (naming the missing term) when the mover was sealed
                        # with no grace.
-                       "mover_progress": mover_progress})
+                       "mover_progress": mover_progress,
+                       # Each stage egress's stall grace and every term of
+                       # it (#1021), by egress key: ``basis`` is ``egress``
+                       # when the stage's receipted egresses priced it and
+                       # the tier named the pool members; ``unmeasured``
+                       # (naming the missing term) when the egress was
+                       # sealed with no grace.
+                       "egress_progress": egress_progress})
     return {
         "plan": plan,
         "residency": {

@@ -110,7 +110,9 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
@@ -1735,6 +1737,177 @@ def _range_live_or_landed(queue: pool.PoolQueue, mover_action_key: str) -> bool:
     return isinstance(receipt, Mapping) and receipt.get("complete") is True
 
 
+class _EgressReporter:
+    """Report this egress's released bytes to the worker's stall check (#1021).
+
+    An egress sealed with a progress policy (``movement_actions.
+    egress_progress_policy``) is ended by the worker's ``no_progress`` rung
+    when it reports nothing for its grace.  This is the other half.  The
+    egress enters its phases in order -- ``snapshot`` at launch, ``drain``
+    when the unlinks start, ``release`` when they are done -- and each entry
+    is committed at once, because a new phase is advancement.  Inside the
+    drain every entry whose unlink returned, or found the file already gone,
+    adds its bytes, and a thread of its own commits the count every
+    ``interval_s`` when it grew.  An entry counts once its unlink has
+    returned, which is the durable unit the contract asks for, and the
+    unlink loop does no extra work for it beyond one addition under a lock.
+
+    The ``unit`` names the mover whose range is being released, so the
+    ending record of a wedged egress names the bytes released and the range
+    they belong to.  Without a progress channel -- an egress sealed with no
+    policy, or a direct run -- nothing starts and nothing is written.  A
+    report that fails is counted and never fails the egress: the worker then
+    reads it as quiet, which is the honest verdict.
+    """
+
+    def __init__(self, *, action_key: str, mover_action_key: str,
+                 interval_s: float) -> None:
+        self.action_key = str(action_key)
+        self.interval_s = max(0.001, float(interval_s))
+        self.unit = (f"bytes released of mover {str(mover_action_key)[:12]}'s "
+                     f"staged range")
+        self.channel = pb_progress.channel() is not None
+        self.phase = movement_actions.EGRESS_SNAPSHOT_PHASE
+        self.units = 0
+        self.reported_units = 0
+        self.reported_phase: str | None = None
+        self.reports = 0
+        self.unwritten = 0
+        self.last_reported_unix: float | None = None
+        self.refusal: str | None = None
+        #: Orders the commits.  The count has its own lock, so an unlink
+        #: never waits on a report being written.
+        self._lock = threading.Lock()
+        self._count_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def report(self) -> None:
+        """Commit the count now if it grew or the phase moved on."""
+
+        if not self.channel or self.refusal is not None:
+            return
+        with self._lock:
+            with self._count_lock:
+                units, phase = self.units, self.phase
+            if units <= self.reported_units and phase == self.reported_phase:
+                return
+            if (units == 0 and self.reported_phase is None
+                    and phase == movement_actions.EGRESS_SNAPSHOT_PHASE):
+                # The first phase is granted at launch; a zero count earns
+                # nothing and would only be rejected as a replay.
+                return
+            try:
+                written = pb_progress.commit(units, phase, unit=self.unit)
+            except ValueError as exc:
+                # A phase this launch did not declare: the policy and this
+                # tool disagree, and every later report would be refused too.
+                self.refusal = str(exc)
+                return
+            if not written:
+                self.unwritten += 1
+                return
+            self.reports += 1
+            self.reported_units = max(self.reported_units, units)
+            self.reported_phase = phase
+            self.last_reported_unix = time.time()
+
+    def enter(self, phase: str) -> None:
+        """Enter ``phase`` and commit it now."""
+
+        with self._count_lock:
+            self.phase = phase
+        self.report()
+
+    def released(self, nbytes: int) -> None:
+        """One entry's unlink returned; its bytes count from here on."""
+
+        with self._count_lock:
+            self.units += int(nbytes)
+
+    def start(self) -> None:
+        if not self.channel or self._thread is not None:
+            return
+
+        def loop() -> None:
+            while not self._stop.wait(self.interval_s):
+                self.report()
+
+        self._thread = threading.Thread(target=loop, daemon=True,
+                                        name="stage-release-progress")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self.report()
+
+    def record(self) -> dict[str, object]:
+        """What the receipt says about the reports this egress made."""
+
+        return {"channel": self.channel, "interval_s": self.interval_s,
+                "reports": self.reports, "units_reported": self.reported_units,
+                "units_released": self.units,
+                "phase": self.reported_phase, "unit": self.unit,
+                "last_reported_unix": self.last_reported_unix,
+                "unwritten": self.unwritten, "refusal": self.refusal}
+
+
+#: The egress this process runs as an action, when it runs as one: ``main``
+#: sets it around its one eviction, so the unlink loop can report through it
+#: and the ownership hold can name it.  ``None`` for a sweep, a reconcile or
+#: a tier cycle calling the same code in process.
+_EGRESS_RUN: contextvars.ContextVar["_EgressReporter | None"] = (
+    contextvars.ContextVar("stage_release_egress_run", default=None))
+
+
+@contextmanager
+def _stage_ownership(queue: pool.PoolQueue, stage: str | Path, *, role: str):
+    """Hold ``stage``'s ownership lock, named as its holder (#1021).
+
+    Every hold this tool takes files the holder's record once the lock is
+    granted and removes it before letting go
+    (``PoolQueue.write_stage_ownership_holder``), so a worker whose mover
+    waits at its start gate can say which egress it waited on, and the
+    worker running this egress can tell the egress's own hold from a wait.
+    The record names this process's action when it runs as one -- the
+    egress ``main`` runs, or any action whose launcher set
+    ``core.ACTION_KEY_ENV`` -- and ``role`` names the pass.
+
+    Yields the ``time.perf_counter()`` of the grant, so a caller's
+    ``lock_held_s`` counts the record's own write and removal as part of
+    the hold they are.
+
+    An action under a progress contract that cannot file its record lets
+    the lock go at once and raises: its own worker could not tell its hold
+    from a wait and would credit it for as long as the hold lasted.
+    Anywhere else a record that will not write is a gap in a diagnostic,
+    and the hold goes ahead without it.
+    """
+
+    run = _EGRESS_RUN.get()
+    action_key = (run.action_key if run is not None
+                  else os.environ.get(pb.ACTION_KEY_ENV) or None)
+    with queue.stage_ownership_lock(str(stage)):
+        granted = time.perf_counter()
+        try:
+            queue.write_stage_ownership_holder(stage, role=role,
+                                               action_key=action_key)
+        except OSError:
+            if pb_progress.channel() is not None:
+                raise
+        try:
+            yield granted
+        finally:
+            try:
+                queue.clear_stage_ownership_holder(stage)
+            except OSError:
+                # Left standing, the record names a holder whose claim or
+                # process ends with this run, and a reader checks both.
+                pass
+
+
 def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                          namespace: str, consumer_action_key: str,
                          stage_root: str, residency_root: str | Path | None,
@@ -2006,8 +2179,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
         census_s = time.perf_counter() - census_started
     parents: set[Path] = set()
     asked = time.perf_counter()
-    with queue.stage_ownership_lock(str(stage)):
-        granted = time.perf_counter()
+    with _stage_ownership(queue, stage, role=reason) as granted:
         receipt = _evict_owned(queue, mover_action_key,
                                consumer_action_key=consumer_action_key,
                                stage=stage, tier_id=tier_id, root=root,
@@ -2540,6 +2712,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                 if verdict in ("handoff", "pinned"):
                     live_pins.extend(detail)              # type: ignore[arg-type]
             verdicts = {}
+    # The egress this process runs as an action, if any (#1021): the drain
+    # is its second phase, and each entry whose unlink returned counts.
+    run = _EGRESS_RUN.get()
+    if run is not None:
+        run.enter(movement_actions.EGRESS_DRAIN_PHASE)
     unlink_started = time.perf_counter()
     for key, (verdict, detail) in verdicts.items():
         entry = entries[key]
@@ -2574,17 +2751,23 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         except FileNotFoundError:
             missing += 1
             bytes_gone += int(entry["bytes"])
+            if run is not None:
+                run.released(int(entry["bytes"]))
             continue
         except OSError as exc:
             errors.append(f"{key}: {exc}")
             continue
         deleted += 1
         bytes_deleted += int(entry["bytes"])
+        if run is not None:
+            run.released(int(entry["bytes"]))
         if prune_after is not None:
             prune_after.add(path.parent)
         else:
             _prune_empty(path.parent, stage)
     unlink_s = time.perf_counter() - unlink_started
+    if run is not None:
+        run.enter(movement_actions.EGRESS_RELEASE_PHASE)
 
     released = decharged = 0
     if (deferred and not deferred_handoffs and not errors and own_generation
@@ -3565,8 +3748,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # left the hold is the census parse and the fence (above) and the
     # empty-directory prune (below).
     asked = time.perf_counter()
-    with queue.stage_ownership_lock(str(stage)):
-        granted = time.perf_counter()
+    with _stage_ownership(queue, stage, role="prune-stale-mentions") as granted:
         result = _held_prune_stale()
     released = time.perf_counter()
     pruned_started = time.perf_counter()
@@ -5170,8 +5352,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                        if identity is None)
     candidates = [one for one in candidates if one[1] is not None]
     asked = time.perf_counter()
-    with queue.stage_ownership_lock(str(stage)):
-        granted = time.perf_counter()
+    with _stage_ownership(queue, stage, role="reconcile") as granted:
         _held_reconcile()
     released = time.perf_counter()
     pruned_started = time.perf_counter()
@@ -5879,8 +6060,8 @@ def recover_orphaned_range(
     # evidence its unlink stands on; what left the hold is the scope, the
     # originals and the census parse (above) and the directory prune.
     asked = time.perf_counter()
-    with queue.stage_ownership_lock(str(stage)):
-        granted = time.perf_counter()
+    with _stage_ownership(queue, stage,
+                          role="recover-orphaned-range") as granted:
         result = _held_recover()
     released = time.perf_counter()
     pruned_started = time.perf_counter()
@@ -5971,6 +6152,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt", default=None,
                         help="also write the receipt here (it is always filed in "
                              "the queue's movers directory)")
+    parser.add_argument("--progress-interval-s", type=float, default=None,
+                        help="how often an eviction reports the bytes it has "
+                             "released, when the launch opened a progress "
+                             "channel (#1021); default one pool heartbeat")
     args = parser.parse_args(argv)
     args.action_key = own_action_key(args.action_key)
 
@@ -6003,10 +6188,24 @@ def main(argv: list[str] | None = None) -> int:
                         ("--consumer-action-key", args.consumer_action_key)):
         if not value:
             parser.error(f"{name} is required for an eviction")
-    receipt = evict(queue, args.mover_action_key,
-                    consumer_action_key=args.consumer_action_key,
-                    stage_root=args.stage_root,
-                    residency_root=args.residency_root)
+    # The eviction reports what it has released to the worker's stall check
+    # (#1021), on the channel the launch opened when the egress was sealed
+    # with a progress policy; without one nothing starts.
+    reporter = _EgressReporter(
+        action_key=args.action_key, mover_action_key=args.mover_action_key,
+        interval_s=(pool.HEARTBEAT_S if args.progress_interval_s is None
+                    else args.progress_interval_s))
+    reporter.start()
+    token = _EGRESS_RUN.set(reporter)
+    try:
+        receipt = evict(queue, args.mover_action_key,
+                        consumer_action_key=args.consumer_action_key,
+                        stage_root=args.stage_root,
+                        residency_root=args.residency_root)
+    finally:
+        _EGRESS_RUN.reset(token)
+        reporter.stop()
+    receipt["progress_report"] = reporter.record()
     queue.record_move(args.action_key, receipt)
     if args.receipt:
         with open(args.receipt, "w") as stream:

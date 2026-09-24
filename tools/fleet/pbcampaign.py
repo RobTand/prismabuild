@@ -1224,7 +1224,10 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
                 if tier is None:
                     tier = pbrun.resolve_stage_tier(queue, stage_args.residency_tier)
                 if movement_receipts is None:
-                    movement_receipts = tuple(queue.move_records())
+                    # Egress receipts too, in the same one read: the stage
+                    # egresses are priced off them (#1021).
+                    movement_receipts = tuple(queue.move_records(schemas=(
+                        pool.POOL_MOVE_SCHEMA_V1, pool.POOL_EGRESS_SCHEMA_V1)))
                 child_template = {**template, "inputs": child["inputs"],
                                   "params": child["params"], "environment": child["environment"]}
                 staged = pbrun.residency_stage_rows(

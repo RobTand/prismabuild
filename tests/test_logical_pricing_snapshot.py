@@ -12,9 +12,9 @@ def test_one_receipt_observation_prices_all_children_and_replay_reads_none(tmp_p
     observed = []
     real = pool.PoolQueue.move_records
 
-    def census(queue):
+    def census(queue, **kwargs):
         observed.append(queue.root)
-        return real(queue)
+        return real(queue, **kwargs)
 
     monkeypatch.setattr(pool.PoolQueue, 'move_records', census)
     first, group = logical.decompose(request)
@@ -29,7 +29,7 @@ def test_one_receipt_observation_prices_all_children_and_replay_reads_none(tmp_p
 def test_new_freeze_observes_fresh_receipts_and_no_read_children_observe_none(tmp_path, monkeypatch):
     _, request = logical.setup_request(tmp_path, monkeypatch)
     observed = []
-    monkeypatch.setattr(pool.PoolQueue, 'move_records', lambda queue: observed.append(queue.root) or [])
+    monkeypatch.setattr(pool.PoolQueue, 'move_records', lambda queue, **_kwargs: observed.append(queue.root) or [])
     logical.decompose(request)
     assert len(observed) == 1
     changed = deepcopy(request)

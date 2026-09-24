@@ -2569,8 +2569,11 @@ Cyclic policies additionally require `progress-cycle-v1`
 (`core.PROGRESS_CYCLE_TAG`). A stage mover that seals a pool contention
 spec beside its policy (`params.progress_pool_contention`, #1010) requires
 `progress-pool-contention-v1` (`core.POOL_CONTENTION_TAG`): an older worker
-would ignore the spec and charge a paced copy to its grace. Updated worker
-loops offer all four tags.
+would ignore the spec and charge a paced copy to its grace. A stage egress
+sealed with a policy (#1021) also requires `progress-egress-v1`
+(`core.EGRESS_PROGRESS_TAG`): an older worker would credit the egress's own
+hold of the stage's ownership lock as a start-gate wait. Updated worker
+loops offer all five tags.
 Submission refuses cyclic mode if no eligible offer proves that capability,
 including an empty offer census. In a mixed fleet only cyclic-capable hosts
 contribute phase ceilings or receive the action. Existing linear requests keep
@@ -8812,11 +8815,12 @@ record. A claimed mover with no usable report keeps the claim-time price.
 
 **What is not covered, and why.**
 
-* **Egress** (`stage_release.py`) is not sealed with progress. A consumer's
-  staged wait never names an egress, so a stalled egress never exempts a
-  consumer's rung, which is the failure #1010 fixes. A mover waiting on a
-  live egress at its start gate is credited (above); an egress's own
-  progress contract is PB #1021.
+* **Egress** (`stage_release.py`) was not sealed with progress by #1010. A
+  consumer's staged wait never names an egress, so a stalled egress never
+  exempts a consumer's rung, which is the failure #1010 fixes. A mover
+  waiting on a live egress at its start gate is credited (above). The
+  egress's own progress contract, and the holder record that names it at
+  the gate, are the next section (#1021).
 * **The ram leg** and **produced-output movers** are not named in staged
   waits either, and seal as before.
 * **Per-mover fairness.** The probe judges the pool, not this mover's share
@@ -8824,6 +8828,179 @@ record. A claimed mover with no usable report keeps the claim-time price.
   caps is charged, and ends at its allowance.
 * **Unadmitted writes.** The caps are read caps. Writes that slow the pool
   without raising read await or backlog over a cap are not credited.
+
+### A stage egress reports what it has released, and a wedged egress ends (#1021)
+
+An egress (`stage_release.py`) holds the stage's ownership lock from the
+census it takes under the lock to the fragment drop
+(`stage_release._evict_locked`, #988), and every mover takes the same lock
+at its start gate (`PoolQueue.ownership_start_gate`). Since #1010 the worker
+credits a mover's wait while the lock is held, so the mover is not killed.
+The egress itself was sealed with no progress policy and no execution
+bound. An egress that stopped inside the lock (a hung NFS unlink, a census
+that never returns) held it until the worker's ceiling, 86400 s on both
+Sparks, and every mover on the stage waited that long at its gate, credited
+and never ended.
+
+**What the egress reports.** An egress reports in three phases
+(`movement_actions.EGRESS_PROGRESS_PHASES`):
+
+* `snapshot` runs from launch until every entry is judged under the lock:
+  the fragment read, containment reclamation, the census taken as a hint,
+  the wait for the lock, and the census and verdicts under it.
+* `drain` is the unlinks. `stage_release.main` runs a reporter
+  (`_EgressReporter`) when the worker gives it a progress channel. The
+  unlink loop in `_evict_owned` enters `drain` before its first unlink,
+  which commits the phase at once. Each entry whose unlink returned, or
+  found the file already gone, adds its bytes, and the reporter's thread
+  commits the count every `--progress-interval-s` (default
+  `pool.HEARTBEAT_S`) when it grew. The unit is `bytes released of mover
+  <key>'s staged range`, with the mover's key cut to 12 characters.
+* `release` is entered, and committed, when the unlinks are done: the token
+  release, the fragment drop, letting the lock go, the prune and the receipt.
+
+An entry counts once its unlink has returned, which is the durable unit the
+progress contract asks for. The unlink loop pays one addition under a lock
+per entry and never waits on a report being written. Units are bytes, not
+entries, so a kill's `delivered_bytes_per_s` sits beside the priced rate as
+it does for a mover, and the contention spec keeps its schema. The receipt
+carries `progress_report` (reports, units reported and released, phase,
+unwritten commits, refusal); a commit that fails is recorded there and
+never raised into the egress.
+
+**What the egress is sealed with.** `pbrun.residency_stage_rows` prices each
+stage chunk's egress from the egress receipts the stage has filed
+(`pool.POOL_EGRESS_SCHEMA_V1`), read in the same pass as the move receipts
+(`PoolQueue.move_records(schemas=...)`; `pbcampaign` reads both too). Each
+term is the slowest any receipt measured (`movement_actions.egress_price`,
+`movement_actions.egress_progress_policy`):
+
+```text
+census_s           = max(census_s + census_validate_s)
+unlink_s_per_entry = max(unlink_s / entries_judged)
+settle_s           = max(max(0, lock_held_s - census_validate_s - unlink_s) + prune_s)
+priced_s           = census_s + entries * unlink_s_per_entry + settle_s
+grace_s            = ceil(priced_s + 2 * pool.HEARTBEAT_S)
+```
+
+* The census reads the whole stage's claims, fragments and pins, so it is
+  priced as the stage's cost, not per entry of one range.
+* `entries` is the number of read-order entries in the chunk, the same
+  window its mover copies.
+* The report latency is the mover's (`movement_actions.
+  mover_report_latency_s`): the reporter commits at most one interval after
+  an unlink returns, and the worker samples the file at most one heartbeat
+  after that.
+* Every phase gets the grace. It is the whole egress of this range at the
+  stage's slowest measured terms, so each quiet stretch of a healthy egress,
+  which is a part of that whole, fits in one grace. The drain reports as it
+  goes, so a range larger than any receipted one is charged for its quiet,
+  not its size.
+* A receipt that names another stage root, judged no entry, or is missing a
+  timing prices nothing. With no egress receipt on the stage, or no source
+  pool members on the tier record (`source_members`), the egress is sealed
+  with no policy, as every egress was before.
+
+The plan's `demand_source.egress_progress` records each egress's derivation
+by egress key (`basis`, `entries`, `range_bytes`, `egress_receipts`, the
+three terms, `priced_s`, `priced_bytes_per_s`, `report_latency_s`,
+`grace_s`, `mover_action_key` and `pool_contention`), with `basis:
+unmeasured`, the missing term under `unmeasured`, and `grace_s: null` for an
+egress sealed with no policy.
+
+Beside the policy, pbrun seals the same `params.progress_pool_contention`
+spec a mover gets (`movement_actions.pool_contention_spec`), with the range's
+bytes over `priced_s` as the priced rate. The census reads the queue, which
+lives on the source pool, and an egress is placed with its mover's tags, on
+the box that owns the stage, where those members are local devices. Time that
+pool is over its caps or blind is credited to the egress with the #1010 rule,
+through `ProgressWatch._credit`, as it is for a mover.
+
+The policy and the spec are part of the action key, so a measured egress's
+key changes with #1021. Its placement needs `progress-v1`,
+`progress-helper-v1`, `progress-pool-contention-v1` and `progress-egress-v1`
+(`core.EGRESS_PROGRESS_TAG`).
+
+**The egress's own hold is not a wait.** The worker's start-gate look runs
+for any action that sealed a contention spec, while it is in its first
+phase. An egress takes the stage's lock itself during `snapshot`, and the
+worker looks from another process, so the look finds the lock held. Credited
+as a wait, that hold would keep an egress wedged in its census under the
+lock alive for as long as it stayed wedged.
+
+So every hold `stage_release` takes (`_stage_ownership`: the eviction,
+`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`) files a
+holder record once the lock is granted and removes it before letting go:
+`stage-ownership-holders/<name>.json` under the queue root, where `<name>`
+is the lock's own name (`PoolQueue.write_stage_ownership_holder`, schema
+`prismabuild.stage_ownership_holder.v1`, with `stage_root`, `role`,
+`action_key`, `host`, `pid` and `since_unix`). The lock file stays empty, as
+`posix_lock` requires. The record names the action the process runs as, from
+`core.ACTION_KEY_ENV`, and the role names the pass. The hold's `lock_held_s`
+counts the record's write and removal, which are part of it.
+
+When a look finds the lock held, the worker reads the record
+(`PoolQueue.stage_ownership_holder`). A record is `live` when, on the
+holder's own host, its pid is still a process, and, for an action, its claim
+is still filed. A live record that names this action from this host is the
+action's own hold: the look counts it in `start_gate_self_probes` and treats
+the lock as free, so none of it is credited. An egress under a progress
+contract whose record will not write raises and lets the lock go, because
+its own worker could not tell its hold from a wait. Anywhere else, the hold
+goes ahead without the record.
+
+Between the grant and the record's write, a look can find the lock held with
+no record. That look grants an entry edge, as for any unrecorded holder, and
+the next look, which finds the record, grants an exit edge. At most two
+heartbeats of an egress's own hold are credited that way.
+
+**A mover names the egress it waited on.** Every other hold is credited as
+before, recorded or not: the lock says somebody holds it. The worker
+attributes each look that found the lock held to the holder its record
+names. `pool_contention.start_gate_holder` is the holder the last such look
+saw. `start_gate_holders` lists each holder, by action key when the record
+names one, with the seconds the worker saw it hold the lock at both ends of
+an interval (`held_s`, the holder's share of `start_gate_held_s`), its
+looks, and whether it was live, up to `pool.MAX_BLIND_EVENTS` holders, with
+the rest counted in `start_gate_holders_dropped`. The first look at each holder is
+appended to the action's stall-watch file as a `start-gate-held` event that
+names it, and a kill's `stall` record carries `start_gate_holder`.
+
+A mover that reaches its gate while an egress is wedged is credited for the
+wait. The egress ends at its own allowance, the kill releases its lock, and
+the mover proceeds. The mover's record names the egress, the wait
+(`start_gate_held_s`) and the credited seconds (`start_gate_exempt_s`).
+
+**What a stall does.** An egress that commits nothing for a grace of
+uncredited quiet ends at its own `no_progress` rung, with the `stall` record
+and the `ending_diagnosis` fields every kill carries. The kill ends the
+process, and with it the process's POSIX lock. Its holder record stays
+behind; a later reader finds the claim ended or the pid gone and reports
+`live: false`. The record is read only when a look finds the lock held, so a
+stale record never holds a mover back. The egress keeps its row's retry
+policy: a retry repeats the eviction, which is idempotent. At its attempt
+limit the range waits for the orphan sweep, as a failed egress's did before.
+
+**What is not covered.**
+
+* **The ram leg's egress** is sealed as before, with no policy.
+* **The price only rises.** Each term is the slowest the stage has
+  receipted, so one slow egress raises the grace of every later egress on
+  that stage.
+* **Other holders file no record.** A mover's own resume census and start
+  gate, reader-lease pins (`reader_lease`), `produced_output` and the tier
+  loop take the same lock without a record. A look that finds one of them
+  is credited, as before, and attributed to `unrecorded`. A mover's own
+  resume census under the lock is still credited to its own start gate.
+* **Unlinks are not judged.** The contention spec names the source pool's
+  members; a stage pool that is slow to unlink is charged to the egress.
+* **Uninterruptible sleep.** An egress killed while it is in
+  uninterruptible sleep (a hung NFS call) does not exit until the call
+  returns, so its lock can outlive the kill.
+* **Deployment order.** A measured egress row is placed only on a worker
+  that offers `progress-egress-v1`. pbrun and the worker loop change in the
+  same runtime generation; an egress row sealed by the new pbrun waits in
+  `ready` on a fleet whose worker loops have not picked that generation up.
 
 ### Claimed consumers share a stage tier in admission order (#1011)
 

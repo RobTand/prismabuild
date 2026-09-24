@@ -1232,7 +1232,7 @@ def _run_loop(stop_requested):
             # for a box that can serve it.
             tags.append("cpu")
         tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
-                     pb.POOL_CONTENTION_TAG))
+                     pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG))
         # This loop's code performs the declared-image claim check, so it may
         # take image-pinned work.  A loop from before the check does not offer
         # the tag and therefore cannot claim that work and die inside it
