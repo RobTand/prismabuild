@@ -23,6 +23,7 @@ not a payload, and nothing hashes it.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -36,7 +37,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
-from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
+from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -141,8 +142,8 @@ def _owned(queue, consumer: str, mover: str) -> bool:
     return fragment
 
 
-def _files(stage: Path, names) -> list[bool]:
-    return [(stage / "models" / f"{name}.pbrange" / f"0-{GIB}").exists()
+def _files(stage: Path, names, size: int = GIB) -> list[bool]:
+    return [(stage / "models" / f"{name}.pbrange" / f"0-{size}").exists()
             for name in names]
 
 
@@ -182,3 +183,293 @@ def test_three_owners_and_one_owners_room_evicts_exactly_the_oldest(fleet):
         False, True, True], receipts
     assert _files(stage, ["age-00100", "age-00200", "age-00300"]) == [
         False, True, True]
+
+
+def _reports(receipts) -> list[dict]:
+    return [entry for entry in receipts
+            if entry.get("event") == stage_release.UNCHARGED_OWNERS_EVENT]
+
+
+def _for(receipts, mover: str) -> list[dict]:
+    return [entry for entry in receipts if entry.get("action_key") == mover
+            and entry.get("reason") == "uncharged-owner-sweep"]
+
+
+@pytest.mark.parametrize("needed,owned", [
+    (2, [False, False, True]),
+    (3, [False, False, False]),
+    (9, [False, False, False]),
+])
+def test_more_room_takes_more_owners_in_age_order(fleet, needed, owned):
+    queue, stage, _ = fleet
+    middle = dead_owner(fleet, ["more-00200"], unix=200.0)
+    newest = dead_owner(fleet, ["more-00300"], unix=300.0)
+    oldest = dead_owner(fleet, ["more-00100"], unix=100.0)
+
+    receipts = _sweep(queue, stage, {TIER: needed})
+
+    assert [_owned(queue, *owner) for owner in (oldest, middle, newest)] == (
+        owned), receipts
+
+
+@pytest.mark.parametrize("pressure", [{}, {TIER: 0}, None],
+                         ids=["empty", "zero", "not-given"])
+def test_no_pressure_evicts_none(fleet, pressure):
+    """Without a window waiting, an uncharged dead owner is cache."""
+
+    queue, stage, _ = fleet
+    owners = [dead_owner(fleet, [f"idle-{index:05d}"], unix=100.0 + index)
+              for index in range(3)]
+
+    for _ in range(2):
+        receipts = _sweep(queue, stage, pressure)
+        assert all(_owned(queue, *owner) for owner in owners), receipts
+        assert not [entry for entry in receipts
+                    if entry.get("reason") == "uncharged-owner-sweep"]
+    assert _files(stage, [f"idle-{index:05d}" for index in range(3)]) == [
+        True, True, True]
+
+
+def test_room_the_ledger_already_has_evicts_none(fleet):
+    queue, stage, _ = fleet
+    owner = dead_owner(fleet, ["roomy-00001"], unix=100.0)
+    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
+    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert _owned(queue, *owner), receipts
+    assert _files(stage, ["roomy-00001"]) == [True]
+
+
+def test_the_credit_is_the_sum_of_deleted_bytes_in_whole_gib(fleet):
+    """Two half-GiB owners make one GiB of room between them, not zero."""
+
+    queue, stage, _ = fleet
+    half = GIB // 2
+    first = dead_owner(fleet, ["half-00100"], unix=100.0, size=half)
+    second = dead_owner(fleet, ["half-00200"], unix=200.0, size=half)
+    third = dead_owner(fleet, ["half-00300"], unix=300.0, size=half)
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert [_owned(queue, *owner) for owner in (first, second, third)] == [
+        False, False, True], receipts
+    assert [receipt["bytes_deleted"] for receipt in (
+        _for(receipts, first[1]) + _for(receipts, second[1]))] == [half, half]
+
+
+def test_charged_and_uncharged_orphans_share_one_age_order(fleet):
+    """The oldest receipt goes first, whichever kind it is."""
+
+    queue, stage, _ = fleet
+    uncharged_old = dead_owner(fleet, ["mix-00100"], unix=100.0)
+    charged_new = dead_owner(fleet, ["mix-00200"], unix=200.0, charged=True)
+    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert not _owned(queue, *uncharged_old), receipts
+    assert _owned(queue, *charged_new), receipts
+    assert charged_new[1] in queue.tier_ledger(TIER).held_keys()
+
+
+def test_an_older_charged_orphan_goes_first_and_covers_the_room(fleet):
+    queue, stage, _ = fleet
+    charged_old = dead_owner(fleet, ["mix-00100"], unix=100.0, charged=True)
+    uncharged_new = dead_owner(fleet, ["mix-00200"], unix=200.0)
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert not _owned(queue, *charged_old), receipts
+    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+    assert _owned(queue, *uncharged_new), receipts
+
+
+def test_a_live_pin_protects_every_byte_and_the_next_owner_goes(
+        fleet, monkeypatch):
+    queue, stage, _ = fleet
+    pinned = dead_owner(fleet, ["pin-00100"], unix=100.0)
+    later = dead_owner(fleet, ["pin-00200"], unix=200.0)
+    last = dead_owner(fleet, ["pin-00300"], unix=300.0)
+    pin = reader_lease.acquire(
+        queue, consumer_action_key=pinned[0],
+        attempt={"nonce": "n1", "scope_id": "s1"}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": GIB},
+        holder={"host": "fixture", "pid": os.getpid()}, acquire_token="p1",
+        covers=[{"mover_action_key": pinned[1], "manifest_sha256": MANIFEST}])
+    assert pin["ok"], pin
+
+    # The first pass sees the pin in the stale-mention census and leaves the
+    # owner out.  The second reaches it through a skip checkpoint (forced
+    # here, since a checkpoint on a directory changed this clock tick is
+    # refused), and the whole eviction declines it.  Each pass takes the
+    # next owner instead.
+    first = _sweep(queue, stage, {TIER: 1})
+    assert _owned(queue, *pinned) and not _owned(queue, *later), first
+    assert _for(first, pinned[1]) == []
+    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
+                        lambda *args: True)
+    second = _sweep(queue, stage, {TIER: 1})
+    assert _owned(queue, *pinned) and not _owned(queue, *last), second
+    assert _files(stage, ["pin-00100"]) == [True]
+    (receipt,) = _for(second, pinned[1])
+    assert receipt["complete"] is False and receipt["bytes_deleted"] == 0
+    assert receipt["declined"] == ["pinned"], receipt
+
+
+@pytest.mark.parametrize("claim", ["foreign", "same-key"])
+def test_a_live_claim_keeps_the_file(fleet, monkeypatch, claim):
+    queue, stage, _ = fleet
+    claimed = dead_owner(fleet, ["claim-00100"], unix=100.0)
+    later = dead_owner(fleet, ["claim-00200"], unix=200.0)
+    relative = f"models/claim-00100.pbrange/0-{GIB}"
+
+    def attributed(*args, own_key: str = "", **kwargs):
+        # (foreign claimed paths, taints, the evicted mover's own claimed
+        # paths): a same-key claim is the claimed owner's own live copy.
+        if claim == "foreign":
+            return {relative}, [], set()
+        return set(), [], ({relative} if own_key == claimed[1] else set())
+
+    monkeypatch.setattr(stage_release, "_claimed_paths_attributed", attributed)
+
+    first = _sweep(queue, stage, {TIER: 1})
+    assert _owned(queue, *claimed) and not _owned(queue, *later), first
+    assert _for(first, claimed[1]) == []
+    # Through a (forced) skip checkpoint, the eviction's own census decides.
+    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
+                        lambda *args: True)
+    second = _sweep(queue, stage, {TIER: 1})
+    assert _files(stage, ["claim-00100"]) == [True], second
+    (receipt,) = _for(second, claimed[1])
+    assert receipt["bytes_deleted"] == 0, receipt
+    if claim == "foreign":
+        # A claimed copy is about to land these bytes: the dead vouch goes
+        # and the file stays, as for a charged orphan (#733).
+        assert receipt["entries_shared"] == 1, receipt
+        assert not _owned(queue, *claimed)
+    else:
+        assert receipt["declined"] == ["own"], receipt
+        assert _owned(queue, *claimed)
+
+
+def test_dead_co_owners_settle_through_shared(fleet):
+    """The first to leave drops its vouch; the last deletes and covers."""
+
+    queue, stage, _ = fleet
+    first = dead_owner(fleet, ["shared-00001"], unix=100.0)
+    second = dead_owner(fleet, ["shared-00001"], unix=200.0)
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert not _owned(queue, *first) and not _owned(queue, *second), receipts
+    assert _files(stage, ["shared-00001"]) == [False]
+    (one,), (two,) = _for(receipts, first[1]), _for(receipts, second[1])
+    assert (one["entries_shared"], one["bytes_deleted"]) == (1, 0), one
+    assert (two["entries_deleted"], two["bytes_deleted"]) == (1, GIB), two
+    assert one["complete"] is True and two["complete"] is True
+
+
+def test_a_live_co_owner_keeps_the_file(fleet):
+    queue, stage, _ = fleet
+    dead = dead_owner(fleet, ["live-00001"], unix=100.0)
+    live_consumer, live_mover = base._key(), base._key()
+    base._publish(queue, live_consumer, max_attempts=1)
+    fragment = residency_map.validate_fragment(json.loads(
+        residency_map.fragment_path(
+            queue.residency_fragment_root(), *dead).read_text()))
+    residency_map.write_fragment(queue.residency_fragment_root(), {
+        **{key: value for key, value in fragment.items()
+           if key not in ("consumer_action_key", "mover_action_key")},
+        "consumer_action_key": live_consumer,
+        "mover_action_key": live_mover})
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert not _owned(queue, *dead), receipts
+    assert _files(stage, ["live-00001"]) == [True]
+    (one,) = _for(receipts, dead[1])
+    assert (one["entries_shared"], one["bytes_deleted"]) == (1, 0), one
+
+
+def test_a_consumer_queued_again_is_not_evicted(fleet, monkeypatch):
+    """The death proof is taken again under the consumer's lock."""
+
+    queue, stage, _ = fleet
+    consumer, mover = dead_owner(fleet, ["again-00001"], unix=100.0)
+    discovered = stage_release.sweep_dead_owner_fragments
+    revived: set[str] = set()
+
+    def discover_then_revive(*args, **kwargs):
+        receipts = discovered(*args, **kwargs)
+        revived.add(consumer)
+        return receipts
+
+    real_live_state = stage_release.residency_plan.live_state
+
+    def live_state(queue_, key):
+        if key in revived:
+            return "ready", ""
+        return real_live_state(queue_, key)
+
+    monkeypatch.setattr(stage_release, "sweep_dead_owner_fragments",
+                        discover_then_revive)
+    monkeypatch.setattr(stage_release.residency_plan, "live_state", live_state)
+
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert _owned(queue, consumer, mover), receipts
+    assert _files(stage, ["again-00001"]) == [True]
+    assert _for(receipts, mover) == []
+
+
+def test_the_sweep_reports_the_uncharged_owners_count_and_bytes(fleet):
+    queue, stage, _ = fleet
+    small = dead_owner(fleet, ["report-00100"], unix=100.0)
+    large = dead_owner(fleet, ["report-00200", "report-00201"], unix=200.0)
+
+    (first,) = _reports(_sweep(queue, stage, {}))
+    assert (first["owners"], first["bytes"]) == (2, 3 * GIB), first
+    assert (first["owners_evicted"], first["bytes_evicted"]) == (0, 0)
+    assert first["tier_id"] == TIER and first["stage_root"] == str(stage)
+    assert first["pressure_gib"] == 0 and first["complete"] is True
+    assert _reports(_sweep(queue, stage, {})) == [], "once per change"
+
+    (second,) = _reports(_sweep(queue, stage, {TIER: 1}))
+    assert not _owned(queue, *small) and _owned(queue, *large)
+    assert (second["owners"], second["bytes"]) == (1, 2 * GIB), second
+    assert (second["owners_evicted"], second["bytes_evicted"]) == (1, GIB)
+    assert second["pressure_gib"] == 1
+    assert _reports(_sweep(queue, stage, {})) == []
+
+    (third,) = _reports(_sweep(queue, stage, {TIER: 5}))
+    assert not _owned(queue, *large)
+    assert (third["owners"], third["bytes"]) == (0, 0), third
+    assert (third["owners_evicted"], third["bytes_evicted"]) == (1, 2 * GIB)
+    assert _reports(_sweep(queue, stage, {TIER: 5})) == []
+
+
+def test_no_report_for_a_tier_that_never_had_one(fleet):
+    queue, stage, _ = fleet
+    dead_owner(fleet, ["charged-00001"], unix=100.0, charged=True)
+
+    assert _reports(_sweep(queue, stage, {})) == []
+
+
+def test_an_unreadable_discovery_files_no_report_and_evicts_none(
+        fleet, monkeypatch):
+    queue, stage, _ = fleet
+    owner = dead_owner(fleet, ["taint-00001"], unix=100.0)
+    assert len(_reports(_sweep(queue, stage, {}))) == 1
+    real = stage_release._fragment_census
+
+    def tainted(root, index=None):
+        fragments, _ = real(root, index)
+        return fragments, ["fixture: unreadable fragment"]
+
+    monkeypatch.setattr(stage_release, "_fragment_census", tainted)
+    receipts = _sweep(queue, stage, {TIER: 1})
+
+    assert _owned(queue, *owner), receipts
+    assert _reports(receipts) == [], "unknown is not none"
