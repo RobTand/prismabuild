@@ -664,7 +664,20 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
     ("adaptive_cpu_refused", {"reason": "projected_cpu_cost"}, False, {"cpu": 4},
      ("tokens", False)),
     ("adaptive_cpu_refused", {"reason": "max_actions"}, False, {"cpu": 1}, (None, False)),
+    # #1085: a GPU refusal that exists only because the pool's own GPU holders
+    # are on the device drains with them, for the GPU kind alone.
     ("adaptive_gpu_refused", {"reason": "exclusive_holder"}, False, {"gpu": 1},
+     ("gpu", False)),
+    ("adaptive_gpu_refused", {"reason": "sharing_probe_not_authorized"}, False,
+     {"gpu": 1}, ("gpu", False)),
+    ("adaptive_gpu_refused", {"reason": "holder_telemetry_unavailable"}, False,
+     {"gpu": 1}, ("gpu", False)),
+    ("adaptive_gpu_refused", {"reason": "max_actions"}, False, {"gpu": 1},
+     ("gpu", False)),
+    # Device and host state, not holder presence: no drain is known to fix it.
+    ("adaptive_gpu_refused", {"reason": "host_or_device_congested"}, False,
+     {"gpu": 1}, (None, False)),
+    ("adaptive_gpu_refused", {"reason": "gpu_memory_budget"}, False, {"gpu": 1},
      (None, False)),
     ("adaptive_gpu_refused", {"reason": "exclusive_holder"}, True, {"gpu": 1},
      ("exclusive", False)),

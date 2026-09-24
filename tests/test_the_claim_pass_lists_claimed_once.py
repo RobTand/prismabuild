@@ -100,7 +100,10 @@ def test_a_pass_over_40_foreign_items_lists_claimed_once(
         _publish(queue, index, ["elsewhere"])
     listings = _count_listings(monkeypatch, queue.dir(pool.CLAIMED))
     assert queue.claim(tags=["here"], owner="worker") is None
-    assert len(listings) == 1, listings
+    # Placement is judged before a row's transition lock (#1085), and the
+    # listing is taken under the first lock the pass takes: a pass over rows
+    # this box cannot place takes no lock and lists ``claimed/`` not at all.
+    assert len(listings) == 0, listings
     # Every item was still judged, and said why it was skipped.
     denials = _denials(queue)
     assert len(denials) == READY_ITEMS

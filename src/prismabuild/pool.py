@@ -325,6 +325,21 @@ MOVER_WITHHOLD_REASONS = frozenset({"deferred_behind_withholding"})
 MOVER_WITHHOLD_SUFFIX = "_withholding"
 MOVER_NEUTRAL_REASONS = frozenset({"placement_mismatch"})
 
+#: Denials the claim pass records without holding the key's transition lock,
+#: and so keeps out of the key's reason ring (#991), whose writers that lock
+#: serializes: an unlocked read-modify-write of the ring could drop the entry
+#: a lock holder is writing.  Each still lands in this host's latest-only
+#: ``claim-denials.json``.  ``transition_busy`` is recorded *because* another
+#: loop holds the lock.  ``placement_mismatch`` is judged before the lock
+#: (#1085): a box that can never place a row takes no lock for it, so it
+#: cannot turn the placing host's pass into a ``transition_busy``.  A ring
+#: written before #1085 may still carry it, which ``_mover_refusal`` reads as
+#: neutral.  ``deferred_behind_withheld_row`` is a row held back, unevaluated,
+#: behind an earlier row's GPU-kind withhold (#1085); it says why the row
+#: waited and is neither a refusal nor a withhold of its own.
+DENIAL_RING_EXEMPT_REASONS = frozenset({
+    "transition_busy", "placement_mismatch", "deferred_behind_withheld_row"})
+
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
@@ -382,11 +397,8 @@ WITHHOLD_CEILING_S = 900.0
 #: *Exclusive*: the item needs the box empty of other holders.  A measurement
 #: needs a quiet host and an idle device, so it is refused while anything else
 #: runs, and a stream of small admissions behind it keeps the box occupied for
-#: as long as the stream lasts.  The GPU refusals count only for a
-#: measurement: for any other item they name GPU holders alone, which leave
-#: whether or not CPU-only work is withheld, so withholding would idle the
-#: CPUs for nothing.  What such an item then needs from CPU-only work is its
-#: CPU and memory, and that is the GPU-first token verdict's to keep.
+#: as long as the stream lasts.  These GPU refusals are exclusive only for a
+#: measurement; for any other item see :data:`DRAIN_GPU_HOLDERS`.
 DRAIN_EXCLUSIVE_CPU = frozenset({
     "measurement_host_not_idle", "measurement_holder", "unbounded_cpu_not_exclusive",
 })
@@ -394,6 +406,27 @@ DRAIN_EXCLUSIVE_GPU = frozenset({
     "exclusive_holder", "measurement_device_not_idle", "host_or_device_congested",
     "sharing_probe_not_authorized", "gpu_memory_budget",
 })
+#: *GPU*: the refusals ``adaptive_gpu.Controller.decision`` gives an item that
+#: is not a measurement only while the pool's own GPU holders are on the
+#: device (#1085).  Each is resolved by those holders draining, and the one
+#: thing that stops them draining is later GPU work sharing the device with
+#: them: the GPU controller lets a shared generation row join a holder once a
+#: probe is authorized, and every such row keeps the device occupied past the
+#: holder it joined.  So the withhold these refusals earn holds back later
+#: rows that demand a GPU, and only those.  CPU-only rows take nothing these
+#: holders release, and keep filling the box; what the item then needs from
+#: them is its CPU and memory, which is the token verdict's to keep.
+#: ``host_or_device_congested`` and ``gpu_memory_budget`` stay out: they read
+#: the device's and the host's state, which a GPU holder leaving is not known
+#: to repair.
+DRAIN_GPU_HOLDERS = frozenset({
+    "exclusive_holder", "sharing_probe_not_authorized",
+    "holder_telemetry_unavailable", "max_actions",
+})
+#: What each withhold mode holds back from the rows behind the item: the
+#: resource kinds a later row must demand to be held back, or ``None`` for
+#: every row (the whole box), which is what every mode but ``gpu`` does.
+WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
 #: *Tokens*: under adaptive admission a CPU token shortage never reaches the
 #: ledger -- ``available < declared`` routes it through borrowing, so it is
 #: refused as one of these before ``begin_acquire`` runs.  They are a token
@@ -418,9 +451,10 @@ def _adaptive_refusal_drains(
 ) -> tuple[str | None, bool]:
     """Classify one adaptive refusal for the withhold verdict (#924).
 
-    Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"`` or
-    ``None`` (draining does not resolve it, and the item is overtaken exactly
-    as before), and ``foreign`` is true when the refusal's own evidence names
+    Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"``,
+    ``"gpu"`` (the pool's GPU holders must drain, #1085) or ``None``
+    (draining does not resolve it, and the item is overtaken exactly as
+    before), and ``foreign`` is true when the refusal's own evidence names
     processes the pool does not own -- draining the pool's holders cannot
     idle a device a vLLM serve is using.
     """
@@ -434,8 +468,9 @@ def _adaptive_refusal_drains(
             # Thermal, power-brake and slowdown limiters are the device's own
             # state; no holder leaving turns them off.
             return None, False
-        return ("exclusive" if measurement and reason in DRAIN_EXCLUSIVE_GPU
-                else None), False
+        if measurement:
+            return ("exclusive" if reason in DRAIN_EXCLUSIVE_GPU else None), False
+        return ("gpu" if reason in DRAIN_GPU_HOLDERS else None), False
     if source != "adaptive_cpu_refused":
         return None, False
     if reason in DRAIN_EXCLUSIVE_CPU:
@@ -3984,6 +4019,20 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
+    def holds_gpu(self, action_key: str) -> bool:
+        """Whether ONE action is on this box's GPU (#1085).
+
+        The same test ``adaptive_gpu.Controller.decision`` applies to a
+        holder: a GPU token, or GPU admission's metadata.  A probe that
+        shares the device with a holder borrows the GPU rather than taking a
+        token (``borrowed_gpu``), so :meth:`holder_tokens` alone would not
+        see it, and it keeps the device occupied all the same.
+        """
+
+        directory = self.held_dir / action_key
+        return (bool(_glob(directory, "gpu-*"))
+                or bool(cpu_admission.read_json(directory / gpu_admission.METADATA)))
+
     def held_keys(self) -> list[str]:
         """Which actions hold tokens here.
 
@@ -5387,6 +5436,92 @@ class PoolQueue:
             return False
         return host == cpu_admission.EXPORT_DEMAND
 
+    def _demands_withheld_kind(self, item: Mapping[str, object],
+                               kinds: frozenset[str]) -> bool:
+        """Whether a later row takes a kind an earlier row withholds (#1085).
+
+        Read from the row's own ``resources``, as :meth:`_may_serve_a_producer`
+        reads it.  A demand that does not parse is held back: the scan cannot
+        say it takes none of those kinds, and a whole-box withhold would hold
+        it back too.
+        """
+
+        try:
+            host, _tiers = storage_tiers.split_demand(self.demand_of(item))
+        except (TypeError, ValueError):
+            return True
+        return any(int(host.get(kind, 0) or 0) > 0 for kind in kinds)
+
+    def _host_denial_records(self) -> Mapping[str, object]:
+        """This host's latest verdict per ready row, as :meth:`record_denial`
+        files it: host-local, bounded, and written by every loop of the box.
+        Empty when it does not read, which leaves every row as it was before
+        #1085 read it."""
+
+        ledger = self.ledger()
+        name = str(ledger.base)
+        try:
+            base = self._claim_denial_bases.get(name)
+            if base is None:
+                base = cpu_admission.local_state_base(ledger.base)
+                self._claim_denial_bases[name] = base
+            records = cpu_admission.read_json(base / CLAIM_DENIALS).get("records", {})
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return {}
+        return records if isinstance(records, Mapping) else {}
+
+    @staticmethod
+    def _carried_withhold(records: Mapping[str, object], item: Mapping[str, object],
+                          *, host: str, now: float) -> dict[str, object] | None:
+        """This host's last word on ``item``, when it is a live withhold (#1085).
+
+        Read by a pass that finds the row's transition lock held by another
+        loop.  A withhold is live while its episode is inside
+        ``WITHHOLD_CEILING_S``: the episode is the verdict's own
+        (``episode_age_s`` back from when it was filed), or, for a withhold
+        with none on file (``in_flight``, ``holder_tail``), the row's first
+        denial (``withhold_age_s``) -- the bound the pool puts on a stage
+        mover's withhold (:meth:`_withhold_epoch`).  A busy pass that carries
+        a withhold files its ``transition_busy`` with the episode it carried,
+        so the next busy pass reads the same start, and a run of them never
+        renews it.  Returns ``{"reason", "mode", "epoch_unix"}``, or ``None``.
+        """
+
+        def finite(value: object) -> bool:
+            return type(value) in (int, float) and math.isfinite(value)  # type: ignore[arg-type]
+
+        published = item.get("published_unix")
+        if not finite(published):
+            return None
+        record = records.get(f"{item.get('action_key', '')}:{float(published)!r}")  # type: ignore[arg-type]
+        if not isinstance(record, Mapping) or record.get("host") != host:
+            return None
+        reason, evidence = record.get("reason"), record.get("evidence")
+        if not isinstance(reason, str) or not isinstance(evidence, Mapping):
+            return None
+        if reason == "transition_busy":
+            carried = evidence.get("withhold_carried")
+            if not isinstance(carried, Mapping):
+                return None
+            origin, mode, epoch = carried.get("reason"), carried.get("mode"), carried.get("epoch_unix")
+        elif reason.endswith(MOVER_WITHHOLD_SUFFIX) and reason not in MOVER_WITHHOLD_REASONS:
+            verdict, denied = evidence.get("withhold"), record.get("denied_unix")
+            if not isinstance(verdict, Mapping) or verdict.get("withhold") is not True:
+                return None
+            held = verdict.get("episode_age_s")
+            if not finite(held):
+                held = verdict.get("withhold_age_s")
+            if not finite(held) or not finite(denied):
+                return None
+            origin, mode = reason, verdict.get("mode")
+            epoch = float(denied) - float(held)  # type: ignore[arg-type]
+        else:
+            return None
+        if (not isinstance(origin, str) or not isinstance(mode, str) or not finite(epoch)
+                or now - float(epoch) > WITHHOLD_CEILING_S):  # type: ignore[arg-type]
+            return None
+        return {"reason": origin, "mode": mode, "epoch_unix": float(epoch)}  # type: ignore[arg-type]
+
     def _claim_blocked_fresh(self, key: str) -> tuple[bool, str | None]:
         """Whether ``claimed/`` refuses a claim of ``key``, listed fresh (#993).
 
@@ -6123,6 +6258,8 @@ class PoolQueue:
           that lock -- is not an admission verdict about the item, only a
           sibling loop evaluating it this instant, and stays out of the ring
           (as #998 kept ``deferred_behind_withholding`` out of ``passes``).
+          So does every reason the pass records without the lock
+          (:data:`DENIAL_RING_EXEMPT_REASONS`, #1085).
 
         A steady reason costs the claim pass one dictionary lookup here; see
         :meth:`_record_denial_transition`.
@@ -6132,7 +6269,7 @@ class PoolQueue:
         host = socket.gethostname()
         decision = (evidence or {}).get("decision") if isinstance(evidence, Mapping) else None
         decision_reason = decision.get("reason") if isinstance(decision, Mapping) else None
-        if reason != "transition_busy":
+        if reason not in DENIAL_RING_EXEMPT_REASONS:
             self._record_denial_transition(
                 item, host=host, reason=reason,
                 decision_reason=decision_reason if isinstance(decision_reason, str) else None)
@@ -7522,8 +7659,9 @@ class PoolQueue:
 
         Called after host admission is released and before the denial is
         counted.  ``mode`` says what the item needs from a drain: ``"tokens"``
-        (the reservation ``need``, per kind) or ``"exclusive"`` (no other
-        holder at all).  The verdict never takes or returns tokens; it is
+        (the reservation ``need``, per kind), ``"exclusive"`` (no other
+        holder at all) or ``"gpu"`` (no other holder on the GPU, #1085: see
+        :data:`DRAIN_GPU_HOLDERS`).  The verdict never takes or returns tokens; it is
         fairness, not capacity authority, and a read it cannot make leaves the
         item to be overtaken, as every adaptive refusal was before #924.
 
@@ -7542,6 +7680,16 @@ class PoolQueue:
         the item's own first-denial clock is inside ``WITHHOLD_CEILING_S``,
         which keeps every pre-#924 behavior for them.  Otherwise the item
         keeps its passes and its place and is reported ``..._starved``.
+
+        A ``"gpu"`` need reads the exclusive rule over the box's GPU holders
+        alone (:meth:`ResourceLedger.holds_gpu`, which counts a probe that
+        borrows the device as well as the token holder): CPU-only holders are
+        not in its way, and the withhold it earns holds back only later rows
+        that demand a GPU (:data:`WITHHOLD_KINDS`).  It is never ``gpu_first``,
+        because the refusal it answers says the pool's own work is on the GPU.
+        With no GPU holder filed under an action, the holders the controller
+        saw are between an acquisition and its rename, or have just left; as
+        for a token shortage with no holder, the item's own clock bounds that.
 
         Three things bound a veto that rests on transient holders:
 
@@ -7593,7 +7741,8 @@ class PoolQueue:
                              and 0 <= now - sampled <= gpu_admission.MAX_SAMPLE_AGE_S)
                 if isinstance(processes, list) and processes:
                     foreign = True
-            gpu_first = (bool(gpu_need) and available.get("gpu", 0) >= gpu_need
+            gpu_first = (mode != "gpu" and bool(gpu_need)
+                         and available.get("gpu", 0) >= gpu_need
                          and gpu_clear is not False)
             short: dict[str, int] = {}
             if mode == "tokens":
@@ -7628,6 +7777,8 @@ class PoolQueue:
             covered = {kind: 0 for kind in short}
             for holder in ledger.held_keys():
                 counts: dict[str, int] = {}
+                if mode == "gpu" and not ledger.holds_gpu(holder):
+                    continue
                 if mode == "tokens":
                     tokens = ledger.holder_tokens(holder)
                     counts = {kind: tokens.get(kind, 0) for kind in short if tokens.get(kind, 0)}
@@ -7657,11 +7808,13 @@ class PoolQueue:
                     return verdict
                 # Short, yet no action holds the short kind: the tokens are
                 # between an acquisition and its rename.  That resolves inside
-                # a pass, so the item's own clock bounds it.
+                # a pass, so the item's own clock bounds it.  A ``gpu`` need
+                # with no GPU holder filed is the same: the controller saw one
+                # the ledger now names under no action.
                 verdict.update(withhold=unknown_drains,
                                why="in_flight" if unknown_drains else "unknown_past_ceiling")
                 return verdict
-            fits = (not in_way if mode == "exclusive" else
+            fits = (not in_way if mode in ("exclusive", "gpu") else
                     all(covered[kind] >= amount for kind, amount in short.items()))
             if not fits:
                 notes.update(epoch_unix=None, expired_unix=None)
@@ -14451,7 +14604,14 @@ class PoolQueue:
         A starved item (``passes >= STARVATION_FLOOR``) that this host could
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
-        will never run there is the deadlock, not the fix.
+        will never run there is the deadlock, not the fix.  An item refused
+        because the pool's own GPU holders are on the device withholds only
+        the rows behind it that demand a GPU, and CPU-only rows still fill the
+        box (#1085, :data:`DRAIN_GPU_HOLDERS`).  A row whose transition lock
+        another loop holds keeps the withhold this host last filed for it
+        while that withhold's episode is live (:meth:`_carried_withhold`).
+        Placement is judged before a row's lock is taken, so a box that can
+        never place a row does not collide with the box that can.
 
         A denied *foreground* item may also take the box back from an admitted
         background holder -- see :meth:`_preempt_background_holder`, which
@@ -14541,8 +14701,26 @@ class PoolQueue:
         #: The item withholding this box, once one does (#924).  The scan used
         #: to end there; it now goes on for the rows that can run without
         #: taking anything that item waits for -- a dependent on its
-        #: producer's allowance -- and for nothing else (#985).
+        #: producer's allowance (#985), and, behind a GPU-kind withhold, a row
+        #: that demands no GPU (#1085) -- and for nothing else.
         withheld_for: str | None = None
+        #: What that withhold holds back (#1085): the resource kinds a later
+        #: row must demand to be held back (:data:`WITHHOLD_KINDS`), or
+        #: ``None`` for every row, which is what every withhold but a GPU
+        #: refusal's does.
+        withheld_kinds: frozenset[str] | None = None
+        #: This host's latest verdicts, read once, at the pass's first busy
+        #: transition lock (#1085).
+        host_verdicts: Mapping[str, object] | None = None
+
+        def withhold(key: str, kinds: frozenset[str] | None) -> None:
+            nonlocal withheld_for, withheld_kinds
+            if withheld_for is not None and withheld_kinds is None:
+                return                      # the whole box is held already
+            if withheld_for is None or kinds is None:
+                withheld_for, withheld_kinds = key, kinds
+            else:
+                withheld_kinds = withheld_kinds | kinds
         #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
         #: first transition lock the pass takes, not before it, and a
         #: ``READDIR`` is itself the revalidation a cached negative lookup
@@ -14557,14 +14735,58 @@ class PoolQueue:
         claimed_marks: list[str] = []
         for item in ready:
             key = str(item.get("action_key", ""))
-            if withheld_for is not None and not self._may_serve_a_producer(item):
+            held_back = withheld_for is not None and (
+                withheld_kinds is None
+                or self._demands_withheld_kind(item, withheld_kinds))
+            producer = held_back and self._may_serve_a_producer(item)
+            if held_back and withheld_kinds is None and not producer:
+                continue
+            if (key and key not in released
+                    and not self._placement_matches(item, tags=tagset, has_gpu=has_gpu)):
+                # Before the key's transition lock (#1085).  Placement reads
+                # only the row and this worker's tags, and a box that can
+                # never place the row taking its lock is what the box that
+                # can met as ``transition_busy`` on every pass.  A released
+                # origin consumer still takes the lock below: failing it is
+                # any box's to do (#954).
+                self.record_denial(item, "placement_mismatch", {
+                    "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
+                    "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
+                })
+                continue
+            if held_back and not producer:
+                # Behind an earlier row's GPU-kind withhold, and demanding a
+                # GPU: held back unevaluated, with no pass, as the whole-box
+                # withhold holds every row back.  Recorded, because the
+                # CPU-only rows beside it are admitted and a reader of this
+                # host's denials would otherwise see it wait with no reason.
+                self.record_denial(item, "deferred_behind_withheld_row", {
+                    "withheld_for": withheld_for,
+                    "withheld_kinds": sorted(withheld_kinds or ())})
                 continue
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     if key:
                         # Another loop holds this key's lock, and may be
                         # writing its reason ring: the entry waits (#991).
-                        self.record_denial(item, "transition_busy")
+                        # If this host's last word on the row was a withhold
+                        # still inside its episode, the row still withholds
+                        # for this pass (#1085): the loop holding the lock is
+                        # this box's sibling deciding the same row, or another
+                        # box deciding it for itself, and neither ends the
+                        # drain this box is holding it for.
+                        carried = None
+                        if withheld_for is None or withheld_kinds is not None:
+                            if host_verdicts is None:
+                                host_verdicts = self._host_denial_records()
+                            carried = self._carried_withhold(
+                                host_verdicts, item, host=socket.gethostname(),
+                                now=_now())
+                        self.record_denial(item, "transition_busy", (
+                            {"withhold_carried": carried} if carried is not None
+                            else None))
+                        if carried is not None:
+                            withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
                     continue
                 if claimed_listed is None:
                     names = os.listdir(self.dir(CLAIMED))
@@ -14883,12 +15105,13 @@ class PoolQueue:
                                           for kind, need in demand.items()
                                           if int(need) - covered.get(kind, 0) > 0}
                                 reservation_demand = dict(demand)
-                            elif withheld_for is not None:
-                                # An earlier item is withholding this box.  Only
-                                # a dependent on its producer's allowance takes
-                                # nothing that item waits for (#985); any other
-                                # row is left as the withhold always left it,
-                                # unevaluated: no pass, no withhold of its own.
+                            elif held_back:
+                                # An earlier item is withholding what this row
+                                # takes.  Only a dependent on its producer's
+                                # allowance takes nothing that item waits for
+                                # (#985); any other row is left as the withhold
+                                # always left it, unevaluated: no pass, no
+                                # withhold of its own.
                                 refused = True
                                 refusal_source = "deferred_behind_withholding"
                                 adaptive = None
@@ -14958,6 +15181,8 @@ class PoolQueue:
                                 # scan looked at stays as silent as before.
                                 if isinstance(dependent_owner, str):
                                     evidence["withheld_for"] = withheld_for
+                                    if withheld_kinds is not None:
+                                        evidence["withheld_kinds"] = sorted(withheld_kinds)
                                     self.record_denial(item, reason, evidence)
                                 continue
                             self.record_pass(key)
@@ -14968,8 +15193,14 @@ class PoolQueue:
                                 # will not.
                                 evidence["withhold"] = verdict
                                 if verdict["withhold"]:
+                                    # A GPU refusal holds back only the rows
+                                    # that demand a GPU (#1085); every other
+                                    # withhold holds back the whole box.
+                                    kinds = WITHHOLD_KINDS.get(str(verdict["mode"]))
+                                    if kinds is not None:
+                                        evidence["withheld_kinds"] = sorted(kinds)
                                     self.record_denial(item, f"{reason}_withholding", evidence)
-                                    withheld_for = key
+                                    withhold(key, kinds)
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
@@ -15003,7 +15234,7 @@ class PoolQueue:
                             if withholding and verdict["withhold"]:
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
-                                withheld_for = key
+                                withhold(key, None)
                                 continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
