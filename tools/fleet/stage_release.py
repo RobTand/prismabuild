@@ -2609,16 +2609,19 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
                              ) -> bool:
     """Install the EXACT verified versions of one owner with nothing to act on.
 
-    The caller passes the stamps it sampled around its scan and proved equal,
-    and the co-owner fragment versions its census read (``documents``, which
-    ``None`` refuses); nothing is sampled again here, so a rename that lands
-    between the scan and this call can never be blessed as clean -- the next
-    pass reads the recorded (older) stamp, sees the difference and re-scans.
-    Every stamp must be present.  Only an owner the latest sweep discovered
-    is cached, one checkpoint each (:func:`_retain_skip_checkpoints`); when
-    the cache is full the newcomer is refused and nothing is evicted.  A
-    cache entry only ever skips a cleanup scan: it holds no deletion or
-    adoption authority.
+    The caller passes the trusted stamps it sampled before its scan
+    (:func:`stage_move._trusted_directory_stamp`, #1062) and proved equal to
+    a sample after it, and the co-owner fragment versions its census read
+    (``documents``, which ``None`` refuses); nothing is sampled again here, so
+    a rename that lands between the scan and this call can never be blessed
+    as clean -- the next pass reads the recorded (older) stamp, sees the
+    difference and re-scans.  Every stamp must be present: a directory the
+    trusted rule refused, because it changed in the tick its stamp was taken
+    in, is one a later rename might not move, so nothing is installed on it.
+    Only an owner the latest sweep discovered is cached, one checkpoint each
+    (:func:`_retain_skip_checkpoints`); when the cache is full the newcomer
+    is refused and nothing is evicted.  A cache entry only ever skips a
+    cleanup scan: it holds no deletion or adoption authority.
     """
 
     if fragment_version is None or material_version is None or not stamps:
@@ -3057,10 +3060,23 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         elif not held_reason and overlap_handoff:
             held_reason = "promotion-handoff"
         # The verified directory stamps, sampled around the classification
-        # scan; nothing is sampled a third time for installation.
+        # scan; nothing is sampled a third time for installation.  The
+        # sample before the scan is a TRUSTED stamp (#1062): two changes in
+        # one coarse clock tick share a stamp, so a stamp sampled between
+        # them would be one the second change never moves, and a checkpoint
+        # standing on it would skip a rename made in that tick.
+        # ``stage_move._trusted_directory_stamp`` refuses a directory changed
+        # in the current tick (and one on a filesystem whose times are not
+        # this kernel's clock); a refused stamp still takes part in the
+        # before/after comparison, at its bare version, but the checkpoint
+        # refuses to install on it, so the owner is scanned again next pass.
         parents = {Path(str(entry["stage_path"])).parent
                    for entry in entries.values()}
-        dirs_before = {str(parent): _directory_version(parent) for parent in parents}
+        dirs_trusted = {str(parent): _trusted_directory_stamp(parent)
+                        for parent in parents}
+        dirs_before = {name: (stamp if stamp is not None
+                              else _directory_version(name))
+                       for name, stamp in dirs_trusted.items()}
         prune: list[str] = []
         absent: list[str] = []
         retained_paths = 0
@@ -3111,6 +3127,10 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 return uncached(
                     "ownership-uncertain",
                     f"ownership uncertain: {key} changed in place")
+        # The after sample needs no clock: it is only compared with the
+        # before sample.  Equal means no change moved a stamp during the
+        # scan, so each trusted stamp is still the directory's version, and
+        # that trusted stamp (never this sample) is what a checkpoint records.
         dirs_after = {str(parent): _directory_version(parent) for parent in parents}
         if dirs_before != dirs_after:
             return uncached("ownership-uncertain",
@@ -3138,7 +3158,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                     and (retained_paths > 0 or exact_material))
             cacheable = idle and _install_skip_checkpoint(
                 checkpoint_key, fragment_version_after,
-                material_version_after, dirs_after, co_owner_fences)
+                material_version_after, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not prune and not absent:
             if retained_paths:
@@ -3147,7 +3167,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 retained_reason = "co-owner"
                 cacheable = _install_skip_checkpoint(
                     checkpoint_key, fragment_version_after,
-                    material_version_after, dirs_after, co_owner_fences)
+                    material_version_after, dirs_trusted, co_owner_fences)
                 return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
             # material a superset.  The strict reader walks every material
@@ -3171,7 +3191,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 material_final_version = _path_version(material_path)
             cacheable = _install_skip_checkpoint(
                 checkpoint_key, fragment_version_after,
-                material_final_version, dirs_after, co_owner_fences)
+                material_final_version, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not retained_paths and len(prune) + len(absent) == total:
             # Fully stale and unprotected: the ordinary whole-owner egress is
