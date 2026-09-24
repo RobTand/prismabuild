@@ -86,10 +86,21 @@ class ResidencyMapError(ValueError):
 #: would stop every reader that predates it.
 RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
 #: The states a pending range can be in.  ``ready`` and ``claimed`` name the
-#: mover's queue state.  ``unpublished`` is an in-horizon leg the window has
-#: not published (a stall, or a failed copy awaiting its recopy).
-#: ``terminal-no-receipt`` is a leg nothing will publish again: its mover
-#: failed and the plan is superseded.
+#: mover's queue state.  ``unpublished`` is a leg the window has not
+#: published: inside the refill horizon a stall or a failed copy awaiting its
+#: recopy, and past it (``deferred_by``, #1018) a leg the consumer's own
+#: progress brings inside.  ``terminal-no-receipt`` is a leg nothing will
+#: publish again: its mover failed and the plan is superseded.
+#:
+#: Every leg a claimed consumer has still to read has a row (#1018), while
+#: the consumer has a refill horizon.  A leg past it carries
+#: ``deferred_by: horizon``, and the record's ``horizon`` block states the
+#: horizon's end, progress and consumption rate.  Its state is
+#: ``unpublished`` (or ``evicted``, for a landed copy given back past the
+#: horizon): a state the reader already waits on, so a reader that predates
+#: the field waits too.  With no horizon, as before a consumer's first
+#: accepted progress, a leg the window will not publish has no row, because
+#: nothing could extend a horizon that does not exist (review F1).
 #:
 #: The range a claimed consumer waits for while the claim order serves the
 #: consumers ranked ahead of it on an over-committed stage tier (#1011) is
@@ -107,7 +118,16 @@ _LANDING_KEYS = frozenset({
     "written_unix", "landing_bytes_per_s", "landing_basis",
     "rates_measured_bytes_per_s", "rate_min_bytes_per_s",
     "rate_max_bytes_per_s", "report_latency_s", "tier_loop_liveness_s",
-    "publish_s", "ranges"})
+    "publish_s", "ranges",
+    # Where the stage window stops this cycle and what moves it (#1018).
+    "horizon"})
+#: The fields of the record's ``horizon`` block (#1018).
+_LANDING_HORIZON_KEYS = frozenset({
+    "end_bytes", "accepted_phase", "reading_phase", "advance_mover_action_key",
+    "consumption_bytes_per_s", "consumption_basis", "readahead_bytes",
+    "reach_end_bytes", "declared_wait_end_bytes"})
+#: Why a leg the window has not reached is not published yet (#1018).
+LANDING_DEFERRALS = ("horizon",)
 _LANDING_RANGE_KEYS = frozenset({
     "mover_action_key", "phase", "chunk_index", "range_start_bytes",
     "range_end_bytes", "state", "queue_position", "bytes_ahead",
@@ -122,7 +142,9 @@ _LANDING_RANGE_KEYS = frozenset({
     "expected_landing_basis",
     # A ready range: the movers queued ahead of it in the tier's order,
     # whose bytes ``bytes_ahead`` counts (#1022 review round 2).
-    "movers_ahead"})
+    "movers_ahead",
+    # A leg the window has not reached, and why (#1018).
+    "deferred_by"})
 #: The values ``basis`` may take (#1010).
 LANDING_BASES = ("reported", "claim", "queue")
 
@@ -641,6 +663,9 @@ def validate_landing(value: object) -> dict[str, object]:
     }
     if out["written_unix"] is None:
         raise ResidencyMapError("landing written_unix is required")
+    horizon = _landing_horizon(value.get("horizon"))
+    if "horizon" in value:
+        out["horizon"] = horizon
     ranges = value.get("ranges")
     if not isinstance(ranges, list):
         raise ResidencyMapError("landing ranges must be an array")
@@ -690,6 +715,23 @@ def validate_landing(value: object) -> dict[str, object]:
                 raise ResidencyMapError("movers_ahead must be an array")
             row["movers_ahead"] = [_action_key(mover, where="movers_ahead")
                                    for mover in movers]
+        if "deferred_by" in entry:
+            deferred = entry["deferred_by"]
+            if deferred not in LANDING_DEFERRALS:
+                raise ResidencyMapError(
+                    f"landing range deferred_by must be one of {LANDING_DEFERRALS}")
+            if state not in ("unpublished", "evicted") or expected is not None \
+                    or not row["waiting_for"]:
+                raise ResidencyMapError(
+                    "a deferred range is unpublished or evicted, carries no "
+                    "expected landing and says what it waits for")
+            if deferred == "horizon":
+                end_bytes = None if horizon is None else horizon.get("end_bytes")
+                if end_bytes is None or start < int(end_bytes):  # type: ignore[call-overload]
+                    raise ResidencyMapError(
+                        "a range deferred by the horizon starts at or past the "
+                        "horizon the record states")
+            row["deferred_by"] = deferred
         if state in ("ready", "claimed"):
             if expected is None:
                 raise ResidencyMapError("a queued range carries its expected landing")
@@ -722,6 +764,36 @@ def validate_landing(value: object) -> dict[str, object]:
                 "says what it waits for")
         checked.append(row)
     out["ranges"] = checked
+    return out
+
+
+def _landing_horizon(value: object) -> dict[str, object] | None:
+    """A landing record's ``horizon`` block, checked (#1018), or ``None``."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ResidencyMapError("landing horizon must be an object or null")
+    unknown = sorted(set(value) - _LANDING_HORIZON_KEYS)
+    if unknown:
+        raise ResidencyMapError(f"unknown landing horizon fields: {unknown}")
+    out: dict[str, object] = {}
+    for name in ("end_bytes", "readahead_bytes", "reach_end_bytes",
+                 "declared_wait_end_bytes"):
+        number = value.get(name)
+        out[name] = None if number is None else _nonnegative(
+            number, where=f"landing horizon {name}")
+    out["consumption_bytes_per_s"] = _finite_or_none(
+        value.get("consumption_bytes_per_s"),
+        where="landing horizon consumption_bytes_per_s")
+    for name in ("accepted_phase", "reading_phase", "consumption_basis"):
+        text = value.get(name)
+        if text is not None and not isinstance(text, str):
+            raise ResidencyMapError(f"landing horizon {name} must be a string")
+        out[name] = text
+    advance = value.get("advance_mover_action_key")
+    out["advance_mover_action_key"] = None if advance is None else _action_key(
+        advance, where="landing horizon advance_mover_action_key")
     return out
 
 
