@@ -306,6 +306,13 @@ def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
     waited, other = _two_phase_reader(queue, stage, digest, total)
     filed = residency_plan.read_filed(queue, READER)[0]
     queue.publish(**dict(filed["phases"][0]["mover_row"]))
+    # The waited copy is claimed, as a running copy is: a copy stands aside
+    # only for a waited copy that is reading (#1091 review 1).
+    ready = queue.item_path(pool.READY, waited)
+    queue.item_path(pool.CLAIMED, waited).write_text(json.dumps({
+        **json.loads(ready.read_text()), "claimed_unix": time.time(),
+        "claimed_by": "fixture", "claimed_host": "dl380g10"}))
+    ready.unlink()
     wait_record = _declare_wait(queue, READER, [waited], since_unix=time.time() - 5.0)
     _cycle(queue, stage, gib=8)
 
@@ -339,11 +346,11 @@ def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
     time.sleep(0.6)
     assert worker.is_alive(), "the other copy did not yield to the waited one"
     wait_record.unlink()
-    ready = queue.item_path(pool.READY, waited)
+    claimed = queue.item_path(pool.CLAIMED, waited)
     done = queue.item_path(pool.DONE, waited)
     done.parent.mkdir(parents=True, exist_ok=True)
-    done.write_text(json.dumps({**json.loads(ready.read_text()), "status": "done"}))
-    ready.unlink()
+    done.write_text(json.dumps({**json.loads(claimed.read_text()), "status": "done"}))
+    claimed.unlink()
     _cycle(queue, stage, gib=8)
     worker.join(30)
     assert not worker.is_alive()
