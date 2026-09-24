@@ -94,7 +94,10 @@ class _World:
         monkeypatch.setattr(po, "_write_commitments", write)
 
     def mover(self, batch_id: str) -> str:
-        return str(self.replay.entry(self.q.root, batch_id)["mover_key"])
+        """The mover of the batch's active copy: a restaged batch's successor."""
+
+        return str(po._active_materialization(
+            self.replay.entry(self.q.root, batch_id))["mover_key"])
 
     def retired(self) -> list[str]:
         return [batch_id for batch_id in self.replay.unretired
@@ -125,11 +128,12 @@ def _retired_events(events: list[dict]) -> list[str]:
 def test_ten_retirements_write_the_commitments_once(tmp_path, monkeypatch):
     world = _World(tmp_path, monkeypatch)
     events = world.tick()
+    reads, writes = world.reads, world.writes
     assert _retired_events(events) == sorted(world.replay.unretired)
     assert world.retired() == world.replay.unretired
-    assert world.writes == 1, f"{world.writes} commitments writes for ten batches"
+    assert writes == 1, f"{writes} commitments writes for ten batches"
     # The tick's own read, and one under the lock on each side of the egresses.
-    assert world.reads == 3, world.reads
+    assert reads == 3, reads
     # Nothing is left for the next tick.
     assert _retired_events(world.tick()) == []
     assert world.writes == 0
