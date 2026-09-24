@@ -853,8 +853,9 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     """The origin-only batches one attempt committed under one template.
 
     Read from what PB filed: the attempt's instance, its commitments and each
-    batch through ``load_origin_batch``, which rechecks every origin by the
-    identity its commit recorded (``lstat``; no file is read or hashed).
+    batch through ``load_origin_batches``, which rechecks every origin by the
+    identity its commit recorded (``lstat``; a file is read and hashed only
+    when its timestamps alone moved, #1111).
     Batch-id order.  Raises ``ActionEdgeError`` naming why the edge cannot
     resolve: no instance, no batch, or a batch that is retiring, reclaimed or
     changed.
@@ -880,13 +881,14 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     for batch_id, entry in sorted(commitments["batches"].items()):
         if not isinstance(entry, Mapping) or entry.get("origin_only") is not True:
             continue
-        ref = po.origin_batch_ref(instance, batch_id=batch_id,
-                                  manifest_digest=str(entry.get("manifest_digest")))
-        try:
-            po.load_origin_batch(queue_root, ref)
-        except po.ProducedOutputError as exc:
-            raise ActionEdgeError(str(exc)) from None
-        refs.append(ref)
+        refs.append(po.origin_batch_ref(
+            instance, batch_id=batch_id,
+            manifest_digest=str(entry.get("manifest_digest"))))
+    try:
+        # One commitments write for every re-pin these checks make (#1111).
+        po.load_origin_batches(queue_root, refs)
+    except po.ProducedOutputError as exc:
+        raise ActionEdgeError(str(exc)) from None
     if not refs:
         raise ActionEdgeError(
             f"producer-committed-nothing: attempt {nonce[:8]} of "

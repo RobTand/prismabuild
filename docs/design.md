@@ -5979,7 +5979,9 @@ prefixes as `mount_prefix`, and the references under
 `load_origin_batch`, which reads the filed instance, template, commitments
 entry and immutable record, and refuses a batch that is not write-only,
 uncommitted, committed over another digest, reclaimed, or whose origin no
-longer has the identity its commit recorded. A path named by two batches
+longer has the identity its commit recorded. An origin whose timestamps
+alone moved is settled by its content instead ("A committed origin whose
+timestamps alone moved (#1111)"). A path named by two batches
 refuses. The consumer submits the manifest with
 `pbrun --data-manifest --residency stage`. At freeze, `pbrun` derives the
 manifest again from the queue (`require_declared_origin_batches`) and refuses
@@ -6088,7 +6090,11 @@ origin with the identity the commit recorded:
   the owner. A path another attempt that can still commit has prewritten
   holds the batch, quietly, until it commits or ends (#1053).
 - The same inode changed in place, or a stat that fails, refuses
-  (`origin-changed`, `origin-unstatable`) and keeps the batch.
+  (`origin-changed`, `origin-unstatable`) and keeps the batch. When only
+  the timestamps moved, the tick reads the file outside the lock and
+  deletes it if its digest is the committed one (#1111). Other bytes refuse
+  as `origin-changed`; a read that fails refuses as `origin-unverified`,
+  and the next tick reads it again.
 
 Before the first unlink the tick sets `retiring: {reason, consumers}` on the
 entry. From then on `declare_origin_consumer` and `load_origin_batch` refuse
@@ -6101,8 +6107,8 @@ bytes and the paths, as `reclaim_origin` does.
 
 **Logging.** Each retirement prints one JSON line in the tier log:
 `output-origin-retired` with `ref`, `bytes`, `reason` (`consumed` or
-`orphan`), `consumers`, `origin_identity` (the recorded identity each file
-was checked against) and the `unlinked`, `superseded` and `absent` paths. A
+`orphan`), `consumers`, `origin_identity` (the identity each file was
+checked against: the recorded one, or its last re-pin) and the `unlinked`, `superseded` and `absent` paths. A
 stall (`output-origin-retirement-stalled`, with the consumers and their
 states) or a refusal (`output-origin-retirement-refused`, with a reason)
 prints once per change: the entry keeps a digest of its last report in
@@ -6671,9 +6677,10 @@ publication record, the tick:
    consumer.
 4. **Pins the release.** It reads the resolved attempt's instance
    `<producer>/<template_id>.<nonce>` and takes every origin-only batch that
-   attempt committed, in batch-id order, through `load_origin_batch`, which
+   attempt committed, in batch-id order, through `load_origin_batches`, which
    rechecks each origin's recorded identity by `lstat`. It reads and hashes
-   no payload bytes. With a v1 static manifest, or none, the consumer's
+   an origin's bytes only when its timestamps alone moved (#1111), and files
+   those re-pins in one commitments write. With a v1 static manifest, or none, the consumer's
    manifest is the static entries with their phases, then each batch as its
    own phase, with the batch refs under `produced_output_batches`. A v2
    static manifest has each edge's batches placed at the phase it names
@@ -6689,7 +6696,7 @@ publication record, the tick:
    submission's publication options. A submission that asked for
    `--residency stage` has its movers sealed and its plan frozen under the
    consumer's transition lock, as `pbrun` does. On a resume it first checks the generation again and
-   each pinned batch with `load_origin_batch`. If the key already has a row
+   each pinned batch with `load_origin_batches`. If the key already has a row
    or a terminal record, it was published before a crash kept step 6 from
    running, and its generation is taken as it is.
 6. **Records the generation** at `deferred-releases/<pending_id>.published.json`.
@@ -7003,8 +7010,11 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   rewritten file of identical length would pass a size check and is refused
   here as `restage-origin-changed`. A batch filed before the field existed has
   no proof and refuses `restage-origin-proof-missing`; its current bytes are
-  never retroactively blessed. Nothing is rehashed -- the writer digest, where
-  one exists, still rides the manifest and the mover verifies it on copy.
+  never retroactively blessed. Nothing is rehashed on a match -- the writer
+  digest, where one exists, still rides the manifest and the mover verifies
+  it on copy. An origin whose timestamps alone moved and whose descriptor
+  carries that digest is read once and re-pinned (#1111); a null-digest
+  origin stays strict.
 * **Crash safety (PO-05).** The materialization intent is filed under the
   output-prefix ownership lock BEFORE any funding or movement side effect
   reaches the pool, so a crash at any prefix leaves a durable resumption point
@@ -10969,6 +10979,51 @@ the sha256 is the digest the export verified while it copied, so a file with
 that digest at the same inode and size is the file the export landed. It is
 not a weaker check: a same-size rewrite whose timestamps also moved is caught
 by the digest, which the stat comparison alone could not catch either.
+
+#### A committed origin whose timestamps alone moved (#1111)
+
+The same recall reaches an origin batch after its commit. A Stage A
+handoff is a write-only batch, and its first consumer stage-in is the
+reader that recalls the producer's delegation, so every later check of the
+identity the commit recorded meets moved timestamps. Every origin-only
+batch carries its sha256 (`commit_origin_batch` refuses a null one), so
+these checks settle a timestamp-only mismatch by content as the spool does:
+read the origin through its parent without following a link, hash it
+(`reader_lease.content_identity`), and accept it when the digest is the
+descriptor's and the inode and size are the recorded ones
+(`produced_output._verify_origin_content`).
+
+The immutable batch record is never rewritten. A re-pin is filed on the
+mutable commitments entry, as `origin_repins`: a list of
+`{path, from, to, reason, sha256, bytes, rehash_s, reads, host, unix, where}`.
+The identity a check compares against is the record's `origin_identity`
+with those re-pins applied in order (`_effective_origin_identity`). Each
+must start from the identity the ones before it left, change only the
+timestamps, and carry its path's sha256; a list that does not chain is
+`unknown-retain`, never the committed identity.
+
+The read never runs under the output-prefix lock. A check reads the origin
+first, with no lock held; the caller then takes the lock, stats the origin
+again, requires it to be the identity the read hashed, and only then files
+the re-pin (`_apply_origin_repins`):
+
+| Check | Read | Filed |
+|---|---|---|
+| `commit_origin_batch`, landed identity against a fresh `lstat` | Before it takes the lock | The hashed identity is the one committed in the record; the entry and the answer carry `landed_repins` |
+| `load_origin_batch`, `load_origin_batches`, `origin_batch_manifest` (a declaration, `pbrun`'s check at submission, a deferred release) | Lockless | `origin_repins`, one lock and one commitments write per instance, whatever the number of batches |
+| `ensure_batch_materialized` (a staged batch's restage) | Outside Phase 1, after the locked pass answers `restage-origin-unverified` | `origin_repins`, in Phase 1 under the lock, before the intent |
+| `_committed_restage_authority` (restage funding) | Never | Reads the entry's re-pins |
+| `origin_retirement_tick` | Outside the lock, then the tick takes it again in the same call | `origin_repins`, in the write that sets `retiring` or before the delete |
+
+A same-size rewrite refuses with a `detail` naming both digests
+(`restage-origin-changed`, `origin-batch-changed`,
+`origin-is-not-the-landed-copy`). The retirement's refusal event keeps its
+shape: other bytes are `origin-changed`, as before, and a read that fails is
+the new reason `origin-unverified`. A process remembers each content check that
+refused, by path, identity and digest, so a retirement tick does not read a
+changed origin again every cycle. A DEV null-digest staged batch has
+nothing to verify against and stays strict: after a recall it cannot be
+restaged.
 
 ### What creates and what retires per-key state
 
