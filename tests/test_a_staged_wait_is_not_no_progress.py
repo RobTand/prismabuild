@@ -387,14 +387,13 @@ def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
     ("tier_unknown", "refusal"),
     # The #538 shape: a ``cpus=`` demand no box's census can place.
     ("never_fits_capacity", "refusal"),
-    ("reservation_unavailable_withholding", "withhold"),
-    ("deferred_behind_withholding", "withhold"),
 ])
-def test_a_ready_mover_the_claim_pass_refuses_or_withholds_is_not_waited_on(
+def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
         tmp_path: Path, reason: str, kind: str) -> None:
-    """Queued, and the claim pass's latest word on it is a refusal or a
-    withhold: nothing will copy it while that stands, so the consumer's wait
-    on it is not a dependency wait.  Tier within commitment, loop alive."""
+    """Queued, and the claim pass's latest word on it is a refusal: nothing
+    will copy it while that stands, so the consumer's wait on it is not a
+    dependency wait.  Tier within commitment, loop alive.  A withhold is the
+    opposite, and has its own tests below (#1022 review round 3, F1)."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
@@ -620,3 +619,178 @@ def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
     entry = verdict["movers"][0]
     assert entry["evidence"] == "none", entry
     assert entry.get("waiting_behind", []) == [], entry
+
+
+# -- a withhold is the pool holding the box for the row (#1022 review round 3)
+#
+# F1.  A withhold (``*_withholding``) is the claim pass keeping the stage host
+# shut for this row while the holders in its way drain (#924): the row is
+# next, and the pool bounds the veto by ``WITHHOLD_CEILING_S`` from the
+# episode's start (``epoch_unix`` in the row's passes sidecar).  Round 2 read
+# it as "not coming", so a withhold that ran toward its ceiling ended a
+# healthy consumer whose chunk grace is the same 900 s.  The wait is now
+# exempt on the withhold, until the ceiling of its epoch.
+#
+# ``deferred_behind_withholding`` is not tested here: the claim pass records
+# it only for a producer's export (``cpu_admission.dependent_owner`` is
+# ``None`` for anything but a ``generation`` action with
+# ``params.produced_spool``), so no stage mover can carry it.
+
+
+def _withheld(queue: pool.PoolQueue, row, reason: str, *,
+              epoch_unix: float | None, first_unix: float | None) -> None:
+    """The claim pass's word on the ready ``row``: ``reason`` in its denial
+    ring, and the passes sidecar ``record_pass`` keeps for it, with the
+    withhold episode's start (``epoch_unix``) and the first denial
+    (``first_unix``) where given."""
+
+    key = str(row["action_key"])
+    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    queue._record_denial_transition(ready, host="dl380g10", reason=reason,
+                                    decision_reason=None)
+    passes: dict[str, object] = {"action_key": key, "passes": pool.STARVATION_FLOOR,
+                                 "updated_unix": time.time()}
+    if first_unix is not None:
+        passes["first_unix"] = first_unix
+    if epoch_unix is not None:
+        passes["epoch_unix"] = epoch_unix
+    path = queue.passes_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(passes))
+
+
+@pytest.mark.parametrize("reason", [
+    "reservation_unavailable_withholding",
+    # The host-PSI shape of PB #985: an adaptive refusal the drain resolves.
+    "adaptive_refused_withholding",
+])
+def test_a_ready_mover_the_claim_pass_withholds_for_is_waited_on(
+        tmp_path: Path, reason: str) -> None:
+    """F1: the withhold began 600 s ago, inside ``WITHHOLD_CEILING_S``, so
+    the pool is still holding the box for this row.  The wait is exempt, the
+    entry names the withhold and the host, and its ``evidence_unix`` is the
+    withhold's epoch, not the check."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    epoch = now - 600.0
+    _withheld(queue, row, reason, epoch_unix=epoch, first_unix=epoch - 120.0)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert (entry["state"], entry["evidence"]) == ("ready", "withheld"), entry
+    assert (entry.get("withhold"), entry.get("denied_by")) == (reason, "dl380g10"), entry
+    assert entry.get("evidence_unix") == epoch, entry
+    assert entry.get("withhold_basis") == "episode", entry
+    assert entry.get("withhold_ceiling_s") == pool.WITHHOLD_CEILING_S, entry
+
+
+def test_a_withhold_with_no_episode_is_bounded_by_the_first_denial(
+        tmp_path: Path) -> None:
+    """F1: a withhold with no episode on file (``in_flight``: the tokens
+    are between an acquisition and its rename) is bounded by the row's own
+    first-denial clock, the one the pool bounds it by."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    first = now - 100.0
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=None, first_unix=first)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "withheld", entry
+    assert (entry.get("evidence_unix"), entry.get("withhold_basis")) == (
+        first, "first-denial"), entry
+
+
+@pytest.mark.parametrize("epoch_age_s,first_age_s", [
+    # An episode past the ceiling: the pool has stopped withholding for it,
+    # so a ring that still says so is not a veto that is coming to an end.
+    (pool.WITHHOLD_CEILING_S + 1.0, pool.WITHHOLD_CEILING_S + 60.0),
+    # No sidecar at all: nothing bounds the withhold, so it is not waited on.
+    (None, None),
+], ids=["past-ceiling", "no-sidecar"])
+def test_a_withhold_past_its_ceiling_is_not_waited_on(
+        tmp_path: Path, epoch_age_s: float | None, first_age_s: float | None) -> None:
+    """F1's bound: exempt only within ``WITHHOLD_CEILING_S`` of the epoch."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=None if epoch_age_s is None else now - epoch_age_s,
+              first_unix=None if first_age_s is None else now - first_age_s)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "withhold-lapsed", entry
+    assert entry.get("withhold") == "reservation_unavailable_withholding", entry
+
+
+def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
+        tmp_path: Path) -> None:
+    """F1: the previous check, 100 s ago, saw a withhold whose epoch was
+    850 s old then, inside the ceiling.  The pool has since stopped
+    withholding and denies the row only transiently.  The withhold's epoch
+    is not carried into the ready rule, where it would read ``none`` at once
+    against a 900 s window: the ready rule takes its own baseline."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    mover = str(row["action_key"])
+    now = time.time()
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    ready = json.loads(queue.item_path(pool.READY, mover).read_text())
+    queue._record_denial_transition(ready, host="dl380g10",
+                                    reason="reservation_unavailable",
+                                    decision_reason=None)
+    prior = {"since_unix": 1.0, "exempt": True, "movers": [{
+        "key": mover, "state": "ready", "evidence": "withheld",
+        "withhold": "reservation_unavailable_withholding",
+        "evidence_unix": now - 950.0, "waiting_behind": []}]}
+
+    verdict = _judge(queue, item, progress_path, prior=prior, window_s=GRACE_S,
+                     now=now)
+
+    entry = verdict["movers"][0]
+    assert (verdict["exempt"], entry.get("evidence")) == (True, "baseline"), entry
+
+
+def test_a_mover_requeued_after_its_worker_died_gets_a_fresh_baseline(
+        tmp_path: Path) -> None:
+    """F4: the previous check saw this mover ``claimed`` with a live lease
+    400 s ago; its worker died, the reaper took the claim back at
+    ``LEASE_TIMEOUT_S`` and the row is ``ready`` again with nothing ahead
+    of it.  The claimed entry's evidence time is not the ready rule's: the
+    ready evidence takes a baseline on the state change, instead of reading
+    ``none`` at once against a 300 s window.  (The RV-1022 review's probe.)"""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    mover = str(row["action_key"])
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    now = time.time()
+    first = _judge(queue, item, progress_path, prior=None, window_s=300.0, now=now)
+    prior = dict(first)
+    prior["movers"] = [{"key": mover, "state": "claimed", "evidence": "lease-live",
+                        "evidence_unix": now - pool.LEASE_TIMEOUT_S - 100.0,
+                        "lease_live": True}]
+
+    verdict = _judge(queue, item, progress_path, prior=prior, window_s=300.0,
+                     now=now)
+
+    entry = verdict["movers"][0]
+    assert entry["state"] == "ready", entry
+    assert (verdict["exempt"], entry.get("evidence")) == (True, "baseline"), entry

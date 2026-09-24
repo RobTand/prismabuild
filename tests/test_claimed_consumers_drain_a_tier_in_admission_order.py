@@ -591,7 +591,8 @@ def _file_order(queue: pool.PoolQueue, key: str, *, standing: str,
 def _ahead_running(queue: pool.PoolQueue, *, quiet_s: float | None,
                    heartbeat_age_s: float = 0.0,
                    accepted_count: int | None = None,
-                   waiting_exempt: bool | None = None) -> None:
+                   waiting_exempt: bool | None = None,
+                   grace_s: float = GRACE_S) -> None:
     """The consumer ranked ahead: claimed, with the lease its worker writes.
 
     ``quiet_s`` is what its progress watch last reported (``None``: the
@@ -613,7 +614,7 @@ def _ahead_running(queue: pool.PoolQueue, *, quiet_s: float | None,
         "claimed_unix": claimed, "published_unix": claimed - 10.0}
     if quiet_s is not None:
         observation: dict[str, object] = {
-            "source": "action-progress", "quiet_s": quiet_s, "grace_s": GRACE_S}
+            "source": "action-progress", "quiet_s": quiet_s, "grace_s": grace_s}
         if accepted_count is not None:
             observation.update({"accepted_count": accepted_count,
                                 "staged_wait_exempt_s": 0.0})
@@ -1210,16 +1211,25 @@ def test_a_late_lease_on_the_ahead_box_does_not_strip_the_exemption(
     assert late.get("ahead_evidence", {}).get("evidence") == "carried", late
 
 
+@pytest.mark.parametrize("quiet_s,heartbeat_age_s", [
+    # Its own judge says it is past its grace: its rung ends it.
+    (GRACE_S + 60.0, 0.0),
+    # Its worker is gone: the lease is past ``LEASE_TIMEOUT_S``, and the
+    # reaper takes the claim back.
+    (60.0, pool.LEASE_TIMEOUT_S + 60.0),
+], ids=["past-its-grace", "lease-dead"])
 def test_a_held_back_consumer_is_not_exempt_once_the_one_ahead_shows_nothing(
-        tmp_path: Path) -> None:
+        tmp_path: Path, quiet_s: float, heartbeat_age_s: float) -> None:
     """Item 5: a whole evidence window with no accepted report, no credited
-    wait and no exempt verdict from the consumer ahead: it is not advancing,
-    whatever its last quiet said, and the wait behind it is not the order's."""
+    wait and no exempt verdict from the consumer ahead, and the ahead's own
+    judge does not vouch for it (round 3, F2): its quiet is past its grace,
+    or its lease is dead.  The wait behind it is not the order's."""
 
     queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
     _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
     now = time.time()
-    _ahead_running(queue, quiet_s=60.0, accepted_count=5)
+    _ahead_running(queue, quiet_s=quiet_s, heartbeat_age_s=heartbeat_age_s,
+                   accepted_count=5)
 
     first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
                    now=now - GRACE_S - 1.0)
@@ -1255,6 +1265,81 @@ def test_a_held_back_consumer_is_exempt_on_the_ahead_ones_evidence(
 
     assert renewed["exempt"] is True, renewed
     assert renewed.get("ahead_evidence", {}).get("evidence") == evidence, renewed
+
+
+# ------------------------------------------------ round 3 (RV-1022)
+
+
+def test_a_held_back_consumer_behind_an_ahead_inside_its_own_grace_is_exempt(
+        tmp_path: Path) -> None:
+    """F2: the consumer ahead is quiet 1500 s against its own 3600 s grace
+    (a longer phase than this consumer's), so its own judge has not ended
+    it, and its rung, which is what stores ``staged_wait`` in its lease, has
+    not run yet.  Its counts are static for a whole 600 s window.  Its lease
+    heartbeat is live and its quiet is inside its grace, so it is healthy by
+    the one reading that stays correct when reports stop: its own watch.
+    The first look is one window ago; only the second is asserted.  (The
+    RV-1022 review's probe, tightened to the evidence it now names.)"""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HELD_BACK)
+    _ahead_running(queue, quiet_s=1500.0, accepted_count=5, grace_s=3600.0,
+                   heartbeat_age_s=20.0)
+    heartbeat = json.loads(queue.lease_path(AHEAD).read_text())["heartbeat_unix"]
+    now = time.time()
+    window = 600.0
+
+    first = _judge(queue, item, progress_path, prior=None, window_s=window,
+                   now=now - window - 1.0)
+    later = _judge(queue, item, progress_path, prior=first, window_s=window,
+                   now=now)
+
+    ahead = later.get("ahead_evidence") or {}
+    assert later["ahead_quiet_s"] < later["ahead_grace_s"], later
+    assert (later["exempt"], ahead.get("evidence")) == (True, "ahead-within-grace"), later
+    assert ahead.get("evidence_unix") == heartbeat, ahead
+
+
+@pytest.mark.parametrize("relief", ["refused", "unknown"])
+@pytest.mark.parametrize("standing", [window_credit.CLAIM_HEAD,
+                                      window_credit.CLAIM_GRANTED,
+                                      window_credit.CLAIM_HELD_BACK])
+def test_no_standing_is_exempt_when_relief_is_refused_or_unknown(
+        tmp_path: Path, relief: str, standing: str) -> None:
+    """F3: relief ``refused`` (the stage root refused) or ``unknown`` (the
+    tier ledger did not read) makes no room and names no victim, so an
+    exemption by standing would be a wait with no end on an infrastructure
+    fault.  Before #1011 an unpublished range on an over-committed tier was
+    never exempt; under these two reliefs it is not exempt again, whatever
+    the standing, and the verdict names the relief.  (The RV-1022 review's
+    probe, widened to every standing.)"""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=standing, relief=relief)
+    _ahead_running(queue, quiet_s=60.0, accepted_count=5)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S)
+
+    assert verdict["exempt"] is False, verdict
+    claim = verdict.get("claim_order") or {}
+    assert (claim.get("standing"), claim.get("relief")) == (standing, relief), claim
+
+
+@pytest.mark.parametrize("relief", ["short", "not-needed", "evicted", "preempted"])
+def test_the_head_stays_exempt_under_every_other_relief(
+        tmp_path: Path, relief: str) -> None:
+    """F3's guard: the deny-list names only ``refused`` and ``unknown``.
+    ``short`` stays exempt (a reader pins a range only while it reads it, so
+    a decline clears), and ``futile`` keeps the one-victim rule
+    (``test_a_stuck_order_ends_only_its_lowest_ranked_consumer``)."""
+
+    queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
+    _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HEAD,
+                relief=relief)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S)
+
+    assert verdict["exempt"] is True, verdict
 
 
 # ------------------------------------------------ item 7: a measurement
