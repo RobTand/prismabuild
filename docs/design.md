@@ -162,7 +162,12 @@ listings of one directory on the NFS export, on every loop of every box, and
 discovery read the aging sidecar of every ready record, though a record the
 box cannot place is skipped whatever its aging count. Now the pass takes one
 listing after its first lock acquisition and uses it, as a hint that only
-denies, for every item. A claim is decided on a fresh listing: under the
+denies, for every item. Since #1085 the pass judges placement before it takes
+a row's transition lock, so a box that can never place a row takes no lock
+for it and cannot turn the placing box's pass into a `transition_busy`; a
+pass over rows the box cannot place takes no lock and lists nothing. A
+released origin consumer still takes its lock whatever its placement, because
+failing it is any box's to do (#954). A claim is decided on a fresh listing: under the
 key's transition lock, just before the rename, `claimed/` is listed again
 and the key refused as `already_claimed` on a claim record or on either
 finish mark (a tombstone or a late-finish record) filed since the pass
@@ -226,7 +231,10 @@ the key's transition lock, which already serializes that key's writers across
 the fleet. `transition_busy`, recorded because another loop holds that lock,
 stays out of the ring: it is a sibling loop evaluating the item this instant,
 not a verdict about the item, and several loops per box would otherwise fill
-the ring with it. One writer is outside the claim scan and its lock: the tier
+the ring with it. So do the two reasons the scan records before it takes the
+lock (#1085), `placement_mismatch` and `deferred_behind_withheld_row`: an
+unlocked read-modify-write of the ring could drop the entry a lock holder is
+writing. Both still reach the latest record. One writer is outside the claim scan and its lock: the tier
 loop's `residency_plan_unreadable`, whose entry is best-effort against a claim
 loop writing the same key at that instant. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
 lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
@@ -331,7 +339,19 @@ full-width CPU demand on a pressured host, and the GPU refusals for a
 measurement) when every holder is transient, and the adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
-by the token rule. Every other adaptive refusal is overtaken as before. A
+by the token rule. A GPU refusal of an item that is not a measurement
+withholds too, when it is one the GPU controller gives only while the pool's
+own GPU holders are on the device (`exclusive_holder`,
+`sharing_probe_not_authorized`, `holder_telemetry_unavailable`,
+`max_actions`; #1085). It is judged by the exclusive rule over the box's GPU
+holders alone, a probe that borrows the device counting as well as the token
+holder, and it holds back only the later rows that demand a GPU: the
+controller lets a shared GPU row join a holder, and each one that does keeps
+the device occupied past the holder it joined, while a CPU-only row takes
+nothing those holders release and keeps filling the box. The row it holds
+back is denied `deferred_behind_withheld_row`, naming `withheld_for` and
+`withheld_kinds`, with no pass. Every other adaptive refusal is overtaken as
+before. A
 `measurement_holder` refusal whose decision names `isolated_by` -- a
 measurement already holds the box -- never withholds: that box admits only the
 measurement's own dependents, so a veto would block just the work its progress
@@ -340,7 +360,11 @@ goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
 left it; a real dependent among them is denied `deferred_behind_withholding`,
-naming `withheld_for` (#985). An item
+naming `withheld_for` (#985). When a pass finds a row's transition lock
+held by another loop, the row still withholds for that pass if this host's
+latest verdict for it is a withhold whose episode is inside
+`WITHHOLD_CEILING_S` (#1085); the `transition_busy` it records carries that
+episode's start, so a run of busy passes never renews it. An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
