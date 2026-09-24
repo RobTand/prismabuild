@@ -8224,10 +8224,14 @@ I5 does not cover three relief outcomes: `short` with nothing evicted,
 `refused` and `unknown`. Under `refused` (the stage root refused the
 eviction) and `unknown` (the tier ledger did not read), no standing is
 exempt (`CLAIM_ORDER_RELIEF_ENDS_WAIT`, read by
-`PoolQueue._tier_commitment_standing`): every blocked consumer on the tier
-waits as it did before #1011 on an over-committed tier, and its own rung
-ends it within one grace. That is the fail-closed answer to an
-infrastructure fault. Round 1 of #1022 exempted `granted`, `head` and
+`PoolQueue._tier_commitment_standing`): every consumer on the tier that
+waits on an unpublished, evicted or failed range waits as it did before
+#1011 on an over-committed tier, and its own rung ends it within one grace.
+A consumer whose mover is ready or claimed is judged on its mover's
+evidence, not its standing. That is the fail-closed answer to an
+infrastructure fault. The tier loop stamps either relief on a single failed
+read, and the record carries it for that cycle, so a consumer whose rung
+checks inside that cycle is ended on a one-cycle fault. Round 1 of #1022 exempted `granted`, `head` and
 `satisfied` whatever the relief; before #1011 none of them was exempt on an
 over-committed tier. `short` with nothing evicted keeps the standing's
 answer, because a reader pins a range only while it reads it, so a decline

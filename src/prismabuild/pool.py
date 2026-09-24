@@ -7242,8 +7242,8 @@ class PoolQueue:
         if relief in CLAIM_ORDER_RELIEF_ENDS_WAIT:
             # The relief made no room and names no victim: whatever the
             # standing, the wait is not the order's (round 3, F3).  Every
-            # blocked consumer on the tier reads this, as every one did
-            # before #1011 on an over-committed tier.
+            # consumer on the tier waiting on an unpublished range reads
+            # this, as every one did before #1011 on an over-committed tier.
             claim.update({"exempt": False,
                           "reason": f"claim order relief {relief}: it made no "
                                     "room and names no victim, so no standing "
