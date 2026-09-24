@@ -8934,15 +8934,34 @@ the transaction verified, and nothing is re-sampled at installation:
 * this owner's fragment and material file versions, sampled before their
   reads and again after the scan, and installed only when the two are equal;
 * device/inode/mtime/ctime stamps of every unique immediate parent directory
-  of the fragment's paths, sampled before and after the classification scan
-  and installed only when all are present and equal;
+  of the fragment's paths, sampled before the classification scan with
+  `stage_move._trusted_directory_stamp` and again after it, and installed
+  only when every stamp is trusted and the two samples are equal;
 * the file version of every co-owner fragment that names one of the owner's
   paths, as the census under the stage ownership lock read it.
 
 The next pass skips only while every fence is unchanged. A rename landing
 after the scan is therefore never blessed as clean: the next pass reads the
-recorded (older) stamp, sees the difference and re-scans. A co-owner fragment
-that is removed or rewritten re-runs the census, where the path it protected
+recorded (older) stamp, sees the difference and re-scans. The directory stamps
+must be trusted ones (#1062). Every change to a directory's entries stamps its
+times from the coarse realtime clock, so two changes in one tick share a
+stamp, and a stamp sampled between them is one the second change never moves.
+The trusted rule refuses a directory whose mtime or ctime is not strictly
+before the clock read taken just before its `lstat`, and refuses every
+directory on a filesystem it does not list. A refused directory still takes
+part in the before-and-after comparison, but nothing is installed on it: the
+owner is scanned again on the next pass, which on a tier cycle lands at least
+one tick later and installs if nothing else changed. On ZFS and tmpfs, the
+stage and RAM tier filesystems, a steady cycle therefore caches after at most
+one extra uncached pass; on a filesystem the rule does not list, such as NFS,
+no checkpoint is installed, as no #992 listing is kept there. The file fences
+take no clock read. Every writer of a fragment or material sidecar replaces it
+by rename (`residency_map._write_atomic`, `reader_lease.write_material`), so
+the first change after the census read installs a new inode while the read
+one is still linked. Matching the recorded version again would take a second
+replacement that reuses the read inode's number with the same size, mtime and
+ctime. A co-owner fragment that is
+removed or rewritten re-runs the census, where the path it protected
 may now prune, or the whole owner evict. A new co-owner needs no fence,
 because it can only add protection. A symlink or non-directory parent is
 never cached. A hit only ever skips the cleanup scan: terminal, live, lease
