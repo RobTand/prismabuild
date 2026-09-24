@@ -48,7 +48,7 @@ import array
 import bisect
 from contextlib import ExitStack, contextmanager
 import errno
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 import os
@@ -2749,6 +2749,144 @@ class _StagedPublisher:
         return record_digest, file_id
 
 
+class _ReaderPlan:
+    """This copy's place in its tier's reader plan (#1091), as the tier loop announces it.
+
+    The tier record's ``reader_plan`` (``tier_loop.reader_plan``) lists the
+    copies claimed consumers are blocked on.  A copy on that list is
+    *exempt*: the disk pacer never holds it, and it reads at its deepest
+    depth.  Every other copy on the tier *yields* while the list is not
+    empty: it stops reading until the waited copies land, because a
+    later-phase copy on the same four spindles is what made the waited one
+    late (2026-09-24: 30.8 MB/s of a 250.6 MB/s pool, 7 copies claimed).
+
+    "Never held" covers the pacer's blind hold too.  That hold stands in for
+    the client verdict while the pool's telemetry is missing, and an exempt
+    copy reads whatever the client verdict says; holding it on a missing
+    verdict would only delay the copy a consumer is already blocked on.
+
+    The record is re-read only when its file changed, and asked about at
+    most every ``hold_s``.  A record older than ``pool.OFFER_TIMEOUT_S`` by
+    its ``announced_unix``, or none at all, is no plan: nothing is exempt and
+    nothing yields, which is the behavior before #1091, so a dead tier loop
+    cannot hold a copy on a wait that has ended.
+    """
+
+    def __init__(self, queue: pool.PoolQueue, tier_id: str, mover: str, *,
+                 hold_s: float = 0.25,
+                 clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        self.queue = queue
+        self.tier_id = str(tier_id)
+        self.mover = str(mover)
+        self.hold_s = max(0.001, float(hold_s))
+        self.clock, self.wall, self.sleep = clock, wall, sleep
+        self._lock = threading.Lock()
+        self._stamp: tuple[int, int, int] | None = None
+        self._declared: frozenset[str] = frozenset()
+        self._announced: float | None = None
+        self._asked_at: float | None = None
+        self._holding = 0
+        self._hold_started = 0.0
+        self.yielded_s = 0.0
+        self.yield_count = 0
+        self.exempt_seen = False
+        self.declared_seen: list[str] = []
+
+    def _refresh_locked(self) -> None:
+        now = self.clock()
+        if self._asked_at is not None and now - self._asked_at < self.hold_s:
+            return
+        self._asked_at = now
+        try:
+            path = self.queue.tier_record_path(self.tier_id)
+            status = os.stat(path)
+        except (OSError, pool.PoolContractError, ValueError):
+            self._stamp, self._declared, self._announced = None, frozenset(), None
+            return
+        stamp = (status.st_ino, status.st_mtime_ns, status.st_size)
+        if stamp == self._stamp:
+            return
+        self._stamp = stamp
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            self._declared, self._announced = frozenset(), None
+            return
+        plan = record.get(pool.READER_PLAN_FIELD) if isinstance(record, dict) else None
+        announced = record.get("announced_unix") if isinstance(record, dict) else None
+        if (not isinstance(plan, dict) or isinstance(announced, bool)
+                or not isinstance(announced, (int, float))):
+            self._declared, self._announced = frozenset(), None
+            return
+        self._announced = float(announced)
+        self._declared = frozenset(
+            str(row.get("mover_action_key") or "")
+            for row in plan.get("declared_wait") or ()
+            if isinstance(row, dict))
+        for key in sorted(self._declared):
+            if key not in self.declared_seen and len(self.declared_seen) < 20:
+                self.declared_seen.append(key)
+
+    def _declared_now(self) -> frozenset[str]:
+        with self._lock:
+            self._refresh_locked()
+            if (self._announced is None
+                    or self.wall() - self._announced > pool.OFFER_TIMEOUT_S):
+                return frozenset()
+            return self._declared
+
+    def exempt(self) -> bool:
+        """Whether a claimed consumer is blocked on this copy right now."""
+
+        exempt = self.mover in self._declared_now()
+        if exempt:
+            self.exempt_seen = True
+        return exempt
+
+    def yields(self) -> bool:
+        """Whether another copy on this tier is waited on and this one is not."""
+
+        declared = self._declared_now()
+        return bool(declared) and self.mover not in declared
+
+    def stand_aside(self, stop: threading.Event) -> None:
+        """Stop reading while :meth:`yields`, or until ``stop``.
+
+        Wall seconds any worker stood aside, not the sum over workers, as the
+        pacer counts ``held_seconds``: they go on the receipt as
+        ``disk_pacing.yielded_seconds``, which ``storage_tiers._fell_short``
+        takes out of the copy's reading time.
+        """
+
+        if not self.yields():
+            return
+        with self._lock:
+            if self._holding == 0:
+                self._hold_started = self.clock()
+                self.yield_count += 1
+            self._holding += 1
+        try:
+            while self.yields() and not stop.is_set():
+                self.sleep(self.hold_s)
+        finally:
+            with self._lock:
+                self._holding -= 1
+                if self._holding == 0:
+                    self.yielded_s += self.clock() - self._hold_started
+
+    def report(self) -> dict[str, object]:
+        with self._lock:
+            yielded = self.yielded_s
+            if self._holding:
+                yielded += self.clock() - self._hold_started
+            return {"exempt": self.exempt_seen,
+                    "yielded_seconds": round(yielded, 3),
+                    "yields": self.yield_count,
+                    "declared_wait_seen": list(self.declared_seen)}
+
+
 class _Copier:
     """One range, copied in read order by a bounded set of workers."""
 
@@ -2805,6 +2943,18 @@ class _Copier:
         #: under the dispatch lock beside :attr:`publication_refused`.
         self.refusal: str | None = None
         self.conflict: dict[str, object] | None = None
+        #: The tier's reader plan (#1091), or ``None``: no exemption and no
+        #: yield, as before.  ``stage_move`` sets it.
+        self.reader_plan: _ReaderPlan | None = None
+        #: Bytes read so far, per copy worker thread, landed or not (#1090):
+        #: the mover's own landing report prices its live rate from their
+        #: sum.  One key per thread, so no lock is taken per block.
+        self.read_bytes: dict[int, int] = {}
+
+    def bytes_read(self) -> int:
+        """Every byte the copy workers have read so far, landed or not."""
+
+        return sum(list(self.read_bytes.values()))
 
     def _temporary(self, destination: Path) -> Path:
         """This mover's own temporary beside ``destination`` (#620).
@@ -2886,6 +3036,8 @@ class _Copier:
         spent = {"pace_wait": 0.0, "copy_read": 0.0, "copy_write": 0.0,
                  "hash": 0.0, "fsync": 0.0}
         now = time.perf_counter
+        plan = self.reader_plan
+        me = threading.get_ident()
         # O_NOFOLLOW at the leaf and a regular-file check, for the reason the
         # prewarm loop gives: the manifest is submitter-supplied and a symlink
         # swapped in after validation must fail here rather than send this copy
@@ -2901,6 +3053,13 @@ class _Copier:
                 view = memoryview(buffer)
                 while written < want and not stop.is_set():
                     mark = now()
+                    if plan is not None:
+                        # Another copy on this tier is one a consumer is
+                        # blocked on (#1091): stand aside, holding no slot.
+                        plan.stand_aside(stop)
+                        if stop.is_set():
+                            spent["pace_wait"] += now() - mark
+                            break
                     if not admission.acquire(
                             self.limit, stop,
                             self.pacer.hold_s if self.pacer is not None else 0.25):
@@ -2908,7 +3067,15 @@ class _Copier:
                         break
                     try:
                         if self.pacer is not None:
-                            self.pacer.wait(stop)
+                            if plan is not None and plan.exempt():
+                                # Never held (#1091), still measured: the
+                                # pacer samples the pool, so the receipt
+                                # carries the delivery the cap is folded from.
+                                sample = getattr(self.pacer, "sample", None)
+                                if sample is not None:
+                                    sample()
+                            else:
+                                self.pacer.wait(stop)
                             if stop.is_set():
                                 break
                         read_at = now()
@@ -2920,6 +3087,7 @@ class _Copier:
                         admission.release()
                     if not chunk:
                         break
+                    self.read_bytes[me] = self.read_bytes.get(me, 0) + chunk
                     sink.write(view[:chunk])
                     hashed_at = now()
                     spent["copy_write"] += hashed_at - mark
@@ -3003,8 +3171,14 @@ class _Copier:
         """
 
         admission = prewarm_loop.Admission()
-        self.limit = (self.pacer.depth if self.pacer is not None
-                      else (lambda: self.workers))
+        paced = (self.pacer.depth if self.pacer is not None
+                 else (lambda: self.workers))
+        plan = self.reader_plan
+        # A copy a consumer is blocked on reads at its deepest depth: the
+        # pacer's shared depth protects other clients, which it never does
+        # at the blocked consumer's expense (#1091).
+        self.limit = (paced if plan is None
+                      else (lambda: self.workers if plan.exempt() else paced()))
         work: queuelib.Queue = queuelib.Queue()
         for entry in entries:
             work.put(entry)
@@ -3266,6 +3440,98 @@ class _ProgressReporter:
                 "phase": self.reported_phase, "unit": self.unit,
                 "last_reported_unix": self.last_reported_unix,
                 "unwritten": self.unwritten, "refusal": self.refusal}
+
+
+class _LandingReport:
+    """This copy's own report of the bytes it has copied, on every launch (#1090).
+
+    The worker's progress channel exists only when the mover was sealed with
+    a progress policy, which needs a measured landing rate, so the copies
+    that most need a live price -- cold ones, before anything like them has
+    landed -- had none: on 2026-09-24 a claimed copy promised in 8 s landed
+    497 s later, and its receipt read ``channel: false, reports: 0``.  This
+    report needs no channel.  Every ``interval_s`` a thread of its own files
+    ``pool.PoolQueue.mover_landing_path``: the bytes read so far, landed or
+    not (``copied_bytes``), the bytes landed (``landed_bytes``) and when the
+    copy started, so the tier loop prices the claimed copy's landing from
+    its own rate (``residency_plan.expected_landings``, ``reported``).
+
+    It gates nothing and is not the worker's stall evidence.  A write that
+    fails is counted and never fails the copy.  The copy's receipt prices it
+    once it lands, so the report is removed when the mover ends; one left by
+    a crash is an earlier attempt's, and the tier loop keeps a report only
+    when it started inside the current claim.
+    """
+
+    def __init__(self, copier: "_Copier", queue: pool.PoolQueue, mover: str, *,
+                 interval_s: float, range_bytes: int) -> None:
+        self.copier = copier
+        self.path = queue.mover_landing_path(mover)
+        self.mover = str(mover)
+        self.interval_s = max(0.001, float(interval_s))
+        self.range_bytes = int(range_bytes)
+        self.started_unix = time.time()
+        self.reports = 0
+        self.unwritten = 0
+        self.last: dict[str, object] | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def write(self) -> None:
+        with self.copier.lock:
+            landed = int(self.copier.bytes_staged)
+        copied = max(landed, int(self.copier.bytes_read()))
+        record = {"schema": pool.MOVER_LANDING_SCHEMA_V1,
+                  "mover_action_key": self.mover,
+                  "started_unix": self.started_unix,
+                  "reported_unix": time.time(),
+                  "copied_bytes": copied, "landed_bytes": landed,
+                  "range_bytes": self.range_bytes}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            pool._write_json_atomic(self.path, record)
+        except (OSError, pool.PoolContractError):
+            self.unwritten += 1
+            return
+        self.reports += 1
+        self.last = record
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self.write()
+
+        def loop() -> None:
+            while not self._stop.wait(self.interval_s):
+                self.write()
+
+        self._thread = threading.Thread(target=loop, daemon=True,
+                                        name="stage-move-landing")
+        self._thread.start()
+
+    def stop(self) -> None:
+        """The copy is over: one last report, then no more."""
+
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self.write()
+
+    def remove(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            self.unwritten += 1
+
+    def record(self) -> dict[str, object]:
+        """What the receipt says about the reports this copy made."""
+
+        last = self.last or {}
+        return {"interval_s": self.interval_s, "reports": self.reports,
+                "unwritten": self.unwritten,
+                "started_unix": self.started_unix,
+                "copied_bytes": last.get("copied_bytes"),
+                "landed_bytes": last.get("landed_bytes")}
 
 
 def warm_staged(paths: "list[str]", *, workers: int = 4,
@@ -3861,6 +4127,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
         owner=str(args.action_key), publisher=publisher, namespace=namespace)
+    # The tier's reader plan (#1091): this copy goes first when a consumer is
+    # blocked on it, and stands aside while one is blocked on another.
+    copier.reader_plan = _ReaderPlan(
+        queue, str(args.tier_id), str(args.action_key),
+        hold_s=float(getattr(pacer, "hold_s", 0.25) or 0.25))
 
     manifest_sha256 = args.manifest_sha256
 
@@ -3997,14 +4268,25 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         range_start_bytes=int(args.range_start_bytes),
         range_end_bytes=int(args.range_end_bytes))
     reporter.start()
+    # This copy's own landed-bytes report, channel or not (#1090).
+    landing = _LandingReport(
+        copier, queue, str(args.action_key),
+        interval_s=float(getattr(args, "progress_interval_s", None)
+                         or pool.HEARTBEAT_S),
+        range_bytes=declared)
+    landing.start()
     copier.run(window, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish,
                named_once=named_once)
+    landing.stop()
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
     cpu_used = max(0.0, cpu_seconds() - cpu_before)
     pacing = (pacer.report() if pacer is not None
               else prewarm_loop.inactive_pacing("no pacer"))
+    plan_report = copier.reader_plan.report()
+    # Stood aside on purpose, like a hold: ``_fell_short`` reads both.
+    pacing[storage_tiers.YIELDED_FIELD] = plan_report["yielded_seconds"]
 
     overran = copier.bytes_staged > declared
     receipt: dict[str, object] = {
@@ -4163,6 +4445,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     # What this copy told the worker's stall check (#1010), so a receipt
     # says whether the copy was bounded by its progress or by nothing.
     receipt["progress_report"] = reporter.record()
+    # What the tier loop priced its landing from (#1090), and where it stood
+    # in the tier's reader plan (#1091).
+    landing.remove()
+    receipt["landing_report"] = landing.record()
+    receipt["reader_plan"] = plan_report
     return receipt
 
 

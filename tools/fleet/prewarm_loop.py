@@ -2118,6 +2118,18 @@ class DiskPacer:
         with self._lock:
             return self.readers if self._clients_active else self.max_readers
 
+    def sample(self) -> None:
+        """Take this interval's measurement without asking to hold (#1091).
+
+        For a reader the pacer must never hold -- a stage copy a claimed
+        consumer is blocked on -- whose record still has to say what the
+        pool delivered: the same resample :meth:`wait` takes, at most every
+        ``sample_s``, with the verdict ignored.
+        """
+
+        if self.active:
+            self._verdict()
+
     def wait(self, stop: threading.Event | None = None,
              abort: Callable[[], bool] | None = None) -> None:
         """Block until the pool is under threshold, or ``stop`` is set.

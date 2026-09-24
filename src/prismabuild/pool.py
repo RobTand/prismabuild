@@ -725,6 +725,23 @@ RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 #: launcher itself gives the action group it reaps on the way out.
 WITHDRAW_GRACE_S = 5.0
 
+#: The tier record field the tier loop announces its reader plan in (#1091):
+#: the copies claimed consumers are blocked on and the measured mover cap.
+READER_PLAN_FIELD = "reader_plan"
+
+#: The two denials the reader plan gives a stage mover (#1091).  Both are
+#: transient in the mover denial classes above -- the row is coming, once the
+#: waited copy lands or a claimed copy finishes -- and neither takes a pass:
+#: the tier is cluster-scoped, as a tier shortage is.
+DEFERRED_FOR_DECLARED_WAIT = "deferred_for_declared_wait"
+DEFERRED_FOR_POOL_READERS = "deferred_for_pool_readers"
+
+#: A mover's own landing report (#1090): ``residency-events/<mover>/`` +
+#: this name, written by ``stage_move`` whether or not the worker gave it a
+#: progress channel.  ``consumer_events`` reads only ``*.jsonl`` there.
+MOVER_LANDING_REPORT = "landing.json"
+MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
+
 #: How long a worker's offer stays believable.  A loop re-announces on every
 #: poll, and the default poll is 10 s, so two minutes is a dozen missed polls:
 #: long enough that a slow NFS write or a long action never makes a live box
@@ -7057,6 +7074,148 @@ class PoolQueue:
             return None
         return {"landed_bytes": units, "reported_unix": float(at),
                 "landed_phase": str(record["phase"])}
+
+    def mover_landing_path(self, mover: str) -> Path:
+        """Where ``mover`` files its own landing report (#1090)."""
+
+        return self.consumer_events_dir(mover) / MOVER_LANDING_REPORT
+
+    def mover_landing(self, mover: str) -> dict[str, object] | None:
+        """A running stage mover's own report of the bytes it has copied (#1090).
+
+        ``stage_move`` writes it on every launch, with or without a progress
+        channel, so a claimed copy's expected landing can come from its own
+        live rate.  It prices an expectation and gates nothing, so it is not
+        the staged-wait verdict's evidence (:meth:`mover_report` stays that).
+        Read once, bounded and without following links.  ``None`` for no
+        report or one that does not read: another schema, a byte count that
+        is not whole, a time that is not finite.  Returns ``{"copied_bytes",
+        "landed_bytes", "started_unix", "reported_unix"}``; the caller keeps
+        it only when ``started_unix`` falls inside the mover's claim.
+        """
+
+        try:
+            raw = pb._read_regular_file_nofollow(
+                self.mover_landing_path(mover), where="mover landing report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+            record = json.loads(raw)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, RecursionError, PoolContractError,
+                pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError):
+            return None
+        if not isinstance(record, Mapping) or record.get(
+                "schema") != MOVER_LANDING_SCHEMA_V1:
+            return None
+        out: dict[str, object] = {}
+        for name in ("copied_bytes", "landed_bytes"):
+            value = record.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+            out[name] = value
+        for name in ("started_unix", "reported_unix"):
+            value = record.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))):
+                return None
+            out[name] = float(value)
+        return out
+
+    def reader_plan_verdict(
+        self, item: Mapping[str, object],
+        tier_demand: Mapping[str, Mapping[str, int]], *,
+        now: float | None = None,
+    ) -> dict[str, object] | None:
+        """What the tier's reader plan says about claiming stage mover ``item`` (#1091).
+
+        The plan is the tier record's ``reader_plan`` (``tier_loop.
+        reader_plan``).  For a stage mover row -- a residency block that names
+        a range -- on a tier whose record is fresh:
+
+        * While the plan lists copies claimed consumers are blocked on
+          (``declared_wait``), a row among them is admitted and its pool fill
+          is waived: the plan, not the fill ledger, admits it, because every
+          other copy on the tier is deferred while it runs.  The occupancy
+          kind (``stage_gib``) is still taken, so the stage never over-fills.
+          The answer's ``tier_demand`` is what to acquire, and
+          ``fill_waived`` how much fill it did not.  Any other mover row on
+          the tier is denied ``deferred_for_declared_wait``: a later-phase
+          copy reading the same spindles is what made the waited copy late.
+        * Otherwise, at the measured cap (``cap.movers``: the mover count past
+          which the pool's delivery stops rising), a row is denied
+          ``deferred_for_pool_readers`` while that many movers are claimed on
+          the tier.
+
+        ``None`` means the plan does not bear on the row: not a stage mover,
+        no record, no plan, or a plan older than ``OFFER_TIMEOUT_S`` by its
+        record's ``announced_unix``.  A stale plan fails open to the
+        behavior before #1091, so a dead tier loop cannot hold a tier on a
+        wait that has ended.  The tier record is re-read only when its file
+        changed.
+        """
+
+        residency = item.get("residency")
+        if not isinstance(residency, Mapping) or "range_start_bytes" not in residency:
+            return None
+        tier_id = str(residency.get("tier_id") or "")
+        if not tier_id or tier_id not in tier_demand:
+            return None
+        try:
+            path = self.tier_record_path(tier_id)
+            status = os.stat(path)
+        except (OSError, PoolContractError, ValueError):
+            return None
+        stamp = (status.st_ino, status.st_mtime_ns, status.st_size)
+        memo = getattr(self, "_reader_plans", None)
+        if memo is None:
+            memo = self._reader_plans = {}
+        held = memo.get(tier_id)
+        if held is not None and held[0] == stamp:
+            record = held[1]
+        else:
+            try:
+                record = _read_json(path)
+            except (OSError, PoolContractError, ValueError):
+                return None
+            memo[tier_id] = (stamp, record)
+        if not isinstance(record, Mapping):
+            return None
+        plan = record.get(READER_PLAN_FIELD)
+        announced = record.get("announced_unix")
+        if (not isinstance(plan, Mapping) or isinstance(announced, bool)
+                or not isinstance(announced, (int, float))):
+            return None
+        moment = _now() if now is None else float(now)
+        if moment - float(announced) > OFFER_TIMEOUT_S:
+            return None
+        key = str(item.get("action_key") or "")
+        waits = [str(row.get("mover_action_key") or "")
+                 for row in plan.get("declared_wait") or ()
+                 if isinstance(row, Mapping)]
+        if waits:
+            if key in waits:
+                needs = dict(tier_demand[tier_id])
+                waived = int(needs.pop(storage_tiers.FILL_KIND, 0) or 0)
+                return {"admit": True, "tier_id": tier_id,
+                        "declared_wait": waits, "fill_waived": waived,
+                        "tier_demand": {**{t: dict(n) for t, n in tier_demand.items()},
+                                        tier_id: needs}}
+            return {"deny": DEFERRED_FOR_DECLARED_WAIT, "tier_id": tier_id,
+                    "declared_wait": waits}
+        cap = plan.get("cap")
+        movers = cap.get("movers") if isinstance(cap, Mapping) else None
+        if isinstance(movers, int) and not isinstance(movers, bool) and movers >= 1:
+            try:
+                claimed = self.movers_claimed_on_tier(tier_id)
+            except (OSError, PoolContractError):
+                return None
+            if len(claimed) >= movers:
+                return {"deny": DEFERRED_FOR_POOL_READERS, "tier_id": tier_id,
+                        "cap_movers": movers,
+                        "cap_basis": cap.get("basis"),         # type: ignore[union-attr]
+                        "movers_claimed": len(claimed)}
+        return None
 
     def _landing_bytes_ahead(self, consumer: str
                              ) -> dict[str, tuple[int | None, list[str] | None]]:
@@ -14984,6 +15143,10 @@ class PoolQueue:
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
                 tier_borrowed: dict[str, object] | None = None
+                #: Pool fill the reader plan waived for a copy a claimed
+                #: consumer is blocked on (#1091): counted as covered, held
+                #: by nobody.
+                tier_fill_waived: dict[str, object] | None = None
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
@@ -15263,6 +15426,31 @@ class PoolQueue:
                         })
                         continue
                     if tier_demand:
+                        # The tier's reader plan first (#1091): a copy a
+                        # claimed consumer is blocked on goes first and alone,
+                        # and no more copies read the pool than its measured
+                        # knee.  No ``record_pass``, as for a tier shortage.
+                        plan_verdict = self.reader_plan_verdict(item, tier_demand)
+                        if plan_verdict is not None and plan_verdict.get("deny"):
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, str(plan_verdict["deny"]), {
+                                "demand": sealed_demand, "tier_demand": tier_demand,
+                                "reader_plan": plan_verdict,
+                            })
+                            continue
+                        acquire_demand = tier_demand
+                        if plan_verdict is not None and plan_verdict.get("admit"):
+                            acquire_demand = plan_verdict["tier_demand"]  # type: ignore[assignment]
+                            if plan_verdict.get("fill_waived"):
+                                tier_fill_waived = {
+                                    "tier_id": plan_verdict["tier_id"],
+                                    "kind": storage_tiers.FILL_KIND,
+                                    "waived": int(plan_verdict["fill_waived"]),  # type: ignore[call-overload]
+                                    "declared_wait": plan_verdict["declared_wait"],
+                                    "waived_unix": _now()}
                         # After host admission, so a box that cannot seat the
                         # work never touches the shared tier ledgers, and
                         # before the rename, so a claim is never won on tier
@@ -15271,7 +15459,7 @@ class PoolQueue:
                         # a shortage every box shares would idle it for nothing
                         # (Rob, #583: the box does other work meanwhile).
                         shortage = self._begin_tier_acquire(
-                            key, tier_demand, tier_handles, tier_funded,
+                            key, acquire_demand, tier_handles, tier_funded,
                             cas_root=item.get("cas_root"))
                         if shortage is not None:
                             self._abandon_tier_acquire(tier_handles)
@@ -15423,8 +15611,10 @@ class PoolQueue:
                         int(entry.get("borrowed", 0))
                         for entry in (tier_borrowed or {}).values()
                         if isinstance(entry, dict))
+                    tier_waived_total = (int(tier_fill_waived["waived"])  # type: ignore[call-overload]
+                                         if tier_fill_waived else 0)
                     incomplete = (tier_filed + tier_funded_total + tier_borrowed_total
-                                  < tier_wanted)
+                                  + tier_waived_total < tier_wanted)
                     filed = 0
                     if ledger is not None and handle is not None:
                         # Won the rename, so the reservation stops belonging to this
@@ -15652,6 +15842,8 @@ class PoolQueue:
                     claimed["residency_verdict"] = residency
                 if tier_borrowed:
                     claimed["tier_fill_borrowed"] = tier_borrowed
+                if tier_fill_waived:
+                    claimed["tier_fill_waived"] = tier_fill_waived
                 if tier_funded:
                     # Re-verify each funding against the renamed record before
                     # persisting: the claim holds this key's transition lock,
