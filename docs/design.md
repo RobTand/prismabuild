@@ -8025,10 +8025,12 @@ writer's share: 29 `scandir`, 1588 `stat`, 2926 `open`, 1064 `os.open`),
 and the largest record grew from 6.2 KB (11 rows) to 23.8 KB (44 rows); with
 every phase in two stage chunks, from 9.1 KB (19 rows) to 44.8 KB (87 rows).
 PrismaQuant drops a record over 256 MiB (`MAX_MAP_BYTES`); at the widest row
-measured (882 bytes) one record reaches that at about 304,000 legs. A
-Stage B quantum's read plan has `1 + (chain layers + replay windows) x
-probes x batch windows` phases, orders of magnitude below it, so the
-record lists every leg and needs no window.
+measured (882 bytes, compact) one record reaches that at about 304,000
+legs; the writer indents, which lowers that by the indent's share. The
+GLM Stage B plan in the campaign-shape gate, the layer-44 executable
+readset (`bc2a3bc8ad11`), has 22 phases, which the gate stages as 22
+legs. The record grows linearly in legs, so it lists every leg and
+needs no window.
 
 **A blocked reader moves its horizon.** Listing a leg the reader waits for
 is safe only if the leg comes. A leg past the horizon is published on the
