@@ -212,6 +212,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "synthetic stage and a scratch queue root; it is a record of one "
      "measurement rather than an operator command, and it must never be "
      "pointed at the live stage or the live queue"),
+    ("bench_ram_promote_restart.py",
+     "a standalone profile of a restarted RAM promotion taking back the "
+     "copies its last attempt left (#1081), run from a checkout through "
+     "pbrun over a scratch stage, RAM root and queue root; it is a record "
+     "of one measurement rather than an operator command, and it must never "
+     "be pointed at the live stage, the live RAM tier or the live queue"),
     ("qualify_record_visibility.py",
      "a standalone timing of how late an NFS client of the queue sees a "
      "record another box files, run from a checkout through pbrun against "
