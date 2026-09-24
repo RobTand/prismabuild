@@ -4206,7 +4206,10 @@ Known limits:
 * The cap is read from the claimed rows at claim time, not from a ledger, so
   claims racing on one tier can each see room for one more mover.
 * `movers_claimed_on_tier` is counted when a copy starts, so a receipt's
-  point on the curve is the concurrency it began under.
+  point on the curve is the concurrency it began under. It counts every
+  claimed mover, including one that has filed its receipt and not finished,
+  while the cap counts only copies still reading. The cap can therefore admit
+  slightly more readers than the curve level it was read at.
 
 ### Demand is derived from the data manifest
 

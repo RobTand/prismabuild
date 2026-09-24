@@ -7216,7 +7216,7 @@ class PoolQueue:
             # A claimed mover that filed a complete receipt has stopped
             # reading the pool; only the copies still reading count.
             reading = [mover for mover in claimed
-                       if not self._copy_filed_complete(mover)]
+                       if not self.copy_filed_complete(mover)]
             if len(reading) >= movers:
                 return {"deny": DEFERRED_FOR_POOL_READERS, "tier_id": tier_id,
                         "cap_movers": movers,
@@ -7225,7 +7225,7 @@ class PoolQueue:
                         "movers_claimed": len(claimed)}
         return None
 
-    def _copy_filed_complete(self, mover: str) -> bool:
+    def copy_filed_complete(self, mover: str) -> bool:
         """Whether ``mover`` filed a complete receipt: its copy has landed."""
 
         try:

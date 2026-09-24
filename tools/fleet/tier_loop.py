@@ -4251,23 +4251,13 @@ def declared_wait_movers(queue: pool.PoolQueue,
         if (not isinstance(residency, Mapping)
                 or str(residency.get("tier_id") or "") != str(tier_id)):
             continue
-        if state == pool.CLAIMED and _copy_complete(queue, mover):
+        if state == pool.CLAIMED and queue.copy_filed_complete(mover):
             continue
         row["state"] = state
         row["consumers"] = sorted(set(row["consumers"]))        # type: ignore[arg-type]
         out.append(row)
     return sorted(out, key=lambda row: (float(row["since_unix"]),  # type: ignore[arg-type]
                                         str(row["mover_action_key"])))
-
-
-def _copy_complete(queue: pool.PoolQueue, mover: str) -> bool:
-    """Whether ``mover`` filed a complete receipt: its copy has landed."""
-
-    try:
-        record = queue.move_record(mover)
-    except (OSError, ValueError, pool.PoolContractError):
-        return False
-    return isinstance(record, Mapping) and record.get("complete") is True
 
 
 def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
