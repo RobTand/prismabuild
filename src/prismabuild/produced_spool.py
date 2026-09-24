@@ -100,6 +100,87 @@ class SpoolCapacityDeferred(SpoolError):
     """Only the bounded local spool is full; completed exports may free it."""
 
 
+class _RepinNeeded(Exception):
+    """A check without the group's ``.export.lock`` met a timestamp-only mismatch.
+
+    Not a refusal: the caller takes the lock and checks again, and only
+    under the lock is the content verified and the re-pin written (#1096).
+    """
+
+
+#: Why a re-pin was made; the only reason there is.
+REPIN_REASON = ("timestamps-only mismatch: same inode and size, content sha256 "
+                "verified (#1096, an NFS delegation recall)")
+_REPIN_FIELDS = frozenset({"from", "to", "reason", "sha256", "bytes", "rehash_s",
+                           "reads", "host", "unix", "where"})
+
+
+def _repinned(proof, observed, *, code, index, path, name, directory, where):
+    """``proof`` re-pinned to the file's identity now, when only its timestamps moved (#1096).
+
+    ``observed`` is the identity a check found that does not match
+    ``proof["identity"]``.  When the two differ in anything but
+    ``mtime_ns``/``ctime_ns``, the check refuses as before.  Otherwise the
+    file is read through ``directory`` and hashed
+    (`reader_lease.content_identity`).  Its digest must be the proof's
+    ``sha256``, the declared digest of the entry, and its inode and size the
+    recorded ones; then the returned proof carries the hashed identity, and
+    a ``repinned`` record naming the identity it replaces, the one it pins,
+    the reason, the seconds the read took and where it was made.  Any other
+    answer is ``code``'s refusal, naming the entry and both identities.
+    The caller writes the returned proof into the record it checked.
+    """
+
+    recorded = proof["identity"]
+
+    def refuse(seen, detail=None):
+        return SpoolIdentityRefusal(code, entry_index=index, path=path,
+                                    recorded=recorded, observed=seen, detail=detail)
+
+    if not reader_lease.timestamp_only_mismatch(recorded, observed):
+        raise refuse(observed)
+    try:
+        read = reader_lease.content_identity(name, dir_fd=directory)
+    except (OSError, reader_lease.ReaderLeaseError) as exc:
+        raise refuse(observed, f"only the timestamps moved, and the content "
+                               f"could not be verified: {exc}") from None
+    now = read["identity"]
+    if (now["ino"], now["size"]) != (recorded["ino"], recorded["size"]):
+        raise refuse(now, "the file changed while its content was verified")
+    if read["sha256"] != proof["sha256"]:
+        raise refuse(now, f"only the timestamps moved, but the content sha256 "
+                          f"{read['sha256']} is not the recorded {proof['sha256']}")
+    repin = {"from": dict(recorded), "to": now, "reason": REPIN_REASON,
+             "sha256": read["sha256"], "bytes": read["bytes"],
+             "rehash_s": read["seconds"], "reads": read["reads"],
+             "host": socket.gethostname(), "unix": round(time.time(), 3),
+             "where": where}
+    return {**proof, "identity": now,
+            "repinned": [*proof.get("repinned", []), repin]}
+
+
+def _check_repins(proof):
+    """A proof's re-pins must chain from its landed identity to its identity now (#1096)."""
+
+    repins = proof["repinned"]
+    if not isinstance(repins, list) or not repins:
+        raise SpoolError("copy proof re-pin record is corrupt")
+    for repin in repins:
+        if (not isinstance(repin, dict) or set(repin) != _REPIN_FIELDS
+                or repin["reason"] != REPIN_REASON
+                or repin["sha256"] != proof.get("sha256")):
+            raise SpoolError("copy proof re-pin record is corrupt")
+        before = reader_lease._check_identity(repin["from"], where="re-pinned from")
+        after = reader_lease._check_identity(repin["to"], where="re-pinned to")
+        if not reader_lease.timestamp_only_mismatch(before, after):
+            raise SpoolError("copy proof re-pin changes more than timestamps")
+    for earlier, later in zip(repins, repins[1:]):
+        if earlier["to"] != later["from"]:
+            raise SpoolError("copy proof re-pins do not chain")
+    if repins[-1]["to"] != proof.get("identity"):
+        raise SpoolError("copy proof identity is not its last re-pin")
+
+
 @contextmanager
 def _parent(path, *, create=False):
     path = Path(path)
@@ -571,6 +652,30 @@ class ProducedSpool:
         return {"ok": True, "complete": False, "export_key": key}
 
     def poll_group(self, batch_id):
+        """Whether the group's export is acknowledged, and its files are still the export's.
+
+        Takes no lock unless a destination's timestamps alone moved (#1096):
+        then it takes the group's ``.export.lock``, checks again, and
+        re-pins under it.  A caller that already holds that lock uses
+        `_poll_locked`, because the lock is not reentrant.
+        """
+
+        try:
+            return self._poll(batch_id, repin=None)
+        except _RepinNeeded:
+            with _lock(self._group(batch_id) / ".export.lock"):
+                return self._poll_locked(batch_id)
+
+    def _poll_locked(self, batch_id):
+        """`poll_group` for a caller that holds the group's ``.export.lock``.
+
+        A destination whose timestamps alone moved is verified by its
+        content, and the re-pinned receipt is written before this returns.
+        """
+
+        return self._poll(batch_id, repin="poll")
+
+    def _poll(self, batch_id, *, repin):
         group = self._group(batch_id)
         record = _export_record(group, self.owner)
         if record is None:
@@ -582,7 +687,8 @@ class ProducedSpool:
                 manifest = _read(group / "manifest.json", expected_sha256=record["manifest_sha256"])
                 if manifest is None:
                     raise SpoolError("export manifest is missing")
-                _check_receipt(receipt, manifest, record)
+                if _check_receipt(receipt, manifest, record, repin=repin):
+                    _write(group / "receipt.json", receipt)
             except SpoolIdentityRefusal as exc:
                 return {"ok": False, "complete": False, "refusal": exc.code,
                         "evidence": exc.evidence,
@@ -614,7 +720,7 @@ class ProducedSpool:
         """
         group = self._group(batch_id)
         with _lock(group / ".export.lock"):
-            result = self.poll_group(batch_id)
+            result = self._poll_locked(batch_id)
             if not result.get("ok") or not result.get("complete"):
                 return {**result, "ok": False,
                         "refusal": result.get("refusal", "export-incomplete-retain")}
@@ -641,10 +747,20 @@ class ProducedSpool:
         result = self.poll_group(batch_id)
         if not result.get("ok") or not result.get("complete"):
             return {**result, "ok": False, "refusal": result.get("refusal", "export-incomplete-retain")}
-        with _lock(group / ".export.lock"), _lock(self.directory / ".reservation.lock"):
-            result = self.poll_group(batch_id)
+        with _lock(group / ".export.lock"):
+            # Checked again under the group's lock and before the namespace's:
+            # a re-pin reads the group's files (#1096), and the namespace lock
+            # is every other group's reservation.  Nothing a release does
+            # needs the destinations checked under that second lock.
+            result = self._poll_locked(batch_id)
             if not result.get("ok") or not result.get("complete"):
                 return {**result, "ok": False, "refusal": result.get("refusal", "export-incomplete-retain")}
+            return self._release_locked(group)
+
+    def _release_locked(self, group):
+        """Release a checked group; the caller holds its ``.export.lock``."""
+
+        with _lock(self.directory / ".reservation.lock"):
             reservation = self._reservation(group)
             if reservation.get("released"):
                 return {"ok": True, "duplicate": True}
@@ -710,12 +826,16 @@ def _check_copy(proof, entry, index, manifest_sha256):
     if type(proof["entry_index"]) is not int:
         raise SpoolError("copy proof entry index is corrupt")
     allowed = set(binding) | {"temporary_ino", "ready_identity", "sha256", "complete",
-                              "destination_path", "identity", "adopted"}
+                              "destination_path", "identity", "adopted", "repinned"}
     if set(proof) - allowed:
         raise SpoolError("copy proof has unknown fields")
     if "adopted" in proof and (not isinstance(proof["adopted"], dict)
                                or not proof.get("complete")):
         raise SpoolError("copy proof adoption record is corrupt")
+    if "repinned" in proof:
+        if not proof.get("complete"):
+            raise SpoolError("copy proof re-pin record is corrupt")
+        _check_repins(proof)
     _positive(proof.get("temporary_ino"), "copy temporary inode")
     if "complete" in proof and type(proof["complete"]) is not bool:
         raise SpoolError("copy completion flag is corrupt")
@@ -745,7 +865,7 @@ def _check_pacing(pacing):
             raise SpoolError("export pacing counters are corrupt")
 
 
-def _check_receipt(receipt, manifest, record, *, destinations=True):
+def _check_receipt(receipt, manifest, record, *, destinations=True, repin=None):
     """Check an export receipt against its manifest and export record.
 
     ``destinations=False`` checks the acknowledgement only: the binding and
@@ -753,18 +873,27 @@ def _check_receipt(receipt, manifest, record, *, destinations=True):
     still the inode the export landed.  The retirement tick (#1001) asks
     that question of a dead producer's group: whether the export finished,
     not whether its output was since consumed or retired downstream.
+
+    A destination whose identity differs from its proof's in timestamps
+    only (#1096) is settled by its content, and only by a caller that holds
+    the group's ``.export.lock`` and names itself in ``repin``: the proof in
+    ``receipt["entries"]`` is replaced by its re-pinned form (`_repinned`),
+    and the caller writes the receipt.  Without ``repin`` such a mismatch
+    raises `_RepinNeeded`, so the caller can take the lock and check again.
+    Returns how many entries were re-pinned.
     """
     if isinstance(receipt, dict) and "pacing" in receipt:
         _check_pacing(receipt["pacing"])
-        receipt = {key: value for key, value in receipt.items() if key != "pacing"}
-    if (not isinstance(receipt, dict) or set(receipt) != {
-            "schema", "export_key", "manifest_sha256", "entries"}
+    if (not isinstance(receipt, dict)
+            or set(receipt) - {"pacing"} != {
+                "schema", "export_key", "manifest_sha256", "entries"}
             or receipt["schema"] != SCHEMA
             or receipt["export_key"] != record["export_key"]
             or receipt["manifest_sha256"] != record["manifest_sha256"]
             or not isinstance(receipt["entries"], list)
             or len(receipt["entries"]) != len(manifest["entries"])):
         raise SpoolError("export receipt binding is corrupt")
+    repinned = 0
     for index, (entry, proof) in enumerate(zip(manifest["entries"], receipt["entries"])):
         _check_copy(proof, entry, index, record["manifest_sha256"])
         path = entry["destination_path"]
@@ -775,12 +904,33 @@ def _check_receipt(receipt, manifest, record, *, destinations=True):
                                        observed=_observe(path) if destinations
                                        else "not checked",
                                        detail="the copy proof is not complete")
-        if destinations:
-            observed = _observe(path)
-            if not reader_lease.file_id_matches(proof["identity"], observed):
-                raise SpoolIdentityRefusal("export-destination-changed", entry_index=index,
-                                           path=path, recorded=proof["identity"],
-                                           observed=observed)
+        if not destinations:
+            continue
+        observed = _observe(path)
+        if reader_lease.file_id_matches(proof["identity"], observed):
+            continue
+        if not reader_lease.timestamp_only_mismatch(proof["identity"], observed):
+            raise SpoolIdentityRefusal("export-destination-changed", entry_index=index,
+                                       path=path, recorded=proof["identity"],
+                                       observed=observed)
+        if repin is None:
+            raise _RepinNeeded(index)
+        destination = Path(path)
+        try:
+            with _parent(destination) as directory:
+                seen = _observe(destination, directory=directory)
+                if reader_lease.file_id_matches(proof["identity"], seen):
+                    continue
+                receipt["entries"][index] = _repinned(
+                    proof, seen, code="export-destination-changed", index=index,
+                    path=path, name=destination.name, directory=directory,
+                    where=repin)
+        except OSError as exc:
+            raise SpoolIdentityRefusal("export-destination-changed", entry_index=index,
+                                       path=path, recorded=proof["identity"],
+                                       observed=f"unreadable: {exc}") from None
+        repinned += 1
+    return repinned
 
 
 # ---------------------------------------------------------------------------
@@ -1126,8 +1276,13 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
         if proof and proof.get("complete"):
             landed = dest_identity(destination)
             if not reader_lease.file_id_matches(proof["identity"], landed):
-                raise refuse("completed destination changed", destination,
-                             proof["identity"], landed or "absent")
+                # Only its timestamps moved (#1096): settled by its content,
+                # under this export's lock, and the copy proof re-pinned.
+                proof = _repinned(proof, landed or "absent",
+                                  code="completed destination changed", index=index,
+                                  path=destination, name=destination.name,
+                                  directory=destination_parent, where="export")
+                _write(proof_path, proof)
             return proof
         # Pin the real local source before any unacknowledged recovery can
         # remove a canonical incarnation. Every ancestor and the leaf refuse
@@ -1293,7 +1448,8 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
 
     receipt = _read(group / "receipt.json")
     if receipt is not None:
-        _check_receipt(receipt, manifest, record)
+        if _check_receipt(receipt, manifest, record, repin="export"):
+            _write(group / "receipt.json", receipt)
         return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
     prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
                                 f"{manifest['batch_id']}.prewrite.json")
@@ -1316,7 +1472,7 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
                "manifest_sha256": manifest_sha256, "entries": landed}
     if pacer is not None:
         receipt["pacing"] = pacer.record(pace_tier)
-    _check_receipt(receipt, manifest, record)
+    _check_receipt(receipt, manifest, record, repin="export")
     _write(group / "receipt.json", receipt)
     answer = {"ok": True, "entries": len(landed)}
     adopted = sum(1 for proof in landed if "adopted" in proof)

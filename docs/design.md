@@ -10883,8 +10883,8 @@ when there is no file to stat):
 
 | Code | Where | Recorded | Observed |
 |---|---|---|---|
-| `export-destination-changed` | `_check_receipt`: a poll, a release, a commit or a rerun export | The copy proof's landed identity | The destination now |
-| `completed destination changed` | `_export_entry`, a completed copy proof | The copy proof's landed identity | The destination now |
+| `export-destination-changed` | `_check_receipt`: a poll, a release, a commit or a rerun export, unless only the timestamps moved and the content is the recorded one (#1096) | The copy proof's landed identity, or its last re-pin | The destination now |
+| `completed destination changed` | `_export_entry`, a completed copy proof, with the same exception (#1096) | The copy proof's landed identity, or its last re-pin | The destination now |
 | `unowned or changed canonical destination` | `_export_entry`, a destination that is not this export's copy, or a failed group's file it may not adopt or retire (#1097) | This export's own pre-publication identity, if any | The destination |
 | `canonical incarnation changed during recovery` | `_export_entry`, removing its own unacknowledged copy | The identity it was about to remove | The destination now |
 | `unowned export temporary` | `_export_entry` | This export's `temporary_ino`, if any | The temporary |
@@ -10913,9 +10913,62 @@ cannot be written, the answer carries `evidence_record_error` instead.
 still removes the group; the record is under the queue, where no spool
 cleanup reaches.
 
-The identity checks themselves are unchanged: `file_id_matches` and
-`portable_identity` compare what they compared before, and which fields an
-identity pin should compare waits on the platform decision in #1096.
+`file_id_matches` and `portable_identity` compare what they compared
+before. A mismatch in timestamps alone is settled by content where the spool
+holds the file's digest, as the next section describes (#1096).
+
+#### A destination whose timestamps alone moved (#1096)
+
+Over NFSv4.2 the exporting client holds a write delegation with delegated
+timestamps on each file it creates. The export records the destination's
+identity from a `stat` on that client. When another reader recalls the
+delegation, the server applies the delegated timestamps, and `ctime_ns`,
+sometimes `mtime_ns` too, moves while the inode, the size and the bytes stay
+the same. On 2026-09-24 that failed Stage A round-2 q0 on
+`export-destination-changed`. Whether a client keeps its delegations after
+close depends on `nfsv4.delegation_watermark`, so the mismatch can stop and
+start again across reboots; the spool does not depend on either.
+
+Every completed copy proof carries the entry's sha256, so a spool check that
+finds a destination whose identity differs from its proof's **only in
+`mtime_ns` or `ctime_ns`** (`reader_lease.timestamp_only_mismatch`: the same
+inode and size) settles it by content:
+
+- It reads the file through the pinned parent descriptor and hashes it
+  (`reader_lease.content_identity`). The identity is read from the open
+  descriptor before and after the read and must not move; a read that races
+  a recall is taken once more, and a second move refuses.
+- When the digest is the proof's sha256 and the inode and size are the
+  recorded ones, the proof is **re-pinned**: its `identity` becomes the
+  hashed identity, and a `repinned` list gains
+  `{from, to, reason, sha256, bytes, rehash_s, reads, host, unix, where}`.
+  The next check compares against the re-pinned identity and reads nothing.
+- When the digest differs, or the file cannot be read, the check refuses as
+  before, and the refusal's `detail` says which.
+- A different inode or size, or an absent or unreadable file, still
+  refuses without a read.
+
+Re-pins are written only under the group's `.export.lock`, into the record
+the check read:
+
+| Check | Record re-pinned |
+|---|---|
+| `_check_receipt` from `poll_group`, `release_group` or `commit_origin_group` | `receipt.json` |
+| `_check_receipt` from a rerun export (a duplicate) or before the receipt is first written | `receipt.json` |
+| `_export_entry`'s completed copy proof, when a crash left no receipt | `copy-N.json`, and the receipt built from it |
+
+`poll_group` takes no lock unless it meets such a mismatch; then it takes
+`.export.lock` and checks again. `release_group` checks the receipt under
+`.export.lock` before it takes the namespace's `.reservation.lock`, so a
+re-pin's read never holds every other group's reservation. The read costs
+one pass over the file, only on this mismatch; `rehash_s` records it.
+`commit_origin_group` then commits against the re-pinned identities.
+
+The re-pin is sound because the check it replaces was a proxy for the bytes:
+the sha256 is the digest the export verified while it copied, so a file with
+that digest at the same inode and size is the file the export landed. It is
+not a weaker check: a same-size rewrite whose timestamps also moved is caught
+by the digest, which the stat comparison alone could not catch either.
 
 ### What creates and what retires per-key state
 

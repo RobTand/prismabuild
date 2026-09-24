@@ -66,6 +66,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import threading
 import time
 import uuid
@@ -141,6 +142,79 @@ def file_id_matches(published: object, live: object) -> bool:
     if any(field not in published or field not in live for field in fields):
         return False
     return all(published[field] == live[field] for field in fields)
+
+
+def timestamp_only_mismatch(published: object, live: object) -> bool:
+    """Whether two identities are one file whose timestamps alone moved (#1096).
+
+    ``True`` only when both carry all four fields, ``ino`` and ``size`` are
+    equal, and ``mtime_ns`` or ``ctime_ns`` differs.  This is the mismatch an
+    NFS delegation recall makes: the server applies the writer's delegated
+    timestamps after the writer recorded the file.  It is never a match by
+    itself: a caller that holds the file's recorded sha256 may settle it by
+    content (:func:`content_identity`), and every other caller refuses it as
+    :func:`file_id_matches` does.
+    """
+
+    fields = ("ino", "size", "mtime_ns", "ctime_ns")
+    if not isinstance(published, Mapping) or not isinstance(live, Mapping):
+        return False
+    if any(field not in published or field not in live for field in fields):
+        return False
+    return (published["ino"] == live["ino"] and published["size"] == live["size"]
+            and (published["mtime_ns"] != live["mtime_ns"]
+                 or published["ctime_ns"] != live["ctime_ns"]))
+
+
+#: One read of :func:`content_identity`'s loop.
+CONTENT_BLOCK_BYTES = 1 << 20
+
+
+def content_identity(name: str | os.PathLike, *, dir_fd: int | None = None
+                     ) -> dict[str, object]:
+    """Hash one regular file and name the identity the hash describes (#1096).
+
+    The file is opened without following a link, relative to ``dir_fd``
+    when one is given.  Its identity is read from the open descriptor before
+    and after the read, and all four fields must be equal, so the digest
+    describes exactly that identity.  One read may race a delegation recall,
+    which moves the timestamps while the bytes stay the same, so a read whose
+    identity moved is taken once more; a second move raises.  A file that is
+    not regular, or whose length is not its size, raises too.
+
+    Returns ``{"sha256", "identity", "bytes", "seconds", "reads"}``.
+    Raises :class:`ReaderLeaseError` or ``OSError``.
+    """
+
+    started = time.monotonic()
+    moved = None
+    for reads in (1, 2):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=dir_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ReaderLeaseError(f"{name}: not a regular file")
+            before = portable_identity(info)
+            digest = hashlib.sha256()
+            buffer = bytearray(CONTENT_BLOCK_BYTES)
+            view = memoryview(buffer)
+            count = 0
+            while got := os.readv(fd, [buffer]):
+                digest.update(view[:got])
+                count += got
+            after = portable_identity(os.fstat(fd))
+        finally:
+            os.close(fd)
+        if count != before["size"]:
+            raise ReaderLeaseError(
+                f"{name}: read {count} bytes of a {before['size']}-byte file")
+        if before == after:
+            return {"sha256": digest.hexdigest(), "identity": after, "bytes": count,
+                    "seconds": round(time.monotonic() - started, 6), "reads": reads}
+        moved = (before, after)
+    raise ReaderLeaseError(f"{name}: changed while it was read twice: "
+                           f"{moved[0]!r} became {moved[1]!r}")
 
 
 def _check_identity(value: object, *, where: str) -> dict[str, int]:
@@ -2917,6 +2991,8 @@ __all__ = [
     "retiring_path",
     "stat_identity",
     "file_id_matches",
+    "timestamp_only_mismatch",
+    "content_identity",
     "validate_material",
     "validate_pin",
     "validate_retiring",
