@@ -7146,7 +7146,8 @@ def _is_committed_file(info: os.stat_result,
 
 
 def _settle_retiring_leftover(path: str, recorded: Mapping[str, object],
-                              tag: str) -> tuple[str, str]:
+                              tag: str, *, dir_fd: int | None = None
+                              ) -> tuple[str, str]:
     """Finish what an interrupted `_unlink_if_committed` left at its private name.
 
     Returns ``("none", "")`` when there is no private name. Otherwise the
@@ -7161,46 +7162,50 @@ def _settle_retiring_leftover(path: str, recorded: Mapping[str, object],
       as ``origin-displaced``, naming it for an operator.
 
     The last two return ``superseded``; any unreadable step refuses.
+    ``dir_fd`` is `_unlink_if_committed`'s.
     """
 
     private = _retiring_name(path, tag)
     try:
         try:
-            left = os.lstat(private)
+            left = os.stat(private, dir_fd=dir_fd, follow_symlinks=False)
         except FileNotFoundError:
             return ("none", "")
         if _is_committed_file(left, recorded):
-            os.unlink(private)
+            os.unlink(private, dir_fd=dir_fd)
             return ("unlinked", "")
         try:
-            there = os.lstat(path)
+            there = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
         except FileNotFoundError:
             there = None
         if there is not None and there.st_ino == left.st_ino:
-            os.unlink(private)
+            os.unlink(private, dir_fd=dir_fd)
             return ("superseded", "")
         if there is not None:
             return ("refuse", f"origin-displaced: another writer's file is "
                               f"kept at {private}")
-        return _link_back(path, private)
+        return _link_back(path, private, dir_fd=dir_fd)
     except OSError as exc:
         return ("refuse", f"origin-unlink: {private}: {exc}")
 
 
-def _link_back(path: str, private: str) -> tuple[str, str]:
+def _link_back(path: str, private: str, *, dir_fd: int | None = None
+               ) -> tuple[str, str]:
     """Put a writer's file moved to ``private`` back at ``path``, never over one."""
 
     try:
-        os.link(private, path)
+        os.link(private, path, src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
+                follow_symlinks=False)
     except FileExistsError:
         return ("refuse", f"origin-displaced: another writer's file is kept "
                           f"at {private}")
-    os.unlink(private)
+    os.unlink(private, dir_fd=dir_fd)
     return ("superseded", "")
 
 
 def _unlink_if_committed(path: str, recorded: Mapping[str, object],
-                         tag: str) -> tuple[str, str]:
+                         tag: str, *, dir_fd: int | None = None
+                         ) -> tuple[str, str]:
     """Delete the file at ``path`` only if it is the one a commit recorded.
 
     The only delete of an origin file PB makes (#1053). A plain ``unlink``
@@ -7234,19 +7239,22 @@ def _unlink_if_committed(path: str, recorded: Mapping[str, object],
 
     Returns ``(outcome, reason)``: ``unlinked``, ``absent`` (nothing was at
     the name), ``superseded`` (another file was, and is again) or
-    ``refuse``.
+    ``refuse``.  With ``dir_fd``, ``path`` is a name in that pinned
+    directory, and every step resolves through the descriptor: the produced
+    spool's export retires a failed group's file that way (#1097).
     """
 
     private = _retiring_name(path, tag)
     try:
         try:
-            os.rename(path, private)
+            os.rename(path, private, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         except FileNotFoundError:
             return ("absent", "")
-        if _is_committed_file(os.lstat(private), recorded):
-            os.unlink(private)
+        if _is_committed_file(os.stat(private, dir_fd=dir_fd, follow_symlinks=False),
+                              recorded):
+            os.unlink(private, dir_fd=dir_fd)
             return ("unlinked", "")
-        return _link_back(path, private)
+        return _link_back(path, private, dir_fd=dir_fd)
     except OSError as exc:
         return ("refuse", f"origin-unlink: {private}: {exc}")
 

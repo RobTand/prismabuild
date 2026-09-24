@@ -45,6 +45,10 @@ SCHEMA = "prismabuild.produced_spool.v1"
 PACING_SCHEMA = "prismabuild.produced_spool.pacing.v1"
 #: The copy loop's block, and so the pacer's step: one read, one write.
 BLOCK_BYTES = 1 << 20
+#: A group's record of the failed groups' files its export has begun to
+#: retire (#1097): each path and the identity retired, so a later run of the
+#: export finishes a delete an interruption left at its private name.
+RETIRING_MARKER = "retiring.json"
 
 
 class SpoolError(RuntimeError):
@@ -637,9 +641,12 @@ def _check_copy(proof, entry, index, manifest_sha256):
     if type(proof["entry_index"]) is not int:
         raise SpoolError("copy proof entry index is corrupt")
     allowed = set(binding) | {"temporary_ino", "ready_identity", "sha256", "complete",
-                              "destination_path", "identity"}
+                              "destination_path", "identity", "adopted"}
     if set(proof) - allowed:
         raise SpoolError("copy proof has unknown fields")
+    if "adopted" in proof and (not isinstance(proof["adopted"], dict)
+                               or not proof.get("complete")):
+        raise SpoolError("copy proof adoption record is corrupt")
     _positive(proof.get("temporary_ino"), "copy temporary inode")
     if "complete" in proof and type(proof["complete"]) is not bool:
         raise SpoolError("copy completion flag is corrupt")
@@ -697,7 +704,330 @@ def _check_receipt(receipt, manifest, record, *, destinations=True):
             raise SpoolError("export-destination-changed")
 
 
-def _export_entry(group, entry, index, manifest_sha256, pacer=None):
+# ---------------------------------------------------------------------------
+# A canonical destination another attempt's records name (#1097)
+# ---------------------------------------------------------------------------
+
+
+def _live_rows(queue):
+    """Every ready and claimed record, by key, read fail-closed.
+
+    `pool.Queue.live_records`'s census, except that a record which cannot
+    be read refuses instead of being skipped: the answer decides whether a
+    file may be deleted, and an unread row may be the export that writes
+    it.  A record that moved between the listing and the read is skipped:
+    the caller takes this twice, so a row that stays live is seen once.
+    """
+
+    rows = {}
+    for state in (pool.READY, pool.CLAIMED):
+        directory = queue.dir(state)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError as exc:
+            raise SpoolError(f"unknown-retain: {state} rows: {exc}") from None
+        for name in names:
+            if not name.endswith(".json") or name.startswith("."):
+                continue
+            try:
+                record = pool._read_json(directory / name)
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                raise SpoolError(f"unknown-retain: {state}/{name}: {exc}") from None
+            if isinstance(record, dict):
+                rows[name[:-len(".json")]] = (state, record)
+    return rows
+
+
+def _export_attempt(queue, record, key, owner):
+    """``(batch_id, owner_nonce)`` of ``owner``'s spool export a live row runs.
+
+    Read from the export's own sealed request and manifest in the CAS the
+    row names.  ``("", "")`` for a row that is not a spool export of
+    ``owner``; ``None`` when a row that may be one cannot be read, which the
+    caller treats as an export of any group.  A row names its producer in
+    ``dependent_of``; one published before that hint is found as
+    `pool.Queue._may_serve_a_producer` finds it, by its export demand.
+    """
+
+    dependent_of = record.get("dependent_of")
+    if dependent_of is not None and dependent_of != owner:
+        return ("", "")
+    if dependent_of is None and not queue._may_serve_a_producer(record):
+        return ("", "")
+    parent = po._read_producer_request(record.get("cas_root"), key)
+    if isinstance(parent, dict):
+        return None
+    cas, request = parent
+    params = request.get("params", {}).get("produced_spool")
+    if not isinstance(params, dict):
+        return ("", "") if dependent_of is None else None
+    if params.get("owner") != owner:
+        return ("", "") if dependent_of is None else None
+    inputs = [item for item in request.get("inputs", [])
+              if item.get("id") == "produced-spool-manifest"]
+    try:
+        if len(inputs) != 1:
+            return None
+        manifest = _read(cas.input_path(inputs[0]), expected_sha256=inputs[0]["sha256"])
+        nonce = manifest["instance"]["owner_attempt"]["nonce"]
+    except (OSError, ValueError, KeyError, TypeError, SpoolError, core.ActionContractError):
+        return None
+    return (str(params.get("batch_id")), str(nonce))
+
+
+def _claim_text(claim):
+    return (f"{claim['owner_kind']} {claim['owner_batch_id']} of "
+            f"{claim['owner_action_key'][:12]}.{claim['owner_nonce'][:8]} "
+            f"({claim['owner_state']})")
+
+
+def _file_digest(directory, name, observed):
+    """sha256 of the file ``name`` in ``directory``, if it is still ``observed``.
+
+    Opened without following a link; the inode, size and mtime must be the
+    observed ones before and after the read, or the file changed under it.
+    ctime is not compared: a read by this host can recall another client's
+    write delegation and move it (#1096).
+    """
+
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    fields = ("ino", "size", "mtime_ns")
+    with os.fdopen(fd, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(before.st_mode)
+                or any(reader_lease.portable_identity(before)[key] != observed[key]
+                       for key in fields)):
+            raise SpoolError("unowned or changed canonical destination: "
+                             "it changed before it could be verified")
+        digest = hashlib.sha256()
+        while block := handle.read(BLOCK_BYTES):
+            digest.update(block)
+        after = reader_lease.portable_identity(os.fstat(handle.fileno()))
+    if any(after[key] != observed[key] for key in fields):
+        raise SpoolError("unowned or changed canonical destination: "
+                         "it changed while it was verified")
+    return digest.hexdigest()
+
+
+def _retire_foreign(directory, name, observed, tag, *, settle=False):
+    """Delete the file ``name`` only if it is still the one ``observed`` (#1097).
+
+    #1053's rename-aside delete (`produced_output._unlink_if_committed`),
+    through the export's pinned directory descriptor: move the name to a
+    private one, so a writer's rename from here on creates a new file;
+    unlink the private name only if its inode, size and mtime are the
+    observed ones; otherwise link it back, or keep it at the private name
+    and refuse when the name was taken again.  ``settle`` first finishes
+    what an interrupted call left at the private name
+    (`produced_output._settle_retiring_leftover`) and deletes nothing else.
+    """
+
+    if settle:
+        outcome, why = po._settle_retiring_leftover(name, observed, tag, dir_fd=directory)
+    else:
+        outcome, why = po._unlink_if_committed(name, observed, tag, dir_fd=directory)
+    if outcome != "none":
+        os.fsync(directory)
+    if outcome == "refuse":
+        raise SpoolError(f"canonical destination displaced: {why}")
+    if outcome == "superseded" and not settle:
+        raise SpoolError("unowned or changed canonical destination: "
+                         "it changed before it could be retired")
+    return outcome
+
+
+class _OtherClaims:
+    """What other attempts' records say about one group's canonical paths (#1097).
+
+    A producer that fails after exporting leaves canonical files, and a
+    successor -- a retry under the same key, or a new key -- exports the same
+    paths.  Its prewrite was already granted, because an attempt that has
+    ended owns nothing a new write can disturb (#1053), so the export is
+    where the files are met.  Who else names a path is answered from the
+    #1053 records, read once per export and only once a present file needs
+    it: the attempts of every template whose output prefix overlaps this
+    one's (`_template_attempts`), less this export's own; each one's
+    committed and prewritten paths (`_attempt_owned_paths`); and its state
+    (`_attempt_state`).  A path's claims decide:
+
+    * none: nobody's file, refused as before;
+    * any attempt that is live, or whose state is unknown: refused;
+    * a commit, or the prewrite of an attempt that succeeded (#1053 counts
+      it as a commit): the file is adopted when its bytes are this entry's,
+      and otherwise refused -- a committed file is never deleted here;
+    * only the prewrites of dead attempts: a failed group's export.  Once
+      no export of that group can still run, the file is adopted when its
+      bytes are this entry's, and retired otherwise.
+    """
+
+    def __init__(self, queue, manifest, export_key, group):
+        self.queue = queue
+        self.manifest = manifest
+        self.export_key = str(export_key)
+        #: The private-name tag of this export's retirements.
+        self.tag = f"export-{self.export_key[:16]}"
+        #: Every path this export retired, in order.
+        self.retired = []
+        #: Each path this export has begun to retire, with the identity it
+        #: retires, recorded before the delete starts.  A later run of the
+        #: export settles those paths first, so a file an interrupted delete
+        #: left at its private name is finished or put back.  One local read
+        #: per run; a path it does not name is never looked for.
+        self._marker = Path(group) / RETIRING_MARKER
+        record = _read(self._marker) or {}
+        if record and (record.get("export_key") != self.export_key
+                       or not isinstance(record.get("paths"), dict)):
+            raise SpoolError("unknown-retain: export retirement record is corrupt")
+        self._retiring = dict(record.get("paths", {}))
+        self._claims = None
+        self._exports = {}
+
+    def settle(self, directory, path):
+        """Finish or undo an interrupted retirement of ``path`` by this export."""
+
+        observed = self._retiring.get(str(path))
+        if observed is not None:
+            _retire_foreign(directory, Path(path).name, observed, self.tag, settle=True)
+
+    def _retire(self, directory, name, observed, path):
+        self._retiring[str(path)] = dict(observed)
+        _write(self._marker, {"schema": SCHEMA, "export_key": self.export_key,
+                              "tag": self.tag, "paths": self._retiring})
+        _retire_foreign(directory, name, observed, self.tag)
+        self.retired.append(str(path))
+
+    def _read(self):
+        instance, template = self.manifest["instance"], self.manifest["template"]
+        wanted = set()
+        for entry in self.manifest["entries"]:
+            wanted.update((str(entry["destination_path"]),
+                           str(entry["destination_path"]) + ".tmp"))
+        own = (str(instance["owner_action_key"]), str(instance["template_id"]),
+               str(instance["owner_attempt"]["nonce"]))
+        reads = po._TickReads(self.queue)
+        claims = {}
+        try:
+            attempts = po._template_attempts(
+                self.queue.root, po._overlapping_template_ids(self.queue.root, template))
+            for owner, template_id, nonce in attempts:
+                if (owner, template_id, nonce) == own:
+                    continue
+                _version, committed, prewritten = reads.owned(
+                    po._attempt_scope(self.queue.root, owner, template_id, nonce))
+                named = [(kind, path, batch_id)
+                         for kind, owned in (("batch", committed), ("prewrite", prewritten))
+                         for path, batch_id in sorted(owned.items()) if path in wanted]
+                if not named:
+                    continue
+                state = po._attempt_state(reads.generation(owner), nonce)
+                for kind, path, batch_id in named:
+                    claims.setdefault(path, []).append({
+                        "owner_action_key": owner, "owner_nonce": nonce,
+                        "template_id": template_id, "owner_kind": kind,
+                        "owner_batch_id": batch_id, "owner_state": state})
+        except (po.ProducedOutputError, OSError, ValueError) as exc:
+            reason = str(exc)
+            if not reason.startswith("unknown-retain"):
+                reason = f"unknown-retain: {reason}"
+            raise SpoolError(reason) from None
+        return claims
+
+    def verdict(self, path, *, refusal):
+        """``("committed" | "failed", claims)`` for ``path``, or the refusal.
+
+        ``committed`` carries the committing claims; ``failed`` carries every
+        claim, all of them prewrites of dead attempts.
+        """
+
+        if self._claims is None:
+            self._claims = self._read()
+        claims = self._claims.get(str(path), [])
+        if not claims:
+            raise SpoolError(f"{refusal}: no attempt's records name {path}")
+        for claim in claims:
+            if claim["owner_state"] not in po._ENDED_ATTEMPT_STATES:
+                raise SpoolError(f"{refusal}: {path} is named by {_claim_text(claim)}")
+        committed = [claim for claim in claims
+                     if claim["owner_kind"] == "batch" or claim["owner_state"] == "succeeded"]
+        return ("committed", committed) if committed else ("failed", claims)
+
+    def require_ended_exports(self, claims, path):
+        """`require_ended_export` for every failed group that names ``path``.
+
+        A retry chain leaves one dead prewrite per attempt, and any of those
+        attempts' exports may still be queued: each one is checked.
+        """
+
+        for claim in claims:
+            self.require_ended_export(claim, path)
+
+    def require_ended_export(self, claim, path):
+        """Refuse while any export of the failed group ``claim`` names may run.
+
+        A dead attempt's export is its own action and can still be queued or
+        claimed, and it writes the same names.  Every live row that runs the
+        owner's spool export of the same batch id under the same attempt
+        nonce holds the path (`_export_attempt`); so does a live row that
+        may be one and cannot be read.  Two reads of the ready and claimed
+        rows, so a row that moved between them is still seen.
+        """
+
+        key = (claim["owner_action_key"], claim["owner_nonce"], claim["owner_batch_id"])
+        if key not in self._exports:
+            owner, nonce, batch_id = key
+            found = {}
+            for _ in range(2):
+                for row, (state, record) in _live_rows(self.queue).items():
+                    if row == self.export_key or row in found:
+                        continue
+                    ran = _export_attempt(self.queue, record, row, owner)
+                    if ran is None or ran == (batch_id, nonce):
+                        found[row] = state
+            self._exports[key] = found
+        found = self._exports[key]
+        if found:
+            rows = ", ".join(f"{row} ({state})" for row, state in sorted(found.items()))
+            raise SpoolError(f"failed-group-export-live: {path} is {_claim_text(claim)}, "
+                             f"whose export may still write it: {rows}")
+
+    def take_over(self, directory, destination, entry, index, manifest_sha256, observed):
+        """Adopt or retire a present destination; returns the adopted proof or None."""
+
+        refusal = "unowned or changed canonical destination"
+        verdict, claims = self.verdict(destination, refusal=refusal)
+        claim = claims[0]
+        if verdict == "failed":
+            self.require_ended_exports(claims, destination)
+        digest = (_file_digest(directory, destination.name, observed)
+                  if observed["size"] == entry["bytes"] else None)
+        if digest == entry["sha256"]:
+            landed = _identity(destination, directory=directory)
+            if any(landed[key] != observed[key] for key in ("ino", "size", "mtime_ns")):
+                raise SpoolError(f"{refusal}: it changed after it was verified")
+            return {**_copy_binding(entry, index, manifest_sha256),
+                    "temporary_ino": landed["ino"], "ready_identity": landed,
+                    "sha256": digest, "complete": True,
+                    "destination_path": str(destination), "identity": landed,
+                    "adopted": dict(claim)}
+        if verdict == "committed":
+            raise SpoolError(f"{refusal}: {destination} is committed by "
+                             f"{_claim_text(claim)} with other bytes, and a "
+                             "committed file is never replaced")
+        self._retire(directory, destination.name, observed, destination)
+        return None
+
+    def retire_temporary(self, directory, temporary, observed):
+        """Retire a failed group's leftover temporary, or refuse."""
+
+        refusal = "unowned export temporary"
+        verdict, claims = self.verdict(temporary, refusal=refusal)
+        if verdict != "failed":
+            raise SpoolError(f"{refusal}: {temporary} is named by {_claim_text(claims[0])}")
+        self.require_ended_exports(claims, temporary)
+        self._retire(directory, temporary.name, observed, temporary)
+
+
+def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None):
     source = _path(entry["source_path"], group / "payload")
     destination = _path(entry["destination_path"])
     temporary = Path(str(destination) + ".tmp")
@@ -725,14 +1055,34 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None):
             if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode) or not reader_lease.file_id_matches(
                     entry["source_identity"], source_identity):
                 raise SpoolError("local source changed before export")
+            if others is not None:
+                # A run interrupted inside `_retire_foreign` may have left a
+                # file at its private name; finish it before deciding again.
+                for path in (destination, temporary):
+                    others.settle(destination_parent, path)
             current = dest_identity(destination)
-            if current is not None:
-                ready = (proof or {}).get("ready_identity", {})
-                # Only this exact export's known pre-publication inode gets
-                # the expected link/rename ctime transition. No post-ACK file
-                # gets that exception: completed proofs above require all4.
-                if any(current.get(key) != ready.get(key) for key in ("ino", "size", "mtime_ns")):
+            ready = (proof or {}).get("ready_identity", {})
+            # Only this exact export's known pre-publication inode gets
+            # the expected link/rename ctime transition. No post-ACK file
+            # gets that exception: completed proofs above require all4.
+            if current is not None and any(current.get(key) != ready.get(key)
+                                           for key in ("ino", "size", "mtime_ns")):
+                # Not this export's own file. A failed group's export, or a
+                # commit, of another attempt may name it (#1097): adopt it
+                # when its bytes are this entry's, retire it when only a
+                # failed group names it, and refuse otherwise.
+                if others is None:
                     raise SpoolError("unowned or changed canonical destination")
+                adopted = others.take_over(destination_parent, destination, entry,
+                                           index, manifest_sha256, current)
+                if adopted is not None:
+                    _write(proof_path, adopted)
+                    return adopted
+                current = dest_identity(destination)
+                if current is not None:
+                    raise SpoolError("unowned or changed canonical destination: "
+                                     "a file landed after the failed group's was retired")
+            if current is not None:
                 if not reader_lease.file_id_matches(current, dest_identity(destination)):
                     raise SpoolError("canonical incarnation changed during recovery")
                 os.unlink(destination.name, dir_fd=destination_parent)
@@ -743,8 +1093,13 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None):
             temporary_identity = dest_identity(temporary)
             if temporary_identity is not None:
                 if temporary_identity["ino"] != (proof or {}).get("temporary_ino"):
-                    raise SpoolError("unowned export temporary")
-                os.unlink(temporary.name, dir_fd=destination_parent)
+                    if others is None:
+                        raise SpoolError("unowned export temporary")
+                    # A failed group's export that died mid-copy (#1097).
+                    others.retire_temporary(destination_parent, temporary,
+                                            temporary_identity)
+                else:
+                    os.unlink(temporary.name, dir_fd=destination_parent)
             fd = os.open(temporary.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
                          0o600, dir_fd=destination_parent)
             proof = {**_copy_binding(entry, index, manifest_sha256),
@@ -824,7 +1179,8 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
             raise SpoolError("canonical artifact class budget changed or exceeded")
         pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
-        landed = [_export_entry(group, entry, index, manifest_sha256, pacer)
+        others = _OtherClaims(queue, manifest, export_key, group)
+        landed = [_export_entry(group, entry, index, manifest_sha256, pacer, others)
                   for index, entry in enumerate(manifest["entries"])]
         receipt = {"schema": SCHEMA, "export_key": export_key,
                    "manifest_sha256": manifest_sha256, "entries": landed}
@@ -832,7 +1188,11 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
             receipt["pacing"] = pacer.record(pace_tier)
         _check_receipt(receipt, manifest, record)
         _write(group / "receipt.json", receipt)
-        return {"ok": True, "entries": len(landed)}
+        answer = {"ok": True, "entries": len(landed)}
+        adopted = sum(1 for proof in landed if "adopted" in proof)
+        if adopted or others.retired:
+            answer.update(adopted=adopted, retired=list(others.retired))
+        return answer
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +1214,7 @@ RETIRE_INTERVAL_S = pool.LEASE_TIMEOUT_S
 #: ``reserve_group``, ``submit_group`` and ``export_group`` write, their
 #: ``_write`` temporaries and the export lock.
 _GROUP_FILES = frozenset({"reservation.json", "manifest.json", "export.json",
-                          "receipt.json", ".export.lock"})
+                          "receipt.json", ".export.lock", RETIRING_MARKER})
 #: ``(cas_root, owner) -> spool root or None``.  A sealed request never
 #: changes, so its answer is read once per process.
 _DECLARED_ROOTS: dict[tuple[str, str], str | None] = {}

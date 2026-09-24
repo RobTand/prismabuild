@@ -111,6 +111,16 @@ def _new_key(spool, label):
                             root=spool.root, max_bytes=spool.max_bytes)
 
 
+def _fail_export(spool, key):
+    """Fail an export row until no attempt of it is left to run."""
+
+    while po._mover_live_state(spool.queue, key) == pool.READY:
+        claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
+        assert claimed["action_key"] == key
+        spool.queue.finish(key, status="failed")
+    assert po._mover_live_state(spool.queue, key) == pool.FAILED
+
+
 def _proof(spool, batch, index=0):
     return ps._read(spool._group(batch) / f"copy-{index}.json")
 
@@ -169,11 +179,13 @@ def test_a_new_key_retires_a_failed_groups_other_bytes_and_copies(tmp_path):
     assert destination.stat().st_ino != pin.stat().st_ino
     assert pin.read_bytes() == b"the dead attempt's bytes"
     assert "adopted" not in _proof(second, "b39")
+    assert answer["retired"] == [str(destination)]
     leftovers = sorted(path.name for path in destination.parent.iterdir()
                        if path.name != destination.name)
     assert leftovers == [], "nothing is left at a private or temporary name"
     second.queue.finish(handle["export_key"], status="executed")
     assert second.poll_group("b39")["complete"]
+    assert second.release_group("b39")["ok"], "the retirement record does not hold release"
 
 
 def test_a_dead_attempts_leftover_temporary_is_retired(tmp_path):
@@ -182,11 +194,7 @@ def test_a_dead_attempts_leftover_temporary_is_retired(tmp_path):
     first = world(tmp_path)
     _source, destination, entries = prepare(first, batch="b38", payload=b"never landed")
     handle = first.submit_group("b38", entries)
-    key = handle["export_key"]
-    while po._mover_live_state(first.queue, key) == pool.READY:
-        claimed = first.queue.claim(owner="export-fails", tags=[first.host])
-        assert claimed["action_key"] == key
-        first.queue.finish(key, status="failed")
+    _fail_export(first, handle["export_key"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(f"{destination}.tmp")
     temporary.write_bytes(b"never la")
@@ -201,6 +209,58 @@ def test_a_dead_attempts_leftover_temporary_is_retired(tmp_path):
     assert answer["ok"], (
         f"a dead attempt's leftover temporary blocks its successor: {answer}")
     assert destination.read_bytes() == payload and not temporary.exists()
+
+
+def test_an_interrupted_retirement_is_finished_by_the_next_run(tmp_path):
+    """A run stopped after moving the failed file aside: the next one deletes it."""
+
+    first = world(tmp_path)
+    destination, _ = _landed(first, "b39", b"the dead attempt's bytes")
+    pin = tmp_path / "dead-inode-pin"
+    pin.hardlink_to(destination)
+    second = _new_key(first, "resubmit")
+    payload = b"the successor's bytes"
+    _source, _destination, entries = prepare(second, batch="b39", payload=payload)
+    handle = second.submit_group("b39", entries)
+    claim_export(second, handle)
+    # What `_OtherClaims._retire` leaves when the run stops inside the
+    # rename-aside delete: the record, and the file at its private name.
+    key = handle["export_key"]
+    tag = f"export-{key[:16]}"
+    ps._write(second._group("b39") / ps.RETIRING_MARKER, {
+        "schema": ps.SCHEMA, "export_key": key, "tag": tag,
+        "paths": {str(destination): ps._identity(destination)}})
+    private = Path(po._retiring_name(str(destination), tag))
+    destination.rename(private)
+
+    answer = _try_export(second, "b39")
+
+    assert answer["ok"], f"an interrupted retirement blocks the next run: {answer}"
+    assert destination.read_bytes() == payload
+    assert not private.exists(), "the interrupted delete is finished"
+    assert pin.read_bytes() == b"the dead attempt's bytes"
+    assert sorted(path.name for path in destination.parent.iterdir()) == [destination.name]
+
+
+def test_a_live_export_of_another_group_does_not_hold_the_destination(tmp_path):
+    """The dead attempt's b40 export still runs; it never writes b39's path."""
+
+    first = world(tmp_path)
+    destination, _ = _landed(first, "b39", b"the dead attempt's b39")
+    _source, _other, entries = prepare(first, batch="b40", payload=b"the dead attempt's b40")
+    running = first.submit_group("b40", entries)
+    claim_export(first, running)
+    second = _retry(first)
+    payload = b"the successor's b39"
+    _source, _destination, entries = prepare(second, batch="b39", payload=payload)
+    handle = second.submit_group("b39", entries)
+    claim_export(second, handle)
+
+    answer = _try_export(second, "b39")
+
+    assert po._mover_live_state(first.queue, running["export_key"]) == pool.CLAIMED
+    assert answer["ok"], f"another group's live export holds this path: {answer}"
+    assert destination.read_bytes() == payload
 
 
 # -- what still refuses -----------------------------------------------------------
@@ -275,6 +335,7 @@ def test_a_committed_file_is_adopted_with_its_bytes_and_never_replaced(tmp_path)
     assert not refused["ok"] and "committed" in refused["refusal"], refused
     assert destination.read_bytes() == payload and destination.stat().st_ino == inode
     second.queue.finish(handle["export_key"], status="failed")
+    _fail_export(second, handle["export_key"])
 
     third = _retry(second)
     _source, _destination, entries = prepare(third, batch="b39", payload=payload)
@@ -284,3 +345,46 @@ def test_a_committed_file_is_adopted_with_its_bytes_and_never_replaced(tmp_path)
     assert answer["ok"], f"a committed file with the successor's bytes is refused: {answer}"
     assert destination.stat().st_ino == inode
     assert _proof(third, "b39")["adopted"]["owner_kind"] == "batch"
+
+
+def test_every_dead_attempt_in_a_retry_chain_is_asked_about_its_export(tmp_path, monkeypatch):
+    """Keys A and B are dead and both prewrote b39; B's export is still claimed."""
+
+    first = world(tmp_path)
+    destination, _ = _landed(first, "b39", b"key A's bytes")
+    second = _new_key(first, "resubmit-1")
+    _source, _destination, entries = prepare(second, batch="b39", payload=b"key B's bytes")
+    running = second.submit_group("b39", entries)
+    claimed = second.queue.claim(owner="a-worker-that-is-still-copying", tags=[second.host])
+    assert claimed["action_key"] == running["export_key"]
+    third = _new_key(second, "resubmit-2")
+    assert po._mover_live_state(third.queue, running["export_key"]) == pool.CLAIMED
+    _source, _destination, entries = prepare(third, batch="b39", payload=b"key C's bytes")
+    handle = third.submit_group("b39", entries)
+    claim_export(third, handle)
+
+    answer = _try_export(third, "b39")
+
+    assert not answer["ok"]
+    assert "failed-group-export-live" in answer["refusal"], answer
+    assert running["export_key"] in answer["refusal"], answer
+    assert destination.read_bytes() == b"key A's bytes"
+
+    # Once B's export has failed for good, every dead claim is asked about,
+    # whichever order the attempt index lists them in.
+    asked = []
+    original = ps._OtherClaims.require_ended_export
+
+    def recording(self, claim, path):
+        asked.append(claim["owner_action_key"])
+        return original(self, claim, path)
+
+    monkeypatch.setattr(ps._OtherClaims, "require_ended_export", recording)
+    third.queue.finish(running["export_key"], status="failed")
+    _fail_export(third, running["export_key"])
+
+    answer = _try_export(third, "b39")
+
+    assert answer["ok"], answer
+    assert sorted(asked) == sorted([first.owner, second.owner]), asked
+    assert destination.read_bytes() == b"key C's bytes"
