@@ -353,6 +353,9 @@ def test_a_writers_file_displaced_by_a_later_one_is_kept_and_named(
 
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
     private = _private(instance, path)
+    # The committed inode stays allocated, so no later file can reuse its
+    # number and read as the committed file changed in place.
+    os.link(path, tmp_path / "committed-inode")
     _successor_rename(path, b"first")()
     os.rename(path, private)
     _successor_rename(path, b"second")()

@@ -108,6 +108,19 @@ def _delta_events(events: list[dict]) -> dict[str, int]:
     return dict(collections.Counter(str(event.get("event")) for event in events))
 
 
+def _event_samples(events: list[dict]) -> dict[str, dict]:
+    """One example of each ``event/reason``, its long lists cut to three."""
+
+    samples: dict[str, dict] = {}
+    for event in events:
+        key = f"{event.get('event')}/{event.get('reason', '')}"
+        if key not in samples:
+            samples[key] = {name: (value[:3] if isinstance(value, list)
+                                   else value)
+                            for name, value in event.items()}
+    return samples
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", required=True,
@@ -194,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
                "wall_s": round(time.perf_counter() - started, 4),
                "cpu_s": round(time.process_time() - cpu, 4),
                "calls": counter.snapshot(),
-               "tick_events": _delta_events(events)}
+               "tick_events": _delta_events(events),
+               "tick_event_samples": _event_samples(events)}
         recorded = getattr(tier_loop, "LAST_CYCLE", None)
         if isinstance(recorded, dict):
             row["last_cycle"] = {key: recorded.get(key)
