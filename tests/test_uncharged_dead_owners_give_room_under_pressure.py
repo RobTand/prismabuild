@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
@@ -473,3 +474,48 @@ def test_an_unreadable_discovery_files_no_report_and_evicts_none(
 
     assert _owned(queue, *owner), receipts
     assert _reports(receipts) == [], "unknown is not none"
+
+
+def test_an_owner_found_and_evicted_in_one_pass_is_reported(fleet):
+    queue, stage, _ = fleet
+    owner = dead_owner(fleet, ["once-00001"], unix=100.0)
+
+    (report,) = _reports(_sweep(queue, stage, {TIER: 1}))
+
+    assert not _owned(queue, *owner)
+    assert (report["owners"], report["bytes"]) == (0, 0), report
+    assert (report["owners_evicted"], report["bytes_evicted"]) == (1, GIB)
+
+
+def test_a_partially_pruned_owner_is_collected_from_its_rewritten_fragment(
+        fleet):
+    """A partial prune is not coherence: the next pass reads the survivors.
+
+    One coherent path and one positively stale path (#853).  The first pass
+    prunes the stale one and rewrites the fragment; the owner it read is no
+    longer the one on disk, so it is neither evicted nor reported from that
+    read.  The next pass collects the survivor alone.
+    """
+
+    queue, stage, _ = fleet
+    consumer, mover = red.stale_owner(fleet, coherent_names={red.NAMES[0]},
+                                      charged=False)
+
+    first = _sweep(queue, stage, {TIER: 1})
+    (pruned,) = [entry for entry in first if entry.get("action_key") == mover
+                 and entry.get("event") == stage_release.STALE_MENTION_EVENT]
+    assert pruned["partial"] is True and pruned["entries_pruned"] == 1, pruned
+    assert _for(first, mover) == [] and _reports(first) == [], first
+    assert _owned(queue, consumer, mover)
+    assert (stage / red.staged_name(red.NAMES[0])).exists()
+
+    (report,) = _reports(_sweep(queue, stage, {}))
+    assert (report["owners"], report["bytes"]) == (1, red.SIZE), report
+
+    third = _sweep(queue, stage, {TIER: 1})
+    (evicted,) = _for(third, mover)
+    assert evicted["complete"] is True and evicted["bytes_deleted"] == red.SIZE
+    assert not _owned(queue, consumer, mover)
+    (report,) = _reports(third)
+    assert (report["owners"], report["owners_evicted"],
+            report["bytes_evicted"]) == (0, 1, red.SIZE), report

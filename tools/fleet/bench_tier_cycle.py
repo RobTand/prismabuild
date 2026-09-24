@@ -33,9 +33,10 @@ tier's fill rate and seal no range (the live ``produced_export.py`` shape).
 Before #1060 they tainted every ownership census on the tier while they were
 claimed; since, the claim census reads a rate-only claim as no copy.
 ``--dead-owners-uncharged`` builds the same dead owners without their stage
-token (#1061): the live shape of an owner whose move receipt never
-completed, so the ledger released its token at ``finish`` while its files,
-fragment and material stayed.
+token (#1061), as the ledger leaves an owner whose move receipt never
+completed: it released the token at ``finish`` while the files, fragment
+and material stayed.  The receipt here still says complete, since the sweep
+reads the token and not the receipt.
 Each cycle row then carries the stage-lock hold its sweep receipts
 recorded.
 

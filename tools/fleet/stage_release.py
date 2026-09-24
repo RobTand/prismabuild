@@ -3573,12 +3573,16 @@ def _left_coherent(receipt: Mapping[str, object]) -> bool:
     The transaction's own "nothing to act on" verdicts (#853, #1056): the
     owner retained whole with no retention reason, or under a co-owner, and
     no error.  A retention reason -- a taint, a live pin or claim, a
-    handoff -- is not coherence, and neither is a prune, an eviction or a
-    changed document.
+    handoff -- is not coherence, and neither is an eviction or a changed
+    document.  Nor is a partial prune, whose receipt carries no retention
+    reason either: the fragment the discovery read is no longer the one on
+    disk, so the owner is collected on the next pass, from the rewritten
+    fragment.
     """
 
     return (receipt.get("event") == STALE_MENTION_EVENT
             and receipt.get("retained_reason") in ("", "co-owner")
+            and not receipt.get("partial")
             and not receipt.get("errors"))
 
 
@@ -3647,14 +3651,16 @@ def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
     ``evicted`` maps each owner this pass gave back to the bytes it
     deleted.  The report names what is left: the count and the bytes their
     fragments name (a file two owners name counts once per owner), plus
-    what this pass evicted and the room the tier needed.
+    what this pass evicted and the room the tier needed.  It is filed when
+    what is left differs from the last report, and whenever this pass
+    evicted one, so an owner found and evicted in one pass is reported.
     """
 
     left = [(mover, fragment) for mover, _consumer, fragment in owners
             if mover not in evicted]
     named = tuple(sorted(mover for mover, _fragment in left))
     memo = (str(queue.root), tier_id)
-    if _UNCHARGED_REPORTS.get(memo, ()) == named:
+    if _UNCHARGED_REPORTS.get(memo, ()) == named and not evicted:
         return []
     _UNCHARGED_REPORTS[memo] = named
     return [{
@@ -4027,7 +4033,12 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     :func:`_evict_uncharged_owner`, which retakes the death proof under the
     consumer's lock and evicts whole, so a live pin, a handoff or the
     mover's own live copy keeps every byte, and co-owners settle through
-    the shared verdict.  The bytes each eviction deletes are credited
+    the shared verdict.  An owner a skip checkpoint stands for may have
+    been pinned or claimed when the checkpoint was installed, since the
+    checkpoint certifies paths and not retention reasons; while that
+    reason lives, each pressured cycle pays one declined eviction for it,
+    whose census (#1056 measured about 1.85 s per owner on the live stage)
+    runs before the decline.  The bytes each eviction deletes are credited
     against the room the tier needs, in whole GiB, until the ledger's next
     mint shows them, and the pass stops once the room is covered.  The
     tier's set of such owners -- count and bytes -- is reported as
