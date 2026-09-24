@@ -854,6 +854,18 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+class StaleAbsenceError(FileNotFoundError):
+    """A linked attempt file its directory lists that this client cannot open yet.
+
+    ``PoolQueue.attempt_outcomes`` raises it only after a listing of every
+    directory on the canonical path showed each name, so the file exists on
+    the server and this client still answers ``ENOENT`` for it from a lookup
+    it cached before the file was created (#1100).  A waiter treats it as a
+    read to repeat later, not as a verdict.  It is a ``FileNotFoundError``,
+    so a caller that does not know it keeps its old handling.
+    """
+
+
 class AmbiguousClaimHolder(PoolContractError):
     """Contradictory committed reservations forbid concluding a claim."""
 
@@ -17823,11 +17835,7 @@ class PoolQueue:
                 raise PoolContractError(
                     f"attempt {attempt} outcome link is not its canonical path"
                 )
-            raw = pb._read_regular_file_nofollow(
-                expected,
-                where="pool attempt outcome",
-                require_readonly=True,
-            )
+            raw = self._read_attempt_file(expected, where="pool attempt outcome")
             try:
                 value = json.loads(raw)
             except json.JSONDecodeError as exc:
@@ -17880,11 +17888,8 @@ class PoolQueue:
                     raise PoolContractError(
                         f"pool attempt {stream} link is not its canonical path"
                     )
-                log = pb._read_regular_file_nofollow(
-                    log_path,
-                    where=f"pool attempt {stream}",
-                    require_readonly=True,
-                )
+                log = self._read_attempt_file(
+                    log_path, where=f"pool attempt {stream}")
                 if (
                     byte_count != len(log)
                     or metadata.get("sha256") != hashlib.sha256(log).hexdigest()
@@ -17895,6 +17900,78 @@ class PoolQueue:
                 expanded[stream] = log.decode("utf-8")
             outcomes.append(expanded)
         return outcomes
+
+    def _read_attempt_file(self, path: Path, *, where: str) -> bytes:
+        """Read one linked immutable attempt file, past a stale "absent" (#1100).
+
+        A landed ending links its attempt records, so a miss here is either a
+        record that is really gone or a name this NFS client cached as absent.
+        The second is the ordinary case for a waiter on another box: its poll
+        walks ``attempts/<key>/<generation>`` before the ending lands
+        (``archived_generation_outcomes``), the worker's box then creates it,
+        and the client keeps answering ``ENOENT`` from the lookup it cached.
+        On sparky that outlived a fresh open of the parent for 25 s to more
+        than 180 s, so the close-to-open revalidation ``_read_json_fresh``
+        relies on (#808) is not enough here.
+
+        A miss is revalidated by listing each directory on the canonical
+        path, the rule ``pbrun.terminal_record`` follows for ``done/``, and
+        the file is read again only when every name is listed.  Only a miss
+        pays for the listings, and ``attempts/`` holds one name per action
+        key, about as many as the ``done/`` a waiter already lists on every
+        poll.  A name that no listing shows raises the original
+        ``FileNotFoundError``: a missing record is never read around.  A name
+        that is listed but still cannot be opened raises
+        ``StaleAbsenceError``, which a waiter repeats inside its own patience.
+        """
+
+        try:
+            return pb._read_regular_file_nofollow(
+                path, where=where, require_readonly=True)
+        except FileNotFoundError:
+            if not self._attempt_path_listed(path):
+                raise
+        try:
+            return pb._read_regular_file_nofollow(
+                path, where=where, require_readonly=True)
+        except FileNotFoundError as exc:
+            raise StaleAbsenceError(
+                errno.ENOENT,
+                f"{where} is listed by its directory but is not visible here "
+                f"yet (a lookup this client cached before it was created, "
+                f"#1100)",
+                str(path),
+            ) from exc
+
+    def _attempt_path_listed(self, path: Path) -> bool:
+        """Whether each directory from ``attempts/`` down lists the next name.
+
+        Listing a directory is also what refreshes this client's view of its
+        names.  A directory whose own name its parent just listed, and that
+        still cannot be opened for its listing, is the same stale lookup one
+        level down, so it counts as listed.  Any other failure to list
+        answers ``False``, and the caller keeps its original miss.
+        """
+
+        base = self.root / ATTEMPTS
+        try:
+            parts = path.relative_to(base).parts
+        except ValueError:
+            return False
+        directory = base
+        for depth, name in enumerate(parts):
+            try:
+                names = os.listdir(directory)
+            except FileNotFoundError:
+                if depth == 0:
+                    return False
+                return True
+            except OSError:
+                return False
+            if name not in names:
+                return False
+            directory = directory / name
+        return True
 
     def _archived_attempt_identity(
         self,

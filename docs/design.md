@@ -6901,6 +6901,26 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
+* **A landed ending's attempt records are read past a stale "absent"
+  (#1100).** A waiter on one box polls for an ending another box files, and
+  its poll walks `attempts/<key>/<generation>` before that exists
+  (`archived_generation_outcomes`), so its NFS client caches the name as
+  absent. On 2026-09-24 that turned four landed endings, and two more the
+  same afternoon, into `pbrun` exit 74 on sparky: verification opened
+  `attempts/<key>` relative to the held `attempts/` descriptor and got
+  `ENOENT`. In a probe on the real mount the cached miss outlived a fresh
+  open of the parent, and a forced attribute refresh of it, for 25 s to
+  more than 180 s, so the #808 open is not enough here.
+  `PoolQueue.attempt_outcomes` therefore reads each linked attempt file
+  through `_read_attempt_file`: a miss lists every directory from
+  `attempts/` down, as `pbrun.terminal_record` lists `done/`, and reads
+  again only when every name is listed. A name that no listing shows keeps
+  its `FileNotFoundError`, so a missing record is never read as a pass. A
+  name that is listed and still cannot be opened raises
+  `pool.StaleAbsenceError`; `pbrun` reports it as `OutcomeNotYetVisible`,
+  a kind of reaped timeout, so `await_outcome` and `pbwait` go back to
+  observation and read again inside their deadline, and a zero-patience
+  read stays exit 74. Only a miss pays for the listings.
 * **Origin reachability is typed at the mover (#804).** A produced-output
   prefix is validated as an absolute normalized path and nothing more, and
   the mover runs on the tier host, which is usually not the box that wrote
