@@ -5589,12 +5589,12 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
     origin-only batch, a duplicate), else ``{"selection": ...}``: the copy to
     retire and everything phase three revalidates against.
 
-    Provenance BEFORE any destructive call: the immutable record validates
-    (schema/binding/entries/manifest), and the mutable commitments entry
-    must agree with it on mover, tier, and the canonically derived
-    namespace. A changed mover/tier in commitments never selects the egress
-    target. Bad or foreign metadata refuses before fragments are read, files
-    deleted, or tier ownership released.
+    Every check comes BEFORE any destructive call: the immutable record
+    validates (schema/binding/entries/manifest), and the mutable
+    commitments entry must agree with it on mover, tier, and the
+    canonically derived namespace. A changed mover/tier in commitments
+    never selects the egress target. Bad or foreign metadata refuses before
+    fragments are read, files deleted, or tier ownership released.
     """
 
     from prismabuild import pool as pool_mod
