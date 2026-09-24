@@ -7835,29 +7835,32 @@ def publish_consumer_row(q, action: Mapping[str, object],
                 template, consumer_action_key=key,
                 tier=resolve_stage_tier(q, args.residency_tier),
                 args=args, queue=q, cas=cas)
-            if not staged.get("reused_frozen_plan"):
-                # A fresh seal is a new generation of this consumer's window.
-                # The predecessor's *visible* child cancellations -- an
-                # operator's withdrawal, or the dead-consumer pass that
-                # stopped its movers -- do not cover it, but the window reads
-                # them as live and would supersede it before its second phase
-                # ever published.  A deliberate seal retires them as evidence,
-                # under this consumer's lock and then each child's, before the
-                # fresh plan is filed.  A cancellation filed after that is the
-                # new plan's own decision and still supersedes it; automatic
-                # publication never retires one (#708 review).
-                try:
-                    renewal = residency_plan.retire_predecessor_cancellations(
-                        q, key, staged["plan"])
-                except residency_plan.ResidencyPlanError as exc:
-                    raise SystemExit(f"pbrun: {exc}") from None
-                if renewal["retired"]:
-                    print(
-                        f"pbrun: renewing {key[:12]}: retired "
-                        f"{len(renewal['retired'])} predecessor cancellation "
-                        f"marker(s); their decisions stay under "
-                        f"{q.superseded_dir()}", file=sys.stderr, flush=True)
-            residency_plan.freeze(q, staged["plan"])
+            # A seal is a new generation of this consumer's window, and so is
+            # a resubmission that reuses its frozen plan.  The predecessor's
+            # *visible* child cancellations -- an operator's withdrawal, or
+            # the dead-consumer pass that stopped a dead consumer's movers --
+            # do not cover it, but the window reads them as live and would
+            # supersede it before its second phase ever published.  So the
+            # plan is filed first, which is what makes this consumer's
+            # interest visible to the dead-consumer pass, and then the
+            # predecessor's markers are retired as evidence under this
+            # consumer's lock and every mover's (#708 review, #1114).  A
+            # cancellation filed after that is the new plan's own decision
+            # and still supersedes it; automatic publication never retires
+            # one.  A release re-attaching to its own live row (#913) renews
+            # nothing: that window already owns its markers.
+            renew = not (attach and staged.get("reused_frozen_plan"))
+            try:
+                renewal = residency_plan.seal_window(
+                    q, staged["plan"], renew=renew)
+            except residency_plan.ResidencyPlanError as exc:
+                raise SystemExit(f"pbrun: {exc}") from None
+            if renewal["retired"]:
+                print(
+                    f"pbrun: renewing {key[:12]}: retired "
+                    f"{len(renewal['retired'])} predecessor cancellation "
+                    f"marker(s); their decisions stay under "
+                    f"{q.superseded_dir()}", file=sys.stderr, flush=True)
             publication = publication_row(action, args=args, queue=q)
             publication["residency"] = staged["residency"]
             if template.get("produced_output_template") is not None:

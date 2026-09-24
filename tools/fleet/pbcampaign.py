@@ -1171,7 +1171,14 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
         with queue._transition_locked(key):
             if residency_plan.superseded(queue, staged_plan) is not None:
                 raise SystemExit("decomposed child's immutable data plan was superseded; refusing automatic revival")
-            residency_plan.freeze(queue, staged_plan)
+            # Filed, then renewed on the same boundary as pbrun's lane: a
+            # dead consumer's cleanup cannot cancel a mover this plan names
+            # once it is filed, and a cancellation it filed before is
+            # retired here or refused by name (#1114).
+            try:
+                residency_plan.seal_window(queue, staged_plan)
+            except residency_plan.ResidencyPlanError as exc:
+                raise SystemExit(f"pbrun: {exc}") from None
             row = pbrun.publication_row(child, args=args, queue=queue)
             row["residency"] = {
                 "schema": pool.RESIDENCY_SCHEMA_V1,
