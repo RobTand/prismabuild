@@ -3543,8 +3543,10 @@ class _UnchargedOwners:
     reads only held keys.  :func:`sweep_dead_owner_fragments` fills this;
     :func:`sweep` evicts from it under pressure and reports it.
 
-    ``by_tier`` maps a tier to ``(mover, consumer, bytes)`` per owner, the
-    bytes being what its fragment names.  ``known`` is false when discovery
+    ``by_tier`` maps a tier to ``(mover, consumer, fragment)`` per owner:
+    the fragment the discovery validated, whose entries' bytes the report
+    sums only when the set it reports has changed, so a steady cycle pays a
+    list append per owner and no walk of its entries.  ``known`` is false when discovery
     did not complete, and ``unknown_tiers`` names a tier whose ledger or
     one of whose owners could not be read: the collection is then not a
     census of that tier, and its report waits.
@@ -3553,12 +3555,11 @@ class _UnchargedOwners:
     def __init__(self) -> None:
         self.known = True
         self.unknown_tiers: set[str] = set()
-        self.by_tier: dict[str, list[tuple[str, str, int]]] = {}
+        self.by_tier: dict[str, list[tuple[str, str, Mapping]]] = {}
 
     def add(self, tier_id: str, mover: str, consumer: str,
-            stage_bytes: int) -> None:
-        self.by_tier.setdefault(tier_id, []).append(
-            (mover, consumer, int(stage_bytes)))
+            fragment: Mapping) -> None:
+        self.by_tier.setdefault(tier_id, []).append((mover, consumer, fragment))
 
     def census_of(self, tier_id: str) -> bool:
         """Whether this pass's collection is a complete census of ``tier_id``."""
@@ -3637,7 +3638,7 @@ def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
 
 def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
                             stage_root: str,
-                            owners: list[tuple[str, str, int]], *,
+                            owners: list[tuple[str, str, Mapping]], *,
                             evicted: Mapping[str, int],
                             needed: int | None) -> list[dict[str, object]]:
     """The tier's uncharged dead owners, once per change of the set (#1061).
@@ -3649,9 +3650,9 @@ def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
     what this pass evicted and the room the tier needed.
     """
 
-    left = [(mover, consumer, stage_bytes)
-            for mover, consumer, stage_bytes in owners if mover not in evicted]
-    named = tuple(sorted(mover for mover, _consumer, _bytes in left))
+    left = [(mover, fragment) for mover, _consumer, fragment in owners
+            if mover not in evicted]
+    named = tuple(sorted(mover for mover, _fragment in left))
     memo = (str(queue.root), tier_id)
     if _UNCHARGED_REPORTS.get(memo, ()) == named:
         return []
@@ -3661,7 +3662,7 @@ def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
         "action_key": "", "consumer_action_key": "", "tier_id": tier_id,
         "stage_root": str(stage_root), "reason": "orphan-sweep",
         "owners": len(left),
-        "bytes": sum(stage_bytes for _mover, _consumer, stage_bytes in left),
+        "bytes": sum(_fragment_bytes(fragment) for _mover, fragment in left),
         "owners_evicted": len(evicted),
         "bytes_evicted": sum(int(value) for value in evicted.values()),
         "pressure_gib": needed,
@@ -3913,7 +3914,7 @@ def sweep_dead_owner_fragments(
                                     # token.  The held-key pass may take
                                     # its bytes back under pressure.
                                     uncharged.add(tier, mover, consumer,
-                                                  _fragment_bytes(observed))
+                                                  observed)
                                 continue
                             if not _metadata_absent(
                                     queue.tier_ledger(tier).held_dir / mover):
@@ -4129,15 +4130,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             orphans.append((_staged_unix(receipt), key, consumer, False))
         needed = None if pressure is None else int(pressure.get(tier_id, 0))
         dead_uncharged = [
-            (mover, consumer, stage_bytes)
-            for mover, consumer, stage_bytes in uncharged.by_tier.get(tier_id, ())
+            (mover, consumer)
+            for mover, consumer, _fragment in uncharged.by_tier.get(tier_id, ())
             if mover not in wanted and mover not in owners]
         if needed is not None and needed > 0:
             # Only a tier that needs room reads their receipts: the order is
             # all they are for, and no pressure evicts none of them (#1061).
             orphans.extend(
                 (_staged_unix(queue.move_record(mover)), mover, consumer, True)
-                for mover, consumer, _stage_bytes in dead_uncharged)
+                for mover, consumer in dead_uncharged)
         orphans.sort()
         kind = storage_tiers.capacity_kind_of(tier_id)
         # Bytes an uncharged eviction deleted are room the ledger cannot
