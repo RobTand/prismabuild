@@ -7716,6 +7716,49 @@ or not a window's holding names it. So an admitted window is committed at the
 larger of what it holds and its footprint, and a static holder (a receipt-less
 token, an output owner's held window) at what it holds.
 
+**Shared ranges are grown once (#1093).** Since #1026 the consumers of one
+manifest share one mover per range, and the census counts its held tokens once.
+Summing each window's growth still counted a shared range's future bytes once
+per sharer, and a shared advance's fence grant only under the window that
+fences it. On the campaign shape (`bench_tier_cycle.py --shared-consumers 4`)
+that committed 2,500 GiB against 128 GiB held. The admitted windows' growth is
+now joint (`tier_loop._joint_committed`):
+
+* Each window can still hold the legs of every phase it has still to read,
+  and at most its **need** at once: the larger of its footprint and its
+  holding. A range is one copy, whichever windows hold it, at the larger of
+  its leg's GiB and the tokens on it.
+* The most the windows can want at once is then a maximum flow from windows to
+  ranges under both bounds (`window_credit.joint_need_gib`). Ranges with the
+  same readers merge into one node, so a shared plan of any length is a few
+  nodes.
+* The committed total is everything nothing can evict, queued and owed, plus
+  how far that joint need exceeds the tokens the windows hold toward it, each
+  token counted once.
+* A window holds toward its footprint every token on its in-horizon legs: the
+  mover's tokens, its queued row and every fence grant on that leg, whichever
+  sharer holds the grant. A grant on a leg its own window no longer reaches is
+  a range of its own.
+
+With no range shared, the flow is each window's need, and the total is the
+#907 sum of each footprint less its holding. With shared ranges it is the
+union, never less: two sharers at the same phase whose windows are shorter
+than the plan commit both footprints, because nothing keeps them together, and
+a range both hold now is holding toward only one of them once they diverge.
+That is more than the old sum, which counted the shared range as holding
+toward both. `growth_gib` on each window is still its own footprint less its
+holding; the tier's `shared_ranges_gib` is how far the joint growth differs
+from their sum, and the terms carry it as `shared-ranges`, so the
+non-evictable terms still sum to `committed_gib`.
+
+The gate prices each newcomer jointly with the admitted windows: it admits
+when the commitment with the newcomer admitted fits the tier. The newcomer's
+`growth_gib` is how far that moves the commitment. Adding a window can lower
+the commitment, when a grant it holds becomes holding toward a range an
+admitted window reads, so the gate reads the signed difference and the record
+shows it as at least 0. Each decision recomputes the flow over the admitted
+windows and the newcomer; the census reads nothing more per cycle than before.
+
 A live consumer the census cannot read is not free room. A plan read fails on
 a torn write or the mount's quarter-hourly ESTALE (#575); the consumer then
 drops out of the pass, and its ranges would count as orphans and its growth
@@ -9746,7 +9789,9 @@ now treats one mover named by several plans as one holder:
 - The joint commitment (`_commitment_census`) counts a shared range evictable
   only when every window naming it has read past it or has it beyond its
   horizon. It counts the range once, and each window counts it toward its own
-  holding.
+  holding. Since #1093 it also grows it once: the admitted windows' growth is
+  joint over the ranges they can still read (see "Shared ranges are grown
+  once" under #907).
 - The beyond-horizon and claim-order candidates keep a shared range only when
   every interested consumer nominates it on its own terms. The range then
   appears once, at the soonest any of them needs it, and it takes every

@@ -70,7 +70,8 @@ tiebreak is determinism only.  No unbounded starvation-freedom claim.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Iterable, Mapping
 import hashlib
 import math
 
@@ -185,6 +186,82 @@ def gate_commitment(*, committed_gib: int, growth_gib: int,
         return {"admit": True, "reason": "", "lone": True}
     return {"admit": False, "reason": REASON_COMMITMENT, "permanent": False,
             "lone": False}
+
+
+def joint_need_gib(needs: Mapping[str, int],
+                   reach: Mapping[str, Iterable[str]],
+                   caps: Mapping[str, int]) -> int:
+    """The most tier GiB some windows can want at once, over shared ranges (#1093).
+
+    ``needs`` is each window's most at once (the larger of its read
+    footprint and its holding), ``reach`` the ranges each can still hold
+    (every leg of a phase it has still to read), and ``caps`` each range's
+    GiB.  At any moment each window holds at most its need, of ranges it
+    can reach, and a range held by several windows is one copy; so what
+    they hold between them is a flow from windows to ranges under both
+    bounds, and this is the maximum such flow.
+
+    Windows that share no range get the sum of their needs, capped by what
+    each can reach.  Windows that share every range they can reach get at
+    most those ranges once.  Ranges with the same readers are merged first,
+    so the network has one node per window and one per distinct reader set,
+    and a plural readers' plan collapses to a few nodes however many
+    phases it has.
+    """
+
+    members = [key for key in sorted(needs) if int(needs[key]) > 0]
+    readers: dict[str, set[str]] = {}
+    for key in members:
+        for item in reach.get(key, ()):
+            readers.setdefault(str(item), set()).add(key)
+    groups: dict[tuple[str, ...], int] = {}
+    for item, keys in readers.items():
+        cap = max(0, int(caps.get(item, 0)))
+        if cap:
+            signature = tuple(sorted(keys))
+            groups[signature] = groups.get(signature, 0) + cap
+    if not groups:
+        return 0
+    # Nodes: 0 source, 1 sink, then one per window, then one per group.
+    node = {key: 2 + offset for offset, key in enumerate(members)}
+    residual: list[dict[int, int]] = [
+        {} for _ in range(2 + len(members) + len(groups))]
+
+    def edge(tail: int, head: int, cap: int) -> None:
+        residual[tail][head] = residual[tail].get(head, 0) + cap
+        residual[head].setdefault(tail, 0)
+
+    unbounded = sum(int(needs[key]) for key in members) + 1
+    for key in members:
+        edge(0, node[key], int(needs[key]))
+    for offset, (signature, cap) in enumerate(sorted(groups.items())):
+        group = 2 + len(members) + offset
+        edge(group, 1, cap)
+        for key in signature:
+            edge(node[key], group, unbounded)
+    flow = 0
+    while True:
+        parent: dict[int, int] = {0: 0}
+        frontier = deque([0])
+        while frontier and 1 not in parent:
+            tail = frontier.popleft()
+            for head, cap in residual[tail].items():
+                if cap > 0 and head not in parent:
+                    parent[head] = tail
+                    frontier.append(head)
+        if 1 not in parent:
+            return flow
+        push, head = unbounded, 1
+        while head:
+            push = min(push, residual[parent[head]][head])
+            head = parent[head]
+        head = 1
+        while head:
+            tail = parent[head]
+            residual[tail][head] -= push
+            residual[head][tail] += push
+            head = tail
+        flow += push
 
 
 #: A claimed consumer whose next range waits behind an older claim on a tier

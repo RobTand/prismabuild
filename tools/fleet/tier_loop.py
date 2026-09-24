@@ -3330,7 +3330,17 @@ def _commitment_census(queue: pool.PoolQueue,
     every window naming it has read past it or has it beyond its horizon;
     one window still reading it inside its horizon keeps it.  Each window
     counts it toward its own holding, because each one's footprint includes
-    it and neither needs room for a second copy.
+    it and neither needs room for a second copy.  So does a fence grant on
+    it, whichever sharer holds the grant.
+
+    The admitted windows' growth is joint, not summed (#1093): the most they
+    can want at once, over the ranges they can still read with a shared
+    range once (:func:`_joint_committed`), less the tokens they hold toward
+    it, each token once.  A window's ``growth_gib`` is still its footprint
+    less its holding, taken alone; ``shared_ranges_gib`` is how far the
+    joint growth differs from their sum, and the tier-level ``joint`` is
+    what the gate reprices each newcomer on.  With no range shared the two
+    agree and ``shared_ranges_gib`` is 0.
     """
 
     out: dict[str, dict[str, object]] = {}
@@ -3472,6 +3482,17 @@ def _commitment_census(queue: pool.PoolQueue,
         # Per held mover, every window's verdict on it: a shared range is
         # named by several (#1026), and evictable only if all of them agree.
         verdicts: dict[str, list[tuple[str, str, bool]]] = {}
+        # What each window can still hold, and what it holds now, for the
+        # joint growth (#1093): per window its legs still to read and its
+        # in-horizon legs; per leg its GiB; per held fence grant the window
+        # and leg it fences.
+        reach: dict[str, list[str]] = {}
+        inside: dict[str, list[str]] = {}
+        leg_gib: dict[str, int] = {}
+        grants = {holder for holder, gib in held.items()
+                  if gib and holder.startswith(window_credit.GRANT_PREFIX)}
+        grant_leg: dict[str, tuple[str, str]] = {}
+        footprints: dict[str, int] = {}
         for key, consumer, plan, plan_tier in consumers:
             if plan_tier != tier_id:
                 continue
@@ -3495,25 +3516,38 @@ def _commitment_census(queue: pool.PoolQueue,
                           if horizon else set())
                 ahead = {str(phase["name"]) for phase in
                          residency_plan.remaining(plan, accepted)}  # type: ignore[arg-type]
-                holding = 0
+                prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
+                fenced = any(holder.startswith(prefix) for holder in grants)
+                reaching: list[str] = []
+                within: list[str] = []
                 for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                     mover_role="mover_row"):
                     mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-                    if leg["phase"] not in ahead or mover in beyond:
+                    if fenced:
+                        grant = window_credit.grant_key(
+                            key, tier_id, "mover_row", str(leg["phase"]),
+                            leg["chunk_index"])              # type: ignore[arg-type]
+                        if grant in grants:
+                            grant_leg[grant] = (key, mover)
+                    if leg["phase"] not in ahead:
                         if held.get(mover, 0):
-                            verdicts.setdefault(mover, []).append((
-                                "passed-leg" if leg["phase"] not in ahead
-                                else "beyond-horizon", key, True))
+                            verdicts.setdefault(mover, []).append(
+                                ("passed-leg", key, True))
                         continue
-                    holding += held.get(mover, 0) + queued.get(mover, 0)
+                    reaching.append(mover)
+                    leg_gib[mover] = max(leg_gib.get(mover, 0),
+                                         int(leg["stage_gib"]))  # type: ignore[call-overload]
+                    if mover in beyond:
+                        if held.get(mover, 0):
+                            verdicts.setdefault(mover, []).append(
+                                ("beyond-horizon", key, True))
+                        continue
+                    within.append(mover)
                     if held.get(mover, 0):
                         verdicts.setdefault(mover, []).append(
                             ("in-horizon-leg", key, False))
-                prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
-                holding += sum(gib for holder, gib in held.items()
-                               if holder.startswith(prefix))
-                for holder, gib in held.items():
-                    if gib and holder.startswith(prefix):
+                for holder in grants:
+                    if holder.startswith(prefix):
                         basis[holder] = ("fence-grant", key, False)
                 # Every term from the window's own declarations and
                 # measurements, none from the tier's announced supply, so the
@@ -3533,11 +3567,12 @@ def _commitment_census(queue: pool.PoolQueue,
                     KeyError, TypeError, ValueError) as exc:
                 error = f"{key[:12]}: footprint unreadable: {exc!r}"
                 break
+            reach[key], inside[key], footprints[key] = reaching, within, footprint
             windows[key] = {
                 "newcomer": _is_newcomer(consumer, needs, already),
                 "priority": _priority(consumer),
-                "footprint_gib": footprint, "holding_gib": holding,
-                "growth_gib": max(0, footprint - holding),
+                "footprint_gib": footprint, "holding_gib": 0,
+                "growth_gib": 0,
                 "own_queued_gib": queued.get(key, 0),
                 "consumption_basis": rate_basis,
                 "readahead_basis": readahead_basis,
@@ -3551,17 +3586,25 @@ def _commitment_census(queue: pool.PoolQueue,
             basis[mover] = keeping[0] if keeping else said[0]
             if not keeping:
                 evictable += held.get(mover, 0)
+        joint = _joint_ranges(
+            windows, reach=reach, inside=inside, leg_gib=leg_gib,
+            footprints=footprints, held=held, queued=queued,
+            grants=grants, grant_leg=grant_leg)
         held_total = sum(held.values())
-        committed = (held_total - evictable + sum(queued.values())
-                     + int(owed["gib"])
-                     + sum(int(window["growth_gib"]) for window in windows.values()
-                           if not window["newcomer"]))
+        joint["base_gib"] = (held_total - evictable + sum(queued.values())
+                             + int(owed["gib"]))
+        admitted = [key for key, window in windows.items()
+                    if not window["newcomer"]]
+        committed = _joint_committed(joint, admitted)
         out[tier_id] = {
             "capacity_gib": capacity_gib, "held_gib": held_total,
             "evictable_gib": evictable, "queued_gib": sum(queued.values()),
             "unheld_output_gib": int(owed["gib"]), "windows": windows,
             "committed_gib": committed,
             "over_committed_gib": max(0, committed - capacity_gib),
+            "shared_ranges_gib": _shared_ranges_gib(
+                joint, windows, admitted, committed),
+            "joint": joint,
             "holders": [
                 {"key": holder, "gib": gib, "basis": basis[holder][0],
                  "consumer": basis[holder][1], "evictable": basis[holder][2]}
@@ -3574,6 +3617,118 @@ def _commitment_census(queue: pool.PoolQueue,
                               sorted(dict(owed.get("owners") or {}).items())},
         }
     return out
+
+
+def _joint_ranges(windows: dict[str, dict[str, object]], *,
+                  reach: Mapping[str, list[str]],
+                  inside: Mapping[str, list[str]],
+                  leg_gib: Mapping[str, int], footprints: Mapping[str, int],
+                  held: Mapping[str, int], queued: Mapping[str, int],
+                  grants: set[str],
+                  grant_leg: Mapping[str, tuple[str, str]],
+                  ) -> dict[str, object]:
+    """One tier's windows as ranges they can hold, for the joint growth (#1093).
+
+    Sets each window's ``holding_gib`` and ``growth_gib`` in ``windows`` and
+    returns what :func:`_joint_committed` reads: per window its ``need``
+    (the larger of its footprint and its holding), the ranges it can
+    ``reach`` and the tokens it ``holds``; per range its GiB (``caps``); per
+    token its GiB (``tokens``).  JSON-clean, and kept off the window records
+    the report files.
+
+    A window holds toward its footprint every token on its in-horizon legs --
+    the mover's held tokens, its queued row, and every fence grant on that
+    leg, whichever sharer holds it -- and every fence grant of its own.  A
+    grant fences one leg of its window's plan (``window_credit.grant_key``);
+    one on a leg its window can still reach is that range's, and any other
+    is a range of its own that only its window reaches.  A range's GiB is
+    the larger of its leg's and the tokens on it.
+    """
+
+    attached: dict[str, list[str]] = {}
+    stray: dict[str, list[str]] = {}
+    for grant in sorted(grants):
+        owner, mover = grant_leg.get(grant, ("", ""))
+        if owner and mover in reach.get(owner, ()):
+            attached.setdefault(mover, []).append(grant)
+            continue
+        for key in windows:
+            if grant.startswith(f"{window_credit.GRANT_PREFIX}{key[:16]}-"):
+                stray.setdefault(key, []).append(grant)
+    tokens: dict[str, int] = {}
+    caps: dict[str, int] = {}
+    for mover, gib in leg_gib.items():
+        on = held.get(mover, 0) + queued.get(mover, 0) + sum(
+            held.get(grant, 0) for grant in attached.get(mover, ()))
+        caps[mover] = max(int(gib), int(on))
+    shaped: dict[str, dict[str, object]] = {}
+    for key, window in windows.items():
+        prefix = f"{window_credit.GRANT_PREFIX}{key[:16]}-"
+        holds: set[str] = set()
+        for mover in inside.get(key, ()):
+            if held.get(mover, 0):
+                holds.add(f"held:{mover}")
+            if queued.get(mover, 0):
+                holds.add(f"queued:{mover}")
+            holds.update(f"held:{grant}" for grant in attached.get(mover, ()))
+        holds.update(f"held:{grant}" for grant in grants
+                     if grant.startswith(prefix))
+        for token in holds:
+            kind, _sep, holder = token.partition(":")
+            tokens[token] = int((held if kind == "held" else queued)[holder])
+        items = list(dict.fromkeys(reach.get(key, ())))
+        for grant in stray.get(key, ()):
+            caps[f"grant:{grant}"] = int(held[grant])
+            items.append(f"grant:{grant}")
+        holding = sum(tokens[token] for token in holds)
+        footprint = int(footprints[key])
+        window["holding_gib"] = holding
+        window["growth_gib"] = max(0, footprint - holding)
+        shaped[key] = {"need": max(footprint, holding), "reach": items,
+                       "holds": sorted(holds)}
+    return {"windows": shaped, "caps": caps, "tokens": tokens}
+
+
+def _joint_committed(joint: Mapping[str, object], members: Iterable[str]) -> int:
+    """What a tier commits with windows ``members`` admitted (#1093).
+
+    Everything nothing can evict, queued and owed (``base_gib``), plus how
+    far the most the members can want at once
+    (:func:`window_credit.joint_need_gib`) exceeds the tokens they hold
+    toward it, each token counted once however many windows hold it.  With
+    no range shared this is the #907 sum of each window's footprint less
+    its holding.
+    """
+
+    shaped = joint["windows"]
+    assert isinstance(shaped, Mapping)
+    members = [key for key in members if key in shaped]
+    need = window_credit.joint_need_gib(
+        {key: int(shaped[key]["need"]) for key in members},
+        {key: shaped[key]["reach"] for key in members},
+        joint["caps"])                                    # type: ignore[arg-type]
+    holds = {token for key in members for token in shaped[key]["holds"]}
+    tokens = joint["tokens"]
+    assert isinstance(tokens, Mapping)
+    return int(joint["base_gib"]) + max(               # type: ignore[call-overload]
+        0, need - sum(int(tokens[token]) for token in holds))
+
+
+def _shared_ranges_gib(joint: Mapping[str, object],
+                       windows: Mapping[str, Mapping[str, object]],
+                       members: Iterable[str], committed: int) -> int:
+    """How far sharing moves a commitment from its windows' own growth (#1093).
+
+    The committed total less everything nothing can evict, queued and owed,
+    less each member's ``growth_gib`` taken alone.  Negative when windows
+    share ranges they will read together: the range is committed once.
+    Positive when sharers can drift apart: a range both hold now is holding
+    toward only one of them once they read on, and each then wants its own
+    footprint.  Zero with no range shared.
+    """
+
+    return (committed - int(joint["base_gib"])          # type: ignore[call-overload]
+            - sum(int(windows[key]["growth_gib"]) for key in members))  # type: ignore[call-overload]
 
 
 def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
@@ -3634,6 +3789,15 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
     committed before the next newcomer is asked.  ``None`` for a tier the
     census does not cover (not a stage tier) or a consumer that is no
     newcomer there.  A census that did not read refuses, naming the record.
+
+    The newcomer is priced jointly with the admitted windows (#1093): the
+    gate compares the tier's commitment with the newcomer admitted
+    (:func:`_joint_committed` over both) to the capacity, so a range it
+    shares with an admitted window is committed once.  Its ``growth_gib``
+    is how far that moves the commitment.  Adding a window can lower the
+    commitment -- a grant it holds becomes holding toward a range an
+    admitted window reads -- so the growth is reported as at least 0 and
+    the gate reads the signed difference.
     """
 
     if census is None:
@@ -3647,23 +3811,19 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
     mine = windows.get(key)
     if not isinstance(mine, Mapping) or not mine["newcomer"]:
         return None
-    growth = 0
-    others = False
-    growth_from: dict[str, int] = {}
-    for other, window in windows.items():
-        if other == key or (window["newcomer"] and other not in admitted):
-            continue
-        others = True
-        growth += int(window["growth_gib"])
-        growth_from[str(other)] = int(window["growth_gib"])
-    committed = (int(census["held_gib"]) - int(census["evictable_gib"])  # type: ignore[arg-type]
-                 + int(census["queued_gib"]) + int(census["unheld_output_gib"])  # type: ignore[arg-type]
-                 + growth)
+    members = [str(other) for other, window in windows.items()
+               if other != key and (not window["newcomer"] or other in admitted)]
+    growth_from = {other: int(windows[other]["growth_gib"]) for other in members}
+    joint = census["joint"]
+    assert isinstance(joint, Mapping)
+    committed = _joint_committed(joint, members)
+    growth = _joint_committed(joint, [*members, key]) - committed
+    others = bool(members)
     other_queued = int(census["queued_gib"]) - int(mine["own_queued_gib"])  # type: ignore[arg-type]
     lone = (not others and int(census["unheld_output_gib"]) == 0   # type: ignore[arg-type]
             and other_queued == 0)
     decision = window_credit.gate_commitment(
-        committed_gib=committed, growth_gib=int(mine["growth_gib"]),
+        committed_gib=committed, growth_gib=growth,
         capacity_gib=int(census["capacity_gib"]), lone=lone)   # type: ignore[arg-type]
     decision["commitment"] = {
         "capacity_gib": census["capacity_gib"],
@@ -3671,11 +3831,11 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
         "evictable_gib": census["evictable_gib"],
         "queued_gib": census["queued_gib"],
         "unheld_output_gib": census["unheld_output_gib"],
-        "admitted_growth_gib": growth,
+        "admitted_growth_gib": committed - int(joint["base_gib"]),  # type: ignore[call-overload]
         "committed_gib": committed,
         "footprint_gib": mine["footprint_gib"],
         "holding_gib": mine["holding_gib"],
-        "growth_gib": mine["growth_gib"],
+        "growth_gib": max(0, growth),
         "consumption_basis": mine["consumption_basis"],
         "readahead_basis": mine["readahead_basis"],
         "landing_basis": mine["landing_basis"],
@@ -3685,25 +3845,29 @@ def _commitment_decision(census: Mapping[str, object] | None, key: str, *,
         # What the gap is made of (#930): a refusal that names only totals
         # leaves the operator to guess which holder or window to look at.
         decision["commitment"]["shortfall_gib"] = max(
-            0, committed + int(mine["growth_gib"])
+            0, committed + growth
             - int(census["capacity_gib"]))            # type: ignore[arg-type]
         decision["commitment"]["terms"] = _commitment_terms(
-            census, growth_from=growth_from)
+            census, growth_from=growth_from,
+            shared_gib=_shared_ranges_gib(joint, windows, members, committed))
     return decision
 
 
 def _commitment_terms(census: Mapping[str, object], *,
-                      growth_from: Mapping[str, int]) -> list[dict[str, object]]:
+                      growth_from: Mapping[str, int],
+                      shared_gib: int = 0) -> list[dict[str, object]]:
     """What a stage tier's commitment is made of, by holder and window (#930).
 
     Every held token, grouped by the ``basis`` the census classified it on
     and the window it belongs to -- a token no window owns is its own term,
     named by holder -- and each marked evictable or not; the growth of each
-    window in ``growth_from``; the queued new money, by the window its row
-    stages for; and each owed produced-output window.  Evictable terms are
-    held but not committed: the sweep and the horizon eviction take them
-    back.  The non-evictable terms sum to the committed total the gate
-    compares.  Non-evictable terms first, largest first.
+    window in ``growth_from``, taken alone; ``shared_gib``, how far sharing
+    moves the windows' joint growth from that sum (``shared-ranges``, #1093;
+    negative when they read shared ranges together); the queued new money,
+    by the window its row stages for; and each owed produced-output window.
+    Evictable terms are held but not committed: the sweep and the horizon
+    eviction take them back.  The non-evictable terms sum to the committed
+    total the gate compares.  Non-evictable terms first, largest first.
     """
 
     groups: dict[tuple[str, str, str], dict[str, object]] = {}
@@ -3721,6 +3885,9 @@ def _commitment_terms(census: Mapping[str, object], *,
         if gib:
             terms.append({"basis": "window-growth", "consumer": consumer,
                           "gib": int(gib), "evictable": False})
+    if shared_gib:
+        terms.append({"basis": "shared-ranges", "gib": int(shared_gib),
+                      "evictable": False})
     queued: dict[tuple[str, str], dict[str, object]] = {}
     for row in census.get("queued") or ():                # type: ignore[union-attr]
         owner = row.get("consumer")
@@ -3807,10 +3974,14 @@ def _commitment_report(tier_id: str, census: Mapping[str, object] | None,
     record.update({
         field: census[field] for field in (
             "capacity_gib", "held_gib", "evictable_gib", "queued_gib",
-            "unheld_output_gib", "committed_gib", "over_committed_gib")})
-    record["admitted_growth_gib"] = sum(growth_from.values())
+            "unheld_output_gib", "committed_gib", "over_committed_gib",
+            "shared_ranges_gib")})
+    record["admitted_growth_gib"] = (
+        sum(growth_from.values()) + int(census["shared_ranges_gib"]))  # type: ignore[call-overload]
     record["windows"] = {str(key): dict(window) for key, window in windows.items()}
-    record["terms"] = _commitment_terms(census, growth_from=growth_from)
+    record["terms"] = _commitment_terms(
+        census, growth_from=growth_from,
+        shared_gib=int(census["shared_ranges_gib"]))      # type: ignore[call-overload]
     record["holders"] = [dict(holder) for holder in census["holders"]]  # type: ignore[union-attr]
     return record
 
