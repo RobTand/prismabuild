@@ -2016,7 +2016,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                                auto_reclaimed=auto_reclaimed,
                                auto_retained=auto_retained, whole=whole,
                                memo=memo, fences=fences, prune_after=parents,
-                               shared=shared)
+                               shared_range=shared)
     released = time.perf_counter()
     # Empty directories go after the lock.  A publisher's rename lands in a
     # directory that already holds its temporary, so ``rmdir`` cannot take
@@ -2319,11 +2319,13 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  memo: _CensusMemo | None = None,
                  fences: Mapping[str, tuple] | None = None,
                  prune_after: set[Path] | None = None,
-                 shared: bool = False) -> dict[str, object]:
+                 shared_range: bool = False) -> dict[str, object]:
     """Unlink what is exclusively this mover's, under the ownership lock.
 
-    ``shared`` is a shared range's whole eviction (#1026), called with the
-    range's share namespace as ``consumer_action_key``.  Every fragment of
+    ``shared_range`` is a shared range's whole eviction (#1026), called with
+    the range's share namespace as ``consumer_action_key``.  It is not
+    ``shared``: that name is this function's count of entries a co-owner
+    keeps, and a flag under it read as that count, zero.  Every fragment of
     this mover under another namespace is the range's own vouch -- the copy
     the tier loop fans out to each interested consumer -- so none of them is
     a co-owner that keeps a file and decharges the tokens, and each is
@@ -2379,7 +2381,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         census = _ownership_census(
             queue, mover_action_key, consumer_action_key=consumer_action_key,
             stage=stage, tier_id=tier_id, root=root, entries=entries,
-            memo=memo, shared=shared)
+            memo=memo, shared=shared_range)
         same_namespaces = list(census.get("same_mover_namespaces") or ())
         claimed = census["claimed"]
         own_claimed = census["own_claimed"]
@@ -2428,7 +2430,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         pins, source_paths = {}, set()
         own_generation = None
         blind = False
-        if shared:
+        if shared_range:
             # No vouch of the range's own to judge, but the fanned copies
             # may still stand, and they go with the range (#1026).
             _owners, taint = _fragment_owners(

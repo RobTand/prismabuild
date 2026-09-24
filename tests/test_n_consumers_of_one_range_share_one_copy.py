@@ -187,6 +187,20 @@ def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
     path.write_text(json.dumps(lease))
 
 
+def _fail(queue: pool.PoolQueue, key: str) -> None:
+    """A claimed consumer ends failed, the way ``finish`` leaves it: its
+    record in ``failed/``, and neither its claim nor its lease left.  A
+    lease left behind reads as a live claim (``residency_plan.live_state``
+    lists ``claimed/<key>.lease`` too), so the sweep would defer on it."""
+
+    claimed = queue.item_path(pool.CLAIMED, key)
+    record = json.loads(claimed.read_text())
+    claimed.unlink()
+    queue.lease_path(key).unlink(missing_ok=True)
+    queue.item_path(pool.FAILED, key).write_text(
+        json.dumps({**record, "status": "failed"}))
+
+
 def _files(stage: Path, ordinal: int) -> Path:
     return stage / MANIFEST[:8] / f"phase-{ordinal}" / "part-0.bin"
 
@@ -368,11 +382,7 @@ def test_a_dead_sharers_eviction_keeps_the_range_for_the_live_one(
     plans, movers = _sharers(queue, stage,
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     _fan_out(queue, stage)
-    claimed = queue.item_path(pool.CLAIMED, SECOND)
-    record = json.loads(claimed.read_text())
-    claimed.unlink()
-    queue.item_path(pool.FAILED, SECOND).write_text(
-        json.dumps({**record, "status": "failed"}))
+    _fail(queue, SECOND)
 
     receipt = stage_release.evict(
         queue, movers[0], consumer_action_key=SECOND, stage_root=str(stage),
@@ -396,23 +406,14 @@ def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
     plans, movers = _sharers(queue, stage, land=(),
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     queue.publish(**dict(plans[FIRST]["phases"][1]["mover_row"]))  # type: ignore[index]
-    for key in (FIRST,):
-        claimed = queue.item_path(pool.CLAIMED, key)
-        record = json.loads(claimed.read_text())
-        claimed.unlink()
-        queue.item_path(pool.FAILED, key).write_text(
-            json.dumps({**record, "status": "failed"}))
+    _fail(queue, FIRST)
 
     first_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert queue.item_path(pool.READY, movers[1]).exists(), first_pass
     assert not queue.item_path(pool.WITHDRAWN, movers[1]).exists(), first_pass
 
-    claimed = queue.item_path(pool.CLAIMED, SECOND)
-    record = json.loads(claimed.read_text())
-    claimed.unlink()
-    queue.item_path(pool.FAILED, SECOND).write_text(
-        json.dumps({**record, "status": "failed"}))
+    _fail(queue, SECOND)
     second_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not queue.item_path(pool.READY, movers[1]).exists(), (
@@ -600,8 +601,11 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
     queue, stage = _fixture_queue(tmp_path, 400)
     consumers = [_hexkey(f"1026campaign{n}") for n in range(CAMPAIGN_CONSUMERS)]
     plans = {}
-    for key in consumers:
-        plans[key] = _shared_plan(queue, key, label=key[:12],
+    for n, key in enumerate(consumers):
+        # A label of its own per consumer: ``key[:12]`` is the same hex
+        # prefix for all four, which on a tree without the registry would
+        # hand them one mover key by accident rather than by sharing.
+        plans[key] = _shared_plan(queue, key, label=f"campaign{n}",
                                   phases=CAMPAIGN_PHASES, phase_gib=CAMPAIGN_GIB)
         _publish_consumer(queue, key, plans[key], manifest=MANIFEST)
     now = time.time()
