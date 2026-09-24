@@ -4676,7 +4676,9 @@ and epoch, which is what the verdict compares.
 
 ### What the tier loop reads per cycle (#992, #1004)
 
-The tier loop runs one cycle every 5 s on the tier host. Until this change
+The tier loop runs one cycle every 5 s on the tier host: the fleet role
+passes `--interval-s 5` (`tools/fleet/fleet_boxes.json`), and
+`CYCLE_INTERVAL_S` falls back to 60 s without the flag. Until this change
 each cycle read the queue as if for the first time: it listed `done/`,
 `failed/` and `withdrawn/` (38,000 names on 2026-09-23), listed every
 residency namespace and parsed every fragment (429 namespaces, 1,957
@@ -7665,7 +7667,12 @@ first check, about two phase graces after the consumer went quiet.
 way drain soon (#924, `PoolQueue._withhold_verdict`): the row is next. The
 pool bounds that veto by `WITHHOLD_CEILING_S` (900 s) from the episode's
 start, `epoch_unix` in the row's passes sidecar, which is the same number as
-the campaign's chunk grace. Round 2 read a withhold as "not coming", so a
+the campaign's chunk grace, but only for an episode with refills: work
+claimed after the epoch that refilled the veto (`_withhold_verdict`). An
+episode with none runs as long as its holders drain soon, which can reach a
+transient holder's declared end (`holder_bound`), past the 900 s the
+consumer allows it. The consumer then ends up to `WITHHOLD_CEILING_S` early
+(#1052). Round 2 read a withhold as "not coming", so a
 withhold that ran toward its ceiling ended a healthy consumer while the pool
 was about to place its mover. The verdict now reads it as evidence, with the
 epoch as its `evidence_unix` and the pool's own bound: `withheld` until
@@ -7674,7 +7681,11 @@ withhold with no episode on file (`in_flight`, `holder_tail`) is bounded by
 the row's first denial (`first_unix`), the clock the pool bounds `in_flight`
 by; `withhold_basis` says which (`episode` or `first-denial`), and a sidecar
 with neither is `withhold-lapsed`. Each new episode has a new epoch, so
-back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`.
+back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`
+on the consumer's clock. The chain of episodes has no total bound, and the
+join between two episodes reads as a fresh `baseline`, not as a refusal:
+each renewal is evidence that the pool admitted and drained other work, a
+#924 fairness question rather than a liveness gap.
 When a withhold lifts, the ready rule takes its own `baseline` rather than
 carry the withhold's epoch, as it does after a `claimed` row is requeued: a
 previous entry's evidence time carries only within the ready rule.
