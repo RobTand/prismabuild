@@ -2797,6 +2797,19 @@ class OutcomeObservationTimedOut(OutcomeReadUnavailable):
     """
 
 
+class OutcomeNotYetVisible(OutcomeObservationTimedOut):
+    """A landed ending's attempt record is listed but not visible here yet.
+
+    The reader raised ``pool.StaleAbsenceError``: every directory on the
+    record's canonical path lists it, and this box's NFS client still answers
+    ``ENOENT`` from a lookup it cached before the record was created (#1100).
+    The reader exited and was reaped, so a caller with patience left repeats
+    the read exactly as it repeats a reaped timeout; at zero patience, or at
+    the deadline, it stays exit 74.  A record that no listing shows is not
+    this error, and it still ends the wait at once.
+    """
+
+
 class OutcomeReaderRetained(OutcomeReadUnavailable):
     """A bounded read ran out of budget, and its reader is still in the kernel.
 
@@ -2890,6 +2903,9 @@ def _bounded_pool_read(section: str, read, *, budget_s: float,
     # ``await_outcome`` even though their originating read now lived in a child.
     if kind == "PoolContractError":
         raise pool.PoolContractError(message)
+    if kind == pool.StaleAbsenceError.__name__:
+        # Listed, not yet visible on this box (#1100); the reader is reaped.
+        raise OutcomeNotYetVisible(f"{section}: {message}")
     raise OutcomeReadUnavailable(f"{section} failed: {kind}: {message}")
 
 
@@ -3405,7 +3421,9 @@ def await_outcome(
 
     With ``wait_s > 0``, a read that timed out and whose reader was reaped
     (``OutcomeObservationTimedOut``) is repeated at the next poll, inside the
-    original deadline. A timed-out verification goes back to observation. A
+    original deadline. A timed-out verification goes back to observation, and
+    so does one whose attempt record every listing shows but this box cannot
+    open yet (``OutcomeNotYetVisible``, #1100). A
     read that timed out and whose reader could not be reaped yet
     (``OutcomeReaderRetained``, #1033) is repeated too, but only after that
     reader has exited and been reaped, one ``POLL_S`` after the read that
