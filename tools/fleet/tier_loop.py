@@ -6117,12 +6117,38 @@ def _deferred_waiting_for(deferred: str | None, *, end: int | None,
         return (f"the refill horizon, which ends at byte {end}: the window "
                 f"publishes this range once the consumer's accepted progress "
                 f"past {accepted} brings it inside")
-    if deferred == "first-progress":
-        return ("the consumer's first accepted progress: until then the "
-                "window publishes the phase it reads and one step past it")
-    return ("the window: the consumer's refill horizon is undefined, and it "
-            "publishes this range when the run-ahead bound and the tier's "
-            "room allow")
+    return ("the window: it publishes this range when the horizon and the "
+            "tier's room allow")
+
+
+def _pre_progress_reach(plan: Mapping[str, object],
+                        accepted_phase: object) -> set[str]:
+    """The later stage legs the window publishes before first progress (F1).
+
+    What :func:`residency_window`'s stage ``residency_plan.window`` call,
+    which passes no run-ahead cap, publishes past the phase a consumer with
+    no accepted progress reads: in read order, the legs whose run-ahead fits its
+    budget, the largest later leg (``_budget_from_step`` with
+    ``has_accepted=False``).  Nothing past them is published until it
+    reports.  A withdrawn leg is counted here and skipped by the window, so
+    this can only name fewer legs than the window publishes, never more.
+    """
+
+    ahead = [str(phase["name"]) for phase in residency_plan.remaining(
+        plan, accepted_phase)][1:]                               # type: ignore[arg-type]
+    later = [leg for leg in residency_plan.legs_over(
+        plan, 0, 1 << 62, mover_role="mover_row") if leg["phase"] in ahead]
+    budget = residency_plan._budget_from_step(
+        max((int(leg["stage_gib"]) for leg in later), default=0),
+        has_accepted=False, capacity_gib=None)
+    reach: set[str] = set()
+    spent = 0
+    for leg in later:
+        spent += int(leg["stage_gib"])
+        if budget is not None and spent > budget:
+            break
+        reach.add(str(leg["mover_row"]["action_key"]))          # type: ignore[index]
+    return reach
 
 
 def _landing_horizon(horizon: Mapping[str, object] | None, *, end: int | None,
@@ -6170,16 +6196,21 @@ def publish_landing_expectations(
     plan is ``unpublished``, because the window republishes it (#627).
 
     Every leg the consumer has still to read is listed, not only the legs
-    inside its refill horizon (#1018).  A leg the window has not reached is
-    ``unpublished`` with ``deferred_by``: ``horizon`` past the horizon, which
-    the record's ``horizon`` block locates with the progress and the
-    consumption rate that move it, or ``first-progress`` before the
-    consumer's first accepted progress defines one.  Its reader waits on it
-    while the tier loop lives, as it waits on any unpublished range; before,
-    the leg had no row and the reader's bounded clock refused a range the
-    window was going to publish.  A reader blocked on such a leg declares it
-    (#989), and :func:`_consumer_horizon` takes the horizon through it, so
-    the wait never depends on progress that the wait itself holds up.
+    inside its refill horizon (#1018).  A leg past the horizon is
+    ``unpublished`` with ``deferred_by: horizon``, and the record's
+    ``horizon`` block locates the horizon with the progress and the
+    consumption rate that move it.  Its reader waits on it while the tier
+    loop lives, as it waits on any unpublished range; before, the leg had no
+    row and the reader's bounded clock refused a range the window was going
+    to publish.  A reader blocked on such a leg declares it (#989), and
+    :func:`_consumer_horizon` takes the horizon through it, so the wait
+    never depends on progress that the wait itself holds up.
+
+    With no horizon (no accepted progress yet, or no rate to price one),
+    nothing can extend it, so only the legs the window publishes regardless
+    are listed: the phase being read and, before first progress, its one
+    step of run-ahead (:func:`_pre_progress_reach`).  A later leg keeps no
+    row and the reader's clock refuses it, as before #1018 (review F1).
 
     On a tier the claim order ranks (#1011), the range a held-back consumer
     waits for is ``unpublished`` and names the consumer ranked ahead of it
@@ -6279,6 +6310,12 @@ def publish_landing_expectations(
             names = [str(phase["name"]) for phase in ahead]
             reading = names[0] if names else None
             progressed = residency_plan.accepted(plan, accepted_phase)  # type: ignore[arg-type]
+            # Before its first accepted progress a consumer has no horizon,
+            # and the window publishes the phase it reads plus one step of
+            # run-ahead (``residency_plan.window``: ``no_accepted_progress``).
+            # Those legs, and only those, are coming without a report.
+            first_step = (set() if horizon is not None or progressed else
+                          _pre_progress_reach(plan, accepted_phase))
             ranges: list[dict[str, object]] = []
             for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                 mover_role="mover_row"):
@@ -6310,8 +6347,8 @@ def publish_landing_expectations(
                             order[:int(expected[mover]["queue_position"])]]  # type: ignore[call-overload]
                     ranges.append(row)
                     continue
-                inside = (leg["phase"] == reading if horizon is None
-                          else end is None or start < end)
+                inside = (leg["phase"] == reading or mover in first_step
+                          if horizon is None else end is None or start < end)
                 # A finished copy whose range is not resident: landed and
                 # holding its tokens (adoption has not caught up), or evicted
                 # and holding none, which the window publishes again once the
@@ -6357,19 +6394,26 @@ def publish_landing_expectations(
                             f"head {head_key}")})
                     ranges.append(row)
                     continue
-                # A leg the window has not reached (#1018): listed, so its
+                # With no horizon, a leg the window will not publish is not
+                # listed, and the reader's bounded clock refuses it (#1018
+                # review F1).  Nothing can extend a horizon that does not
+                # exist, so listing it would leave a reader blocked on it
+                # waiting while the tier loop lives, which for an action
+                # with no sealed deadline has no end.  A superseded plan's
+                # leg is still listed: it refuses at once.
+                if (state is None and horizon is None and not inside
+                        and not superseded):
+                    continue
+                # A leg past the refill horizon (#1018): listed, so its
                 # reader waits while the tier loop lives instead of on its
-                # bounded clock, which refused ranges that were coming.
-                # Past the refill horizon, it is published on the cycle the
-                # consumer's progress brings it inside; before the
-                # consumer's first accepted progress there is no horizon,
-                # and the window publishes one step past the phase it reads.
+                # bounded clock, which refused ranges that were coming.  It
+                # is published on the cycle the consumer's progress brings
+                # it inside, or the reader's declared wait takes the horizon
+                # through it (``_declared_wait_end``).
                 deferred: str | None = None
-                if state is None and not inside and not superseded:
-                    if end is not None and start >= end:
-                        deferred = "horizon"
-                    elif not progressed:
-                        deferred = "first-progress"
+                if (state is None and not inside and not superseded
+                        and end is not None and start >= end):
+                    deferred = "horizon"
                 if finished == "evicted":
                     row.update({"state": finished, "expected_landing_unix": None,
                                 "waiting_for": "the window: the range was "

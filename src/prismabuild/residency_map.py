@@ -92,13 +92,15 @@ RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
 #: progress brings inside.  ``terminal-no-receipt`` is a leg nothing will
 #: publish again: its mover failed and the plan is superseded.
 #:
-#: Every leg a claimed consumer has still to read has a row (#1018).  A leg
-#: the window has not reached carries ``deferred_by``: ``horizon`` past the
-#: refill horizon, whose end, progress and consumption rate the record's
-#: ``horizon`` block states, or ``first-progress`` before the consumer's
-#: first accepted progress defines one.  Its state is ``unpublished`` (or
-#: ``evicted``, for a landed copy given back past the horizon): a state the
-#: reader already waits on, so a reader that predates the field waits too.
+#: Every leg a claimed consumer has still to read has a row (#1018), while
+#: the consumer has a refill horizon.  A leg past it carries
+#: ``deferred_by: horizon``, and the record's ``horizon`` block states the
+#: horizon's end, progress and consumption rate.  Its state is
+#: ``unpublished`` (or ``evicted``, for a landed copy given back past the
+#: horizon): a state the reader already waits on, so a reader that predates
+#: the field waits too.  With no horizon, as before a consumer's first
+#: accepted progress, a leg the window will not publish has no row, because
+#: nothing could extend a horizon that does not exist (review F1).
 #:
 #: The range a claimed consumer waits for while the claim order serves the
 #: consumers ranked ahead of it on an over-committed stage tier (#1011) is
@@ -125,7 +127,7 @@ _LANDING_HORIZON_KEYS = frozenset({
     "consumption_bytes_per_s", "consumption_basis", "readahead_bytes",
     "reach_end_bytes", "declared_wait_end_bytes"})
 #: Why a leg the window has not reached is not published yet (#1018).
-LANDING_DEFERRALS = ("horizon", "first-progress")
+LANDING_DEFERRALS = ("horizon",)
 _LANDING_RANGE_KEYS = frozenset({
     "mover_action_key", "phase", "chunk_index", "range_start_bytes",
     "range_end_bytes", "state", "queue_position", "bytes_ahead",

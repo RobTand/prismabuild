@@ -7985,8 +7985,9 @@ the window was going to publish. On R12's plan the advance past the horizon
 publishes one phase after the reader first asks for it: about 1130 s, 3.8
 times the 300 s clock.
 
-**Every leg is listed.** For a claimed consumer the record now answers for
-every leg of the phases from the one it reads onward that is not resident:
+**Every leg is listed.** For a claimed consumer with a refill horizon, the
+record now answers for every leg of the phases from the one it reads onward
+that is not resident:
 
 | Leg | State | Fields |
 |---|---|---|
@@ -7994,7 +7995,6 @@ every leg of the phases from the one it reads onward that is not resident:
 | inside the horizon, not published | `unpublished` | `waiting_for`: the window's room, a recopy, or a landing rate |
 | held back by the claim order | `unpublished` | `held_back_by`, `waiting_on`, `claim_rank` (#1011) |
 | past the refill horizon | `unpublished`, or `evicted` for a landed copy given back | `deferred_by: horizon`; the record's `horizon` block locates it |
-| before the consumer's first accepted progress | `unpublished` | `deferred_by: first-progress` |
 | its plan superseded | `terminal-no-receipt` | now for every leg, not only those inside the horizon |
 
 The record's `horizon` block states where the stage window stops this
@@ -8070,11 +8070,17 @@ record age against `tier_loop_liveness_s`, refuses
 
 **Limits.**
 
-* Before its first accepted progress a consumer has no horizon, and the
-  window publishes one step past the phase it reads. A reader that blocks
-  past that step before it reports anything is not served until it
-  reports: the declared-wait extension applies to a defined horizon only.
-  PrismaQuant's walk reports before it waits.
+* With no horizon, the record lists only what the window publishes
+  regardless: the phase being read and, before the consumer's first
+  accepted progress, its one step of run-ahead
+  (`tier_loop._pre_progress_reach`, the same prefix the stage window
+  publishes under `_budget_from_step(..., has_accepted=False)`). A reader
+  blocked on a later leg finds no row and keeps its bounded clock, as
+  before #1018. Listing that leg would be a wait nothing ends: no declared
+  wait can extend a horizon that does not exist, and the staged-wait
+  verdict exempts an `unpublished` range while the tier loop lives, so for
+  an action with no sealed deadline the wait would have no end (review F1,
+  `test_before_first_progress_a_leg_past_one_step_keeps_the_clock`).
 * Legs of phases the consumer has passed are not listed; a reader that
   reads backwards finds no row and keeps its bounded clock.
 * A row does not carry the claim pass's withhold reason for a `ready`
