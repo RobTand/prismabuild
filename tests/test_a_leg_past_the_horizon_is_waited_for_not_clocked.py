@@ -355,13 +355,19 @@ FIRST = "9" * 64
 FIRST_MANIFEST = "8" * 64
 
 
-def test_a_leg_waiting_on_first_progress_is_waited_for(tmp_path: Path) -> None:
-    """A claimed consumer with no accepted progress has no horizon.
+def test_before_first_progress_a_leg_past_one_step_keeps_the_clock(
+        tmp_path: Path) -> None:
+    """A reader blocked two steps ahead before first progress is never left waiting.
 
-    Its window publishes the phase it reads and one step past it
-    (``residency_plan.window``: ``no_accepted_progress``), and publishes the
-    rest once the consumer's first progress record defines the horizon.  On
-    main those legs have no row, so the reader's clock refuses them.
+    A claimed consumer with no accepted progress has no horizon, so no
+    declared wait can extend one.  Its window publishes the phase it reads
+    and one step of run-ahead (``residency_plan.window``:
+    ``no_accepted_progress``), and nothing past that until the consumer
+    reports.  A leg past the step is therefore not listed: the reader's
+    bounded clock refuses it, as it did before #1018, instead of a wait the
+    tier loop's liveness would exempt for as long as the action lives.  The
+    step the window publishes is listed.  Once the consumer reports, the leg
+    is published and read.
     """
 
     queue, stage = _fixture_queue(tmp_path, 40)
@@ -379,20 +385,32 @@ def test_a_leg_waiting_on_first_progress_is_waited_for(tmp_path: Path) -> None:
     phase = plan["phases"][3]                                    # type: ignore[index]
     mover = _small_mover("first", 3)
     start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+    step = _small_mover("first", 1)
 
     rate = (end - start) / MOVER_SECONDS
+    _cycle(queue, stage, gib=40)
+    record = reader_landing(queue, FIRST, FIRST_MANIFEST)
+    assert record is not None
+    listed = {row["mover_action_key"]: row for row in record["ranges"]}  # type: ignore[union-attr]
+    assert step in listed, sorted(listed)              # the one step it publishes
+
     outcomes = []
-    for elapsed in (0.0, READER_CLOCK_S, 2 * READER_CLOCK_S, 3 * READER_CLOCK_S):
-        _cycle(queue, stage, gib=40)
+    for elapsed in (0.0, READER_CLOCK_S, 2 * READER_CLOCK_S):
+        if elapsed:
+            _cycle(queue, stage, gib=40)
         assert not queue.item_path(pool.READY, mover).exists()
         outcomes.append((elapsed, *poll(queue, FIRST, FIRST_MANIFEST,
                                         name="phase-3", start=start, end=end,
                                         elapsed_s=elapsed)))
         _land_queued(queue, stage, consumer=FIRST, manifest=FIRST_MANIFEST,
                      plan=plan, bytes_per_s=rate)
-    assert [kind for _elapsed, kind, _detail in outcomes] == ["wait"] * 4, outcomes
+    assert [kind for _elapsed, kind, _detail in outcomes] == [
+        "absent", "refuse", "refuse"], outcomes
+    assert mover not in listed, listed[mover]
+    assert not any(row.get("deferred_by") for row in listed.values()), listed
 
-    # The first accepted progress: phase-1.
+    # The first accepted progress: phase-1.  The horizon exists now, so the
+    # leg is published, or listed as deferred by it, and read once it lands.
     _report(queue, FIRST, phase="phase-1", reported_unix=time.time(), units=1)
     _cycle(queue, stage, gib=40)
     assert queue.item_path(pool.READY, mover).exists()
@@ -400,7 +418,7 @@ def test_a_leg_waiting_on_first_progress_is_waited_for(tmp_path: Path) -> None:
                           plan=plan, bytes_per_s=rate)
     _cycle(queue, stage, gib=40)
     kind, declared = poll(queue, FIRST, FIRST_MANIFEST, name="phase-3",
-                          start=start, end=end, elapsed_s=4 * READER_CLOCK_S)
+                          start=start, end=end, elapsed_s=3 * READER_CLOCK_S)
     assert kind == "hit", (kind, declared)
     served = staged(queue, FIRST, declared, end - start)
     assert served == landed["phase-3"]
