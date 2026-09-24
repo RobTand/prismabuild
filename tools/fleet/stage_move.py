@@ -2755,10 +2755,18 @@ class _ReaderPlan:
     The tier record's ``reader_plan`` (``tier_loop.reader_plan``) lists the
     copies claimed consumers are blocked on.  A copy on that list is
     *exempt*: the disk pacer never holds it, and it reads at its deepest
-    depth.  Every other copy on the tier *yields* while the list is not
-    empty: it stops reading until the waited copies land, because a
+    depth.  Every other copy on the tier *yields* while a listed copy is
+    ``claimed``: it stops reading until the waited copies land, because a
     later-phase copy on the same four spindles is what made the waited one
     late (2026-09-24: 30.8 MB/s of a 250.6 MB/s pool, 7 copies claimed).
+
+    A listed copy that is still ``ready`` reads nothing, so nothing yields
+    to it (#1091 review 1).  It may be unclaimable for want of the very
+    stage GiB the yielding copies hold, and yielding to it would then be a
+    deadlock.  The claim pass still defers other rows for it, which holds
+    nothing.  The worker credits the same stand-aside in its ``no_progress``
+    rung, from the same record read on its own side
+    (``pool.PoolQueue.reader_plan_stand_aside``).
 
     "Never held" covers the pacer's blind hold too.  That hold stands in for
     the client verdict while the pool's telemetry is missing, and an exempt
@@ -2785,6 +2793,8 @@ class _ReaderPlan:
         self._lock = threading.Lock()
         self._stamp: tuple[int, int, int] | None = None
         self._declared: frozenset[str] = frozenset()
+        #: The listed copies the plan says are ``claimed``, so reading.
+        self._reading: frozenset[str] = frozenset()
         self._announced: float | None = None
         self._asked_at: float | None = None
         self._holding = 0
@@ -2803,7 +2813,8 @@ class _ReaderPlan:
             path = self.queue.tier_record_path(self.tier_id)
             status = os.stat(path)
         except (OSError, pool.PoolContractError, ValueError):
-            self._stamp, self._declared, self._announced = None, frozenset(), None
+            self._stamp, self._announced = None, None
+            self._declared = self._reading = frozenset()
             return
         stamp = (status.st_ino, status.st_mtime_ns, status.st_size)
         if stamp == self._stamp:
@@ -2812,44 +2823,51 @@ class _ReaderPlan:
         try:
             record = json.loads(path.read_text())
         except (OSError, ValueError):
-            self._declared, self._announced = frozenset(), None
+            self._declared = self._reading = frozenset()
+            self._announced = None
             return
         plan = record.get(pool.READER_PLAN_FIELD) if isinstance(record, dict) else None
         announced = record.get("announced_unix") if isinstance(record, dict) else None
         if (not isinstance(plan, dict) or isinstance(announced, bool)
                 or not isinstance(announced, (int, float))):
-            self._declared, self._announced = frozenset(), None
+            self._declared = self._reading = frozenset()
+            self._announced = None
             return
         self._announced = float(announced)
+        rows = [row for row in plan.get("declared_wait") or ()
+                if isinstance(row, dict)]
         self._declared = frozenset(
-            str(row.get("mover_action_key") or "")
-            for row in plan.get("declared_wait") or ()
-            if isinstance(row, dict))
+            str(row.get("mover_action_key") or "") for row in rows)
+        self._reading = frozenset(
+            str(row.get("mover_action_key") or "") for row in rows
+            if row.get("state") == pool.CLAIMED)
         for key in sorted(self._declared):
             if key not in self.declared_seen and len(self.declared_seen) < 20:
                 self.declared_seen.append(key)
 
-    def _declared_now(self) -> frozenset[str]:
+    def _plan_now(self) -> tuple[frozenset[str], frozenset[str]]:
+        """``(listed, reading)`` from a fresh plan, else two empty sets."""
+
         with self._lock:
             self._refresh_locked()
             if (self._announced is None
                     or self.wall() - self._announced > pool.OFFER_TIMEOUT_S):
-                return frozenset()
-            return self._declared
+                return frozenset(), frozenset()
+            return self._declared, self._reading
 
     def exempt(self) -> bool:
         """Whether a claimed consumer is blocked on this copy right now."""
 
-        exempt = self.mover in self._declared_now()
+        exempt = self.mover in self._plan_now()[0]
         if exempt:
             self.exempt_seen = True
         return exempt
 
     def yields(self) -> bool:
-        """Whether another copy on this tier is waited on and this one is not."""
+        """Whether another waited copy on this tier is reading and this one is not listed."""
 
-        declared = self._declared_now()
-        return bool(declared) and self.mover not in declared
+        listed, reading = self._plan_now()
+        return self.mover not in listed and bool(reading - {self.mover})
 
     def stand_aside(self, stop: threading.Event) -> None:
         """Stop reading while :meth:`yields`, or until ``stop``.

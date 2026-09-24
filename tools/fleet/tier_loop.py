@@ -4271,7 +4271,8 @@ def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
     * ``declared_wait``: :func:`declared_wait_movers`.  While it lists any
       copy, only those copies are claimed on the tier, the fill ledger does
       not hold them back, the disk pacer never holds them, and every other
-      running copy on the tier stands aside until they land.
+      running copy on the tier stands aside while one of them is
+      ``claimed`` (a ``ready`` one reads nothing, #1091 review 1).
     * ``cap``: :func:`storage_tiers.mover_cap_from_records`, the mover count
       at which this pool's measured delivery stops rising, with its curve
       and its method.  No more copies than that are claimed at once.

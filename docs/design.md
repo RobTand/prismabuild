@@ -4173,10 +4173,28 @@ when the record's file changes:
   but it never holds the copy while it is listed. The receipt records
   `reader_plan.exempt`, and `held_seconds` is 0 for a copy listed from its
   start.
-* An unlisted copy stands aside before each read while another copy on the
-  tier is waited on. The receipt records `disk_pacing.yielded_seconds`, and
+* An unlisted copy stands aside before each read while a listed copy on the
+  tier is `claimed`. The receipt records `disk_pacing.yielded_seconds`, and
   the supply fold's shortfall test subtracts it as it subtracts
   `held_seconds`: a copy stopped on purpose did not show the pool short.
+* A listed copy that is still `ready` reads nothing, so no running copy stands
+  aside for it. It may be unclaimable for want of the stage GiB the running
+  copies hold, and standing aside for it would then deadlock. The claim pass
+  still defers other rows for it, which holds nothing.
+
+The worker does not count a stand-aside as a stall. At a stage mover's
+`no_progress` rung it reads the same tier record itself
+(`PoolQueue.reader_plan_stand_aside`), and credits the quiet
+(`reader_plan_exempt_s`, and `credited_s.reader_plan` on a stall record)
+while the plan is fresh, lists a `claimed` waited copy that is not this mover,
+does not list this mover, and the queue holds a claim for that waited copy.
+The credit goes through `ProgressWatch`'s one crediting rule, so a stretch
+another exemption already covered is credited once. It never takes the
+mover's word for it.
+
+A claim pass reads each tier's plan and reading set once, not once per
+candidate row, so a cap that denies every mover row costs one listing of
+`claimed/` per tier per pass.
 
 **A claimed copy is priced from its own live rate (#1090).** Every
 `stage_move` launch files `residency-events/<mover>/landing.json`
@@ -4198,11 +4216,15 @@ Known limits:
   does not stand aside.
 * `mover_fill_price` is unchanged, so a warm receipt can still set a mover's
   sealed fill reservation and stall grace.
-* The pool contention probe does not read the plan. A copy that stands aside
-  under a progress policy can look quiet to the worker's stall check.
 * A listed copy that cannot be claimed, for example because the stage is
-  full, still defers every other copy on the tier until the wait ends or the
-  plan goes stale.
+  full, still defers every other claim on the tier until the wait ends or the
+  plan goes stale. Running copies keep reading meanwhile.
+* Listed copies bypass both the cap and the fill ledger. Their number is
+  bounded in practice by the claimed consumers times the movers each wait
+  names (usually one or two), but nothing enforces a bound.
+* A mover launched before #1091 does not stand aside, but a worker of this
+  generation credits its quiet as a stand-aside while the plan says a waited
+  copy is claimed.
 * The cap is read from the claimed rows at claim time, not from a ledger, so
   claims racing on one tier can each see room for one more mover.
 * `movers_claimed_on_tier` is counted when a copy starts, so a receipt's
