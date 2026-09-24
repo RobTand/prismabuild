@@ -144,7 +144,10 @@ def test_slurm_query_remains_in_parent_after_bounded_record_read(
 def test_retained_reader_refuses_before_scheduler_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def retained(_section, _read, *, deadline, abandoned):
+    def retained(_section, _read, *, deadline, abandoned, announce_retained=True):
+        # The attachment path names the retained reader in its own refusal,
+        # so it asks pbstatus not to announce it too (#1048, #1051).
+        assert announce_retained is False
         abandoned.append({"pid": 12345, "starttime_ticks": 67890})
         return {"status": "ok", "value": {"transport": "slurm",
                 "generation": 200.0, "job_id": "41", "submission": "unused"}}
