@@ -1834,6 +1834,7 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
                    declared_bytes_per_s: float | None = None,
                    mover_role: str = "mover_row",
                    consumption_bytes_per_s: float | None = None,
+                   declared_wait_end_bytes: int | None = None,
                    ) -> dict[str, object] | None:
     """How far ahead of a reading consumer its window must be staged (#903).
 
@@ -1874,6 +1875,16 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     two above is computed: :func:`read_footprint` asks for the horizon at
     phases the consumer has not reached, where the bytes through that phase
     over the time to *its* report would be a rate nobody measured (#907).
+
+    ``declared_wait_end_bytes`` is where the furthest leg the consumer has
+    declared itself blocked on ends (#1018): its reader's staged-wait record
+    (#989) names that leg's mover.  The read-ahead above is the consumer's
+    own statement of how far it reads, and a reader blocked past it has
+    measured a longer one; a leg past the horizon is published only once the
+    consumer's progress brings it inside, and that progress waits on the
+    leg.  So a horizon that ends before the declared leg ends is taken
+    through that leg, and ``declared_wait_end_bytes`` says why.  A declared
+    leg already inside the horizon changes nothing.
 
     Returns ``None`` when the horizon is undefined: no accepted progress (the
     window's own no-progress regime already publishes one step), no
@@ -1940,6 +1951,15 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
             horizon_end = start
             break
         refilled += int(leg["end_bytes"]) - start
+    extended = False
+    if (declared_wait_end_bytes is not None and horizon_end is not None
+            and int(declared_wait_end_bytes) > horizon_end):
+        # The reader is blocked on a leg past the horizon: take the horizon
+        # through the end of that leg, to the first leg that starts after it.
+        horizon_end = next((int(leg["start_bytes"]) for leg in future
+                            if int(leg["start_bytes"])
+                            >= int(declared_wait_end_bytes)), None)
+        extended = True
     outside = ([] if horizon_end is None else
                [leg for leg in future if int(leg["start_bytes"]) >= horizon_end])
     return {
@@ -1957,6 +1977,11 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
         "latency_s": latency,
         "refill_bytes": refill_bytes,
         "horizon_end_bytes": horizon_end,
+        # The end of the furthest leg the consumer declared itself blocked
+        # on (#1018), and whether it took the horizon past the refill.
+        "declared_wait_end_bytes": (None if declared_wait_end_bytes is None
+                                    else int(declared_wait_end_bytes)),
+        "extended_by_declared_wait": extended,
         "advance": (str(outside[0]["mover_row"]["action_key"])  # type: ignore[index]
                     if outside else None),
         "beyond": [{

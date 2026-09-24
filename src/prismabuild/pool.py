@@ -1574,8 +1574,25 @@ def staged_wait_since(path: Path) -> float | None:
     an earlier attempt left behind does not move a consumer up the rank.
     """
 
-    record, _reason = _read_staged_wait(path, token=None)
+    record = staged_wait_declared(path)
     return None if record is None else float(record["since_unix"])  # type: ignore[arg-type]
+
+
+def staged_wait_declared(path: Path) -> dict[str, object] | None:
+    """A claimed consumer's declared staged wait: its movers and since when.
+
+    ``{"movers": [...], "since_unix": ...}``, or ``None`` when there is no
+    record or it does not read.  Read the way :func:`staged_wait_since`
+    reads it, with the token unchecked: the tier loop is not the launch.
+    The tier loop takes a consumer's refill horizon through the furthest
+    leg the record names (#1018), so what a record can move is bounded by
+    what it could already claim: legs of that consumer's own frozen plan,
+    which it would read anyway, published only as the tier's room allows.
+    The caller keeps a record only when it falls inside the claim.
+    """
+
+    record, _reason = _read_staged_wait(path, token=None)
+    return record
 
 
 def _read_staged_wait(path: Path, *, token: str | None

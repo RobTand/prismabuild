@@ -105,6 +105,11 @@ _VERDICT_IDENTITY = ("event", "consumer", "tier_id", "holder", "mover", "stage_r
 _VERDICT_SINCE: dict[tuple, list] = {}
 #: The cycle counter those entries are dated by.
 _VERDICT_CYCLE = [0]
+#: While :func:`cycle` runs, each claimed consumer's staged-wait record as
+#: this cycle read it, by ``(queue root, consumer key)``: the refill horizon
+#: is asked for at several steps of one cycle and the claim order reads the
+#: same record (#1018).  ``None`` outside a cycle, where every ask reads.
+_STAGED_WAITS: list[dict[tuple[str, str], dict[str, object] | None] | None] = [None]
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
 
@@ -2512,6 +2517,12 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
         return None
     landing, _landing_basis = _plan_landing(
         queue, plan, ram=mover_role == "ram_mover_row")
+    # A reader blocked on a stage leg past the horizon takes the horizon
+    # through it (#1018): only its progress moves the horizon, and that
+    # progress waits on the leg.  The stage leg only: a ram leg read from
+    # the stage while its copy is not there is slower, never a stall.
+    wanted = (_declared_wait_end(queue, consumer, plan)
+              if mover_role == "mover_row" else None)
     try:
         # Measured when the claim and its report time one, declared when the
         # plan declares one, and the larger when both: each is a lower bound
@@ -2523,7 +2534,8 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
             readahead_bytes=readahead, landing_bytes_per_s=landing,
             report_latency_s=pool.HEARTBEAT_S + CYCLE_INTERVAL_S,
             mover_role=mover_role,
-            declared_bytes_per_s=residency_plan.declared_read_bytes_per_s(plan))
+            declared_bytes_per_s=residency_plan.declared_read_bytes_per_s(plan),
+            declared_wait_end_bytes=wanted)
     except (residency_plan.ResidencyPlanError, KeyError, TypeError,
             ValueError):
         return None
@@ -3639,14 +3651,64 @@ def _blocked_since(queue: pool.PoolQueue, key: str,
     reported = consumer.get("reported_unix")
     if isinstance(reported, (int, float)) and not isinstance(reported, bool):
         stamps.append(float(reported))
-    try:
-        since = pool.staged_wait_since(Path(pb_progress.staged_wait_path(
-            str(queue.action_progress_path(key)))))
-    except (OSError, ValueError, pool.PoolContractError):
-        since = None
+    record = _staged_wait(queue, key)
+    since = None if record is None else float(record["since_unix"])  # type: ignore[arg-type]
     if since is not None and math.isfinite(since) and since >= float(claimed):
         stamps.append(since)
     return max(stamps)
+
+
+def _staged_wait(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
+    """Claimed consumer ``key``'s staged-wait record (#989), read once a cycle.
+
+    :func:`pool.staged_wait_declared`: the movers its reader is blocked on
+    and since when, token unchecked.  One bounded read per claimed consumer
+    per cycle however many steps ask (#1018); outside a cycle every ask
+    reads.  ``None`` when there is none or it does not read.
+    """
+
+    memo = _STAGED_WAITS[0]
+    cache_key = (str(queue.root), key)
+    if memo is not None and cache_key in memo:
+        return memo[cache_key]
+    try:
+        record = pool.staged_wait_declared(Path(pb_progress.staged_wait_path(
+            str(queue.action_progress_path(key)))))
+    except (OSError, ValueError, pool.PoolContractError):
+        record = None
+    if memo is not None:
+        memo[cache_key] = record
+    return record
+
+
+def _declared_wait_end(queue: pool.PoolQueue, consumer: Mapping[str, object],
+                       plan: Mapping[str, object]) -> int | None:
+    """Where the furthest stage leg a claimed consumer is blocked on ends (#1018).
+
+    The legs its reader's staged-wait record names, among the plan's stage
+    legs of the phases still ahead of it.  A record from before the claim is
+    an earlier attempt's and is not used (the rule :func:`_blocked_since`
+    keeps); a mover that is not one of those legs is not this consumer's to
+    ask for.  ``None`` when nothing it names is ahead of it.
+    """
+
+    claimed = consumer.get("claimed_unix")
+    if isinstance(claimed, bool) or not isinstance(claimed, (int, float)):
+        return None
+    record = _staged_wait(queue, str(consumer.get("action_key") or ""))
+    if record is None:
+        return None
+    since = float(record["since_unix"])                          # type: ignore[arg-type]
+    if not math.isfinite(since) or since < float(claimed):
+        return None
+    named = set(record["movers"])                                # type: ignore[arg-type]
+    ahead = {str(phase["name"]) for phase in residency_plan.remaining(
+        plan, consumer.get("accepted_phase"))}                   # type: ignore[arg-type]
+    ends = [int(leg["end_bytes"]) for leg in residency_plan.legs_over(
+                plan, 0, 1 << 62, mover_role="mover_row")
+            if leg["phase"] in ahead
+            and str(leg["mover_row"]["action_key"]) in named]    # type: ignore[index]
+    return max(ends) if ends else None
 
 
 def _rank_claims(queue: pool.PoolQueue, tier_id: str,
@@ -6047,6 +6109,41 @@ def _mover_report(queue: pool.PoolQueue, mover: str
     return queue.mover_report(mover)
 
 
+def _deferred_waiting_for(deferred: str | None, *, end: int | None,
+                          accepted: object) -> str:
+    """What a leg the stage window has not reached waits for (#1018)."""
+
+    if deferred == "horizon":
+        return (f"the refill horizon, which ends at byte {end}: the window "
+                f"publishes this range once the consumer's accepted progress "
+                f"past {accepted} brings it inside")
+    if deferred == "first-progress":
+        return ("the consumer's first accepted progress: until then the "
+                "window publishes the phase it reads and one step past it")
+    return ("the window: the consumer's refill horizon is undefined, and it "
+            "publishes this range when the run-ahead bound and the tier's "
+            "room allow")
+
+
+def _landing_horizon(horizon: Mapping[str, object] | None, *, end: int | None,
+                     reading: str | None) -> dict[str, object] | None:
+    """The landing record's ``horizon``: where the window stops, and why."""
+
+    if not isinstance(horizon, Mapping):
+        return None
+    return {
+        "end_bytes": end,
+        "accepted_phase": horizon.get("accepted_phase"),
+        "reading_phase": reading,
+        "advance_mover_action_key": horizon.get("advance"),
+        "consumption_bytes_per_s": horizon.get("consumption_bytes_per_s"),
+        "consumption_basis": horizon.get("consumption_basis"),
+        "readahead_bytes": horizon.get("readahead_bytes"),
+        "reach_end_bytes": horizon.get("reach_end_bytes"),
+        "declared_wait_end_bytes": horizon.get("declared_wait_end_bytes"),
+    }
+
+
 def publish_landing_expectations(
         queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
         consumers: Sequence[Mapping[str, object]],
@@ -6071,6 +6168,18 @@ def publish_landing_expectations(
     what it waits for.  It is ``terminal-no-receipt`` only when nothing will
     publish it again: the plan is superseded.  A failed copy under a live
     plan is ``unpublished``, because the window republishes it (#627).
+
+    Every leg the consumer has still to read is listed, not only the legs
+    inside its refill horizon (#1018).  A leg the window has not reached is
+    ``unpublished`` with ``deferred_by``: ``horizon`` past the horizon, which
+    the record's ``horizon`` block locates with the progress and the
+    consumption rate that move it, or ``first-progress`` before the
+    consumer's first accepted progress defines one.  Its reader waits on it
+    while the tier loop lives, as it waits on any unpublished range; before,
+    the leg had no row and the reader's bounded clock refused a range the
+    window was going to publish.  A reader blocked on such a leg declares it
+    (#989), and :func:`_consumer_horizon` takes the horizon through it, so
+    the wait never depends on progress that the wait itself holds up.
 
     On a tier the claim order ranks (#1011), the range a held-back consumer
     waits for is ``unpublished`` and names the consumer ranked ahead of it
@@ -6165,9 +6274,11 @@ def publish_landing_expectations(
                                "tier_id": tier_id, "error": repr(exc)})
                 continue
             end = _horizon_end(horizon)
-            ahead = residency_plan.remaining(plan, consumer.get("accepted_phase"))  # type: ignore[arg-type]
+            accepted_phase = consumer.get("accepted_phase")
+            ahead = residency_plan.remaining(plan, accepted_phase)  # type: ignore[arg-type]
             names = [str(phase["name"]) for phase in ahead]
             reading = names[0] if names else None
+            progressed = residency_plan.accepted(plan, accepted_phase)  # type: ignore[arg-type]
             ranges: list[dict[str, object]] = []
             for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                 mover_role="mover_row"):
@@ -6246,14 +6357,39 @@ def publish_landing_expectations(
                             f"head {head_key}")})
                     ranges.append(row)
                     continue
-                if not inside and state is None:
-                    continue
+                # A leg the window has not reached (#1018): listed, so its
+                # reader waits while the tier loop lives instead of on its
+                # bounded clock, which refused ranges that were coming.
+                # Past the refill horizon, it is published on the cycle the
+                # consumer's progress brings it inside; before the
+                # consumer's first accepted progress there is no horizon,
+                # and the window publishes one step past the phase it reads.
+                deferred: str | None = None
+                if state is None and not inside and not superseded:
+                    if end is not None and start >= end:
+                        deferred = "horizon"
+                    elif not progressed:
+                        deferred = "first-progress"
                 if finished == "evicted":
                     row.update({"state": finished, "expected_landing_unix": None,
                                 "waiting_for": "the window: the range was "
                                                "evicted, and is published again "
                                                "when it is back inside the "
                                                "horizon and the tier's room allows"})
+                    if deferred == "horizon":
+                        row["deferred_by"] = deferred
+                    ranges.append(row)
+                    continue
+                if state is None and not inside and not superseded:
+                    # Before the failed-copy stat: a recopy past the horizon
+                    # waits for the horizon like any other leg, so a listed
+                    # leg costs no read the unlisted one did not.
+                    row.update({"state": "unpublished",
+                                "expected_landing_unix": None,
+                                "waiting_for": _deferred_waiting_for(
+                                    deferred, end=end, accepted=accepted_phase)})
+                    if deferred is not None:
+                        row["deferred_by"] = deferred
                     ranges.append(row)
                     continue
                 failed = queue.item_path(pool.FAILED, mover).exists()
@@ -6274,10 +6410,16 @@ def publish_landing_expectations(
                 row["expected_landing_unix"] = None
                 ranges.append(row)
             path = residency_map.landing_path(root, key)
+            window_view = _landing_horizon(horizon, end=end, reading=reading)
             fingerprint = (queue_print, tuple(
                 (row["mover_action_key"], row["state"], row.get("held_back_by"),
-                 row.get("waiting_on"), row.get("claim_rank"))
-                for row in ranges), landing, tuple(rates))
+                 row.get("waiting_on"), row.get("claim_rank"),
+                 row.get("deferred_by"))
+                for row in ranges), landing, tuple(rates),
+                None if window_view is None else (
+                    window_view["end_bytes"], window_view["accepted_phase"],
+                    window_view["advance_mover_action_key"],
+                    window_view["declared_wait_end_bytes"]))
             cache_key = (str(queue.root), key)
             if _LANDING_FINGERPRINTS.get(cache_key) == fingerprint and path.exists():
                 continue
@@ -6295,6 +6437,11 @@ def publish_landing_expectations(
                 # What this pass had spent when it composed the record: the
                 # queue and plan reads for every consumer before this one.
                 "publish_s": round(time.monotonic() - began, 4),
+                # Where the stage window stops this cycle and what moves it
+                # (#1018): the refill horizon's end, the progress it was
+                # priced from and the consumption rate that moves it.
+                # ``None`` when the consumer's horizon is undefined.
+                "horizon": window_view,
                 "ranges": ranges}
             try:
                 residency_map.write_landing(path, record)
@@ -7344,6 +7491,7 @@ def cycle(
     before = _read_counts(receipts)
     completed = False
     records = getattr(receipts, "records", None)
+    _STAGED_WAITS[0] = {}
     try:
         if isinstance(records, stage_release.DirectoryRecords):
             with stage_release.queue_records_from(records):
@@ -7358,6 +7506,7 @@ def cycle(
         return announced
     finally:
         global LAST_CYCLE
+        _STAGED_WAITS[0] = None
         after = _read_counts(receipts)
         LAST_CYCLE = {
             "cycle_seconds": round(time.perf_counter() - phases.started, 6),

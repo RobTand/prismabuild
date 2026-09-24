@@ -7244,6 +7244,9 @@ is an admitted window's advance, which the would-publish term covers.
   consumer's landing record while the tier loop is alive, and
   `STAGED_RANGE_WAIT_S` (300 s) bounds it only where no landing record
   covers the range (see "A reader waits on its range's landing" below).
+  Since #1018 the record lists every leg, and a reader blocked on a leg past
+  its horizon takes the horizon through that leg (see "Every leg has a row,
+  and a blocked reader moves its horizon" below).
 * Since #906 the ram window is bounded by its own horizon as well (next
   section).
 * Since #907 admission charges the horizons jointly: a newcomer is admitted
@@ -7749,9 +7752,10 @@ the smallest sealed fill. The record carries every measured rate beside it
 `rate_max_bytes_per_s`) and `report_latency_s` (heartbeat plus cycle). The
 tier loop rewrites the record only when the queue, the ranges' states or the
 rates change, so `written_unix` dates the last change, not the last cycle.
-An `unpublished` or `evicted` range is listed only inside the consumer's
-refill horizon; a queued or `done-not-resident` range is listed wherever it
-is. A consumer that is no longer running
+Every leg the consumer has still to read and that is not resident has a row
+(#1018): a leg the window has not reached is `unpublished` with
+`deferred_by` (see "Every leg has a row, and a blocked reader moves its
+horizon" below). A consumer that is no longer running
 loses its record, and the dead-consumer pass removes it with the plan it
 reaps. Each record carries `publish_s`, what the pass had spent when it
 composed it.
@@ -7969,6 +7973,110 @@ them the tier serves first.
   unmeasured`), so if its copy stops it holds its claim until the box's
   announced ceiling, and the reader waits that long. Every mover of a plan
   whose manifest has landed once on the tier is bounded (next section).
+
+### Every leg has a row, and a blocked reader moves its horizon (#1018)
+
+Until #1018 the landing record listed an unpublished leg only inside its
+consumer's refill horizon (`publish_landing_expectations`: `if not inside
+and state is None: continue`). A reader that asked for a leg past the
+horizon found no row, its verdict was `absent`, and its bounded clock
+(`STAGED_RANGE_WAIT_S`, 300 s; R13 overrides it to 840 s) refused a range
+the window was going to publish. On R12's plan the advance past the horizon
+publishes one phase after the reader first asks for it: about 1130 s, 3.8
+times the 300 s clock.
+
+**Every leg is listed.** For a claimed consumer the record now answers for
+every leg of the phases from the one it reads onward that is not resident:
+
+| Leg | State | Fields |
+|---|---|---|
+| queued or copying | `ready`, `claimed` | as before: `queue_position`, `bytes_ahead`, `movers_ahead`, `expected_landing_unix` |
+| inside the horizon, not published | `unpublished` | `waiting_for`: the window's room, a recopy, or a landing rate |
+| held back by the claim order | `unpublished` | `held_back_by`, `waiting_on`, `claim_rank` (#1011) |
+| past the refill horizon | `unpublished`, or `evicted` for a landed copy given back | `deferred_by: horizon`; the record's `horizon` block locates it |
+| before the consumer's first accepted progress | `unpublished` | `deferred_by: first-progress` |
+| its plan superseded | `terminal-no-receipt` | now for every leg, not only those inside the horizon |
+
+The record's `horizon` block states where the stage window stops this
+cycle and what moves it: `end_bytes` (the first leg outside the horizon),
+`accepted_phase` and `reading_phase`, `advance_mover_action_key`,
+`consumption_bytes_per_s` with its `consumption_basis`, `readahead_bytes`,
+`reach_end_bytes` and `declared_wait_end_bytes` (below). It is `null` when
+the consumer's horizon is undefined. `validate_landing` requires a deferred
+row to be `unpublished` or `evicted`, to carry no expected landing and to
+say what it waits for, and a row `deferred_by: horizon` to start at or past
+the stated `end_bytes`. A record without the two fields, written before
+#1018, still validates.
+
+The deferred states are states the reader already knows, and
+`mover_action_key` is the leg's sealed mover (`mover_row.action_key`), which
+the plan names before anything is published. PrismaQuant's
+`_read_landing` drops a whole record that lists an unknown state or a row
+without a string `mover_action_key`, so a new state would have cost every
+reader its record. A reader that predates `deferred_by` waits on the row,
+as it waits on any `unpublished` range, while the tier loop lives.
+
+**The cost.** A deferred row is written before the failed-copy stat, so it
+costs no read beyond the `done/` stat every leg already paid. At eight
+47-phase R12 consumers on one stage
+(`tests/test_the_landing_record_fits_its_reader_at_scale.py`), one steady cycle made the same directory
+listings, `stat` calls and opens before and after the change (the landing
+writer's share: 29 `scandir`, 1588 `stat`, 2926 `open`, 1064 `os.open`),
+and the largest record grew from 6.2 KB (11 rows) to 23.8 KB (44 rows); with
+every phase in two stage chunks, from 9.1 KB (19 rows) to 44.8 KB (87 rows).
+PrismaQuant drops a record over 256 MiB (`MAX_MAP_BYTES`); at the widest row
+measured (882 bytes) one record reaches that at about 304,000 legs. A
+Stage B quantum's read plan has `1 + (chain layers + replay windows) x
+probes x batch windows` phases, orders of magnitude below it, so the
+record lists every leg and needs no window.
+
+**A blocked reader moves its horizon.** Listing a leg the reader waits for
+is safe only if the leg comes. A leg past the horizon is published on the
+cycle the consumer's accepted progress brings it inside, so a reader that
+blocks on such a leg while its progress needs that leg would wait for ever,
+where before it was refused. The horizon is priced from the read-ahead the
+consumer declares (`reader.prefetch_depth_bytes`, else its memory
+reservations), so this happens only when the reader reads past its own
+declaration. It declares the wait anyway (#989): its staged-wait record
+names the leg's mover. `_consumer_horizon` reads that record once a cycle
+(`_staged_wait`, shared with the claim order's `_blocked_since`) and passes
+the end of the furthest named stage leg of the phases still ahead of the
+consumer to `residency_plan.refill_horizon` as `declared_wait_end_bytes`. A
+horizon that ends before that leg ends is taken through it. The window, the
+eviction past the horizon, the admission gates and the landing record all
+read the one horizon, so they agree on the extension; the record states
+it in `horizon.declared_wait_end_bytes`. A record from before the claim is
+an earlier attempt's and is not used, and a mover the plan does not name
+for a phase ahead is ignored, so a record can move only legs of the
+consumer's own frozen plan, published as the run-ahead bound and the tier's
+room allow. The token is not checked, the same footing as `_blocked_since`.
+
+For PrismaQuant's Stage A walk this is a guard rather than the common path:
+it reports `source_loading(L)` before it installs layer L and then waits on
+layers L+1 and L+2 (lookahead 2). R13 declares 28 GiB of read-ahead, the
+reach of that lookahead, so the horizon at its accepted phase already
+covers every leg it waits on, and the one-leg refill absorbs the report's
+lag (a heartbeat plus a cycle).
+
+**The wait counts as declared, and ends with the loop.** A deferred leg is
+`unpublished`, so the staged-wait verdict exempts the wait while the tier
+loop is alive and the tier is within its commitment, as it does for any
+unpublished range. Once the loop stops announcing its tier, the verdict no
+longer exempts the wait, and the reader, whose verdict reads the same tier
+record age against `tier_loop_liveness_s`, refuses
+(`tests/test_a_leg_past_the_horizon_is_waited_for_not_clocked.py`).
+
+**Limits.**
+
+* Before its first accepted progress a consumer has no horizon, and the
+  window publishes one step past the phase it reads. A reader that blocks
+  past that step before it reports anything is not served until it
+  reports: the declared-wait extension applies to a defined horizon only.
+  PrismaQuant's walk reports before it waits.
+* Legs of phases the consumer has passed are not listed; a reader that
+  reads backwards finds no row and keeps its bounded clock.
+* A row does not carry the claim pass's withhold reason for a `ready`
+  mover. The staged-wait verdict reads the denial ring itself.
 
 ### A mover reports what it has landed, and a stalled copy ends (#1010)
 

@@ -68,6 +68,9 @@ READER_CLOCK_S = 300.0
 #: What R12 takes to read one phase at its measured rate, which is when the
 #: advance it asks for first publishes.
 PHASE_READ_S = 1130.0
+#: The slowest complete R12 copy on 2026-09-22 (134 MB/s): what a landed
+#: range's receipt says it took.
+LANDING_BYTES_PER_S = 134e6
 
 
 def reader_landing(queue: pool.PoolQueue, consumer: str,
@@ -196,46 +199,62 @@ def _marker(mover: str) -> bytes:
     return (seed * (65536 // len(seed)))[:65536]
 
 
-def _run_one(queue: pool.PoolQueue, stage: Path, *, consumer: str,
-             manifest: str, mover: str, name: str, start: int, end: int,
-             seconds: float) -> Path:
-    """The queued copy of one leg lands, as ``_run_movers`` lands one.
+def _land_queued(queue: pool.PoolQueue, stage: Path, *, consumer: str,
+                 manifest: str, plan: dict[str, object],
+                 bytes_per_s: float) -> dict[str, Path]:
+    """Every queued copy of ``consumer``'s plan lands, as a cycle's movers would.
 
-    Its row leaves ``ready/`` for ``done/``, a fence the window put on the
-    leg is handed back, the range is filed the way ``stage_move`` files it
-    (``_land``), and the mover's head bytes are written into the copy.
+    Each mover's row leaves ``ready/`` for ``done/``, a fence the window put
+    on the leg is handed back, the range is filed the way ``stage_move``
+    files it (``_land``), and the mover's head bytes are written into the
+    copy.  The copies the reader has not reached keep landing while it
+    waits, as they do in a run.
     """
 
-    ready = queue.item_path(pool.READY, mover)
-    item = json.loads(ready.read_text())
-    ready.unlink()
     ledger = queue.tier_ledger(TIER)
-    for holder in (mover, window_credit.grant_key(
-            consumer, TIER, "mover_row", name, None)):
-        if ledger.holder_tokens(holder):
-            ledger.release(holder)
-    done = queue.item_path(pool.DONE, mover)
-    done.parent.mkdir(parents=True, exist_ok=True)
-    done.write_text(json.dumps({**item, "status": "done"}))
-    [path] = _land(queue, stage, consumer=consumer, manifest=manifest,
-                   mover=mover, name=name, start=start, end=end,
-                   seconds=seconds)
-    with open(path, "r+b") as stream:
-        stream.write(_marker(mover))
-    return path
+    landed: dict[str, Path] = {}
+    for phase in plan["phases"]:                               # type: ignore[union-attr]
+        name = str(phase["name"])
+        mover = str(phase["mover_row"]["action_key"])
+        ready = queue.item_path(pool.READY, mover)
+        if not ready.exists():
+            continue
+        item = json.loads(ready.read_text())
+        ready.unlink()
+        for holder in (mover, window_credit.grant_key(
+                consumer, TIER, "mover_row", name, None)):
+            if ledger.holder_tokens(holder):
+                ledger.release(holder)
+        done = queue.item_path(pool.DONE, mover)
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.write_text(json.dumps({**item, "status": "done"}))
+        start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
+        [path] = _land(queue, stage, consumer=consumer, manifest=manifest,
+                       mover=mover, name=name, start=start, end=end,
+                       seconds=(end - start) / bytes_per_s)
+        with open(path, "r+b") as stream:
+            stream.write(_marker(mover))
+        landed[name] = path
+    return landed
 
 
 def _report(queue: pool.PoolQueue, consumer: str, *, phase: str,
-            reported_unix: float) -> None:
-    """The claimed consumer's worker files a later accepted phase."""
+            reported_unix: float, units: int = 2) -> None:
+    """The claimed consumer's worker files a later accepted phase.
 
-    item = json.loads(queue.item_path(pool.CLAIMED, consumer).read_text())
-    queue.write_lease(
-        consumer, owner="replay-fixture", claim_snapshot=item,
-        progress_observation={
-            "source": "action-progress",
-            "last_accepted": {"phase": phase, "units_completed": 2,
-                              "reported_unix": reported_unix}})
+    Into the lease the claim wrote, as the worker's heartbeat files it.
+    ``write_lease`` would refuse it here: the fixture claims as
+    ``dl380g10`` from whichever box runs the test, and a second write
+    compares the two (``AmbiguousClaimHolder``).
+    """
+
+    lease_path = queue.lease_path(consumer)
+    lease = json.loads(lease_path.read_text())
+    lease["progress_observation"] = {
+        "source": "action-progress",
+        "last_accepted": {"phase": phase, "units_completed": units,
+                          "reported_unix": reported_unix}}
+    lease_path.write_text(json.dumps(lease))
 
 
 def _r12(tmp_path: Path):
@@ -277,31 +296,31 @@ def test_the_advance_past_the_horizon_is_waited_for_then_read(
         outcomes.append((elapsed, *poll(queue, key, manifest, name=ADVANCE,
                                         start=start, end=end,
                                         elapsed_s=elapsed)))
+        _land_queued(queue, stage, consumer=key, manifest=manifest, plan=plan,
+                     bytes_per_s=LANDING_BYTES_PER_S)
     refused = [entry for entry in outcomes if entry[1] == "refuse"]
     assert not refused, (
         f"the reader refused {ADVANCE} while it was coming: {refused}")
     assert [kind for _elapsed, kind, _detail in outcomes] == ["wait"] * 4, outcomes
 
     # R12 reads chain-043 and reports chain-042 one phase later: the horizon
-    # moves one leg and the advance is inside it.
-    reported = float(DATA["r12"]["accepted"]["reported_unix"]) + (
-        time.time() - SAMPLE_UNIX) + PHASE_READ_S
-    _report(queue, key, phase="chain-042", reported_unix=reported)
+    # moves one leg and the advance is inside it.  (The polls above stand
+    # for the 1130 s; the report is filed now, so its rate is R12's own.)
+    _report(queue, key, phase="chain-042", reported_unix=time.time())
     _cycle(queue, stage, gib=capacity)
     assert queue.item_path(pool.READY, mover).exists()
     kind, detail = poll(queue, key, manifest, name=ADVANCE, start=start,
                         end=end, elapsed_s=3 * READER_CLOCK_S + PHASE_READ_S)
     assert (kind, detail.split(" is ")[-1]) == ("wait", "ready"), (kind, detail)
 
-    landed = _run_one(queue, stage, consumer=key, manifest=manifest,
-                      mover=mover, name=ADVANCE, start=start, end=end,
-                      seconds=(end - start) / 134e6)
+    landed = _land_queued(queue, stage, consumer=key, manifest=manifest,
+                          plan=plan, bytes_per_s=LANDING_BYTES_PER_S)
     _cycle(queue, stage, gib=capacity)
     kind, declared = poll(queue, key, manifest, name=ADVANCE, start=start,
                           end=end, elapsed_s=3 * READER_CLOCK_S + PHASE_READ_S + 180)
     assert kind == "hit", (kind, declared)
     served = staged(queue, key, declared, end - start)
-    assert served == landed
+    assert served == landed[ADVANCE]
     with open(served, "rb") as stream:
         assert stream.read(65536) == _marker(mover)
 
@@ -361,6 +380,7 @@ def test_a_leg_waiting_on_first_progress_is_waited_for(tmp_path: Path) -> None:
     mover = _small_mover("first", 3)
     start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
 
+    rate = (end - start) / MOVER_SECONDS
     outcomes = []
     for elapsed in (0.0, READER_CLOCK_S, 2 * READER_CLOCK_S, 3 * READER_CLOCK_S):
         _cycle(queue, stage, gib=40)
@@ -368,25 +388,24 @@ def test_a_leg_waiting_on_first_progress_is_waited_for(tmp_path: Path) -> None:
         outcomes.append((elapsed, *poll(queue, FIRST, FIRST_MANIFEST,
                                         name="phase-3", start=start, end=end,
                                         elapsed_s=elapsed)))
+        _land_queued(queue, stage, consumer=FIRST, manifest=FIRST_MANIFEST,
+                     plan=plan, bytes_per_s=rate)
     assert [kind for _elapsed, kind, _detail in outcomes] == ["wait"] * 4, outcomes
 
-    # The first accepted progress: phase-1, read at the fixture's 2.2 MB/s.
-    item = json.loads(queue.item_path(pool.CLAIMED, FIRST).read_text())
-    queue.write_lease(FIRST, owner="horizon-fixture", claim_snapshot=item,
-                      progress_observation={
-                          "source": "action-progress",
-                          "last_accepted": {"phase": "phase-1",
-                                            "units_completed": 1,
-                                            "reported_unix": now - 10.0}})
+    # The first accepted progress: phase-1.
+    _report(queue, FIRST, phase="phase-1", reported_unix=time.time(), units=1)
     _cycle(queue, stage, gib=40)
     assert queue.item_path(pool.READY, mover).exists()
-    _run_one(queue, stage, consumer=FIRST, manifest=FIRST_MANIFEST,
-             mover=mover, name="phase-3", start=start, end=end,
-             seconds=MOVER_SECONDS)
+    landed = _land_queued(queue, stage, consumer=FIRST, manifest=FIRST_MANIFEST,
+                          plan=plan, bytes_per_s=rate)
     _cycle(queue, stage, gib=40)
-    kind, _detail = poll(queue, FIRST, FIRST_MANIFEST, name="phase-3",
-                         start=start, end=end, elapsed_s=4 * READER_CLOCK_S)
-    assert kind == "hit"
+    kind, declared = poll(queue, FIRST, FIRST_MANIFEST, name="phase-3",
+                          start=start, end=end, elapsed_s=4 * READER_CLOCK_S)
+    assert kind == "hit", (kind, declared)
+    served = staged(queue, FIRST, declared, end - start)
+    assert served == landed["phase-3"]
+    with open(served, "rb") as stream:
+        assert stream.read(65536) == _marker(mover)
 
 
 # --------------------------------------- a reader past its declared reach
@@ -441,3 +460,111 @@ def test_a_reader_blocked_past_its_horizon_pulls_the_horizon_to_it(
     kind, detail, _movers = reader_verdict(queue, SMALL_READER,
                                            SMALL_READER_MANIFEST, start, end)
     assert (kind, detail.split(" is ")[-1]) == ("wait", "ready"), (kind, detail)
+    record = residency_map.read_landing(residency_map.landing_path(
+        queue.residency_fragment_root(), SMALL_READER))
+    horizon = record["horizon"]
+    assert horizon["declared_wait_end_bytes"] == end, horizon  # type: ignore[index]
+    assert horizon["end_bytes"] == int(plan["phases"][6]["start_bytes"]), horizon  # type: ignore[index]
+
+
+# ------------------------------------------- the wait counts as declared (#989)
+
+TOKEN = "t" * 32
+
+
+def test_a_wait_on_a_deferred_leg_counts_while_the_tier_loop_lives(
+        tmp_path: Path) -> None:
+    """Constraint 4: the worker's watch and the reader agree, and both end.
+
+    R12 declares its wait on the advance, which the record lists as
+    deferred by the horizon.  While the tier loop announces its tier the
+    watch counts the wait as declared, not quiet (PB #989's ``unpublished``
+    rule), and the reader waits.  Once the loop stops announcing, both end
+    it: the watch no longer exempts the wait and the reader refuses,
+    naming the silent loop.
+    """
+
+    queue, stage, _plan, capacity = _r12(tmp_path)
+    key, manifest = _key(0), _manifest(0)
+    mover = _mover(0, ADVANCE)
+    start = int(PHASES[ADVANCE]["start_bytes"])
+    end = int(PHASES[ADVANCE]["end_bytes"])
+    _cycle(queue, stage, gib=capacity)
+    progress_path = Path(queue.action_progress_path(key))
+    Path(pb_progress.staged_wait_path(str(progress_path))).write_text(json.dumps({
+        "schema": pb_progress.STAGED_WAIT_SCHEMA_V1, "token": TOKEN,
+        "since_unix": time.time(), "movers": [mover]}))
+
+    verdict = queue.staged_wait_verdict(key, progress_path, token=TOKEN)
+    assert verdict is not None
+    assert [entry["state"] for entry in verdict["movers"]] == ["unpublished"], verdict
+    assert verdict["tier_over_committed_gib"] <= 0, verdict
+    assert verdict["exempt"] is True, verdict
+    kind, _detail, movers = reader_verdict(queue, key, manifest, start, end)
+    assert (kind, movers) == ("wait", (mover,))
+
+    tier_path = queue.tier_record_path(TIER)
+    announced = json.loads(tier_path.read_text())
+    announced["announced_unix"] = time.time() - 2 * pool.OFFER_TIMEOUT_S
+    tier_path.write_text(json.dumps(announced))
+
+    verdict = queue.staged_wait_verdict(key, progress_path, token=TOKEN)
+    assert verdict is not None and verdict["exempt"] is False, verdict
+    kind, detail, _movers = reader_verdict(queue, key, manifest, start, end)
+    assert (kind, detail) == ("refuse", "the tier loop is silent")
+
+
+# ------------------------------------------------------------ the record
+
+def test_the_record_says_where_the_horizon_ends_and_holds_it(
+        tmp_path: Path) -> None:
+    """The deferred rows and the ``horizon`` block, and what the check refuses.
+
+    A deferred row is ``unpublished`` (or ``evicted``) with no expected
+    landing; a row deferred by the horizon starts at or past the end the
+    record states.  A record written before #1018, with neither field,
+    still reads.
+    """
+
+    queue, stage, _plan, capacity = _r12(tmp_path)
+    key = _key(0)
+    _cycle(queue, stage, gib=capacity)
+    path = residency_map.landing_path(queue.residency_fragment_root(), key)
+    raw = json.loads(path.read_text())
+    record = residency_map.validate_landing(raw)
+    horizon = record["horizon"]
+    start = int(PHASES[ADVANCE]["start_bytes"])
+    assert horizon["end_bytes"] == start, horizon                 # type: ignore[index]
+    assert horizon["accepted_phase"] == "chain-043", horizon      # type: ignore[index]
+    assert horizon["advance_mover_action_key"] == _mover(0, ADVANCE)  # type: ignore[index]
+    assert horizon["consumption_bytes_per_s"] > 0, horizon        # type: ignore[index]
+    rows = {row["phase"]: row for row in record["ranges"]}        # type: ignore[union-attr]
+    advance = rows[ADVANCE]
+    assert (advance["state"], advance["deferred_by"]) == ("unpublished", "horizon")
+    assert advance["expected_landing_unix"] is None
+    assert "refill horizon" in str(advance["waiting_for"])
+    assert rows["chain-000"]["deferred_by"] == "horizon"
+
+    index = next(n for n, row in enumerate(raw["ranges"]) if row["phase"] == ADVANCE)
+    for mutate in (
+            lambda doc: doc["ranges"][index].update(deferred_by="later"),
+            lambda doc: doc["ranges"][index].update(
+                state="ready", expected_landing_unix=1.0, queue_position=0,
+                bytes_ahead=0),
+            lambda doc: doc["ranges"][index].update(expected_landing_unix=1.0),
+            lambda doc: doc.update(horizon=None),
+            lambda doc: doc["horizon"].update(end_bytes=start + 1),
+            lambda doc: doc["horizon"].update(extra=1)):
+        doc = json.loads(json.dumps(raw))
+        mutate(doc)
+        try:
+            residency_map.validate_landing(doc)
+        except residency_map.ResidencyMapError:
+            continue
+        raise AssertionError(f"the check took {doc['ranges'][index]}")
+
+    before = json.loads(json.dumps(raw))
+    before.pop("horizon")
+    before["ranges"] = [{name: value for name, value in row.items()
+                         if name != "deferred_by"} for row in before["ranges"]]
+    assert "horizon" not in residency_map.validate_landing(before)
