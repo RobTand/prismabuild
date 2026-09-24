@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from pbtest_shard_output import ShardProcess  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
     "pbtest_placement", REPOSITORY / "tools" / "fleet" / "pbtest.py"
@@ -124,7 +125,7 @@ def test_the_rule_is_pools_and_not_a_second_copy_of_it():
 # pbtest: the tag it no longer fabricates
 # --------------------------------------------------------------------------
 
-class _FinishedProcess:
+class _FinishedProcess(ShardProcess):
     returncode = 0
 
     def communicate(self):

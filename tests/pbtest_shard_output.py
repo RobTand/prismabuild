@@ -10,6 +10,7 @@ drift from it.
 """
 from __future__ import annotations
 
+import io
 import json
 
 import pbtest_outcomes
@@ -57,3 +58,23 @@ def shard_output_for(command) -> str:
         "uncounted": [],
     })
     return f"{record}\n{len(nodeids)} passed in 0.01s\n"
+
+
+class ShardProcess:
+    """A finished stand-in shard, readable the way ``pbtest`` reads a real one.
+
+    ``pbtest`` streams each shard's stdout line by line while the shard runs,
+    so a long ``pbrun`` wait is not silent (#1048), and then waits for its
+    exit. A stand-in defines ``communicate`` and ``returncode``; this answers
+    ``stdout`` and ``wait`` from them.
+    """
+
+    @property
+    def stdout(self):
+        stream = self.__dict__.get("_stdout")
+        if stream is None:
+            stream = self.__dict__["_stdout"] = io.StringIO(self.communicate()[0] or "")
+        return stream
+
+    def wait(self, timeout=None):
+        return self.returncode

@@ -28,6 +28,8 @@ import sys
 
 import pytest
 
+from pbtest_shard_output import ShardProcess  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -172,7 +174,7 @@ def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0):
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     queue = list(outputs)
 
-    class Finished:
+    class Finished(ShardProcess):
         def __init__(self, output):
             self.output = output
             self.returncode = returncode

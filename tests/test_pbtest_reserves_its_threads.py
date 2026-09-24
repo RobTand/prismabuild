@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import shard_output_for  # noqa: E402
+from pbtest_shard_output import ShardProcess, shard_output_for  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
@@ -39,7 +39,7 @@ _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 from prismabuild.slurm_lane import LaneResources  # noqa: E402
 
 
-class _FinishedProcess:
+class _FinishedProcess(ShardProcess):
     returncode = 0
 
     def __init__(self, command):

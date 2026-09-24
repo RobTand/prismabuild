@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ONE_PASS, shard_output  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS, shard_output  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +59,7 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
     test_file.write_text("def test_one():\n    assert True\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
 
-    class FinishedProcess:
+    class FinishedProcess(ShardProcess):
         def __init__(self) -> None:
             self.returncode = returncode
 
