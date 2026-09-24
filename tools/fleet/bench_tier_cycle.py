@@ -418,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live-consumers", type=int, default=6,
                         help="live consumers with frozen plans and one landed "
                              "range each; even-numbered ones are claimed, and "
-                             "the first has a mover in flight")
+                             "the first has a mover in flight when --phases is "
+                             "above 1")
     parser.add_argument("--phases", type=int, default=3,
                         help="phases in each live consumer's plan")
     parser.add_argument("--files-per-range", type=int, default=64,
