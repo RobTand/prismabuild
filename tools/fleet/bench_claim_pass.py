@@ -122,15 +122,22 @@ def count(trace: Path, work: Path, poll: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--work", required=True, type=Path)
+    parser.add_argument("--work", required=True, type=Path,
+                        help="scratch directory the synthetic queue is built "
+                             "in; must not exist yet; with --count, the "
+                             "directory the traced run used")
     parser.add_argument("--checkout", type=Path,
                         default=Path(__file__).resolve().parents[2],
                         help="the tree whose src/prismabuild is measured")
     parser.add_argument("--count", type=Path,
                         help="an strace -f log of a run; prints its counts")
-    parser.add_argument("--ready", type=int, default=40)
-    parser.add_argument("--claimed", type=int, default=28)
-    parser.add_argument("--passes", type=int, default=1324)
+    parser.add_argument("--ready", type=int, default=40,
+                        help="ready items this box cannot place (the live "
+                             "queue held 40 on 2026-09-23)")
+    parser.add_argument("--claimed", type=int, default=28,
+                        help="claimed records (the live queue held 28)")
+    parser.add_argument("--passes", type=int, default=1324,
+                        help="passes/ sidecars (the live queue held 1,324)")
     args = parser.parse_args()
     if args.count is not None:
         for poll in (1, 2):
