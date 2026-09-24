@@ -417,6 +417,10 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     assert stage_move.main([*command[2:], "--action-key", lead, "--unpaced"]) == 0
     receipt = queue.move_record(lead)
     assert receipt["complete"] is True and receipt["errors"] == [], receipt
+    # The mover files its vouch under the range's share namespace (#1026);
+    # the tier loop's next cycle copies it to each consumer that reads the
+    # range, before it composes that consumer's map.
+    _tier_cycle(queue, tmp_path / "stage")
 
     composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, consumer))
     staged = composed["entries"][rm.residency_map_key(str(destination), 0)]

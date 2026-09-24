@@ -6940,7 +6940,12 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     published: list[dict[str, object]] = []
     cancelled = _withdrawn_keys(queue, withdrawn)
     if consumers is None:
-        consumers = _planned_consumers(queue, tiers)
+        try:
+            consumers = _planned_consumers(queue, tiers)
+        except OSError:
+            # A queue this pass cannot list: the protection pass below reads
+            # it too and defers every publication.  No sharer is known.
+            consumers = []
     readers_of = _shared_readers(queue, consumers)
     fragment_root = queue.residency_fragment_root()
 
