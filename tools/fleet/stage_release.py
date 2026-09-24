@@ -1400,9 +1400,13 @@ def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
     it -- but its claim already exists, and the claim's sealed request names
     its manifest and its read-order range.  Resolving those through the same
     ``stage_relative`` computation both movers use attributes exactly the
-    files the copy can rename into place.  Non-movement claims (no range
-    flags) are skipped, never tainting: a consumer is not a copy.  Anything
-    unreadable taints the pass, the same fail-closed rule as fragments.
+    files the copy can rename into place.  Non-movement claims are skipped,
+    never tainting: a claim with no demand on the tier, or one that demands
+    only a rate there (the paced produced export's pool fill, #1060), is not
+    a copy.  A claim that demands occupancy on the tier is a copy, and one
+    whose sealed command carries no range taints unless it is a verified
+    producer reservation.  Anything unreadable taints the pass, the same
+    fail-closed rule as fragments.
 
     The CAS root comes from each sealed claim record's own ``cas_root`` where
     present (an explicit override wins for tests); the queue-sibling default
@@ -1498,12 +1502,22 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
             # ``None`` and skipped the unknown silently.)
             tainted.append(f"{key[:12]}: malformed resources")
             continue
-        demand = resources
-        kinds = {str(kind).split("@", 1)[1] for kind in demand
-                 if "@" in str(kind)}
-        if tier_id not in kinds:
+        on_tier = {str(kind).split("@", 1)[0] for kind in resources
+                   if "@" in str(kind) and str(kind).split("@", 1)[1] == tier_id}
+        if not on_tier:
             continue    # not a movement node on this tier; a consumer is
                         # not a copy
+        if on_tier <= pool.TIER_RATE_KINDS:
+            # A rate reservation names no bytes (#636, #1060): the paced
+            # produced export reserves this tier's pool-side fill and
+            # writes under its template's output prefix, never onto the
+            # stage.  The pool's publish gate draws the same line -- only
+            # occupancy kinds need a range or a working window -- and
+            # every copy onto a tier carries the tier's capacity kind
+            # (``storage_tiers.residency_demand``, the produced-output
+            # mover).  An occupancy or unknown kind still reads as a copy
+            # below, so a mover that seals no range still taints.
+            continue
         memo_key = (key, own_cas, tier_id)
         remembered = memo.claims.get(memo_key) if memo is not None else None
         if remembered is not None:

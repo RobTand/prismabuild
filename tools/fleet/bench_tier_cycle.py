@@ -29,8 +29,9 @@ consumer's executed, charged mover with a fragment and a material sidecar)
 whose fragments name the same staged files, one ``.pbrange`` parent
 directory per entry, as an adoption leaves them once both consumers have
 died.  ``--no-range-claims`` adds claimed exports that demand only the
-tier's fill rate and seal no range, which taint every ownership census on
-the tier while they are claimed (the live ``produced_export.py`` shape).
+tier's fill rate and seal no range (the live ``produced_export.py`` shape).
+Before #1060 they tainted every ownership census on the tier while they were
+claimed; since, the claim census reads a rate-only claim as no copy.
 Each cycle row then carries the stage-lock hold its sweep receipts
 recorded.
 
@@ -292,9 +293,10 @@ def build_no_range_claims(queue: pool.PoolQueue, count: int) -> dict[str, int]:
     """Claimed exports that demand only the tier's fill rate (#1056).
 
     The live ``produced_export.py`` rows: a ``fill_mb_s_pool_side@<tier>``
-    demand makes the claim census read them as movement on the tier, and
-    their sealed command carries no range, so every ownership census taints
-    ("mover seals no range") while one is claimed.
+    demand and a sealed command with no range.  Before #1060 the claim census
+    read the demand as movement on the tier, so every ownership census
+    tainted ("mover seals no range") while one was claimed; since, a claim
+    that demands only a rate on the tier is not a copy onto it.
     """
 
     for index in range(count):

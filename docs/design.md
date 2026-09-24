@@ -10063,7 +10063,11 @@ residency block or produced-output template, because such demand names bytes
 that no manifest maps. A rate kind names no bytes: `TIER_RATE_KINDS` tokens
 price bandwidth while the action runs and are returned when it stops (#636).
 The gate now applies only to occupancy kinds, and occupancy demand without a
-range or a working window is still refused.
+range or a working window is still refused. The stage egress's claim census
+draws the same line (#1060): a claim that demands only a rate on a tier is not
+a copy onto that tier. So a claimed paced export no longer makes every
+ownership census on its tier uncertain, and a claim that demands occupancy but
+seals no range still does.
 
 **Pace.** `ExportPacer` is a token bucket over the export's canonical writes,
 denominated in decimal MB per second like the ledger. When the copy gets
