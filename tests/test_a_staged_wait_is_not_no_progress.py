@@ -712,6 +712,30 @@ def test_a_withhold_with_no_episode_is_bounded_by_the_first_denial(
         first, "first-denial"), entry
 
 
+def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
+        tmp_path: Path) -> None:
+    """F1: one box's census can never place the row (``never_fits_capacity``),
+    and the stage host withholds its box for it.  The row is coming on the
+    stage host, so the consumer waits on it, as it would on a host that says
+    nothing but a transient reason."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    queue._record_denial_transition(ready, host="sparky", reason="never_fits_capacity",
+                                    decision_reason=None)
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=now - 60.0, first_unix=now - 120.0)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert (entry["evidence"], entry.get("denied_by")) == ("withheld", "dl380g10"), entry
+
+
 @pytest.mark.parametrize("epoch_age_s,first_age_s", [
     # An episode past the ceiling: the pool has stopped withholding for it,
     # so a ring that still says so is not a veto that is coming to an end.
