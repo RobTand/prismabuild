@@ -7765,13 +7765,13 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
         if resumed:
             # About to publish: the generation must still be there, and the
             # pinned batches must still be the ones the release pinned.
-            # ``lstat`` only, as at submission.
+            # ``lstat`` only, as at submission, unless an origin's timestamps
+            # alone moved and its content must be read (#1111).
             sealing_runtime(template)
-            for ref in all_refs:
-                try:
-                    produced_mod.load_origin_batch(q.root, ref)
-                except produced_mod.ProducedOutputError as exc:
-                    raise action_edges.ActionEdgeError(str(exc)) from None
+            try:
+                produced_mod.load_origin_batches(q.root, all_refs)
+            except produced_mod.ProducedOutputError as exc:
+                raise action_edges.ActionEdgeError(str(exc)) from None
         cas.publish_action_request(action)
         options = argparse.Namespace(**dict(record["publication"]))
         sealed = {**template,

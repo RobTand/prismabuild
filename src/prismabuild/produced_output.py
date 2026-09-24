@@ -105,6 +105,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 import stat
 import sys
 import tempfile
@@ -2377,10 +2378,141 @@ def _origin_identity_at_commit(sealed: list[dict[str, object]]
     return (identity, None)
 
 
-def _recheck_origin_identity(filed: Mapping[str, object],
-                             sealed: list[dict[str, object]]
-                             ) -> tuple[bool, str | None]:
-    """Do the sealed origins still have the identity the FIRST commit recorded?
+#: Why an origin identity was re-pinned; the only reason there is.
+ORIGIN_REPIN_REASON = ("timestamps-only mismatch: same inode and size, content "
+                       "sha256 verified (#1111, an NFS delegation recall)")
+_ORIGIN_REPIN_FIELDS = frozenset({"path", "from", "to", "reason", "sha256",
+                                  "bytes", "rehash_s", "reads", "host", "unix",
+                                  "where"})
+#: Content checks that refused, by ``(path, identity, sha256)``.  A file
+#: whose identity has not moved since its content was refused is refused
+#: again without a read, so a retirement tick does not re-read a changed
+#: origin every cycle.  Only refusals are kept: a changed origin is an
+#: anomaly an operator settles, so this grows with those, not with the work.
+_CONTENT_REFUSED: dict[tuple[str, tuple[object, ...], str], str] = {}
+
+
+def _identity_key(identity: Mapping[str, object]) -> tuple[object, ...]:
+    return tuple(identity.get(field)
+                 for field in ("ino", "size", "mtime_ns", "ctime_ns"))
+
+
+def _verify_origin_content(path: str, published: Mapping[str, object],
+                           observed: Mapping[str, object], sha256: object, *,
+                           where: str
+                           ) -> tuple[dict[str, object] | None, str | None]:
+    """Settle one origin whose timestamps alone moved, by its content (#1111).
+
+    ``published`` is the identity a check compares against, and ``observed``
+    the one it found: the same inode and size, other timestamps
+    (`reader_lease.timestamp_only_mismatch`).  That is what an NFS
+    delegation recall does to a file its writer recorded: the server applies
+    the writer's delegated timestamps, and the bytes stay the same.  The file
+    is read through its parent without following a link and hashed
+    (`reader_lease.content_identity`), with no lock held; the caller files
+    the result under its own lock after a re-stat.
+
+    Returns ``(repin, None)`` when the digest is the committed ``sha256`` and
+    the inode and size are the published ones: ``repin`` names the path, the
+    identity it replaces, the hashed one, the reason, the seconds the read
+    took and where it was made.  Otherwise ``(None, why)``.  A batch with no
+    digest (the DEV null convention) is never settled this way.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    if not isinstance(sha256, str) or not sha256:
+        return (None, "only the timestamps moved, and the batch carries no "
+                      "sha256 to verify its content against")
+    memo = (path, _identity_key(observed), sha256)
+    if memo in _CONTENT_REFUSED:
+        return (None, _CONTENT_REFUSED[memo])
+    directory, name = os.path.split(path)
+    try:
+        parent = os.open(directory or ".",
+                         os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        return (None, f"only the timestamps moved, and the content could not "
+                      f"be verified: {exc}")
+    try:
+        read = lease_mod.content_identity(name, dir_fd=parent)
+    except (OSError, lease_mod.ReaderLeaseError) as exc:
+        return (None, f"only the timestamps moved, and the content could not "
+                      f"be verified: {exc}")
+    finally:
+        os.close(parent)
+    now = read["identity"]
+    if (now["ino"], now["size"]) != (published.get("ino"), published.get("size")):
+        return (None, "the file changed while its content was verified")
+    if read["sha256"] != sha256:
+        why = (f"only the timestamps moved, but the content sha256 "
+               f"{read['sha256']} is not the committed {sha256}")
+        _CONTENT_REFUSED[memo] = why
+        _CONTENT_REFUSED[(path, _identity_key(now), sha256)] = why
+        return (None, why)
+    return ({"path": path, "from": dict(published), "to": dict(now),
+             "reason": ORIGIN_REPIN_REASON, "sha256": sha256,
+             "bytes": read["bytes"], "rehash_s": read["seconds"],
+             "reads": read["reads"], "host": socket.gethostname(),
+             "unix": round(time.time(), 3), "where": where}, None)
+
+
+def _effective_origin_identity(filed: Mapping[str, object],
+                               sealed: list[dict[str, object]],
+                               entry: Mapping[str, object] | None
+                               ) -> dict[str, dict[str, object]] | None:
+    """The identity each origin is checked against: the commit's, re-pinned (#1111).
+
+    The immutable batch record carries the identity its commit recorded.
+    The mutable commitments entry may carry ``origin_repins``, each filed
+    after a content check (`_verify_origin_content`); applied in order, each
+    must start from the identity the ones before it left, change only the
+    timestamps, and carry the batch's sha256 for its path.  A list that does
+    not chain is corrupt and raises ``unknown-retain``, never reads as the
+    committed identity.  Returns ``None`` when the record has no identity.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    recorded = filed.get("origin_identity")
+    if not isinstance(recorded, Mapping):
+        return None
+    current = {str(path): dict(identity) if isinstance(identity, Mapping)
+               else identity for path, identity in recorded.items()}
+    repins = (entry or {}).get("origin_repins")
+    if repins is None:
+        return current
+    corrupt = ProducedOutputError(
+        "unknown-retain: origin re-pins do not chain from the committed identity")
+    if not isinstance(repins, list) or not repins:
+        raise corrupt
+    digests = {str(desc["path"]): desc.get("sha256") for desc in sealed}
+    for repin in repins:
+        if (not isinstance(repin, Mapping) or set(repin) != _ORIGIN_REPIN_FIELDS
+                or repin["reason"] != ORIGIN_REPIN_REASON):
+            raise corrupt
+        path = repin["path"]
+        if (not isinstance(path, str) or path not in current
+                or not isinstance(digests.get(path), str)
+                or repin["sha256"] != digests[path]
+                or repin["from"] != current[path]):
+            raise corrupt
+        try:
+            after = lease_mod._check_identity(repin["to"], where="re-pinned to")
+        except lease_mod.ReaderLeaseError:
+            raise corrupt from None
+        if not lease_mod.timestamp_only_mismatch(repin["from"], after):
+            raise corrupt
+        current[path] = dict(after)
+    return current
+
+
+def _check_origin_identity(filed: Mapping[str, object],
+                           sealed: list[dict[str, object]],
+                           entry: Mapping[str, object] | None = None, *,
+                           verify: bool = False, where: str = ""
+                           ) -> dict[str, object]:
+    """Do the sealed origins still carry the identity their commit recorded?
 
     This is the whole safety of restaging a DEV null-digest batch. The
     descriptor carries no payload digest, so the only thing that can say the
@@ -2390,39 +2522,122 @@ def _recheck_origin_identity(filed: Mapping[str, object],
     `reader_lease.file_id_matches` every strict reader and every publication
     proof uses. Size alone is NOT that proof: a rewritten file of identical
     length passes an lstat size check and is a different artifact.
-    Deliberately NOT a rehash: the writer digest, where one exists, already
-    rides the manifest and the mover verifies it on copy; this path adds no
-    payload read.
+
+    The identity compared is the commit's with the entry's re-pins applied
+    (`_effective_origin_identity`). A mismatch in the timestamps alone, on an
+    origin whose descriptor carries its sha256, is what an NFS delegation
+    recall leaves (#1111). With ``verify`` the origin is read and hashed
+    here, with no lock held (`_verify_origin_content`), and the answer
+    carries the re-pins for the caller to file under its lock; without it
+    the answer is ``restage-origin-unverified`` and names the paths. Nothing
+    else is ever read: a match costs one lstat, and a batch with no digest
+    stays strict.
 
     A batch committed before the proof existed has no `origin_identity` and
     refuses `restage-origin-proof-missing` -- the current bytes are never
     retroactively blessed as the committed ones. An unstatable path is unknown
-    and refuses. Returns `(True, None)` or `(False, refusal)`.
+    and refuses. Returns ``{"ok": True, "repins": [...]}`` or
+    ``{"ok": False, "refusal", "detail"?, "paths"?}``.
     """
 
     from prismabuild import reader_lease as lease_mod
 
-    recorded = filed.get("origin_identity")
-    if not isinstance(recorded, Mapping) or not recorded:
-        return (False, "restage-origin-proof-missing")
-    if len(recorded) != len(sealed):
-        return (False, "restage-origin-proof-missing")
+    try:
+        recorded = _effective_origin_identity(filed, sealed, entry)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    if not recorded or len(recorded) != len(sealed):
+        return {"ok": False, "refusal": "restage-origin-proof-missing"}
+    repins: list[dict[str, object]] = []
+    unverified: list[str] = []
     for desc in sealed:
         path = str(desc["path"])
         published = recorded.get(path)
         if not isinstance(published, Mapping):
-            return (False, "restage-origin-proof-missing")
+            return {"ok": False, "refusal": "restage-origin-proof-missing"}
         # A proof that disagrees with the manifest it is filed beside is not a
         # proof of anything.
         if published.get("size") != int(desc["bytes"]):
-            return (False, "restage-origin-proof-missing")
+            return {"ok": False, "refusal": "restage-origin-proof-missing"}
         try:
             live = _portable_identity_of(os.lstat(path))
         except OSError as exc:
-            return (False, f"restage-origin-unstatable: {exc}")
-        if not lease_mod.file_id_matches(published, live):
-            return (False, "restage-origin-changed")
-    return (True, None)
+            return {"ok": False, "refusal": f"restage-origin-unstatable: {exc}"}
+        if lease_mod.file_id_matches(published, live):
+            continue
+        if (desc.get("sha256") is None
+                or not lease_mod.timestamp_only_mismatch(published, live)):
+            return {"ok": False, "refusal": "restage-origin-changed"}
+        if not verify:
+            unverified.append(path)
+            continue
+        repin, why = _verify_origin_content(path, published, live,
+                                            desc["sha256"], where=where)
+        if repin is None:
+            return {"ok": False, "refusal": "restage-origin-changed",
+                    "detail": f"{path}: {why}"}
+        repins.append(repin)
+    if unverified:
+        return {"ok": False, "refusal": "restage-origin-unverified",
+                "paths": unverified}
+    return {"ok": True, "repins": repins}
+
+
+def _recheck_origin_identity(filed: Mapping[str, object],
+                             sealed: list[dict[str, object]],
+                             entry: Mapping[str, object] | None = None
+                             ) -> tuple[bool, str | None]:
+    """`_check_origin_identity` without a read: ``(True, None)`` or ``(False, refusal)``."""
+
+    verdict = _check_origin_identity(filed, sealed, entry)
+    return (bool(verdict["ok"]), verdict.get("refusal"))
+
+
+def _apply_origin_repins(entry: Mapping[str, object],
+                         filed: Mapping[str, object],
+                         sealed: list[dict[str, object]],
+                         repins: Sequence[Mapping[str, object]]
+                         ) -> tuple[dict[str, object] | None, dict[str, str] | None]:
+    """``entry`` with verified re-pins appended, checked under the caller's lock.
+
+    Each origin is stat'ed again: it must still be the identity its content
+    check hashed, or it changed after the read and refuses. An origin whose
+    entry already carries that identity (another caller filed the same
+    re-pin) adds nothing. Returns ``(entry, None)`` -- the same mapping when
+    nothing is added -- or ``(None, refusal)``.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    try:
+        current = _effective_origin_identity(filed, sealed, entry)
+    except ProducedOutputError as exc:
+        return (None, {"refusal": str(exc)})
+    if current is None:
+        return (None, {"refusal": "restage-origin-proof-missing"})
+    added: list[dict[str, object]] = []
+    for repin in repins:
+        path = str(repin["path"])
+        try:
+            live = _portable_identity_of(os.lstat(path))
+        except OSError as exc:
+            return (None, {"refusal": f"restage-origin-unstatable: {exc}"})
+        if not lease_mod.file_id_matches(repin["to"], live):
+            return (None, {"refusal": "restage-origin-changed",
+                           "detail": f"{path}: the file changed after its "
+                                     f"content was verified"})
+        if lease_mod.file_id_matches(current.get(path), live):
+            continue
+        if current.get(path) != repin["from"]:
+            return (None, {"refusal": "restage-origin-changed",
+                           "detail": f"{path}: another identity was filed "
+                                     f"after its content was verified"})
+        added.append(dict(repin))
+        current[path] = dict(repin["to"])
+    if not added:
+        return (dict(entry), None)
+    return ({**entry, "origin_repins": [*(entry.get("origin_repins") or []),
+                                        *added]}, None)
 
 
 def _materializations(entry: Mapping[str, object]) -> list[dict[str, object]]:
@@ -2577,7 +2792,8 @@ def _committed_restage_authority(queue, checked_instance, checked_template,
     * exactly ONE live materialization is filed and it names THIS mover key.
       The caller therefore cannot pick a successor id: only the key PB itself
       sealed and filed under the ownership lock is fundable.
-    * the sealed origins still carry the identity the first commit recorded.
+    * the sealed origins still carry the identity the first commit recorded,
+      or the one its entry re-pinned after a content check (#1111).
 
     A damaged record or commitments file raises `unknown-retain` (fail
     closed), and a changed or unprovable origin raises its own typed reason so
@@ -2615,7 +2831,9 @@ def _committed_restage_authority(queue, checked_instance, checked_template,
     live = _live_materialization(entry)
     if live is None or str(live.get("mover_key")) != str(mover_key):
         return None
-    ok, refusal = _recheck_origin_identity(filed, sealed)
+    # Against the entry's re-pins, and never a read: the restage filed any
+    # re-pin under the lock before this key was sealed (#1111).
+    ok, refusal = _recheck_origin_identity(filed, sealed, entry)
     if not ok:
         raise ProducedOutputError(str(refusal))
     return dict(entry)
@@ -3533,6 +3751,10 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
       (`ProducedSpool.commit_origin_group`). Each origin must still be that
       file. An export retried before its receipt can replace a landed copy,
       so an identity taken from before the receipt is not the committed one.
+      An origin whose timestamps alone moved since the receipt (an NFS
+      delegation recall, #1111) is read and hashed before the lock is taken;
+      when its digest is the descriptor's, the hashed identity is the one
+      committed, and the entry and the answer carry ``landed_repins``.
 
     The commitments entry carries ``origin_only: true`` and no mover. Its
     paths stay owned until `reclaim_origin` proves them absent, because a
@@ -3579,14 +3801,30 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
     if identity_refusal is not None:
         return identity_refusal
     assert origin_identity is not None
+    landed_repins: list[dict[str, object]] = []
     if landed is not None:
         from prismabuild import reader_lease as lease_mod
 
         if (not isinstance(landed, Mapping)
-                or set(landed) != set(origin_identity)
-                or not all(lease_mod.file_id_matches(landed[path], live)
-                           for path, live in origin_identity.items())):
+                or set(landed) != set(origin_identity)):
             return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
+        for desc in sealed:
+            path = str(desc["path"])
+            live = origin_identity[path]
+            if lease_mod.file_id_matches(landed[path], live):
+                continue
+            if not lease_mod.timestamp_only_mismatch(landed[path], live):
+                return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
+            # Only the timestamps moved since the receipt: a delegation
+            # recall (#1111). The landed copy is the committed one if its
+            # bytes are; read with no lock held, before the commit takes one.
+            repin, why = _verify_origin_content(
+                path, landed[path], live, desc["sha256"], where="commit")
+            if repin is None:
+                return {"ok": False, "refusal": "origin-is-not-the-landed-copy",
+                        "detail": f"{path}: {why}"}
+            origin_identity[path] = dict(repin["to"])
+            landed_repins.append(repin)
     class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
@@ -3693,6 +3931,10 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
         }
         if lifetime != ORIGIN_LIFETIME_RETAIN:
             entry["lifetime"] = lifetime
+        if landed_repins:
+            # What the commit read to accept the landed copy; the record's
+            # identity is already the hashed one, so nothing chains from it.
+            entry["landed_repins"] = landed_repins
         batches[batch_id] = entry
         _write_commitments(commitments_path, {"batches": batches})
         prewrite_path.unlink(missing_ok=True)
@@ -3701,6 +3943,8 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
               "tier": tier, "entries": sealed, "origin_only": True, "ref": ref}
     if lifetime != ORIGIN_LIFETIME_RETAIN:
         result["lifetime"] = lifetime
+    if landed_repins:
+        result["landed_repins"] = landed_repins
     return result
 
 
@@ -4469,7 +4713,11 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
     * an origin whose identity no longer matches what the first commit
       recorded refuses `restage-origin-changed` BEFORE any funding, and a
       batch with no such proof refuses `restage-origin-proof-missing` rather
-      than blessing whatever bytes are there now;
+      than blessing whatever bytes are there now. The one exception is an
+      origin whose timestamps alone moved and whose descriptor carries its
+      sha256 (an NFS delegation recall, #1111): it is hashed with no lock
+      held, and when the digest is the committed one the re-pin is filed on
+      the entry under the lock, after a re-stat, before the intent;
     * a batch whose origins were reclaimed refuses: its durable charge is
       gone and so are the only bytes that could be copied.
 
@@ -4493,6 +4741,85 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
     resume republishes the price the intent was sealed at, whatever the switch
     or the tier's offer says by then.
     """
+
+    kwargs = dict(batch_id=batch_id, cas_root=cas_root,
+                  producer_action_key=producer_action_key,
+                  command_extra=command_extra, retry_policy=retry_policy,
+                  restage_fill=restage_fill)
+    answer = _ensure_batch_materialized(queue, instance, template, **kwargs)
+    if answer.get("refusal") != "restage-origin-unverified":
+        return answer
+    # Only the timestamps of a digest-carrying origin moved: read it here,
+    # with no lock held, and let the locked pass re-stat and file the re-pins.
+    verdict = _origin_verdict_unlocked(queue.root, instance, template,
+                                       batch_id, where="restage")
+    if not verdict.get("ok"):
+        return {"ok": False, "step": "origin",
+                **{k: v for k, v in verdict.items() if k != "ok"}}
+    return _ensure_batch_materialized(queue, instance, template, **kwargs,
+                                      verified=verdict["repins"])
+
+
+def _origin_verdict_unlocked(queue_root, instance: Mapping[str, object],
+                             template: Mapping[str, object], batch_id: str, *,
+                             where: str) -> dict[str, object]:
+    """`_check_origin_identity` with reads, on a lockless read of the batch (#1111)."""
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+        entry = _read_commitments(_commitments_path(
+            queue_root, checked_instance))["batches"].get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "refusal": "unknown-batch"}
+        filed, sealed = _load_batch_record(
+            queue_root, checked_instance, checked_template, entry, batch_id)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    return _check_origin_identity(filed, sealed, entry, verify=True,
+                                  where=where)
+
+
+def _origin_gate_locked(commitments_path: Path,
+                        commitments: Mapping[str, object], batch_id: str,
+                        entry: Mapping[str, object],
+                        filed: Mapping[str, object],
+                        sealed: list[dict[str, object]],
+                        verified: Sequence[Mapping[str, object]] | None
+                        ) -> dict[str, object]:
+    """The origin check a caller holding the prefix lock makes (#1111).
+
+    Without a read. When only re-pins are missing and ``verified`` carries
+    them (hashed by the caller before it took the lock), they are checked
+    against a fresh stat, appended to the entry and written, and the check
+    is made again. Returns `_check_origin_identity`'s answer.
+    """
+
+    verdict = _check_origin_identity(filed, sealed, entry)
+    if (verdict["ok"] or verdict.get("refusal") != "restage-origin-unverified"
+            or not verified):
+        return verdict
+    updated, refusal = _apply_origin_repins(entry, filed, sealed, verified)
+    if updated is None:
+        return {"ok": False, **(refusal or {})}
+    if updated != entry:
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        batches[batch_id] = updated
+        _write_commitments(commitments_path, commitments)
+    return _check_origin_identity(filed, sealed, updated)
+
+
+def _ensure_batch_materialized(queue, instance: Mapping[str, object],
+                               template: Mapping[str, object], *,
+                               batch_id: str, cas_root,
+                               producer_action_key: str | None = None,
+                               command_extra: Sequence[str] = (),
+                               retry_policy: Mapping[str, object] | None = None,
+                               restage_fill: bool | None = None,
+                               verified: Sequence[Mapping[str, object]] | None = None,
+                               ) -> dict[str, object]:
+    """One pass of `ensure_batch_materialized`; ``verified`` are hashed re-pins."""
 
     try:
         checked_template, checked_instance = _require_bound_contract(
@@ -4591,9 +4918,12 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
         if resume is None:
             # A NEW materialization. Prove the origins are the committed ones
             # BEFORE anything is funded or published.
-            ok, refusal = _recheck_origin_identity(filed, sealed)
-            if not ok:
-                return {"ok": False, "step": "origin", "refusal": str(refusal)}
+            gate = _origin_gate_locked(
+                _commitments_path(queue.root, checked_instance), commitments,
+                batch_id, entry, filed, sealed, verified)
+            if not gate["ok"]:
+                return {"ok": False, "step": "origin",
+                        **{k: v for k, v in gate.items() if k != "ok"}}
             generation = len(mats) + 1
             sealed_mover = _seal_output_mover(
                 queue, checked_instance, checked_template, sealed,
@@ -4633,10 +4963,12 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
                 return {"ok": False, "step": "resume",
                         "refusal": "unknown-retain: materialization-fill"}
             if str(resume.get("state")) != "funded":
-                ok, refusal = _recheck_origin_identity(filed, sealed)
-                if not ok:
+                gate = _origin_gate_locked(
+                    _commitments_path(queue.root, checked_instance),
+                    commitments, batch_id, entry, filed, sealed, verified)
+                if not gate["ok"]:
                     return {"ok": False, "step": "origin",
-                            "refusal": str(refusal)}
+                            **{k: v for k, v in gate.items() if k != "ok"}}
             from prismabuild import core as _core_mod
             from prismabuild import storage_tiers as _tiers_mod
 
@@ -4813,9 +5145,38 @@ def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
     sha256 as it copies, which is what binds the staged bytes to the
     committed ones. Raises `ProducedOutputError` naming what failed.
 
+    An origin whose timestamps alone moved (an NFS delegation recall, #1111)
+    is read and hashed, with no lock held; when its digest is the committed
+    one the batch resolves, and the re-pin is filed on the commitments entry
+    (`load_origin_batches`), so the next check compares against it and reads
+    nothing.
+
     Returns ``{"ref", "instance", "template", "record", "entries"}`` with the
     sealed descriptors in the batch's own order.
     """
+
+    return load_origin_batches(queue_root, [ref])[0]
+
+
+def load_origin_batches(queue_root: str | Path,
+                        refs: Sequence[Mapping[str, object]]
+                        ) -> list[dict[str, object]]:
+    """`load_origin_batch` for each ref, with one commitments write per instance.
+
+    Each batch is checked with no lock held. The re-pins its content checks
+    made are then filed per instance: one output-prefix lock, one re-read of
+    the commitments document, a re-stat of each re-pinned origin, and one
+    write (`_file_origin_repins`), whatever the number of batches.
+    """
+
+    loaded = [_load_origin_batch(queue_root, ref) for ref in refs]
+    _file_origin_repins(queue_root, loaded)
+    return [item for item, _repins in loaded]
+
+
+def _load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
+                       ) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """One batch resolved with no lock held, and the re-pins it needs filed."""
 
     checked_ref = _checked_origin_ref(ref)
     instance, template = _origin_ref_scope(queue_root, checked_ref)
@@ -4845,12 +5206,72 @@ def load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
     if filed.get("origin_only") is not True:
         raise ProducedOutputError(
             "unknown-retain: origin batch record is not origin-only")
-    ok, refusal = _recheck_origin_identity(filed, sealed)
-    if not ok:
+    verdict = _check_origin_identity(filed, sealed, entry, verify=True,
+                                     where="declare")
+    if not verdict["ok"]:
+        detail = f": {verdict['detail']}" if verdict.get("detail") else ""
         raise ProducedOutputError(
-            f"origin-batch-changed: {refusal} ({checked_ref['batch_id']})")
-    return {"ref": checked_ref, "instance": instance, "template": template,
-            "record": filed, "entries": sealed}
+            f"origin-batch-changed: {verdict['refusal']} "
+            f"({checked_ref['batch_id']}){detail}")
+    return ({"ref": checked_ref, "instance": instance, "template": template,
+             "record": filed, "entries": sealed}, list(verdict["repins"]))
+
+
+def _file_origin_repins(queue_root: str | Path,
+                        loaded: Sequence[tuple[Mapping[str, object],
+                                               Sequence[Mapping[str, object]]]]
+                        ) -> None:
+    """File the re-pins lockless checks made, under each instance's prefix lock (#1111).
+
+    Per instance: the output-prefix lock `commit_origin_batch` and the
+    retirement take, the commitments document read again, each origin
+    stat'ed again and required to still be the identity its content check
+    hashed (`_apply_origin_repins`), and one write. The lock holds no read of
+    an origin's bytes. A batch that was reclaimed or re-committed meanwhile
+    is left alone: whatever reads it next reads its state then. Raises
+    `ProducedOutputError` when an origin changed after its content was read.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    groups: dict[str, tuple[Mapping[str, object], list]] = {}
+    for item, repins in loaded:
+        if repins:
+            instance = item["instance"]
+            key = str(_commitments_path(queue_root, instance))
+            groups.setdefault(key, (instance, []))[1].append((item, repins))
+    if not groups:
+        return
+    queue = pool_mod.PoolQueue(queue_root)
+    for key, (instance, items) in groups.items():
+        path = Path(key)
+        with queue.stage_ownership_lock(str(instance["output_prefix"])):
+            commitments = _read_commitments(path)
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            changed = False
+            for item, repins in items:
+                batch_id = str(item["ref"]["batch_id"])
+                entry = batches.get(batch_id)
+                if (not isinstance(entry, Mapping)
+                        or entry.get("origin_only") is not True
+                        or entry.get("manifest_digest")
+                        != item["ref"]["manifest_digest"]
+                        or entry.get("origin_reclaimed")):
+                    continue
+                updated, refusal = _apply_origin_repins(
+                    entry, item["record"], item["entries"], repins)
+                if updated is None:
+                    detail = (f": {refusal['detail']}"
+                              if refusal and refusal.get("detail") else "")
+                    raise ProducedOutputError(
+                        f"origin-batch-changed: "
+                        f"{(refusal or {}).get('refusal')} ({batch_id}){detail}")
+                if updated != entry:
+                    batches[batch_id] = updated
+                    changed = True
+            if changed:
+                _write_commitments(path, commitments)
 
 
 def origin_batch_manifest(queue_root: str | Path,
@@ -4872,7 +5293,7 @@ def origin_batch_manifest(queue_root: str | Path,
     if (not isinstance(refs, Sequence) or isinstance(refs, (str, bytes))
             or not refs):
         raise ProducedOutputError("origin batch manifest needs at least one ref")
-    loaded = [load_origin_batch(queue_root, ref) for ref in refs]
+    loaded = load_origin_batches(queue_root, refs)
     keys = [tuple(item["ref"].values()) for item in loaded]
     if len(set(keys)) != len(keys):
         raise ProducedOutputError("origin batch manifest names a batch twice")
@@ -6873,9 +7294,10 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
                            ) -> dict[str, object] | None:
     """One retirement step for one consumed batch; the event to log, or None.
 
-    Everything happens under the batch's output-prefix lock, the lock
-    `declare_origin_consumer` takes, so no consumer can be declared between
-    the decision and the delete.
+    Every decision and every delete happens under the batch's output-prefix
+    lock, the lock `declare_origin_consumer` takes, so no consumer can be
+    declared between the decision and the delete.  The one thing done
+    outside it is reading an origin whose timestamps alone moved (below).
 
     The decision, unless the batch is already ``retiring``:
 
@@ -6902,7 +7324,11 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       producer attempt wrote the path again, #912's per-attempt ownership),
       so it is left alone and the batch stops charging for it;
     * the same inode changed in place, or any unreadable stat, refuses and
-      keeps the batch.
+      keeps the batch -- except when only its timestamps moved (an NFS
+      delegation recall, #1111): the file is read and hashed outside the
+      lock, and when its digest is the committed one the retirement takes
+      the lock again, re-stats it, files the re-pin on the entry
+      (``origin_repins``) and deletes it as the committed file.
 
     Another attempt's claim is read under the same lock first (#1053),
     over every attempt of every template whose prefix overlaps this one's
@@ -6920,6 +7346,48 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     never deleted. Afterwards ``origin_reclaimed`` frees its durable class
     bytes and its paths, as `reclaim_origin` does.
     """
+
+    verified: dict[str, dict[str, object]] = {}
+    for _attempt in (1, 2):
+        outcome = _retire_consumed_batch_locked(
+            queue, instance, template, batch_id,
+            deferred_holds=deferred_holds, reads=reads, verified=verified)
+        if not isinstance(outcome, _OriginsToVerify):
+            return outcome
+        # With no lock held: one read of each origin whose timestamps alone
+        # moved.  A refusal is kept as one, and the locked pass reports it.
+        for path, (published, observed, sha256) in outcome.pending.items():
+            repin, why = _verify_origin_content(path, published, observed,
+                                                sha256, where="retire")
+            if repin is not None:
+                verified[path] = repin
+            else:
+                # Other bytes are `origin-changed`, as before #1111; a read
+                # that failed is `origin-unverified`, and the next tick reads
+                # it again.
+                changed = (path, _identity_key(observed), sha256) in _CONTENT_REFUSED
+                verified[path] = {"refused": why, "reason": (
+                    "origin-changed" if changed else "origin-unverified")}
+    # An origin moved again between its read and the lock: the next tick
+    # decides, from what is there then.
+    return None
+
+
+class _OriginsToVerify:
+    """Origins a retirement must read, outside its lock, before it decides (#1111)."""
+
+    def __init__(self, pending: dict[str, tuple[Mapping[str, object],
+                                                 Mapping[str, object], str]]):
+        self.pending = pending
+
+
+def _retire_consumed_batch_locked(
+        queue, instance: Mapping[str, object], template: Mapping[str, object],
+        batch_id: str, *, deferred_holds: Collection[tuple[str, str]] = (),
+        reads: _TickReads | None = None,
+        verified: Mapping[str, Mapping[str, object]]
+        ) -> dict[str, object] | None | _OriginsToVerify:
+    """One pass of `_retire_consumed_batch` under the output-prefix lock."""
 
     from prismabuild import reader_lease as lease_mod
 
@@ -7032,6 +7500,16 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
                 or set(recorded) != {str(desc["path"]) for desc in sealed}):
             return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": "origin-proof-missing"})
+        # The committed identity with the entry's re-pins applied (#1111).
+        try:
+            recorded = _effective_origin_identity(filed, sealed, entry)
+        except ProducedOutputError as exc:
+            return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
+                           "reason": str(exc)})
+        assert recorded is not None
+        digests = {str(desc["path"]): desc.get("sha256") for desc in sealed}
+        observed: dict[str, dict[str, object]] = {}
+        repinned: list[dict[str, object]] = []
 
         def classify(path: str) -> tuple[str, str]:
             try:
@@ -7040,11 +7518,39 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
                 return ("absent", "")
             except OSError as exc:
                 return ("refuse", f"origin-unstatable: {exc}")
+            observed[path] = live
             if lease_mod.file_id_matches(recorded[path], live):
                 return ("unlink", "")
+            if (isinstance(digests.get(path), str)
+                    and lease_mod.timestamp_only_mismatch(recorded[path], live)):
+                # A delegation recall: settled by the content, which is read
+                # outside this lock (`_retire_consumed_batch`).
+                got = verified.get(path)
+                if got is None:
+                    return ("verify", "")
+                if "refused" in got:
+                    return ("refuse", str(got["reason"]))
+                if (got.get("from") == recorded[path]
+                        and lease_mod.file_id_matches(got.get("to"), live)):
+                    recorded[path] = dict(got["to"])
+                    repinned.append(dict(got))
+                    return ("unlink", "")
+                return ("verify", "")
             if live.get("ino") != recorded[path].get("ino"):
                 return ("superseded", "")
             return ("refuse", "origin-changed")
+
+        def to_verify(paths_: Collection[str]) -> _OriginsToVerify:
+            return _OriginsToVerify({
+                path: (dict(recorded[path]), dict(observed[path]),
+                       str(digests[path])) for path in paths_})
+
+        def file_repins() -> None:
+            # On the entry, in the same write as the decision it supports.
+            if repinned:
+                entry["origin_repins"] = [
+                    *(entry.get("origin_repins") or []), *repinned]
+                repinned.clear()
 
         paths = sorted(str(desc["path"]) for desc in sealed)
         # Another attempt's claim on these paths, read under this lock.
@@ -7059,14 +7565,26 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
                for path in paths):
             quiet()
             return None
+        pending: list[str] = []
         for path in paths:
             verdict, why = classify(path)
             if verdict == "refuse" and path not in claimed:
                 return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                                "reason": why, "path": path})
+            if verdict == "verify" and path not in claimed:
+                pending.append(path)
+        if pending:
+            # Not a refusal and nothing is reported: the caller reads them
+            # without this lock and comes back.
+            return to_verify(pending)
         if not retiring:
+            file_repins()
             entry["retiring"] = {"reason": reason, "consumers": consumers}
             entry.pop("retirement_report", None)
+            batches[batch_id] = entry
+            _write_commitments(commitments_path, {"batches": batches})
+        elif repinned:
+            file_repins()
             batches[batch_id] = entry
             _write_commitments(commitments_path, {"batches": batches})
         unlinked: list[str] = []
@@ -7095,6 +7613,14 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
             if verdict == "refuse":
                 return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                                "reason": why, "path": path})
+            if verdict == "verify":
+                # Its timestamps moved again since the check above.  The
+                # entry is ``retiring``, so the next pass resumes the delete.
+                return to_verify([path])
+            if repinned:
+                file_repins()
+                batches[batch_id] = entry
+                _write_commitments(commitments_path, {"batches": batches})
             if verdict == "unlink":
                 outcome, why = _unlink_if_committed(path, recorded[path], tag)
                 if outcome == "refuse":
@@ -9355,6 +9881,7 @@ __all__ = [
     "commit_origin_batch",
     "origin_batch_ref",
     "load_origin_batch",
+    "load_origin_batches",
     "origin_batch_manifest",
     "place_origin_batches",
     "verify_placed_origin_batches",

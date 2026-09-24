@@ -288,3 +288,91 @@ def test_a_null_digest_batch_stays_strict_and_reads_nothing(
 
     assert refused.get("refusal") == "restage-origin-changed", refused
     assert "materializations" not in world.entry("b1")
+
+
+# -- the bounds: one write per instance, one read per changed file ----------
+
+
+def _two_batches(tmp_path: Path):
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    instance = retirement._bind_owner(queue, template,
+                                      retirement.fx._hexkey("two-batches"))
+    refs, paths = [], []
+    for batch_id in ("b1", "b2"):
+        path = Path(template["output_prefix"]) / f"{batch_id}.bin"
+        payload = f"handoff {batch_id}".encode()
+        assert _prewrite(queue, instance, template, batch_id, [path],
+                         len(payload))["ok"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        committed = po.commit_origin_batch(
+            queue, instance, template,
+            [_descriptor(instance, template, path, payload)],
+            batch_id=batch_id, lifetime=retirement.CONSUMED)
+        assert committed["ok"], committed
+        refs.append(committed["ref"])
+        paths.append(path)
+    return queue, instance, refs, paths
+
+
+def test_the_re_pins_of_one_declaration_are_filed_in_one_write(
+        tmp_path: Path, monkeypatch) -> None:
+    queue, instance, refs, paths = _two_batches(tmp_path)
+    for path in paths:
+        _recall_ctime(path)
+    writes = []
+    original = po._write_commitments
+
+    def counted(path, record):
+        writes.append(Path(path))
+        return original(path, record)
+
+    monkeypatch.setattr(po, "_write_commitments", counted)
+    po.origin_batch_manifest(queue.root, refs)
+
+    assert writes == [po._commitments_path(queue.root, instance)], (
+        f"two re-pinned batches of one instance took {len(writes)} writes")
+    for batch_id in ("b1", "b2"):
+        assert len(retirement._entry(queue, instance, batch_id)["origin_repins"]) == 1
+
+
+def test_a_changed_origin_is_read_once_across_retirement_ticks(
+        tmp_path: Path, monkeypatch) -> None:
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    instance, path, committed = retirement._commit(queue, template, "read-once")
+    queue.finish(instance["owner_action_key"], status="failed")
+    _rewrite_same_size(path)
+    reads = []
+    original = reader_lease.content_identity
+
+    def counted(*args, **kwargs):
+        reads.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reader_lease, "content_identity", counted)
+    first = po.origin_retirement_tick(queue)
+    second = po.origin_retirement_tick(queue)
+
+    assert [(e["event"], e["reason"]) for e in first] == [
+        (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "origin-changed")], first
+    assert second == []
+    assert len(reads) == 1, f"a refused origin was read {len(reads)} times"
+    assert path.exists()
+
+
+def test_re_pins_that_do_not_chain_are_unknown_state(tmp_path: Path) -> None:
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    instance, path, committed = retirement._commit(queue, template, "tampered")
+    before, after = _recall_ctime(path)
+    po.origin_batch_manifest(queue.root, [committed["ref"]])
+    commitments_path = po._commitments_path(queue.root, instance)
+    body = json.loads(commitments_path.read_text())
+    body["batches"]["b1"]["origin_repins"][0]["from"] = dict(
+        before, ctime_ns=before["ctime_ns"] - 1)
+    commitments_path.write_text(json.dumps(body))
+
+    with pytest.raises(po.ProducedOutputError, match="unknown-retain"):
+        po.origin_batch_manifest(queue.root, [committed["ref"]])
