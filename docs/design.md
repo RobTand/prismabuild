@@ -4825,6 +4825,136 @@ once, never under the lock, and the lock is held 3.3 s, longest hold 2.3 ms
 (pbtest shard 7bcd96891b36 and action 1e0a9b624335). The fixture's forest
 lists in about 3 ms; the live one took 38 to 66 ms.
 
+### A long cycle keeps its tier records alive (#1072)
+
+Readers judge the tier loop by one field of its tier records,
+`announced_unix`. `PoolQueue._tier_loop_alive` and PrismaQuant's
+`landing_verdict` both call the loop dead once a record is older than
+`pool.OFFER_TIMEOUT_S` (120 s). The loop wrote each record once per cycle,
+near the cycle's start, so a cycle longer than 120 s read as a dead loop. The
+first cycle after the 2026-09-24 publish took 222.7 s: 129.7 s retiring 137
+staged batches of fourteen dead instances, and 87.9 s in the cold dead-owner
+census of 50 owners.
+
+The fix has three parts. None of them runs on a timer or a thread: a loop
+that stops making progress stops writing and reads dead within the bound, as
+before.
+
+**A checkpoint re-announces a record that would otherwise age too far.**
+`tier_loop.Liveness` checkpoints after every step of a cycle and on both
+sides of every unit of a long step. The terms, in seconds:
+
+* `L` = `pool.OFFER_TIMEOUT_S` (120): the age at which a reader calls the
+  loop dead.
+* `P` = `pool.HEARTBEAT_S` (30): the slowest reader's poll interval (PB's
+  `no_progress` rung; PrismaQuant polls every second). It is kept below `L`
+  as margin for a stretch longer than any measured one and for a reader's
+  clock that runs ahead of the tier host's.
+* `H` = `L - P` (90): the oldest a record may get.
+* `W`: the write latency, measured on every write from the stamp to the
+  rename that makes it visible; the largest of this cycle and the last.
+* `U`: the longest stretch between two checkpoints, measured the same way.
+
+At a checkpoint with a record `age` seconds old, the next checkpoint comes at
+most `U` later, and a write started then is visible `W` after that. So the
+record is re-announced when `age + U + W >= H`. The end of a cycle applies
+the same test to the sleep that follows it, with the interval `I` added. A
+stretch longer than every one measured, which is what a hang looks like, gets
+no write: the record passes `L` at most `L` after the last write, and a reader
+that polls every `P` sees a dead loop within `L + P`, the bound it had before.
+
+**A refresh republishes only what is still the loop's word.** A refresh
+writes the record the cycle minted, byte for byte, with a new
+`announced_unix` and a `liveness_refresh` note (`after`, the step it
+followed; `minted_unix`, the mint's own stamp; `refreshes`). No reader
+checks a tier record's key set, and only the liveness readers above read
+`announced_unix`. The rest of the record (mountpoint, epoch, retired flag,
+fill offer, ledger) is what the loop acts on until its next mint replaces it,
+and readers that age that content use `sampled_unix`, which a refresh leaves
+alone. A tier the current cycle did not announce is never written again from
+memory, and a refresh that fails is recorded in the cycle's
+`refresh_errors`, not retried.
+
+**A budget bounds the long steps, so the minted content stays young.** A
+refresh extends a record's life, not its content's: without a bound on the
+cycle, a 300 s cycle would keep a 300 s old fill offer looking fresh. The
+content minted at a cycle's start is replaced one cycle plus one sleep later,
+and that must stay within `H`:
+
+* `I`: the loop's sleep between cycles (`--interval-s`, 5 s on the fleet).
+* `T`: the cycle's time outside the budgeted units: the previous cycle's,
+  measured, or this cycle's so far if that is larger.
+* `b` = `H - W - I - T`: what the units may spend in one cycle.
+
+A unit of kind `k` starts only while `spent + est(k) <= b`, where `est(k)` is
+the longest unit of that kind in this cycle or the last. The first unit of
+each kind always starts, so every long step makes progress every cycle
+whatever `b` is. A refused unit waits for the next cycle, which starts that
+step from the first unit refused. The units are one consumer of the
+dead-owner census (`stage_release.DEAD_OWNER_UNIT`), one instance's ended
+prewrites, one staged batch's egress and one consumed batch's origin
+retirement (`produced_output.ORIGIN_RETIREMENT_UNITS`). At the live shape `b`
+is about 80 s. `LAST_CYCLE["liveness"]`, on each `tier-cycle` line, reports
+every term, the units run and deferred per kind, the refreshes, and the
+oldest age any record reached.
+
+**A dead producer's backlog writes its commitments once.** `retire_batch`
+reads the instance's `commitments.json` four times and writes it once, with
+an fsync, so K batches of one instance cost K whole-document writes; R13's
+document holds 436 batches in 9.2 MB. `origin_retirement_tick` now retires
+an instance's ready staged batches through
+`produced_output.retire_staged_batches`, which runs `retire_batch`'s three
+phases for all of them: select every batch under one ownership lock and one
+read, run each egress with no lock of this lane held, then revalidate each
+batch under one lock and one read and write the document once for every
+batch marked. The selection, revalidation and marking are the same helpers
+`retire_batch` uses (`_select_retirement_locked`,
+`_file_retirement_locked`). A crash cannot leave either of the two states
+that must never exist:
+
+* A batch recorded retired while its copy is still on the stage. A batch is
+  marked only for a complete, error-free receipt of its exact selection,
+  checked again under the lock, and the write is made after every receipt is
+  in hand. A batch whose egress was incomplete, deferred or raised, or whose
+  selection moved, is left out of the write; the others are still recorded.
+  An egress that raises stops the egresses after it, the receipts already in
+  hand are filed, and the error is raised again.
+* A copy gone with nothing that will ever record it. Egressed but unrecorded
+  is the state `retire_batch` already has for one batch between its egress
+  and its write. The next tick finds the batch again (its mover ended, no
+  tokens held), runs the egress again, which finds nothing to delete and
+  returns a complete receipt, and files it. Batching widens that window to
+  every batch egressed before the write; it opens no new state. The write
+  itself is one atomic rename, so it leaves every mark or none.
+
+The #929 token-holder sweep in `stage_release` still calls `retire_batch` one
+mover at a time; it was not part of the measured backlog.
+
+**The cold census is not persisted.** #1056's census memos are kept only in
+memory, so the first cycle after a restart lists every directory. A stamp
+from `stage_move._trusted_directory_stamp` proves a listing current only
+while nothing unseen could have reproduced the directory's version: the
+filesystem-type answer behind it is dropped on every mount or unmount
+(`POLLPRI` on `/proc/self/mountinfo`), because device numbers are reused. A
+restarted process saw none of the mount events during its absence, and in
+that gap a remount or a ZFS rollback can bring back an old device, inode,
+`mtime` and `ctime` together. So a persisted memo could not be revalidated
+without trusting state no check covered, and the memos stay in memory. The
+budget bounds the cold census instead: it spreads over as many cycles as it
+needs.
+
+**Measured.** `tests/test_a_live_tier_loop_never_reads_dead.py` replays the
+live first cycle on a fake clock (ten retirements and four censuses): before
+the change the oldest record reached 217.6 s against the 120 s bound. In
+`tools/fleet/bench_tier_cycle_r13.py` at the live widths (14 dead instances,
+140 unretired batches, 50 dead owners), through pbrun on sparky, the
+retirement tick fell from 11.65 s to 2.55 s (0.083 s to 0.018 s per batch),
+the commitments reads from 574 to 42, the writes from 140 to 14 and the
+fsyncs from 170 to 44. The live cost per batch on dl380g10 was about 0.95 s,
+so the absolute times differ by box; the call counts do not. The cold census
+(`sweep_orphans`, about 64 s in the bench) is unchanged and is now 96% of the
+cold cycle; the budget, not a speedup, keeps it inside `H`.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
@@ -6156,14 +6286,16 @@ the same origin paths. Three things were wrong:
 **Retiring a dead producer's staged batch closes its records, never its
 origin.** `origin_retirement_tick` reads each scope's unretired staged
 batches (`_unretired_staged_batches`). Once the attempt has ended (`dead`
-or `succeeded`), `_retire_dead_staged_batch` retires a batch whose active
+or `succeeded`), `_retire_dead_staged_batches` retires a batch whose active
 materialization's mover has ended (`done`, `failed` or `withdrawn`), holds
 no tier tokens (a holder is the #929 sweep's), and whose funding record is
-absent, `consumed` or `released`. It runs the producer's own
-`retire_batch` on the tier host: the ordinary egress on the batch's
-fragment root, which finds nothing to delete once the copy is gone and
-deletes a remaining copy only against its fragment's identity, and then
-`retired` is filed. The event is `output-dead-producer-batch-retired`, with
+absent, `consumed` or `released`. It runs the producer's own retirement on
+the tier host: the ordinary egress on the batch's fragment root, which
+finds nothing to delete once the copy is gone and deletes a remaining copy
+only against its fragment's identity, and then `retired` is filed. Since
+#1072 it runs `retire_staged_batches` once per instance rather than
+`retire_batch` once per batch; see "A long cycle keeps its tier records
+alive" for why and for the crash argument. The event is `output-dead-producer-batch-retired`, with
 `origin_kept: true`, the egress counts, and `superseded`: which of the
 batch's paths another attempt has since committed or prewritten. A mover
 still queued or running, or a token holder, waits quietly; anything else is
@@ -7937,8 +8069,9 @@ publish. A reader that does not know the sidecar never opens it.
 **The liveness judgment.** The record also carries `tier_loop_liveness_s`,
 the offer freshness bound the fleet already applies to every announcement
 (`pool.OFFER_TIMEOUT_S`, 120 s). The tier loop re-announces its tiers every
-cycle, so a tier record older than that bound means the loop that publishes
-and composes has stopped. That is the same judgment
+cycle, and within a long cycle whenever a record would otherwise age past
+`OFFER_TIMEOUT_S - HEARTBEAT_S` (#1072), so a tier record older than that
+bound means the loop that publishes and composes has stopped. That is the same judgment
 `PoolQueue._tier_loop_alive` makes. No new constant is involved.
 
 **What the reader does** (PrismaQuant `residency_shard_reader.landing_verdict`):

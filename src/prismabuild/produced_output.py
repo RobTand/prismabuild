@@ -2262,19 +2262,26 @@ def _write_commitments(path: Path, record: Mapping[str, object]) -> None:
     admission = record.get("admission")
     if admission is None and "admission" not in record:
         # Read-modify-write callers pass batches only; never drop a bound
-        # admission credit record on a batch update.
+        # admission credit record on a batch update.  A caller that holds
+        # the record it read under the same lock passes ``admission`` itself,
+        # which spares a second parse of the whole document (#1072).
         try:
             previous = _read_commitments(path)
             admission = previous.get("admission")
         except ProducedOutputError:
             admission = None
+    # One encode and one write.  ``json.dump`` runs the pure-Python encoder
+    # (the C encoder serves only ``dumps``, CPython's ``_one_shot`` path) and
+    # hands the stream one small chunk at a time; on R13's 9.2 MB document
+    # that was a large part of every retirement (#1072).  The text is the
+    # same either way.
+    text = json.dumps({"batches": dict(record["batches"]),
+                       "admission": admission}, sort_keys=True) + "\n"
     handle, temporary = tempfile.mkstemp(
         dir=str(path.parent), prefix=".commitments.")
     try:
         with os.fdopen(handle, "w") as stream:
-            json.dump({"batches": dict(record["batches"]),
-                       "admission": admission}, stream, sort_keys=True)
-            stream.write("\n")
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -2735,10 +2742,15 @@ def _mark_materialization_funded_locked(
 
 
 def _mark_materialization_retired_locked(
-        queue, checked_instance, batch_id: str, *, mover_key: str,
+        batches: dict, batch_id: str, *, mover_key: str,
         receipt: Mapping[str, object], canonical_ns: str,
-        staged_paths: list[str]) -> None:
-    """File one materialization's stage retirement under the caller's lock.
+        staged_paths: list[str]) -> bool:
+    """Mark one materialization's stage retirement in ``batches``.
+
+    ``batches`` is the commitments document the caller read under its
+    ownership lock, and the caller writes it back under the same lock: this
+    marks, it does not read or write (#1072).  Returns whether it changed
+    anything.
 
     Proof-checked exactly like the primary retirement: the egress receipt must
     be complete, error-free, and name THIS materialization's mover with the
@@ -2756,13 +2768,6 @@ def _mark_materialization_retired_locked(
     if (str(receipt.get("action_key") or "") != str(mover_key)
             or str(receipt.get("consumer_action_key") or "") != canonical_ns):
         raise ProducedOutputError("retire receipt names another materialization")
-    path = _commitments_path(queue.root, checked_instance)
-    try:
-        commitments = _read_commitments(path)
-    except ProducedOutputError as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    batches = commitments["batches"]
-    assert isinstance(batches, dict)
     entry = batches.get(batch_id)
     if not isinstance(entry, Mapping):
         raise ProducedOutputError("unknown batch_id for this instance")
@@ -2770,7 +2775,7 @@ def _mark_materialization_retired_locked(
     for index, item in enumerate(items):
         if str(item.get("mover_key")) == str(mover_key):
             if item.get("retired"):
-                return
+                return False
             item = dict(item)
             item["retired"] = True
             item["staged_paths"] = sorted(set(staged_paths))
@@ -2781,10 +2786,7 @@ def _mark_materialization_retired_locked(
     updated = dict(entry)
     updated["materializations"] = items
     batches[batch_id] = updated
-    try:
-        _write_commitments(path, {"batches": batches})
-    except ProducedOutputError as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -5213,9 +5215,15 @@ def _load_batch_record(queue_root: str | Path,
 
 def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
                                checked_template: Mapping[str, object],
-                               batch_id: str, receipt: Mapping[str, object],
-                               staged_paths: list[str]) -> None:
-    """File stage retirement under the caller's ownership lock.
+                               batches: dict, batch_id: str,
+                               receipt: Mapping[str, object],
+                               staged_paths: list[str]) -> bool:
+    """Mark stage retirement in ``batches``, under the caller's ownership lock.
+
+    ``batches`` is the commitments document the caller read under that lock,
+    and the caller writes it back under the same lock: this marks, it does
+    not read or write the document (#1072).  Returns whether it changed
+    anything.
 
     Proof-checked, never a bare flag: the receipt must be a complete
     egress for this exact batch (mover + namespace match, no errors),
@@ -5223,18 +5231,11 @@ def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
     egress vouched so later census attribution can name them.
     """
 
-    path = _commitments_path(queue.root, checked_instance)
-    try:
-        commitments = _read_commitments(path)
-    except ProducedOutputError as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    batches = commitments["batches"]
-    assert isinstance(batches, dict)
     entry = batches.get(batch_id)
     if not isinstance(entry, Mapping):
         raise ProducedOutputError("unknown batch_id for this instance")
     if entry.get("retired"):
-        return
+        return False
     # Owner/attempt/manifest proof comes from the filed immutable batch
     # record through the single loader: exact schema/id/binding plus
     # re-validated entries whose canonical digest matches the seal.
@@ -5257,7 +5258,7 @@ def _mark_batch_retired_locked(queue, checked_instance: Mapping[str, object],
     entry["retired"] = True
     entry["staged_paths"] = sorted(set(staged_paths))
     batches[batch_id] = entry
-    _write_commitments(path, {"batches": batches})
+    return True
 
 
 #: The deferral `retire_batch` reports while the retirement's OWN egress action
@@ -5576,6 +5577,182 @@ def _record_staged_paths(queue, checked_instance: Mapping[str, object],
                        {"batches": batches})
 
 
+def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
+                              checked_template: Mapping[str, object],
+                              batches: Mapping[str, object],
+                              batch_id: str) -> dict[str, object]:
+    """Phase one of a retirement: validate and select, under the ownership lock.
+
+    ``batches`` is the commitments document the caller read under the
+    instance's output-prefix ownership lock, which it still holds.  Returns
+    ``{"answer": ...}`` when the retirement ends here (a refusal, an
+    origin-only batch, a duplicate), else ``{"selection": ...}``: the copy to
+    retire and everything phase three revalidates against.
+
+    Every check comes BEFORE any destructive call: the immutable record
+    validates (schema/binding/entries/manifest), and the mutable
+    commitments entry must agree with it on mover, tier, and the
+    canonically derived namespace. A changed mover/tier in commitments
+    never selects the egress target. Bad or foreign metadata refuses before
+    fragments are read, files deleted, or tier ownership released.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        return {"answer": {"ok": False, "refusal": "unknown-batch"}}
+    try:
+        filed, _sealed = _load_batch_record(
+            queue.root, checked_instance, checked_template,
+            entry, batch_id)
+    except ProducedOutputError as exc:
+        return {"answer": {"ok": False, "refusal": str(exc)}}
+    if entry.get("origin_only") is True and filed.get("origin_only") is True:
+        # Nothing was staged, so there is no copy to evict and no window
+        # to return (#912). The origin is `reclaim_origin`'s.
+        return {"answer": {"ok": True, "batch_id": batch_id,
+                           "origin_only": True, "staged": False}}
+    mover = str(filed.get("mover_key") or "")
+    tier = str(filed.get("tier") or "")
+    try:
+        canonical_ns = batch_namespace(
+            checked_instance, batch_id,
+            str(filed.get("manifest_digest") or ""))
+    except ProducedOutputError as exc:
+        return {"answer": {"ok": False, "refusal": f"unknown-retain: {exc}"}}
+    if (len(mover) != 64
+            or str(entry.get("mover_key") or "") != mover
+            or str(entry.get("tier") or "") != tier
+            or tier not in checked_template["permitted_tiers"]
+            or str(entry.get("batch_namespace") or "") != canonical_ns
+            or str(filed.get("batch_namespace") or "") != canonical_ns):
+        return {"answer": {"ok": False,
+                           "refusal": "unknown-retain: batch-target-mismatch"}}
+    # WHICH copy is being retired: the batch's first materialization, or
+    # a restaged successor that now owns the material under the same
+    # canonical namespace. `entry["retired"]` answers only for the first,
+    # so the active materialization is what selects the egress target --
+    # otherwise a restaged batch reports a duplicate retirement and
+    # orphans a live stage copy plus its window credit.
+    try:
+        active = _active_materialization(entry)
+    except ProducedOutputError as exc:
+        return {"answer": {"ok": False, "refusal": str(exc)}}
+    if active.get("retired"):
+        return {"answer": {"ok": True, "batch_id": batch_id,
+                           "duplicate": True}}
+    target_mover = str(active.get("mover_key") or "")
+    if len(target_mover) != 64 or str(active.get("tier") or "") != tier:
+        return {"answer": {"ok": False,
+                           "refusal": "unknown-retain: batch-target-mismatch"}}
+    consumer = canonical_ns
+    # Capture the staged paths the egress is about to vouch while the
+    # fragments still exist; after the delete only this record names
+    # them for later live-path attribution. A fragment read that
+    # fails is unknown attribution, never an empty set: retirement
+    # refuses rather than recording known-empty paths.
+    staged_paths: list[str] = []
+    try:
+        from prismabuild import residency_map as map_mod
+
+        out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+        fragments = map_mod.read_fragments(out_base, consumer)
+        if fragments:
+            composed = map_mod.compose(fragments)
+            entries = composed.get("entries")
+            if not isinstance(entries, Mapping):
+                return {"answer": {"ok": False,
+                                   "refusal": "unknown-retain: fragment-entries"}}
+            for record in entries.values():
+                if isinstance(record, Mapping) and record.get("stage_path"):
+                    staged_paths.append(os.path.normpath(
+                        str(record["stage_path"])))
+    except ProducedOutputError as exc:
+        return {"answer": {"ok": False, "refusal": f"unknown-retain: {exc}"}}
+    except (OSError, ValueError) as exc:
+        return {"answer": {"ok": False, "refusal": f"unknown-retain: {exc}"}}
+    # Paths an earlier call of this retirement filed for this same copy:
+    # a tier-host egress drops the fragment between two calls, so the
+    # call that files the retirement may find nothing left to read.
+    recorded = active.get("staged_paths")
+    recorded_paths = {os.path.normpath(path) for path in recorded
+                      if isinstance(path, str) and path} if isinstance(
+                          recorded, list) else set()
+    return {"selection": {
+        "entry": entry, "tier": tier, "canonical_ns": canonical_ns,
+        "target_mover": target_mover, "consumer": consumer,
+        "manifest": str(filed.get("manifest_digest") or ""),
+        "source": str(active.get("source") or ""),
+        "generation": int(active.get("generation") or 0),
+        "recorded_paths": recorded_paths,
+        "staged_paths": sorted(set(staged_paths) | recorded_paths)}}
+
+
+def _file_retirement_locked(queue, checked_instance: Mapping[str, object],
+                            checked_template: Mapping[str, object],
+                            batches: dict, batch_id: str,
+                            selection: Mapping[str, object],
+                            receipt: Mapping[str, object]
+                            ) -> dict[str, object]:
+    """Phase three of a retirement: revalidate and mark, under the ownership lock.
+
+    ``batches`` is the commitments document the caller read again, under the
+    lock it took back after the egress; the caller writes it once for every
+    batch it marks.  The EXACT selection is revalidated before anything is
+    marked: the record still loads, the batch still resolves to the same
+    manifest, and the active materialization is still the generation whose
+    copy this receipt just deleted.  A selection that moved underneath the
+    egress is unknown state and retains.  The answer carries ``marked``:
+    whether ``batches`` changed.
+    """
+
+    entry = batches.get(batch_id)
+    if not isinstance(entry, Mapping):
+        return {"ok": False, "refusal": "unknown-retain: unknown-batch"}
+    try:
+        filed, _sealed = _load_batch_record(
+            queue.root, checked_instance, checked_template, entry,
+            batch_id)
+        active = _active_materialization(entry)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    target_mover = str(selection["target_mover"])
+    generation = int(selection["generation"])  # type: ignore[arg-type]
+    if (str(filed.get("manifest_digest") or "") != selection["manifest"]
+            or str(active.get("mover_key") or "") != target_mover
+            or str(active.get("source") or "") != selection["source"]
+            or int(active.get("generation") or 0) != generation):
+        return {"ok": False,
+                "refusal": "unknown-retain: materialization-changed"}
+    if active.get("retired"):
+        return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                "receipt": receipt, "mover_key": target_mover,
+                "generation": generation, "marked": False}
+    staged_paths = list(selection["staged_paths"])  # type: ignore[arg-type]
+    try:
+        if selection["source"] == "materialization":
+            marked = _mark_materialization_retired_locked(
+                batches, batch_id, mover_key=target_mover, receipt=receipt,
+                canonical_ns=str(selection["canonical_ns"]),
+                staged_paths=staged_paths)
+        else:
+            marked = _mark_batch_retired_locked(
+                queue, checked_instance, checked_template, batches, batch_id,
+                receipt, staged_paths)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return {"ok": True, "batch_id": batch_id, "receipt": receipt,
+            "mover_key": target_mover, "generation": generation,
+            "staged_paths": sorted(set(staged_paths)), "marked": marked}
+
+
+def _answer(result: Mapping[str, object]) -> dict[str, object]:
+    """A phase-three answer as `retire_batch` returns it."""
+
+    return {key: value for key, value in result.items() if key != "marked"}
+
+
 def retire_batch(queue, instance: Mapping[str, object],
                  template: Mapping[str, object], batch_id: str, *,
                  stage_root: str, residency_root: str | Path,
@@ -5602,16 +5779,20 @@ def retire_batch(queue, instance: Mapping[str, object],
     `ensure_batch_materialized` restage put on the tier.
 
     Three phases, and the ownership lock is held for only two of them:
-    select and capture under the output-prefix ownership lock; run the
-    existing egress with NO lock of this lane held; reacquire, revalidate
-    the exact same manifest/mover/generation, and file `retired` for a
-    complete error-free receipt naming that mover and namespace. The egress
-    takes the mover transition lock and then the stage root's ownership lock,
-    so running it underneath this instance's ownership lock would nest two
-    locks of one family with a blocking transition wait between them; nothing
-    needs that, because the materialization stays unretired for the whole
-    window and therefore keeps refusing both a second writer over its origins
-    and any successor materialization.
+    select and capture under the output-prefix ownership lock
+    (`_select_retirement_locked`); run the existing egress with NO lock of
+    this lane held; reacquire, revalidate the exact same
+    manifest/mover/generation, and file `retired` for a complete error-free
+    receipt naming that mover and namespace (`_file_retirement_locked`). The
+    egress takes the mover transition lock and then the stage root's
+    ownership lock, so running it underneath this instance's ownership lock
+    would nest two locks of one family with a blocking transition wait
+    between them; nothing needs that, because the materialization stays
+    unretired for the whole window and therefore keeps refusing both a
+    second writer over its origins and any successor materialization.
+    `retire_staged_batches` runs the same three phases for many batches of
+    one instance, with one read and one write of the document for all of
+    them.
 
     Durable-origin quota is NOT freed here -- origin files still exist; see
     `reclaim_origin`. Charge (durable) and window (tier) accounting
@@ -5620,7 +5801,6 @@ def retire_batch(queue, instance: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
-    from prismabuild import pool as pool_mod
 
     try:
         checked_template, checked_instance = _require_bound_contract(
@@ -5636,95 +5816,18 @@ def retire_batch(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         batches = commitments["batches"]
         assert isinstance(batches, dict)
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
-            return {"ok": False, "refusal": "unknown-batch"}
-        # Provenance BEFORE any destructive call: the immutable record
-        # validates (schema/binding/entries/manifest), and the mutable
-        # commitments entry must agree with it on mover, tier, and the
-        # canonically derived namespace. A changed mover/tier in
-        # commitments never selects the egress target. Bad or foreign
-        # metadata refuses before fragments are read, files deleted, or
-        # tier ownership released.
-        try:
-            filed, _sealed = _load_batch_record(
-                queue.root, checked_instance, checked_template,
-                entry, batch_id)
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": str(exc)}
-        if entry.get("origin_only") is True and filed.get("origin_only") is True:
-            # Nothing was staged, so there is no copy to evict and no window
-            # to return (#912). The origin is `reclaim_origin`'s.
-            return {"ok": True, "batch_id": batch_id, "origin_only": True,
-                    "staged": False}
-        mover = str(filed.get("mover_key") or "")
-        tier = str(filed.get("tier") or "")
-        try:
-            canonical_ns = batch_namespace(
-                checked_instance, batch_id,
-                str(filed.get("manifest_digest") or ""))
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        if (len(mover) != 64
-                or str(entry.get("mover_key") or "") != mover
-                or str(entry.get("tier") or "") != tier
-                or tier not in checked_template["permitted_tiers"]
-                or str(entry.get("batch_namespace") or "") != canonical_ns
-                or str(filed.get("batch_namespace") or "") != canonical_ns):
-            return {"ok": False, "refusal": "unknown-retain: batch-target-mismatch"}
-        # WHICH copy is being retired: the batch's first materialization, or
-        # a restaged successor that now owns the material under the same
-        # canonical namespace. `entry["retired"]` answers only for the first,
-        # so the active materialization is what selects the egress target --
-        # otherwise a restaged batch reports a duplicate retirement and
-        # orphans a live stage copy plus its window credit.
-        try:
-            active = _active_materialization(entry)
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": str(exc)}
-        if active.get("retired"):
-            return {"ok": True, "batch_id": batch_id, "duplicate": True}
-        target_mover = str(active.get("mover_key") or "")
-        if len(target_mover) != 64 or str(active.get("tier") or "") != tier:
-            return {"ok": False,
-                    "refusal": "unknown-retain: batch-target-mismatch"}
-        consumer = canonical_ns
-        # Capture the staged paths the egress is about to vouch while the
-        # fragments still exist; after the delete only this record names
-        # them for later live-path attribution. A fragment read that
-        # fails is unknown attribution, never an empty set: retirement
-        # refuses rather than recording known-empty paths.
-        staged_paths: list[str] = []
-        try:
-            from prismabuild import residency_map as map_mod
-
-            out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
-            fragments = map_mod.read_fragments(out_base, consumer)
-            if fragments:
-                composed = map_mod.compose(fragments)
-                entries = composed.get("entries")
-                if not isinstance(entries, Mapping):
-                    return {"ok": False,
-                            "refusal": "unknown-retain: fragment-entries"}
-                for record in entries.values():
-                    if isinstance(record, Mapping) and record.get("stage_path"):
-                        staged_paths.append(os.path.normpath(
-                            str(record["stage_path"])))
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        except (OSError, ValueError) as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        selected_manifest = str(filed.get("manifest_digest") or "")
-        selected_source = str(active.get("source") or "")
-        selected_generation = int(active.get("generation") or 0)
-        # Paths an earlier call of this retirement filed for this same copy:
-        # a tier-host egress drops the fragment between two calls, so the
-        # call that files the retirement may find nothing left to read.
-        recorded = active.get("staged_paths")
-        recorded_paths = {os.path.normpath(path) for path in recorded
-                          if isinstance(path, str) and path} if isinstance(
-                              recorded, list) else set()
-        staged_paths = sorted(set(staged_paths) | recorded_paths)
+        chosen = _select_retirement_locked(
+            queue, checked_instance, checked_template, batches, batch_id)
+        if "answer" in chosen:
+            return dict(chosen["answer"])  # type: ignore[arg-type]
+        selection = chosen["selection"]
+        assert isinstance(selection, dict)
+        entry = selection["entry"]
+        tier = str(selection["tier"])
+        target_mover = str(selection["target_mover"])
+        consumer = str(selection["consumer"])
+        staged_paths = list(selection["staged_paths"])
+        recorded_paths = set(selection["recorded_paths"])
         try:
             tier_record = _announced_tier_record(queue, tier)
         except Exception as exc:
@@ -5750,7 +5853,7 @@ def retire_batch(queue, instance: Mapping[str, object],
             try:
                 _record_staged_paths(
                     queue, checked_instance, batches, batch_id, entry,
-                    selected_source, target_mover, staged_paths)
+                    str(selection["source"]), target_mover, staged_paths)
             except (ProducedOutputError, OSError) as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     # --- The ownership lock is RELEASED here, before the egress runs. ---
@@ -5784,7 +5887,7 @@ def retire_batch(queue, instance: Mapping[str, object],
                         else str(Path(queue.root).parent / "cas"))
         routed = _tier_host_egress(
             queue, record=tier_record, producer=producer, cas_root=cas_root,
-            batch_id=batch_id, generation=selected_generation,
+            batch_id=batch_id, generation=int(selection["generation"]),
             target_mover=target_mover, consumer=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
         if "answer" in routed:
@@ -5794,54 +5897,204 @@ def retire_batch(queue, instance: Mapping[str, object],
         receipt = routed["receipt"]
         assert isinstance(receipt, dict)
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        # Revalidate the EXACT selection before filing anything: the record
-        # still loads, the batch still resolves to the same manifest, and the
-        # active materialization is still the generation whose copy this
-        # receipt just deleted. A selection that moved underneath the egress
-        # is unknown state and retains.
+        path = _commitments_path(queue.root, checked_instance)
         try:
-            commitments = _read_commitments(
-                _commitments_path(queue.root, checked_instance))
+            commitments = _read_commitments(path)
         except ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         batches = commitments["batches"]
         assert isinstance(batches, dict)
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
-            return {"ok": False, "refusal": "unknown-retain: unknown-batch"}
+        result = _file_retirement_locked(
+            queue, checked_instance, checked_template, batches, batch_id,
+            selection, receipt)
+        if result.get("marked"):
+            try:
+                _write_commitments(path, {
+                    "batches": batches,
+                    "admission": commitments.get("admission")})
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+    return _answer(result)
+
+
+#: The unit `retire_staged_batches` asks a budget for: one batch's egress.
+BATCH_RETIREMENT_UNIT = "staged-batch-retirement"
+
+
+def retire_staged_batches(queue, instance: Mapping[str, object],
+                          template: Mapping[str, object],
+                          batch_ids: Sequence[str], *, stage_root: str,
+                          residency_root: str | Path,
+                          budget=None) -> dict[str, dict[str, object]]:
+    """Retire many staged batches of one instance, with one commitments write (#1072).
+
+    `retire_batch`, run for each batch, reads the instance's commitments
+    document four times and writes it once, fsync included.  R13's document
+    holds 436 batches in 9.2 MB, so a backlog of K batches of one instance
+    cost K whole-document writes: the live tier loop's first cycle after
+    the 09-24 publish spent 129.7 s retiring 137 batches of fourteen dead
+    instances.  Here the three phases of `retire_batch` run for every batch
+    at once: phase one selects all of them under one ownership lock and one
+    read, phase two runs each egress with no lock of this lane held, and
+    phase three revalidates each batch under one lock and one read and
+    writes the document once for every batch it marked.
+
+    Only the in-process egress: the caller is the tier loop, on the tier
+    host.  A batch whose egress would take the tier-host route is answered
+    ``not-on-the-tier-host`` and nothing of it is touched.
+
+    **What a crash can leave.**  The two states that must never exist are a
+    batch recorded retired while its copy is still on the stage, and a copy
+    gone with nothing that will ever record it.
+
+    * Recorded but not retired cannot happen.  Phase three marks a batch
+      only for a complete, error-free egress receipt of this batch's exact
+      selection (the same `_file_retirement_locked` checks as
+      `retire_batch`), and the one write that records it is made after
+      every such receipt is in hand.  A batch whose egress was incomplete,
+      was deferred, or whose selection moved is left out of the write, not
+      the transaction: the others are still recorded.
+    * Retired but unrecorded is the state `retire_batch` already has for
+      one batch, between its egress and its write, and it recovers: the
+      unretired materialization keeps refusing a second writer and any
+      successor, and the next tick finds the batch again (its mover ended,
+      no tokens held) and runs the egress again, which finds nothing to
+      delete and returns a complete receipt, and files it.  Batching widens
+      that window to every batch egressed before the one write; it opens no
+      new state.
+    * The write itself is one atomic rename of the whole document, so a
+      crash during it leaves either every mark or none.
+
+    ``budget``, when given, is asked before each egress whether another
+    fits this cycle (`budget.start`) and told when it ends (`budget.done`),
+    which is where the tier loop re-announces its tiers between units.  A
+    batch the budget defers is answered ``deferred`` and waits, untouched,
+    for a later cycle.
+
+    Returns ``{batch_id: answer}``, each answer shaped as `retire_batch`'s.
+    """
+
+    try:
+        checked_template, checked_instance = _require_bound_contract(
+            template, instance)
+    except ProducedOutputError as exc:
+        refusal = {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        return {batch_id: dict(refusal) for batch_id in batch_ids}
+    for batch_id in batch_ids:
+        _name(batch_id, where="batch_id")
+    answers: dict[str, dict[str, object]] = {}
+    selections: dict[str, dict[str, object]] = {}
+    lock_name = str(checked_instance["output_prefix"])
+    path = _commitments_path(queue.root, checked_instance)
+    with queue.stage_ownership_lock(lock_name):
         try:
-            filed, _sealed = _load_batch_record(
-                queue.root, checked_instance, checked_template, entry,
-                batch_id)
-            active = _active_materialization(entry)
+            commitments = _read_commitments(path)
         except ProducedOutputError as exc:
-            return {"ok": False, "refusal": str(exc)}
-        if (str(filed.get("manifest_digest") or "") != selected_manifest
-                or str(active.get("mover_key") or "") != target_mover
-                or str(active.get("source") or "") != selected_source
-                or int(active.get("generation") or 0) != selected_generation):
-            return {"ok": False,
-                    "refusal": "unknown-retain: materialization-changed"}
-        if active.get("retired"):
-            return {"ok": True, "batch_id": batch_id, "duplicate": True,
-                    "receipt": receipt, "mover_key": target_mover,
-                    "generation": selected_generation}
+            refusal = {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            return {batch_id: dict(refusal) for batch_id in batch_ids}
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        tier_records: dict[str, object] = {}
+        for batch_id in batch_ids:
+            chosen = _select_retirement_locked(
+                queue, checked_instance, checked_template, batches, batch_id)
+            if "answer" in chosen:
+                answers[batch_id] = dict(chosen["answer"])  # type: ignore[arg-type]
+                continue
+            selection = chosen["selection"]
+            assert isinstance(selection, dict)
+            tier = str(selection["tier"])
+            if tier not in tier_records:
+                try:
+                    tier_records[tier] = _announced_tier_record(queue, tier)
+                except Exception as exc:
+                    tier_records[tier] = exc
+            tier_record = tier_records[tier]
+            if isinstance(tier_record, Exception):
+                answers[batch_id] = {"ok": False,
+                                     "refusal": f"unknown-retain: {tier_record}"}
+                continue
+            if not _egress_runs_in_process(tier_record):
+                answers[batch_id] = {"ok": False,
+                                     "refusal": "not-on-the-tier-host"}
+                continue
+            selections[batch_id] = selection
+    if not selections:
+        return answers
+    try:
+        import stage_release  # type: ignore[import-not-found]
+    except ImportError:
+        for batch_id in selections:
+            answers[batch_id] = {"ok": False,
+                                 "refusal": "stage-release-unimportable"}
+        return answers
+    # --- No lock of this lane is held while the egresses run; see
+    # `retire_batch` for why nothing needs it.
+    receipts: dict[str, dict[str, object]] = {}
+    # An egress that raises ends the egresses, not the retirement: the
+    # receipts already in hand are still filed below, as `retire_batch` would
+    # have filed each of them before the next one ran, and the exception is
+    # raised once they are.  An interrupt is not caught: it leaves those
+    # batches egressed and unrecorded, the recoverable state described above.
+    raised: Exception | None = None
+    for batch_id, selection in selections.items():
+        if raised is not None or (budget is not None and not budget.start(
+                BATCH_RETIREMENT_UNIT, batch_id)):
+            answers[batch_id] = {"ok": False, "refusal": "deferred",
+                                 "deferred": True}
+            continue
         try:
-            if selected_source == "materialization":
-                _mark_materialization_retired_locked(
-                    queue, checked_instance, batch_id,
-                    mover_key=target_mover, receipt=receipt,
-                    canonical_ns=canonical_ns, staged_paths=staged_paths)
-            else:
-                _mark_batch_retired_locked(
-                    queue, checked_instance, checked_template, batch_id,
-                    receipt, staged_paths)
+            receipt = stage_release.evict(
+                queue, str(selection["target_mover"]),
+                consumer_action_key=str(selection["consumer"]),
+                stage_root=str(stage_root), residency_root=str(residency_root))
+        except Exception as exc:  # noqa: BLE001 -- re-raised below
+            raised = exc
+            answers[batch_id] = {"ok": False, "refusal": "egress-raised"}
+            continue
+        finally:
+            if budget is not None:
+                budget.done(BATCH_RETIREMENT_UNIT)
+        if not receipt.get("complete"):
+            answers[batch_id] = {"ok": False, "refusal": "egress-incomplete",
+                                 "receipt": receipt}
+            continue
+        receipts[batch_id] = receipt
+    if not receipts:
+        if raised is not None:
+            raise raised
+        return answers
+    with queue.stage_ownership_lock(lock_name):
+        try:
+            commitments = _read_commitments(path)
         except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-    return {"ok": True, "batch_id": batch_id, "receipt": receipt,
-            "mover_key": target_mover,
-            "generation": selected_generation,
-            "staged_paths": sorted(set(staged_paths))}
+            for batch_id in receipts:
+                answers[batch_id] = {"ok": False,
+                                     "refusal": f"unknown-retain: {exc}"}
+            if raised is not None:
+                raise raised
+            return answers
+        batches = commitments["batches"]
+        assert isinstance(batches, dict)
+        results = {batch_id: _file_retirement_locked(
+            queue, checked_instance, checked_template, batches, batch_id,
+            selections[batch_id], receipt)
+            for batch_id, receipt in receipts.items()}
+        if any(result.get("marked") for result in results.values()):
+            try:
+                _write_commitments(path, {
+                    "batches": batches,
+                    "admission": commitments.get("admission")})
+            except ProducedOutputError as exc:
+                for batch_id in receipts:
+                    answers[batch_id] = {"ok": False,
+                                         "refusal": f"unknown-retain: {exc}"}
+                results = {}
+    for batch_id, result in results.items():
+        answers[batch_id] = _answer(result)
+    if raised is not None:
+        raise raised
+    return answers
 
 
 def reclaim_origin(queue, instance: Mapping[str, object],
@@ -7613,127 +7866,129 @@ def _unretired_staged_batches(batches: Mapping[str, object]) -> list[str]:
     return found
 
 
-def _retire_dead_staged_batch(queue, instance: Mapping[str, object],
-                              template: Mapping[str, object], batch_id: str,
-                              batches: Mapping[str, object], *,
-                              producer_state: str, reads: _TickReads
-                              ) -> dict[str, object] | None:
-    """File the stage retirement of a dead producer's batch (#1053).
+class _DeadStagedReports:
+    """Once-per-change reports for one dead producer's staged batch (#1053)."""
 
-    R13 left ten staged batches that read ``retired: false`` for ever: its
-    movers had finished and held no tier tokens, their funding was
-    ``consumed``, and their stage copies were gone, but the producer died
-    before its own `retire_batch` filed. The #929 sweep reaches only a
-    mover that still holds tokens, so nothing retired them, and the
-    unretired batches kept their paths from every later writer.
+    def __init__(self, instance: Mapping[str, object], batch_id: str) -> None:
+        self.coordinates = _batch_report_key(instance, batch_id)
+        self.memo = f"{self.coordinates}.stage"
 
-    The caller has read that the producer attempt ended (``dead`` or
-    ``succeeded``). A batch is retired here when its active
-    materialization's mover has ended (``done``, ``failed`` or
-    ``withdrawn``), holds no tier tokens (a holder is the #929 sweep's), and
-    its funding record is absent, ``consumed`` or ``released``. Then the
-    producer's own `retire_batch` runs, on the tier host only: it validates
-    the batch record, runs the ordinary egress on the batch's fragment root
-    (which finds nothing to delete once the copy is gone, and deletes a
-    copy that remains only against its fragment's identity), and files
-    ``retired``.
+    def refused(self, reason: str, **detail: object) -> dict[str, object] | None:
+        event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                 "batch": self.coordinates, "reason": reason, **detail}
+        signature = hashlib.sha256(json.dumps(
+            event, sort_keys=True, default=str).encode()).hexdigest()
+        if _UNFILED_REPORTS.get(self.memo) == signature:
+            return None
+        _UNFILED_REPORTS[self.memo] = signature
+        return event
 
-    Retirement closes the stage records. It never reclaims, and never
-    touches, the batch's origin files: a relaunch reads them (R13's reads
-    392 of its predecessor's 436 batches), and their durable charge stays
-    until a successor supersedes them or an operator reclaims them.
+    def quiet(self) -> None:
+        _UNFILED_REPORTS.pop(self.memo, None)
+        return None
 
-    A mover still queued or running, or a token holder, waits quietly.
-    Anything else that stops the retirement is reported once per change as
-    ``output-origin-retirement-refused``. Returns the event to log, or None.
+
+def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
+                             batch_id: str, batches: Mapping[str, object], *,
+                             reads: _TickReads) -> dict[str, object]:
+    """Whether a dead producer's staged batch is the tick's to retire (#1053).
+
+    Returns ``{"event": ...}`` (the report, or None) when it is not, else
+    ``{"ready": ...}``: the mover, the tier and the tier's stage root.  The
+    conditions are `_retire_dead_staged_batches`'s.
     """
 
     from prismabuild import pool as pool_mod
 
-    coordinates = _batch_report_key(instance, batch_id)
-    memo = f"{coordinates}.stage"
-
-    def refused(reason: str, **detail: object) -> dict[str, object] | None:
-        event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT, "batch": coordinates,
-                 "reason": reason, **detail}
-        signature = hashlib.sha256(json.dumps(
-            event, sort_keys=True, default=str).encode()).hexdigest()
-        if _UNFILED_REPORTS.get(memo) == signature:
-            return None
-        _UNFILED_REPORTS[memo] = signature
-        return event
-
-    def quiet() -> None:
-        _UNFILED_REPORTS.pop(memo, None)
-        return None
-
+    report = _DeadStagedReports(instance, batch_id)
     entry = batches.get(batch_id)
     if not isinstance(entry, Mapping):
-        return quiet()
+        return {"event": report.quiet()}
     try:
         active = _active_materialization(entry)
     except ProducedOutputError as exc:
-        return refused(f"unknown-retain: {exc}")
+        return {"event": report.refused(f"unknown-retain: {exc}")}
     if active.get("retired"):
-        return quiet()
+        return {"event": report.quiet()}
     mover = str(active.get("mover_key") or "")
     tier = str(active.get("tier") or entry.get("tier") or "")
     if len(mover) != 64 or not tier:
-        return refused("unknown-retain: batch-target-mismatch")
+        return {"event": report.refused("unknown-retain: batch-target-mismatch")}
     mover_state, _row = reads.generation(mover)
     if mover_state in (pool_mod.READY, pool_mod.CLAIMED, "moving"):
-        return quiet()
+        return {"event": report.quiet()}
     if mover_state not in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
-        return refused(f"unknown-retain: its mover {mover[:12]} is {mover_state}",
-                       mover_key=mover)
+        return {"event": report.refused(
+            f"unknown-retain: its mover {mover[:12]} is {mover_state}",
+            mover_key=mover)}
     try:
         held = queue.tier_ledger(tier).holder_tokens(mover)
     except Exception as exc:
-        return refused(f"unknown-retain: tier ledger: {exc}", mover_key=mover)
+        return {"event": report.refused(f"unknown-retain: tier ledger: {exc}",
+                                        mover_key=mover)}
     if held:
-        return quiet()
+        return {"event": report.quiet()}
     try:
         record, file_state = queue.output_funding_file_state(mover, tier)
     except Exception as exc:
-        return refused(f"unknown-retain: funding: {exc}", mover_key=mover)
+        return {"event": report.refused(f"unknown-retain: funding: {exc}",
+                                        mover_key=mover)}
     if file_state not in ("absent", "ok"):
-        return refused(f"unknown-retain: funding record is {file_state}",
-                       mover_key=mover)
+        return {"event": report.refused(
+            f"unknown-retain: funding record is {file_state}", mover_key=mover)}
     if file_state == "ok" and str((record or {}).get("state")) not in (
             "consumed", "released"):
-        return refused(f"funding-{(record or {}).get('state')}", mover_key=mover)
+        return {"event": report.refused(f"funding-{(record or {}).get('state')}",
+                                        mover_key=mover)}
     try:
         tier_record = _announced_tier_record(queue, tier)
     except Exception as exc:
-        return refused(f"unknown-retain: tier record: {exc}", mover_key=mover)
+        return {"event": report.refused(f"unknown-retain: tier record: {exc}",
+                                        mover_key=mover)}
     if tier_record is None or not tier_record.get("mountpoint"):
-        return refused(f"tier-not-announced: {tier}", mover_key=mover)
+        return {"event": report.refused(f"tier-not-announced: {tier}",
+                                        mover_key=mover)}
     if not _egress_runs_in_process(tier_record):
         # Elsewhere `retire_batch` would publish an egress action; the tick
         # publishes nothing.  The tier loop runs on the tier host.
-        return refused("not-on-the-tier-host", mover_key=mover,
-                       tier_host=str(tier_record.get("host") or ""))
+        return {"event": report.refused(
+            "not-on-the-tier-host", mover_key=mover,
+            tier_host=str(tier_record.get("host") or ""))}
     try:
         import stage_release  # type: ignore[import-not-found]  # noqa: F401
     except ImportError:
-        return refused("stage-release-unimportable", mover_key=mover)
-    result = retire_batch(
-        queue, instance, template, batch_id,
-        stage_root=str(tier_record["mountpoint"]),
-        residency_root=output_fragment_root(
-            Path(queue.root) / pool_mod.RESIDENCY))
+        return {"event": report.refused("stage-release-unimportable",
+                                        mover_key=mover)}
+    return {"ready": {"mover": mover, "tier": tier,
+                      "stage_root": str(tier_record["mountpoint"])}}
+
+
+def _dead_staged_batch_event(queue, instance: Mapping[str, object],
+                             template: Mapping[str, object], batch_id: str,
+                             batches: Mapping[str, object],
+                             result: Mapping[str, object], *, mover: str,
+                             tier: str, producer_state: str,
+                             reads: _TickReads) -> dict[str, object] | None:
+    """The event for one dead producer's batch retirement, from its answer."""
+
+    report = _DeadStagedReports(instance, batch_id)
+    if result.get("deferred"):
+        # The cycle's budget ran out before this batch's egress: nothing of
+        # it was touched, and the next cycle takes it up.
+        return None
     if result.get("ok") is not True:
         receipt = result.get("receipt")
         errors = (list(receipt.get("errors") or [])
                   if isinstance(receipt, Mapping) else [])
-        return refused(str(result.get("refusal") or "retirement refused"),
-                       mover_key=mover, errors=errors)
+        return report.refused(str(result.get("refusal") or "retirement refused"),
+                              mover_key=mover, errors=errors)
     if result.get("duplicate"):
-        return quiet()
+        return report.quiet()
     receipt = result.get("receipt")
     receipt = receipt if isinstance(receipt, Mapping) else {}
     event: dict[str, object] = {
-        "event": DEAD_PRODUCER_BATCH_RETIRED_EVENT, "batch": coordinates,
+        "event": DEAD_PRODUCER_BATCH_RETIRED_EVENT,
+        "batch": report.coordinates,
         "mover_key": mover, "tier": tier, "producer_state": producer_state,
         "origin_kept": True,
         "entries_deleted": int(receipt.get("entries_deleted") or 0),
@@ -7741,6 +7996,8 @@ def _retire_dead_staged_batch(queue, instance: Mapping[str, object],
         "tokens_released": int(receipt.get("tokens_released") or 0),
     }
     # Which of its paths another attempt now claims: for the record only.
+    entry = batches.get(batch_id)
+    entry = entry if isinstance(entry, Mapping) else {}
     try:
         owners = reads.path_owners(instance, template)
         superseded: list[dict[str, str]] = []
@@ -7755,11 +8012,128 @@ def _retire_dead_staged_batch(queue, instance: Mapping[str, object],
     except (ProducedOutputError, OSError, ValueError) as exc:
         event["superseded"] = None
         event["superseded_unreadable"] = str(exc)
-    _UNFILED_REPORTS.pop(memo, None)
+    _UNFILED_REPORTS.pop(report.memo, None)
     return event
 
 
-def origin_retirement_tick(queue) -> list[dict[str, object]]:
+def _retire_dead_staged_batches(queue, instance: Mapping[str, object],
+                                template: Mapping[str, object],
+                                staged: Sequence[str],
+                                batches: Mapping[str, object], *,
+                                producer_state: str, reads: _TickReads,
+                                budget=None) -> list[dict[str, object]]:
+    """File the stage retirements of a dead producer's batches (#1053, #1072).
+
+    R13 left ten staged batches that read ``retired: false`` for ever: its
+    movers had finished and held no tier tokens, their funding was
+    ``consumed``, and their stage copies were gone, but the producer died
+    before its own `retire_batch` filed. The #929 sweep reaches only a
+    mover that still holds tokens, so nothing retired them, and the
+    unretired batches kept their paths from every later writer.
+
+    The caller has read that the producer attempt ended (``dead`` or
+    ``succeeded``). A batch is retired here when its active
+    materialization's mover has ended (``done``, ``failed`` or
+    ``withdrawn``), holds no tier tokens (a holder is the #929 sweep's), and
+    its funding record is absent, ``consumed`` or ``released``
+    (`_dead_staged_batch_ready`). Then the producer's own retirement runs, on
+    the tier host only: every such batch of the instance on one stage root
+    goes through `retire_staged_batches`, which validates each batch record,
+    runs the ordinary egress on the batch's fragment root (which finds
+    nothing to delete once the copy is gone, and deletes a copy that remains
+    only against its fragment's identity), and files ``retired`` for all of
+    them with one write of the instance's commitments (#1072).
+
+    Retirement closes the stage records. It never reclaims, and never
+    touches, the batch's origin files: a relaunch reads them (R13's reads
+    392 of its predecessor's 436 batches), and their durable charge stays
+    until a successor supersedes them or an operator reclaims them.
+
+    A mover still queued or running, or a token holder, waits quietly, and
+    so does a batch whose egress ``budget`` deferred to a later cycle.
+    Anything else that stops the retirement is reported once per change as
+    ``output-origin-retirement-refused``. Returns the events to log.
+    """
+
+    events: list[dict[str, object]] = []
+    groups: dict[str, list[str]] = {}
+    ready: dict[str, dict[str, object]] = {}
+    for batch_id in staged:
+        try:
+            found = _dead_staged_batch_ready(queue, instance, batch_id, batches,
+                                             reads=reads)
+        except (ProducedOutputError, OSError, ValueError) as exc:
+            found = {"event": _unfiled_report(instance, f"{batch_id}.stage", {
+                "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})}
+        if "ready" not in found:
+            if found.get("event") is not None:
+                events.append(found["event"])  # type: ignore[arg-type]
+            continue
+        ready[batch_id] = found["ready"]  # type: ignore[assignment]
+        groups.setdefault(str(ready[batch_id]["stage_root"]), []).append(batch_id)
+    from prismabuild import pool as pool_mod
+
+    residency_root = output_fragment_root(Path(queue.root) / pool_mod.RESIDENCY)
+    for stage_root, batch_ids in groups.items():
+        try:
+            results = retire_staged_batches(
+                queue, instance, template, batch_ids, stage_root=stage_root,
+                residency_root=residency_root, budget=budget)
+        except (ProducedOutputError, OSError, ValueError) as exc:
+            for batch_id in batch_ids:
+                event = _unfiled_report(instance, f"{batch_id}.stage", {
+                    "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                    "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+                if event is not None:
+                    events.append(event)
+            continue
+        for batch_id in batch_ids:
+            try:
+                event = _dead_staged_batch_event(
+                    queue, instance, template, batch_id, batches,
+                    results.get(batch_id) or {"ok": False,
+                                              "refusal": "no answer"},
+                    mover=str(ready[batch_id]["mover"]),
+                    tier=str(ready[batch_id]["tier"]),
+                    producer_state=producer_state, reads=reads)
+            except (ProducedOutputError, OSError, ValueError) as exc:
+                event = _unfiled_report(instance, f"{batch_id}.stage", {
+                    "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                    "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+            if event is not None:
+                events.append(event)
+    return events
+
+
+#: The units of work `origin_retirement_tick` asks a budget for (#1072): one
+#: instance's ended prewrites, one staged batch's egress
+#: (`BATCH_RETIREMENT_UNIT`), and one consumed batch's origin retirement.
+ENDED_PREWRITES_UNIT = "ended-prewrites"
+CONSUMED_RETIREMENT_UNIT = "consumed-origin-retirement"
+ORIGIN_RETIREMENT_UNITS = (ENDED_PREWRITES_UNIT, BATCH_RETIREMENT_UNIT,
+                           CONSUMED_RETIREMENT_UNIT)
+
+
+class _ScopeBudget:
+    """A cycle budget that sees one scope's units under the scope's own key.
+
+    `retire_staged_batches` asks for each batch by its id; the tick's
+    rotation is by scope, so the budget records a deferral under the scope.
+    """
+
+    def __init__(self, budget, key: str) -> None:
+        self._budget = budget
+        self._key = key
+
+    def start(self, kind: str, _key: str) -> bool:
+        return bool(self._budget.start(kind, self._key))
+
+    def done(self, kind: str) -> None:
+        self._budget.done(kind)
+
+
+def origin_retirement_tick(queue, *, budget=None) -> list[dict[str, object]]:
     """Retire what the produced-output lane's ended attempts left (#914, #1053).
 
     Called once per `tier_loop.cycle` on the tier host. It scans the same
@@ -7773,12 +8147,23 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
       are swept (`_sweep_ended_prewrites`, #949), whatever the template:
       a staged template's too (#1053);
     * a staged batch of an ended attempt whose stage copy was never
-      retired has its stage retirement filed
-      (`_retire_dead_staged_batch`, #1053). Its origin files are kept.
+      retired has its stage retirement filed (`_retire_dead_staged_batches`,
+      #1053), one commitments write per instance (#1072). Its origin files
+      are kept.
 
     It also files the attempt index pointer of any scope that has none, and
     marks the index complete once one full pass has indexed every scope it
     listed (`_backfill_attempt`).
+
+    ``budget``, when the tier loop passes one (#1072), is asked before each
+    unit of work -- an instance's ended prewrites, a staged batch's egress, a
+    consumed batch's retirement -- whether it still fits this cycle
+    (``budget.start(kind, key)``) and told when it ends
+    (``budget.done(kind)``).  A unit it refuses is left exactly as it was
+    for a later cycle, and the scopes are visited from the one whose unit
+    was refused first (``budget.order``), so a backlog is worked through
+    rather than retried from the top.  The scan itself still visits every
+    scope: the attempt index is filed and marked complete as before.
 
     Returns the events to log: one ``output-origin-retired`` per retired
     batch (its ref, bytes, consumers and the origin identity each deleted
@@ -7804,103 +8189,113 @@ def origin_retirement_tick(queue) -> list[dict[str, object]]:
     # when some batch is due.  A queue that cannot say keeps every batch for
     # this tick.
     holds: set[tuple[str, str]] | None = None
+    visits: list[tuple[str, Path]] = []
     for owner in owners:
         try:
-            scopes = sorted(child for child in (scopes_root / owner).iterdir()
-                            if child.is_dir())
+            visits.extend((owner, child) for child in sorted(
+                child for child in (scopes_root / owner).iterdir()
+                if child.is_dir()))
         except OSError:
             indexed = False
+    if budget is not None:
+        # From the scope whose unit the budget refused first last cycle.
+        by_key = {str(scope): (owner, scope) for owner, scope in visits}
+        visits = [by_key[key] for key in budget.order(
+            ORIGIN_RETIREMENT_UNITS, list(by_key))]
+    for owner, scope in visits:
+        indexed = _backfill_attempt(queue.root, owner, scope.name) and indexed
+        nonce = scope.name.rpartition(".")[2]
+        try:
+            batches = reads.batches(scope)
+        except ProducedOutputError:
             continue
-        for scope in scopes:
-            indexed = _backfill_attempt(queue.root, owner, scope.name) and indexed
-            nonce = scope.name.rpartition(".")[2]
+        due = [batch_id for batch_id, entry in sorted(batches.items())
+               if isinstance(entry, Mapping)
+               and entry.get("origin_only") is True
+               and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
+               and not entry.get("origin_reclaimed")]
+        try:
+            outstanding = _outstanding_prewrite_ids(scope, batches)
+        except OSError:
+            outstanding = []
+        staged = _unretired_staged_batches(batches)
+        if not due and not outstanding and not staged:
+            continue
+        ended = (_attempt_state(reads.generation(owner), nonce)
+                 if staged or not due else "")
+        if not due and ended not in _ENDED_ATTEMPT_STATES:
+            # Only an ended attempt's prewrites and stage copies are the
+            # tick's (#949, #1053).  The scope is named for the attempt's
+            # nonce, so a producer that can still commit costs no
+            # instance or template read.
+            continue
+        try:
+            instance = validate_instance(json.loads(
+                (scope / "instance.json").read_text()))
+            template = validate_template(json.loads(
+                (templates_root / f"{instance['template_id']}.json"
+                 ).read_text()))
+        except (OSError, ValueError) as exc:
+            event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                     "batch": f"{owner}/{scope.name}",
+                     "reason": f"unknown-retain: scope unreadable: {exc}"}
+            signature = hashlib.sha256(json.dumps(
+                event, sort_keys=True).encode()).hexdigest()
+            if _UNFILED_REPORTS.get(event["batch"]) != signature:
+                _UNFILED_REPORTS[event["batch"]] = signature
+                events.append(event)
+            continue
+        if (instance_dir(queue.root, instance) != scope
+                or template_sha256(template) != instance["template_sha256"]):
+            continue
+        scope_budget = (None if budget is None
+                        else _ScopeBudget(budget, str(scope)))
+        if outstanding and (scope_budget is None or scope_budget.start(
+                ENDED_PREWRITES_UNIT, str(scope))):
+            # An attempt that ended before committing (#949), of any
+            # template (#1053).
             try:
-                batches = reads.batches(scope)
-            except ProducedOutputError:
-                continue
-            due = [batch_id for batch_id, entry in sorted(batches.items())
-                   if isinstance(entry, Mapping)
-                   and entry.get("origin_only") is True
-                   and _entry_lifetime(entry) == ORIGIN_LIFETIME_CONSUMED
-                   and not entry.get("origin_reclaimed")]
-            try:
-                outstanding = _outstanding_prewrite_ids(scope, batches)
-            except OSError:
-                outstanding = []
-            staged = _unretired_staged_batches(batches)
-            if not due and not outstanding and not staged:
-                continue
-            ended = (_attempt_state(reads.generation(owner), nonce)
-                     if staged or not due else "")
-            if not due and ended not in _ENDED_ATTEMPT_STATES:
-                # Only an ended attempt's prewrites and stage copies are the
-                # tick's (#949, #1053).  The scope is named for the attempt's
-                # nonce, so a producer that can still commit costs no
-                # instance or template read.
-                continue
-            try:
-                instance = validate_instance(json.loads(
-                    (scope / "instance.json").read_text()))
-                template = validate_template(json.loads(
-                    (templates_root / f"{instance['template_id']}.json"
-                     ).read_text()))
-            except (OSError, ValueError) as exc:
-                event = {"event": ORIGIN_RETIREMENT_REFUSED_EVENT,
-                         "batch": f"{owner}/{scope.name}",
-                         "reason": f"unknown-retain: scope unreadable: {exc}"}
-                signature = hashlib.sha256(json.dumps(
-                    event, sort_keys=True).encode()).hexdigest()
-                if _UNFILED_REPORTS.get(event["batch"]) != signature:
-                    _UNFILED_REPORTS[event["batch"]] = signature
-                    events.append(event)
-                continue
-            if (instance_dir(queue.root, instance) != scope
-                    or template_sha256(template) != instance["template_sha256"]):
-                continue
-            if outstanding:
-                # An attempt that ended before committing (#949), of any
-                # template (#1053).
-                try:
-                    events.extend(_sweep_ended_prewrites(
-                        queue, instance, template, outstanding, reads))
-                except (ProducedOutputError, OSError, ValueError) as exc:
-                    event = _unfiled_report(instance, "prewrites", {
-                        "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
-                        "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
-                    if event is not None:
-                        events.append(event)
-            if staged and ended in _ENDED_ATTEMPT_STATES:
-                for batch_id in staged:
-                    try:
-                        event = _retire_dead_staged_batch(
-                            queue, instance, template, batch_id, batches,
-                            producer_state=ended, reads=reads)
-                    except (ProducedOutputError, OSError, ValueError) as exc:
-                        event = _unfiled_report(instance, f"{batch_id}.stage", {
-                            "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
-                            "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
-                    if event is not None:
-                        events.append(event)
-            if not due:
-                continue
-            if holds is None:
-                from . import action_edges
-
-                try:
-                    holds = action_edges.held_producer_batches(queue)
-                except (OSError, ProducedOutputError, ValueError):
-                    return events
-            for batch_id in due:
-                try:
-                    event = _retire_consumed_batch(
-                        queue, instance, template, batch_id,
-                        deferred_holds=holds, reads=reads)
-                except (ProducedOutputError, OSError, ValueError) as exc:
-                    event = _unfiled_report(instance, batch_id, {
-                        "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
-                        "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+                events.extend(_sweep_ended_prewrites(
+                    queue, instance, template, outstanding, reads))
+            except (ProducedOutputError, OSError, ValueError) as exc:
+                event = _unfiled_report(instance, "prewrites", {
+                    "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                    "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
                 if event is not None:
                     events.append(event)
+            finally:
+                if scope_budget is not None:
+                    scope_budget.done(ENDED_PREWRITES_UNIT)
+        if staged and ended in _ENDED_ATTEMPT_STATES:
+            events.extend(_retire_dead_staged_batches(
+                queue, instance, template, staged, batches,
+                producer_state=ended, reads=reads, budget=scope_budget))
+        if not due:
+            continue
+        if holds is None:
+            from . import action_edges
+
+            try:
+                holds = action_edges.held_producer_batches(queue)
+            except (OSError, ProducedOutputError, ValueError):
+                return events
+        for batch_id in due:
+            if scope_budget is not None and not scope_budget.start(
+                    CONSUMED_RETIREMENT_UNIT, batch_id):
+                continue
+            try:
+                event = _retire_consumed_batch(
+                    queue, instance, template, batch_id,
+                    deferred_holds=holds, reads=reads)
+            except (ProducedOutputError, OSError, ValueError) as exc:
+                event = _unfiled_report(instance, batch_id, {
+                    "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
+                    "reason": f"unknown-retain: {type(exc).__name__}: {exc}"})
+            finally:
+                if scope_budget is not None:
+                    scope_budget.done(CONSUMED_RETIREMENT_UNIT)
+            if event is not None:
+                events.append(event)
     if indexed and str(queue.root) not in _INDEX_MARKED:
         try:
             if not os.path.lexists(_attempts_root(queue.root)

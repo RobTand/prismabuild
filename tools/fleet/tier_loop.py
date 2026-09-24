@@ -6946,6 +6946,7 @@ def sweep_orphans(queue: pool.PoolQueue,
                   tiers: Mapping[str, Mapping[str, object]],
                   *, pressure: Mapping[str, int] | None = None,
                   index: stage_release.CensusIndex | None = None,
+                  budget: Liveness | None = None,
                   ) -> list[dict[str, object]]:
     """Take back the stage from movers no live consumer still plans to read.
 
@@ -6973,8 +6974,10 @@ def sweep_orphans(queue: pool.PoolQueue,
     }
     if not stage_roots:
         return []
+    # ``budget`` bounds the dead-owner census's units per cycle (#1072).
     return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure,
-                               index=index)
+                               index=index,
+                               **({} if budget is None else {"budget": budget}))
 
 
 def evict_beyond_horizon(queue: pool.PoolQueue,
@@ -7481,18 +7484,296 @@ def _tier_admits_movers(tier_record: Mapping[str, object]) -> bool:
 LAST_CYCLE: dict[str, object] = {}
 
 
-class _Phases:
-    """Seconds per cycle step, taken as laps of one clock."""
+class Liveness:
+    """Keeps a live loop's tier records younger than the liveness bound (#1072).
 
-    def __init__(self) -> None:
+    Readers judge this loop by one field: a tier record's ``announced_unix``.
+    PB's ``PoolQueue._tier_loop_alive`` and PQ's ``landing_verdict`` both
+    call the loop dead once ``now - announced_unix`` passes
+    ``pool.OFFER_TIMEOUT_S``.  The loop used to write each record once per
+    cycle, near its start, so a cycle longer than the bound read as a dead
+    loop: the first cycle after the 09-24 publish took 222.7 s.
+
+    Two mechanisms, both tied to the loop's own progress.  Nothing here runs
+    on a timer or a thread: a loop that stops making progress stops writing,
+    and reads dead within the bound, exactly as before.
+
+    **A checkpoint re-announces when the record would otherwise age too far.**
+    The loop checkpoints after every step (`_Phases.lap`) and on both sides of
+    every unit of a long step (`start`, `done`).  The terms, all in seconds:
+
+    * ``L`` = ``pool.OFFER_TIMEOUT_S`` (120): the age at which a reader calls
+      the loop dead.
+    * ``P`` = ``pool.HEARTBEAT_S`` (30): the slowest reader's poll interval,
+      PB's ``no_progress`` rung (PQ polls every second).  It is the margin
+      kept below ``L`` for a stretch longer than any measured one and for a
+      reader's clock running ahead of this box's; it does not change the age
+      a reader computes.
+    * ``H`` = ``L - P`` (90): the oldest the record may get.
+    * ``W``: the write latency, measured on every write from the stamp to the
+      rename that makes it visible, the largest of this cycle and the last.
+    * ``U``: the longest stretch between two checkpoints, measured the same
+      way.
+
+    At a checkpoint with the record ``age`` old, the next checkpoint comes at
+    most ``U`` later, and a write started then is visible ``W`` after that.
+    So the record is re-announced when ``age + U + W >= H``, and a reader
+    never sees it older than ``H`` while the stretches stay within ``U``.  A
+    stretch longer than every one measured -- a hang -- gets no write: the
+    record passes ``L`` at most ``L`` after the last write, and a reader
+    polling every ``P`` sees a dead loop within ``L + P``, the bound it had
+    before.  The end of a cycle checks the sleep that follows it the same
+    way, with the interval ``I`` added to the stretch.
+
+    What is re-announced is the record the cycle minted, byte for byte, with
+    a new ``announced_unix`` and a ``liveness_refresh`` note naming the step
+    it followed, the mint's own stamp and how many refreshes the mint has
+    had.  Every other field of a tier record is content a reader acts on --
+    the mountpoint, the epoch, the fill offer, the ledger, the retired flag
+    -- and it is still the loop's word until the next mint replaces it: the
+    loop acts on nothing else meanwhile.  Readers that read content keep
+    ``sampled_unix`` to age it, and the refresh leaves it alone.
+
+    **A budget bounds the long steps, so the minted content stays young.**  A
+    refresh extends the record's life, not its content's; without a bound on
+    the cycle, a 300 s cycle would keep a 300 s old fill offer looking fresh.
+    The bound: content minted at a cycle's start is replaced by the next
+    cycle's mint, one cycle plus one sleep later.  Keep that within ``H``:
+
+    * ``I``: the interval the loop sleeps between cycles (``--interval-s``).
+    * ``T``: the cycle's time outside the budgeted units -- the previous
+      cycle's, measured, or this cycle's so far if that is larger.
+    * ``b`` = ``H - W - I - T``: what the units may spend in one cycle.
+
+    A unit of kind ``k`` starts only while ``spent + est(k) <= b``, where
+    ``est(k)`` is the longest unit of that kind in this cycle or the last.
+    The first unit of each kind always starts, so every long step makes
+    progress every cycle whatever ``b`` is, and a refused unit is left for
+    the next cycle, which starts its step from the first unit refused
+    (`order`).  At the live shape (``L`` 120, ``P`` 30, ``I`` 5, ``T`` about
+    5 s) ``b`` is about 80 s.
+    """
+
+    def __init__(self, *, interval_s: float | None = None,
+                 bound_s: float | None = None,
+                 poll_s: float | None = None) -> None:
+        self.bound_s = float(pool.OFFER_TIMEOUT_S if bound_s is None else bound_s)
+        self.poll_s = float(pool.HEARTBEAT_S if poll_s is None else poll_s)
+        self.horizon_s = self.bound_s - self.poll_s
+        self.interval_s = float(CYCLE_INTERVAL_S if interval_s is None
+                                else interval_s)
+        #: tier id -> [queue, the minted record, its stamp, the last stamp,
+        #: refreshes, the cycle that minted it]
+        self._records: dict[str, list[object]] = {}
+        self._cycle = 0
+        self._mark: float | None = None
+        self._stretch = [0.0, 0.0]
+        self._write = [0.0, 0.0]
+        self._cycle_started: float | None = None
+        self._outside_prev = 0.0
+        self._spent = 0.0
+        self._unit: tuple[str, float] | None = None
+        self._ran: dict[str, int] = {}
+        self._estimate: dict[str, float] = {}
+        self._estimate_prev: dict[str, float] = {}
+        self._deferred: dict[str, tuple[int, str]] = {}
+        self._deferred_prev: dict[str, tuple[int, str]] = {}
+        self._deferrals: dict[str, int] = {}
+        self._refreshes = 0
+        self._refresh_errors: list[str] = []
+        self._oldest_seen = 0.0
+
+    # -- the clock the stamps are taken on --------------------------------
+    @staticmethod
+    def _now() -> float:
+        # ``pool._now`` is what ``announce_tier`` stamps with, so every age
+        # here is the age a reader computes.
+        return float(pool._now())
+
+    # -- writes ----------------------------------------------------------------
+    def _write_record(self, queue, record: Mapping[str, object]) -> float:
+        stamp = self._now()
+        queue.announce_tier(record, now=stamp)
+        self._write[0] = max(self._write[0], self._now() - stamp)
+        return stamp
+
+    def announce(self, queue, record: Mapping[str, object]) -> None:
+        """Announce a record this cycle minted, and remember it as minted."""
+
+        minted = copy.deepcopy(dict(record))
+        minted.pop("liveness_refresh", None)
+        stamp = self._write_record(queue, minted)
+        self._records[str(minted.get("tier_id"))] = [
+            queue, minted, stamp, stamp, 0, self._cycle]
+
+    def _age(self, now: float) -> float:
+        if not self._records:
+            return 0.0
+        return now - min(float(entry[3]) for entry in self._records.values())
+
+    def _refresh(self, after: str) -> None:
+        for tier_id, entry in sorted(self._records.items()):
+            queue, minted, stamp, _last, refreshes, _cycle = entry
+            assert isinstance(minted, dict)
+            record = dict(minted, liveness_refresh={
+                "after": after, "minted_unix": stamp,
+                "refreshes": int(refreshes) + 1})
+            try:
+                entry[3] = self._write_record(queue, record)
+            except OSError as exc:
+                # A write that fails is a write that did not happen: the
+                # record ages, and a reader sees what it would have seen.
+                self._refresh_errors.append(f"{tier_id}: {exc}")
+                continue
+            entry[4] = int(refreshes) + 1
+            self._refreshes += 1
+
+    def checkpoint(self, after: str, *, ahead_s: float = 0.0) -> None:
+        """The loop has finished ``after``: re-announce if the next stretch could age the record past ``H``."""
+
+        now = self._now()
+        if self._mark is not None:
+            self._stretch[0] = max(self._stretch[0], now - self._mark)
+        self._mark = now
+        age = self._age(now)
+        self._oldest_seen = max(self._oldest_seen, age)
+        stretch = max(self._stretch)
+        if self._records and (age + ahead_s + stretch + max(self._write)
+                              >= self.horizon_s):
+            self._refresh(after)
+            self._mark = self._now()
+
+    # -- the cycle and its budget ----------------------------------------------
+    def begin_cycle(self) -> None:
+        now = self._now()
+        self._cycle += 1
+        self._stretch = [0.0, self._stretch[0]]
+        self._write = [0.0, self._write[0]]
+        self._estimate_prev = self._estimate
+        self._estimate = {}
+        self._deferred_prev = self._deferred
+        self._deferred = {}
+        self._deferrals = {}
+        self._ran = {}
+        self._spent = 0.0
+        self._unit = None
+        self._refreshes = 0
+        self._refresh_errors = []
+        self._oldest_seen = 0.0
+        self._cycle_started = now
+        self._mark = now
+
+    def budget_s(self, now: float | None = None) -> float:
+        """``b = H - W - I - T``, as of ``now``."""
+
+        now = self._now() if now is None else now
+        outside = 0.0
+        if self._cycle_started is not None:
+            outside = max(0.0, now - self._cycle_started - self._spent)
+        return (self.horizon_s - max(self._write) - self.interval_s
+                - max(self._outside_prev, outside))
+
+    def order(self, kinds: str | Sequence[str], keys: Sequence[str]) -> list[str]:
+        """``keys``, from the first one a unit of ``kinds`` was refused for last cycle."""
+
+        kinds = (kinds,) if isinstance(kinds, str) else tuple(kinds)
+        refused = sorted(self._deferred_prev[kind] for kind in kinds
+                         if kind in self._deferred_prev)
+        keys = list(keys)
+        for _sequence, key in refused:
+            if key in keys:
+                at = keys.index(key)
+                return keys[at:] + keys[:at]
+        return keys
+
+    def start(self, kind: str, key: str) -> bool:
+        """May a unit of ``kind`` start now?  Every kind's first unit may."""
+
+        self.checkpoint(f"before {kind}")
+        now = self._now()
+        estimate = max(self._estimate.get(kind, 0.0),
+                       self._estimate_prev.get(kind, 0.0))
+        if (self._ran.get(kind, 0)
+                and self._spent + estimate > self.budget_s(now)):
+            self._deferrals[kind] = self._deferrals.get(kind, 0) + 1
+            if kind not in self._deferred:
+                self._deferred[kind] = (sum(self._deferrals.values()), str(key))
+            return False
+        self._ran[kind] = self._ran.get(kind, 0) + 1
+        self._unit = (kind, now)
+        return True
+
+    def done(self, kind: str) -> None:
+        """The unit `start` let begin has ended."""
+
+        now = self._now()
+        if self._unit is not None and self._unit[0] == kind:
+            took = max(0.0, now - self._unit[1])
+            self._spent += took
+            self._estimate[kind] = max(self._estimate.get(kind, 0.0), took)
+        self._unit = None
+        self.checkpoint(kind)
+
+    def end_cycle(self, *, completed: bool) -> dict[str, object]:
+        """Close the cycle: check the sleep ahead, and say what the cycle did."""
+
+        now = self._now()
+        if self._cycle_started is not None:
+            self._outside_prev = max(0.0, now - self._cycle_started - self._spent)
+        # Only what this cycle announced is the loop's word now: a tier it
+        # no longer announces is never written again from memory.
+        self._records = {tier_id: entry for tier_id, entry in self._records.items()
+                         if entry[5] == self._cycle}
+        if completed:
+            # The next mint comes after the sleep and the next cycle's first
+            # steps: at most ``I`` plus one stretch.
+            self.checkpoint("cycle-end", ahead_s=self.interval_s)
+        return {
+            "bound_s": self.bound_s, "poll_s": self.poll_s,
+            "horizon_s": self.horizon_s, "interval_s": self.interval_s,
+            "write_s": round(max(self._write), 6),
+            "stretch_s": round(max(self._stretch), 6),
+            "outside_s": round(self._outside_prev, 6),
+            "spent_s": round(self._spent, 6),
+            "budget_s": round(self.budget_s(now), 6),
+            "units": dict(self._ran), "deferred": dict(self._deferrals),
+            "refreshes": self._refreshes,
+            "refresh_errors": list(self._refresh_errors),
+            "oldest_age_s": round(self._oldest_seen, 6),
+        }
+
+
+class _Phases:
+    """Seconds per cycle step, taken as laps of one clock.
+
+    With a `Liveness`, every lap is also a checkpoint (#1072).
+    """
+
+    def __init__(self, liveness: Liveness | None = None) -> None:
         self.started = time.perf_counter()
         self._mark = self.started
         self.seconds: dict[str, float] = {}
+        self.liveness = liveness
 
     def lap(self, name: str) -> None:
         now = time.perf_counter()
         self.seconds[name] = self.seconds.get(name, 0.0) + (now - self._mark)
         self._mark = now
+        if self.liveness is not None:
+            self.liveness.checkpoint(name)
+
+    def announce(self, queue: pool.PoolQueue, record: Mapping[str, object]) -> None:
+        """Announce a tier record, through the loop's `Liveness` when it has one."""
+
+        if self.liveness is not None:
+            self.liveness.announce(queue, record)
+        else:
+            queue.announce_tier(record)
+
+    def budgeted(self) -> dict[str, object]:
+        """``{"budget": liveness}`` for a step that takes one, else nothing."""
+
+        return {} if self.liveness is None else {"budget": self.liveness}
 
 
 def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
@@ -7521,6 +7802,7 @@ def cycle(
     receipts: ReceiptCache,
     now: float | None = None,
     discover=storage_tiers.discover_tiers,
+    liveness: Liveness | None = None,
 ) -> list[dict[str, object]]:
     """Discover, mint, announce; returns the records it announced.
 
@@ -7529,9 +7811,17 @@ def cycle(
     step shares, the receipts, the residency fragments.  What the cycle cost,
     per step, and how much it listed, parsed and reused, is left in
     :data:`LAST_CYCLE` whether the cycle completes or raises.
+
+    ``liveness`` is the serving loop's `Liveness`, kept from one cycle to the
+    next (#1072): it announces the minted records, re-announces them between
+    steps when the cycle runs long, and budgets the long steps' units.  What
+    it did is left in ``LAST_CYCLE["liveness"]``.  Without it the cycle
+    announces each record once, as before.
     """
 
-    phases = _Phases()
+    if liveness is not None:
+        liveness.begin_cycle()
+    phases = _Phases(liveness)
     before = _read_counts(receipts)
     completed = False
     records = getattr(receipts, "records", None)
@@ -7561,6 +7851,11 @@ def cycle(
                       for name in after},
             "receipts_unreadable": dict(getattr(receipts, "unreadable", {})),
         }
+        if liveness is not None:
+            try:
+                LAST_CYCLE["liveness"] = liveness.end_cycle(completed=completed)
+            except Exception as exc:  # noqa: BLE001 -- a report, never the cycle
+                LAST_CYCLE["liveness"] = {"error": repr(exc)}
 
 
 def _cycle(
@@ -7875,7 +8170,7 @@ def _cycle(
             record["ledger"] = minted["ledger"]
         else:
             record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
-        queue.announce_tier(record)
+        phases.announce(queue, record)
         announced.append(record)
     phases.lap("mint_announce")
     # Minting first, windowing second, on purpose: the window publishes what
@@ -7958,7 +8253,8 @@ def _cycle(
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("reclaim_failed_mover_partials")
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure,
-                               index=getattr(receipts, "census", None)):
+                               index=getattr(receipts, "census", None),
+                               **phases.budgeted()):
         _emit(queue, host, {"event": "stage-orphan-evicted", **event},
               stamp_unix=False)
     phases.lap("sweep_orphans")
@@ -7997,7 +8293,8 @@ def _cycle(
     # succeeded, and consumed ones a dead producer attempt left undeclared
     # (#914).  Silent when it retires nothing; a stalled or refused
     # retirement is reported once per change.
-    for event in produced_output.origin_retirement_tick(queue):
+    for event in produced_output.origin_retirement_tick(
+            queue, **phases.budgeted()):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("origin_retirement_tick")
     # Deferred consumers whose producers have committed (#913): sealed over
@@ -8022,7 +8319,7 @@ def _cycle(
         if tier_id in tiers or not tier_id.endswith(suffix):
             continue
         ledger = queue.mint_tier_capacity(tier_id, {})
-        queue.announce_tier({
+        phases.announce(queue, {
             "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": tier_id, "host": host,
             "tier": storage_tiers.tier_kind_of(tier_id),
             "capacity_bytes": 0, "retired": True, "ledger": ledger,
@@ -8070,6 +8367,9 @@ def _serve(args) -> int:
     queue.ensure_layout()
     host = socket.gethostname()
     receipts = ReceiptCache()
+    # Kept for the loop's life: the stretches and write times it measured
+    # last cycle are this cycle's estimates (#1072).
+    liveness = Liveness(interval_s=float(args.interval_s))
     loaded_commit = runtime_gate.loaded_runtime_commit()
     loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
 
@@ -8096,7 +8396,8 @@ def _serve(args) -> int:
             return 75 if args.once else 0
         started = time.monotonic()
         try:
-            records = cycle(queue, host=host, source_pool=args.source_pool, receipts=receipts)
+            records = cycle(queue, host=host, source_pool=args.source_pool,
+                            receipts=receipts, liveness=liveness)
         except (OSError, pool.PoolContractError) as exc:
             # What the failed cycle cost up to the raise, phase by phase
             # (#992): a slow failure is still a slow cycle.
