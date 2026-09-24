@@ -483,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cycles_out = out / "cycles.json"
     argv_child = [sys.executable, str(Path(__file__).resolve()),
-                  "--run-cycles", "--work", str(work),
+                  "--run-cycles", "--work", str(work), "--out", str(out),
                   "--cycles", str(args.cycles),
                   "--age-sample-s", str(args.age_sample_s),
                   "--cycles-out", str(cycles_out)]
@@ -511,9 +511,16 @@ def main(argv: list[str] | None = None) -> int:
         "ended_unix": rows[-1].get("ended_unix") if rows else None,
         "profile": analyze(profile, args.rate) if args.py_spy else None,
     }
+    if code == 0 and not rows:
+        # py-spy exits 0 whatever its child did: a child that ran no cycle
+        # is a failed bench, and its log says why.
+        code = 1
+        summary["returncode"] = code
+        summary["child_log_tail"] = log.read_text(errors="replace")[-2000:]
     (out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     print(json.dumps({
         "returncode": code, "shape": shape,
+        "child_log_tail": summary.get("child_log_tail"),
         "cycles": [{key: row.get(key) for key in
                     ("kind", "wall_s", "cpu_s", "retired",
                      "tick_s_per_retirement", "oldest_tier_age_s",
