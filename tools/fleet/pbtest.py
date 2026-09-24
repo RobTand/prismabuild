@@ -44,6 +44,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -124,6 +125,36 @@ def unobserved_outcome(lines: list[str]) -> str | None:
     return None
 
 
+#: The last line ``pbrun`` prints, with exit 1, when it refused a submission
+#: because its worker-offer scan timed out and the reader was reaped
+#: (``pbrun.OfferDiscoveryTimedOut``, raised by ``bounded_offer_snapshot``).
+#: Nothing was published, so submitting the same shard again is safe, and it
+#: is the one refusal a resubmission can clear.  The ``$`` matters: the same
+#: timeout with a reader that survived cleanup appends `` retained reader=``,
+#: and that one stays a plain refusal, because a retry would race the reader.
+OFFER_DISCOVERY_TIMED_OUT = re.compile(
+    r"^pbrun: worker-offer discovery timed out after [^;]*; refusing submission; "
+    r"no runnable submission was published\.$")
+
+
+def offer_discovery_timed_out(lines: list[str], returncode: int | None) -> bool:
+    """Whether a shard's ``pbrun`` ended in the refusal a resubmission can clear.
+
+    ``pbtest`` runs ``pbrun`` as a subprocess, so it cannot catch the class the
+    way ``pbcampaign`` does (#560).  What it sees is the interpreter printing
+    the ``SystemExit`` text last and exiting 1.  Only pbrun's LAST line counts:
+    a shard whose tests quote the message, and fail, ran and is not retried.
+    """
+
+    if returncode != 1:
+        return False
+    for line in reversed(lines):
+        text = ANSI.sub("", line).strip()
+        if text:
+            return bool(OFFER_DISCOVERY_TIMED_OUT.match(text))
+    return False
+
+
 #: The prefixes of the lines a shard's submitter prints about its own wait.
 #: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
 #: reader stuck in the kernel for all of ``--wait-s``, and says so every
@@ -154,6 +185,54 @@ def drain_shard(index: int, stream, lines: list[str]) -> None:
         lines.append(line)
         if line.startswith(STREAMED_PREFIXES):
             _say(f"shard {index:>3} {line.rstrip()}")
+
+
+def run_shard(index: int, command: list[str], first, *, wait_s: float,
+              deadline: float, result: dict) -> None:
+    """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
+
+    ``first`` is the attempt the caller already launched, so shards start in
+    order as before.  An attempt whose ``pbrun`` ended in
+    ``OFFER_DISCOVERY_TIMED_OUT`` published nothing and holds nothing, so the
+    same command is run again after ``pbrun.POLL_S``, while the shard's own
+    ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
+    row (#560).  Any other ending is the shard's ending.  Every attempt's
+    output stays in ``result["lines"]``, so the receipt shows each refusal.
+    """
+
+    lines: list[str] = []
+    result.update(lines=lines, attempts=1, returncode=None)
+    proc = first
+    while True:
+        drain_shard(index, proc.stdout, lines)
+        proc.wait()
+        result["returncode"] = proc.returncode
+        if not offer_discovery_timed_out(lines, proc.returncode):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= pbrun.POLL_S:
+            # The pause would reach the deadline; pbcampaign would stop there
+            # too.  The shard keeps pbrun's refusal as its ending.
+            _say(f"shard {index:>3} pbtest: worker-offer discovery timed out on "
+                 f"attempt {result['attempts']}; {max(remaining, 0.0):.0f}s of "
+                 f"--wait-s {wait_s:g} left, not resubmitting")
+            return
+        result["attempts"] += 1
+        _say(f"shard {index:>3} pbtest: worker-offer discovery timed out and "
+             f"nothing was published; attempt {result['attempts']} in "
+             f"{pbrun.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
+        time.sleep(pbrun.POLL_S)
+        try:
+            proc = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, errors="replace")
+        except OSError as exc:
+            # The first attempt launched this same command, so this is the
+            # box, not the shard.  The refusal already recorded stands.
+            _say(f"shard {index:>3} pbtest: could not start attempt "
+                 f"{result['attempts']}: {exc}")
+            result["attempts"] -= 1
+            return
 
 
 def replayed_output(out: str) -> str:
@@ -855,22 +934,29 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
+        # The shard's own wait budget, spanning every attempt (#1102).
+        deadline = time.monotonic() + args.wait_s
         # ``errors="replace"``: a stray byte must not end the drain thread,
         # which would leave the pipe to fill and the shard's wait blocked.
         proc = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             errors="replace")
-        lines: list[str] = []
-        drain = threading.Thread(target=drain_shard, args=(index, proc.stdout, lines),
-                                 name=f"pbtest-shard-{index}", daemon=True)
+        shard_result: dict = {}
+        drain = threading.Thread(
+            target=run_shard, args=(index, command, proc),
+            kwargs={"wait_s": args.wait_s, "deadline": deadline,
+                    "result": shard_result},
+            name=f"pbtest-shard-{index}", daemon=True)
         drain.start()
-        procs.append((index, bucket, proc, drain, lines))
+        procs.append((index, bucket, drain, shard_result))
 
     results = []
-    for index, bucket, proc, drain, lines in procs:
-        # EOF comes when the shard's pbrun exits, so the join is the wait.
+    for index, bucket, drain, shard_result in procs:
+        # EOF comes when the shard's last pbrun exits, so the join is the wait.
         drain.join()
-        proc.wait()
+        lines = shard_result["lines"]
+        attempts = shard_result["attempts"]
+        returncode = shard_result["returncode"]
         out = "".join(lines)
         # A cache hit prints the receipt where the shard's stdout would be, so
         # look through it to the payload before asking whether pytest reported.
@@ -893,7 +979,7 @@ def main() -> int:
             # by a signal, one that timed out, and one whose pbrun refused to
             # submit all printed the same sentence, and the reader had to go
             # find the returncode elsewhere to tell them apart.
-            rc = proc.returncode
+            rc = returncode
             how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
             unobserved = unobserved_outcome(tail) if rc == 74 else None
             if unobserved is not None:
@@ -912,10 +998,16 @@ def main() -> int:
         # shard printed no record", which is not "it skipped nothing".
         skipped = recorded_skips(pbtest_outcomes.parse(out))
         results.append({"shard": index, "files": bucket,
-                        "returncode": proc.returncode, "summary": summary,
-                        "ran": ran, "skipped": skipped, "output": out})
-        state = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
-        _say(f"shard {index:>3} {state:<8} {summary}")
+                        "returncode": returncode, "summary": summary,
+                        "ran": ran, "skipped": skipped, "attempts": attempts,
+                        "output": out})
+        state = "ok" if returncode == 0 else f"rc={returncode}"
+        # A resubmitted shard says so on its own line, so the receipt records
+        # that its first submission was refused (#1102).
+        retried = (f" [attempt {attempts}; {attempts - 1} earlier submission(s) "
+                   "refused by a worker-offer discovery timeout]"
+                   if attempts > 1 else "")
+        _say(f"shard {index:>3} {state:<8} {summary}{retried}")
         counted = summary_count(summary, "skipped") if ran else 0
         if skipped is None and counted:
             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "
