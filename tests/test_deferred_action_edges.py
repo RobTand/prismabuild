@@ -258,6 +258,10 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
     mover = _request(tmp_path, lead)["params"]["command"]
     assert stage_move.main([*mover[2:], "--action-key", lead, "--unpaced"]) == 0
+    # The mover files its vouch under the range's share namespace (#1026);
+    # the tier loop's next cycle copies it to each consumer that reads the
+    # range, before it composes that consumer's map.
+    _tier_cycle(queue, tmp_path / "stage")
     composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
     staged = composed["entries"][rm.residency_map_key(str(path), 0)]
     assert Path(staged["stage_path"]).read_bytes() == payload
