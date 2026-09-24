@@ -24,6 +24,16 @@ sample is attributed to the step of ``cycle`` it was spent in -- the callee
 frame directly below ``cycle`` -- and to the innermost filesystem or parse
 operation it was doing.  The same analysis reads a before and an after tree.
 
+``--dead-owner-pairs`` adds the #1056 shape: pairs of dead owners (a failed
+consumer's executed, charged mover with a fragment and a material sidecar)
+whose fragments name the same staged files, one ``.pbrange`` parent
+directory per entry, as an adoption leaves them once both consumers have
+died.  ``--no-range-claims`` adds claimed exports that demand only the
+tier's fill rate and seal no range, which taint every ownership census on
+the tier while they are claimed (the live ``produced_export.py`` shape).
+Each cycle row then carries the stage-lock hold its sweep receipts
+recorded.
+
 Run it through PrismaBuild on a GB10, never on the tier host, and never
 against the live queue::
 
@@ -199,12 +209,121 @@ def _claim(queue: pool.PoolQueue, key: str) -> None:
     queue.write_lease(key, owner="bench", claim_snapshot=item)
 
 
+def _dead_action(queue: pool.PoolQueue, key: str, status: str) -> None:
+    """One real claim and terminal transition: an attempt-backed outcome."""
+
+    queue.publish(action_key=key, cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  resources={"cpu": 1}, max_attempts=1)
+    claimed = queue.claim(capacity={"cpu": 4})
+    assert claimed is not None and claimed["action_key"] == key, claimed
+    queue.finish(key, status=status,
+                 detail={"returncode": 0 if status == "executed" else 1})
+
+
+def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
+                      entries: int) -> dict[str, int]:
+    """Co-owned dead owners: the #1056 live shape.
+
+    Each pair shares ``entries`` staged files, each in its own ``.pbrange``
+    directory (one parent per entry since #889).  Both owners are a failed
+    consumer's executed DONE mover with a move receipt, one stage token, a
+    fragment and a material sidecar dating the files, so each is the
+    other's co-owner and neither prunes anything.  Built before any other
+    ready row, so each claim takes the row just published.
+    """
+
+    counts: collections.Counter = collections.Counter()
+    if pairs <= 0:
+        return {}
+    root = queue.residency_fragment_root()
+    queue.mint_tier_capacity(TIER, {"stage_gib": 2 * pairs})
+    for pair in range(pairs):
+        mentions: dict[str, dict[str, object]] = {}
+        for index in range(entries):
+            directory = (stage / "models" / f"dead-{pair:03d}"
+                         / f"model-{index:05d}-of-{entries:05d}"
+                           ".safetensors.pbrange")
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"0-{4096}"
+            with open(path, "wb") as stream:
+                stream.truncate(4096)
+            key = residency_map.residency_map_key(
+                f"/pool/models/dead-{pair:03d}/model-{index:05d}", 0)
+            mentions[key] = {"stage_path": str(path), "bytes": 4096,
+                             "sha256": DIGEST,
+                             "file_id": reader_lease.stat_identity(str(path))}
+        fragment_entries = {
+            key: {"stage_path": mention["stage_path"], "bytes": 4096,
+                  "sha256": DIGEST, "offset": 0}
+            for key, mention in mentions.items()}
+        for side in ("a", "b"):
+            consumer = _key(f"dead{pair}{side}:consumer")
+            mover = _key(f"dead{pair}{side}:mover")
+            _dead_action(queue, consumer, "failed")
+            _dead_action(queue, mover, "executed")
+            reader_lease.write_material(
+                root, consumer_action_key=consumer, mover_action_key=mover,
+                tier_id=TIER, stage_root=str(stage),
+                manifest_sha256=MANIFEST, generation="b" * 32,
+                entries=mentions)
+            residency_map.write_fragment(root, {
+                "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+                "consumer_action_key": consumer, "mover_action_key": mover,
+                "tier_id": TIER, "stage_root": str(stage),
+                "manifest_sha256": MANIFEST, "entries": fragment_entries})
+            queue.record_move(mover, {
+                "consumer_action_key": consumer, "tier_id": TIER,
+                "stage_root": str(stage), "manifest_sha256": MANIFEST,
+                "range_start_bytes": 0, "range_end_bytes": 4096 * entries,
+                "range_bytes": 4096 * entries,
+                "bytes_staged": 4096 * entries,
+                "entries_declared": entries, "entries_staged": entries,
+                "complete": True, "seconds": 20.0,
+                "unix": time.time() - 3600.0})
+            assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1})
+            counts["dead_owners"] += 1
+        counts["dead_owner_entries"] += entries
+    return dict(counts)
+
+
+def build_no_range_claims(queue: pool.PoolQueue, count: int) -> dict[str, int]:
+    """Claimed exports that demand only the tier's fill rate (#1056).
+
+    The live ``produced_export.py`` rows: a ``fill_mb_s_pool_side@<tier>``
+    demand makes the claim census read them as movement on the tier, and
+    their sealed command carries no range, so every ownership census taints
+    ("mover seals no range") while one is claimed.
+    """
+
+    for index in range(count):
+        key = _key(f"no-range{index}")
+        queue.publish(**_row(queue, key, {"cpu": 1, "mem_gb": 1}))
+        _claim(queue, key)
+        claimed = queue.item_path(pool.CLAIMED, key)
+        item = json.loads(claimed.read_text())
+        item["resources"] = {"cpu": 1, "mem_gb": 1,
+                             f"fill_mb_s_pool_side@{TIER}": 510}
+        claimed.write_text(json.dumps(item))
+        request = queue.root / "cas" / "requests" / key[:2] / f"{key}.json"
+        request.parent.mkdir(parents=True, exist_ok=True)
+        request.write_text(json.dumps({
+            "action_key": key, "inputs": [],
+            "params": {"command": [
+                "/usr/bin/python3", "tools/fleet/produced_export.py",
+                "--pace-mb-s", "510", "--pace-tier", TIER]}}))
+    return {"no_range_claims": count} if count else {}
+
+
 def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
     counts = collections.Counter()
     counts.update(bench_stage_adopt.build_forest(
         queue, stage, empty_dirs=args.empty_dirs, small_dirs=args.small_dirs,
         big_fragments=[int(x) for x in args.big_fragments.split(",") if x],
         produced_fragment_dirs=args.produced_fragment_dirs))
+    counts.update(build_dead_owners(queue, stage, pairs=args.dead_owner_pairs,
+                                    entries=args.dead_entries))
     for state, count in ((pool.DONE, args.done), (pool.FAILED, args.failed),
                          (pool.WITHDRAWN, args.withdrawn)):
         _terminal(queue, state, count)
@@ -241,6 +360,7 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         _claim(queue, key)
     counts["ready_noise"] = args.ready_noise
     counts["claimed_noise"] = args.claimed_noise
+    counts.update(build_no_range_claims(queue, args.no_range_claims))
     return dict(counts)
 
 
@@ -265,14 +385,39 @@ def run_cycles(args) -> int:
     def discover(**_kwargs):
         return {TIER: _tier_record(stage)}
 
+    # What each cycle's sweep held the stage ownership lock for, summed over
+    # the receipts it returned (#1056): every egress and stale-mention prune
+    # records its own hold.
+    swept: dict[str, float] = {}
+    real_sweep = stage_release.sweep
+
+    def counted_sweep(*args, **kwargs):
+        out = real_sweep(*args, **kwargs)
+        for entry in out:
+            held = entry.get("lock_held_s")
+            if isinstance(held, (int, float)):
+                swept["lock_held_s"] = swept.get("lock_held_s", 0.0) + held
+                swept["holds"] = swept.get("holds", 0) + 1
+            if entry.get("event") == stage_release.STALE_MENTION_EVENT:
+                swept["stale_receipts"] = swept.get("stale_receipts", 0) + 1
+        return out
+
+    stage_release.sweep = counted_sweep
+
     def one() -> dict[str, object]:
+        swept.clear()
+        unix = time.time()
         started = time.perf_counter()
         cpu = time.process_time()
         tier_loop.cycle(queue, host=HOST, source_pool="storage_pool",
                         receipts=receipts, discover=discover)
         row: dict[str, object] = {
             "wall_s": round(time.perf_counter() - started, 4),
-            "cpu_s": round(time.process_time() - cpu, 4)}
+            "cpu_s": round(time.process_time() - cpu, 4),
+            "started_unix": round(unix, 3), "ended_unix": round(time.time(), 3),
+            "stage_lock_held_s": round(swept.get("lock_held_s", 0.0), 6),
+            "stage_lock_holds": int(swept.get("holds", 0)),
+            "stale_mention_receipts": int(swept.get("stale_receipts", 0))}
         recorded = getattr(tier_loop, "LAST_CYCLE", None)
         if isinstance(recorded, dict):
             row["recorded"] = recorded
@@ -428,6 +573,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="unrelated ready rows")
     parser.add_argument("--claimed-noise", type=int, default=28,
                         help="unrelated claimed rows")
+    parser.add_argument("--dead-owner-pairs", type=int, default=0,
+                        help="pairs of co-owned dead owners (#1056; the live "
+                             "tier loop carried 35 to 47 such owners on "
+                             "2026-09-24)")
+    parser.add_argument("--dead-entries", type=int, default=1680,
+                        help="entries in each dead owner's fragment, one "
+                             "parent directory each")
+    parser.add_argument("--no-range-claims", type=int, default=0,
+                        help="claimed fill-rate-only exports that seal no "
+                             "range (#1056)")
     parser.add_argument("--run-cycles", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--cycles-out", default="", help=argparse.SUPPRESS)
@@ -481,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
         "cold_wall_s": rows[0]["wall_s"] if rows else None,
         "steady_median_wall_s": (steady[len(steady) // 2] if steady else None),
         "steady_max_wall_s": (steady[-1] if steady else None),
+        "started_unix": rows[0].get("started_unix") if rows else None,
+        "ended_unix": rows[-1].get("ended_unix") if rows else None,
         "profile": analyze(profile, args.rate) if args.py_spy else None,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
