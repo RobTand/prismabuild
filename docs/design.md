@@ -66,7 +66,7 @@ an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
 publishes a runnable `ready/` item from an unavailable snapshot. A timeout whose
 reader was reaped raises `OfferDiscoveryTimedOut`, a `SystemExit` subclass. Plain
-`pbrun` still exits 1 on it. A windowed campaign may retry it, because nothing
+`pbrun` still exits 1 on it. A windowed campaign and `pbtest` may retry it, because nothing
 was published and no reader survives. Within the scan, an offer read that
 returns nothing (`ENOENT`, `ESTALE` or empty) is read once more. Workers publish
 offers with `os.replace`, which never removes the name. A reader that opened the
@@ -1033,6 +1033,22 @@ skipped or failed at import, which the summary counts and a `--collect-only`
 pass does not) and a test the summary counts in more than one phase (a pass
 whose teardown errors or skips). The report's totals line states the sum:
 outcomes equal tests, plus outcomes at collection, plus extra phases.
+
+`pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
+discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
+row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
+by `pbrun`'s last line and exit 1: the `OfferDiscoveryTimedOut` text, which ends
+at "no runnable submission was published." A timeout whose reader survived
+cleanup appends `retained reader=` and is not retried, and neither is any other
+refusal, nor a shard whose tests merely print that text. The retry runs the
+same command after `pbrun.POLL_S`, while the shard's `--wait-s`, counted from
+its first submission, has more than one pause left; otherwise the refusal is the
+shard's ending, reported as before. Each attempt's output stays in the shard's
+receipt, each retry is printed as it happens, and the shard's line and receipt
+entry carry `attempts`. The first attempt of every shard is still launched in
+order before any shard is waited on. A retried shard's last `pbrun` gets the
+full `--wait-s`, so the shard's wait can exceed `--wait-s` by the time its
+refused attempts took.
 
 ## Problem
 
@@ -2612,7 +2628,7 @@ would let a restart republish failed early rows before encountering later live
 work. Restart requires the previous controller to stop and the ordered manifest,
 source identity, options and limit to stay the same; existing pbrun cache/attach
 semantics recover that prefix. The one refusal that does not stop refilling is
-`pbrun.OfferDiscoveryTimedOut`. It is raised before any runnable publication,
+`pbrun.OfferDiscoveryTimedOut` (`pbtest` retries it per shard by the same rule). It is raised before any runnable publication,
 and only after its reader was reaped, so the controller holds no slot and
 resubmits the same row each poll until the shared wait budget expires. The row
 is then `not_submitted` (#560). No durable parent or background dispatcher is
