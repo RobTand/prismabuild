@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -73,16 +74,47 @@ def load_bundle() -> dict:
     return json.loads(gzip.decompress(FIXTURE.read_bytes()))
 
 
+def _variant_of(raw: str, variant: int) -> str:
+    """The bundle as another dead attempt of its own template (#1072).
+
+    The live tier loop met fourteen dead Stage A instances at once, each with
+    its own owner, attempt, template and movers.  The owner key, the attempt
+    nonce, the template id and the unretired batches' mover keys are replaced
+    by names derived from ``variant``; every digest that covers them is
+    recomputed by :func:`install` as it already is for the prefix.
+    """
+
+    bundle = json.loads(raw)
+    instance = bundle["instance"]
+    template_id = str(bundle["template"]["template_id"])
+
+    def derived(value: str, width: int) -> str:
+        return hashlib.sha256(
+            f"r13-1072-variant-{variant}:{value}".encode()).hexdigest()[:width]
+
+    for key in [str(instance["owner_action_key"]), *sorted(bundle["queue"]["done"])]:
+        raw = raw.replace(key, derived(key, 64))
+    nonce = str(instance["owner_attempt"]["nonce"])
+    raw = raw.replace(nonce, derived(nonce, 32))
+    return raw.replace(f'"{template_id}', f'"{template_id}-v{variant}')
+
+
 def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
-            origin_files: bool = True) -> Replay:
+            origin_files: bool = True, variant: int = 0) -> Replay:
     """File the dead instance into ``queue``; create its origin files.
 
     ``origin_files`` creates one small file for every path of a batch whose
     origin was never reclaimed, and for every ``.pt`` an outstanding prewrite
     plans (none of the ``.tmp`` names), as the live prefix held them.
+
+    ``variant`` above zero files the same records as another dead attempt,
+    with its own owner, nonce, template and movers (:func:`_variant_of`), so
+    one queue can hold several; give each its own ``prefix``.
     """
 
     raw = gzip.decompress(FIXTURE.read_bytes()).decode()
+    if variant:
+        raw = _variant_of(raw, variant)
     live_prefix = json.loads(raw)["template"]["output_prefix"]
     raw = raw.replace(live_prefix, str(prefix))
     raw = raw.replace(f'"{LIVE_STAGE}/', f'"{stage}/')
