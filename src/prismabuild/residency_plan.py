@@ -1450,39 +1450,58 @@ def seal_window(queue, plan: Mapping[str, object], *,
             raise
 
 
-#: Per queue root and consumer, the movers its filed plan names, keyed by the
-#: filing's incarnation.  A filing is immutable, so the answer holds until the
-#: incarnation moves; entries for plans no longer filed are dropped.
-_FILED_MOVERS: dict[tuple[str, str],
-                    tuple[tuple[int, int, int], frozenset[str]]] = {}
+#: Per queue root and consumer, every action key its filed plan's bytes
+#: carry, keyed by the filing's incarnation.  A filing is immutable, so the
+#: answer holds until the incarnation moves; entries for plans no longer
+#: filed are dropped.
+_FILED_KEYS: dict[tuple[str, str],
+                  tuple[tuple[int, int, int], frozenset[str]]] = {}
+
+#: One action key in a plan's bytes: 64 lowercase hex digits, not part of a
+#: longer run.
+_KEY_IN_BYTES = re.compile(rb"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
 
 
-def _filed_movers(queue, consumer_action_key: str,
-                  ) -> tuple[frozenset[str] | None, str]:
-    """``(movers, "")`` for one filed plan, or ``(None, why)`` when unknown."""
+def _filed_keys(queue, consumer_action_key: str,
+                ) -> tuple[frozenset[str] | None, str]:
+    """``(keys, "")`` for one filed plan, or ``(None, why)`` when unknown.
+
+    The keys are read off the plan's bytes, not its validated body, so the
+    answer does not depend on this reader knowing the plan's schema: a plan
+    sealed by a newer generation than this reader (#615) names its movers
+    all the same, and one this reader refuses must not read as "names
+    nothing".  Every mover a plan names appears in its bytes as its key, so
+    a key absent from the bytes is a mover the plan does not name; the other
+    keys a plan carries (its consumer, its egress rows, its manifest digest)
+    are never a mover's, so the set over-states nothing a caller asks.
+    """
 
     root = str(queue.root)
     path = queue.residency_plan_path(consumer_action_key)
-    current, error = _stat_incarnation(path)
-    if error is not None:
-        return None, f"its plan could not be stat-ed: {error}"
-    if current is None:
-        return frozenset(), ""             # reaped since the listing
-    kept = _FILED_MOVERS.get((root, consumer_action_key))
-    if kept is not None and kept[0] == current:
-        return kept[1], ""
-    refused: list[Exception] = []
-    plan, filing = read_filed(queue, consumer_action_key,
-                              on_unreadable=refused.append)
-    if plan is None or filing is None:
-        if refused:
-            return None, f"its plan does not read: {refused[0]!r}"
-        if incarnation(path) is None:
+    for _attempt in range(3):
+        before, error = _stat_incarnation(path)
+        if error is not None:
+            return None, f"its plan could not be stat-ed: {error}"
+        if before is None:
+            return frozenset(), ""             # reaped since the listing
+        kept = _FILED_KEYS.get((root, consumer_action_key))
+        if kept is not None and kept[0] == before:
+            return kept[1], ""
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
             return frozenset(), ""
-        return None, "its plan kept changing while it was read"
-    movers = frozenset(mover_keys(plan))
-    _FILED_MOVERS[(root, consumer_action_key)] = (filing, movers)
-    return movers, ""
+        except OSError as exc:
+            return None, f"its plan could not be read: {exc}"
+        after, error = _stat_incarnation(path)
+        if error is not None:
+            return None, f"its plan could not be stat-ed: {error}"
+        if after == before:
+            keys = frozenset(match.decode()
+                             for match in _KEY_IN_BYTES.findall(raw))
+            _FILED_KEYS[(root, consumer_action_key)] = (before, keys)
+            return keys, ""
+    return None, "its plan kept changing while it was read"
 
 
 def plan_interest(queue, mover_action_key: str, *,
@@ -1500,8 +1519,10 @@ def plan_interest(queue, mover_action_key: str, *,
     Read from the *filed plans*, not from live queue rows, because a plan is
     filed before its consumer's row is published (:func:`seal_window`), and
     that row can take a while to become visible: a sealed consumer with no
-    row yet is interested.  A consumer counts as dead only when all of this
-    holds, read under its own transition lock taken without blocking: it is
+    row yet is interested.  A plan is read as bytes (:func:`_filed_keys`)
+    rather than through :func:`validate_plan`, so a plan a newer generation
+    sealed (#615) still counts by the keys it names.  A consumer counts as
+    dead only when all of this holds, read under its own transition lock taken without blocking: it is
     in no live state, and it has a ``failed``, ``withdrawn`` or ``done``
     record.  So a consumer being sealed or resubmitted right now (its lock
     is held) is never taken for the dead generation it replaces.
@@ -1530,17 +1551,17 @@ def plan_interest(queue, mover_action_key: str, *,
             and set(path.stem) <= _HEX)
     except OSError:
         return {"interested": [], "unknown": ["<plans>"]}
-    for stale in [entry for entry in _FILED_MOVERS
+    for stale in [entry for entry in _FILED_KEYS
                   if entry[0] == root and entry[1] not in filed]:
-        del _FILED_MOVERS[stale]
+        del _FILED_KEYS[stale]
     for key in filed:
         if key in skip:
             continue
-        movers, _why = _filed_movers(queue, key)
-        if movers is None:
+        keys, _why = _filed_keys(queue, key)
+        if keys is None:
             unknown.append(key)
             continue
-        if mover not in movers:
+        if mover not in keys:
             continue
         with queue._transition_locked(key, blocking=False) as got:
             if not got:

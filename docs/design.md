@@ -7577,8 +7577,11 @@ index that does not list, reads there as nobody. Two rules close it:
   is dead only when, under its own transition lock taken without blocking, it
   is in no live state and has a `failed`, `withdrawn` or `done` record; a busy
   lock is a seal or resubmission in progress and counts as interest. A filed
-  plan with neither a row nor an ending counts as interest too. The pass
-  decides and withdraws under the mover's own transition lock.
+  plan with neither a row nor an ending counts as interest too. A plan is
+  read for the keys its bytes name, not through `validate_plan`, so a plan a
+  newer generation sealed (#615) still counts, and a plan that cannot be read
+  keeps the mover. The pass decides and withdraws under the mover's own
+  transition lock.
 * The seal files its plan before it renews (`seal_window`, above), and renews
   under every mover's lock. So each withdrawal the pass makes either landed
   before the renewal's listing, and is retired by it, or runs after that
