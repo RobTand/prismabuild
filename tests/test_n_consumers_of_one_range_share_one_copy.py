@@ -168,6 +168,18 @@ def _egress(queue: pool.PoolQueue, stage: Path, plan: dict[str, object],
     return receipt
 
 
+def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
+    """A claimed consumer reports ``phase``: its accepted progress moves on."""
+
+    queue.write_lease(
+        key, owner="horizon-fixture",
+        claim_snapshot=json.loads(queue.item_path(pool.CLAIMED, key).read_text()),
+        progress_observation={
+            "source": "action-progress",
+            "last_accepted": {"phase": phase, "units_completed": 2,
+                              "reported_unix": time.time() - 5.0}})
+
+
 def _files(stage: Path, ordinal: int) -> Path:
     return stage / MANIFEST[:8] / f"phase-{ordinal}" / "part-0.bin"
 
@@ -292,14 +304,7 @@ def test_a_shared_range_is_evictable_only_once_every_reader_passed_it(
     assert holder["evictable"] is False, census["holders"]
     assert census["evictable_gib"] == 0
 
-    now = time.time()
-    queue.write_lease(
-        SECOND, owner="horizon-fixture",
-        claim_snapshot=json.loads(queue.item_path(pool.CLAIMED, SECOND).read_text()),
-        progress_observation={
-            "source": "action-progress",
-            "last_accepted": {"phase": "phase-1", "units_completed": 2,
-                              "reported_unix": now - 5.0}})
+    _advance(queue, SECOND, "phase-1")
     census = tier_loop._commitment_census(
         queue, tiers, consumers=_consumers(queue, stage), remember=False)[TIER]
     holder = {entry["key"]: entry for entry in census["holders"]}[movers[0]]
@@ -319,10 +324,12 @@ def test_one_readers_egress_leaves_the_range_and_the_last_one_deletes(
 
     queue, stage = _fixture_queue(tmp_path, 20)
     plans, movers = _sharers(queue, stage,
-                             reading={FIRST: "phase-1", SECOND: "phase-0"})
+                             reading={FIRST: "phase-0", SECOND: "phase-0"})
     root = queue.residency_fragment_root()
     _fan_out(queue, stage)
-    assert residency_map.fragment_path(root, SECOND, movers[0]).exists()
+    for key in (FIRST, SECOND):
+        assert residency_map.fragment_path(root, key, movers[0]).exists()
+    _advance(queue, FIRST, "phase-1")
 
     first = _egress(queue, stage, plans[FIRST], 0)
 
@@ -331,15 +338,9 @@ def test_one_readers_egress_leaves_the_range_and_the_last_one_deletes(
     assert first["tokens_released"] == 0 and first["tokens_decharged"] == 0
     assert residency_map.fragment_path(root, SECOND, movers[0]).exists()
     assert not residency_map.fragment_path(root, FIRST, movers[0]).exists()
+    assert first.get("interest_dropped") is True, first
 
-    now = time.time()
-    queue.write_lease(
-        SECOND, owner="horizon-fixture",
-        claim_snapshot=json.loads(queue.item_path(pool.CLAIMED, SECOND).read_text()),
-        progress_observation={
-            "source": "action-progress",
-            "last_accepted": {"phase": "phase-1", "units_completed": 2,
-                              "reported_unix": now - 5.0}})
+    _advance(queue, SECOND, "phase-1")
     second = _egress(queue, stage, plans[SECOND], 0)
 
     assert not _files(stage, 0).exists(), second

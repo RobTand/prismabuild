@@ -9601,6 +9601,155 @@ stage mover and promoter: the restart adopts with no copy, no poll and no
 rename, and the copy in flight, live claim, live pin, dated divergence and
 unattributed wrong bytes keep their verdicts.
 
+### Consumers of one staged range share one copy, charged once (#1026)
+
+Before #1026, every consumer sealed its own mover for every range it reads. A
+mover's action key is the digest of its whole sealed body, and that body
+carries `--consumer-action-key`, so two consumers of one manifest named two
+movers for the same bytes. Both copied into the same content-addressed staged
+names (`stage_move.stage_relative`). Both claims took the range's tokens from
+free (`PoolQueue._begin_tier_acquire`), and the joint commitment charged the
+range once per consumer.
+
+**The registry, not the descriptor, is the key.** A mover's key cannot be
+derived from the range alone: the sealed body also carries the submission's
+checkout snapshot, the pricing read off receipts, and the log name. So the
+first submitter of a range registers its mover, and every later submitter of
+the same range names that mover
+(`residency_plan.register_shared_range`). The range is identified by the
+four fields `core.residency_descriptor` binds: manifest, tier, start, and
+end. Their digest is the range's *share namespace*
+(`residency_plan.share_namespace`). The records live under
+`residency-plans/shared/`:
+
+- `ranges/<namespace>.json` names the mover and holds its sealed row. The
+  first writer wins, under the namespace's transition lock.
+- `movers/<mover>.json` indexes the mover back to its namespace. Every
+  reader that must tell a shared mover from a per-consumer one reads this
+  index.
+
+Every scanner of the plan directory lists `<consumer>.json` names only, so the
+subdirectory is invisible to them. A registration is kept for as long as its
+mover can be published. A `done` mover whose range was evicted holds no
+tokens, so `_mover_state` reads it as unpublished and the window publishes it
+again. The one exception is an operator's live withdrawal of the registered
+mover (#708), which the window never republishes. A later submitter then
+replaces that registration, and the old record moves to
+`<namespace>.<mover>.withdrawn`.
+
+`pbrun --residency-share auto` (the default) seals this way. `off` seals a
+mover per consumer, as before, and is the A/B's other arm.
+
+**The shared mover files under the namespace.** Its argv carries
+`--consumer-action-key <namespace>`, so its fragment and material sidecar are
+filed under the namespace rather than under a consumer. No one consumer's
+death can then retire bytes that the others read. No queue record carries the
+namespace, so nothing takes it for a live or an ended consumer. The mover's
+receipt names the namespace too. Adoption into a shared mover
+(`adopt_resident_ranges`) vouches under the namespace for the same reason.
+
+**Each reader gets its own copy of the vouch.** Every reader of a range looks
+it up per consumer: `compose_map`, `residency_plan.resident_movers`, and
+`reader_lease.covers_for_keys`. So once a cycle, after the beyond-horizon
+eviction and before the windows, `tier_loop.fan_out_shared_ranges` copies the
+namespace's fragment and material to each consumer that still reads the range,
+the way an adoption reissues a vouch (#598). No token moves. It copies only the
+entries the material dates, and it writes the material before the fragment.
+A fragment entry that nothing dates would read to every later publisher of the
+same staged name as a vouch still pending, which refuses forever (#1087). A
+date that no fragment cites is inert. The copy runs under the mover's
+transition lock, taken without blocking, and is rewritten only when the
+namespace's documents change.
+
+**Interest is derived, not filed.** A consumer is interested in a shared
+range while all of these hold (`stage_release.shared_interest`):
+
+- it is in `ready/` or `claimed/` and declares residency leads;
+- its frozen plan names the mover as a stage leg;
+- its accepted progress has not passed the leg's phase.
+
+A consumer whose plan or progress does not read counts as interested. A filed
+interest marker would outlive a consumer that died without dropping it, and
+would need a reaper of its own. Derived this way, a consumer requeued from its
+first phase regains its interest by construction.
+
+**An egress drops one interest.** Each consumer keeps its own egress row. For
+a shared range, `stage_release.evict` runs under the mover's transition lock
+and reads the mover index. While another consumer is interested, the egress
+removes only the egressing consumer's fragment, material, and retiring mark,
+and returns a complete receipt with `interest_dropped` and no tokens moved.
+When no other consumer is interested, the egress evicts the range as the
+namespace. The eviction reads every fragment filed directly for the mover (the
+namespace's and each fanned copy) as the range's own vouch, not as a co-owner,
+because a co-owner keeps its file and decharges the tokens. On completion it
+drops all of those documents, the fanned copies first and the namespace's
+last. Three evictions take the whole range at once, whoever names them:
+
+- the relief evictions (`evict_beyond_horizon` and the claim order), whose
+  candidates every interested consumer has already agreed to;
+- an eviction named for the namespace itself, such as the orphan sweep reading
+  the mover's receipt;
+- an eviction of a range that did not land: a mover that is neither queued,
+  running, nor complete. The failed-mover reclaim (#627) asks for this to free
+  the partials for the recopy, and it reads the partials under the namespace.
+
+A window whose consumer has already dropped its interest (its fanned copy is
+gone) does not ask for the same egress again while another consumer reads the
+range.
+
+**The tier counts the range once.** Every accounting step that walks windows
+now treats one mover named by several plans as one holder:
+
+- The joint commitment (`_commitment_census`) counts a shared range evictable
+  only when every window naming it has read past it or has it beyond its
+  horizon. It counts the range once, and each window counts it toward its own
+  holding.
+- The beyond-horizon and claim-order candidates keep a shared range only when
+  every interested consumer nominates it on its own terms. The range then
+  appears once, at the soonest any of them needs it, and it takes every
+  sharer's ram copies with it.
+- The claim order (`window_credit.claim_order`) spends a shared range's GiB
+  once. A consumer whose range an earlier consumer was granted is granted too,
+  with nothing left to spend (`shared_with`).
+- The advance fence is taken once per shared advance on a tier
+  (`_shared_advance_fences`). The first window whose grant already holds it, or
+  else the first to fence it in the pass, owns it. The others are permitted as
+  `shared` and give back any second grant they hold.
+- A window publishes a shared mover with `refuse_if_live`, so a second window
+  never replaces the generation another window published.
+
+**Withdrawal is per interest too.** A failed consumer's queued movers are
+withdrawn (#620), but a shared mover is not withdrawn while another consumer is
+interested or while interest does not read. The dead consumer's plan then stays
+filed, because `reap` does not archive a plan under a live child, and a later
+pass reaps it once the mover has ended.
+
+**Limits of this design.**
+
+- Sharing needs the same manifest digest and the same chunk cuts. Two
+  submissions that cut one manifest differently share nothing.
+- The shared row is the first registrant's: its priority, `max_attempts`, and
+  `retry_safe`. A later, higher-priority submitter's reads wait on a copy
+  published at the first one's priority, and the retry budget is shared.
+- An operator's withdrawal of a shared mover supersedes every plan that names
+  it, not only the operator's target. The replaced registration serves new
+  submitters only.
+- A consumer that reads past a range before the fan-out gave it a copy never
+  asks for an egress of it. The range stays until the last reader's egress,
+  a relief eviction, or the orphan sweep takes it.
+- A registration can race a submission that sealed against the record it
+  replaced. The race costs a second mover for the range, which is the
+  per-consumer charge this design removes, never a lost range.
+- The mover-crash retry is shared. Every consumer waits on one row, and that
+  row's attempts are counted once for all of them.
+
+The tests are in `tests/test_n_consumers_of_one_range_share_one_copy.py` and
+`tests/test_claimed_consumers_drain_a_tier_in_admission_order.py`
+(`test_a_range_two_claimed_consumers_read_is_charged_once`).
+`bench_tier_cycle.py --shared-consumers 4` builds the campaign shape (four
+consumers on two hosts reading one 45-phase plan of 22 GiB phases) against a
+tree with or without the registry.
+
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
 A consumer that fails with movers published leaves them running for nobody.
